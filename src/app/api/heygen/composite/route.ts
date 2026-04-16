@@ -14,6 +14,10 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
 }
 
+function getFfprobePath(): string {
+  return process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+}
+
 async function downloadFile(url: string, dest: string, heygenKey?: string): Promise<void> {
   if (url.startsWith("/api/stocks/")) {
     const filename = url.replace("/api/stocks/", "");
@@ -105,6 +109,7 @@ async function chromakeyComposite(
 
   // Count avatar frames to estimate time
   const { execFileSync } = require("child_process");
+  const ffprobe = getFfprobePath();
   let frameCount = "?";
   try {
     const probe = execFileSync(ffprobe, [
