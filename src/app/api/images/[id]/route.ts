@@ -6,7 +6,7 @@ import { apiError } from "@/lib/api-error";
 
 export async function DELETE(
   _req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -14,15 +14,17 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const { id } = await params;
+
     const image = await prisma.generatedImage.findUnique({
-      where: { id: params.id },
+      where: { id },
     });
 
     if (!image || image.userId !== session.user.id) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    await prisma.generatedImage.delete({ where: { id: params.id } });
+    await prisma.generatedImage.delete({ where: { id } });
 
     return NextResponse.json({ success: true });
   } catch (error) {
