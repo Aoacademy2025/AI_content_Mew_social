@@ -6,7 +6,7 @@ import { apiError } from "@/lib/api-error";
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -15,6 +15,7 @@ export async function PATCH(
     }
 
     const { plan, role, suspended } = await req.json();
+    const { id } = await params;
 
     const data: Record<string, unknown> = {};
     if (plan !== undefined) data.plan = plan;
@@ -26,7 +27,7 @@ export async function PATCH(
     }
 
     const user = await prisma.user.update({
-      where: { id: params.id },
+      where: { id },
       data,
       select: { id: true, name: true, email: true, role: true, plan: true, suspended: true },
     });
@@ -39,7 +40,7 @@ export async function PATCH(
 
 export async function DELETE(
   _req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -47,12 +48,14 @@ export async function DELETE(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    const { id } = await params;
+
     // Prevent admin from deleting themselves
-    if ((session.user as any).id === params.id) {
+    if ((session.user as any).id === id) {
       return NextResponse.json({ error: "Cannot delete yourself" }, { status: 400 });
     }
 
-    await prisma.user.delete({ where: { id: params.id } });
+    await prisma.user.delete({ where: { id } });
     return NextResponse.json({ success: true });
   } catch (error) {
     return apiError({ route: "admin/users/[id]", error });
