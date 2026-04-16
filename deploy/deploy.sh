@@ -7,7 +7,7 @@
 set -e
 
 APP_DIR="/var/www/ai-content"
-REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"  # แก้ตรงนี้
+REPO_URL="https://github.com/Aoacademy2025/AI_content_Mew_social.git"
 
 echo "=== [1/6] Pull latest code ==="
 if [ -d "$APP_DIR/.git" ]; then
