@@ -19,10 +19,14 @@ function mergeAudioFiles(inputPaths: string[], outputPath: string): Promise<void
       return resolve();
     }
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ffmpeg = require("fluent-ffmpeg");
-    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+    if (process.platform !== "win32") {
+      ffmpeg.setFfmpegPath("ffmpeg");
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+      ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+    }
     const cmd = ffmpeg();
     inputPaths.forEach(p => cmd.input(p));
     cmd

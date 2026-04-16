@@ -6,11 +6,11 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-
 const execFileAsync = promisify(execFile);
-const FFMPEG_PATH: string = ffmpegInstaller.path;
+const FFMPEG_PATH: string = process.platform !== "win32" ? "ffmpeg" : (() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require("@ffmpeg-installer/ffmpeg").path;
+})();
 
 /** Use ffmpeg -i to extract basic metadata (width, height, duration) from any media file */
 async function probeFile(filePath: string): Promise<{ width?: number; height?: number; duration?: number; codec?: string }> {

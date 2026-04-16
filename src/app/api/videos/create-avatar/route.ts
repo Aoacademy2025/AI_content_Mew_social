@@ -5,10 +5,15 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ffmpeg = require("fluent-ffmpeg");
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+// Use system ffmpeg on Linux, installer on Windows
+if (process.platform !== "win32") {
+  ffmpeg.setFfmpegPath("ffmpeg");
+} else {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+}
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
