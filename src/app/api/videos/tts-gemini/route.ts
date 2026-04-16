@@ -10,8 +10,6 @@ import fs from "fs";
 export const maxDuration = 120;
 export const runtime = "nodejs";
 
-export { GEMINI_VOICES };
-
 // POST /api/videos/tts-gemini
 // Body: { text, voiceName? }
 // Returns: { voiceUrl }
