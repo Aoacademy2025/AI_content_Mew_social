@@ -1,0 +1,390 @@
+@import "tailwindcss";
+
+/* Map CSS variables to Tailwind v4 theme tokens
+   so utilities like `border-border` and `bg-background` work. */
+@theme {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius: var(--radius);
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+}
+
+/* ═══════════════════════════════════════════════════════
+   UI COMPONENT VARIABLES — used in inline style={} props
+   so they respond to dark/light theme switching
+   ═══════════════════════════════════════════════════════ */
+:root {
+  /* Nav / Sidebar */
+  --ui-nav-bg:          hsl(220 20% 93%);
+  --ui-nav-border:      hsl(220 13% 85%);
+  --ui-sidebar-bg:      hsl(220 20% 93%);
+  --ui-sidebar-border:  hsl(220 13% 85%);
+
+  /* Cards / Panels */
+  --ui-card-bg:         hsl(220 18% 96%);
+  --ui-card-border:     hsl(220 13% 86%);
+  --ui-card-bg-2:       hsl(220 16% 92%);
+  --ui-card-bg-3:       hsl(220 16% 89%);
+
+  /* Buttons / Controls */
+  --ui-btn-bg:          hsl(220 14% 88%);
+  --ui-btn-border:      hsl(220 13% 81%);
+  --ui-btn-bg-hover:    hsl(220 14% 84%);
+
+  /* Input fields */
+  --ui-input-bg:        hsl(220 14% 90%);
+  --ui-input-border:    hsl(220 13% 81%);
+
+  /* Dividers */
+  --ui-divider:         hsl(220 13% 84%);
+
+  /* Text on dark surfaces */
+  --ui-text-primary:    hsl(222 47% 11%);
+  --ui-text-secondary:  hsl(220 9% 44%);
+  --ui-text-muted:      hsl(220 9% 58%);
+
+  /* Overlays */
+  --ui-overlay-bg:      rgba(10, 14, 40, 0.45);
+  --ui-hover-overlay:   rgba(100, 116, 172, 0.07);
+
+  /* Status badge bg */
+  --ui-badge-neutral-bg:     hsl(220 14% 90%);
+  --ui-badge-neutral-border: hsl(220 13% 82%);
+
+  /* Rendering spinner bg */
+  --ui-spinner-bg:      hsl(220 14% 90%);
+
+  /* Short-video page — always dark */
+  --ui-sv-bg:           hsl(221 30% 9%);
+  --ui-sv-card:         hsl(221 30% 11%);
+  --ui-sv-card-2:       hsl(221 30% 13%);
+  --ui-sv-input:        hsl(221 28% 15%);
+  --ui-sv-border:       hsl(220 25% 18%);
+  --ui-sv-border-2:     hsl(220 22% 22%);
+}
+
+.dark {
+  /* Nav / Sidebar */
+  --ui-nav-bg:          hsl(221 39% 8%);
+  --ui-nav-border:      hsl(220 30% 13%);
+  --ui-sidebar-bg:      hsl(221 39% 8%);
+  --ui-sidebar-border:  hsl(220 30% 14%);
+
+  /* Cards / Panels */
+  --ui-card-bg:         hsl(221 39% 10%);
+  --ui-card-border:     hsl(220 30% 14%);
+  --ui-card-bg-2:       hsl(221 39% 9%);
+  --ui-card-bg-3:       hsl(222 47% 8%);
+
+  /* Buttons / Controls */
+  --ui-btn-bg:          hsl(220 30% 14%);
+  --ui-btn-border:      hsl(220 30% 20%);
+  --ui-btn-bg-hover:    hsl(220 30% 18%);
+
+  /* Input fields */
+  --ui-input-bg:        hsl(220 30% 12%);
+  --ui-input-border:    hsl(220 30% 20%);
+
+  /* Dividers */
+  --ui-divider:         hsl(220 30% 14%);
+
+  /* Text */
+  --ui-text-primary:    hsl(213 31% 91%);
+  --ui-text-secondary:  hsl(215 16% 60%);
+  --ui-text-muted:      hsl(215 16% 47%);
+
+  /* Overlays */
+  --ui-overlay-bg:      rgba(0, 0, 0, 0.85);
+  --ui-hover-overlay:   rgba(255, 255, 255, 0.04);
+
+  /* Status badge bg */
+  --ui-badge-neutral-bg:     hsl(220 30% 16%);
+  --ui-badge-neutral-border: hsl(220 30% 22%);
+
+  /* Rendering spinner bg */
+  --ui-spinner-bg:      hsl(222 47% 8%);
+
+  /* Short-video page — always-dark tool UI (same in dark mode) */
+  --ui-sv-bg:           hsl(221 30% 9%);
+  --ui-sv-card:         hsl(221 30% 11%);
+  --ui-sv-card-2:       hsl(221 30% 13%);
+  --ui-sv-input:        hsl(221 28% 15%);
+  --ui-sv-border:       hsl(220 25% 18%);
+  --ui-sv-border-2:     hsl(220 22% 22%);
+}
+
+@layer base {
+  :root {
+    /* ── Cool blue-gray background — not too white ── */
+    --background: 220 18% 91%;
+    --foreground: 222 47% 11%;
+    /* ── Cards pop white against the background ── */
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    /* ── Purple primary — matches the AI/creative identity ── */
+    --primary: 252 83% 57%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 92%;
+    --secondary-foreground: 222 47% 28%;
+    --muted: 220 14% 92%;
+    --muted-foreground: 220 9% 46%;
+    /* ── Light purple accent for active sidebar / hover states ── */
+    --accent: 252 83% 95%;
+    --accent-foreground: 252 80% 38%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 89%;
+    --input: 220 13% 92%;
+    --ring: 252 83% 57%;
+    --radius: 0.75rem;
+    --chart-1: 252 83% 57%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+
+  .dark {
+    /* ── Deep navy background (Glacier AI style) ── */
+    --background: 222 47% 6%;
+    --foreground: 213 31% 91%;
+    /* ── Cards slightly lighter than bg ── */
+    --card: 221 39% 9%;
+    --card-foreground: 213 31% 91%;
+    --popover: 221 39% 11%;
+    --popover-foreground: 213 31% 91%;
+    /* ── Cyan primary accent ── */
+    --primary: 190 100% 50%;
+    --primary-foreground: 222 47% 6%;
+    --secondary: 220 30% 14%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 220 30% 14%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 220 30% 16%;
+    --accent-foreground: 190 100% 50%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 30% 14%;
+    --input: 220 30% 14%;
+    --ring: 190 100% 50%;
+    --radius: 0.75rem;
+    --chart-1: 190 100% 50%;
+    --chart-2: 271 91% 65%;
+    --chart-3: 142 72% 50%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 0 84% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ── Custom scrollbar ── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(221 39% 8%);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(220 30% 20%);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(190 100% 50% / 0.45);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(220 30% 20%) hsl(221 39% 8%);
+}
+
+/* ═══════════════════════════════════════════════════════
+   LIGHT MODE OVERRIDES for hardcoded dark utility classes
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Card depth: subtle shadow on border-white/* cards ── */
+:root:not(.dark) .border-white\/5,
+:root:not(.dark) .border-white\/10,
+:root:not(.dark) .border-white\/20 {
+  box-shadow: 0 1px 4px 0 rgba(34, 42, 90, 0.06), 0 1px 2px 0 rgba(34, 42, 90, 0.04);
+}
+
+/* ── Zinc backgrounds → blue-tinted light grays ── */
+:root:not(.dark) .bg-zinc-950 { background-color: hsl(220 20% 93%); }
+:root:not(.dark) .bg-zinc-900 { background-color: hsl(220 20% 96%); }
+:root:not(.dark) .bg-zinc-800 { background-color: hsl(220 14% 90%); }
+:root:not(.dark) .bg-zinc-700 { background-color: hsl(220 14% 84%); }
+:root:not(.dark) .bg-zinc-800\/50 { background-color: hsl(220 14% 90% / 0.6); }
+:root:not(.dark) .bg-zinc-900\/50 { background-color: hsl(220 20% 96% / 0.6); }
+:root:not(.dark) .border-zinc-800 { border-color: hsl(220 13% 84%); }
+:root:not(.dark) .border-zinc-700 { border-color: hsl(220 13% 78%); }
+
+/* ── White text → deep navy (light mode only, skip .sv-dark subtree) ── */
+:root:not(.dark) .text-white     { color: hsl(222 47% 11%); }
+:root:not(.dark) .text-white\/70 { color: hsl(222 47% 11% / 0.7); }
+:root:not(.dark) .text-white\/80 { color: hsl(222 47% 11% / 0.8); }
+:root:not(.dark) .text-white\/90 { color: hsl(222 47% 11% / 0.9); }
+
+/* ── Short-video page — CSS variables that flip with light/dark ── */
+.sv-dark {
+  --sv-bg:      hsl(221 30% 9%);
+  --sv-card:    hsl(221 30% 11%);
+  --sv-card2:   hsl(221 28% 13%);
+  --sv-input:   hsl(221 26% 16%);
+  --sv-border:  hsl(220 24% 20%);
+  --sv-border2: hsl(220 22% 25%);
+  --sv-text:    hsl(213 31% 91%);
+  --sv-muted:   rgba(255,255,255,0.3);
+}
+:root:not(.dark) .sv-dark {
+  --sv-bg:      hsl(220 18% 91%);
+  --sv-card:    hsl(220 16% 96%);
+  --sv-card2:   hsl(220 14% 92%);
+  --sv-input:   hsl(220 14% 89%);
+  --sv-border:  hsl(220 13% 84%);
+  --sv-border2: hsl(220 13% 79%);
+  --sv-text:    hsl(222 47% 11%);
+  --sv-muted:   rgba(30,40,80,0.5);
+}
+.sv-bg { background: var(--sv-bg); }
+
+/* ── Inside .sv-dark: text-white uses --sv-text (white in dark, navy in light) ── */
+.sv-dark .text-white     { color: var(--sv-text) !important; }
+.sv-dark .text-white\/90 { color: color-mix(in srgb, var(--sv-text) 90%, transparent) !important; }
+.sv-dark .text-white\/80 { color: color-mix(in srgb, var(--sv-text) 80%, transparent) !important; }
+.sv-dark .text-white\/70 { color: color-mix(in srgb, var(--sv-text) 70%, transparent) !important; }
+.sv-dark .text-white\/60 { color: color-mix(in srgb, var(--sv-text) 60%, transparent) !important; }
+.sv-dark .text-white\/50 { color: color-mix(in srgb, var(--sv-text) 50%, transparent) !important; }
+.sv-dark .text-white\/40 { color: color-mix(in srgb, var(--sv-text) 40%, transparent) !important; }
+.sv-dark .text-white\/35 { color: color-mix(in srgb, var(--sv-text) 35%, transparent) !important; }
+.sv-dark .text-white\/30 { color: color-mix(in srgb, var(--sv-text) 30%, transparent) !important; }
+.sv-dark .text-white\/25 { color: color-mix(in srgb, var(--sv-text) 25%, transparent) !important; }
+.sv-dark .text-white\/20 { color: color-mix(in srgb, var(--sv-text) 20%, transparent) !important; }
+.sv-dark .text-white\/15 { color: color-mix(in srgb, var(--sv-text) 15%, transparent) !important; }
+.sv-dark .text-white\/10 { color: color-mix(in srgb, var(--sv-text) 10%, transparent) !important; }
+/* bg-white/* inside sv-dark */
+.sv-dark .bg-white\/5  { background-color: hsl(0 0% 100% / 0.05) !important; }
+.sv-dark .bg-white\/10 { background-color: hsl(0 0% 100% / 0.1) !important; }
+.sv-dark .hover\:bg-white\/5:hover  { background-color: hsl(0 0% 100% / 0.05) !important; }
+:root:not(.dark) .sv-dark .bg-white\/5  { background-color: hsl(220 14% 86% / 0.6) !important; }
+:root:not(.dark) .sv-dark .bg-white\/10 { background-color: hsl(220 14% 86% / 0.8) !important; }
+:root:not(.dark) .sv-dark .hover\:bg-white\/5:hover { background-color: hsl(220 14% 84%) !important; }
+:root:not(.dark) .text-zinc-50   { color: hsl(222 47% 14%); }
+:root:not(.dark) .text-zinc-100  { color: hsl(222 47% 18%); }
+:root:not(.dark) .text-zinc-200  { color: hsl(222 30% 26%); }
+:root:not(.dark) .text-zinc-300  { color: hsl(220 12% 34%); }
+:root:not(.dark) .text-zinc-400  { color: hsl(220 9% 44%); }
+:root:not(.dark) .text-zinc-500  { color: hsl(220 9% 50%); }
+:root:not(.dark) .text-zinc-600  { color: hsl(220 9% 42%); }
+
+/* ── Glass panels → solid white panels ── */
+:root:not(.dark) .bg-white\/5  { background-color: hsl(0 0% 100% / 0.75); }
+:root:not(.dark) .bg-white\/10 { background-color: hsl(0 0% 100% / 0.82); }
+:root:not(.dark) .bg-white\/15 { background-color: hsl(0 0% 100% / 0.88); }
+:root:not(.dark) .bg-white\/20 { background-color: hsl(0 0% 100% / 0.92); }
+:root:not(.dark) .border-white\/5  { border-color: hsl(220 13% 88%); }
+:root:not(.dark) .border-white\/10 { border-color: hsl(220 13% 84%); }
+:root:not(.dark) .border-white\/20 { border-color: hsl(220 13% 78%); }
+
+/* ── Hover states → light purple tint ── */
+:root:not(.dark) .hover\:bg-white\/10:hover { background-color: hsl(252 83% 57% / 0.06); }
+:root:not(.dark) .hover\:bg-white\/20:hover { background-color: hsl(252 83% 57% / 0.09); }
+:root:not(.dark) .hover\:bg-white\/5:hover  { background-color: hsl(252 83% 57% / 0.04); }
+
+/* ── Colored borders ── */
+:root:not(.dark) .border-blue-500\/20   { border-color: hsl(217 91% 60% / 0.35); }
+:root:not(.dark) .border-purple-500\/20 { border-color: hsl(271 91% 55% / 0.35); }
+:root:not(.dark) .border-green-500\/20  { border-color: hsl(142 72% 29% / 0.35); }
+:root:not(.dark) .border-red-500\/20    { border-color: hsl(0 84% 60% / 0.35); }
+:root:not(.dark) .border-red-500\/30    { border-color: hsl(0 84% 60% / 0.45); }
+:root:not(.dark) .border-amber-500\/20  { border-color: hsl(38 92% 50% / 0.35); }
+:root:not(.dark) .border-orange-500\/20 { border-color: hsl(25 95% 53% / 0.35); }
+
+/* ── Colored section backgrounds ── */
+:root:not(.dark) .bg-blue-500\/5   { background-color: hsl(217 91% 60% / 0.07); }
+:root:not(.dark) .bg-purple-500\/5 { background-color: hsl(271 91% 55% / 0.07); }
+:root:not(.dark) .bg-green-500\/5  { background-color: hsl(142 72% 29% / 0.07); }
+:root:not(.dark) .bg-red-500\/5    { background-color: hsl(0 84% 60% / 0.07); }
+:root:not(.dark) .bg-orange-500\/5 { background-color: hsl(25 95% 53% / 0.07); }
+
+/* ── Status / badge backgrounds ── */
+:root:not(.dark) .bg-purple-500\/10 { background-color: hsl(271 91% 55% / 0.1); }
+:root:not(.dark) .bg-purple-500\/20 { background-color: hsl(271 91% 55% / 0.14); }
+:root:not(.dark) .bg-purple-500\/30 { background-color: hsl(271 91% 55% / 0.18); }
+:root:not(.dark) .bg-blue-500\/10   { background-color: hsl(217 91% 60% / 0.1); }
+:root:not(.dark) .bg-blue-500\/20   { background-color: hsl(217 91% 60% / 0.14); }
+:root:not(.dark) .bg-blue-500\/30   { background-color: hsl(217 91% 60% / 0.18); }
+:root:not(.dark) .bg-green-500\/10  { background-color: hsl(142 72% 29% / 0.1); }
+:root:not(.dark) .bg-green-500\/20  { background-color: hsl(142 72% 29% / 0.14); }
+:root:not(.dark) .bg-red-500\/10    { background-color: hsl(0 84% 60% / 0.1); }
+:root:not(.dark) .bg-red-500\/20    { background-color: hsl(0 84% 60% / 0.14); }
+:root:not(.dark) .bg-amber-500\/20  { background-color: hsl(38 92% 50% / 0.14); }
+:root:not(.dark) .bg-yellow-500\/20 { background-color: hsl(48 96% 53% / 0.14); }
+:root:not(.dark) .bg-orange-500\/10 { background-color: hsl(25 95% 53% / 0.1); }
+:root:not(.dark) .bg-zinc-500\/10   { background-color: hsl(220 9% 50% / 0.1); }
+
+/* ── Colored text — darken for light bg contrast ── */
+:root:not(.dark) .text-purple-300 { color: hsl(271 70% 38%); }
+:root:not(.dark) .text-purple-400 { color: hsl(271 75% 36%); }
+:root:not(.dark) .text-blue-300   { color: hsl(217 85% 33%); }
+:root:not(.dark) .text-blue-400   { color: hsl(217 85% 30%); }
+:root:not(.dark) .text-green-400  { color: hsl(142 65% 25%); }
+:root:not(.dark) .text-red-400    { color: hsl(0 72% 40%); }
+:root:not(.dark) .text-amber-400  { color: hsl(38 85% 34%); }
+:root:not(.dark) .text-orange-400 { color: hsl(25 88% 37%); }
+:root:not(.dark) .text-yellow-400 { color: hsl(48 90% 29%); }
+
+/* ── Gradient hero cards → light purple/blue tints ── */
+:root:not(.dark) .from-purple-900\/50 { --tw-gradient-from: hsl(252 83% 93% / 0.8) var(--tw-gradient-from-position); }
+:root:not(.dark) .via-blue-900\/30    { --tw-gradient-via:  hsl(217 91% 94% / 0.6) var(--tw-gradient-via-position); }
+:root:not(.dark) .to-indigo-900\/50   { --tw-gradient-to:   hsl(239 84% 93% / 0.8) var(--tw-gradient-to-position); }
+:root:not(.dark) .from-red-900\/40    { --tw-gradient-from: hsl(0 84% 94% / 0.7) var(--tw-gradient-from-position); }
+:root:not(.dark) .via-orange-900\/20  { --tw-gradient-via:  hsl(25 95% 95% / 0.5) var(--tw-gradient-via-position); }
+:root:not(.dark) .to-yellow-900\/30   { --tw-gradient-to:   hsl(48 96% 94% / 0.6) var(--tw-gradient-to-position); }
+
+/* Glow blur blobs → light tinted blobs */
+:root:not(.dark) .bg-purple-500\/20 { background-color: hsl(271 91% 55% / 0.12); }
+:root:not(.dark) .bg-red-500\/20    { background-color: hsl(0 84% 60% / 0.12); }
+
+/* ── Backdrop blur panels ── */
+:root:not(.dark) .backdrop-blur-xl { backdrop-filter: blur(24px); }
+:root:not(.dark) [class*="backdrop-blur"] { background-color: hsl(0 0% 100% / 0.85); }
+
+/* ── Modal / overlay backgrounds ── */
+:root:not(.dark) .bg-black\/60 { background-color: rgba(10, 10, 30, 0.45); }
+:root:not(.dark) .bg-black\/80 { background-color: rgba(10, 10, 30, 0.55); }
+:root:not(.dark) .bg-black\/20 { background-color: rgba(10, 10, 30, 0.08); }

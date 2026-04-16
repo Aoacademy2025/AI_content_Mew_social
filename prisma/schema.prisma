@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  password      String
+  role          Role      @default(USER)
+  plan          Plan      @default(FREE)
+  usageCount    Int       @default(0)
+  usageLimit    Int       @default(10)
+  openaiKey          String?
+  geminiKey          String?
+  heygenKey          String?
+  elevenlabsKey      String?
+  pexelsKey          String?
+  pixabayKey         String?
+  avatar             String?
+  heygenAvatarId     String?
+  elevenlabsVoiceId  String?
+  ttsProvider        String?  @default("elevenlabs")
+  geminiVoiceName    String?  @default("Aoede")
+  suspended     Boolean   @default(false)
+  resetToken    String?
+  resetExpires  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  styles        Style[]
+  contents      Content[]
+  videos        Video[]
+  images        GeneratedImage[]
+  notifications   Notification[]
+  supportTickets  SupportTicket[]
+}
+
+model Style {
+  id                String   @id @default(cuid())
+  name              String
+  sampleText        String?  
+  sampleUrl         String?
+  instructionPrompt String   
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Content {
+  id            String   @id @default(cuid())
+  sourceText    String?
+  sourceUrl     String?
+  styleId       String?
+  language      Language @default(TH)
+  imageModel    String?  @default("nanobanana")
+  videoDuration Int?
+  headline      String?
+  subheadline   String?
+  body          String?
+  hashtags      String?
+  imagePrompt   String?
+  visualNotes   String?
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videos        Video[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Video {
+  id              String      @id @default(cuid())
+  contentId       String?
+  content         Content?    @relation(fields: [contentId], references: [id])
+  avatarModel     String
+  voiceModel      String
+  imageModel      String?
+  sceneCount      Int
+  script          String?     
+  sceneMapping    String?     
+  generatedImages String?     
+  audioUrl        String?
+  videoUrl        String?
+  avatarVideoUrl  String?
+  thumbnail       String?
+  thumbnailConfig String?     // JSON: { seekTime, textLayers } for thumbnail editor
+  renderConfig    String?     // JSON: shortVideoConfig for Remotion thumbnail
+  status          VideoStatus @default(PENDING)
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum Plan {
+  FREE
+  PRO
+}
+
+enum Language {
+  TH
+  EN
+}
+
+enum VideoStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+}
+
+enum NotificationType {
+  VIDEO_COMPLETED
+  VIDEO_FAILED
+  LIMIT_WARNING
+  LIMIT_REACHED
+  NEW_USER
+  ERROR_SYSTEM
+}
+
+model SupportTicket {
+  id          String              @id @default(cuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message     String
+  imageBase64 String?
+  imageName   String?
+  status      SupportTicketStatus @default(OPEN)
+  adminReply  String?
+  repliedAt   DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+enum SupportTicketStatus {
+  OPEN
+  CLOSED
+}
+
+model GeneratedImage {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt       String
+  url          String
+  imageModel   String
+  sceneTitle   String?
+  contentTitle String?
+  createdAt    DateTime @default(now())
+}
