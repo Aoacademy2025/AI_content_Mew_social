@@ -27,11 +27,13 @@ export async function POST(req: Request) {
 
   if (!sceneList.length) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
+  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { geminiKey: true, openaiKey: true } });
   let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
+  let useGemini = false;
   if (!apiKey) {
-    const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { openaiKey: true } });
-    if (!user?.openaiKey) return NextResponse.json({ error: "OpenAI key not set", missingKey: "openai" }, { status: 400 });
-    apiKey = decrypt(user.openaiKey);
+    if (user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    else if (user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
+    else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
   const fullScript = sceneList.join(" ");
@@ -85,25 +87,34 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown, no explanation:
 
 CRITICAL: The total number of queries across all scenes must equal ${totalClips}. Every query must be unique.`;
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 8000,
-      temperature: 0.4,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    console.error("[extract-keywords] OpenAI error:", res.status, errText);
-    return NextResponse.json({ error: `OpenAI failed (${res.status}): ${errText.slice(0, 200)}` }, { status: 500 });
+  let text = "[]";
+  if (useGemini) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 8000 } }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[extract-keywords] Gemini error:", res.status, errText);
+      return NextResponse.json({ error: `Gemini failed (${res.status}): ${errText.slice(0, 200)}` }, { status: 500 });
+    }
+    const data = await res.json();
+    text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
+  } else {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], max_tokens: 8000, temperature: 0.4 }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[extract-keywords] OpenAI error:", res.status, errText);
+      return NextResponse.json({ error: `OpenAI failed (${res.status}): ${errText.slice(0, 200)}` }, { status: 500 });
+    }
+    const data = await res.json();
+    text = data.choices?.[0]?.message?.content ?? "[]";
   }
-
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content ?? "[]";
 
   try {
     const match = text.match(/\[[\s\S]*\]/);

@@ -29,12 +29,14 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { openaiKey: true },
+    select: { geminiKey: true, openaiKey: true },
   });
   let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
+  let useGemini = false;
   if (!apiKey) {
-    if (!user?.openaiKey) return NextResponse.json({ error: "OpenAI key not set", missingKey: "openai" }, { status: 400 });
-    apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
+    if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+    else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+    else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
   const prompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
@@ -77,25 +79,32 @@ Output: {"phrases":["คุณเคยสังเกตไหมว่าท�
 ━━━ SCRIPT TO PROCESS ━━━
 ${script.trim()}`;
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 800,
-      temperature: 0,
-      response_format: { type: "json_object" },
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text().catch(() => "");
-    return NextResponse.json({ error: `OpenAI failed: ${err.slice(0, 200)}` }, { status: 500 });
+  let text = "{}";
+  if (useGemini) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 800, responseMimeType: "application/json" } }),
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => "");
+      return NextResponse.json({ error: `Gemini failed: ${err.slice(0, 200)}` }, { status: 500 });
+    }
+    const data = await res.json();
+    text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+  } else {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+    });
+    if (!res.ok) {
+      const err = await res.text().catch(() => "");
+      return NextResponse.json({ error: `OpenAI failed: ${err.slice(0, 200)}` }, { status: 500 });
+    }
+    const data = await res.json();
+    text = data.choices?.[0]?.message?.content ?? "{}";
   }
-
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content ?? "{}";
   console.log(`[split-phrases] GPT raw:`, text.slice(0, 400));
 
   // CTA keyword detector — only tag as cta if explicit action words present

@@ -84,7 +84,7 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { openaiKey: true },
+      select: { openaiKey: true, geminiKey: true },
     });
 
     // Resolve local file path or download remote
@@ -179,9 +179,13 @@ export async function POST(req: Request) {
       console.log(`[transcribe] OpenAI Whisper OK — ${words.length} words, ${segments.length} segs`);
     }
 
-    // ── Get OpenAI key for LLM subtitle splitting (needed below for Thai) ──
+    // ── Get LLM key for subtitle splitting (Gemini preferred, fallback OpenAI) ──
     let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
-    if (!apiKey && user?.openaiKey) apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
+    let useGemini = false;
+    if (!apiKey) {
+      if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+      else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+    }
 
     // Detect if Thai — local Whisper large-v3-turbo has word-level for Thai too,
     // but quality varies. Use segment-level grouping for Thai; word-level for Latin scripts.
@@ -207,14 +211,7 @@ export async function POST(req: Request) {
           const minPhrases = Math.max(2, Math.floor(durationSec / 5));
           const maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
 
-          const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [{
-                role: "user",
-                content: `You are an expert Thai subtitle editor. Split this script into ${minPhrases}–${maxPhrases} subtitle phrases.
+          const splitPrompt = `You are an expert Thai subtitle editor. Split this script into ${minPhrases}–${maxPhrases} subtitle phrases.
 
 RULES:
 - Each phrase = one complete thought (8–25 Thai chars ideally)
@@ -224,34 +221,51 @@ RULES:
 - Return ONLY JSON: {"phrases":["...","..."]}
 
 SCRIPT:
-${sourceText.trim()}`,
-              }],
-              max_tokens: 800,
-              temperature: 0,
-              response_format: { type: "json_object" },
-            }),
-          });
+${sourceText.trim()}`;
 
-          if (gptRes.ok) {
-            const gptData = await gptRes.json();
-            const parsed = JSON.parse(gptData.choices?.[0]?.message?.content ?? "{}");
-            const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : [];
-            // Validate: stripped text must approximately match original
-            // Strip punctuation too — GPT may clean punctuation, that's fine
-            const normalize = (s: string) => s.replace(/\s+/g, "").replace(/[.,!?。、฿"'\-–—]/g, "");
-            const origStripped = normalize(sourceText);
-            const outStripped = normalize(raw.join(""));
-            // Accept if chars match exactly, OR if GPT just dropped ≤5% chars (punctuation cleanup)
-            const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
-            if (raw.length > 0 && charRatio >= 0.90 && charRatio <= 1.05) {
-              phrases = raw.map((p: string) => p.trim()).filter(Boolean);
-              console.log(`[transcribe] GPT split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
-            } else {
-              console.warn(`[transcribe] GPT mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
+          let gptRawText = "{}";
+          if (useGemini) {
+            const gptRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ contents: [{ parts: [{ text: splitPrompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 800, responseMimeType: "application/json" } }),
+            });
+            if (gptRes.ok) {
+              const d = await gptRes.json();
+              gptRawText = d.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+            }
+          } else {
+            const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: splitPrompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+            });
+            if (gptRes.ok) {
+              const d = await gptRes.json();
+              gptRawText = d.choices?.[0]?.message?.content ?? "{}";
+            }
+          }
+
+          if (gptRawText !== "{}") {
+            try {
+              const parsed = JSON.parse(gptRawText);
+              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : [];
+              const normalize = (s: string) => s.replace(/\s+/g, "").replace(/[.,!?。、฿"'\-–—]/g, "");
+              const origStripped = normalize(sourceText);
+              const outStripped = normalize(raw.join(""));
+              const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
+              if (raw.length > 0 && charRatio >= 0.90 && charRatio <= 1.05) {
+                phrases = raw.map((p: string) => p.trim()).filter(Boolean);
+                console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
+              } else {
+                console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
+              }
+            } catch (e) {
+              console.warn("[transcribe] LLM parse failed:", e);
             }
           }
         } catch (e) {
-          console.warn("[transcribe] GPT split failed:", e);
+          console.warn("[transcribe] LLM split failed:", e);
         }
       }
 
