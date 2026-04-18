@@ -135,6 +135,7 @@ export default function ShortVideoPage() {
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [running, setRunning] = useState(false);
   const abortRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [steps, setSteps] = useState<StepState>({ ...DEFAULT_STEPS });
   const stepsRef = useRef<StepState>({ ...DEFAULT_STEPS });
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
@@ -199,6 +200,8 @@ export default function ShortVideoPage() {
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
+  // LLM provider picker — shown when no key is set at all before runAll
+  const [showLLMPicker, setShowLLMPicker] = useState(false);
 
   // Stored pipeline data for partial re-runs
   const pipe = useRef<Partial<PipelineData>>({});
@@ -383,6 +386,7 @@ export default function ShortVideoPage() {
 
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
+    if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
     if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
     if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
     if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
@@ -432,6 +436,7 @@ export default function ShortVideoPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scenes: sc }),
+      signal: abortControllerRef.current?.signal,
     });
     const kwData = await kwRes.json();
     assertOk("Keywords", kwRes, kwData);
@@ -468,6 +473,7 @@ export default function ShortVideoPage() {
         stockSource,
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
       }),
+      signal: abortControllerRef.current?.signal,
     });
     const stockData = await stockRes.json();
     assertOk("Stock", stockRes, stockData);
@@ -497,6 +503,7 @@ export default function ShortVideoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: script, voiceName: geminiVoiceName }),
+        signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
       assertOk("TTS (Gemini)", ttsRes, ttsData);
@@ -511,6 +518,7 @@ export default function ShortVideoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: script, voiceId, languageCode: "th" }),
+        signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
       assertOk("TTS", ttsRes, ttsData);
@@ -531,6 +539,7 @@ export default function ShortVideoPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: script.slice(0, 800), script }),
+      signal: abortControllerRef.current?.signal,
     });
     const txData = await txRes.json();
     assertOk("Transcribe", txRes, txData);
@@ -557,6 +566,7 @@ export default function ShortVideoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ script, audioDurationMs }),
+        signal: abortControllerRef.current?.signal,
       });
       if (splitRes.ok) {
         const splitData = await splitRes.json();
@@ -615,6 +625,7 @@ export default function ShortVideoPage() {
     const cfgRes = await fetch("/api/videos/generate-config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
       body: JSON.stringify({
         sceneCaptions: noSubtitles ? [] : sceneCaptions,
         stockVideos,
@@ -646,6 +657,7 @@ export default function ShortVideoPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ shortVideoConfig: config }),
+      signal: abortControllerRef.current?.signal,
     });
     const renderData = await renderRes.json();
     assertOk("Render", renderRes, renderData);
@@ -690,6 +702,7 @@ export default function ShortVideoPage() {
     const genRes = await fetch("/api/heygen/generate-with-bg", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
       body: JSON.stringify({
         audioUrl: avatarAudioUrl,
         avatarId,
@@ -713,6 +726,7 @@ export default function ShortVideoPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoId: heygenVideoId }),
+        signal: abortControllerRef.current?.signal,
       });
       const pollData = await pollRes.json();
       if (pollData.status === "completed" && pollData.videoUrl) {
@@ -741,6 +755,7 @@ export default function ShortVideoPage() {
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
       body: isDirect
         ? JSON.stringify({
             avatarVideoUrl: avatarUrl,
@@ -812,8 +827,21 @@ export default function ShortVideoPage() {
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
     if (isDirectMode && !avatarDirectUrl.trim()) return toast.error("กรอก Avatar Video URL ก่อน");
 
+    // Check if any LLM key exists — if not, show picker before starting
+    try {
+      const keysRes = await fetch("/api/user/api-keys");
+      if (keysRes.ok) {
+        const keys = await keysRes.json();
+        if (!keys.geminiKey && !keys.openaiKey) {
+          setShowLLMPicker(true);
+          return;
+        }
+      }
+    } catch { /* ignore — let pipeline fail naturally if keys really missing */ }
+
     setRunning(true);
     abortRef.current = false;
+    abortControllerRef.current = new AbortController();
     stepsRef.current = { ...DEFAULT_STEPS };
     setSteps({ ...DEFAULT_STEPS });
     setLogs({});
@@ -858,7 +886,7 @@ export default function ShortVideoPage() {
       setEditedSceneCaptions(sceneCaptions);
       toast.success("Transcribe เสร็จ — ตรวจสอบซับด้านล่างแล้วกด Generate Video");
     } catch (err) {
-      if (err instanceof Error && err.message === "__ABORTED__") {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
       } else if (!handleMissingKey(err, "runAll")) {
@@ -868,6 +896,7 @@ export default function ShortVideoPage() {
       }
     } finally {
       abortRef.current = false;
+      abortControllerRef.current = null;
       setRunning(false);
     }
   }
@@ -917,6 +946,7 @@ export default function ShortVideoPage() {
 
     setRunning(true);
     abortRef.current = false;
+    abortControllerRef.current = new AbortController();
     setVideoUrl("");
     try {
       const config = await runConfig(stocks, voice, durMs, editedSceneCaptions, false);
@@ -939,7 +969,7 @@ export default function ShortVideoPage() {
       } catch {}
       toast.success("Render เสร็จ! บันทึกใน Gallery แล้ว");
     } catch (err) {
-      if (err instanceof Error && err.message === "__ABORTED__") {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
       } else if (!handleMissingKey(err, "runGenerate")) {
@@ -949,6 +979,7 @@ export default function ShortVideoPage() {
       }
     } finally {
       abortRef.current = false;
+      abortControllerRef.current = null;
       setRunning(false);
     }
   }
@@ -962,6 +993,7 @@ export default function ShortVideoPage() {
 
     setRunning(true);
     abortRef.current = false;
+    abortControllerRef.current = new AbortController();
     setVideoUrl("");
     try {
       const avUrl = await runAvatar(voice);
@@ -970,7 +1002,7 @@ export default function ShortVideoPage() {
       setVideoUrl(composited);
       toast.success("เสร็จแล้ว!");
     } catch (err) {
-      if (err instanceof Error && err.message === "__ABORTED__") {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
       } else if (!handleMissingKey(err, "runAvatarPipeline")) {
@@ -980,6 +1012,7 @@ export default function ShortVideoPage() {
       }
     } finally {
       abortRef.current = false;
+      abortControllerRef.current = null;
       setRunning(false);
     }
   }
@@ -990,6 +1023,7 @@ export default function ShortVideoPage() {
     if (running) return;
     setRunning(true);
     abortRef.current = false;
+    abortControllerRef.current = new AbortController();
     setVideoUrl("");
 
     try {
@@ -1059,7 +1093,7 @@ export default function ShortVideoPage() {
           toast.success("เสร็จแล้ว!");
       }
     } catch (err) {
-      if (err instanceof Error && err.message === "__ABORTED__") {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
       } else if (!handleMissingKey(err, step)) {
@@ -1069,6 +1103,7 @@ export default function ShortVideoPage() {
       }
     } finally {
       abortRef.current = false;
+      abortControllerRef.current = null;
       setRunning(false);
     }
   }
@@ -1113,6 +1148,52 @@ export default function ShortVideoPage() {
             else rerunFromRef.current(step as keyof StepState);
           }}
         />
+      )}
+
+      {showLLMPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowLLMPicker(false); }}>
+          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
+            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
+              <p className="text-sm font-bold text-white">เลือก AI Provider</p>
+              <p className="text-[11px] text-white/40 mt-0.5">ต้องมี API Key อย่างน้อย 1 ตัวเพื่อใช้งาน pipeline</p>
+            </div>
+            <div className="p-5 space-y-3">
+              <button
+                onClick={() => { setShowLLMPicker(false); setMissingKey({ type: "gemini", retryStep: "runAll" }); }}
+                className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
+                style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
+                  style={{ background: "hsl(190 100% 50% / 0.15)" }}>
+                  <span className="text-base">✦</span>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-white">Gemini</p>
+                  <p className="text-[10px] text-white/40">Google AI · ฟรี · แนะนำ</p>
+                </div>
+              </button>
+              <button
+                onClick={() => { setShowLLMPicker(false); setMissingKey({ type: "openai", retryStep: "runAll" }); }}
+                className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
+                style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
+                  style={{ background: "hsl(140 60% 50% / 0.12)" }}>
+                  <span className="text-base">⊹</span>
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-white">OpenAI</p>
+                  <p className="text-[10px] text-white/40">GPT-4o-mini · ต้องชำระเงิน</p>
+                </div>
+              </button>
+              <button onClick={() => setShowLLMPicker(false)}
+                className="w-full rounded-xl py-2 text-sm text-white/30 hover:text-white/60 transition-colors">
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Bai+Jamjuree:wght@600;700&family=Krub:wght@600;700&family=Pridi:wght@600;700&family=Chonburi&family=Itim&display=swap" />
@@ -1802,7 +1883,7 @@ export default function ShortVideoPage() {
               </div>
               <div className="flex items-center gap-2">
                 {running && (
-                  <button onClick={() => { abortRef.current = true; }}
+                  <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
                     className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold text-white transition-all hover:opacity-90 shadow-lg"
                     style={{ background: "linear-gradient(135deg, hsl(0 80% 45%), hsl(20 90% 45%))", boxShadow: "0 4px 16px hsl(0 80% 40% / 0.3)" }}>
                     <Square className="h-3.5 w-3.5 fill-white" />

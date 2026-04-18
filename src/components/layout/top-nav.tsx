@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useEffect, useState } from "react";
-import { Plus, LogOut, Menu, Sun, Moon } from "lucide-react";
+import { LogOut, Menu, Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import {
@@ -81,20 +81,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
 
       {/* Right — actions */}
       <div className="flex items-center gap-2">
-        {/* Create New */}
-        <Link
-          href="/short-video"
-          className="flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all"
-          style={{
-            background: "var(--ui-btn-bg)",
-            border: "1px solid var(--ui-btn-border)",
-            color: "var(--ui-text-primary)",
-          }}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Create New
-        </Link>
-
         {/* Theme toggle */}
         <button
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}

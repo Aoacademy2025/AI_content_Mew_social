@@ -225,7 +225,7 @@ ${sourceText.trim()}`;
 
           let gptRawText = "{}";
           if (useGemini) {
-            const gptRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            const gptRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ contents: [{ parts: [{ text: splitPrompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 800, responseMimeType: "application/json" } }),

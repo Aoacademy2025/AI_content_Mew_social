@@ -5,7 +5,7 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
-  RefreshCw, Camera,
+  RefreshCw, Camera, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -26,6 +26,7 @@ interface VideoItem {
   script: string | null;
   thumbnail: string | null;
   createdAt: string;
+  expiresAt: string | null;
   content?: { headline: string | null } | null;
 }
 
@@ -70,6 +71,12 @@ export default function VideosGalleryPage() {
 
   const totalSize = videos.length * 47;
 
+  function daysLeft(expiresAt: string | null): number | null {
+    if (!expiresAt) return null;
+    const diff = new Date(expiresAt).getTime() - Date.now();
+    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  }
+
   const btnStyle: React.CSSProperties = {
     background: "var(--ui-card-bg)",
     border: "1px solid var(--ui-card-border)",
@@ -111,6 +118,15 @@ export default function VideosGalleryPage() {
           </div>
         </div>
 
+        {/* ── Expiry notice ── */}
+        <div className="flex items-center gap-2.5 rounded-xl px-4 py-3"
+          style={{ background: "hsl(38 90% 50% / 0.08)", border: "1px solid hsl(38 90% 50% / 0.25)" }}>
+          <Clock className="h-4 w-4 shrink-0" style={{ color: "hsl(38 90% 60%)" }} />
+          <p className="text-xs" style={{ color: "hsl(38 90% 70%)" }}>
+            วิดีโอในแกลเลอรีจะ<span className="font-semibold">หมดอายุและถูกลบอัตโนมัติภายใน 7 วัน</span>หลังจากสร้าง — ดาวน์โหลดไว้ก่อนหมดอายุ
+          </p>
+        </div>
+
         {/* ── Grid ── */}
         {loading ? (
           <div className="flex items-center justify-center py-32">
@@ -122,6 +138,7 @@ export default function VideosGalleryPage() {
               <VideoCard
                 key={video.id}
                 video={video}
+                daysLeft={daysLeft(video.expiresAt)}
                 onPreview={() => {
                   const url = video.videoUrl || video.avatarVideoUrl;
                   if (url) setPreviewUrl(url);
@@ -235,9 +252,10 @@ export default function VideosGalleryPage() {
 
 /* ── Video Card ── */
 function VideoCard({
-  video, onPreview, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel, onEditThumbnail, onThumbnailGenerated,
+  video, daysLeft, onPreview, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel, onEditThumbnail, onThumbnailGenerated,
 }: {
   video: VideoItem;
+  daysLeft: number | null;
   onPreview: () => void;
   onDelete: () => void;
   deleteConfirm: boolean;
@@ -313,9 +331,17 @@ function VideoCard({
       {/* Title (bottom) — always white because it's over gradient/video */}
       <div className="absolute bottom-0 inset-x-0 p-3">
         <p className="text-sm font-semibold text-white line-clamp-2 leading-snug">{title}</p>
-        <p className="text-[10px] text-white/50 mt-0.5">
-          {new Date(video.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-        </p>
+        <div className="flex items-center justify-between mt-0.5">
+          <p className="text-[10px] text-white/50">
+            {new Date(video.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          </p>
+          {daysLeft !== null && (
+            <p className={`text-[10px] font-semibold flex items-center gap-0.5 ${daysLeft <= 1 ? "text-red-400" : daysLeft <= 3 ? "text-orange-400" : "text-white/40"}`}>
+              <Clock className="h-2.5 w-2.5" />
+              {daysLeft === 0 ? "หมดวันนี้" : `${daysLeft}ว`}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Hover actions */}

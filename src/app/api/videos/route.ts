@@ -59,6 +59,7 @@ export async function POST(req: Request) {
       renderConfig,
     } = await req.json();
 
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     const video = await prisma.video.create({
       data: {
         contentId: contentId ?? null,
@@ -74,6 +75,7 @@ export async function POST(req: Request) {
         renderConfig: renderConfig ? (typeof renderConfig === "string" ? renderConfig : JSON.stringify(renderConfig)) : null,
         status: status ?? "COMPLETED",
         userId: session.user.id,
+        expiresAt,
       },
     });
 
