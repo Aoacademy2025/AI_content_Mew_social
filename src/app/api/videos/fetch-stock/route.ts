@@ -196,7 +196,9 @@ export async function POST(req: Request) {
   // User override wins; otherwise use adaptive auto calculation
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
 
-  const clipsPerKeyword = Math.max(1, Math.ceil(totalClipsNeeded / keywords.length));
+  // Cap total clips to avoid VPS timeout on large scripts
+  const cappedClipsNeeded = Math.min(totalClipsNeeded, 30);
+  const clipsPerKeyword = Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length));
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s avgCut=${avgCut}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
 
@@ -300,8 +302,8 @@ export async function POST(req: Request) {
 
   if (!found.length) return NextResponse.json({ results: [] });
 
-  // Download phase: max 4 concurrent (CPU-bound ffmpeg crop)
-  await withConcurrency(found, 4, async ({ keyword, id, duration, link }) => {
+  // Download phase: max 2 concurrent to avoid VPS timeout
+  await withConcurrency(found, 2, async ({ keyword, id, duration, link }) => {
     if (download) {
       const ts = Date.now() + Math.random();
       const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
