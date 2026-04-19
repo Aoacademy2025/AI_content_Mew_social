@@ -12,7 +12,7 @@ interface DashboardLayoutProps {
 }
 
 export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -53,7 +53,11 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
         {/* Main Content */}
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
           <main className={noPadding ? "flex-1 overflow-hidden flex flex-col" : "flex-1 overflow-y-auto p-4 md:p-6"}>
-            {children}
+            {status === "loading" ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+              </div>
+            ) : children}
           </main>
         </div>
       </div>

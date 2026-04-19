@@ -26,12 +26,19 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const { data: session } = useSession();
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const [initials, setInitials] = useState("U");
+  const [displayName, setDisplayName] = useState("");
+  const [displayEmail, setDisplayEmail] = useState("");
 
   useEffect(() => { setMounted(true); }, []);
 
-  const initials = session?.user?.name
-    ? session.user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
-    : "U";
+  useEffect(() => {
+    if (session?.user?.name) {
+      setInitials(session.user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2));
+      setDisplayName(session.user.name);
+    }
+    if (session?.user?.email) setDisplayEmail(session.user.email);
+  }, [session?.user?.name, session?.user?.email]);
 
   return (
     <div
@@ -117,10 +124,10 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
             <DropdownMenuLabel>
               <div className="flex flex-col space-y-0.5">
                 <p className="text-sm font-medium leading-none" style={{ color: "var(--ui-text-primary)" }}>
-                  {session?.user?.name}
+                  {displayName}
                 </p>
                 <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
-                  {session?.user?.email}
+                  {displayEmail}
                 </p>
               </div>
             </DropdownMenuLabel>

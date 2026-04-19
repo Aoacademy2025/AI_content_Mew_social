@@ -8,7 +8,6 @@ export const runtime = "nodejs";
 
 const STOCKS_DIR = path.join(process.cwd(), "stocks");
 
-// Only files starting with "stock-" are considered cache (not avatar uploads etc.)
 function isStockCache(filename: string) {
   return filename.startsWith("stock-") && filename.endsWith(".mp4");
 }

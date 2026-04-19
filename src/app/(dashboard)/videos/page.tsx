@@ -5,14 +5,11 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
-  RefreshCw, Camera, Clock,
+  RefreshCw, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import dynamic from "next/dynamic";
-
-const ThumbnailEditor = dynamic(() => import("@/components/thumbnail/ThumbnailEditor"), { ssr: false });
 
 interface VideoItem {
   id: string;
@@ -36,7 +33,6 @@ export default function VideosGalleryPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
-  const [thumbEditor, setThumbEditor] = useState<{ videoId: string; videoUrl: string; script: string | null } | null>(null);
 
   const fetchVideos = useCallback(() => {
     setLoading(true);
@@ -147,13 +143,6 @@ export default function VideosGalleryPage() {
                 deleteConfirm={deleteId === video.id}
                 onDeleteConfirm={() => handleDelete(video.id)}
                 onDeleteCancel={() => setDeleteId(null)}
-                onEditThumbnail={() => {
-                  const url = video.videoUrl || video.avatarVideoUrl;
-                  if (url) setThumbEditor({ videoId: video.id, videoUrl: url, script: video.script });
-                }}
-                onThumbnailGenerated={(id, url) =>
-                  setVideos(p => p.map(v => v.id === id ? { ...v, thumbnail: url } : v))
-                }
               />
             ))}
 
@@ -234,25 +223,14 @@ export default function VideosGalleryPage() {
         </div>
       )}
 
-      {/* ── Thumbnail Editor Modal ── */}
-      {thumbEditor && (
-        <ThumbnailEditor
-          videoId={thumbEditor.videoId}
-          videoUrl={thumbEditor.videoUrl}
-          script={thumbEditor.script}
-          onSave={(url) => {
-            setVideos(p => p.map(v => v.id === thumbEditor.videoId ? { ...v, thumbnail: url } : v));
-          }}
-          onClose={() => setThumbEditor(null)}
-        />
-      )}
+
     </DashboardLayout>
   );
 }
 
 /* ── Video Card ── */
 function VideoCard({
-  video, daysLeft, onPreview, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel, onEditThumbnail, onThumbnailGenerated,
+  video, daysLeft, onPreview, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel,
 }: {
   video: VideoItem;
   daysLeft: number | null;
@@ -261,8 +239,6 @@ function VideoCard({
   deleteConfirm: boolean;
   onDeleteConfirm: () => void;
   onDeleteCancel: () => void;
-  onEditThumbnail: () => void;
-  onThumbnailGenerated: (id: string, url: string) => void;
 }) {
   const isReady = video.status === "COMPLETED";
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
@@ -361,13 +337,6 @@ function VideoCard({
                 <Download className="h-4 w-4" />
               </a>
             )}
-            <button
-              onClick={(e) => { e.stopPropagation(); onEditThumbnail(); }}
-              title="Edit thumbnail"
-              className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
-              style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}>
-              <Camera className="h-4 w-4" />
-            </button>
           </>
         )}
         {deleteConfirm ? (

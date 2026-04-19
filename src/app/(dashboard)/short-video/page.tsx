@@ -669,6 +669,25 @@ export default function ShortVideoPage() {
     return url;
   }
 
+  async function saveToGallery(videoUrl: string) {
+    try {
+      await fetch("/api/videos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl,
+          audioUrl: pipe.current.voiceUrl ?? null,
+          script: script.trim() || null,
+          avatarModel: "none",
+          voiceModel: voiceId || "gemini",
+          sceneCount: pipe.current.scenes?.length ?? 1,
+          renderConfig: pipe.current.config ?? null,
+          status: "COMPLETED",
+        }),
+      });
+    } catch {}
+  }
+
   // ── Step 7: Avatar — only HeyGen gen + poll, show preview ──
 
   async function runAvatar(audioUrl: string): Promise<string> {
@@ -952,22 +971,10 @@ export default function ShortVideoPage() {
       const config = await runConfig(stocks, voice, durMs, editedSceneCaptions, false);
       if (abortRef.current) throw new Error("__ABORTED__");
       const renderedUrl = await runRender(config);
-      try {
-        await fetch("/api/videos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            script: script.trim() || null,
-            videoUrl: renderedUrl,
-            avatarModel: "short-video",
-            voiceModel: voiceId,
-            sceneCount: editedSceneCaptions.length,
-            renderConfig: pipe.current.config ?? null,
-            status: "COMPLETED",
-          }),
-        });
-      } catch {}
-      toast.success("Render เสร็จ! บันทึกใน Gallery แล้ว");
+      if (!useAvatar) {
+        await saveToGallery(renderedUrl);
+        toast.success("Render เสร็จ! บันทึกใน Gallery แล้ว");
+      }
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
@@ -1054,9 +1061,9 @@ export default function ShortVideoPage() {
       } else if (step === "fetchStock") {
         stocks = await runFetchStock(kws);
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
-        await runRender(cfg);
-        if (useAvatar) toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
-        else toast.success("เสร็จแล้ว!");
+        const url1 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url1); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
       } else if (step === "tts") {
         if (isDirectMode) {
           voice = avatarDirectUrl.trim();
@@ -1074,13 +1081,13 @@ export default function ShortVideoPage() {
         toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "config") {
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
-        await runRender(cfg);
-        if (useAvatar) toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
-        else toast.success("เสร็จแล้ว!");
+        const url2 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url2); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
       } else if (step === "render") {
-        await runRender(cfg);
-        if (useAvatar) toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
-        else toast.success("เสร็จแล้ว!");
+        const url3 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url3); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
       } else if (step === "avatar") {
         const avUrl = await runAvatar(voice);
         const composited = await runComposite(rendered, avUrl);
@@ -1138,7 +1145,13 @@ export default function ShortVideoPage() {
       {missingKey && (
         <ApiKeyModal
           keyType={missingKey.type}
-          onClose={() => setMissingKey(null)}
+          onClose={() => {
+            setMissingKey(null);
+            abortRef.current = true;
+            abortControllerRef.current?.abort();
+            setRunning(false);
+            markError("ยกเลิกโดยผู้ใช้");
+          }}
           onSaved={() => {
             const step = missingKey.retryStep;
             setMissingKey(null);
@@ -1240,30 +1253,6 @@ export default function ShortVideoPage() {
                   <h2 className="flex items-center gap-2 text-sm font-bold text-white">
                     <FileText className="h-4 w-4 text-cyan-400" />Script
                   </h2>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(script); toast.success("คัดลอกแล้ว"); }}
-                      disabled={!script.trim()}
-                      className="text-[9px] font-bold text-white/25 hover:text-cyan-400 disabled:opacity-30 transition-colors px-2 py-0.5 rounded-full"
-                      style={{ background: "var(--sv-input)" }}>
-                      Copy
-                    </button>
-                    <button
-                      onClick={() => { setScript(""); }}
-                      disabled={!script.trim()}
-                      className="text-[9px] font-bold text-white/25 hover:text-red-400 disabled:opacity-30 transition-colors px-2 py-0.5 rounded-full"
-                      style={{ background: "var(--sv-input)" }}>
-                      Clear
-                    </button>
-                    <button
-                      onClick={saveScript}
-                      disabled={!script.trim() || scriptSaving}
-                      className="flex items-center gap-1 text-[9px] font-bold disabled:opacity-30 transition-colors px-2.5 py-0.5 rounded-full"
-                      style={{ background: "hsl(190 100% 50% / 0.12)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
-                      {scriptSaving ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : null}
-                      Save
-                    </button>
-                  </div>
                 </div>
                 <div className="p-4 space-y-2">
                   <Textarea value={script} onChange={e => setScript(e.target.value)}

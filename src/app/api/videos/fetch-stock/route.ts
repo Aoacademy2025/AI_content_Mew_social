@@ -9,8 +9,6 @@ import { execFile } from "child_process";
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
-const PEXELS_KEY = process.env.PEXELS_API_KEY!;
-const PIXABAY_KEY_ENV = process.env.PIXABAY_API_KEY || "";
 
 function getFfmpegPath(): string {
   const ext = process.platform === "win32" ? ".exe" : "";
@@ -175,11 +173,11 @@ export async function POST(req: Request) {
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { pixabayKey: true, pexelsKey: true } });
-  const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : PEXELS_KEY;
-  const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : PIXABAY_KEY_ENV;
+  const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
+  const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
 
   if (usePexels && !pexelsKey) return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" }, { status: 400 });
-  if (usePixabay && !usePexels && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings", missingKey: "pixabay" }, { status: 400 });
+  if (usePixabay && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings", missingKey: "pixabay" }, { status: 400 });
 
   // Adaptive cut duration: short scripts get longer cuts (fewer clips), long scripts get snappier cuts
   // ≤10s → avg 5s/cut, 20s → 4s, 30s → 3.5s, 60s+ → 2.5s
@@ -243,8 +241,8 @@ export async function POST(req: Request) {
         // Fire only selected sources in parallel
         const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
           usePexels
-            ? searchPexels(keyword, pexelsKey, 3, perPage)
-                .then(r => r.length ? r : shortQuery !== keyword ? searchPexels(shortQuery, pexelsKey, 3, perPage) : r)
+            ? searchPexels(keyword, pexelsKey!, 3, perPage)
+                .then(r => r.length ? r : shortQuery !== keyword ? searchPexels(shortQuery, pexelsKey!, 3, perPage) : r)
             : Promise.resolve([] as PexelsVideo[]),
           usePixabay && pixabayKey
             ? searchPixabay(keyword, pixabayKey)

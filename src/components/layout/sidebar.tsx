@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, BookOpen,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 
@@ -27,7 +27,6 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
   { title: "Avatar Cloning",href: "/short-video", icon: Film,   locked: true },
   { title: "Gallery",       href: "/videos",      icon: Video },
-  { title: "คู่มือการใช้งาน",href: "/docs",        icon: BookOpen },
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];
 

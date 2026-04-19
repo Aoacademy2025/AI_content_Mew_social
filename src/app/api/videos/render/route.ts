@@ -131,11 +131,14 @@ export async function POST(req: Request) {
           src: toAbsolute(resolveStockUrl(v.src)),
         })),
       };
-      // Log first few resolved URLs for debugging
-      const sample = resolvedShortConfig.bgVideos?.slice(0, 2).map((v: { src: string }) => v.src) ?? [];
-      console.log(`[render] resolved voiceFile=${resolvedShortConfig.voiceFile}`);
-      console.log(`[render] resolved bgVideos sample:`, sample);
       console.log(`[render] copied ${stockCopyMap.size} stock file(s) to renders/`);
+
+      // Delete original stock files now that they've been copied to renders/ — safe to remove
+      for (const stockUrl of stockCopyMap.keys()) {
+        const filename = stockUrl.slice("/api/stocks/".length);
+        const srcPath = path.join(stocksDir, filename);
+        try { fs.unlinkSync(srcPath); } catch { /* ignore */ }
+      }
     }
 
     // For SubtitleOverlay: resolve videoUrl → absolute URL

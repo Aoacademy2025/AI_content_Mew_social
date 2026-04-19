@@ -14,19 +14,20 @@ const INP = "h-10 rounded-lg border-0 text-sm focus-visible:ring-1 focus-visible
 
 export function ProfileSettings({ user }: ProfileSettingsProps) {
   const [loading, setLoading] = useState(false);
-  const [name, setName] = useState(user?.name || "");
+  const [name, setName] = useState("");
+  const [initials, setInitials] = useState("U");
   const [avatar, setAvatar] = useState<string | null>(null);
   const [pendingAvatar, setPendingAvatar] = useState<string | null>(null);
   const [savingAvatar, setSavingAvatar] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (user?.name) {
+      setName(user.name);
+      setInitials(user.name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2));
+    }
     fetch("/api/user/avatar").then(r => r.json()).then(d => setAvatar(d.avatar ?? null)).catch(() => {});
-  }, []);
-
-  const initials = user?.name
-    ? user.name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)
-    : "U";
+  }, [user?.name]);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

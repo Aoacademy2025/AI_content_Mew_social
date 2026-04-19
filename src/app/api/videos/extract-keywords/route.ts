@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { geminiGenerateText } from "@/lib/gemini";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -89,18 +90,13 @@ CRITICAL: The total number of queries across all scenes must equal ${totalClips}
 
   let text = "[]";
   if (useGemini) {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 8000 } }),
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error("[extract-keywords] Gemini error:", res.status, errText);
-      return NextResponse.json({ error: `Gemini failed (${res.status}): ${errText.slice(0, 200)}` }, { status: 500 });
+    try {
+      text = await geminiGenerateText(apiKey, prompt, 8000);
+      console.log(`[extract-keywords] Gemini OK`);
+    } catch (e) {
+      console.error("[extract-keywords] Gemini error:", e);
+      return NextResponse.json({ error: `Gemini failed: ${e instanceof Error ? e.message : e}` }, { status: 500 });
     }
-    const data = await res.json();
-    text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
   } else {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",

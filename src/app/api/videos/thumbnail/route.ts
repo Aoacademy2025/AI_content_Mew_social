@@ -114,67 +114,78 @@ interface SuggestResult {
   line2Color?: string;
 }
 
-/** Ask OpenAI to create viral thumbnail text + style */
-async function suggestText(
-  script: string,
-  captions: string[],
-  apiKey: string,
-): Promise<SuggestResult> {
-  const captionsList = captions.length > 0
+function getCaptionsList(script: string, captions: string[]): string[] {
+  return captions.length > 0
     ? captions
     : script.split(/[.\n]+/).filter((s: string) => s.trim().length > 3).slice(0, 15);
+}
 
-  const prompt = `You are the world's #1 viral thumbnail copywriter. Your thumbnails get 3x higher CTR than average.
+const STYLE_GUIDE = `STYLE PRESETS — pick the one that best matches the mood:
+"tiktok" | "bold" | "neon" | "fire" | "cinema" | "highlight" | "pink" | "blue"`;
 
-SCRIPT:
-"${script.slice(0, 800)}"
+const JSON_SCHEMA = `Output ONLY valid JSON, no markdown, no explanation:
+{"line":"<main hook 4-6 words>","line2":"<supporting 3-5 words or empty>","style":"<preset>","line1Color":"<#hex>","line2Color":"<#hex>"}`;
 
-AVAILABLE LINES FROM VIDEO:
-${captionsList.map((c, i) => `${i + 1}. ${c}`).join("\n")}
+function buildGeminiPrompt(script: string, captions: string[]): string {
+  const topic = script.slice(0, 500) || captions.slice(0, 5).join(" ");
+  return `คุณคือนักเขียน thumbnail viral มืออาชีพ ห้ามคัดลอกประโยคจาก script มาใส่ตรงๆ
 
-CREATE the ultimate clickbait thumbnail text. You can:
-- Pick from available lines OR rewrite them to be more shocking
-- Create completely NEW text that captures the video's hook
-- Mix Thai + English if the script is Thai (e.g. "สิ่งที่คุณไม่เคยรู้!" or "5 เรื่องช็อค!")
+เนื้อหาของวิดีโอ:
+"${topic}"
 
-VIRAL THUMBNAIL FORMULAS (use one):
-1. SHOCK: "คนส่วนใหญ่ไม่รู้..." / "ห้ามทำแบบนี้!"
-2. CURIOSITY GAP: "สิ่งที่เกิดขึ้นคือ..." / "ผลลัพธ์น่าตกใจ"
-3. NUMBER HOOK: "5 สิ่งที่..." / "3 ความลับ..."
-4. CHALLENGE: "ลองแล้วช็อค!" / "ไม่เชื่อก็ต้องเชื่อ"
-5. EMOTION: extreme joy, anger, surprise — one strong feeling
-6. QUESTION: "ทำไม...?" / "จริงหรือ?"
-7. CONTROVERSY: bold claim that makes people click to verify
+สร้างข้อความ thumbnail ใหม่ที่ทำให้คนอยากกดดูทันที โดย:
+- คิด hook ใหม่ที่กระแทกใจ ไม่ใช่คัดลอกประโยคจากวิดีโอ
+- ใช้สูตร: ช็อค / ความอยากรู้ / ตัวเลข / ท้าทาย / ขัดแย้ง
+- ภาษาเดียวกับเนื้อหา (ไทย→ไทย, ผสม Eng ได้เพื่อ impact)
+- line: hook หลัก 3-5 คำ สั้นกระแทก
+- line2: เสริม 2-4 คำ หรือ "" ถ้าไม่จำเป็น
+- เลือก style และสีที่ pop บน background มืด
 
-STYLE PRESETS (pick best match for content mood):
-- "tiktok" — yellow accent, playful, trendy
-- "bold" — red accent, aggressive, attention-grabbing
-- "neon" — cyan glow, tech/modern/futuristic
-- "fire" — orange blaze, intense/action/drama
-- "cinema" — clean white, classy/documentary
-- "highlight" — yellow highlight pill, educational
-- "pink" — pink glow, beauty/lifestyle/emotional
-- "blue" — blue highlight, calm/trust/informational
+${STYLE_GUIDE}
 
-RULES:
-- Line 1: MAX 5-6 words, the main hook — must trigger instant curiosity or emotion
-- Line 2: MAX 4-5 words, supporting punch — amplifies line 1 (optional, use "" if line 1 is enough)
-- If script is Thai, write Thai text (mixing English words is OK for impact)
-- Suggest colors that POP against dark video backgrounds
-- Be BOLD. Be DRAMATIC. Think Mr.Beast / viral TikTok energy
+${JSON_SCHEMA}`;
+}
 
-Return JSON ONLY:
-{
-  "line": "main hook text",
-  "line2": "supporting text or empty",
-  "style": "preset_id",
-  "line1Color": "#hex color for line 1",
-  "line2Color": "#hex color for line 2"
-}`;
+function buildOpenAIPrompt(script: string, captions: string[]): string {
+  const topic = script.slice(0, 600) || captions.slice(0, 5).join(" ");
+  return `You are a viral thumbnail copywriter for TikTok/YouTube Shorts. NEVER copy sentences directly from the script.
 
+VIDEO TOPIC: "${topic}"
+
+Create NEW thumbnail text that makes viewers instantly click. Rules:
+- Invent a fresh hook — do NOT paste script lines verbatim
+- Use: SHOCK / CURIOSITY GAP / NUMBER / CHALLENGE / CONTROVERSY
+- Match script language (Thai script → Thai text, English mixing OK for impact)
+- line: main hook, 3-5 words, punchy
+- line2: supporting 2-4 words, or "" if not needed
+- Pick style + colors that POP on dark backgrounds
+
+${STYLE_GUIDE}
+
+${JSON_SCHEMA}`;
+}
+
+function parseJsonResult(text: string, fallback: string): SuggestResult {
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    return JSON.parse(match?.[0] ?? "{}");
+  } catch {
+    return { line: fallback };
+  }
+}
+
+async function suggestWithGemini(script: string, captions: string[], geminiKey: string): Promise<SuggestResult> {
+  const { geminiGenerateText } = await import("@/lib/gemini");
+  const prompt = buildGeminiPrompt(script, captions);
+  const text = await geminiGenerateText(geminiKey, prompt, 512, 1.0);
+  return parseJsonResult(text, "");
+}
+
+async function suggestWithOpenAI(script: string, captions: string[], openaiKey: string): Promise<SuggestResult> {
+  const prompt = buildOpenAIPrompt(script, captions);
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
@@ -182,16 +193,10 @@ Return JSON ONLY:
       temperature: 0.9,
     }),
   });
-
   if (!res.ok) throw new Error(`OpenAI failed: ${res.status}`);
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content ?? "";
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    return JSON.parse(match?.[0] ?? '{"line":""}');
-  } catch {
-    return { line: captionsList[0] ?? "" };
-  }
+  return parseJsonResult(text, "");
 }
 
 /**
@@ -249,15 +254,16 @@ export async function POST(req: Request) {
 
     // ── MODE: suggest ──
     if (mode === "suggest") {
-      let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
-      if (!apiKey) {
-        const user = await prisma.user.findUnique({
-          where: { id: session.user.id },
-          select: { openaiKey: true },
-        });
-        if (user?.openaiKey) apiKey = decrypt(user.openaiKey);
+      const user = await prisma.user.findUnique({
+        where: { id: session.user.id },
+        select: { geminiKey: true, openaiKey: true },
+      });
+      const geminiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
+      const openaiKey = user?.openaiKey ? decrypt(user.openaiKey) : (process.env.SERVER_OPENAI_API_KEY || null);
+
+      if (!geminiKey && !openaiKey) {
+        return NextResponse.json({ error: "Gemini หรือ OpenAI key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "gemini" }, { status: 400 });
       }
-      if (!apiKey) return NextResponse.json({ error: "OpenAI key not set", missingKey: "openai" }, { status: 400 });
 
       // Extract captions from renderConfig
       const captions: string[] = [];
@@ -271,47 +277,74 @@ export async function POST(req: Request) {
         } catch { /* ignore */ }
       }
 
-      const result = await suggestText(script, captions, apiKey);
+      const fallback = captions[0] ?? script.split(/[.\n]+/).find(s => s.trim().length > 3) ?? "";
+
+      let result: SuggestResult;
+      if (geminiKey) {
+        try {
+          result = await suggestWithGemini(script, captions, geminiKey);
+        } catch {
+          if (openaiKey) result = await suggestWithOpenAI(script, captions, openaiKey);
+          else result = { line: fallback };
+        }
+      } else {
+        result = await suggestWithOpenAI(script, captions, openaiKey!);
+      }
+
+      if (!result.line) result.line = fallback;
       return NextResponse.json(result);
     }
 
     // ── MODE: render (or legacy) ──
-    if (!videoSrc)
-      return NextResponse.json({ error: "No video URL available" }, { status: 400 });
-
     const rendersDir = path.join(process.cwd(), "public", "renders");
     fs.mkdirSync(rendersDir, { recursive: true });
 
-    // Resolve video path
-    let videoPath: string;
-    if (videoSrc.startsWith("/")) {
-      videoPath = path.join(process.cwd(), "public", videoSrc);
-    } else {
-      videoPath = videoSrc;
-    }
-
-    if (!videoSrc.startsWith("http") && !fs.existsSync(videoPath)) {
-      return NextResponse.json({ error: "Video file not found" }, { status: 404 });
-    }
-
-    // Capture frame
-    const atSec = seekTime ?? 3;
-    const framePath = path.join(rendersDir, `thumb-frame-${Date.now()}.jpg`);
-    await captureFrame(videoPath, atSec, framePath);
-
+    const atSec = seekTime ?? 0;
     const filename = `thumb-${Date.now()}.jpg`;
     const outPath = path.join(rendersDir, filename);
 
-    if (mode === "render" && Array.isArray(textLayers) && textLayers.length > 0) {
-      // User-defined text layers
-      await renderWithTextLayers(framePath, outPath, textLayers);
-    } else {
-      // No text — just use the captured frame
-      fs.copyFileSync(framePath, outPath);
+    // Prefer stock video (no subtitles) from renderConfig, fallback to rendered video
+    let sourceVideoSrc: string | null = null;
+    if (video?.renderConfig) {
+      try {
+        const cfg = typeof video.renderConfig === "string"
+          ? JSON.parse(video.renderConfig) : video.renderConfig;
+        const firstSrc = cfg?.bgVideos?.[0]?.src ?? null;
+        if (firstSrc) {
+          // bgVideos src may be /renders/stock-xxx.mp4 or /api/stocks/xxx.mp4
+          const localPath = firstSrc.startsWith("/api/stocks/")
+            ? path.join(process.cwd(), "stocks", firstSrc.slice("/api/stocks/".length))
+            : firstSrc.startsWith("/")
+              ? path.join(process.cwd(), "public", firstSrc)
+              : null;
+          if (localPath && fs.existsSync(localPath)) {
+            sourceVideoSrc = localPath;
+          }
+        }
+      } catch { /* ignore */ }
     }
 
-    // Cleanup temp frame
-    try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+    // Fallback to rendered video
+    if (!sourceVideoSrc) {
+      if (!videoSrc)
+        return NextResponse.json({ error: "No video URL available" }, { status: 400 });
+      const p = videoSrc.startsWith("/") ? path.join(process.cwd(), "public", videoSrc) : videoSrc;
+      if (!videoSrc.startsWith("http") && !fs.existsSync(p))
+        return NextResponse.json({ error: "Video file not found" }, { status: 404 });
+      sourceVideoSrc = p;
+    }
+
+    // Capture frame via ffmpeg
+    const framePath = path.join(rendersDir, `thumb-frame-${Date.now()}.jpg`);
+    await captureFrame(sourceVideoSrc!, atSec, framePath);
+
+    // Overlay text layers (Sharp) or just use the frame
+    if (mode === "render" && Array.isArray(textLayers) && textLayers.length > 0) {
+      await renderWithTextLayers(framePath, outPath, textLayers);
+      try { fs.unlinkSync(framePath); } catch { /* ignore */ }
+    } else {
+      fs.renameSync(framePath, outPath);
+    }
 
     const thumbnailUrl = `/renders/${filename}`;
 

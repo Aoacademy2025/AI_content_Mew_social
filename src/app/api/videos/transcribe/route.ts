@@ -6,6 +6,7 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
+import { geminiGenerateText } from "@/lib/gemini";
 
 export const maxDuration = 300;  // local Whisper can take longer
 
@@ -211,28 +212,36 @@ export async function POST(req: Request) {
           const minPhrases = Math.max(2, Math.floor(durationSec / 5));
           const maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
 
-          const splitPrompt = `You are an expert Thai subtitle editor. Split this script into ${minPhrases}–${maxPhrases} subtitle phrases.
+          const splitPrompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
 
-RULES:
-- Each phrase = one complete thought (8–25 Thai chars ideally)
-- Split at punctuation (. ? ! ฯ) or conjunctions (แต่ และ เพราะ จึง)
-- NEVER split a date: keep "13 เมษายน 2569", "วันที่ 13 เมษายน" as ONE phrase
-- NEVER change or drop any word — copy exactly
-- Return ONLY JSON: {"phrases":["...","..."]}
+TASK: Split the script into natural subtitle phrases.
 
-SCRIPT:
+━━━ SPLITTING RULES ━━━
+• Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
+• Each phrase = one complete thought unit (8–30 chars).
+• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง).
+• NEVER split mid-sentence just to hit a char limit.
+• Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
+• NEVER split a date expression — keep "วันที่ 13 เมษายน 2569", "13 เมษายน 2569" as ONE phrase each.
+• NEVER change, correct, or modify any word from the original script. Copy every character exactly as-is.
+
+━━━ OUTPUT FORMAT ━━━
+Return ONLY valid JSON — no markdown, no explanation:
+{"phrases":["phrase1","phrase2"]}
+
+━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
 
           let gptRawText = "{}";
           if (useGemini) {
-            const gptRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ contents: [{ parts: [{ text: splitPrompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 800, responseMimeType: "application/json" } }),
-            });
-            if (gptRes.ok) {
-              const d = await gptRes.json();
-              gptRawText = d.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+            try {
+              const raw = await geminiGenerateText(apiKey, splitPrompt, 4096);
+              console.log(`[transcribe] Gemini split raw:`, raw.slice(0, 300));
+              const stripped = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+              const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+              gptRawText = jsonMatch ? jsonMatch[0] : stripped;
+            } catch (e) {
+              console.warn("[transcribe] Gemini split failed:", e);
             }
           } else {
             const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -394,8 +403,10 @@ ${sourceText.trim()}`;
         }
 
         // Pin first caption to 0 and last to audioDur
-        result[0].startMs = 0;
-        result[result.length - 1].endMs = Math.round(audioDur * 1000);
+        if (result.length > 0) {
+          result[0].startMs = 0;
+          result[result.length - 1].endMs = Math.round(audioDur * 1000);
+        }
 
         captions = result.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
         console.log(`[transcribe] proportional-mapped ${captions.length} captions, dur=${audioDur.toFixed(2)}s, points=${timeline.length}`);
@@ -417,7 +428,7 @@ ${sourceText.trim()}`;
         if (buf) merged.push({ text: buf, startMs: Math.round(bufStart * 1000), endMs: Math.round(bufEnd * 1000) });
         captions = merged.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
       }
-    } else {
+    } else if (words.length > 0) {
       // Word-level grouping for non-Thai (English, etc.)
       const MAX_WORDS = 4;
       const MAX_DURATION_S = 2.0;

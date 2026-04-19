@@ -127,7 +127,7 @@ export default function ThumbnailEditor({
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
-  const [seekTime, setSeekTime] = useState(3);
+  const [seekTime, setSeekTime] = useState(0);
   const [configLoaded, setConfigLoaded] = useState(false);
 
   // Load saved thumbnail config from DB
@@ -141,9 +141,6 @@ export default function ThumbnailEditor({
       .then(r => r.json())
       .then(data => {
         if (data.config) {
-          if (Array.isArray(data.config.textLayers) && data.config.textLayers.length > 0) {
-            setLayers(data.config.textLayers.map((l: Partial<TextLayer>) => ({ ...DEFAULT_LAYER, ...l })));
-          }
           if (typeof data.config.seekTime === "number") {
             setSeekTime(data.config.seekTime);
           }
