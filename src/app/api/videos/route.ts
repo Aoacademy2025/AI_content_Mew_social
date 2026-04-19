@@ -31,7 +31,7 @@ export async function GET() {
 
     // Auto-delete records where all video files are missing
     const brokenIds: string[] = [];
-    const valid = videos.filter(v => {
+    const valid = videos.filter((v: typeof videos[number]) => {
       const hasFile = localFileExists(v.videoUrl) || localFileExists(v.avatarVideoUrl);
       if (!hasFile) brokenIds.push(v.id);
       return hasFile;
