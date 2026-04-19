@@ -31,7 +31,7 @@ function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: stri
 // ── Local Whisper via Python script ──────────────────────────────────────────
 // Uses openai-whisper (pip install openai-whisper) with word_timestamps=True.
 // Returns null if Python/whisper not available → caller falls back to OpenAI API.
-const WHISPER_MODEL = process.env.WHISPER_MODEL ?? "medium";
+const WHISPER_MODEL = process.env.WHISPER_MODEL ?? "base";
 const WHISPER_SCRIPT = path.join(process.cwd(), "scripts", "whisper_transcribe.py");
 
 function getPythonCmd(): string {
