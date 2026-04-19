@@ -40,6 +40,6 @@ export async function notifyAdmins({
   });
 
   await prisma.notification.createMany({
-    data: admins.map((a) => ({ userId: a.id, type, title, body })),
+    data: admins.map((a: { id: string }) => ({ userId: a.id, type, title, body })),
   });
 }
