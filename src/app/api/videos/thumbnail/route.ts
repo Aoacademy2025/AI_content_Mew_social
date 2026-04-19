@@ -226,16 +226,16 @@ export async function POST(req: Request) {
     } | null = null;
     if (videoId) {
       // Use raw query to access thumbnailConfig without needing prisma generate
-      const rows = await prisma.$queryRawUnsafe<Array<{
+      const rows = (await prisma.$queryRawUnsafe(
+        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ?`,
+        videoId,
+      )) as Array<{
         videoUrl: string | null;
         avatarVideoUrl: string | null;
         script: string | null;
         renderConfig: string | null;
         thumbnailConfig: string | null;
-      }>>(
-        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ?`,
-        videoId,
-      );
+      }>;
       video = rows[0] ?? null;
     }
 
