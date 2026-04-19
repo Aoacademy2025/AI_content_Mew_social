@@ -192,6 +192,7 @@ export async function POST(req: Request) {
       concurrency: null,
       x264Preset: "ultrafast",
       jpegQuality: 80,
+      chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true },
       onProgress: ({ progress }: { progress: number }) => {
         console.log(`[Render] ${Math.round(progress * 100)}%`);
       },
