@@ -31,7 +31,7 @@ interface SceneInput {
 
 async function readAsset(url: string, origin: string): Promise<Buffer | null> {
   if (url.startsWith("/")) {
-    const filePath = path.join(process.cwd(), "public", url);
+    const filePath = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
     if (!fs.existsSync(filePath)) return null;
     return fs.readFileSync(filePath);
   }
@@ -133,7 +133,7 @@ export async function POST(req: Request) {
 
       // Re-encode BG video to H.264 baseline for HeyGen compatibility
       if (bgVideoUrl.startsWith("/")) {
-        const srcPath = path.join(process.cwd(), "public", bgVideoUrl);
+        const srcPath = path.join(process.cwd(), "public", bgVideoUrl.replace(/^\/api\/renders\//, "/renders/"));
         reencodedPath = srcPath.replace(/\.mp4$/, `-reenc.mp4`);
         try {
           console.log("[create-avatar] re-encoding BG video for HeyGen compatibility...");

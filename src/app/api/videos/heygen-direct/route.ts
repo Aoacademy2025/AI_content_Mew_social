@@ -17,12 +17,12 @@ function decrypt(encrypted: string): string {
 
 function readLocalFile(url: string): Buffer | null {
   if (!url.startsWith("/")) return null;
-  const fp = path.join(process.cwd(), "public", url);
+  const fp = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
   return fs.existsSync(fp) ? fs.readFileSync(fp) : null;
 }
 
 function localPath(url: string): string {
-  return path.join(process.cwd(), "public", url);
+  return path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
 }
 
 function getFfmpegPath(): string {

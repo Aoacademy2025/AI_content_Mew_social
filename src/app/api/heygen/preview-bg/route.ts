@@ -51,10 +51,10 @@ export async function POST(req: Request) {
     inputPath = path.join(stocksDir, filename);
     if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
   } else if (avatarVideoUrl.startsWith("/renders/")) {
-    inputPath = path.join(process.cwd(), "public", avatarVideoUrl);
+    inputPath = path.join(process.cwd(), "public", avatarVideoUrl.replace(/^\/api\/renders\//, "/renders/"));
     if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
   } else if (avatarVideoUrl.startsWith("/")) {
-    inputPath = path.join(process.cwd(), "public", avatarVideoUrl);
+    inputPath = path.join(process.cwd(), "public", avatarVideoUrl.replace(/^\/api\/renders\//, "/renders/"));
     if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
   } else {
     inputPath = path.join(stocksDir, `tmp-avatar-${ts}.mp4`);

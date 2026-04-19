@@ -27,7 +27,7 @@ export async function POST(req: Request) {
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decrypt(user.heygenKey);
 
-  const localPath = path.join(process.cwd(), "public", fileUrl);
+  const localPath = path.join(process.cwd(), "public", fileUrl.replace(/^\/api\/renders\//, "/renders/"));
   if (!fs.existsSync(localPath)) return NextResponse.json({ error: `File not found: ${fileUrl}` }, { status: 404 });
 
   const buffer = fs.readFileSync(localPath);

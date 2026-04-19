@@ -59,7 +59,7 @@ export async function POST(req: Request) {
   const audioUrl: string = body?.audioUrl ?? "";
   if (!audioUrl) return NextResponse.json({ error: "audioUrl required" }, { status: 400 });
 
-  const filePath = path.join(process.cwd(), "public", audioUrl);
+  const filePath = path.join(process.cwd(), "public", audioUrl.replace(/^\/api\/renders\//, "/renders/"));
   if (!fs.existsSync(filePath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
 
   try {

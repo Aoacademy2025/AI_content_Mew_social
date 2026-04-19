@@ -47,7 +47,8 @@ function detectVideoType(buf: Buffer): string {
 
 // Upload a local file to HeyGen and return { id, url }
 async function uploadAsset(localUrl: string, heygenKey: string, contentType?: string): Promise<{ id: string; url: string | null }> {
-  const localPath = path.join(process.cwd(), "public", localUrl);
+  const normalizedUrl = localUrl.replace(/^\/api\/renders\//, "/renders/");
+  const localPath = path.join(process.cwd(), "public", normalizedUrl);
   if (!fs.existsSync(localPath)) throw new Error(`File not found: ${localUrl}`);
   const buffer = fs.readFileSync(localPath);
   const ct = contentType ?? detectVideoType(buffer);
@@ -121,7 +122,8 @@ export async function POST(req: Request) {
   if (audioUrl) {
     // Always upload as MP3 — HeyGen's asset API is strict about audio format.
     // WAV (Gemini TTS) and other formats must be converted first.
-    const localPath = path.join(process.cwd(), "public", audioUrl);
+    const normalizedAudioUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
+    const localPath = path.join(process.cwd(), "public", normalizedAudioUrl);
     const audioExt = audioUrl.split(".").pop()?.toLowerCase() ?? "";
     let uploadPath = localPath;
     let tmpMp3: string | null = null;

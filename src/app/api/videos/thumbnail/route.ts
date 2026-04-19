@@ -315,7 +315,7 @@ export async function POST(req: Request) {
           const localPath = firstSrc.startsWith("/api/stocks/")
             ? path.join(process.cwd(), "stocks", firstSrc.slice("/api/stocks/".length))
             : firstSrc.startsWith("/")
-              ? path.join(process.cwd(), "public", firstSrc)
+              ? path.join(process.cwd(), "public", firstSrc.replace(/^\/api\/renders\//, "/renders/"))
               : null;
           if (localPath && fs.existsSync(localPath)) {
             sourceVideoSrc = localPath;
@@ -328,7 +328,7 @@ export async function POST(req: Request) {
     if (!sourceVideoSrc) {
       if (!videoSrc)
         return NextResponse.json({ error: "No video URL available" }, { status: 400 });
-      const p = videoSrc.startsWith("/") ? path.join(process.cwd(), "public", videoSrc) : videoSrc;
+      const p = videoSrc.startsWith("/") ? path.join(process.cwd(), "public", videoSrc.replace(/^\/api\/renders\//, "/renders/")) : videoSrc;
       if (!videoSrc.startsWith("http") && !fs.existsSync(p))
         return NextResponse.json({ error: "Video file not found" }, { status: 404 });
       sourceVideoSrc = p;

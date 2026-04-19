@@ -27,7 +27,7 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
     return;
   }
   if (url.startsWith("/")) {
-    const src = path.join(process.cwd(), "public", url);
+    const src = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
     if (!fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
     return;

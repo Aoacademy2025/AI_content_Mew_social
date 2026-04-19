@@ -100,12 +100,12 @@ export async function POST(req: Request) {
       inputPath = path.join(tmpDir, filename);
       if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
     } else if (audioUrl.startsWith("/")) {
-      inputPath = path.join(process.cwd(), "public", audioUrl);
+      inputPath = path.join(process.cwd(), "public", audioUrl.replace(/^\/api\/renders\//, "/renders/"));
       if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
     } else {
       // Extract local path from full URL if pointing to our own server, then read from disk
       const localMatch = audioUrl.match(/^https?:\/\/[^/]+(\/.*)/);
-      const localPath = localMatch ? path.join(process.cwd(), "public", localMatch[1]) : null;
+      const localPath = localMatch ? path.join(process.cwd(), "public", localMatch[1].replace(/^\/api\/renders\//, "/renders/")) : null;
       if (localPath && fs.existsSync(localPath)) {
         inputPath = localPath;
       } else {
