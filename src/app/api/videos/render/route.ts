@@ -20,7 +20,7 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
       const ext = url.includes(".png") ? "png" : "jpg";
       const filename = `img-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       fs.writeFileSync(path.join(rendersDir, filename), buf);
-      return `${baseUrl}/renders/${filename}`;
+      return `${baseUrl}/api/renders/${filename}`;
     } catch {
       return url;
     }
@@ -108,7 +108,7 @@ export async function POST(req: Request) {
           console.warn(`[render] failed to copy stock file ${filename}:`, e);
         }
       }
-      const resolved = `/renders/${filename}`;
+      const resolved = `/api/renders/${filename}`;
       stockCopyMap.set(url, resolved);
       return resolved;
     }
