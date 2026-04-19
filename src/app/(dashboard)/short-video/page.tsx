@@ -960,8 +960,8 @@ export default function ShortVideoPage() {
     const stocks = getActiveStocks();
     const voice = pipe.current.voiceUrl ?? "";
     const durMs = pipe.current.audioDurationMs ?? 0;
-    if (!voice) return toast.error("ยังไม่มีเสียงพากย์ — กด Run All ก่อน");
-    if (!editedSceneCaptions.length) return toast.error("ยังไม่มีซับไตเติล — กด Run All ก่อน");
+    if (!voice) return toast.error("ยังไม่มี audio URL — กด Run All ก่อน");
+    if (!editedSceneCaptions.length) return toast.error("ยังไม่มีซับ — กด Run All ก่อน");
 
     setRunning(true);
     abortRef.current = false;
@@ -995,8 +995,8 @@ export default function ShortVideoPage() {
   async function runAvatarPipeline() {
     const voice = pipe.current.voiceUrl;
     const rendered = pipe.current.renderedVideoUrl;
-    if (!voice) return toast.error("ยังไม่มีเสียงพากย์ — กด Run All ก่อน");
-    if (!rendered) return toast.error("ยังไม่มีวิดีโอ — กด Render ก่อน");
+    if (!voice) return toast.error("ยังไม่มีเสียง — ต้อง Generate ก่อน");
+    if (!rendered) return toast.error("ยังไม่มีวิดีโอ — ต้อง Generate ก่อน");
 
     setRunning(true);
     abortRef.current = false;
@@ -1094,7 +1094,7 @@ export default function ShortVideoPage() {
         setVideoUrl(composited);
           toast.success("เสร็จแล้ว!");
       } else if (step === "composite") {
-        if (!avatarGreenUrl) throw new Error("ยังไม่มี Avatar — กด Run ที่ขั้นตอน Avatar AI ก่อน");
+        if (!avatarGreenUrl) throw new Error("ยังไม่มี Avatar — ต้อง run avatar ก่อน");
         const composited = await runComposite(rendered, avatarGreenUrl);
         setVideoUrl(composited);
           toast.success("เสร็จแล้ว!");
@@ -1128,14 +1128,14 @@ export default function ShortVideoPage() {
       return true;
     }) as (keyof StepState)[];
   const STEP_DISPLAY: Record<keyof StepState, string> = {
-    keywords: "วิเคราะห์คำค้นหา",
-    fetchStock: "ดาวน์โหลดวิดีโอพื้นหลัง",
-    tts: "สร้างเสียงพากย์",
-    transcribe: "ซิงค์ซับไตเติล",
-    config: "ตั้งค่าวิดีโอ",
-    render: "สร้างวิดีโอ",
-    avatar: "สร้าง Avatar AI",
-    composite: "รวมวิดีโอ",
+    keywords: "Extract Keywords (LLM)",
+    fetchStock: "Pexels Asset Fetch",
+    tts: "TTS Gen",
+    transcribe: "Whisper Transcribe",
+    config: "Build Render Config",
+    render: "Remotion Render Engine",
+    avatar: "HeyGen API Process",
+    composite: "FFMPEG Composite",
   };
 
   if (plan !== "PRO") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
@@ -1866,8 +1866,8 @@ export default function ShortVideoPage() {
                   <Layers className="h-3.5 w-3.5 text-cyan-400" />
                 </div>
                 <div>
-                  <p className="font-bold text-white text-sm leading-none">ขั้นตอนการสร้างวิดีโอ</p>
-                  <p className="text-[10px] text-white/30 mt-0.5">กดแต่ละขั้นตอนเพื่อรัน หรือรันใหม่</p>
+                  <p className="font-bold text-white text-sm leading-none">Execution Pipeline</p>
+                  <p className="text-[10px] text-white/30 mt-0.5">กดแต่ละขั้นตอนเพื่อ run หรือ re-run</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1894,13 +1894,13 @@ export default function ShortVideoPage() {
               {/* Phase 1 — Prepare */}
               <PhaseRow
                 phaseNum={1}
-                label="เตรียมข้อมูล"
+                label="Prepare"
                 color="cyan"
                 steps={[
-                  { key: "keywords" as const,   label: "คำค้นหา", icon: Wand2, canRun: !!script.trim() },
-                  { key: "fetchStock" as const, label: "วิดีโอพื้นหลัง", icon: Film,  canRun: !!script.trim() },
-                  { key: "tts" as const,        label: "สร้างเสียง", icon: Mic,      canRun: !!script.trim() },
-                  { key: "transcribe" as const, label: "ซิงค์ซับ", icon: Captions, canRun: !!pipe.current.voiceUrl },
+                  { key: "keywords" as const,   label: "Keywords", icon: Wand2, canRun: !!script.trim() },
+                  { key: "fetchStock" as const, label: "Stock",    icon: Film,  canRun: !!script.trim() },
+                  { key: "tts" as const,        label: "TTS Voice",  icon: Mic,      canRun: !!script.trim() },
+                  { key: "transcribe" as const, label: "Transcribe", icon: Captions, canRun: !!pipe.current.voiceUrl },
                 ]}
                 stepStates={steps}
                 running={running}
@@ -1918,11 +1918,11 @@ export default function ShortVideoPage() {
               {/* Phase 2 — Render */}
               <PhaseRow
                 phaseNum={2}
-                label="สร้างวิดีโอ"
+                label="Render"
                 color="blue"
                 steps={[
-                  { key: "config", label: "ตั้งค่าวิดีโอ", icon: Settings2, canRun: !!pipe.current.captions?.length },
-                  { key: "render", label: "สร้างวิดีโอ", icon: Video,    canRun: !!pipe.current.config },
+                  { key: "config", label: "Config", icon: Settings2, canRun: !!pipe.current.captions?.length },
+                  { key: "render", label: "Render",  icon: Video,    canRun: !!pipe.current.config },
                 ]}
                 stepStates={steps}
                 running={running}
@@ -1941,11 +1941,11 @@ export default function ShortVideoPage() {
               {useAvatar && (
                 <PhaseRow
                   phaseNum={3}
-                  label="Avatar AI"
+                  label="Avatar"
                   color="purple"
                   steps={[
-                    { key: "avatar",    label: "สร้าง Avatar", icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
-                    { key: "composite", label: "รวมวิดีโอ", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
+                    { key: "avatar",    label: "Avatar",    icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
+                    { key: "composite", label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
                   ]}
                   stepStates={steps}
                   running={running}
@@ -1972,7 +1972,7 @@ export default function ShortVideoPage() {
             <div className="xl:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
-                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">สถานะ</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Live Status</p>
               </div>
               <div className="p-2 space-y-0.5">
               <div className="space-y-0.5">
@@ -2361,8 +2361,8 @@ export default function ShortVideoPage() {
               {editedSceneCaptions.length === 0 ? (
                 <div className="flex flex-col items-center justify-center flex-1 py-10">
                   <Captions className="h-8 w-8 text-white/8 mb-2" />
-                  <p className="text-xs text-white/18">รัน pipeline ก่อน</p>
-                  <p className="text-[9px] text-white/10 mt-1">ซับจะโชว์ที่นี่หลัง Transcribe เสร็จ</p>
+                  <p className="text-xs text-white/18">Run pipeline first</p>
+                  <p className="text-[9px] text-white/10 mt-1">Subtitles appear here after Transcribe</p>
                 </div>
               ) : (
                 <>
@@ -2528,8 +2528,8 @@ export default function ShortVideoPage() {
                     disabled={testRemoveLoading || (!avatarDirectUrl.trim() && !avatarGreenUrl) || !preRenderUrl}
                     onClick={async () => {
                       const avatarSrc = avatarDirectUrl.trim() || avatarGreenUrl;
-                      if (!avatarSrc) { toast.error("ยังไม่มี Avatar — กด Run ที่ขั้นตอน Avatar AI ก่อน"); return; }
-                      if (!preRenderUrl) { toast.error("ยังไม่มีวิดีโอพื้นหลัง — กด Render ก่อน"); return; }
+                      if (!avatarSrc) { toast.error("ยังไม่มี Avatar — run Avatar ก่อน"); return; }
+                      if (!preRenderUrl) { toast.error("ยังไม่มี BG — Render Video ก่อน"); return; }
                       setTestRemoveLoading(true);
                       setTestRemoveUrl("");
                       try {

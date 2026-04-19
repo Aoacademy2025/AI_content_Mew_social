@@ -11,6 +11,12 @@ if (process.platform === "win32") {
 }
 
 const nextConfig: NextConfig = {
+  async rewrites() {
+    return [
+      // Serve dynamically-written renders via API route (static public/ doesn't serve runtime files in prod)
+      { source: "/renders/:filename", destination: "/api/renders/:filename" },
+    ];
+  },
   // Prevent Next.js from bundling Remotion server-side packages.
   // @remotion/bundler and @remotion/renderer include esbuild native binaries
   // and non-JS files (.md, .node) that webpack/turbopack cannot handle.
