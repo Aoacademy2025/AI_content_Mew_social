@@ -106,7 +106,7 @@ export async function POST(req: Request) {
     const outPath = path.join(rendersDir, filename);
     fs.writeFileSync(outPath, wavBuffer);
 
-    return NextResponse.json({ voiceUrl: `/renders/${filename}` });
+    return NextResponse.json({ voiceUrl: `/api/renders/${filename}` });
   } catch (error) {
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });
   }

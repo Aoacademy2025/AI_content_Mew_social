@@ -37,7 +37,7 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(await file.arrayBuffer());
     fs.writeFileSync(outputPath, buffer);
 
-    return NextResponse.json({ url: `/renders/${filename}` });
+    return NextResponse.json({ url: `/api/renders/${filename}` });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(

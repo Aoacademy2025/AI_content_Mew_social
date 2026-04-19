@@ -58,7 +58,7 @@ export async function POST(req: Request) {
         const filename = `tts-${Date.now()}.mp3`;
         const outPath = path.join(rendersDir, filename);
         fs.writeFileSync(outPath, Buffer.from(await retry.arrayBuffer()));
-        return NextResponse.json({ voiceUrl: `/renders/${filename}` });
+        return NextResponse.json({ voiceUrl: `/api/renders/${filename}` });
       }
       const retryErr = await retry.text();
       console.error("[tts] retry also failed:", retry.status, retryErr);
@@ -73,5 +73,5 @@ export async function POST(req: Request) {
   const outPath = path.join(rendersDir, filename);
   fs.writeFileSync(outPath, Buffer.from(await res.arrayBuffer()));
 
-  return NextResponse.json({ voiceUrl: `/renders/${filename}` });
+  return NextResponse.json({ voiceUrl: `/api/renders/${filename}` });
 }

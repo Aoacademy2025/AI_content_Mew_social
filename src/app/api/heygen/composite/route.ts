@@ -305,7 +305,7 @@ export async function POST(req: Request) {
     }
 
     console.log("[composite] output:", finalFile, fs.statSync(finalPath).size, "bytes");
-    return NextResponse.json({ videoUrl: `/renders/${finalFile}`, usedMode: mode });
+    return NextResponse.json({ videoUrl: `/api/renders/${finalFile}`, usedMode: mode });
   } catch (error) {
     console.error("[composite] error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Composite failed" }, { status: 500 });

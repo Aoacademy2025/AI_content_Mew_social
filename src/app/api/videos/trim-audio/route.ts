@@ -60,7 +60,7 @@ export async function POST(req: Request) {
 
   try {
     await trimAudio(ffmpeg, srcPath, outPath, durationSecs);
-    return NextResponse.json({ audioUrl: `/renders/${outFile}` });
+    return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
   } catch (e) {
     console.error("[trim-audio]", e);
     return NextResponse.json({ error: e instanceof Error ? e.message : "Failed" }, { status: 500 });

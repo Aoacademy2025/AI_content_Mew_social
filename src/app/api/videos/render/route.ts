@@ -198,7 +198,7 @@ export async function POST(req: Request) {
       },
     });
 
-    const videoUrl = `/renders/${filename}`;
+    const videoUrl = `/api/renders/${filename}`;
 
     // Notify user that render completed
     const session2 = await getServerSession(authOptions);

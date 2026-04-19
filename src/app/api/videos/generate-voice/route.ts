@@ -113,14 +113,14 @@ export async function POST(req: Request) {
       const audioBuffer = Buffer.from(await res.arrayBuffer());
       const filename = `voice-${s.scene}-${ts}.mp3`;
       fs.writeFileSync(path.join(rendersDir, filename), audioBuffer);
-      audioUrls.push({ scene: s.scene, url: `/renders/${filename}` });
+      audioUrls.push({ scene: s.scene, url: `/api/renders/${filename}` });
     }
 
     // 5. Merge all scenes into one MP3 using ffmpeg concat (proper headers + duration)
     const mergedFilename = `voice-merged-${ts}.mp3`;
     const mergedPath = path.join(rendersDir, mergedFilename);
     await mergeAudioFiles(audioUrls.map(a => path.join(rendersDir, path.basename(a.url))), mergedPath);
-    const mergedUrl = `/renders/${mergedFilename}`;
+    const mergedUrl = `/api/renders/${mergedFilename}`;
 
     return NextResponse.json({ audioUrls, mergedUrl });
   } catch (error) {

@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     const outPath = path.join(rendersDir, filename);
     fs.writeFileSync(outPath, buffer);
 
-    const thumbnailUrl = `/renders/${filename}`;
+    const thumbnailUrl = `/api/renders/${filename}`;
 
     // Save to DB using raw SQL (works without prisma generate for thumbnailConfig)
     await prisma.$executeRawUnsafe(

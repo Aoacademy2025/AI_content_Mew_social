@@ -346,7 +346,7 @@ export async function POST(req: Request) {
       fs.renameSync(framePath, outPath);
     }
 
-    const thumbnailUrl = `/renders/${filename}`;
+    const thumbnailUrl = `/api/renders/${filename}`;
 
     // Save to DB (thumbnail URL + editor config for re-editing)
     if (videoId) {
