@@ -103,13 +103,18 @@ export async function POST(req: Request) {
       inputPath = path.join(process.cwd(), "public", audioUrl);
       if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
     } else {
-      // If URL points to our own server, rewrite to localhost to avoid self-fetch issues
-      const fetchUrl = audioUrl.replace(/^https?:\/\/[^/]+(\/.*)$/, (_: string, p: string) => `http://localhost:3000${p}`);
-      const audioRes = await fetch(fetchUrl);
-      if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${fetchUrl}` }, { status: 400 });
-      inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
-      fs.writeFileSync(inputPath, Buffer.from(await audioRes.arrayBuffer()));
-      needsCleanup = true;
+      // Extract local path from full URL if pointing to our own server, then read from disk
+      const localMatch = audioUrl.match(/^https?:\/\/[^/]+(\/.*)/);
+      const localPath = localMatch ? path.join(process.cwd(), "public", localMatch[1]) : null;
+      if (localPath && fs.existsSync(localPath)) {
+        inputPath = localPath;
+      } else {
+        const audioRes = await fetch(audioUrl);
+        if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${audioUrl}` }, { status: 400 });
+        inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
+        fs.writeFileSync(inputPath, Buffer.from(await audioRes.arrayBuffer()));
+        needsCleanup = true;
+      }
     }
 
     // Extract audio as mp3 (mono 16kHz) — required for both local Whisper and OpenAI API
