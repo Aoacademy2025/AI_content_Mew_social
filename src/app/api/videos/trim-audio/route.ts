@@ -45,7 +45,8 @@ export async function POST(req: Request) {
   if (!audioUrl) return NextResponse.json({ error: "audioUrl required" }, { status: 400 });
   if (!durationSecs || durationSecs <= 0) return NextResponse.json({ error: "durationSecs required" }, { status: 400 });
 
-  const srcPath = path.join(process.cwd(), "public", audioUrl);
+  const normalizedUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
+  const srcPath = path.join(process.cwd(), "public", normalizedUrl);
   if (!fs.existsSync(srcPath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
 
   const ffmpeg = getFfmpegPath();
