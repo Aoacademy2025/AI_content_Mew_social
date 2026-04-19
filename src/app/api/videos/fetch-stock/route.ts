@@ -196,9 +196,9 @@ export async function POST(req: Request) {
   // User override wins; otherwise use adaptive auto calculation
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
 
-  // Cap total clips to avoid VPS timeout on large scripts
-  const cappedClipsNeeded = Math.min(totalClipsNeeded, 30);
-  const clipsPerKeyword = Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length));
+  // Cap total clips to avoid VPS timeout
+  const cappedClipsNeeded = Math.min(totalClipsNeeded, 20);
+  const clipsPerKeyword = 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s avgCut=${avgCut}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
 
