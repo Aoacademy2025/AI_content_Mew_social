@@ -104,7 +104,7 @@ export async function POST(req: Request) {
       if (!fs.existsSync(inputPath)) return NextResponse.json({ error: "File not found" }, { status: 400 });
     } else {
       // If URL points to our own server, rewrite to localhost to avoid self-fetch issues
-      const fetchUrl = audioUrl.replace(/^https?:\/\/[^/]+(\/.*)$/, (_, path) => `http://localhost:3000${path}`);
+      const fetchUrl = audioUrl.replace(/^https?:\/\/[^/]+(\/.*)$/, (_: string, p: string) => `http://localhost:3000${p}`);
       const audioRes = await fetch(fetchUrl);
       if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${fetchUrl}` }, { status: 400 });
       inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
