@@ -741,13 +741,28 @@ export default function ShortVideoPage() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise(r => setTimeout(r, 5000));
       if (abortRef.current) throw new Error("__ABORTED__");
-      const pollRes = await fetch("/api/videos/poll-avatar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: heygenVideoId }),
-        signal: abortControllerRef.current?.signal,
-      });
-      const pollData = await pollRes.json();
+      // Wait for tab to be visible before fetching (prevents ERR_NETWORK_IO_SUSPENDED)
+      if (document.visibilityState === "hidden") {
+        await new Promise<void>(resolve => {
+          const handler = () => { if (document.visibilityState === "visible") { document.removeEventListener("visibilitychange", handler); resolve(); } };
+          document.addEventListener("visibilitychange", handler);
+        });
+      }
+      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
+      try {
+        const pollRes = await fetch("/api/videos/poll-avatar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: heygenVideoId }),
+          signal: abortControllerRef.current?.signal,
+        });
+        pollData = await pollRes.json();
+      } catch {
+        // Network error (suspend/offline) — skip this tick, retry next cycle
+        const elapsed = Math.round((i + 1) * 5 / 60);
+        setStep("avatar", "running", `HeyGen: polling... (${i + 1}) ~${elapsed}min ⏸ retrying`);
+        continue;
+      }
       if (pollData.status === "completed" && pollData.videoUrl) {
         avatarVideoUrl = pollData.videoUrl;
         break;

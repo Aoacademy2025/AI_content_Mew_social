@@ -7,8 +7,8 @@ import fs from "fs";
 import { execFile } from "child_process";
 
 function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
+  if (process.platform !== "win32") return "/usr/bin/ffmpeg";
+  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
 }
 
 /** Convert any audio file to MP3 128k, return path to tmp mp3 */
