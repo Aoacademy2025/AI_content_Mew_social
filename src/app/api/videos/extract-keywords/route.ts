@@ -42,12 +42,12 @@ export async function POST(req: Request) {
   // Estimate duration per scene: Thai speech ~3 chars/sec, min 5s per scene
   const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
   const totalEstimatedSec = sceneDurations.reduce((a, b) => a + b, 0);
-  // Target: 1 unique keyword per 3s of content (+30% buffer), min 3 per scene, cap total at 15
-  const rawClipsPerScene = sceneDurations.map(d => Math.max(3, Math.ceil((d / 3) * 1.3)));
+  // Target: 1 unique keyword per 3s of content (+30% buffer), min 2 per scene, cap total at 15
+  const rawClipsPerScene = sceneDurations.map(d => Math.max(2, Math.ceil((d / 3) * 1.3)));
   const rawTotal = rawClipsPerScene.reduce((a, b) => a + b, 0);
-  const MAX_TOTAL_CLIPS = 6;
+  const MAX_TOTAL_CLIPS = 15;
   const scale = rawTotal > MAX_TOTAL_CLIPS ? MAX_TOTAL_CLIPS / rawTotal : 1;
-  const clipsPerScene = rawClipsPerScene.map(c => Math.max(3, Math.round(c * scale)));
+  const clipsPerScene = rawClipsPerScene.map(c => Math.max(1, Math.round(c * scale)));
   const totalClips = clipsPerScene.reduce((a, b) => a + b, 0);
   const scenesText = sceneList
     .map((s, i) => `Scene ${i + 1} (${sceneDurations[i]}s, need ${clipsPerScene[i]} unique clips): ${s}`)

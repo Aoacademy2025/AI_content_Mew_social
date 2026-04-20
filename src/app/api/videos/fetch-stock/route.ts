@@ -197,7 +197,7 @@ export async function POST(req: Request) {
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
 
   // Cap total clips to avoid VPS timeout
-  const cappedClipsNeeded = Math.min(totalClipsNeeded, 6);
+  const cappedClipsNeeded = Math.min(totalClipsNeeded, 15);
   const clipsPerKeyword = 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s avgCut=${avgCut}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);

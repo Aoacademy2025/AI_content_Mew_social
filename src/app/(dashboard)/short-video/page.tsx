@@ -131,13 +131,14 @@ export default function ShortVideoPage() {
 
   const [script, setScript] = useState("");
 
-  // Preprocess script: collapse multiple blank lines, trim each line, join into clean paragraph
+  // Preprocess script: trim each line, collapse 2+ blank lines to single newline, keep paragraph breaks
   function preprocessScript(raw: string): string {
     return raw
-      .split(/\n+/)
+      .split(/\n/)
       .map(line => line.trim())
-      .filter(line => line.length > 0)
-      .join(" ");
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")  // collapse 3+ newlines → double newline (paragraph break)
+      .trim();
   }
 
   const cleanScript = preprocessScript(script);
