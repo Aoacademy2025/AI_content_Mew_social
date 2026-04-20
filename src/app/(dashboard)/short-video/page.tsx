@@ -130,6 +130,17 @@ export default function ShortVideoPage() {
   }, [router]);
 
   const [script, setScript] = useState("");
+
+  // Preprocess script: collapse multiple blank lines, trim each line, join into clean paragraph
+  function preprocessScript(raw: string): string {
+    return raw
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .join(" ");
+  }
+
+  const cleanScript = preprocessScript(script);
   const [voiceId, setVoiceId] = useState("");
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
@@ -429,7 +440,7 @@ export default function ShortVideoPage() {
 
   async function runKeywords(): Promise<string[]> {
     setStep("keywords", "running");
-    const sc = splitScenes(script);
+    const sc = splitScenes(cleanScript);
     setScenes(sc);
     pipe.current.scenes = sc;
     const kwRes = await fetch("/api/videos/extract-keywords", {
@@ -502,7 +513,7 @@ export default function ShortVideoPage() {
       const ttsRes = await fetch("/api/videos/tts-gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: script, voiceName: geminiVoiceName }),
+        body: JSON.stringify({ text: cleanScript, voiceName: geminiVoiceName }),
         signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
@@ -517,7 +528,7 @@ export default function ShortVideoPage() {
       const ttsRes = await fetch("/api/videos/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: script, voiceId, languageCode: "th" }),
+        body: JSON.stringify({ text: cleanScript, voiceId, languageCode: "th" }),
         signal: abortControllerRef.current?.signal,
       });
       const ttsData = await ttsRes.json();
@@ -538,7 +549,7 @@ export default function ShortVideoPage() {
     const txRes = await fetch("/api/videos/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: script.slice(0, 800), script }),
+      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript }),
       signal: abortControllerRef.current?.signal,
     });
     const txData = await txRes.json();
@@ -565,7 +576,7 @@ export default function ShortVideoPage() {
       const splitRes = await fetch("/api/videos/split-phrases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script, audioDurationMs }),
+        body: JSON.stringify({ script: cleanScript, audioDurationMs }),
         signal: abortControllerRef.current?.signal,
       });
       if (splitRes.ok) {

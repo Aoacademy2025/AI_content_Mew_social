@@ -33,7 +33,7 @@ export async function POST(req: Request) {
     const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
 
     // Gemini TTS API (multimodal live / speech synthesis)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
 
     const res = await fetch(url, {
       method: "POST",
