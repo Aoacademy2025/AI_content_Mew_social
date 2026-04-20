@@ -218,6 +218,21 @@ export default function AdminUsersPage() {
                               {user.plan === "PRO" ? "→ Free" : "→ Pro"}
                             </Button>
 
+                            {/* Toggle Admin */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => patchUser(user.id, { role: user.role === "ADMIN" ? "USER" : "ADMIN" })}
+                              className={`h-7 gap-1 text-xs ${
+                                user.role === "ADMIN"
+                                  ? "text-red-400 hover:text-red-300"
+                                  : "text-zinc-400 hover:text-red-400"
+                              }`}
+                            >
+                              <ShieldCheck className="h-3 w-3" />
+                              {user.role === "ADMIN" ? "→ User" : "→ Admin"}
+                            </Button>
+
                             {/* Toggle Suspend */}
                             <Button
                               size="sm"
