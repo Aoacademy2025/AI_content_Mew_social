@@ -671,7 +671,7 @@ export default function ShortVideoPage() {
 
   async function saveToGallery(videoUrl: string) {
     try {
-      await fetch("/api/videos", {
+      const res = await fetch("/api/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -685,7 +685,15 @@ export default function ShortVideoPage() {
           status: "COMPLETED",
         }),
       });
-    } catch {}
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("[saveToGallery] failed:", res.status, err);
+        toast.error(`บันทึก Gallery ไม่สำเร็จ: ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[saveToGallery] error:", e);
+      toast.error("บันทึก Gallery ไม่สำเร็จ");
+    }
   }
 
   // ── Step 7: Avatar — only HeyGen gen + poll, show preview ──
