@@ -45,7 +45,7 @@ export async function POST(req: Request) {
   // Target: 1 unique keyword per 3s of content (+30% buffer), min 3 per scene, cap total at 15
   const rawClipsPerScene = sceneDurations.map(d => Math.max(3, Math.ceil((d / 3) * 1.3)));
   const rawTotal = rawClipsPerScene.reduce((a, b) => a + b, 0);
-  const MAX_TOTAL_CLIPS = 15;
+  const MAX_TOTAL_CLIPS = 6;
   const scale = rawTotal > MAX_TOTAL_CLIPS ? MAX_TOTAL_CLIPS / rawTotal : 1;
   const clipsPerScene = rawClipsPerScene.map(c => Math.max(3, Math.round(c * scale)));
   const totalClips = clipsPerScene.reduce((a, b) => a + b, 0);

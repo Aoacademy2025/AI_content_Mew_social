@@ -84,6 +84,8 @@ export async function POST(req: Request) {
   const primaryColor = subtitleColor ?? "#FFFFFF";
   const accentColor  = subtitleAccentColor ?? "#FFE500";
 
+  console.log(`[config] start: ${stockVideos.length} clips, ${sceneCaptions.length} captions, ${audioDurationMs}ms`);
+
   if (!voiceFile) return NextResponse.json({ error: "voiceFile required" }, { status: 400 });
   if (!audioDurationMs) return NextResponse.json({ error: "audioDurationMs required" }, { status: 400 });
 
@@ -305,5 +307,6 @@ export async function POST(req: Request) {
     subtitleStylePreset,
   };
 
+  console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);
   return NextResponse.json({ config });
 }
