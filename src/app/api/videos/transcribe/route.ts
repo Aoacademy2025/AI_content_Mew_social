@@ -158,7 +158,7 @@ export async function POST(req: Request) {
         if (!user?.openaiKey) {
           return NextResponse.json({ error: "OpenAI API key not set", missingKey: "openai" }, { status: 400 });
         }
-        apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
+        apiKey = Buffer.from(user!.openaiKey!, "base64").toString("utf-8");
       }
 
       const audioBuffer = fs.readFileSync(mp3Path);
