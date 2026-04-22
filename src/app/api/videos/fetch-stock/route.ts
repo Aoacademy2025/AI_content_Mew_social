@@ -244,10 +244,15 @@ export async function POST(req: Request) {
   // Download phase: max 1 concurrent to avoid VPS timeout
   await withConcurrency(found, 1, async ({ keyword, id, duration, link }) => {
     if (download) {
-      const ts = Date.now() + Math.random();
       const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
-      const outFile = `stock-${slug}-${Math.round(ts)}.mp4`;
+      const outFile = `stock-${slug}-${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
+      // Reuse cached file if already downloaded
+      if (fs.existsSync(outPath) && fs.statSync(outPath).size >= 1000) {
+        console.log(`[fetch-stock] cache hit: ${outFile}`);
+        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
+        return;
+      }
       console.log(`[fetch-stock] downloading: ${outFile}`);
       await downloadAndCrop(link, outPath);
       const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
