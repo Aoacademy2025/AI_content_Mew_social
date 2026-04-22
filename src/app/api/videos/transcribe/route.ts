@@ -146,13 +146,17 @@ export async function POST(req: Request) {
       fullText = localResult.text;
       try { fs.unlinkSync(mp3Path); } catch {}
     } else {
-      // ── Strategy 2: OpenAI Whisper API (fallback) ──
-      console.log("[transcribe] local Whisper unavailable — falling back to OpenAI API");
+      // Local Whisper failed — always ask user to retry, never prompt for OpenAI key
+      try { fs.unlinkSync(mp3Path); } catch {}
+      return NextResponse.json({ error: "Whisper ไม่สำเร็จ กรุณากด Transcribe ใหม่อีกครั้ง", retryable: true }, { status: 503 });
+    }
+
+    if (false) {
+      // ── OpenAI fallback disabled — kept for reference only ──
       let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
       if (!apiKey) {
         if (!user?.openaiKey) {
-          try { fs.unlinkSync(mp3Path); } catch {}
-          return NextResponse.json({ error: "OpenAI API key not set (and local Whisper not available)", missingKey: "openai" }, { status: 400 });
+          return NextResponse.json({ error: "OpenAI API key not set", missingKey: "openai" }, { status: 400 });
         }
         apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
       }
