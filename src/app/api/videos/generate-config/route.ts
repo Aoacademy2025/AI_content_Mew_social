@@ -207,6 +207,7 @@ export async function POST(req: Request) {
       }
 
       // Map clips to scenes by keyword
+      // Each scene gets clips whose keywords were extracted for that scene (via sceneClipCounts offset)
       const uniqueKws = [...new Set(validStocks.map(s => s.keyword))];
       const hasSceneClipCounts = Array.isArray(sceneClipCounts) && sceneClipCounts.length === numScenes;
       const kwOffsets: { start: number; end: number }[] = [];
@@ -218,9 +219,25 @@ export async function POST(req: Request) {
           kwOffsets.push({ start: si * keywordsPerScene, end: (si + 1) * keywordsPerScene });
       }
 
-      const clipsForScene: StockVideo[][] = sceneBoundaries.map((_, si) => {
+      // Also map by caption text: find which captions fall in each scene boundary
+      // and match their text against keywords for tighter sync
+      const clipsForScene: StockVideo[][] = sceneBoundaries.map((bound, si) => {
         const { start: kStart, end: kEnd } = kwOffsets[si] ?? { start: 0, end: keywordsPerScene };
         const sceneKws = new Set(uniqueKws.slice(kStart, kEnd));
+
+        // Find captions that overlap this scene's time range
+        const sceneCaps = sceneCaptions.filter(c =>
+          c.startMs / 1000 >= bound.startSec - 0.5 && c.startMs / 1000 < bound.endSec + 0.5
+        );
+
+        // Also match any keyword that appears in caption text (word overlap)
+        const capText = sceneCaps.map(c => c.text.toLowerCase()).join(" ");
+        for (const kw of uniqueKws) {
+          const kwWords = kw.toLowerCase().split(/\s+/);
+          const matchCount = kwWords.filter(w => w.length > 3 && capText.includes(w)).length;
+          if (matchCount >= Math.min(2, kwWords.length)) sceneKws.add(kw);
+        }
+
         return validStocks.filter(s => sceneKws.has(s.keyword));
       });
 
