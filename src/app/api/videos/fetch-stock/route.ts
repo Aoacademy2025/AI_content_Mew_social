@@ -144,6 +144,16 @@ export async function POST(req: Request) {
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
 
+  // Auto-delete stock files older than 1 day
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  try {
+    for (const f of fs.readdirSync(rendersDir)) {
+      if (!f.startsWith("stock-") || !f.endsWith(".mp4")) continue;
+      const fp = path.join(rendersDir, f);
+      if (Date.now() - fs.statSync(fp).mtimeMs > MAX_AGE_MS) fs.unlinkSync(fp);
+    }
+  } catch {}
+
   const results: {
     keyword: string;
     pexelsId: number;

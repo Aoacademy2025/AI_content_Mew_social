@@ -7,9 +7,22 @@ import fs from "fs";
 export const runtime = "nodejs";
 
 const STOCKS_DIR = path.join(process.cwd(), "stocks");
+const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 1 day
 
 function isStockCache(filename: string) {
   return filename.startsWith("stock-") && filename.endsWith(".mp4");
+}
+
+function cleanOldStocks() {
+  if (!fs.existsSync(STOCKS_DIR)) return;
+  const now = Date.now();
+  for (const f of fs.readdirSync(STOCKS_DIR).filter(isStockCache)) {
+    try {
+      const fp = path.join(STOCKS_DIR, f);
+      const age = now - fs.statSync(fp).mtimeMs;
+      if (age > MAX_AGE_MS) fs.unlinkSync(fp);
+    } catch {}
+  }
 }
 
 /** GET /api/stocks — returns total size and file count of stock cache only */
@@ -19,6 +32,7 @@ export async function GET() {
 
   if (!fs.existsSync(STOCKS_DIR)) return NextResponse.json({ count: 0, sizeMb: 0 });
 
+  cleanOldStocks();
   const files = fs.readdirSync(STOCKS_DIR).filter(isStockCache);
   const totalBytes = files.reduce((sum, f) => {
     try { return sum + fs.statSync(path.join(STOCKS_DIR, f)).size; } catch { return sum; }
