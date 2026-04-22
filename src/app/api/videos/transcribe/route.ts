@@ -11,8 +11,8 @@ import { geminiGenerateText } from "@/lib/gemini";
 export const maxDuration = 300;  // local Whisper can take longer
 
 function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
+  if (process.platform !== "win32") return "/usr/bin/ffmpeg";
+  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
 }
 
 function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: string): Promise<void> {
