@@ -402,6 +402,7 @@ export default function ShortVideoPage() {
     if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
     if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
     if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
+    if (err instanceof ApiCallError && err.data.retryable) return String(err.data.error ?? "เกิดข้อผิดพลาด กรุณากดรันใหม่อีกครั้ง");
     // Show the actual error message so user/developer can see what went wrong
     const firstLine = raw.split("\n")[0].slice(0, 200);
     return firstLine || "เกิดข้อผิดพลาด กรุณาลองใหม่";
@@ -1550,8 +1551,8 @@ export default function ShortVideoPage() {
 
                     {/* Colors */}
                     {([
-                      { label: "สีหลัก", val: subColor, set: setSubColor },
-                      { label: "สีเน้น", val: subAccentColor, set: setSubAccentColor },
+                      { label: "สีตัวอักษร", val: subColor, set: setSubColor },
+                      { label: "สีไฮไลต์", val: subAccentColor, set: setSubAccentColor },
                     ] as const).map(({ label, val, set }) => (
                       <div key={label} className="space-y-1.5">
                         <div className="flex items-center justify-between">
@@ -1630,9 +1631,9 @@ export default function ShortVideoPage() {
                         const lineH = Math.round(subFontSize * scale * 1.4);
                         // Show 3 lines stacked at subPosition: hook, body, cta
                         const labels: { text: string; isAccent: boolean; tag: string }[] = [
-                          { text: "HOOK — ประโยคเปิด", isAccent: false, tag: "hook" },
-                          { text: "body ข้อมูลทั่วไป",  isAccent: false, tag: "body" },
-                          { text: "CTA กดติดตาม",        isAccent: true,  tag: "cta"  },
+                          { text: "Mew Social",       isAccent: false, tag: "hook" },
+                          { text: "สร้างคอนเทนต์ง่ายๆ", isAccent: false, tag: "body" },
+                          { text: "กดติดตาม",           isAccent: true,  tag: "cta"  },
                         ];
                         const totalH = lineH * labels.length;
                         const topPx = (subPosition / 100) * previewH - totalH / 2;

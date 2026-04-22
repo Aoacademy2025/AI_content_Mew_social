@@ -132,13 +132,6 @@ export async function POST(req: Request) {
         })),
       };
       console.log(`[render] copied ${stockCopyMap.size} stock file(s) to renders/`);
-
-      // Delete original stock files now that they've been copied to renders/ — safe to remove
-      for (const stockUrl of stockCopyMap.keys()) {
-        const filename = stockUrl.slice("/api/stocks/".length);
-        const srcPath = path.join(stocksDir, filename);
-        try { fs.unlinkSync(srcPath); } catch { /* ignore */ }
-      }
     }
 
     // For SubtitleOverlay: resolve videoUrl → absolute URL
