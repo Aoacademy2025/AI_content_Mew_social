@@ -4,16 +4,9 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-import { execFile } from "child_process";
 
-export const maxDuration = 300;
+export const maxDuration = 600;
 export const runtime = "nodejs";
-
-
-function getFfmpegPath(): string {
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
-}
 
 interface PexelsVideoFile {
   quality: string;
@@ -61,70 +54,16 @@ function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   return files.find(f => f.quality === "hd") ?? files[0] ?? null;
 }
 
-// Download video + ffmpeg crop to 1080x1920 (center crop, 9:16)
+// Download video directly (no ffmpeg crop — Remotion handles cropping at render time)
 function downloadAndCrop(url: string, outPath: string): Promise<void> {
   return new Promise(async (resolve, reject) => {
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-      const tmpPath = outPath + ".tmp.mp4";
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length < 1000) throw new Error(`Downloaded file too small: ${buf.length} bytes`);
-      fs.writeFileSync(tmpPath, buf);
-
-      const ffmpeg = getFfmpegPath();
-      if (!fs.existsSync(ffmpeg)) {
-        // No ffmpeg — just copy as-is
-        fs.renameSync(tmpPath, outPath);
-        return resolve();
-      }
-
-      // Crop to 9:16 center then scale to 1080x1920.
-      // Steps:
-      //   1. Compute target crop_w = ih * 9/16, clamped to iw (in case video is already narrow)
-      //   2. Round both dimensions down to even numbers (libx264 requires even w/h)
-      //   3. Scale to exactly 1080x1920
-      //   4. Force yuv420p pixel format
-      const cropFilter = [
-        "crop=trunc(min(iw\\,ih*9/16)/2)*2:trunc(ih/2)*2",
-        "scale=1080:1920:flags=lanczos",
-        "format=yuv420p",
-      ].join(",");
-      const args = [
-        "-y",
-        "-i", tmpPath,
-        "-vf", cropFilter,
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-an",
-        "-movflags", "+faststart",
-        outPath,
-      ];
-
-      execFile(ffmpeg, args, { maxBuffer: 100 * 1024 * 1024 }, (err, _stdout, stderr) => {
-        if (err) {
-          console.error("[fetch-stock] ffmpeg crop failed, using original:", stderr?.slice(-300));
-          // Fallback: use uncropped original instead of leaving 0-byte file
-          try {
-            if (fs.existsSync(tmpPath)) {
-              fs.renameSync(tmpPath, outPath);
-            }
-          } catch {}
-          return resolve(); // don't reject — use uncropped video as fallback
-        }
-        // Verify output file exists and has content
-        try {
-          const stat = fs.statSync(outPath);
-          if (stat.size < 1000) {
-            console.error("[fetch-stock] ffmpeg output too small, using original");
-            if (fs.existsSync(tmpPath)) fs.renameSync(tmpPath, outPath);
-          } else {
-            try { fs.unlinkSync(tmpPath); } catch {}
-          }
-        } catch {
-          if (fs.existsSync(tmpPath)) fs.renameSync(tmpPath, outPath);
-        }
-        resolve();
-      });
+      fs.writeFileSync(outPath, buf);
+      return resolve();
     } catch (e) {
       reject(e);
     }

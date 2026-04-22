@@ -47,7 +47,7 @@ TASK: Split the script into subtitle phrases AND tag each one.
 ━━━ TAGGING RULES ━━━
 • "hook" = The OPENING attention-grabbing line(s) only — typically the FIRST 1–2 phrases that create curiosity/shock. Once the content shifts to explaining or giving value, switch to "body". Do NOT tag the whole script as hook.
 • "body" = The MAIN CONTENT — explanations, facts, story, value delivery. This is usually the MAJORITY of phrases (the middle section).
-• "cta"  = EXPLICIT call-to-action words ONLY: กดติดตาม, กด like, แชร์, คอมเมนต์, ลิงก์ในไบโอ, สมัคร, subscribe, follow. A punchy closing statement that is NOT asking the viewer to do something is still "body", not "cta".
+• "cta"  = EXPLICIT call-to-action words ONLY: กดติดตาม, กด like, กดแชร์, ลิงก์ในไบโอ, สมัครเลย, subscribe, follow. "คอมเมนต์บอก" or "คอมเมนต์ไว้" = "body" NOT cta. A punchy closing that is NOT asking viewer to tap/click is still "body".
 
 ━━━ TAGGING DISTRIBUTION (approximate) ━━━
 • hook: 1–3 phrases (opening only)
@@ -112,7 +112,7 @@ ${script.trim()}`;
   console.log(`[split-phrases] GPT raw:`, text.slice(0, 400));
 
   // CTA keyword detector — only tag as cta if explicit action words present
-  const CTA_RE = /กดติดตาม|กด\s*like|แชร์|คอมเมนต์|ลิงก์ในไบโอ|สมัคร|subscribe|follow|ติดตาม/i;
+  const CTA_RE = /กดติดตาม|กด\s*like|กด\s*แชร์|ลิงก์ในไบโอ|สมัครเลย|subscribe|follow now/i;
 
   // Hook detector — questions, shocking openers, "เคย", "รู้ไหม", "รู้มั้ย" etc.
   const HOOK_RE = /ไหม[?？]?$|มั้ย[?？]?$|หรอ[?？]?$|จริงๆ[?？]?$|เคย|รู้ไหม|รู้มั้ย|คุณเคย|เชื่อไหม|[?？]$/;

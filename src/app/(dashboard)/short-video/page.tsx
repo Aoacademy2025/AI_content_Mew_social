@@ -1083,6 +1083,7 @@ export default function ShortVideoPage() {
       if (step === "keywords") {
         kws = await runKeywords();
         stocks = await runFetchStock(kws);
+
         if (isDirectMode) {
           voice = avatarDirectUrl.trim();
           pipe.current.voiceUrl = voice;
@@ -1094,6 +1095,7 @@ export default function ShortVideoPage() {
         setEditedSceneCaptions(sceneCaptions);
         toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "fetchStock") {
+        if (!kws.length) kws = await runKeywords();
         stocks = await runFetchStock(kws);
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
         const url1 = await runRender(cfg);
