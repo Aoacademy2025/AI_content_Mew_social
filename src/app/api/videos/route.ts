@@ -26,7 +26,11 @@ export async function GET() {
     function localFileExists(url: string | null): boolean {
       if (!url) return false;
       if (url.startsWith("http://") || url.startsWith("https://")) return true;
-      return fs.existsSync(path.join(publicDir, url));
+      // /api/renders/foo.mp4 → public/renders/foo.mp4
+      const filePath = url.startsWith("/api/renders/")
+        ? path.join(publicDir, "renders", url.slice("/api/renders/".length))
+        : path.join(publicDir, url);
+      return fs.existsSync(filePath);
     }
 
     // Auto-delete records where all video files are missing
