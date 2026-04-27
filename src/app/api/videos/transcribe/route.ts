@@ -51,7 +51,7 @@ function runLocalWhisper(audioPath: string): Promise<LocalWhisperResult | null> 
     const python = getPythonCmd();
     execFile(python, [WHISPER_SCRIPT, audioPath, WHISPER_MODEL], {
       maxBuffer: 20 * 1024 * 1024,
-      timeout: 240_000,  // 4 min max
+      timeout: 600_000,  // 10 min max
       env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
     }, (err, stdout, stderr) => {
       if (err) {
