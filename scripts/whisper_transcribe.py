@@ -42,7 +42,7 @@ def main():
     result = model.transcribe(
         audio_path,
         language="th",
-        word_timestamps=True,
+        word_timestamps=False,
         verbose=False,
         condition_on_previous_text=False,
         temperature=0,
