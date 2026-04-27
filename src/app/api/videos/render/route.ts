@@ -30,7 +30,7 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
   return url;
 }
 
-export const maxDuration = 600;
+export const maxDuration = 3600;
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
@@ -68,6 +68,12 @@ export async function POST(req: Request) {
     // Ensure output directory exists (moved up so cacheImageLocally can use rendersDir)
     const rendersDir = path.join(process.cwd(), "public", "renders");
     fs.mkdirSync(rendersDir, { recursive: true });
+
+    // Clean up stale Remotion bundles from /tmp to prevent disk full
+    try {
+      const { execSync } = await import("child_process");
+      execSync("find /tmp -maxdepth 1 -name 'remotion-*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true");
+    } catch {}
 
     // Derive base URL from request so Remotion's Chromium can fetch assets from Next.js server
     const reqUrl = new URL(req.url);
@@ -181,7 +187,7 @@ export async function POST(req: Request) {
       codec: "h264",
       outputLocation,
       inputProps,
-      timeoutInMilliseconds: 600000,
+      timeoutInMilliseconds: 3600000,
       concurrency: null,
       x264Preset: "ultrafast",
       jpegQuality: 80,
