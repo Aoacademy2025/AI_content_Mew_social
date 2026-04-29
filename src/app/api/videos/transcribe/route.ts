@@ -267,6 +267,7 @@ export async function POST(req: Request) {
       (preferOpenAI && !!user?.openaiKey) ||
       !!user?.openaiKey
     );
+    console.log(`[transcribe] strategy: ttsProvider=${user?.ttsProvider} hasOpenAI=${!!user?.openaiKey} hasGemini=${!!user?.geminiKey} hasServerKey=${hasServerKey} → ${useGeminiTranscribe ? "Gemini" : useOpenAITranscribe ? "OpenAI" : "LocalWhisper"}`);
 
     // Resolve local file path or download remote
     const ts = Date.now();
