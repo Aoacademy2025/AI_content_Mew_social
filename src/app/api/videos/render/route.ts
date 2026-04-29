@@ -33,6 +33,11 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 export const maxDuration = 3600;
 export const runtime = "nodejs";
 
+// Cache the Remotion webpack bundle across requests so each render reuses the same
+// 7GB bundle instead of creating a new one. Invalidated on process restart.
+let cachedBundleLocation: string | null = null;
+let cachedBundleMtime: number = 0;
+
 export async function POST(req: Request) {
   try {
     const session = await getServerSession(authOptions);
@@ -88,7 +93,22 @@ export async function POST(req: Request) {
 
 
     const entryPoint = path.resolve(process.cwd(), "src/remotion/index.tsx");
-    const bundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
+
+    // Reuse cached bundle if it still exists on disk (saves ~7GB per render)
+    const entryMtime = fs.statSync(entryPoint).mtimeMs;
+    if (
+      cachedBundleLocation &&
+      entryMtime === cachedBundleMtime &&
+      fs.existsSync(path.join(cachedBundleLocation, "index.html"))
+    ) {
+      console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
+    } else {
+      console.log("[Render] building new webpack bundle...");
+      cachedBundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
+      cachedBundleMtime = entryMtime;
+      console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
+    }
+    const bundleLocation = cachedBundleLocation;
 
     // Pre-download external image URLs so Remotion doesn't fetch them during render
     // (external URLs may expire or be rate-limited → causes white frames)
