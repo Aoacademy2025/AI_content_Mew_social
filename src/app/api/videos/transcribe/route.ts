@@ -428,7 +428,7 @@ export async function POST(req: Request) {
     // but quality varies. Use segment-level grouping for Thai; word-level for Latin scripts.
     const isThai = /[\u0E00-\u0E7F]/.test(fullText);
 
-    let captions;
+    let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number }[] = [];
 
     if (isThai || words.length === 0) {
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
