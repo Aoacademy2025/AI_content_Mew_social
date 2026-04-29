@@ -176,7 +176,11 @@ export async function POST(req: Request) {
           }
         );
 
-        if (!geminiRes.ok) throw new Error(`Gemini transcribe failed: ${geminiRes.status}`);
+        if (!geminiRes.ok) {
+          const errBody = await geminiRes.text().catch(() => "");
+          console.error("[transcribe] Gemini 404 body:", errBody.slice(0, 500));
+          throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
+        }
         const geminiData = await geminiRes.json();
         fullText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
         console.log(`[transcribe] Gemini OK — ${fullText.length} chars`);
