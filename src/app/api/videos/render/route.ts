@@ -76,7 +76,9 @@ export async function POST(req: Request) {
         // Windows does not support shell fallback commands used above.
         // Keep cleanup lightweight to avoid noisy shell failures on Windows.
       } else {
-        execSync("find /tmp -maxdepth 1 -name 'remotion-*' -mmin +30 -exec rm -rf {} + 2>/dev/null");
+        // Clean assets older than 30 min and webpack bundles older than 60 min
+        execSync("find /tmp -maxdepth 1 -name 'remotion-*assets*' -mmin +30 -exec rm -rf {} + 2>/dev/null");
+        execSync("find /tmp -maxdepth 1 -name 'remotion-webpack-bundle-*' -mmin +60 -exec rm -rf {} + 2>/dev/null");
       }
     } catch {}
 
