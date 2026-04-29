@@ -30,12 +30,16 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { geminiKey: true, openaiKey: true },
+    select: { geminiKey: true, openaiKey: true, ttsProvider: true },
   });
   let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
   let useGemini = false;
   if (!apiKey) {
-    if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+    const preferGemini = user?.ttsProvider === "gemini";
+    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
+    if (preferGemini && user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+    else if (preferOpenAI && user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+    else if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
     else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }

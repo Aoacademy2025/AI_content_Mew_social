@@ -54,10 +54,18 @@ export async function POST(req: Request) {
     if (!res.ok) {
       const err = await res.text();
       console.error("[tts-gemini] error:", res.status, err);
-      if (res.status === 401 || res.status === 403) {
+      if (res.status === 401) {
+        // API key invalid — prompt user to re-enter
         return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
       }
-      return NextResponse.json({ error: `Gemini TTS ไม่สำเร็จ (${res.status})` }, { status: 500 });
+      if (res.status === 403) {
+        // Key valid but model not enabled for this account — don't prompt for key again
+        return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้ TTS — กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio ก่อน", retryable: false }, { status: 403 });
+      }
+      if (res.status === 404) {
+        return NextResponse.json({ error: "ไม่พบ Gemini TTS model — กรุณาตรวจสอบว่า account รองรับ gemini-3.1-flash-tts-preview", retryable: false }, { status: 404 });
+      }
+      return NextResponse.json({ error: `Gemini TTS ไม่สำเร็จ (${res.status}): ${err.slice(0, 200)}` }, { status: 500 });
     }
 
     const data = await res.json();

@@ -28,11 +28,15 @@ export async function POST(req: Request) {
 
   if (!sceneList.length) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { geminiKey: true, openaiKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { geminiKey: true, openaiKey: true, ttsProvider: true } });
   let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
   let useGemini = false;
   if (!apiKey) {
-    if (user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    const preferGemini = user?.ttsProvider === "gemini";
+    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
+    if (preferGemini && user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    else if (preferOpenAI && user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
+    else if (user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
     else if (user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }

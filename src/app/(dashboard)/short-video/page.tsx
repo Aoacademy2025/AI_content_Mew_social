@@ -1096,7 +1096,9 @@ export default function ShortVideoPage() {
         setEditedSceneCaptions(sceneCaptions);
         toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "fetchStock") {
+        if (!kws.length) kws = pipe.current.keywords ?? [];
         if (!kws.length) kws = await runKeywords();
+        if (!kws.length) throw new Error("ไม่สามารถดึง keywords ได้ กรุณากด Run All ใหม่");
         stocks = await runFetchStock(kws);
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
         const url1 = await runRender(cfg);
