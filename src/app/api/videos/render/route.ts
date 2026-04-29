@@ -240,6 +240,11 @@ export async function POST(req: Request) {
     const filename = `render-${Date.now()}.mp4`;
     const outputLocation = path.join(rendersDir, filename);
 
+    const cpuCount = (await import("os")).cpus().length;
+    // concurrency: VPS often gives 2-4 CPUs — leave 1 for OS, cap at 8 to avoid memory thrash
+    const renderConcurrency = Math.max(1, Math.min(8, cpuCount - 1));
+    console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount})`);
+
     await renderMedia({
       composition,
       serveUrl: bundleLocation,
@@ -247,12 +252,15 @@ export async function POST(req: Request) {
       outputLocation,
       inputProps,
       timeoutInMilliseconds: 3600000,
-      concurrency: null,
+      concurrency: renderConcurrency,
       x264Preset: "ultrafast",
-      jpegQuality: 80,
-      chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true },
-      onProgress: ({ progress }: { progress: number }) => {
-        console.log(`[Render] ${Math.round(progress * 100)}%`);
+      jpegQuality: 70,
+      offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
+      chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true, gl: "swiftshader" },
+      onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
+        if (Math.round(progress * 100) % 5 === 0) {
+          console.log(`[Render] ${Math.round(progress * 100)}% (${renderedFrames ?? "?"} frames)`);
+        }
       },
     });
 
