@@ -72,7 +72,12 @@ export async function POST(req: Request) {
     // Clean up stale Remotion bundles from /tmp to prevent disk full
     try {
       const { execSync } = await import("child_process");
-      execSync("find /tmp -maxdepth 1 -name 'remotion-*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true");
+      if (process.platform === "win32") {
+        // Windows does not support shell fallback commands used above.
+        // Keep cleanup lightweight to avoid noisy shell failures on Windows.
+      } else {
+        execSync("find /tmp -maxdepth 1 -name 'remotion-*' -mmin +30 -exec rm -rf {} + 2>/dev/null");
+      }
     } catch {}
 
     // Derive base URL from request so Remotion's Chromium can fetch assets from Next.js server
@@ -106,17 +111,66 @@ export async function POST(req: Request) {
       if (!url) return url ?? "";
       if (!url.startsWith("/api/stocks/")) return url;
       if (stockCopyMap.has(url)) return stockCopyMap.get(url)!;
+
       const filename = url.slice("/api/stocks/".length);
       const srcPath = path.join(stocksDir, filename);
       const destPath = path.join(rendersDir, filename);
-      if (fs.existsSync(srcPath) && !fs.existsSync(destPath)) {
-        try { fs.copyFileSync(srcPath, destPath); } catch (e) {
-          console.warn(`[render] failed to copy stock file ${filename}:`, e);
+      const srcValid = fs.existsSync(srcPath) && fs.statSync(srcPath).size > 128;
+
+      // Copy stock file to public/renders/ so it survives the beforeunload cleanup
+      // and is served via /api/renders/* (Remotion only supports http(s):// URLs)
+      if (srcValid) {
+        const destExists = fs.existsSync(destPath) && fs.statSync(destPath).size === fs.statSync(srcPath).size;
+        if (!destExists) {
+          try {
+            fs.copyFileSync(srcPath, destPath);
+          } catch (e) {
+            console.warn(`[render] copy stock failed: ${filename}`, e);
+          }
         }
       }
+
       const resolved = `/api/renders/${filename}`;
       stockCopyMap.set(url, resolved);
       return resolved;
+    }
+
+    function toLocalFilePath(url: string): string | null {
+      if (!url) return null;
+      if (url.startsWith("/api/renders/")) return path.join(rendersDir, url.slice("/api/renders/".length));
+      if (url.startsWith("/renders/")) return path.join(rendersDir, url.slice("/renders/".length));
+      if (url.startsWith("/api/stocks/")) return path.join(stocksDir, url.slice("/api/stocks/".length));
+      // absolute URL pointing to our own server
+      try {
+        const u = new URL(url);
+        if (u.pathname.startsWith("/renders/")) return path.join(rendersDir, u.pathname.slice("/renders/".length));
+        if (u.pathname.startsWith("/api/renders/")) return path.join(rendersDir, u.pathname.slice("/api/renders/".length));
+      } catch {}
+      return null;
+    }
+
+    function toLocalFilePathIfInternal(url: string): string | null {
+      if (!url) return null;
+      if (url.startsWith("/api/")) return toLocalFilePath(url);
+      if (/^https?:\/\//.test(url)) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.origin === `${new URL(req.url).origin}`) {
+            return toLocalFilePath(parsed.pathname);
+          }
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
+
+    function assertExistingAsset(url: string, label: string) {
+      const localPath = toLocalFilePathIfInternal(url);
+      if (!localPath) return;
+      if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 128) {
+        throw new Error(`Missing ${label} asset: ${url}`);
+      }
     }
 
     function toAbsolute(url: string | undefined | null): string {
@@ -137,6 +191,11 @@ export async function POST(req: Request) {
           src: toAbsolute(resolveStockUrl(v.src)),
         })),
       };
+      if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
+      if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
+      for (const v of resolvedShortConfig.bgVideos ?? []) {
+        assertExistingAsset(v.src, "bg");
+      }
       console.log(`[render] copied ${stockCopyMap.size} stock file(s) to renders/`);
     }
 

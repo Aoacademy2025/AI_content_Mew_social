@@ -119,10 +119,15 @@ export function ShortVideoComposition({
       {bgVideos.flatMap((v, i) => {
         const startFrame      = Math.round(v.start * fps);
         const segDurFrames    = Math.max(1, Math.round((v.end - v.start) * fps));
-        const clipOffsetFrames = Math.round((v.clipOffset ?? 0) * fps);
         const clipDurFrames   = v.clipDuration && v.clipDuration > 0
           ? Math.max(1, Math.round(v.clipDuration * fps))
           : null;
+        const clipOffsetFrames = Math.round((v.clipOffset ?? 0) * fps);
+        const initialStartFrom = (() => {
+          if (!clipDurFrames) return 0;
+          const safe = ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames;
+          return safe;
+        })();
 
         // OffthreadVideo doesn't support loop prop — we must render one <Sequence>
         // per "loop iteration" so startFrom stays within the source clip duration.
@@ -138,7 +143,7 @@ export function ShortVideoComposition({
           if (iterDur <= 0) return null;
 
           // startFrom restarts at the clip offset for each iteration
-          const startFrom = iter === 0 ? clipOffsetFrames : 0;
+          const startFromFrame = iter === 0 ? initialStartFrom : 0;
 
           return (
             <Sequence
@@ -150,7 +155,7 @@ export function ShortVideoComposition({
               <AbsoluteFill>
                 <OffthreadVideo
                   src={v.src}
-                  startFrom={startFrom}
+                  startFrom={startFromFrame}
                   style={{
                     position: "absolute",
                     top: 0,

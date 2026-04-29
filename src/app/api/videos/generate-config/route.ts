@@ -6,6 +6,108 @@ import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePrese
 export const maxDuration = 60;
 export const runtime = "nodejs";
 
+function normalizeBgVideos(raw: BrollVideo[], audioDurationSec: number, fps: number): BrollVideo[] {
+  const minDuration = 1 / Math.max(1, fps);
+  const epsilon = 0.001;
+  const normalized: BrollVideo[] = [];
+
+  for (const seg of raw) {
+    if (!seg?.src?.trim()) continue;
+    let start = Number(seg.start);
+    let end = Number(seg.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+    start = Math.max(0, Math.min(start, audioDurationSec));
+    end = Math.min(Math.max(end, start + minDuration), audioDurationSec);
+    if (end - start < minDuration) continue;
+
+    const clipDuration = seg.clipDuration && seg.clipDuration > 0 ? Number(seg.clipDuration) : undefined;
+    const clipOffset = Number.isFinite(seg.clipOffset as number) && (seg.clipOffset ?? 0) > 0 ? (seg.clipOffset as number) : 0;
+
+    normalized.push({
+      ...seg,
+      src: seg.src.trim(),
+      start,
+      end,
+      clipDuration,
+      clipOffset,
+    });
+  }
+
+  if (!normalized.length) return [];
+
+  normalized.sort((a, b) => a.start - b.start);
+  const deduped: BrollVideo[] = [];
+
+  for (const seg of normalized) {
+    if (!deduped.length) {
+      deduped.push(seg);
+      continue;
+    }
+
+    const prev = deduped[deduped.length - 1];
+    if (seg.start < prev.end - epsilon) {
+      if (seg.src === prev.src) {
+        prev.end = Math.max(prev.end, seg.end);
+      } else {
+        seg.start = prev.end;
+      }
+    }
+
+    if (seg.end - seg.start >= minDuration) {
+      deduped.push(seg);
+    }
+  }
+
+  return deduped;
+}
+
+function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
+  const EPS = 0.01;
+  if (!raw.length) return [];
+
+  raw.sort((a, b) => a.start - b.start);
+  const filled: BrollVideo[] = [];
+  let cursor = 0;
+
+  for (const seg of raw) {
+    const start = Math.max(0, Math.min(seg.start, audioDurationSec));
+    const end = Math.min(audioDurationSec, Math.max(seg.end, start + EPS));
+
+    if (start > cursor + EPS) {
+      const filler = filled.length > 0 ? filled[filled.length - 1] : raw[0];
+      filled.push({
+        src: filler.src,
+        start: cursor,
+        end: start,
+        clipOffset: 0,
+        clipDuration: filler.clipDuration,
+      });
+    }
+
+    const safeStart = Math.max(cursor, start);
+    if (end > safeStart + EPS) {
+      filled.push({ ...seg, start: safeStart, end });
+      cursor = Math.max(cursor, end);
+    }
+  }
+
+  if (cursor < audioDurationSec - EPS) {
+    const filler = filled[filled.length - 1];
+    if (filler) {
+      filled.push({
+        src: filler.src,
+        start: cursor,
+        end: audioDurationSec,
+        clipOffset: 0,
+        clipDuration: filler.clipDuration,
+      });
+    }
+  }
+
+  return filled;
+}
+
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
 type StockVideo = { keyword: string; localUrl?: string; videoUrl: string; duration: number };
 
@@ -139,7 +241,7 @@ export async function POST(req: Request) {
   //   Map clips to script scenes by keyword, use adaptive cut cycling within each scene.
 
   const validStocks = stockVideos.filter(sv => sv.localUrl || sv.videoUrl);
-  const bgVideos: BrollVideo[] = [];
+  let bgVideos: BrollVideo[] = [];
 
   if (validStocks.length > 0) {
     const n = validStocks.length;
@@ -161,7 +263,7 @@ export async function POST(req: Request) {
           start:       i * sliceSec,
           end:         (i + 1) * sliceSec,
           clipOffset:  0,
-          clipDuration: sv.duration > 0 ? sv.duration : undefined,
+          clipDuration: sv.duration > 0 ? sv.duration : 10,
         });
       }
     } else {
@@ -261,7 +363,9 @@ export async function POST(req: Request) {
         return [
           ...shuffle(sc.filter(ok)),
           ...shuffle(other.filter(ok)),
-          ...(sc.filter(ok).length === 0 && other.filter(ok).length === 0 ? shuffle(validStocks) : []),
+          ...(sc.filter(ok).length === 0 && other.filter(ok).length === 0
+            ? shuffle(validStocks.filter((s) => s.duration > 0))
+            : []),
         ];
       }
 
@@ -274,44 +378,36 @@ export async function POST(req: Request) {
           const sv = pool[poolIdx++];
           const src = sv.localUrl ?? sv.videoUrl;
           const playable = remainingPlayable(sv);
-          const cutDur = Math.min(CUT_CYCLE[cutIdx % CUT_CYCLE.length], endSec - cursor, Math.max(1, playable));
+          const clipDuration = sv.duration > 0 ? sv.duration : 10;
+          const cutDur = Math.min(CUT_CYCLE[cutIdx % CUT_CYCLE.length], endSec - cursor, Math.max(0.5, Math.min(10, playable)));
           if (cutDur < 0.5) continue;
           const clipOffset = clipNextOffset.get(src) ?? 0;
-          bgVideos.push({ src, start: cursor, end: cursor + cutDur, clipOffset, clipDuration: sv.duration > 0 ? sv.duration : undefined });
-          clipNextOffset.set(src, clipOffset + cutDur);
+          const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+          bgVideos.push({ src, start: cursor, end: cursor + cutDur, clipOffset: safeOffset, clipDuration: sv.duration > 0 ? sv.duration : 10 });
+          const nextOffset = clipDuration > 0 ? (safeOffset + cutDur) % clipDuration : 0;
+          clipNextOffset.set(src, nextOffset);
           cursor += cutDur; cutIdx++;
         }
       }
     }
   }
 
-  // ── Gap-fill: ensure bgVideos covers [0, audioDurationSec] with no gaps ──
-  // Sort by start time, then fill any uncovered range using the nearest clip.
-  if (bgVideos.length > 0) {
-    bgVideos.sort((a, b) => a.start - b.start);
-
-    const filled: BrollVideo[] = [];
-    let cursor = 0;
-
-    for (const seg of bgVideos) {
-      if (seg.start > cursor + 0.05) {
-        // Gap before this segment — fill with previous clip or first clip
-        const filler = filled.length > 0 ? filled[filled.length - 1] : bgVideos[0];
-        filled.push({ src: filler.src, start: cursor, end: seg.start, clipOffset: 0, clipDuration: filler.clipDuration });
-      }
-      filled.push(seg);
-      cursor = Math.max(cursor, seg.end);
-    }
-
-    // Gap at the end
-    if (cursor < audioDurationSec - 0.05) {
-      const filler = filled[filled.length - 1];
-      filled.push({ src: filler.src, start: cursor, end: audioDurationSec, clipOffset: 0, clipDuration: filler.clipDuration });
-    }
-
-    bgVideos.length = 0;
-    bgVideos.push(...filled);
+  // 3. Normalize and ensure coverage: clamp invalid segment times, remove zero-length,
+  // merge/trim overlaps, and fill gaps with nearest clip so the timeline stays continuous.
+  bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
+  if (!bgVideos.length && validStocks.length > 0) {
+    const first = validStocks[0];
+    bgVideos.push({
+      src: first.localUrl ?? first.videoUrl,
+      start: 0,
+      end: audioDurationSec,
+      clipOffset: 0,
+      clipDuration: first.duration > 0 ? first.duration : 10,
+    });
   }
+
+  bgVideos = fillBgGaps(bgVideos, audioDurationSec);
+  bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
 
   const config: ShortVideoConfig = {
     bgVideos,

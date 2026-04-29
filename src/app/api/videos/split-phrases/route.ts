@@ -7,12 +7,35 @@ import { geminiGenerateText } from "@/lib/gemini";
 export const maxDuration = 30;
 export const runtime = "nodejs";
 
+const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
+const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
+
+function stripSrtArtifacts(input: string): string {
+  return input
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (l === "✕" || l === "···" || l === "..." || l === "…") return false;
+      if (SRT_ARROW_RE.test(l) || SRT_TIME_RE.test(l)) return false;
+      if (/^\d{1,6}$/.test(l)) return false;
+      if (/^(CTA|HOOK|BODY|OUTRO|INTRO)$/i.test(l)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\([^\n]{0,80}\n[^\n]{0,80}\)/g, (m) => m.replace(/\n/g, " "))
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /**
  * POST /api/videos/split-phrases
  * Body: { script: string, audioDurationMs?: number }
  * Returns: { phrases: string[], tags: ("hook"|"body"|"cta")[] }
  *
- * Uses GPT to split a Thai script into natural subtitle phrases AND tag each one.
+ * Uses LLM to rewrite thai script into natural subtitle-ready lines + tags.
+ * It is allowed to shorten/rephrase slightly, but meaning should stay intact.
  */
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -24,15 +47,16 @@ export async function POST(req: Request) {
 
   // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
   // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line
-  const script = rawScript
+  const script = stripSrtArtifacts(rawScript)
     .replace(/\.{3,}/g, "\n")          // ... → newline (split point)
-    .replace(/["""]/g, "")             // remove curly/straight double quotes
+    .replace(/["“”’「」]/g, "")  // remove all quote variants
     .split("\n")
     .map((l: string) => l.trim())
     .filter((l: string) => l.length > 0)
     .join("\n");
 
-  // ~2–5s per subtitle phrase; give ±2 flexibility so LLM isn't over-constrained
+  // Target density is generous so captions can be rewritten and merged/split naturally.
+  // ~2–4s per subtitle for short clips, longer clips tend to need more chunks.
   const durationSec = audioDurationMs ? audioDurationMs / 1000 : null;
   const minPhrases = durationSec ? Math.max(2, Math.floor(durationSec / 5)) : 2;
   const maxPhrases = durationSec ? Math.max(minPhrases + 2, Math.ceil(durationSec / 2)) : 8;
@@ -42,6 +66,7 @@ export async function POST(req: Request) {
     where: { id: session.user.id },
     select: { geminiKey: true, openaiKey: true, ttsProvider: true },
   });
+  const openAiModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
   let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
   let useGemini = false;
   if (!apiKey) {
@@ -56,7 +81,7 @@ export async function POST(req: Request) {
 
   const prompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
 
-TASK: Split the script into subtitle phrases AND tag each one.
+TASK: Rewrite this Thai script into subtitle-ready phrases and tag each one.
 
 ━━━ TAGGING RULES ━━━
 • "hook" = The OPENING attention-grabbing line(s) only — typically the FIRST 1–2 phrases that create curiosity/shock. Once the content shifts to explaining or giving value, switch to "body". Do NOT tag the whole script as hook.
@@ -70,15 +95,19 @@ TASK: Split the script into subtitle phrases AND tag each one.
 • If there is no explicit CTA in the script, do NOT force a "cta" tag.
 
 ━━━ CRITICAL ━━━
-• NEVER change, correct, or modify any word from the original script. Copy every character exactly as-is.
+• Keep core meaning, but language should be concise and natural for subtitles.
+• Remove unnecessary filler, harsh repetition, and repeated filler words if they do not add meaning.
+• It is allowed to rewrite wording/order, as long as the hook/body/cta intent stays the same.
+• Do NOT invent facts that are not in the source.
+• Keep each phrase short, spoken-style, and easy to read in 2–4 seconds.
 • EXCEPTION — SUBTITLE CLEANUP (apply to every phrase before outputting):
   - Remove leading/trailing ellipsis: "..." at start or end of a phrase → delete it
-  - Remove standalone quotation marks: " or " or " at start/end → delete them (keep if mid-phrase)
+  - Remove standalone quotation marks: leading/trailing quotes (' " « » etc.) → delete them (keep if needed in the middle)
   - After cleanup, trim whitespace from both ends of every phrase
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → target ${targetRange} phrases total
-• Each phrase = one complete thought unit (8–25 chars ideal, hard max 32 chars). If a phrase exceeds 32 chars, you MUST split it.
+• Each phrase = one complete thought unit (8–30 chars ideal, hard max 36 chars). If a phrase exceeds 36 chars, you MUST split it.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or at natural breath points (สรุป, โดย, ขณะที่, พร้อม, ระบุ, ชี้).
 • Also split at "..." (ellipsis) — treat as a breath/pause point, do NOT include the ... in the output phrase.
 • NEVER split mid-sentence just to hit a char limit.
@@ -91,6 +120,9 @@ Return ONLY valid JSON — no markdown, no explanation:
 {"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}
 
 ━━━ EXAMPLES ━━━
+Input: "มึงเคยคิดปะ ว่าความรู้ที่พวกมึงเรียนมาตั้งแต่เด็ก อาจจะเป็นแค่เรื่องโกหก"
+Output: {"phrases":["มึงเคยคิดปะว่าความรู้ที่เรียนมาตั้งแต่เด็ก อาจไม่ใช่ความจริงทั้งหมด","มึงอาจต้องกลับมาคิดใหม่"],"tags":["hook","body"]}
+
 Script: "โลกที่คุณเห็น สงครามที่คุณได้ยิน วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ ผิดสัตว์ กดติดตามไว้เลย"
 Output: {"phrases":["โลกที่คุณเห็น สงครามที่คุณได้ยิน","วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ","คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ","ผิดสัตว์","กดติดตามไว้เลย"],"tags":["hook","body","body","body","cta"]}
 
@@ -119,7 +151,7 @@ ${script.trim()}`;
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+      body: JSON.stringify({ model: openAiModel, messages: [{ role: "user", content: prompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
     });
     if (!res.ok) {
       const err = await res.text().catch(() => "");
@@ -160,10 +192,8 @@ ${script.trim()}`;
   // Post-process: clean up subtitle display artifacts
   function cleanPhrase(p: string): string {
     return p
-      .replace(/^[\s""“”"]+/, "")   // leading quotes
-      .replace(/[\s""“”"]+$/, "")   // trailing quotes
-      .replace(/^\.{2,}\s*/, "")                    // leading ellipsis ...
-      .replace(/\s*\.{2,}$/, "")                    // trailing ellipsis ...
+      .replace(/["“”’「」]/g, "")  // remove all quotes
+      .replace(/\.{2,}/g, "")  // remove all ellipsis
       .trim();
   }
 
@@ -181,7 +211,8 @@ ${script.trim()}`;
     const outThai = thaiOnly(phrases.join(""));
     const charRatio = origThai.length > 0 ? outThai.length / origThai.length : 0;
     console.log(`[split-phrases] thaiRatio=${charRatio.toFixed(3)} orig=${origThai.length} out=${outThai.length}`);
-    if (charRatio < 0.80 || charRatio > 1.15) {
+    // Rewrite is allowed, so allow more lenient ratio. Still guard against extreme edits.
+    if (charRatio < 0.45 || charRatio > 1.80) {
       console.warn(`[split-phrases] LLM dropped/added Thai text! ratio=${charRatio.toFixed(3)}\n  original: ${origThai.slice(0, 100)}\n  phrases:  ${outThai.slice(0, 100)}`);
       throw new Error("text-mismatch");
     }
@@ -198,3 +229,4 @@ ${script.trim()}`;
     return NextResponse.json({ phrases: lines, tags: fallbackTags });
   }
 }
+

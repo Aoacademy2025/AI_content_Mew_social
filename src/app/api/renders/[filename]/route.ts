@@ -34,16 +34,22 @@ export async function GET(
   const total = stat.size;
   const rangeHeader = req.headers.get("range");
 
+  const cors = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+  };
+
   if (rangeHeader) {
     const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
     if (match) {
       const start = parseInt(match[1], 10);
       const end = match[2] ? parseInt(match[2], 10) : total - 1;
       const chunkSize = end - start + 1;
-      const stream = fs.createReadStream(filePath, { start, end });
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream) chunks.push(chunk as Buffer);
-      return new NextResponse(Buffer.concat(chunks), {
+      const buf = Buffer.allocUnsafe(chunkSize);
+      const fd = fs.openSync(filePath, "r");
+      fs.readSync(fd, buf, 0, chunkSize, start);
+      fs.closeSync(fd);
+      return new NextResponse(buf, {
         status: 206,
         headers: {
           "Content-Type": contentType,
@@ -51,6 +57,7 @@ export async function GET(
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
           "Cache-Control": "public, max-age=86400",
+          ...cors,
         },
       });
     }
@@ -64,6 +71,7 @@ export async function GET(
       "Content-Length": String(total),
       "Accept-Ranges": "bytes",
       "Cache-Control": "public, max-age=86400",
+      ...cors,
     },
   });
 }

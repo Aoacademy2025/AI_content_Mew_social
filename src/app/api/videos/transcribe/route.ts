@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -10,9 +10,147 @@ import { geminiGenerateText } from "@/lib/gemini";
 
 export const maxDuration = 300;  // local Whisper can take longer
 
+const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
+const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
+
+function stripSrtArtifacts(input: string): string {
+  return input
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (l === "✕" || l === "···" || l === "..." || l === "…") return false;
+      if (SRT_ARROW_RE.test(l) || SRT_TIME_RE.test(l)) return false;
+      if (/^\d{1,6}$/.test(l)) return false;
+      if (/^(CTA|HOOK|BODY|OUTRO|INTRO)$/i.test(l)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\([^\n]{0,80}\n[^\n]{0,80}\)/g, (m) => m.replace(/\n/g, " "))
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sanitizeTranscriptionText(input: string): string {
+  if (!input) return "";
+  const filtered = stripSrtArtifacts(input);
+  return filtered
+    .replace(/\r/g, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/^\s*[·•…]{2,}\s*$/gm, "")
+    .replace(/^\s*✕\s*$/gm, "")
+    .replace(/\"{2,}/g, "")
+    .replace(/\.{2,}/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function sanitizePhraseText(input: string): string {
+  return sanitizeTranscriptionText(input)
+    .replace(/^[·•…]{2,}$/g, "")
+    .replace(/^\s*✕+\s*$/g, "")
+    .replace(/["“”'’]/g, "")
+    .replace(/\.{2,}/g, "")
+    .trim();
+}
+
+function normalizeForCompare(input: string): string {
+  return sanitizeTranscriptionText(input)
+    .replace(/\s+/g, "")
+    .replace(/[.,!?·•…฿"'\-–—()]/g, "");
+}
+
+function splitTextByTargetLen(input: string, targetLen: number, minChunk: number): string[] {
+  const text = sanitizeTranscriptionText(input);
+  if (!text) return [];
+
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  const maxLen = Math.max(minChunk, Math.floor(targetLen));
+
+  if (tokens.length <= 1) {
+    let chunk = "";
+    for (const ch of [...text]) {
+      chunk += ch;
+      if (chunk.replace(/\s+/g, "").length >= maxLen && /\s/.test(ch)) {
+        out.push(chunk.trim());
+        chunk = "";
+      }
+    }
+    if (chunk.trim()) out.push(chunk.trim());
+    if (out.length <= 1 && text.length > maxLen * 1.4) {
+      const chars = [...text];
+      const fixed: string[] = [];
+      for (let i = 0; i < chars.length; i += maxLen) {
+        fixed.push(chars.slice(i, i + maxLen).join("").trim());
+      }
+      return fixed.filter(Boolean);
+    }
+    return out;
+  }
+
+  let line = "";
+  for (const tok of tokens) {
+    const next = line ? `${line} ${tok}` : tok;
+    if (line && next.replace(/\s+/g, "").length > maxLen) {
+      out.push(line.trim());
+      line = tok;
+    } else {
+      line = next;
+    }
+  }
+  if (line.trim()) out.push(line.trim());
+  return out;
+}
+
+function expandPhrasesToTargetDensity(phrases: string[], targetCount: number, fallbackText: string): string[] {
+  if (!Array.isArray(phrases) || phrases.length === 0) return [];
+  if (phrases.length >= targetCount) return phrases;
+  const combined = sanitizeTranscriptionText(phrases.join(" "));
+  const source = combined || sanitizeTranscriptionText(fallbackText);
+  if (!source) return phrases;
+  const targetLen = Math.max(10, Math.floor(source.replace(/\s+/g, "").length / targetCount));
+  return splitTextByTargetLen(source, targetLen, 10);
+}
+
+function parseSplitPhrasesFromRaw(raw: string): string[] {
+  if (!raw) return [];
+  try {
+    const stripped = raw
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/g, "")
+      .trim();
+    const match = stripped.match(/\{[\s\S]*\}/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]);
+    const arr = Array.isArray(parsed?.phrases) ? parsed.phrases : [];
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((p): p is string => typeof p === "string")
+      .map((p) => sanitizePhraseText(p))
+      .filter((p) => p.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
+}
+
+function getFfprobePath(): string {
+  const ext = process.platform === "win32" ? ".exe" : "";
+  const ffmpegDir = path.join(
+    process.cwd(),
+    "node_modules",
+    "@ffmpeg-installer",
+    `${process.platform}-${process.arch}`,
+  );
+  const probe = path.join(ffmpegDir, `ffprobe${ext}`);
+  if (fs.existsSync(probe)) return probe;
+  return path.join(ffmpegDir, `ffmpeg${ext}`);
 }
 
 function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: string): Promise<void> {
@@ -24,6 +162,33 @@ function extractAudioMp3(ffmpegPath: string, inputPath: string, outputPath: stri
     ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
       if (err) reject(new Error(`ffmpeg audio extract failed: ${err.message}\n${stderr?.slice(-300)}`));
       else resolve();
+    });
+  });
+}
+
+function getAudioDurationMs(audioPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = getFfprobePath();
+    if (!fs.existsSync(probe)) return reject(new Error("ffprobe/ffmpeg not found"));
+
+    if (probe.toLowerCase().includes("ffprobe")) {
+      execFile(probe, [
+        "-v", "error", "-show_entries", "format=duration",
+        "-of", "csv=p=0", audioPath,
+      ], (err, stdout) => {
+        if (err) return reject(err);
+        const sec = parseFloat(stdout.trim());
+        if (!Number.isFinite(sec)) return reject(new Error("Could not parse duration"));
+        resolve(Math.max(1, Math.round(sec * 1000)));
+      });
+      return;
+    }
+
+    execFile(probe, ["-i", audioPath, "-f", "null", "-"], { maxBuffer: 5 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+      if (!m) return reject(new Error("Could not parse duration from ffmpeg"));
+      const ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) * 1000 + parseInt(m[4], 10) * 10;
+      resolve(Math.max(1, ms));
     });
   });
 }
@@ -142,6 +307,13 @@ export async function POST(req: Request) {
       if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
       return NextResponse.json({ error: "ไม่สามารถแกะเสียงจากไฟล์ได้" }, { status: 500 });
     }
+    let sourceAudioDurationMs = 0;
+    try {
+      sourceAudioDurationMs = await getAudioDurationMs(mp3Path);
+      console.log(`[transcribe] source audio duration ${sourceAudioDurationMs}ms`);
+    } catch (e) {
+      console.warn("[transcribe] failed to read mp3 duration:", e);
+    }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
 
     type WhisperWord = { word: string; start: number; end: number };
@@ -259,35 +431,42 @@ export async function POST(req: Request) {
     let captions;
 
     if (isThai || words.length === 0) {
-      const sourceText: string = (typeof script === "string" && script.trim().length > 0)
+      const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
         ? script.trim() : fullText;
-      const audioDur = segments.length > 0
-        ? segments[segments.length - 1].end
-        : words.length > 0
-          ? words[words.length - 1].end
-          : 30; // reasonable fallback
+      const sourceText = sanitizeTranscriptionText(sourceRaw);
+      const fallbackDur = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 1000 : 30;
+      const audioDur = Math.max(
+        segments.length > 0 ? segments[segments.length - 1].end : 0,
+        words.length > 0 ? words[words.length - 1].end : 0,
+        fallbackDur
+      );
 
       // ── Step 1: Get phrases from GPT (split script into natural subtitle lines) ──
       let phrases: string[] = [];
+      let minPhrases = 4;
+      let maxPhrases = 6;
+      const openAiSplitModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
 
       if (apiKey) {
         try {
           const durationSec = audioDur;
-          const minPhrases = Math.max(2, Math.floor(durationSec / 5));
-          const maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
+          const sourceLen = sourceText.replace(/\s+/g, "").length;
+          minPhrases = Math.max(4, Math.floor(durationSec / 5));
+          maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
 
           const splitPrompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
 
-TASK: Split the script into natural subtitle phrases.
+TASK: Rewrite the script into short natural subtitle phrases.
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = one complete thought unit (8–30 chars).
+• Each phrase = one complete thought unit (8–30 chars ideal, hard max 36 chars).
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง).
 • NEVER split mid-sentence just to hit a char limit.
 • Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
 • NEVER split a date expression — keep "วันที่ 13 เมษายน 2569", "13 เมษายน 2569" as ONE phrase each.
-• NEVER change, correct, or modify any word from the original script. Copy every character exactly as-is.
+• Keep core meaning but rewrite wording for subtitle readability.
+• Do NOT invent facts not present in the source.
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
@@ -301,9 +480,7 @@ ${sourceText.trim()}`;
             try {
               const raw = await geminiGenerateText(apiKey, splitPrompt, 4096);
               console.log(`[transcribe] Gemini split raw:`, raw.slice(0, 300));
-              const stripped = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-              const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-              gptRawText = jsonMatch ? jsonMatch[0] : stripped;
+              gptRawText = parseSplitPhrasesFromRaw(raw).length > 0 ? raw : "{}";
             } catch (e) {
               console.warn("[transcribe] Gemini split failed:", e);
             }
@@ -311,7 +488,7 @@ ${sourceText.trim()}`;
             const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
               method: "POST",
               headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: splitPrompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+              body: JSON.stringify({ model: openAiSplitModel, messages: [{ role: "user", content: splitPrompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
             });
             if (gptRes.ok) {
               const d = await gptRes.json();
@@ -321,14 +498,13 @@ ${sourceText.trim()}`;
 
           if (gptRawText !== "{}") {
             try {
-              const parsed = JSON.parse(gptRawText);
-              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : [];
-              const normalize = (s: string) => s.replace(/\s+/g, "").replace(/[.,!?。、฿"'\-–—]/g, "");
-              const origStripped = normalize(sourceText);
-              const outStripped = normalize(raw.join(""));
+              const raw = parseSplitPhrasesFromRaw(gptRawText);
+              const origStripped = normalizeForCompare(sourceText);
+              const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
-              if (raw.length > 0 && charRatio >= 0.90 && charRatio <= 1.05) {
-                phrases = raw.map((p: string) => p.trim()).filter(Boolean);
+              if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
+                const expanded = expandPhrasesToTargetDensity(raw, minPhrases, sourceText);
+                phrases = expanded.length > 0 ? expanded : raw;
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
@@ -340,6 +516,10 @@ ${sourceText.trim()}`;
         } catch (e) {
           console.warn("[transcribe] LLM split failed:", e);
         }
+      }
+
+      if (phrases.length > 0 && phrases.length < minPhrases) {
+        phrases = expandPhrasesToTargetDensity(phrases, minPhrases, sourceText);
       }
 
       // ── Fallback: split by sentence punctuation or newlines ─────────────────
@@ -391,6 +571,9 @@ ${sourceText.trim()}`;
           phrases.push(cur);
         }
         console.log(`[transcribe] fallback split → ${phrases.length} phrases`);
+        if (phrases.length > 0 && phrases.length < minPhrases) {
+          phrases = expandPhrasesToTargetDensity(phrases, minPhrases, sourceText);
+        }
       }
 
       // ── Step 2: Align phrases → Whisper timestamps ──────────────────────────
@@ -463,7 +646,8 @@ ${sourceText.trim()}`;
           const endFrac = cumChars / totalPhraseChars;
           const startSec = timeAtFrac(startFrac);
           const endSec   = timeAtFrac(endFrac);
-          result.push({ text: phrases[i], startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
+          const cleanedText = phrases[i].replace(/["""'’]/g, "").replace(/\.{2,}/g, "").trim();
+          result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
         }
 
         // Pin first caption to 0 and last to audioDur
@@ -551,7 +735,22 @@ ${sourceText.trim()}`;
       endMs: Math.round(w.end * 1000),
     }));
 
-    return NextResponse.json({ captions, segments: rawSegments, words: wordTimestamps, fullText });
+    const safeFullText = sanitizeTranscriptionText(fullText);
+    const resolvedDurationMs = Math.max(
+      sourceAudioDurationMs,
+      captions.at(-1)?.endMs ?? 0,
+      rawSegments.at(-1)?.endMs ?? 0,
+      wordTimestamps.at(-1)?.endMs ?? 0,
+      1000,
+    );
+
+    return NextResponse.json({
+      captions,
+      segments: rawSegments,
+      words: wordTimestamps,
+      fullText: safeFullText,
+      audioDurationMs: resolvedDurationMs,
+    });
   } catch (error) {
     return apiError({ route: "videos/transcribe", error, notifyUser: true });
   }

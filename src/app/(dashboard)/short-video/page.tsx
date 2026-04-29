@@ -557,8 +557,12 @@ export default function ShortVideoPage() {
 
     const whisperWords: { word: string; startMs: number; endMs: number }[] = txData.words ?? [];
     const captions: Caption[] = txData.captions ?? [];
+    const durationFromServerRaw = Number(txData.audioDurationMs);
+    const durationFromServer = Number.isFinite(durationFromServerRaw) ? durationFromServerRaw : 0;
 
-    const audioDurationMs = whisperWords.length
+    const audioDurationMs = durationFromServer > 0
+      ? durationFromServer
+      : whisperWords.length
       ? whisperWords[whisperWords.length - 1].endMs
       : captions.length
         ? Math.max(...captions.map(c => c.endMs))
@@ -571,6 +575,7 @@ export default function ShortVideoPage() {
     let sceneCaptions: Caption[] = [];
 
     // Get tags from split-phrases
+    const splitTagByIndex: ("hook" | "body" | "cta")[] = [];
     const tagMap = new Map<string, "hook" | "body" | "cta">();
     try {
       const splitRes = await fetch("/api/videos/split-phrases", {
@@ -583,6 +588,7 @@ export default function ShortVideoPage() {
         const splitData = await splitRes.json();
         const spPhrases: string[] = splitData.phrases ?? [];
         const spTags: ("hook" | "body" | "cta")[] = splitData.tags ?? [];
+        splitTagByIndex.push(...spTags);
         spPhrases.forEach((p: string, i: number) => tagMap.set(p.trim(), spTags[i] ?? "body"));
       }
     } catch { /* non-critical */ }
@@ -598,6 +604,7 @@ export default function ShortVideoPage() {
             if (phrase.startsWith(t) || t.startsWith(phrase)) { tag = pt; break; }
           }
         }
+        if (!tag && i < splitTagByIndex.length) tag = splitTagByIndex[i];
         if (!tag) tag = i === 0 ? "hook" : "body";
         return { ...cap, tag };
       });
