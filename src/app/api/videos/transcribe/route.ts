@@ -88,13 +88,20 @@ export async function POST(req: Request) {
       select: { openaiKey: true, geminiKey: true, ttsProvider: true },
     });
 
-    // Mirror the same priority as Extract Keywords (LLM):
-    // ttsProvider=gemini → Gemini first; ttsProvider=elevenlabs/openai → OpenAI first;
-    // fallback: whichever key exists (gemini beats openai when both present)
-    const preferGemini = user?.ttsProvider === "gemini";
-    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
-    const useGeminiTranscribe = (preferGemini && !!user?.geminiKey) || (!preferOpenAI && !!user?.geminiKey);
-    const useOpenAITranscribe = !useGeminiTranscribe && ((preferOpenAI && !!user?.openaiKey) || !!user?.openaiKey);
+    // Use the exact same model selection as Extract Keywords (LLM) step 1:
+    // SERVER_OPENAI_API_KEY → OpenAI; else ttsProvider drives preference; else whichever key exists
+    const hasServerKey = !!process.env.SERVER_OPENAI_API_KEY;
+    const preferGemini = !hasServerKey && user?.ttsProvider === "gemini";
+    const preferOpenAI = !hasServerKey && (user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai");
+    const useGeminiTranscribe = !hasServerKey && (
+      (preferGemini && !!user?.geminiKey) ||
+      (!preferOpenAI && !!user?.geminiKey)
+    );
+    const useOpenAITranscribe = !useGeminiTranscribe && (
+      hasServerKey ||
+      (preferOpenAI && !!user?.openaiKey) ||
+      !!user?.openaiKey
+    );
 
     // Resolve local file path or download remote
     const ts = Date.now();
@@ -180,7 +187,8 @@ export async function POST(req: Request) {
     } else if (useOpenAITranscribe) {
       // ── Strategy 2: OpenAI Whisper API ──
       console.log("[transcribe] using OpenAI Whisper API...");
-      const apiKey = Buffer.from(user!.openaiKey!, "base64").toString("utf-8");
+      const rawKey = process.env.SERVER_OPENAI_API_KEY ?? (user?.openaiKey ? Buffer.from(user.openaiKey, "base64").toString("utf-8") : "");
+      const apiKey = rawKey;
       const audioBuffer = fs.readFileSync(mp3Path);
       try { fs.unlinkSync(mp3Path); } catch {}
       const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
