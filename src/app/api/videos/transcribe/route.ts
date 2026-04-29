@@ -88,8 +88,13 @@ export async function POST(req: Request) {
       select: { openaiKey: true, geminiKey: true, ttsProvider: true },
     });
 
-    const useGeminiTranscribe = user?.ttsProvider === "gemini" && !!user?.geminiKey;
-    const useOpenAITranscribe = (user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai") && !!user?.openaiKey;
+    // Mirror the same priority as Extract Keywords (LLM):
+    // ttsProvider=gemini → Gemini first; ttsProvider=elevenlabs/openai → OpenAI first;
+    // fallback: whichever key exists (gemini beats openai when both present)
+    const preferGemini = user?.ttsProvider === "gemini";
+    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
+    const useGeminiTranscribe = (preferGemini && !!user?.geminiKey) || (!preferOpenAI && !!user?.geminiKey);
+    const useOpenAITranscribe = !useGeminiTranscribe && ((preferOpenAI && !!user?.openaiKey) || !!user?.openaiKey);
 
     // Resolve local file path or download remote
     const ts = Date.now();
