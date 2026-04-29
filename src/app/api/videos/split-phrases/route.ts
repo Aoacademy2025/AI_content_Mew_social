@@ -61,11 +61,16 @@ TASK: Split the script into subtitle phrases AND tag each one.
 
 ━━━ CRITICAL ━━━
 • NEVER change, correct, or modify any word from the original script. Copy every character exactly as-is.
+• EXCEPTION — SUBTITLE CLEANUP (apply to every phrase before outputting):
+  - Remove leading/trailing ellipsis: "..." at start or end of a phrase → delete it
+  - Remove standalone quotation marks: " or " or " at start/end → delete them (keep if mid-phrase)
+  - After cleanup, trim whitespace from both ends of every phrase
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → target ${targetRange} phrases total
-• Each phrase = one complete thought unit (8–30 chars). If a phrase exceeds 35 chars, you MUST split it.
+• Each phrase = one complete thought unit (8–25 chars ideal, hard max 32 chars). If a phrase exceeds 32 chars, you MUST split it.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or at natural breath points (สรุป, โดย, ขณะที่, พร้อม, ระบุ, ชี้).
+• Also split at "..." (ellipsis) — treat as a breath/pause point, do NOT include the ... in the output phrase.
 • NEVER split mid-sentence just to hit a char limit.
 • Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
 • Long sentences with numbers/stats: split before/after each stat unit — e.g. "กว่า 1.11 ล้านคน-เที่ยว" is one unit, "สรุปยอดสะสม 7 วัน" is another.
@@ -142,9 +147,21 @@ ${script.trim()}`;
     return tags;
   }
 
+  // Post-process: clean up subtitle display artifacts
+  function cleanPhrase(p: string): string {
+    return p
+      .replace(/^[\s""“”"]+/, "")   // leading quotes
+      .replace(/[\s""“”"]+$/, "")   // trailing quotes
+      .replace(/^\.{2,}\s*/, "")                    // leading ellipsis ...
+      .replace(/\s*\.{2,}$/, "")                    // trailing ellipsis ...
+      .trim();
+  }
+
   try {
     const parsed = JSON.parse(text);
-    const phrases: string[] = Array.isArray(parsed.phrases) ? parsed.phrases.map((p: string) => p.trim()).filter(Boolean) : [];
+    const phrases: string[] = Array.isArray(parsed.phrases)
+      ? parsed.phrases.map((p: string) => cleanPhrase(p)).filter(Boolean)
+      : [];
 
     if (phrases.length === 0) throw new Error("empty");
 
@@ -165,7 +182,7 @@ ${script.trim()}`;
     return NextResponse.json({ phrases, tags: normalizedTags });
   } catch {
     // Fallback: split by newlines, auto-tag based on content
-    const lines = script.trim().split(/\n+/).map((s: string) => s.trim()).filter(Boolean);
+    const lines = script.trim().split(/\n+/).map((s: string) => cleanPhrase(s)).filter(Boolean);
     const fallbackTags = autoTag(lines);
     console.log(`[split-phrases] fallback: ${lines.length} lines, tags:`, fallbackTags);
     return NextResponse.json({ phrases: lines, tags: fallbackTags });
