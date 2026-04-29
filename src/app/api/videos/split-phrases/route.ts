@@ -19,8 +19,18 @@ export async function POST(req: Request) {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { script, audioDurationMs } = body ?? {};
-  if (!script?.trim()) return NextResponse.json({ error: "script required" }, { status: 400 });
+  const { script: rawScript, audioDurationMs } = body ?? {};
+  if (!rawScript?.trim()) return NextResponse.json({ error: "script required" }, { status: 400 });
+
+  // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
+  // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line
+  const script = rawScript
+    .replace(/\.{3,}/g, "\n")          // ... → newline (split point)
+    .replace(/["""]/g, "")             // remove curly/straight double quotes
+    .split("\n")
+    .map((l: string) => l.trim())
+    .filter((l: string) => l.length > 0)
+    .join("\n");
 
   // ~2–5s per subtitle phrase; give ±2 flexibility so LLM isn't over-constrained
   const durationSec = audioDurationMs ? audioDurationMs / 1000 : null;
