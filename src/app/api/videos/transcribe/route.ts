@@ -85,8 +85,11 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { openaiKey: true, geminiKey: true },
+      select: { openaiKey: true, geminiKey: true, ttsProvider: true },
     });
+
+    const useGeminiTranscribe = user?.ttsProvider === "gemini" && !!user?.geminiKey;
+    const useOpenAITranscribe = (user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai") && !!user?.openaiKey;
 
     // Resolve local file path or download remote
     const ts = Date.now();
@@ -135,36 +138,47 @@ export async function POST(req: Request) {
     let segments: WhisperSegment[] = [];
     let fullText = "";
 
-    // ── Strategy 1: Local Whisper (free, better Thai accuracy) ──
-    console.log(`[transcribe] trying local Whisper (model=${WHISPER_MODEL})...`);
-    const localResult = await runLocalWhisper(mp3Path);
+    if (useGeminiTranscribe) {
+      // ── Strategy 1: Gemini Audio Transcribe ──
+      console.log("[transcribe] using Gemini transcribe...");
+      try {
+        const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
+        const audioBuffer = fs.readFileSync(mp3Path);
+        try { fs.unlinkSync(mp3Path); } catch {}
+        const audioB64 = audioBuffer.toString("base64");
 
-    if (localResult && (localResult.words.length > 0 || localResult.segments.length > 0)) {
-      console.log(`[transcribe] local Whisper OK — ${localResult.words.length} words, ${localResult.segments.length} segs`);
-      words    = localResult.words;
-      segments = localResult.segments;
-      fullText = localResult.text;
-      try { fs.unlinkSync(mp3Path); } catch {}
-    } else {
-      // Local Whisper failed — always ask user to retry, never prompt for OpenAI key
-      try { fs.unlinkSync(mp3Path); } catch {}
-      return NextResponse.json({ error: "Whisper ไม่สำเร็จ กรุณากด Transcribe ใหม่อีกครั้ง", retryable: true }, { status: 503 });
-    }
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: `Transcribe this Thai audio exactly word-for-word. Return ONLY the transcribed text, no explanation, no translation.\n${script ? `Reference script (do NOT modify): ${script.trim()}` : ""}` },
+                  { inlineData: { mimeType: "audio/mp3", data: audioB64 } },
+                ],
+              }],
+              generationConfig: { temperature: 0 },
+            }),
+          }
+        );
 
-    if (false) {
-      // ── OpenAI fallback disabled — kept for reference only ──
-      let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
-      if (!apiKey) {
-        if (!user?.openaiKey) {
-          return NextResponse.json({ error: "OpenAI API key not set", missingKey: "openai" }, { status: 400 });
-        }
-        apiKey = Buffer.from(user!.openaiKey!, "base64").toString("utf-8");
+        if (!geminiRes.ok) throw new Error(`Gemini transcribe failed: ${geminiRes.status}`);
+        const geminiData = await geminiRes.json();
+        fullText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+        console.log(`[transcribe] Gemini OK — ${fullText.length} chars`);
+      } catch (e) {
+        console.error("[transcribe] Gemini transcribe error:", e);
+        return NextResponse.json({ error: "Gemini transcribe ไม่สำเร็จ กรุณาลองใหม่", retryable: true }, { status: 503 });
       }
-
+    } else if (useOpenAITranscribe) {
+      // ── Strategy 2: OpenAI Whisper API ──
+      console.log("[transcribe] using OpenAI Whisper API...");
+      const apiKey = Buffer.from(user!.openaiKey!, "base64").toString("utf-8");
       const audioBuffer = fs.readFileSync(mp3Path);
       try { fs.unlinkSync(mp3Path); } catch {}
       const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
-
       const form = new FormData();
       form.append("file", audioBlob, "audio.mp3");
       form.append("model", "whisper-1");
@@ -178,17 +192,29 @@ export async function POST(req: Request) {
         headers: { Authorization: `Bearer ${apiKey}` },
         body: form,
       });
-
       if (!whisperRes.ok) {
         const err = await whisperRes.text();
-        return apiError({ route: "videos/transcribe", error: new Error(err), notifyUser: true });
+        return NextResponse.json({ error: `OpenAI Whisper ไม่สำเร็จ: ${err.slice(0, 200)}` }, { status: 500 });
       }
-
       const data = await whisperRes.json();
       words    = data.words    ?? [];
       segments = data.segments ?? [];
       fullText = data.text     ?? "";
-      console.log(`[transcribe] OpenAI Whisper OK — ${words.length} words, ${segments.length} segs`);
+      console.log(`[transcribe] OpenAI Whisper OK — ${words.length} words`);
+    } else {
+      // ── Strategy 3: Local Whisper (fallback) ──
+      console.log(`[transcribe] trying local Whisper (model=${WHISPER_MODEL})...`);
+      const localResult = await runLocalWhisper(mp3Path);
+      if (localResult && (localResult.words.length > 0 || localResult.segments.length > 0)) {
+        console.log(`[transcribe] local Whisper OK — ${localResult.words.length} words, ${localResult.segments.length} segs`);
+        words    = localResult.words;
+        segments = localResult.segments;
+        fullText = localResult.text;
+        try { fs.unlinkSync(mp3Path); } catch {}
+      } else {
+        try { fs.unlinkSync(mp3Path); } catch {}
+        return NextResponse.json({ error: "Whisper ไม่สำเร็จ กรุณากด Transcribe ใหม่อีกครั้ง", retryable: true }, { status: 503 });
+      }
     }
 
     // ── Get LLM key for subtitle splitting (Gemini preferred, fallback OpenAI) ──
