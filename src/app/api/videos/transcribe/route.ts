@@ -253,20 +253,28 @@ export async function POST(req: Request) {
       select: { openaiKey: true, geminiKey: true, ttsProvider: true },
     });
 
-    // Use the exact same model selection as Extract Keywords (LLM) step 1:
-    // SERVER_OPENAI_API_KEY → OpenAI; else ttsProvider drives preference; else whichever key exists
+    // Mirror Extract Keywords (LLM) step 1 strategy exactly:
+    //   1. SERVER_OPENAI_API_KEY (if set) → OpenAI
+    //   2. preferGemini (ttsProvider=gemini) + geminiKey → Gemini
+    //   3. preferOpenAI (ttsProvider=elevenlabs/openai) + openaiKey → OpenAI
+    //   4. fallback: whichever key user has (geminiKey takes priority)
     const hasServerKey = !!process.env.SERVER_OPENAI_API_KEY;
-    const preferGemini = !hasServerKey && user?.ttsProvider === "gemini";
-    const preferOpenAI = !hasServerKey && (user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai");
-    const useGeminiTranscribe = !hasServerKey && (
-      (preferGemini && !!user?.geminiKey) ||
-      (!preferOpenAI && !!user?.geminiKey)
-    );
-    const useOpenAITranscribe = !useGeminiTranscribe && (
-      hasServerKey ||
-      (preferOpenAI && !!user?.openaiKey) ||
-      !!user?.openaiKey
-    );
+    const preferGemini = user?.ttsProvider === "gemini";
+    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
+
+    let useGeminiTranscribe = false;
+    let useOpenAITranscribe = false;
+    if (hasServerKey) {
+      useOpenAITranscribe = true;
+    } else if (preferGemini && user?.geminiKey) {
+      useGeminiTranscribe = true;
+    } else if (preferOpenAI && user?.openaiKey) {
+      useOpenAITranscribe = true;
+    } else if (user?.geminiKey) {
+      useGeminiTranscribe = true;
+    } else if (user?.openaiKey) {
+      useOpenAITranscribe = true;
+    }
     console.log(`[transcribe] strategy: ttsProvider=${user?.ttsProvider} hasOpenAI=${!!user?.openaiKey} hasGemini=${!!user?.geminiKey} hasServerKey=${hasServerKey} → ${useGeminiTranscribe ? "Gemini" : useOpenAITranscribe ? "OpenAI" : "LocalWhisper"}`);
 
     // Resolve local file path or download remote
