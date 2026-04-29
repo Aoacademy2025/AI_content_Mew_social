@@ -178,14 +178,24 @@ export async function POST(req: Request) {
 
         if (!geminiRes.ok) {
           const errBody = await geminiRes.text().catch(() => "");
-          console.error("[transcribe] Gemini 404 body:", errBody.slice(0, 500));
+          console.error("[transcribe] Gemini error body:", errBody.slice(0, 500));
+          if (geminiRes.status === 401 || geminiRes.status === 403) {
+            throw { status: geminiRes.status, body: errBody };
+          }
           throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
         }
         const geminiData = await geminiRes.json();
         fullText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
         console.log(`[transcribe] Gemini OK — ${fullText.length} chars`);
-      } catch (e) {
+      } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
+        const status = (e as { status?: number })?.status;
+        if (status === 401) {
+          return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
+        }
+        if (status === 403) {
+          return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้งาน กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio", retryable: false }, { status: 403 });
+        }
         return NextResponse.json({ error: "Gemini transcribe ไม่สำเร็จ กรุณาลองใหม่", retryable: true }, { status: 503 });
       }
     } else if (useOpenAITranscribe) {

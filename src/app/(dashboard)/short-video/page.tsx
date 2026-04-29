@@ -413,19 +413,17 @@ export default function ShortVideoPage() {
     err: unknown,
     fallbackRetry: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline"
   ): boolean {
-    // Detect key type from error
+    // If server explicitly says retryable=false → not a key problem, just show toast
+    if (err instanceof ApiCallError && err.data.retryable === false) return false;
+
+    // Only open modal if server sent missingKey field (explicit) — don't guess from error string
     let keyType = null;
     if (err instanceof ApiCallError) {
       keyType = detectMissingKeyType(err.data);
     }
-    if (!keyType) {
-      const raw = err instanceof Error ? err.message : String(err);
-      keyType = detectMissingKeyType(raw);
-    }
     if (!keyType) return false;
 
     // Find which step is currently "running" — that's the step that failed
-    // Use stepsRef (not steps state) to get the latest value inside async closures
     const runningStep = (Object.keys(stepsRef.current) as (keyof StepState)[])
       .find(k => stepsRef.current[k] === "running");
     const retryStep = runningStep ?? fallbackRetry;
