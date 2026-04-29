@@ -241,8 +241,10 @@ export async function POST(req: Request) {
     const outputLocation = path.join(rendersDir, filename);
 
     const cpuCount = (await import("os")).cpus().length;
-    // concurrency: VPS often gives 2-4 CPUs — leave 1 for OS, cap at 8 to avoid memory thrash
-    const renderConcurrency = Math.max(1, Math.min(8, cpuCount - 1));
+    // On low-CPU VPS (1-2 cores), 1:1 concurrency is too low — Chromium frame-render
+    // is partly I/O bound (waiting on assets, layout), so 2x cores is a sweet spot.
+    // On 4+ core machines, leave 1 for OS to avoid stalls.
+    const renderConcurrency = cpuCount <= 2 ? cpuCount * 2 : Math.max(1, Math.min(8, cpuCount - 1));
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount})`);
 
     await renderMedia({
