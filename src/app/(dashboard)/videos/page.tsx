@@ -70,7 +70,7 @@ export default function VideosGalleryPage() {
   function daysLeft(expiresAt: string | null): number | null {
     if (!expiresAt) return null;
     const diff = new Date(expiresAt).getTime() - Date.now();
-    return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+    return Math.ceil(diff / (1000 * 60 * 60 * 24)); // negative = already expired
   }
 
   const btnStyle: React.CSSProperties = {
@@ -312,9 +312,9 @@ function VideoCard({
             {new Date(video.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
           </p>
           {daysLeft !== null && (
-            <p className={`text-[10px] font-semibold flex items-center gap-0.5 ${daysLeft <= 1 ? "text-red-400" : daysLeft <= 3 ? "text-orange-400" : "text-white/40"}`}>
+            <p className={`text-[10px] font-semibold flex items-center gap-0.5 ${daysLeft <= 0 ? "text-red-400" : daysLeft <= 3 ? "text-orange-400" : "text-white/40"}`}>
               <Clock className="h-2.5 w-2.5" />
-              {daysLeft === 0 ? "หมดวันนี้" : `${daysLeft}ว`}
+              {daysLeft <= 0 ? "หมดอายุแล้ว" : daysLeft === 1 ? "หมดวันนี้" : `${daysLeft}ว`}
             </p>
           )}
         </div>
