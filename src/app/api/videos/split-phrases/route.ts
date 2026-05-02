@@ -48,9 +48,10 @@ export async function POST(req: Request) {
   // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
   // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line
   const script = stripSrtArtifacts(rawScript)
-    .replace(/\([A-Za-z][^)]{0,40}\)/g, "")
+    .replace(/\([A-Za-z][^)]{0,60}\)/g, "")               // single-line English parentheticals
+    .replace(/\([A-Za-z][^\n)]{0,30}\n[^\n)]{0,30}\)/g, "") // multi-line e.g. (Fractional\nExcitons)
     .replace(/\.{3,}/g, "\n")
-    .replace(/["""''`「」"']/g, "")
+    .replace(/["""''`""''「」]/g, "")
     .split("\n")
     .map((l: string) => l.trim())
     .filter((l: string) => l.length > 0)

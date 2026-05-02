@@ -134,8 +134,10 @@ export default function ShortVideoPage() {
   // Preprocess script: trim each line, collapse 2+ blank lines to single newline, keep paragraph breaks
   function preprocessScript(raw: string): string {
     return raw
-      .replace(/\.{3,}/g, "\n")           // ... → newline (split point, mirrors server)
-      .replace(/["""'「」“”]/g, "") // strip quotes (mirrors server)
+      .replace(/\([A-Za-z][^)]{0,60}\)/g, "")    // remove English parentheticals (Anyons) single-line
+      .replace(/\([A-Za-z][^\n)]{0,30}\n[^\n)]{0,30}\)/g, "")  // multi-line e.g. (Fractional\nExcitons)
+      .replace(/\.{3,}/g, "\n")
+      .replace(/["'"]/g, "")
       .split(/\n/)
       .map(line => line.trim())
       .filter(line => line.length > 0)
