@@ -196,7 +196,8 @@ ${script.trim()}`;
     const charRatio = origThai.length > 0 ? outThai.length / origThai.length : 0;
     console.log(`[split-phrases] thaiRatio=${charRatio.toFixed(3)} orig=${origThai.length} out=${outThai.length}`);
     // No rewrite allowed — output must preserve nearly all Thai chars from input.
-    if (charRatio < 0.80 || charRatio > 1.20) {
+    // Allow 0.70-1.30 to accommodate scripts with English/numbers mixed in.
+    if (charRatio < 0.70 || charRatio > 1.30) {
       console.warn(`[split-phrases] LLM dropped/added Thai text! ratio=${charRatio.toFixed(3)}\n  original: ${origThai.slice(0, 100)}\n  phrases:  ${outThai.slice(0, 100)}`);
       throw new Error("text-mismatch");
     }
@@ -206,11 +207,20 @@ ${script.trim()}`;
     console.log(`[split-phrases] OK: ${phrases.length} phrases, tags:`, normalizedTags);
     return NextResponse.json({ phrases, tags: normalizedTags });
   } catch {
-    // Fallback: split by newlines, auto-tag based on content
-    const lines = script.trim().split(/\n+/).map((s: string) => cleanPhrase(s)).filter(Boolean);
-    const fallbackTags = autoTag(lines);
+    // Fallback: split by newlines then by sentence-ending punctuation
+    const rawLines = script.trim().split(/\n+/);
+    const lines: string[] = [];
+    for (const line of rawLines) {
+      // Split long lines at Thai sentence boundaries
+      const parts = line.split(/(?<=[.?!ฯ])\s+|(?<=[฀-๿])\s+(?=แต่|และ|เพราะ|จึง|โดย|สรุป)/);
+      for (const p of parts) {
+        const cleaned = cleanPhrase(p);
+        if (cleaned) lines.push(cleaned);
+      }
+    }
+    const fallbackTags = autoTag(lines.length > 0 ? lines : [script.trim()]);
     console.log(`[split-phrases] fallback: ${lines.length} lines, tags:`, fallbackTags);
-    return NextResponse.json({ phrases: lines, tags: fallbackTags });
+    return NextResponse.json({ phrases: lines.length > 0 ? lines : [cleanPhrase(script.trim())], tags: fallbackTags });
   }
 }
 
