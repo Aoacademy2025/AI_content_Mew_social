@@ -48,8 +48,9 @@ export async function POST(req: Request) {
   // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
   // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line
   const script = stripSrtArtifacts(rawScript)
-    .replace(/\.{3,}/g, "\n")          // ... → newline (split point)
-    .replace(/["“”’「」]/g, "")  // remove all quote variants
+    .replace(/\([A-Za-z][^)]{0,40}\)/g, "")
+    .replace(/\.{3,}/g, "\n")
+    .replace(/["""''`「」"']/g, "")
     .split("\n")
     .map((l: string) => l.trim())
     .filter((l: string) => l.length > 0)
@@ -84,9 +85,10 @@ export async function POST(req: Request) {
 TASK: Split this Thai script into subtitle phrases exactly as written — DO NOT rewrite, rephrase, or remove words.
 
 ━━━ CRITICAL RULE ━━━
-• COPY words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any words.
+• COPY Thai words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any Thai words.
 • Only task is to decide WHERE to split into subtitle lines.
-• Every word in the script must appear in the output phrases — nothing removed.
+• English terms in parentheses like (Anyons), (Fractional Excitons) → REMOVE them from output (they are pronunciation guides, not subtitle content).
+• Remove any standalone English-only words or parenthetical terms that are just transliterations of Thai words already in the phrase.
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → target ${targetRange} phrases total
@@ -176,8 +178,10 @@ ${script.trim()}`;
   // Post-process: clean up subtitle display artifacts
   function cleanPhrase(p: string): string {
     return p
-      .replace(/["“”’「」]/g, "")  // remove all quotes
-      .replace(/\.{2,}/g, "")  // remove all ellipsis
+      .replace(/\([A-Za-z][^)]*\)/g, "")  // remove English parentheticals like (Anyons)
+      .replace(/["""'「」]/g, "")
+      .replace(/\.{2,}/g, "")
+      .replace(/\s{2,}/g, " ")
       .trim();
   }
 
