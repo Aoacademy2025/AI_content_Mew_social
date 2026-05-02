@@ -463,19 +463,22 @@ export async function POST(req: Request) {
           minPhrases = Math.max(4, Math.floor(durationSec / 5));
           maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
 
-          const splitPrompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
+          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
-TASK: Rewrite the script into short natural subtitle phrases.
+TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NOT rewrite or remove any words.
+
+━━━ CRITICAL ━━━
+• COPY words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any words.
+• Every word in the script must appear in the output — nothing removed.
+• Only decide WHERE to split into subtitle lines.
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = one complete thought unit (8–30 chars ideal, hard max 36 chars).
-• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง).
+• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
 • NEVER split mid-sentence just to hit a char limit.
-• Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
-• NEVER split a date expression — keep "วันที่ 13 เมษายน 2569", "13 เมษายน 2569" as ONE phrase each.
-• Keep core meaning but rewrite wording for subtitle readability.
-• Do NOT invent facts not present in the source.
+• Short punchy lines → keep as ONE phrase.
+• NEVER split a date expression (Thai month name + date + year = ONE phrase).
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
