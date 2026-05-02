@@ -79,58 +79,42 @@ export async function POST(req: Request) {
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
-  const prompt = `You are an expert Thai short-video subtitle editor for TikTok/Reels.
+  const prompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
-TASK: Rewrite this Thai script into subtitle-ready phrases and tag each one.
+TASK: Split this Thai script into subtitle phrases exactly as written — DO NOT rewrite, rephrase, or remove words.
 
-━━━ TAGGING RULES ━━━
-• "hook" = The OPENING attention-grabbing line(s) only — typically the FIRST 1–2 phrases that create curiosity/shock. Once the content shifts to explaining or giving value, switch to "body". Do NOT tag the whole script as hook.
-• "body" = The MAIN CONTENT — explanations, facts, story, value delivery. This is usually the MAJORITY of phrases (the middle section).
-• "cta"  = EXPLICIT call-to-action words ONLY: กดติดตาม, กด like, กดแชร์, ลิงก์ในไบโอ, สมัครเลย, subscribe, follow. "คอมเมนต์บอก" or "คอมเมนต์ไว้" = "body" NOT cta. A punchy closing that is NOT asking viewer to tap/click is still "body".
-
-━━━ TAGGING DISTRIBUTION (approximate) ━━━
-• hook: 1–3 phrases (opening only)
-• body: most phrases (middle, the bulk)
-• cta: 0–2 phrases (ending, only if explicit action request)
-• If there is no explicit CTA in the script, do NOT force a "cta" tag.
-
-━━━ CRITICAL ━━━
-• Keep core meaning, but language should be concise and natural for subtitles.
-• Remove unnecessary filler, harsh repetition, and repeated filler words if they do not add meaning.
-• It is allowed to rewrite wording/order, as long as the hook/body/cta intent stays the same.
-• Do NOT invent facts that are not in the source.
-• Keep each phrase short, spoken-style, and easy to read in 2–4 seconds.
-• EXCEPTION — SUBTITLE CLEANUP (apply to every phrase before outputting):
-  - Remove leading/trailing ellipsis: "..." at start or end of a phrase → delete it
-  - Remove standalone quotation marks: leading/trailing quotes (' " « » etc.) → delete them (keep if needed in the middle)
-  - After cleanup, trim whitespace from both ends of every phrase
+━━━ CRITICAL RULE ━━━
+• COPY words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any words.
+• Only task is to decide WHERE to split into subtitle lines.
+• Every word in the script must appear in the output phrases — nothing removed.
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → target ${targetRange} phrases total
-• Each phrase = one complete thought unit (8–30 chars ideal, hard max 36 chars). If a phrase exceeds 36 chars, you MUST split it.
-• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or at natural breath points (สรุป, โดย, ขณะที่, พร้อม, ระบุ, ชี้).
-• Also split at "..." (ellipsis) — treat as a breath/pause point, do NOT include the ... in the output phrase.
+• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). If a phrase exceeds 40 chars, you MUST split it.
+• Split at: sentence-ending punctuation (. ? ! ฯ), major conjunctions (แต่, และ, เพราะ, จึง), natural breath points (สรุป, โดย, ขณะที่, พร้อม, ระบุ, ชี้).
 • NEVER split mid-sentence just to hit a char limit.
 • Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
-• Long sentences with numbers/stats: split before/after each stat unit — e.g. "กว่า 1.11 ล้านคน-เที่ยว" is one unit, "สรุปยอดสะสม 7 วัน" is another.
-• NEVER split a date expression — keep "วันที่ 13 เมษายน 2569", "13 เมษายน 2569", "เมษายน 2569" as ONE phrase each. Date = any phrase containing a Thai month name (มกราคม/กุมภาพันธ์/มีนาคม/เมษายน/พฤษภาคม/มิถุนายน/กรกฎาคม/สิงหาคม/กันยายน/ตุลาคม/พฤศจิกายน/ธันวาคม).
+• Long sentences with numbers/stats: split before/after each stat unit.
+• NEVER split a date expression (keep Thai month name + date + year as ONE phrase).
+
+━━━ TAGGING RULES ━━━
+• "hook" = opening attention-grabbing line(s) — FIRST 1–2 phrases only.
+• "body" = main content — the majority of phrases.
+• "cta"  = explicit action words only: กดติดตาม, กด like, กดแชร์, สมัครเลย, subscribe, follow.
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
 {"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}
 
 ━━━ EXAMPLES ━━━
-Input: "มึงเคยคิดปะ ว่าความรู้ที่พวกมึงเรียนมาตั้งแต่เด็ก อาจจะเป็นแค่เรื่องโกหก"
-Output: {"phrases":["มึงเคยคิดปะว่าความรู้ที่เรียนมาตั้งแต่เด็ก อาจไม่ใช่ความจริงทั้งหมด","มึงอาจต้องกลับมาคิดใหม่"],"tags":["hook","body"]}
-
 Script: "โลกที่คุณเห็น สงครามที่คุณได้ยิน วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ ผิดสัตว์ กดติดตามไว้เลย"
 Output: {"phrases":["โลกที่คุณเห็น สงครามที่คุณได้ยิน","วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ","คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ","ผิดสัตว์","กดติดตามไว้เลย"],"tags":["hook","body","body","body","cta"]}
 
 Script: "คุณเคยสังเกตไหมว่าทำไมคนรวยนอนน้อย แต่ยังมีพลังงาน นั่นเป็นเพราะพวกเขาจัดการเวลาต่างออกไป ลองทำตามนี้ดู"
 Output: {"phrases":["คุณเคยสังเกตไหมว่าทำไมคนรวยนอนน้อย","แต่ยังมีพลังงาน","นั่นเป็นเพราะพวกเขาจัดการเวลาต่างออกไป","ลองทำตามนี้ดู"],"tags":["hook","hook","body","body"]}
 
-Script: "กรมการขนส่งทางราง\nเผยยอดใช้ระบบรางเปิดทำงานวันแรกกว่า 1.11 ล้านคน-เที่ยว สรุปยอดสะสม 7 วันเทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"
-Output: {"phrases":["กรมการขนส่งทางราง","เผยยอดใช้ระบบรางเปิดทำงานวันแรก","กว่า 1.11 ล้านคน-เที่ยว","สรุปยอดสะสม 7 วัน","เทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"],"tags":["hook","body","body","body","body"]}
+Script: "กรมการขนส่งทางราง เผยยอดใช้ระบบรางวันแรกกว่า 1.11 ล้านคน-เที่ยว สรุปยอดสะสม 7 วันเทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"
+Output: {"phrases":["กรมการขนส่งทางราง","เผยยอดใช้ระบบรางวันแรก","กว่า 1.11 ล้านคน-เที่ยว","สรุปยอดสะสม 7 วัน","เทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"],"tags":["hook","body","body","body","body"]}
 
 ━━━ SCRIPT TO PROCESS ━━━
 ${script.trim()}`;
@@ -211,8 +195,8 @@ ${script.trim()}`;
     const outThai = thaiOnly(phrases.join(""));
     const charRatio = origThai.length > 0 ? outThai.length / origThai.length : 0;
     console.log(`[split-phrases] thaiRatio=${charRatio.toFixed(3)} orig=${origThai.length} out=${outThai.length}`);
-    // Rewrite is allowed, so allow more lenient ratio. Still guard against extreme edits.
-    if (charRatio < 0.45 || charRatio > 1.80) {
+    // No rewrite allowed — output must preserve nearly all Thai chars from input.
+    if (charRatio < 0.80 || charRatio > 1.20) {
       console.warn(`[split-phrases] LLM dropped/added Thai text! ratio=${charRatio.toFixed(3)}\n  original: ${origThai.slice(0, 100)}\n  phrases:  ${outThai.slice(0, 100)}`);
       throw new Error("text-mismatch");
     }
