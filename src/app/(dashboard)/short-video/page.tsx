@@ -134,10 +134,13 @@ export default function ShortVideoPage() {
   // Preprocess script: trim each line, collapse 2+ blank lines to single newline, keep paragraph breaks
   function preprocessScript(raw: string): string {
     return raw
+      .replace(/\.{3,}/g, "\n")           // ... → newline (split point, mirrors server)
+      .replace(/["""'「」“”]/g, "") // strip quotes (mirrors server)
       .split(/\n/)
       .map(line => line.trim())
+      .filter(line => line.length > 0)
       .join("\n")
-      .replace(/\n{3,}/g, "\n\n")  // collapse 3+ newlines → double newline (paragraph break)
+      .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
 
