@@ -6,7 +6,7 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 
-export const maxDuration = 600;
+export const maxDuration = 3600;
 export const runtime = "nodejs";
 
 function getFfmpegPath(): string {
@@ -134,8 +134,9 @@ async function chromakeyComposite(
     "-i", avatarPath,
     "-filter_complex", filterComplex,
     "-map", "[out]",
-    "-map", "0:a?",          // audio from bg video (TTS + BGM, full duration)
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
+    "-map", "0:a?",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+    "-vf", "scale=1080:1920:flags=lanczos",
     "-threads", "0",
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p",
