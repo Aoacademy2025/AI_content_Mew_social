@@ -219,6 +219,11 @@ export async function POST(req: Request) {
         assertExistingAsset(v.src, "bg");
       }
       console.log(`[render] copied ${stockCopyMap.size} stock file(s) to renders/`);
+      console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
+      console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
+      resolvedShortConfig.bgVideos?.forEach((v: { src: string }, i: number) =>
+        console.log(`[render] bgVideo[${i}]: ${v.src}`)
+      );
     }
 
     // For SubtitleOverlay: resolve videoUrl → absolute URL
