@@ -4,6 +4,7 @@ import {
   Audio,
   OffthreadVideo,
   Sequence,
+  interpolate,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -11,6 +12,59 @@ import type { ShortVideoConfig, SubtitleStylePreset } from "./types";
 
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
+
+// Ken Burns zoom directions — alternate per clip for visual variety
+const KB_CONFIGS = [
+  { startScale: 1.0, endScale: 1.08, originX: "50%", originY: "50%" },
+  { startScale: 1.08, endScale: 1.0, originX: "55%", originY: "45%" },
+  { startScale: 1.0, endScale: 1.08, originX: "45%", originY: "55%" },
+  { startScale: 1.06, endScale: 1.0, originX: "50%", originY: "40%" },
+  { startScale: 1.0, endScale: 1.06, originX: "52%", originY: "52%" },
+];
+
+function VideoClip({
+  src,
+  startFrom,
+  clipIndex,
+  segDurFrames,
+}: {
+  src: string;
+  startFrom: number;
+  clipIndex: number;
+  segDurFrames: number;
+}) {
+  const frame = useCurrentFrame();
+  const { width, height } = useVideoConfig();
+
+  const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
+  const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
+  const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
+
+  // Fade in first 6 frames, fade out last 6 frames of each clip
+  const fadeInOpacity = interpolate(frame, [0, 6], [0, 1], { extrapolateRight: "clamp" });
+  const fadeOutOpacity = interpolate(frame, [segDurFrames - 6, segDurFrames], [1, 0], { extrapolateLeft: "clamp" });
+  const opacity = Math.min(fadeInOpacity, fadeOutOpacity);
+
+  return (
+    <AbsoluteFill style={{ opacity }}>
+      <OffthreadVideo
+        src={src}
+        startFrom={startFrom}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width,
+          height,
+          objectFit: "cover",
+          transform: `scale(${scale})`,
+          transformOrigin: `${kb.originX} ${kb.originY}`,
+        }}
+        muted
+      />
+    </AbsoluteFill>
+  );
+}
 
 function renderSubtitle(
   text: string,
@@ -48,7 +102,6 @@ function renderSubtitle(
         </div>
       );
     case "glow": {
-      // Parse hex color to build rgba glow
       const r = parseInt(color.slice(1, 3), 16);
       const g = parseInt(color.slice(3, 5), 16);
       const b = parseInt(color.slice(5, 7), 16);
@@ -85,6 +138,74 @@ function renderSubtitle(
   }
 }
 
+function AnimatedSubtitle({
+  popup,
+  preset,
+  resolvedFont,
+  captionDurFrames,
+}: {
+  popup: NonNullable<ShortVideoConfig["keywordPopups"]>[number];
+  preset: SubtitleStylePreset;
+  resolvedFont: string;
+  captionDurFrames: number;
+}) {
+  const frame = useCurrentFrame();
+
+  // Pop in: scale 0.7→1.05→1.0 over first 8 frames + fade in
+  const popScale = interpolate(
+    frame,
+    [0, 5, 8],
+    [0.7, 1.05, 1.0],
+    { extrapolateRight: "clamp" }
+  );
+  const popOpacity = interpolate(frame, [0, 4], [0, 1], { extrapolateRight: "clamp" });
+
+  // Fade out last 4 frames
+  const fadeOut = interpolate(
+    frame,
+    [captionDurFrames - 4, captionDurFrames],
+    [1, 0],
+    { extrapolateLeft: "clamp" }
+  );
+
+  const opacity = Math.min(popOpacity, fadeOut);
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: `${popup.topPercent ?? 75}%`,
+          left: 0,
+          right: 0,
+          transform: `translateY(-50%) scale(${popScale})`,
+          transformOrigin: "center center",
+          opacity,
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <div style={{ maxWidth: "88%", width: "100%", textAlign: "center", paddingLeft: "6%", paddingRight: "6%" }}>
+          {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900)}
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+function Vignette() {
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      <div style={{
+        position: "absolute",
+        inset: 0,
+        background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%)",
+      }} />
+    </AbsoluteFill>
+  );
+}
+
 export function ShortVideoComposition({
   bgVideos,
   keywordPopups,
@@ -100,7 +221,6 @@ export function ShortVideoComposition({
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
 
-  // Current keyword popup — use < end so adjacent captions don't overlap by 1 frame
   const popup = keywordPopups.find((p) => frame >= p.start && frame < p.end);
   const preset = popup?.stylePreset ?? subtitleStylePreset ?? "stroke";
 
@@ -112,37 +232,30 @@ export function ShortVideoComposition({
         overflow: "hidden",
       }}
     >
-      {/* Load Google Fonts */}
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Stock video segments — OffthreadVideo decodes via ffmpeg, supports all codecs */}
+      {/* Stock video segments with Ken Burns zoom + crossfade */}
       {bgVideos.flatMap((v, i) => {
-        const startFrame      = Math.round(v.start * fps);
-        const segDurFrames    = Math.max(1, Math.round((v.end - v.start) * fps));
-        const clipDurFrames   = v.clipDuration && v.clipDuration > 0
+        const startFrame = Math.round(v.start * fps);
+        const segDurFrames = Math.max(1, Math.round((v.end - v.start) * fps));
+        const clipDurFrames = v.clipDuration && v.clipDuration > 0
           ? Math.max(1, Math.round(v.clipDuration * fps))
           : null;
         const clipOffsetFrames = Math.round((v.clipOffset ?? 0) * fps);
         const initialStartFrom = (() => {
           if (!clipDurFrames) return 0;
-          const safe = ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames;
-          return safe;
+          return ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames;
         })();
 
-        // OffthreadVideo doesn't support loop prop — we must render one <Sequence>
-        // per "loop iteration" so startFrom stays within the source clip duration.
-        const iterations = clipDurFrames
-          ? Math.ceil(segDurFrames / clipDurFrames)
-          : 1;
+        const iterations = clipDurFrames ? Math.ceil(segDurFrames / clipDurFrames) : 1;
 
         return Array.from({ length: iterations }, (_, iter) => {
-          const iterStart  = iter * (clipDurFrames ?? segDurFrames);
-          const iterDur    = clipDurFrames
+          const iterStart = iter * (clipDurFrames ?? segDurFrames);
+          const iterDur = clipDurFrames
             ? Math.min(clipDurFrames, segDurFrames - iterStart)
             : segDurFrames;
           if (iterDur <= 0) return null;
 
-          // startFrom restarts at the clip offset for each iteration
           const startFromFrame = iter === 0 ? initialStartFrom : 0;
 
           return (
@@ -152,25 +265,19 @@ export function ShortVideoComposition({
               durationInFrames={iterDur}
               layout="none"
             >
-              <AbsoluteFill>
-                <OffthreadVideo
-                  src={v.src}
-                  startFrom={startFromFrame}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: width,
-                    height: height,
-                    objectFit: "cover",
-                  }}
-                  muted
-                />
-              </AbsoluteFill>
+              <VideoClip
+                src={v.src}
+                startFrom={startFromFrame}
+                clipIndex={i}
+                segDurFrames={iterDur}
+              />
             </Sequence>
           );
         });
       })}
+
+      {/* Vignette overlay — darkens edges for cinematic look */}
+      <Vignette />
 
       {/* TTS voice */}
       {voiceFile && <Audio src={voiceFile} volume={voiceVolume} />}
@@ -178,26 +285,21 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
-      {/* Subtitle */}
+      {/* Animated subtitle — pop in + fade out per caption */}
       {popup && (
-        <AbsoluteFill style={{ pointerEvents: "none" }}>
-          <div
-            style={{
-              position: "absolute",
-              top: `${popup.topPercent ?? 75}%`,
-              left: 0,
-              right: 0,
-              transform: "translateY(-50%)",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-            }}
-          >
-            <div style={{ maxWidth: "88%", width: "100%", textAlign: "center", paddingLeft: "6%", paddingRight: "6%" }}>
-              {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900)}
-            </div>
-          </div>
-        </AbsoluteFill>
+        <Sequence
+          key={`sub-${popup.start}`}
+          from={popup.start}
+          durationInFrames={popup.end - popup.start}
+          layout="none"
+        >
+          <AnimatedSubtitle
+            popup={popup}
+            preset={preset}
+            resolvedFont={resolvedFont}
+            captionDurFrames={popup.end - popup.start}
+          />
+        </Sequence>
       )}
     </AbsoluteFill>
   );
