@@ -101,7 +101,7 @@ async function chromakeyComposite(
   // Always: remove green then scale avatar to match bg exactly, overlay full cover
   console.log(`[chromakey] scale to bg size, overlay full`);
   filterComplex = [
-    `[0:v]setsar=1[bg]`,
+    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
     `[1:v]${chromaFilter}[fg_key]`,
     `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
     `[bg2][fg]overlay=0:0:format=auto[out]`,
@@ -136,7 +136,6 @@ async function chromakeyComposite(
     "-map", "[out]",
     "-map", "0:a?",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-    "-vf", "scale=1080:1920:flags=lanczos",
     "-threads", "0",
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p",
