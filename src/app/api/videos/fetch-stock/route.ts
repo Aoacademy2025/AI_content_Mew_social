@@ -127,21 +127,18 @@ export async function POST(req: Request) {
     return 2.5;
   }
 
-  const avgCut = avgCutSec(totalDurationSec);
-  const BUFFER = 1.3;
+  // Estimate ~1 clip per 2s of speech (Thai subtitle density)
+  const BUFFER = 1.4;
   const autoClipsNeeded = totalDurationSec > 0
-    ? Math.max(2, Math.ceil((totalDurationSec / avgCut) * BUFFER))
+    ? Math.max(2, Math.ceil((totalDurationSec / 2.0) * BUFFER))
     : keywords.length;
-  // User override wins; otherwise use adaptive auto calculation
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
 
-  // Cap: manual override can go up to 200, auto capped at 50
-  const cappedClipsNeeded = overrideClipCount > 0
-    ? Math.min(totalClipsNeeded, 200)
-    : Math.min(totalClipsNeeded, 50);
-  // How many clips to pick per keyword — distribute evenly, min 1, max 5
+  // Cap: override up to 200, auto up to 150
+  const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 200 : 150);
+  // How many clips per keyword — distribute evenly, min 1, max 8
   const clipsPerKeyword = keywords.length > 0
-    ? Math.min(5, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
+    ? Math.min(8, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
     : 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s avgCut=${avgCut}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
