@@ -355,50 +355,80 @@ export async function POST(req: Request) {
         return validStocks.filter(s => sceneKws.has(s.keyword));
       });
 
+      // ── Caption-driven cuts: 1 subtitle = 1 stock video clip ──
+      // Use caption startMs/endMs directly as cut points.
+      // Pool clips from the scene that caption belongs to.
       const clipNextOffset = new Map<string, number>();
-      const CUT_CYCLE =
-        audioDurationSec <= 10 ? [5, 4.5, 5.5] :
-        audioDurationSec <= 20 ? [4, 3.5, 4.5] :
-        audioDurationSec <= 40 ? [3.5, 3, 4, 3] : [3, 2.5, 3.5, 2];
 
-      function remainingPlayable(sv: StockVideo): number {
-        const src = sv.localUrl ?? sv.videoUrl;
-        const used = clipNextOffset.get(src) ?? 0;
-        return Math.max(0, (sv.duration > 0 ? sv.duration : 10) - used);
-      }
-
-      function buildPool(si: number): StockVideo[] {
-        const shuffle = <T>(arr: T[]) => [...arr].sort(() => Math.random() - 0.5);
-        const ok = (sv: StockVideo) => remainingPlayable(sv) >= 1;
-        const sc = clipsForScene[si];
-        const other = validStocks.filter(sv => !sc.includes(sv));
-        return [
-          ...shuffle(sc.filter(ok)),
-          ...shuffle(other.filter(ok)),
-          ...(sc.filter(ok).length === 0 && other.filter(ok).length === 0
-            ? shuffle(validStocks.filter((s) => s.duration > 0))
-            : []),
-        ];
-      }
-
-      for (let si = 0; si < sceneBoundaries.length; si++) {
-        const { startSec, endSec } = sceneBoundaries[si];
-        if (endSec - startSec <= 0) continue;
-        let pool = buildPool(si), poolIdx = 0, cursor = startSec, cutIdx = 0;
-        while (cursor < endSec - 0.1) {
-          if (poolIdx >= pool.length) { pool = buildPool(si); poolIdx = 0; if (!pool.length) break; }
-          const sv = pool[poolIdx++];
+      function pickClip(pool: StockVideo[]): StockVideo | null {
+        // Pick first clip that still has footage remaining, cycling through pool
+        for (const sv of pool) {
           const src = sv.localUrl ?? sv.videoUrl;
-          const playable = remainingPlayable(sv);
+          const used = clipNextOffset.get(src) ?? 0;
+          const dur = sv.duration > 0 ? sv.duration : 10;
+          if (used < dur - 0.5) return sv;
+        }
+        // All clips exhausted — reset offsets and reuse from start
+        for (const sv of pool) clipNextOffset.set(sv.localUrl ?? sv.videoUrl, 0);
+        return pool[0] ?? null;
+      }
+
+      function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
+
+      if (sceneCaptions.length > 0) {
+        // Assign each caption to a scene by timestamp
+        for (const cap of sceneCaptions) {
+          const capStartSec = cap.startMs / 1000;
+          const capEndSec = cap.endMs / 1000;
+          const dur = capEndSec - capStartSec;
+          if (dur < 0.1) continue;
+
+          // Find which scene this caption belongs to
+          let si = sceneBoundaries.findIndex(
+            (b, i) => capStartSec >= b.startSec - 0.1 && (i === sceneBoundaries.length - 1 || capStartSec < sceneBoundaries[i + 1].startSec)
+          );
+          if (si < 0) si = sceneBoundaries.length - 1;
+
+          // Build clip pool: scene clips first, then all others as fallback
+          const sceneClips = shuffle(clipsForScene[si] ?? []);
+          const otherClips = shuffle(validStocks.filter(sv => !(clipsForScene[si] ?? []).includes(sv)));
+          const pool = [...sceneClips, ...otherClips];
+          if (!pool.length) continue;
+
+          const sv = pickClip(pool);
+          if (!sv) continue;
+
+          const src = sv.localUrl ?? sv.videoUrl;
           const clipDuration = sv.duration > 0 ? sv.duration : 10;
-          const cutDur = Math.min(CUT_CYCLE[cutIdx % CUT_CYCLE.length], endSec - cursor, Math.max(0.5, Math.min(10, playable)));
-          if (cutDur < 0.5) continue;
           const clipOffset = clipNextOffset.get(src) ?? 0;
           const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
-          bgVideos.push({ src, start: cursor, end: cursor + cutDur, clipOffset: safeOffset, clipDuration: sv.duration > 0 ? sv.duration : 10 });
-          const nextOffset = clipDuration > 0 ? (safeOffset + cutDur) % clipDuration : 0;
-          clipNextOffset.set(src, nextOffset);
-          cursor += cutDur; cutIdx++;
+
+          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+          clipNextOffset.set(src, safeOffset + dur);
+        }
+      } else {
+        // Fallback: no captions — use scene boundaries with fixed cut cycle
+        const CUT_CYCLE = audioDurationSec <= 20 ? [4, 3.5, 4.5] : [3, 2.5, 3.5, 2];
+        for (let si = 0; si < sceneBoundaries.length; si++) {
+          const { startSec, endSec } = sceneBoundaries[si];
+          if (endSec - startSec <= 0) continue;
+          const sceneClips = shuffle(clipsForScene[si] ?? []);
+          const otherClips = shuffle(validStocks.filter(sv => !(clipsForScene[si] ?? []).includes(sv)));
+          const pool = [...sceneClips, ...otherClips];
+          if (!pool.length) continue;
+          let cursor = startSec, cutIdx = 0;
+          while (cursor < endSec - 0.1) {
+            const sv = pickClip(pool) ?? pool[0];
+            const src = sv.localUrl ?? sv.videoUrl;
+            const clipDuration = sv.duration > 0 ? sv.duration : 10;
+            const cutDur = Math.min(CUT_CYCLE[cutIdx % CUT_CYCLE.length], endSec - cursor);
+            if (cutDur < 0.5) break;
+            const clipOffset = clipNextOffset.get(src) ?? 0;
+            const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+            bgVideos.push({ src, start: cursor, end: cursor + cutDur, clipOffset: safeOffset, clipDuration });
+            clipNextOffset.set(src, safeOffset + cutDur);
+            cursor += cutDur; cutIdx++;
+          }
         }
       }
     }
