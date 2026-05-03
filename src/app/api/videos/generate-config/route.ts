@@ -357,47 +357,40 @@ export async function POST(req: Request) {
 
       // ── Caption-driven cuts: 1 subtitle = 1 stock video clip ──
       // Use caption startMs/endMs directly as cut points.
-      // Pool clips from the scene that caption belongs to.
+      // Rotate through ALL available clips so each subtitle gets a unique clip.
       const clipNextOffset = new Map<string, number>();
-
-      function pickClip(pool: StockVideo[]): StockVideo | null {
-        // Pick first clip that still has footage remaining, cycling through pool
-        for (const sv of pool) {
-          const src = sv.localUrl ?? sv.videoUrl;
-          const used = clipNextOffset.get(src) ?? 0;
-          const dur = sv.duration > 0 ? sv.duration : 10;
-          if (used < dur - 0.5) return sv;
-        }
-        // All clips exhausted — reset offsets and reuse from start
-        for (const sv of pool) clipNextOffset.set(sv.localUrl ?? sv.videoUrl, 0);
-        return pool[0] ?? null;
-      }
 
       function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
       if (sceneCaptions.length > 0) {
-        // Assign each caption to a scene by timestamp
+        // Build a global rotation pool: scene clips grouped by scene, shuffled within scene
+        // So captions in scene 1 get scene-1 clips first, then borrow from others
+        const globalPool: StockVideo[] = [];
+        for (let si = 0; si < sceneBoundaries.length; si++) {
+          const sceneClips = shuffle(clipsForScene[si] ?? []);
+          globalPool.push(...sceneClips);
+        }
+        // Add any clips not yet in pool as extra fallback
+        const inPool = new Set(globalPool.map(s => s.localUrl ?? s.videoUrl));
+        globalPool.push(...shuffle(validStocks.filter(s => !inPool.has(s.localUrl ?? s.videoUrl))));
+
+        // If we have fewer clips than captions, repeat the pool
+        // Use a rotating index so every caption gets a different clip
+        let poolIdx = 0;
+        const getNextClip = (): StockVideo => {
+          const sv = globalPool[poolIdx % globalPool.length];
+          poolIdx++;
+          return sv;
+        };
+
         for (const cap of sceneCaptions) {
           const capStartSec = cap.startMs / 1000;
           const capEndSec = cap.endMs / 1000;
           const dur = capEndSec - capStartSec;
           if (dur < 0.1) continue;
+          if (!globalPool.length) continue;
 
-          // Find which scene this caption belongs to
-          let si = sceneBoundaries.findIndex(
-            (b, i) => capStartSec >= b.startSec - 0.1 && (i === sceneBoundaries.length - 1 || capStartSec < sceneBoundaries[i + 1].startSec)
-          );
-          if (si < 0) si = sceneBoundaries.length - 1;
-
-          // Build clip pool: scene clips first, then all others as fallback
-          const sceneClips = shuffle(clipsForScene[si] ?? []);
-          const otherClips = shuffle(validStocks.filter(sv => !(clipsForScene[si] ?? []).includes(sv)));
-          const pool = [...sceneClips, ...otherClips];
-          if (!pool.length) continue;
-
-          const sv = pickClip(pool);
-          if (!sv) continue;
-
+          const sv = getNextClip();
           const src = sv.localUrl ?? sv.videoUrl;
           const clipDuration = sv.duration > 0 ? sv.duration : 10;
           const clipOffset = clipNextOffset.get(src) ?? 0;
@@ -418,7 +411,7 @@ export async function POST(req: Request) {
           if (!pool.length) continue;
           let cursor = startSec, cutIdx = 0;
           while (cursor < endSec - 0.1) {
-            const sv = pickClip(pool) ?? pool[0];
+            const sv = pool.find(s => { const used = clipNextOffset.get(s.localUrl ?? s.videoUrl) ?? 0; return used < (s.duration > 0 ? s.duration : 10) - 0.5; }) ?? pool[0];
             const src = sv.localUrl ?? sv.videoUrl;
             const clipDuration = sv.duration > 0 ? sv.duration : 10;
             const cutDur = Math.min(CUT_CYCLE[cutIdx % CUT_CYCLE.length], endSec - cursor);
