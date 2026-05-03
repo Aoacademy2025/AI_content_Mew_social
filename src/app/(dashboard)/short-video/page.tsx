@@ -404,6 +404,10 @@ export default function ShortVideoPage() {
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
     if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
     if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
+    if (raw.includes("Server Action") || raw.includes("newer deployment") || raw.includes("older deployment")) {
+      setTimeout(() => { if (confirm("มีการอัพเดตระบบใหม่ — กด OK เพื่อ refresh หน้า")) window.location.reload(); }, 300);
+      return "ระบบมีการอัพเดต กรุณา refresh หน้าแล้วรันใหม่";
+    }
     if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
     if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
       setShowClearCacheDialog(true);
