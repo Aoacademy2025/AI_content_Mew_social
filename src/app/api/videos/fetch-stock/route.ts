@@ -141,7 +141,7 @@ export async function POST(req: Request) {
     ? Math.min(8, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
     : 1;
 
-  console.log(`[fetch-stock] duration=${totalDurationSec}s avgCut=${avgCut}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
+  console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
 
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
