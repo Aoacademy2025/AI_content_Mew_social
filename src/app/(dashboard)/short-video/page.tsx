@@ -666,6 +666,7 @@ export default function ShortVideoPage() {
         scenes: pipe.current.scenes ?? [],
         keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: pipe.current.sceneClipCounts ?? [],
+        sceneDurations: pipe.current.sceneDurations ?? [],
       }),
     });
     const cfgData = await cfgRes.json();

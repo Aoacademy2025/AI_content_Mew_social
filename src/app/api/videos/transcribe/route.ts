@@ -596,80 +596,100 @@ ${sourceText.trim()}`;
       //   Use Whisper segment start/end times, weighted by phrase char length.
 
       if (phrases.length > 0) {
-        // ── Timestamp mapping: proportional by char length across audio timeline ──
+        // ── Timestamp mapping: forced alignment via Whisper word/segment timestamps ──
         //
-        // We DO NOT try to match phrase text against Whisper output — Thai Whisper
-        // often transcribes differently from the script (different spelling, particles,
-        // spaces).  Instead we use Whisper only for the AUDIO TIMELINE (where is
-        // each second of speech) and distribute phrases proportionally by char count.
+        // Strategy A — word-level forced alignment (preferred when words available):
+        //   Strip Thai chars only from both phrase and whisper words, then greedily
+        //   consume whisper words until the phrase’s char count is satisfied.
+        //   Use first consumed word’s start and last consumed word’s end as timestamps.
         //
-        // Timeline source priority:
-        //   1. word-level timestamps  → finer-grained, 1 entry per word char
-        //   2. segment-level timestamps → fallback, 1 entry per segment
-        //
-        // Both produce a sorted array of { sec } "time points" that span [0, audioDur].
-        // We then divide that array proportionally among phrases by their char counts.
+        // Strategy B — segment-level proportional (fallback when no word timestamps):
+        //   Distribute phrases proportionally by char count across Whisper segment timeline.
+        //   This is less accurate but better than pure char-proportion over full audio.
 
-        // Build a sorted timeline of (sec) anchor points
-        type TimePoint = { sec: number };
-        let timeline: TimePoint[] = [];
+        const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
+        const result: { text: string; startMs: number; endMs: number }[] = [];
 
         if (words.length > 0) {
-          // One point per word (use word midpoint for stability)
-          for (const w of words) {
-            timeline.push({ sec: (w.start + w.end) / 2 });
+          // Strategy A: forced alignment
+          // Each Whisper word contributes its Thai char count to consuming phrase chars.
+          // When cumulative chars >= phrase chars, close that phrase and open next.
+          let wi = 0; // whisper word index
+          for (let pi = 0; pi < phrases.length; pi++) {
+            const phraseChars = thaiOnly(phrases[pi]).length || 1;
+            let consumed = 0;
+            const startSec = wi < words.length ? words[wi].start : audioDur;
+            let endSec = startSec;
+
+            while (wi < words.length && (consumed < phraseChars || pi === phrases.length - 1)) {
+              const wChars = thaiOnly(words[wi].word).length || 1;
+              consumed += wChars;
+              endSec = words[wi].end;
+              wi++;
+              // stop consuming once phrase satisfied, unless it’s the last phrase
+              if (consumed >= phraseChars && pi < phrases.length - 1) break;
+            }
+
+            const cleanedText = phrases[pi].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
+            result.push({
+              text: cleanedText,
+              startMs: Math.round(startSec * 1000),
+              endMs: Math.round(endSec * 1000),
+            });
           }
-        } else if (segments.length > 0) {
-          for (const seg of segments) {
-            timeline.push({ sec: seg.start });
-            timeline.push({ sec: seg.end });
+          console.log(`[transcribe] forced-alignment ${result.length} captions from ${words.length} words`);
+        } else {
+          // Strategy B: segment-level proportional
+          type TimePoint = { sec: number };
+          const timeline: TimePoint[] = [];
+          if (segments.length > 0) {
+            for (const seg of segments) {
+              timeline.push({ sec: seg.start });
+              timeline.push({ sec: seg.end });
+            }
           }
+          if (timeline.length === 0 || timeline[0].sec > 0.1) timeline.unshift({ sec: 0 });
+          if (timeline[timeline.length - 1].sec < audioDur - 0.1) timeline.push({ sec: audioDur });
+
+          const timeAtFrac = (frac: number): number => {
+            const f = Math.max(0, Math.min(1, frac));
+            if (f === 0) return timeline[0].sec;
+            if (f === 1) return timeline[timeline.length - 1].sec;
+            const idx = f * (timeline.length - 1);
+            const lo = Math.floor(idx);
+            const hi = Math.min(lo + 1, timeline.length - 1);
+            return timeline[lo].sec + (idx - lo) * (timeline[hi].sec - timeline[lo].sec);
+          };
+
+          const charLengths = phrases.map(p => Math.max(1, p.replace(/\s+/g, "").length));
+          const totalChars = charLengths.reduce((a, b) => a + b, 0);
+          let cumChars = 0;
+          for (let i = 0; i < phrases.length; i++) {
+            const startSec = timeAtFrac(cumChars / totalChars);
+            cumChars += charLengths[i];
+            const endSec = timeAtFrac(cumChars / totalChars);
+            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
+            result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
+          }
+          console.log(`[transcribe] segment-proportional ${result.length} captions, ${timeline.length} points`);
         }
 
-        // Normalise: make sure we have at least 2 points covering [0, audioDur]
-        if (timeline.length === 0 || timeline[0].sec > 0.1) {
-          timeline.unshift({ sec: 0 });
-        }
-        if (timeline[timeline.length - 1].sec < audioDur - 0.1) {
-          timeline.push({ sec: audioDur });
-        }
-
-        // Helper: get time at fractional position [0,1] through the timeline
-        function timeAtFrac(frac: number): number {
-          const f = Math.max(0, Math.min(1, frac));
-          if (f === 0) return timeline[0].sec;
-          if (f === 1) return timeline[timeline.length - 1].sec;
-          const idx = f * (timeline.length - 1);
-          const lo  = Math.floor(idx);
-          const hi  = Math.min(lo + 1, timeline.length - 1);
-          const rem = idx - lo;
-          return timeline[lo].sec + rem * (timeline[hi].sec - timeline[lo].sec);
-        }
-
-        // Distribute phrases proportionally by their char count
-        const charLengths = phrases.map(p => Math.max(1, p.replace(/\s+/g, "").length));
-        const totalPhraseChars = charLengths.reduce((a, b) => a + b, 0);
-        const result: { text: string; startMs: number; endMs: number }[] = [];
-        let cumChars = 0;
-
-        for (let i = 0; i < phrases.length; i++) {
-          const startFrac = cumChars / totalPhraseChars;
-          cumChars += charLengths[i];
-          const endFrac = cumChars / totalPhraseChars;
-          const startSec = timeAtFrac(startFrac);
-          const endSec   = timeAtFrac(endFrac);
-          const cleanedText = phrases[i].replace(/["""'’]/g, "").replace(/\.{2,}/g, "").trim();
-          result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
-        }
-
-        // Pin first caption to 0 and last to audioDur
+        // Pin first to 0, last to audioDur, ensure no overlap
         if (result.length > 0) {
           result[0].startMs = 0;
           result[result.length - 1].endMs = Math.round(audioDur * 1000);
+          // ensure each caption ends before next starts
+          for (let i = 0; i < result.length - 1; i++) {
+            if (result[i].endMs > result[i + 1].startMs) {
+              result[i].endMs = result[i + 1].startMs;
+            }
+            if (result[i].startMs >= result[i].endMs) {
+              result[i].endMs = result[i].startMs + 500;
+            }
+          }
         }
 
         captions = result.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
-        console.log(`[transcribe] proportional-mapped ${captions.length} captions, dur=${audioDur.toFixed(2)}s, points=${timeline.length}`);
         captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
 
       } else {

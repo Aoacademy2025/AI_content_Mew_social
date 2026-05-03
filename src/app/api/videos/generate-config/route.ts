@@ -165,6 +165,7 @@ export async function POST(req: Request) {
     scenes = [],
     keywordsPerScene = 5,
     sceneClipCounts = [] as number[],
+    sceneDurations = [] as number[],
   }: {
     sceneCaptions?: Cap[];
     stockVideos: StockVideo[];
@@ -181,6 +182,7 @@ export async function POST(req: Request) {
     scenes?: string[];
     keywordsPerScene?: number;
     sceneClipCounts?: number[];
+    sceneDurations?: number[];
   } = body ?? {};
 
   const primaryColor = subtitleColor ?? "#FFFFFF";
@@ -270,43 +272,53 @@ export async function POST(req: Request) {
       // ── SCENE-AWARE: map clips to scenes, adaptive cut cycling ──
       console.log(`[config] scene-aware: ${n} clips across ${numScenes} scenes`);
 
-      // Build scene time boundaries from caption timestamps
+      // Build scene time boundaries — prefer sceneDurations from extract-keywords,
+      // fallback to equal splits. Then snap each boundary to nearest caption timestamp.
       const sceneBoundaries: { startSec: number; endSec: number }[] = [];
 
-      if (sceneCaptions.length > 0) {
-        const totalChars = scenes.reduce((s, sc) => s + Math.max(1, sc.replace(/\s/g, "").length), 0);
-        let cum = 0;
-        const sceneCumChars = scenes.map(sc => { cum += Math.max(1, sc.replace(/\s/g, "").length); return cum; });
-        const capCount = sceneCaptions.length;
-        const sceneCapGroups: Cap[][] = Array.from({ length: numScenes }, () => []);
-        for (let ci = 0; ci < capCount; ci++) {
-          const charPos = ((ci + 0.5) / capCount) * totalChars;
-          let si = sceneCumChars.findIndex(c => charPos <= c);
-          if (si < 0) si = numScenes - 1;
-          sceneCapGroups[si].push(sceneCaptions[ci]);
+      const hasSceneDurations = Array.isArray(sceneDurations) && sceneDurations.length === numScenes;
+      if (hasSceneDurations) {
+        // Use extract-keywords scene duration estimates
+        let cumSec = 0;
+        for (const dur of sceneDurations) {
+          sceneBoundaries.push({ startSec: cumSec, endSec: cumSec + dur });
+          cumSec += dur;
         }
-        for (let si = 0; si < numScenes; si++) {
-          const g = sceneCapGroups[si];
-          if (g.length > 0) {
-            sceneBoundaries.push({ startSec: g[0].startMs / 1000, endSec: g[g.length - 1].endMs / 1000 });
-          } else {
-            const prev = sceneBoundaries[si - 1];
-            const dur = audioDurationSec / numScenes;
-            const s = prev ? prev.endSec : si * dur;
-            sceneBoundaries.push({ startSec: s, endSec: s + dur });
-          }
+        // Scale to actual audio duration in case estimates are off
+        const estimatedTotal = sceneBoundaries[sceneBoundaries.length - 1].endSec;
+        if (estimatedTotal > 0 && Math.abs(estimatedTotal - audioDurationSec) > 1) {
+          const scale = audioDurationSec / estimatedTotal;
+          for (const b of sceneBoundaries) { b.startSec *= scale; b.endSec *= scale; }
         }
-        for (let si = 1; si < sceneBoundaries.length; si++) {
-          if (sceneBoundaries[si].startSec < sceneBoundaries[si - 1].endSec)
-            sceneBoundaries[si].startSec = sceneBoundaries[si - 1].endSec;
-        }
-        sceneBoundaries[0].startSec = 0;
-        sceneBoundaries[sceneBoundaries.length - 1].endSec = audioDurationSec;
       } else {
+        // Equal splits fallback
         const dur = audioDurationSec / numScenes;
         for (let i = 0; i < numScenes; i++)
           sceneBoundaries.push({ startSec: i * dur, endSec: (i + 1) * dur });
       }
+
+      // Snap scene boundaries to actual caption timestamps for tighter sync
+      if (sceneCaptions.length > 0) {
+        for (let si = 1; si < sceneBoundaries.length; si++) {
+          const target = sceneBoundaries[si].startSec;
+          // Find nearest caption startMs to this boundary
+          let best = sceneCaptions[0];
+          let bestDist = Infinity;
+          for (const c of sceneCaptions) {
+            const dist = Math.abs(c.startMs / 1000 - target);
+            if (dist < bestDist) { bestDist = dist; best = c; }
+          }
+          // Only snap if within 3s of estimated boundary
+          if (bestDist < 3) {
+            const snapped = best.startMs / 1000;
+            sceneBoundaries[si].startSec = snapped;
+            sceneBoundaries[si - 1].endSec = snapped;
+          }
+        }
+      }
+      sceneBoundaries[0].startSec = 0;
+      sceneBoundaries[sceneBoundaries.length - 1].endSec = audioDurationSec;
+      console.log(`[config] scene boundaries:`, sceneBoundaries.map(b => `${b.startSec.toFixed(1)}-${b.endSec.toFixed(1)}s`));
 
       // Map clips to scenes by keyword
       // Each scene gets clips whose keywords were extracted for that scene (via sceneClipCounts offset)
