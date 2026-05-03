@@ -956,6 +956,39 @@ export default function ShortVideoPage() {
       if (abortRef.current) throw new Error("__ABORTED__");
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
+
+      // If we have fewer clips than subtitles, fetch more stock to match
+      const currentClips = (pipe.current.stockVideos ?? []).length;
+      const neededClips = sceneCaptions.length;
+      if (neededClips > currentClips && (pipe.current.keywords ?? []).length > 0) {
+        const extraNeeded = neededClips - currentClips;
+        try {
+          setStep("fetchStock", "running", `ดึงเพิ่ม ${extraNeeded} คลิปให้ครบ ${neededClips} ซับ...`);
+          const kws = pipe.current.keywords ?? [];
+          const extraRes = await fetch("/api/videos/fetch-stock", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              keywords: kws,
+              download: true,
+              totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
+              stockSource,
+              overrideClipCount: neededClips,
+            }),
+            signal: abortControllerRef.current?.signal,
+          });
+          if (extraRes.ok) {
+            const extraData = await extraRes.json();
+            const allClips = (extraData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
+            if (allClips.length > currentClips) {
+              pipe.current.stockVideos = allClips;
+              setPipeStockVideos(allClips);
+              setStep("fetchStock", "done", `ได้ ${allClips.length} คลิป สำหรับ ${neededClips} ซับ`);
+            }
+          }
+        } catch { /* non-critical — use existing clips */ }
+      }
+
       toast.success("Transcribe เสร็จ — ตรวจสอบซับด้านล่างแล้วกด Generate Video");
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
