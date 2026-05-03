@@ -216,6 +216,7 @@ export default function ShortVideoPage() {
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
   // LLM provider picker — shown when no key is set at all before runAll
   const [showLLMPicker, setShowLLMPicker] = useState(false);
+  const [showClearCacheDialog, setShowClearCacheDialog] = useState(false);
 
   // Stored pipeline data for partial re-runs
   const pipe = useRef<Partial<PipelineData>>({});
@@ -404,10 +405,14 @@ export default function ShortVideoPage() {
     if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
     if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
     if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
+    if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
+      setShowClearCacheDialog(true);
+      return "keywords required — กรุณาล้างแคชแล้วรันใหม่";
+    }
     if (err instanceof ApiCallError && err.data.retryable) return String(err.data.error ?? "เกิดข้อผิดพลาด กรุณากดรันใหม่อีกครั้ง");
     // Show the actual error message so user/developer can see what went wrong
     const firstLine = raw.split("\n")[0].slice(0, 200);
-    return firstLine || "เกิดข้อผิดพลาด กรุณาลองใหม่";
+    return (firstLine || "เกิดข้อผิดพลาด") + " — กรุณากดรันใหม่อีกครั้ง";
   }
 
   /** Returns true if the error is a missing-key error and opens the modal. */
@@ -1208,6 +1213,49 @@ export default function ShortVideoPage() {
             else rerunFromRef.current(step as keyof StepState);
           }}
         />
+      )}
+
+      {showClearCacheDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowClearCacheDialog(false); }}>
+          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
+            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
+              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <p className="text-sm" style={{ color: "hsl(220 15% 65%)" }}>
+                ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
+              </p>
+              <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(220 15% 75%)" }}>
+                <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
+                <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
+              </ol>
+            </div>
+            <div className="px-5 py-4 flex gap-3" style={{ borderTop: "1px solid hsl(220 30% 14%)" }}>
+              <button
+                className="flex-1 rounded-lg py-2 text-sm font-medium"
+                style={{ background: "hsl(220 30% 18%)", color: "hsl(220 15% 65%)" }}
+                onClick={() => setShowClearCacheDialog(false)}>
+                ปิด
+              </button>
+              <button
+                className="flex-1 rounded-lg py-2 text-sm font-semibold text-white"
+                style={{ background: "hsl(14 90% 55%)" }}
+                onClick={async () => {
+                  setShowClearCacheDialog(false);
+                  try {
+                    await fetch("/api/stocks", { method: "DELETE" });
+                  } catch {}
+                  pipe.current = {};
+                  toast.success("ล้าง Cache แล้ว — กด Run ได้เลย");
+                }}>
+                ล้าง Cache แล้วรันใหม่
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showLLMPicker && (
