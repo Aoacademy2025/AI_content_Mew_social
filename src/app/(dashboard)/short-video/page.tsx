@@ -131,18 +131,15 @@ export default function ShortVideoPage() {
 
   const [script, setScript] = useState("");
 
-  // Preprocess script: trim each line, collapse 2+ blank lines to single newline, keep paragraph breaks
   function preprocessScript(raw: string): string {
     return raw
-      .replace(/\([A-Za-z][^)]{0,60}\)/g, "")    // remove English parentheticals (Anyons) single-line
-      .replace(/\([A-Za-z][^\n)]{0,30}\n[^\n)]{0,30}\)/g, "")  // multi-line e.g. (Fractional\nExcitons)
+      .replace(/\r?\n/g, " ")
+      .replace(/\([A-Za-z][^)]{0,80}\)/g, "")
       .replace(/\.{3,}/g, "\n")
-      .replace(/["'"]/g, "")
-      .split(/\n/)
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => l.length > 0)
       .join("\n")
-      .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
 
