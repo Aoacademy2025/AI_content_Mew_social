@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { script, scenes } = body ?? {};
+  const { script, scenes, perSubtitle = false } = body ?? {};
 
   // Support both: scenes array (preferred) or plain script (split by newline)
   const sceneList: string[] = Array.isArray(scenes) && scenes.length > 0
@@ -43,13 +43,64 @@ export async function POST(req: Request) {
 
   const fullScript = sceneList.join(" ");
 
+  // perSubtitle mode: 1 keyword per subtitle phrase (called after transcribe)
+  if (perSubtitle) {
+    const subtitlePrompt = `You are a B-roll video editor sourcing footage from Pexels for a TikTok/Reels video.
+
+For each Thai subtitle phrase below, output ONE short English search query (2-4 words) that describes the best visual B-roll for that moment.
+
+RULES:
+- Output ONLY valid JSON array of strings, one per subtitle, same order
+- Each query must describe something physically filmable (no abstract concepts)
+- Queries should match the visual content/emotion of that specific subtitle
+- Translate Thai concepts to English visuals
+- Make queries specific and varied — no repeats if possible
+- BANNED: concept, idea, success, growth, abstract, metaphor, innovation
+
+SUBTITLES:
+${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+
+OUTPUT (JSON array, exactly ${sceneList.length} items):`;
+
+    let kwText = "[]";
+    try {
+      if (useGemini) {
+        kwText = await geminiGenerateText(apiKey!, subtitlePrompt, 4096);
+      } else {
+        const r = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: subtitlePrompt }], max_tokens: 4096, temperature: 0.4 }),
+        });
+        if (r.ok) { const d = await r.json(); kwText = d.choices?.[0]?.message?.content ?? "[]"; }
+      }
+    } catch (e) {
+      console.error("[extract-keywords] perSubtitle error:", e);
+    }
+
+    try {
+      const match = kwText.match(/\[[\s\S]*\]/);
+      const parsed: string[] = JSON.parse(match?.[0] ?? "[]");
+      const keywords = parsed.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
+      console.log(`[extract-keywords] perSubtitle: ${keywords.length} keywords for ${sceneList.length} subtitles`);
+      return NextResponse.json({
+        keywords,
+        sceneClipCounts: keywords.map(() => 1),
+        sceneDurations: sceneList.map(() => 3),
+        keywordsPerScene: 1,
+      });
+    } catch {
+      return NextResponse.json({ keywords: [], sceneClipCounts: [], sceneDurations: [], keywordsPerScene: 1 });
+    }
+  }
+
   // Estimate duration per scene: Thai speech ~3 chars/sec, min 5s per scene
   const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
   const totalEstimatedSec = sceneDurations.reduce((a, b) => a + b, 0);
-  // Target: 1 unique keyword per 3s of content (+30% buffer), min 2 per scene, cap total at 15
+  // Target: 1 unique keyword per 3s of content (+30% buffer), min 2 per scene, cap total at 30
   const rawClipsPerScene = sceneDurations.map(d => Math.max(2, Math.ceil((d / 3) * 1.3)));
   const rawTotal = rawClipsPerScene.reduce((a, b) => a + b, 0);
-  const MAX_TOTAL_CLIPS = 15;
+  const MAX_TOTAL_CLIPS = 30;
   const scale = rawTotal > MAX_TOTAL_CLIPS ? MAX_TOTAL_CLIPS / rawTotal : 1;
   const clipsPerScene = rawClipsPerScene.map(c => Math.max(1, Math.round(c * scale)));
   const totalClips = clipsPerScene.reduce((a, b) => a + b, 0);
