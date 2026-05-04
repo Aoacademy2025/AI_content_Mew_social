@@ -402,19 +402,41 @@ export default function ShortVideoPage() {
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
-    if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
-    if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
+
+    // Server returned HTML instead of JSON (crashed, 502, 504, cold start)
+    if (raw.includes("Unexpected token '<'") || raw.includes("Unexpected token \"<\"") || raw.includes("<html"))
+      return "Server ไม่ตอบสนอง (502/504) — กรุณารอสักครู่แล้วกดรันใหม่";
+
+    if (raw.includes("ENOSPC") || raw.includes("no space left"))
+      return "พื้นที่ดิสก์บน Server เต็ม — กรุณาติดต่อผู้ดูแลระบบ";
+    if (raw.includes("Unauthorized") || raw.includes("401"))
+      return "Session หมดอายุ — กรุณา Login ใหม่";
+    if (raw.includes("403"))
+      return "ไม่มีสิทธิ์เข้าถึง — กรุณาตรวจสอบ API Key ใน Settings";
+    if (raw.includes("429"))
+      return "API เกิน Rate Limit — กรุณารอสักครู่แล้วลองใหม่";
     if (raw.includes("Server Action") || raw.includes("newer deployment") || raw.includes("older deployment")) {
       setTimeout(() => { if (confirm("มีการอัพเดตระบบใหม่ — กด OK เพื่อ refresh หน้า")) window.location.reload(); }, 300);
-      return "ระบบมีการอัพเดต กรุณา refresh หน้าแล้วรันใหม่";
+      return "ระบบมีการอัพเดต — กรุณา Refresh หน้าแล้วรันใหม่";
     }
-    if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
+    if (raw.includes("timeout") || raw.includes("ETIMEDOUT") || raw.includes("504"))
+      return "หมดเวลารอ (Timeout) — กรุณากดรันใหม่อีกครั้ง";
+    if (raw.includes("ECONNREFUSED") || raw.includes("fetch failed") || raw.includes("NetworkError"))
+      return "ไม่สามารถเชื่อมต่อ Server — กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต";
     if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
       setShowClearCacheDialog(true);
-      return "keywords required — กรุณาล้างแคชแล้วรันใหม่";
+      return "Keywords ขาดหาย — กรุณาล้างแคชแล้วรันใหม่";
     }
-    if (err instanceof ApiCallError && err.data.retryable) return String(err.data.error ?? "เกิดข้อผิดพลาด กรุณากดรันใหม่อีกครั้ง");
-    // Show the actual error message so user/developer can see what went wrong
+    if (raw.includes("pexels") || raw.includes("Pexels"))
+      return "Pexels API มีปัญหา — กรุณาตรวจสอบ API Key ใน Settings แล้วลองใหม่";
+    if (raw.includes("ffmpeg") || raw.includes("ffprobe"))
+      return "Video processing ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
+    if (raw.includes("Whisper") || raw.includes("transcribe"))
+      return "Transcribe ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
+    if (err instanceof ApiCallError && err.data.retryable)
+      return String(err.data.error ?? "เกิดข้อผิดพลาด — กรุณากดรันใหม่อีกครั้ง");
+    if (err instanceof ApiCallError && err.data.error)
+      return String(err.data.error);
     const firstLine = raw.split("\n")[0].slice(0, 200);
     return (firstLine || "เกิดข้อผิดพลาด") + " — กรุณากดรันใหม่อีกครั้ง";
   }
@@ -891,13 +913,62 @@ export default function ShortVideoPage() {
     return finalUrl;
   }
 
+  // ── Input validation before any pipeline run ────────────────────
+  // Returns true if valid, false + shows toast if something is missing.
+  function validateInputs(phase: "prepare" | "generate" | "avatar"): boolean {
+    const errors: string[] = [];
+
+    if (phase === "prepare" || phase === "generate") {
+      if (!script.trim())
+        errors.push("กรอก Script ก่อนเริ่ม");
+
+      const isDirectMode = avatarInputMode === "direct";
+      if (!isDirectMode) {
+        // TTS required
+        if (ttsProvider === "elevenlabs" && !voiceId.trim())
+          errors.push("เลือก ElevenLabs Voice ID ใน TTS Settings");
+      } else {
+        // Direct URL mode — need avatar URL (audio source)
+        if (!avatarDirectUrl.trim())
+          errors.push("กรอก Avatar Video URL (Direct URL mode)");
+      }
+    }
+
+    if (phase === "generate") {
+      if (!pipe.current.voiceUrl)
+        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
+      if (!editedSceneCaptions.length)
+        errors.push("ยังไม่มีซับไตเติ้ล — กด Run All ก่อน");
+      if (!getActiveStocks().length)
+        errors.push("ยังไม่มี stock video — กด Run All ก่อน");
+    }
+
+    if (phase === "avatar") {
+      if (!pipe.current.voiceUrl && avatarInputMode !== "direct")
+        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
+      if (avatarInputMode === "generate" && !avatarId.trim())
+        errors.push("กรอก HeyGen Avatar ID ใน Avatar Settings");
+      if (avatarInputMode === "direct" && !avatarDirectUrl.trim())
+        errors.push("กรอก Avatar Video URL");
+      if (!pipe.current.renderedVideoUrl)
+        errors.push("ยังไม่มีวิดีโอ — กด Render ก่อน");
+    }
+
+    if (errors.length > 0) {
+      errors.forEach((e, i) => {
+        setTimeout(() => toast.error(e), i * 150);
+      });
+      return false;
+    }
+    return true;
+  }
+
   // ── Full pipeline ────────────────────────────────────────────────
 
   // Pipeline Phase 1: Content → Render (stops before HeyGen)
   async function runAll() {
-    if (!script.trim()) return toast.error("กรอก script ก่อน");
+    if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
-    if (isDirectMode && !avatarDirectUrl.trim()) return toast.error("กรอก Avatar Video URL ก่อน");
 
     // Check if any LLM key exists — if not, show picker before starting
     try {
@@ -1057,11 +1128,10 @@ export default function ShortVideoPage() {
 
   // Pipeline Phase 1b: Render preview WITHOUT subtitles — user previews CSS overlay first
   async function runGenerate() {
+    if (!validateInputs("generate")) return;
     const stocks = getActiveStocks();
     const voice = pipe.current.voiceUrl ?? "";
     const durMs = pipe.current.audioDurationMs ?? 0;
-    if (!voice) return toast.error("ยังไม่มี audio URL — กด Run All ก่อน");
-    if (!editedSceneCaptions.length) return toast.error("ยังไม่มีซับ — กด Run All ก่อน");
 
     setRunning(true);
     abortRef.current = false;
@@ -1093,10 +1163,9 @@ export default function ShortVideoPage() {
 
   // Pipeline Phase 2: Avatar (HeyGen) → Composite
   async function runAvatarPipeline() {
-    const voice = pipe.current.voiceUrl;
-    const rendered = pipe.current.renderedVideoUrl;
-    if (!voice) return toast.error("ยังไม่มีเสียง — ต้อง Generate ก่อน");
-    if (!rendered) return toast.error("ยังไม่มีวิดีโอ — ต้อง Generate ก่อน");
+    if (!validateInputs("avatar")) return;
+    const voice = pipe.current.voiceUrl!;
+    const rendered = pipe.current.renderedVideoUrl!;
 
     setRunning(true);
     abortRef.current = false;
