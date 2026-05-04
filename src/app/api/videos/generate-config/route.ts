@@ -363,8 +363,35 @@ export async function POST(req: Request) {
       function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
       if (sceneCaptions.length > 0) {
-        // Build a global rotation pool: scene clips grouped by scene, shuffled within scene
-        // So captions in scene 1 get scene-1 clips first, then borrow from others
+        // ── Per-subtitle mode: keywords.length ≈ captions.length, each keyword maps 1:1 to caption ──
+        // Detected when sceneClipCounts are all 1 (set by per-subtitle fetch in page.tsx)
+        const isPerSubtitle = Array.isArray(sceneClipCounts) &&
+          sceneClipCounts.length > 0 &&
+          sceneClipCounts.every(c => c === 1) &&
+          validStocks.length >= Math.floor(sceneCaptions.length * 0.5);
+
+        if (isPerSubtitle) {
+          // Direct 1:1 mapping: caption[i] → stock[i % stocks.length]
+          // stocks are already ordered by keyword which matches caption order
+          console.log(`[config] per-subtitle mode: ${validStocks.length} clips for ${sceneCaptions.length} captions`);
+          for (let ci = 0; ci < sceneCaptions.length; ci++) {
+            const cap = sceneCaptions[ci];
+            const capStartSec = cap.startMs / 1000;
+            const capEndSec = cap.endMs / 1000;
+            const dur = capEndSec - capStartSec;
+            if (dur < 0.1) continue;
+
+            const sv = validStocks[ci % validStocks.length];
+            const src = sv.localUrl ?? sv.videoUrl;
+            const clipDuration = sv.duration > 0 ? sv.duration : 10;
+            const clipOffset = clipNextOffset.get(src) ?? 0;
+            const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+
+            bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+            clipNextOffset.set(src, safeOffset + dur);
+          }
+        } else {
+        // ── Scene-aware pool mode: group clips by scene, rotate through pool ──
         const globalPool: StockVideo[] = [];
         for (let si = 0; si < sceneBoundaries.length; si++) {
           const sceneClips = shuffle(clipsForScene[si] ?? []);
@@ -374,8 +401,6 @@ export async function POST(req: Request) {
         const inPool = new Set(globalPool.map(s => s.localUrl ?? s.videoUrl));
         globalPool.push(...shuffle(validStocks.filter(s => !inPool.has(s.localUrl ?? s.videoUrl))));
 
-        // If we have fewer clips than captions, repeat the pool
-        // Use a rotating index so every caption gets a different clip
         let poolIdx = 0;
         const getNextClip = (): StockVideo => {
           const sv = globalPool[poolIdx % globalPool.length];
@@ -399,6 +424,7 @@ export async function POST(req: Request) {
           bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
           clipNextOffset.set(src, safeOffset + dur);
         }
+        } // end scene-aware pool mode
       } else {
         // Fallback: no captions — use scene boundaries with fixed cut cycle
         const CUT_CYCLE = audioDurationSec <= 20 ? [4, 3.5, 4.5] : [3, 2.5, 3.5, 2];

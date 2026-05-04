@@ -42,9 +42,13 @@ function VideoClip({
   const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
   const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
 
-  // Fade in only non-first clips (first clip must start at full opacity — no black frame)
-  const fadeInOpacity = isFirst ? 1 : interpolate(frame, [0, 6], [0, 1], { extrapolateRight: "clamp" });
-  const fadeOutOpacity = interpolate(frame, [segDurFrames - 6, segDurFrames], [1, 0], { extrapolateLeft: "clamp" });
+  // Fade windows: cap at half segment so they never overlap on short clips
+  const fadeFrames = Math.min(6, Math.floor(segDurFrames / 2));
+  const fadeInOpacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
+  const fadeOutStart = Math.max(0, segDurFrames - fadeFrames);
+  const fadeOutOpacity = fadeFrames > 0
+    ? interpolate(frame, [fadeOutStart, segDurFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 1;
   const opacity = Math.min(fadeInOpacity, fadeOutOpacity);
 
   return (
