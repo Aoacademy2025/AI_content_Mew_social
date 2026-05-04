@@ -638,17 +638,15 @@ ${sourceText.trim()}`;
             });
           }
           console.log(`[transcribe] forced-alignment ${result.length} captions from ${words.length} words`);
-        } else {
-          // Strategy B: segment-level proportional
+        } else if (segments.length > 0) {
+          // Strategy B: segment-level proportional — use Whisper segment boundaries
           type TimePoint = { sec: number };
           const timeline: TimePoint[] = [];
-          if (segments.length > 0) {
-            for (const seg of segments) {
-              timeline.push({ sec: seg.start });
-              timeline.push({ sec: seg.end });
-            }
+          for (const seg of segments) {
+            timeline.push({ sec: seg.start });
+            timeline.push({ sec: seg.end });
           }
-          if (timeline.length === 0 || timeline[0].sec > 0.1) timeline.unshift({ sec: 0 });
+          if (timeline[0].sec > 0.1) timeline.unshift({ sec: 0 });
           if (timeline[timeline.length - 1].sec < audioDur - 0.1) timeline.push({ sec: audioDur });
 
           const timeAtFrac = (frac: number): number => {
@@ -672,6 +670,20 @@ ${sourceText.trim()}`;
             result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
           }
           console.log(`[transcribe] segment-proportional ${result.length} captions, ${timeline.length} points`);
+        } else {
+          // Strategy C: no timestamps at all (Gemini path) — distribute evenly by char count
+          // Thai TTS speaks at roughly constant rate, so char proportion ≈ time proportion
+          const charLengths = phrases.map(p => Math.max(1, thaiOnly(p).length || p.replace(/\s+/g, "").length));
+          const totalChars = charLengths.reduce((a, b) => a + b, 0);
+          let cumChars = 0;
+          for (let i = 0; i < phrases.length; i++) {
+            const startSec = (cumChars / totalChars) * audioDur;
+            cumChars += charLengths[i];
+            const endSec = (cumChars / totalChars) * audioDur;
+            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
+            result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
+          }
+          console.log(`[transcribe] char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
         }
 
         // Pin first to 0, last to audioDur, ensure no overlap

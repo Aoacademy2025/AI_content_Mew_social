@@ -27,11 +27,13 @@ function VideoClip({
   startFrom,
   clipIndex,
   segDurFrames,
+  isFirst,
 }: {
   src: string;
   startFrom: number;
   clipIndex: number;
   segDurFrames: number;
+  isFirst: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
@@ -40,8 +42,8 @@ function VideoClip({
   const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
   const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
 
-  // Fade in first 6 frames, fade out last 6 frames of each clip
-  const fadeInOpacity = interpolate(frame, [0, 6], [0, 1], { extrapolateRight: "clamp" });
+  // Fade in only non-first clips (first clip must start at full opacity — no black frame)
+  const fadeInOpacity = isFirst ? 1 : interpolate(frame, [0, 6], [0, 1], { extrapolateRight: "clamp" });
   const fadeOutOpacity = interpolate(frame, [segDurFrames - 6, segDurFrames], [1, 0], { extrapolateLeft: "clamp" });
   const opacity = Math.min(fadeInOpacity, fadeOutOpacity);
 
@@ -270,6 +272,7 @@ export function ShortVideoComposition({
                 startFrom={startFromFrame}
                 clipIndex={i}
                 segDurFrames={iterDur}
+                isFirst={i === 0 && iter === 0}
               />
             </Sequence>
           );
