@@ -957,7 +957,53 @@ export default function ShortVideoPage() {
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
 
-      toast.success("Transcribe เสร็จ — ตรวจสอบซับด้านล่างแล้วกด Generate Video");
+      toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
+
+      // Background: re-fetch stock with 1 keyword per subtitle for better visual match
+      // Don't await — runs in background so user can see subtitles immediately
+      if (sceneCaptions.length > 0) {
+        (async () => {
+          try {
+            setStep("keywords", "running", `mapping ${sceneCaptions.length} ซับ → keyword...`);
+            const kwRes = await fetch("/api/videos/extract-keywords", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
+            });
+            if (!kwRes.ok) return;
+            const kwData = await kwRes.json();
+            const kws: string[] = kwData.keywords ?? [];
+            if (kws.length === 0) return;
+            pipe.current.keywords = kws;
+            pipe.current.sceneClipCounts = kws.map(() => 1);
+            setKeywords(kws);
+            setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
+
+            setStep("fetchStock", "running", `ดึง stock ${kws.length} คลิปตรงซับ...`);
+            const stockRes = await fetch("/api/videos/fetch-stock", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                keywords: kws,
+                download: true,
+                totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
+                stockSource,
+                overrideClipCount: kws.length,
+              }),
+            });
+            if (!stockRes.ok) return;
+            const stockData = await stockRes.json();
+            const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
+            if (clips.length > 0) {
+              pipe.current.stockVideos = clips;
+              setPipeStockVideos(clips);
+              setExcludedClipIds(new Set());
+              setStep("fetchStock", "done", `ได้ ${clips.length} คลิปตรงซับ`);
+              toast.success(`อัพเดต stock ${clips.length} คลิปตรงซับแล้ว — กด Generate Video ได้เลย`);
+            }
+          } catch { /* non-critical */ }
+        })();
+      }
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
