@@ -1033,7 +1033,13 @@ export default function ShortVideoPage() {
       // Background: re-fetch stock with 1 keyword per subtitle for better visual match
       // Don't await — runs in background so user can see subtitles immediately
       if (sceneCaptions.length > 0) {
+        const prevKwCount = (pipe.current.keywords ?? []).length;
+        const prevStockCount = (pipe.current.stockVideos ?? []).length;
+        const restoreKw = () => setStep("keywords", "done", `${prevKwCount} keywords (เดิม)`);
+        const restoreStock = () => setStep("fetchStock", "done", `${prevStockCount} คลิป (เดิม)`);
+
         (async () => {
+          let kwsDone = false;
           try {
             setStep("keywords", "running", `mapping ${sceneCaptions.length} ซับ → keyword...`);
             const kwRes = await fetch("/api/videos/extract-keywords", {
@@ -1041,14 +1047,15 @@ export default function ShortVideoPage() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
             });
-            if (!kwRes.ok) return;
+            if (!kwRes.ok) { restoreKw(); return; }
             const kwData = await kwRes.json();
             const kws: string[] = kwData.keywords ?? [];
-            if (kws.length === 0) return;
+            if (kws.length === 0) { restoreKw(); return; }
             pipe.current.keywords = kws;
             pipe.current.sceneClipCounts = kws.map(() => 1);
             setKeywords(kws);
             setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
+            kwsDone = true;
 
             setStep("fetchStock", "running", `ดึง stock ${kws.length} คลิปตรงซับ...`);
             const stockRes = await fetch("/api/videos/fetch-stock", {
@@ -1062,17 +1069,22 @@ export default function ShortVideoPage() {
                 overrideClipCount: kws.length,
               }),
             });
-            if (!stockRes.ok) return;
+            if (!stockRes.ok) { restoreStock(); return; }
             const stockData = await stockRes.json();
             const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
             if (clips.length > 0) {
               pipe.current.stockVideos = clips;
               setPipeStockVideos(clips);
               setExcludedClipIds(new Set());
-              setStep("fetchStock", "done", `ได้ ${clips.length} คลิปตรงซับ`);
-              toast.success(`อัพเดต stock ${clips.length} คลิปตรงซับแล้ว — กด Generate Video ได้เลย`);
+              setStep("fetchStock", "done", `ได้ ${clips.length}`);
+              toast.success(`อัพเดต stock ${clips.length}  — กด Generate Video ได้เลย`);
+            } else {
+              restoreStock();
             }
-          } catch { /* non-critical */ }
+          } catch {
+            if (!kwsDone) restoreKw();
+            restoreStock();
+          }
         })();
       }
     } catch (err) {
@@ -1940,7 +1952,7 @@ export default function ShortVideoPage() {
                   <div className="space-y-3">
                     {/* Step 1: URL / Upload */}
                     <div className="space-y-1.5">
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">1. Avatar Video URL (public)</p>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Video URL or Upload</p>
                       <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }}
                         placeholder="https://... หรือวาง URL วิดีโอ"
                         className="text-xs font-mono text-white border-0 focus-visible:ring-0"
