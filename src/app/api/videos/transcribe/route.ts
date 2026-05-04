@@ -332,13 +332,27 @@ export async function POST(req: Request) {
     let fullText = "";
 
     if (useGeminiTranscribe) {
-      // ── Strategy 1: Gemini Audio Transcribe ──
-      console.log("[transcribe] using Gemini transcribe...");
+      // ── Strategy 1: Gemini Audio Transcribe with timestamps ──
+      // Ask Gemini to return segments with start/end times so we get real timestamps.
+      // Gemini 2.5 Flash supports audio + JSON structured output in a single call.
+      console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {
         const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
         const audioBuffer = fs.readFileSync(mp3Path);
         try { fs.unlinkSync(mp3Path); } catch {}
         const audioB64 = audioBuffer.toString("base64");
+
+        const timestampPrompt = `Transcribe this Thai audio into segments with timestamps.
+
+Return ONLY valid JSON, no markdown, no explanation:
+{"segments":[{"text":"...","start":0.0,"end":2.5},...],"fullText":"..."}
+
+RULES:
+- Each segment = one natural phrase or sentence (roughly 3–8 words)
+- start/end = seconds (float, accurate to 0.1s)
+- fullText = complete transcription joined together
+- NEVER fabricate timestamps — only use what you can hear
+- If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 500)}` : ""}`;
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
@@ -348,7 +362,7 @@ export async function POST(req: Request) {
             body: JSON.stringify({
               contents: [{
                 parts: [
-                  { text: `Transcribe this Thai audio exactly word-for-word. Return ONLY the transcribed text, no explanation, no translation.\n${script ? `Reference script (do NOT modify): ${script.trim()}` : ""}` },
+                  { text: timestampPrompt },
                   { inlineData: { mimeType: "audio/mp3", data: audioB64 } },
                 ],
               }],
@@ -366,8 +380,39 @@ export async function POST(req: Request) {
           throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
         }
         const geminiData = await geminiRes.json();
-        fullText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-        console.log(`[transcribe] Gemini OK — ${fullText.length} chars`);
+        const rawGeminiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+        console.log(`[transcribe] Gemini raw: ${rawGeminiText.slice(0, 300)}`);
+
+        // Try to parse structured JSON response with timestamps
+        try {
+          const jsonMatch = rawGeminiText.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+          const match = jsonMatch.match(/\{[\s\S]*\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            fullText = parsed.fullText?.trim() ?? rawGeminiText;
+            if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+              segments = parsed.segments
+                .filter((s: { text?: string; start?: number; end?: number }) =>
+                  typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"
+                )
+                .map((s: { text: string; start: number; end: number }) => ({
+                  text: s.text.trim(),
+                  start: s.start,
+                  end: s.end,
+                }));
+              console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments with timestamps`);
+            } else {
+              console.warn("[transcribe] Gemini returned no segments, falling back to text-only");
+              fullText = rawGeminiText;
+            }
+          } else {
+            fullText = rawGeminiText;
+          }
+        } catch {
+          // JSON parse failed → use raw text, no timestamps
+          fullText = rawGeminiText;
+          console.warn("[transcribe] Gemini JSON parse failed, using text-only mode");
+        }
       } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
         const status = (e as { status?: number })?.status;
@@ -450,7 +495,32 @@ export async function POST(req: Request) {
         fallbackDur
       );
 
-      // ── Step 1: Get phrases from GPT (split script into natural subtitle lines) ──
+      // ── Fast path: if we already have timestamped segments (Gemini or Whisper),
+      // use them directly as captions — no need for GPT split + alignment.
+      // Segments already represent natural speech units with accurate timing.
+      if (segments.length >= 2) {
+        const segCaptions = segments.map((seg, i) => {
+          const text = sanitizePhraseText(seg.text);
+          const startMs = Math.round(seg.start * 1000);
+          const endMs = i < segments.length - 1
+            ? Math.round(segments[i + 1].start * 1000)  // end = next segment start (no gap)
+            : Math.round(audioDur * 1000);
+          return { text, startMs, endMs, timestampMs: startMs, confidence: 1 as const };
+        }).filter(c => c.text.length > 0);
+
+        if (segCaptions.length > 0) {
+          segCaptions[0].startMs = 0;
+          segCaptions[segCaptions.length - 1].endMs = Math.round(audioDur * 1000);
+          captions = segCaptions;
+          console.log(`[transcribe] direct-segments: ${captions.length} captions from ${segments.length} segments`);
+          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
+        }
+      }
+
+      // ── Step 1: Get phrases from GPT (only if we don't already have segment timestamps) ──
+      // When Gemini/Whisper returned segments with timestamps, captions is already populated above.
+      // Skip GPT split in that case — it would only drift the timing.
+      if (captions.length === 0) {
       let phrases: string[] = [];
       let minPhrases = 4;
       let maxPhrases = 6;
@@ -701,10 +771,13 @@ ${sourceText.trim()}`;
           }
         }
 
-        captions = result.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
-        captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
+          captions = result.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
+          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
+        } // end if (phrases.length > 0) — alignment path
 
-      } else {
+      } // end if (captions.length === 0) — GPT split + alignment path
+
+      if (captions.length === 0) {
         // Last resort: use raw Whisper segments grouped by duration
         const merged: { text: string; startMs: number; endMs: number }[] = [];
         let buf = "", bufStart = 0, bufEnd = 0;
@@ -719,7 +792,7 @@ ${sourceText.trim()}`;
         }
         if (buf) merged.push({ text: buf, startMs: Math.round(bufStart * 1000), endMs: Math.round(bufEnd * 1000) });
         captions = merged.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
-      }
+      } // end if (captions.length === 0) last-resort
     } else if (words.length > 0) {
       // Word-level grouping for non-Thai (English, etc.)
       const MAX_WORDS = 4;
@@ -799,3 +872,4 @@ ${sourceText.trim()}`;
     return apiError({ route: "videos/transcribe", error, notifyUser: true });
   }
 }
+
