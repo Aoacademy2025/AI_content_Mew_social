@@ -2007,12 +2007,23 @@ export default function ShortVideoPage() {
                 running={running}
                 onRerun={rerunFrom}
                 action={
-                  <button onClick={runAll} disabled={running || !script.trim()}
-                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
-                    style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
-                    {running && ["keywords","fetchStock","tts","transcribe"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                    Run
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {stockCacheInfo && stockCacheInfo.count > 0 && (
+                      <button onClick={clearStockCache} disabled={clearingCache}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40"
+                        style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
+                        title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
+                        {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                        Cache {stockCacheInfo.sizeMb}MB
+                      </button>
+                    )}
+                    <button onClick={runAll} disabled={running || !script.trim()}
+                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                      style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+                      {running && ["keywords","fetchStock","tts","transcribe"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                      Run
+                    </button>
+                  </div>
                 }
               />
 
@@ -2161,16 +2172,6 @@ export default function ShortVideoPage() {
                                   ))}
                                 </div>
                                 <div className="flex-1" />
-                                {/* Cache clear button */}
-                                {stockCacheInfo && stockCacheInfo.count > 0 && (
-                                  <button onClick={clearStockCache} disabled={clearingCache}
-                                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
-                                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์ (${stockCacheInfo.sizeMb} MB)`}>
-                                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                                    Cache {stockCacheInfo.sizeMb}MB
-                                  </button>
-                                )}
                                 {/* Clip count: Auto badge or number input */}
                                 <div className="flex items-center gap-1.5 rounded-lg px-2 py-1"
                                   style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
