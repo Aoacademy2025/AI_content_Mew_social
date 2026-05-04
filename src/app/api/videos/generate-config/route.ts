@@ -248,13 +248,41 @@ export async function POST(req: Request) {
   if (validStocks.length > 0) {
     const n = validStocks.length;
 
+    // ── PER-SUBTITLE mode (highest priority): when 1 keyword per caption ──
+    // Detected when sceneClipCounts are all 1 — set by per-subtitle re-fetch
+    // after transcribe. Each stock clip maps 1:1 to a caption by index, using
+    // the caption's actual startMs/endMs as the cut. This is what guarantees
+    // visual matches the spoken word.
+    const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
+      sceneClipCounts.length > 0 &&
+      sceneClipCounts.every(c => c === 1) &&
+      sceneCaptions.length > 0 &&
+      n >= Math.floor(sceneCaptions.length * 0.5);
+
     // ── EVEN-SPLIT: divide total duration equally across all selected clips ──
     // Use this when clips are few (≤ scenes count × 3) — user manually curated them.
     // Each clip plays from second 0 for its slice; <Video loop> fills short clips.
     const numScenes = Math.max(1, scenes.length);
-    const useEvenSplit = n <= numScenes * 4; // few clips → guaranteed equal airtime
+    const useEvenSplit = !isPerSubtitleTop && n <= numScenes * 4; // few clips → guaranteed equal airtime
 
-    if (useEvenSplit) {
+    if (isPerSubtitleTop) {
+      console.log(`[config] per-subtitle (top): ${n} clips for ${sceneCaptions.length} captions — direct 1:1`);
+      const clipNextOffsetTop = new Map<string, number>();
+      for (let ci = 0; ci < sceneCaptions.length; ci++) {
+        const cap = sceneCaptions[ci];
+        const capStartSec = cap.startMs / 1000;
+        const capEndSec = cap.endMs / 1000;
+        const dur = capEndSec - capStartSec;
+        if (dur < 0.1) continue;
+        const sv = validStocks[ci % n];
+        const src = sv.localUrl ?? sv.videoUrl;
+        const clipDuration = sv.duration > 0 ? sv.duration : 10;
+        const clipOffset = clipNextOffsetTop.get(src) ?? 0;
+        const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+        clipNextOffsetTop.set(src, safeOffset + dur);
+      }
+    } else if (useEvenSplit) {
       const sliceSec = audioDurationSec / n;
       console.log(`[config] even-split: ${n} clips × ${sliceSec.toFixed(2)}s each`);
       for (let i = 0; i < n; i++) {
