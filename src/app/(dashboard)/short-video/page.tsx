@@ -957,55 +957,6 @@ export default function ShortVideoPage() {
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
 
-      // Re-extract keywords mapped 1-per-subtitle, then fetch stock fresh
-      if (sceneCaptions.length > 0) {
-        try {
-          setStep("keywords", "running", `สร้าง keyword สำหรับ ${sceneCaptions.length} ซับ...`);
-          const kwRes = await fetch("/api/videos/extract-keywords", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              scenes: sceneCaptions.map(c => c.text),
-              perSubtitle: true,
-            }),
-            signal: abortControllerRef.current?.signal,
-          });
-          if (kwRes.ok) {
-            const kwData = await kwRes.json();
-            const kws: string[] = kwData.keywords ?? [];
-            if (kws.length > 0) {
-              pipe.current.keywords = kws;
-              pipe.current.sceneClipCounts = kwData.sceneClipCounts ?? [];
-              setKeywords(kws);
-              setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
-
-              // Fetch stock with new per-subtitle keywords
-              setStep("fetchStock", "running", `${kws.length} keywords → stock...`);
-              const stockRes = await fetch("/api/videos/fetch-stock", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  keywords: kws,
-                  download: true,
-                  totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
-                  stockSource,
-                  overrideClipCount: kws.length,
-                }),
-                signal: abortControllerRef.current?.signal,
-              });
-              if (stockRes.ok) {
-                const stockData = await stockRes.json();
-                const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
-                pipe.current.stockVideos = clips;
-                setPipeStockVideos(clips);
-                setExcludedClipIds(new Set());
-                setStep("fetchStock", "done", `ได้ ${clips.length} คลิป สำหรับ ${sceneCaptions.length} ซับ`);
-              }
-            }
-          }
-        } catch { /* non-critical — use existing keywords/clips */ }
-      }
-
       toast.success("Transcribe เสร็จ — ตรวจสอบซับด้านล่างแล้วกด Generate Video");
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
