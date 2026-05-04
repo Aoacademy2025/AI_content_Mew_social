@@ -495,10 +495,11 @@ RULES:
         fallbackDur
       );
 
-      // ── Fast path: if we already have timestamped segments (Gemini or Whisper),
-      // use them directly as captions — no need for GPT split + alignment.
-      // Segments already represent natural speech units with accurate timing.
-      if (segments.length >= 2) {
+      // ── Fast path: Gemini segments only (no word timestamps available)
+      // When Gemini returns timestamped segments but no word-level data,
+      // use segments directly — GPT split + forced alignment would only drift.
+      // OpenAI Whisper has word timestamps → always use the full GPT split + alignment path.
+      if (segments.length >= 2 && words.length === 0) {
         const segCaptions = segments.map((seg, i) => {
           const text = sanitizePhraseText(seg.text);
           const startMs = Math.round(seg.start * 1000);
