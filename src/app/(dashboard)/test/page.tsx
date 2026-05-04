@@ -123,7 +123,7 @@ export default function ShortVideoPage() {
       const p = d.plan === "PRO" ? "PRO" : "FREE";
       setPlan(p);
       if (p !== "PRO") {
-        toast.error("Avatar Cloning สำหรับผู้ใช้งานระดับ Pro เท่านั้น");
+        toast.error("Test สำหรับผู้ใช้งานระดับ Pro เท่านั้น");
         router.replace("/dashboard");
       }
     }).catch(() => { router.replace("/dashboard"); });
@@ -131,15 +131,13 @@ export default function ShortVideoPage() {
 
   const [script, setScript] = useState("");
 
+  // Preprocess script: trim each line, collapse 2+ blank lines to single newline, keep paragraph breaks
   function preprocessScript(raw: string): string {
     return raw
-      .replace(/\r?\n/g, " ")
-      .replace(/\([A-Za-z][^)]{0,80}\)/g, "")
-      .replace(/\.{3,}/g, "\n")
-      .split("\n")
-      .map(l => l.trim())
-      .filter(l => l.length > 0)
+      .split(/\n/)
+      .map(line => line.trim())
       .join("\n")
+      .replace(/\n{3,}/g, "\n\n")  // collapse 3+ newlines → double newline (paragraph break)
       .trim();
   }
 
@@ -216,7 +214,6 @@ export default function ShortVideoPage() {
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
   // LLM provider picker — shown when no key is set at all before runAll
   const [showLLMPicker, setShowLLMPicker] = useState(false);
-  const [showClearCacheDialog, setShowClearCacheDialog] = useState(false);
 
   // Stored pipeline data for partial re-runs
   const pipe = useRef<Partial<PipelineData>>({});
@@ -402,43 +399,13 @@ export default function ShortVideoPage() {
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
-
-    // Server returned HTML instead of JSON (crashed, 502, 504, cold start)
-    if (raw.includes("Unexpected token '<'") || raw.includes("Unexpected token \"<\"") || raw.includes("<html"))
-      return "Server ไม่ตอบสนอง (502/504) — กรุณารอสักครู่แล้วกดรันใหม่";
-
-    if (raw.includes("ENOSPC") || raw.includes("no space left"))
-      return "พื้นที่ดิสก์บน Server เต็ม — กรุณาติดต่อผู้ดูแลระบบ";
-    if (raw.includes("Unauthorized") || raw.includes("401"))
-      return "Session หมดอายุ — กรุณา Login ใหม่";
-    if (raw.includes("403"))
-      return "ไม่มีสิทธิ์เข้าถึง — กรุณาตรวจสอบ API Key ใน Settings";
-    if (raw.includes("429"))
-      return "API เกิน Rate Limit — กรุณารอสักครู่แล้วลองใหม่";
-    if (raw.includes("Server Action") || raw.includes("newer deployment") || raw.includes("older deployment")) {
-      setTimeout(() => { if (confirm("มีการอัพเดตระบบใหม่ — กด OK เพื่อ refresh หน้า")) window.location.reload(); }, 300);
-      return "ระบบมีการอัพเดต — กรุณา Refresh หน้าแล้วรันใหม่";
-    }
-    if (raw.includes("timeout") || raw.includes("ETIMEDOUT") || raw.includes("504"))
-      return "หมดเวลารอ (Timeout) — กรุณากดรันใหม่อีกครั้ง";
-    if (raw.includes("ECONNREFUSED") || raw.includes("fetch failed") || raw.includes("NetworkError"))
-      return "ไม่สามารถเชื่อมต่อ Server — กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต";
-    if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
-      setShowClearCacheDialog(true);
-      return "Keywords ขาดหาย — กรุณาล้างแคชแล้วรันใหม่";
-    }
-    if (raw.includes("pexels") || raw.includes("Pexels"))
-      return "Pexels API มีปัญหา — กรุณาตรวจสอบ API Key ใน Settings แล้วลองใหม่";
-    if (raw.includes("ffmpeg") || raw.includes("ffprobe"))
-      return "Video processing ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
-    if (raw.includes("Whisper") || raw.includes("transcribe"))
-      return "Transcribe ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
-    if (err instanceof ApiCallError && err.data.retryable)
-      return String(err.data.error ?? "เกิดข้อผิดพลาด — กรุณากดรันใหม่อีกครั้ง");
-    if (err instanceof ApiCallError && err.data.error)
-      return String(err.data.error);
+    if (raw.includes("ENOSPC") || raw.includes("no space left")) return "พื้นที่ดิสก์เต็ม กรุณาลบไฟล์เก่าแล้วลองใหม่";
+    if (raw.includes("Unauthorized") || raw.includes("401")) return "Session หมดอายุ กรุณา login ใหม่";
+    if (raw.includes("timeout") || raw.includes("ETIMEDOUT")) return "หมดเวลารอ กรุณาลองใหม่";
+    if (err instanceof ApiCallError && err.data.retryable) return String(err.data.error ?? "เกิดข้อผิดพลาด กรุณากดรันใหม่อีกครั้ง");
+    // Show the actual error message so user/developer can see what went wrong
     const firstLine = raw.split("\n")[0].slice(0, 200);
-    return (firstLine || "เกิดข้อผิดพลาด") + " — กรุณากดรันใหม่อีกครั้ง";
+    return firstLine || "เกิดข้อผิดพลาด กรุณาลองใหม่";
   }
 
   /** Returns true if the error is a missing-key error and opens the modal. */
@@ -579,24 +546,10 @@ export default function ShortVideoPage() {
     const fullAudioUrl = voiceUrl.startsWith("http://") || voiceUrl.startsWith("https://")
       ? voiceUrl
       : `${window.location.origin}${voiceUrl}`;
-    // In Direct URL mode, the audio source is the user's own video — its actual
-    // spoken words may differ from the script field. Don't pass script as truth;
-    // let the transcriber produce captions from what it actually hears.
-    const directMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
-    const txBody: Record<string, unknown> = { audioUrl: fullAudioUrl };
-    if (!directMode && cleanScript.trim()) {
-      txBody.scriptPrompt = cleanScript.slice(0, 800);
-      txBody.script = cleanScript;
-    }
-    if (directMode) {
-      // For user-uploaded video: tell server to prefer word-level Whisper
-      // so timestamps follow what's actually said in the video.
-      txBody.directAudio = true;
-    }
     const txRes = await fetch("/api/videos/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(txBody),
+      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript }),
       signal: abortControllerRef.current?.signal,
     });
     const txData = await txRes.json();
@@ -604,12 +557,8 @@ export default function ShortVideoPage() {
 
     const whisperWords: { word: string; startMs: number; endMs: number }[] = txData.words ?? [];
     const captions: Caption[] = txData.captions ?? [];
-    const durationFromServerRaw = Number(txData.audioDurationMs);
-    const durationFromServer = Number.isFinite(durationFromServerRaw) ? durationFromServerRaw : 0;
 
-    const audioDurationMs = durationFromServer > 0
-      ? durationFromServer
-      : whisperWords.length
+    const audioDurationMs = whisperWords.length
       ? whisperWords[whisperWords.length - 1].endMs
       : captions.length
         ? Math.max(...captions.map(c => c.endMs))
@@ -622,7 +571,6 @@ export default function ShortVideoPage() {
     let sceneCaptions: Caption[] = [];
 
     // Get tags from split-phrases
-    const splitTagByIndex: ("hook" | "body" | "cta")[] = [];
     const tagMap = new Map<string, "hook" | "body" | "cta">();
     try {
       const splitRes = await fetch("/api/videos/split-phrases", {
@@ -635,7 +583,6 @@ export default function ShortVideoPage() {
         const splitData = await splitRes.json();
         const spPhrases: string[] = splitData.phrases ?? [];
         const spTags: ("hook" | "body" | "cta")[] = splitData.tags ?? [];
-        splitTagByIndex.push(...spTags);
         spPhrases.forEach((p: string, i: number) => tagMap.set(p.trim(), spTags[i] ?? "body"));
       }
     } catch { /* non-critical */ }
@@ -651,7 +598,6 @@ export default function ShortVideoPage() {
             if (phrase.startsWith(t) || t.startsWith(phrase)) { tag = pt; break; }
           }
         }
-        if (!tag && i < splitTagByIndex.length) tag = splitTagByIndex[i];
         if (!tag) tag = i === 0 ? "hook" : "body";
         return { ...cap, tag };
       });
@@ -706,7 +652,6 @@ export default function ShortVideoPage() {
         scenes: pipe.current.scenes ?? [],
         keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: pipe.current.sceneClipCounts ?? [],
-        sceneDurations: pipe.current.sceneDurations ?? [],
       }),
     });
     const cfgData = await cfgRes.json();
@@ -927,62 +872,13 @@ export default function ShortVideoPage() {
     return finalUrl;
   }
 
-  // ── Input validation before any pipeline run ────────────────────
-  // Returns true if valid, false + shows toast if something is missing.
-  function validateInputs(phase: "prepare" | "generate" | "avatar"): boolean {
-    const errors: string[] = [];
-
-    if (phase === "prepare" || phase === "generate") {
-      if (!script.trim())
-        errors.push("กรอก Script ก่อนเริ่ม");
-
-      const isDirectMode = avatarInputMode === "direct";
-      if (!isDirectMode) {
-        // TTS required
-        if (ttsProvider === "elevenlabs" && !voiceId.trim())
-          errors.push("เลือก ElevenLabs Voice ID ใน TTS Settings");
-      } else {
-        // Direct URL mode — need avatar URL (audio source)
-        if (!avatarDirectUrl.trim())
-          errors.push("กรอก Avatar Video URL (Direct URL mode)");
-      }
-    }
-
-    if (phase === "generate") {
-      if (!pipe.current.voiceUrl)
-        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
-      if (!editedSceneCaptions.length)
-        errors.push("ยังไม่มีซับไตเติ้ล — กด Run All ก่อน");
-      if (!getActiveStocks().length)
-        errors.push("ยังไม่มี stock video — กด Run All ก่อน");
-    }
-
-    if (phase === "avatar") {
-      if (!pipe.current.voiceUrl && avatarInputMode !== "direct")
-        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
-      if (avatarInputMode === "generate" && !avatarId.trim())
-        errors.push("กรอก HeyGen Avatar ID ใน Avatar Settings");
-      if (avatarInputMode === "direct" && !avatarDirectUrl.trim())
-        errors.push("กรอก Avatar Video URL");
-      if (!pipe.current.renderedVideoUrl)
-        errors.push("ยังไม่มีวิดีโอ — กด Render ก่อน");
-    }
-
-    if (errors.length > 0) {
-      errors.forEach((e, i) => {
-        setTimeout(() => toast.error(e), i * 150);
-      });
-      return false;
-    }
-    return true;
-  }
-
   // ── Full pipeline ────────────────────────────────────────────────
 
   // Pipeline Phase 1: Content → Render (stops before HeyGen)
   async function runAll() {
-    if (!validateInputs("prepare")) return;
+    if (!script.trim()) return toast.error("กรอก script ก่อน");
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
+    if (isDirectMode && !avatarDirectUrl.trim()) return toast.error("กรอก Avatar Video URL ก่อน");
 
     // Check if any LLM key exists — if not, show picker before starting
     try {
@@ -1041,66 +937,7 @@ export default function ShortVideoPage() {
       if (abortRef.current) throw new Error("__ABORTED__");
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
-
-      toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
-
-      // Background: re-fetch stock with 1 keyword per subtitle for better visual match
-      // Don't await — runs in background so user can see subtitles immediately
-      if (sceneCaptions.length > 0) {
-        const prevKwCount = (pipe.current.keywords ?? []).length;
-        const prevStockCount = (pipe.current.stockVideos ?? []).length;
-        const restoreKw = () => setStep("keywords", "done", `${prevKwCount} keywords (เดิม)`);
-        const restoreStock = () => setStep("fetchStock", "done", `${prevStockCount} คลิป (เดิม)`);
-
-        (async () => {
-          let kwsDone = false;
-          try {
-            setStep("keywords", "running", `mapping ${sceneCaptions.length} ซับ → keyword...`);
-            const kwRes = await fetch("/api/videos/extract-keywords", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
-            });
-            if (!kwRes.ok) { restoreKw(); return; }
-            const kwData = await kwRes.json();
-            const kws: string[] = kwData.keywords ?? [];
-            if (kws.length === 0) { restoreKw(); return; }
-            pipe.current.keywords = kws;
-            pipe.current.sceneClipCounts = kws.map(() => 1);
-            setKeywords(kws);
-            setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
-            kwsDone = true;
-
-            setStep("fetchStock", "running", `ดึง stock ${kws.length} คลิปตรงซับ...`);
-            const stockRes = await fetch("/api/videos/fetch-stock", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                keywords: kws,
-                download: true,
-                totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
-                stockSource,
-                overrideClipCount: kws.length,
-              }),
-            });
-            if (!stockRes.ok) { restoreStock(); return; }
-            const stockData = await stockRes.json();
-            const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
-            if (clips.length > 0) {
-              pipe.current.stockVideos = clips;
-              setPipeStockVideos(clips);
-              setExcludedClipIds(new Set());
-              setStep("fetchStock", "done", `ได้ ${clips.length}`);
-              toast.success(`อัพเดต stock ${clips.length}  — กด Generate Video ได้เลย`);
-            } else {
-              restoreStock();
-            }
-          } catch {
-            if (!kwsDone) restoreKw();
-            restoreStock();
-          }
-        })();
-      }
+      toast.success("Transcribe เสร็จ — ตรวจสอบซับด้านล่างแล้วกด Generate Video");
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
@@ -1154,10 +991,11 @@ export default function ShortVideoPage() {
 
   // Pipeline Phase 1b: Render preview WITHOUT subtitles — user previews CSS overlay first
   async function runGenerate() {
-    if (!validateInputs("generate")) return;
     const stocks = getActiveStocks();
     const voice = pipe.current.voiceUrl ?? "";
     const durMs = pipe.current.audioDurationMs ?? 0;
+    if (!voice) return toast.error("ยังไม่มี audio URL — กด Run All ก่อน");
+    if (!editedSceneCaptions.length) return toast.error("ยังไม่มีซับ — กด Run All ก่อน");
 
     setRunning(true);
     abortRef.current = false;
@@ -1189,9 +1027,10 @@ export default function ShortVideoPage() {
 
   // Pipeline Phase 2: Avatar (HeyGen) → Composite
   async function runAvatarPipeline() {
-    if (!validateInputs("avatar")) return;
-    const voice = pipe.current.voiceUrl!;
-    const rendered = pipe.current.renderedVideoUrl!;
+    const voice = pipe.current.voiceUrl;
+    const rendered = pipe.current.renderedVideoUrl;
+    if (!voice) return toast.error("ยังไม่มีเสียง — ต้อง Generate ก่อน");
+    if (!rendered) return toast.error("ยังไม่มีวิดีโอ — ต้อง Generate ก่อน");
 
     setRunning(true);
     abortRef.current = false;
@@ -1360,49 +1199,6 @@ export default function ShortVideoPage() {
             else rerunFromRef.current(step as keyof StepState);
           }}
         />
-      )}
-
-      {showClearCacheDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
-          onClick={e => { if (e.target === e.currentTarget) setShowClearCacheDialog(false); }}>
-          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
-            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
-              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
-            </div>
-            <div className="px-5 py-4 space-y-3">
-              <p className="text-sm" style={{ color: "hsl(220 15% 65%)" }}>
-                ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
-              </p>
-              <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(220 15% 75%)" }}>
-                <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
-                <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
-              </ol>
-            </div>
-            <div className="px-5 py-4 flex gap-3" style={{ borderTop: "1px solid hsl(220 30% 14%)" }}>
-              <button
-                className="flex-1 rounded-lg py-2 text-sm font-medium"
-                style={{ background: "hsl(220 30% 18%)", color: "hsl(220 15% 65%)" }}
-                onClick={() => setShowClearCacheDialog(false)}>
-                ปิด
-              </button>
-              <button
-                className="flex-1 rounded-lg py-2 text-sm font-semibold text-white"
-                style={{ background: "hsl(14 90% 55%)" }}
-                onClick={async () => {
-                  setShowClearCacheDialog(false);
-                  try {
-                    await fetch("/api/stocks", { method: "DELETE" });
-                  } catch {}
-                  pipe.current = {};
-                  toast.success("ล้าง Cache แล้ว — กด Run ได้เลย");
-                }}>
-                ล้าง Cache แล้วรันใหม่
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {showLLMPicker && (
@@ -1966,7 +1762,7 @@ export default function ShortVideoPage() {
                   <div className="space-y-3">
                     {/* Step 1: URL / Upload */}
                     <div className="space-y-1.5">
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Video URL or Upload</p>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">1. Avatar Video URL (public)</p>
                       <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }}
                         placeholder="https://... หรือวาง URL วิดีโอ"
                         className="text-xs font-mono text-white border-0 focus-visible:ring-0"
@@ -2147,15 +1943,6 @@ export default function ShortVideoPage() {
                 stepStates={steps}
                 running={running}
                 onRerun={rerunFrom}
-                beforeStock={stockCacheInfo && stockCacheInfo.count > 0 ? (
-                  <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40 shrink-0"
-                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                    Cache {stockCacheInfo.sizeMb}MB
-                  </button>
-                ) : undefined}
                 action={
                   <button onClick={runAll} disabled={running || !script.trim()}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
@@ -2311,6 +2098,16 @@ export default function ShortVideoPage() {
                                   ))}
                                 </div>
                                 <div className="flex-1" />
+                                {/* Cache clear button */}
+                                {stockCacheInfo && stockCacheInfo.count > 0 && (
+                                  <button onClick={clearStockCache} disabled={clearingCache}
+                                    className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40"
+                                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
+                                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์ (${stockCacheInfo.sizeMb} MB)`}>
+                                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                                    Cache {stockCacheInfo.sizeMb}MB
+                                  </button>
+                                )}
                                 {/* Clip count: Auto badge or number input */}
                                 <div className="flex items-center gap-1.5 rounded-lg px-2 py-1"
                                   style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
@@ -2888,7 +2685,7 @@ export default function ShortVideoPage() {
 type StepKey = "keywords" | "fetchStock" | "tts" | "transcribe" | "config" | "render" | "avatar" | "composite";
 
 function PhaseRow({
-  phaseNum, label, color, steps, stepStates, running, onRerun, action, beforeStock,
+  phaseNum, label, color, steps, stepStates, running, onRerun, action,
 }: {
   phaseNum: number;
   label: string;
@@ -2898,7 +2695,6 @@ function PhaseRow({
   running: boolean;
   onRerun: (key: StepKey) => void;
   action: React.ReactNode;
-  beforeStock?: React.ReactNode;
 }) {
   const colorMap = {
     cyan:   { bg: "hsl(190 100% 50% / 0.05)", border: "hsl(190 100% 50% / 0.15)", badge: "hsl(190 100% 60%)", badgeBg: "hsl(190 100% 50% / 0.12)" },
@@ -2926,7 +2722,6 @@ function PhaseRow({
           const isSkip = status === "skip";
           return (
             <React.Fragment key={key}>
-              {key === "fetchStock" && beforeStock}
               <button
                 onClick={() => onRerun(key)}
                 disabled={running || (!isDone && !isErr && !canRun)}
