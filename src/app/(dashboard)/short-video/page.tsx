@@ -1048,12 +1048,12 @@ export default function ShortVideoPage() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ scenes: subTexts, perSubtitle: true }),
             });
-            if (!kwRes.ok) break;
+            if (!kwRes.ok) continue;
             const kwData = await kwRes.json();
             const got: string[] = kwData.keywords ?? [];
             if (got.length >= N) { perSubKws = got; break; }
             if (got.length > perSubKws.length) perSubKws = got;
-          } catch { break; }
+          } catch { continue; }
         }
 
         // ── Step B: Pad keywords to N using scene keywords as filler ──

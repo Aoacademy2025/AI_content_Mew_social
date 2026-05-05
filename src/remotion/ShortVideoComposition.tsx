@@ -222,13 +222,10 @@ export function ShortVideoComposition({
   fontFamily,
   subtitleStylePreset = "stroke",
 }: ShortVideoConfig) {
-  const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
-
-  const popup = keywordPopups.find((p) => frame >= p.start && frame < p.end);
-  const preset = popup?.stylePreset ?? subtitleStylePreset ?? "stroke";
+  const preset = subtitleStylePreset ?? "stroke";
 
   return (
     <AbsoluteFill
@@ -292,22 +289,27 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
-      {/* Animated subtitle — pop in + fade out per caption */}
-      {popup && (
-        <Sequence
-          key={`sub-${popup.start}`}
-          from={popup.start}
-          durationInFrames={popup.end - popup.start}
-          layout="none"
-        >
-          <AnimatedSubtitle
-            popup={popup}
-            preset={preset}
-            resolvedFont={resolvedFont}
-            captionDurFrames={popup.end - popup.start}
-          />
-        </Sequence>
-      )}
+      {/* Animated subtitles — every caption gets its own Sequence */}
+      {keywordPopups.map((p) => {
+        const dur = p.end - p.start;
+        if (dur <= 0) return null;
+        const capPreset = p.stylePreset ?? preset;
+        return (
+          <Sequence
+            key={`sub-${p.start}-${p.end}`}
+            from={p.start}
+            durationInFrames={dur}
+            layout="none"
+          >
+            <AnimatedSubtitle
+              popup={p}
+              preset={capPreset}
+              resolvedFont={resolvedFont}
+              captionDurFrames={dur}
+            />
+          </Sequence>
+        );
+      })}
     </AbsoluteFill>
   );
 }
