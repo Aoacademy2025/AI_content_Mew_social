@@ -598,46 +598,15 @@ export default function ShortVideoPage() {
         ? Math.max(...captions.map(c => c.endMs))
         : (txData.segments?.at(-1)?.endMs ?? 60000);
 
-    // ── Use captions from server (already GPT-split + Whisper-timestamped) ──
-    // Server handles: GPT phrase split → char-weighted timestamp mapping via Whisper segments
-    // Client only adds hook/body/cta tags from split-phrases (text matching, no re-timestamping)
-    setStep("transcribe", "running", "Tagging phrases...");
+    // ── Use captions from server (already GPT-split + tagged + Whisper-timestamped) ──
+    // Server now returns tags (hook/body/cta) directly in each caption from transcribe LLM call
     let sceneCaptions: Caption[] = [];
 
-    // Get tags from split-phrases
-    const splitTagByIndex: ("hook" | "body" | "cta")[] = [];
-    const tagMap = new Map<string, "hook" | "body" | "cta">();
-    try {
-      const splitRes = await fetch("/api/videos/split-phrases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: cleanScript, audioDurationMs }),
-        signal: abortControllerRef.current?.signal,
-      });
-      if (splitRes.ok) {
-        const splitData = await splitRes.json();
-        const spPhrases: string[] = splitData.phrases ?? [];
-        const spTags: ("hook" | "body" | "cta")[] = splitData.tags ?? [];
-        splitTagByIndex.push(...spTags);
-        spPhrases.forEach((p: string, i: number) => tagMap.set(p.trim(), spTags[i] ?? "body"));
-      }
-    } catch { /* non-critical */ }
-
-    // Apply tags to server captions by text match, fallback to position
     if (captions.length > 0) {
-      sceneCaptions = captions.map((cap, i) => {
-        const t = cap.text.trim();
-        let tag = tagMap.get(t);
-        if (!tag) {
-          // fuzzy: find any split-phrase that starts with or contains this caption text
-          for (const [phrase, pt] of tagMap) {
-            if (phrase.startsWith(t) || t.startsWith(phrase)) { tag = pt; break; }
-          }
-        }
-        if (!tag && i < splitTagByIndex.length) tag = splitTagByIndex[i];
-        if (!tag) tag = i === 0 ? "hook" : "body";
-        return { ...cap, tag };
-      });
+      sceneCaptions = captions.map((cap, i) => ({
+        ...cap,
+        tag: cap.tag ?? (i === 0 ? "hook" : "body"),
+      }));
     }
 
     // Fallback for non-Thai word-level grouping

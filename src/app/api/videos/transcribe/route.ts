@@ -523,6 +523,7 @@ RULES:
       // Skip GPT split in that case — it would only drift the timing.
       if (captions.length === 0) {
       let phrases: string[] = [];
+      let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;
       let maxPhrases = 6;
       const openAiSplitModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
@@ -551,9 +552,14 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 
+━━━ TAGGING RULES ━━━
+• "hook" = opening attention-grabbing line(s) — FIRST 1–2 phrases only.
+• "body" = main content — the majority of phrases.
+• "cta"  = explicit action words only: กดติดตาม, กด like, กดแชร์, สมัครเลย, subscribe, follow.
+
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
-{"phrases":["phrase1","phrase2"]}
+{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}
 
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
@@ -581,14 +587,19 @@ ${sourceText.trim()}`;
 
           if (gptRawText !== "{}") {
             try {
-              const raw = parseSplitPhrasesFromRaw(gptRawText);
+              const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
+              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
+              // store tags if LLM returned them
+              if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
+                llmTags = parsed.tags as ("hook" | "body" | "cta")[];
+              }
               const origStripped = normalizeForCompare(sourceText);
               const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
               if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
                 const expanded = expandPhrasesToTargetDensity(raw, minPhrases, sourceText);
                 phrases = expanded.length > 0 ? expanded : raw;
-                console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
+                console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
               }
@@ -772,8 +783,15 @@ ${sourceText.trim()}`;
           }
         }
 
-          captions = result.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
-          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
+          captions = result.map((g, i) => ({
+            text: g.text,
+            startMs: g.startMs,
+            endMs: g.endMs,
+            timestampMs: g.startMs,
+            confidence: 1,
+            tag: llmTags[i] ?? undefined,
+          }));
+          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s [${c.tag ?? "body"}] "${c.text.slice(0,30)}"`));
         } // end if (phrases.length > 0) — alignment path
 
       } // end if (captions.length === 0) — GPT split + alignment path
