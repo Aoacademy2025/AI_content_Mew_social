@@ -173,6 +173,7 @@ export async function POST(req: Request) {
     overrideClipCount = 0,
     stockSource = "both",
     subtitleTexts,       // string[] — subtitle text per keyword, for LLM ranking
+    perSubtitleMode: perSubtitleFlag = false,
   }: {
     keywords: string[];
     download?: boolean;
@@ -180,6 +181,7 @@ export async function POST(req: Request) {
     overrideClipCount?: number;
     stockSource?: string;
     subtitleTexts?: string[];
+    perSubtitleMode?: boolean;
   } = body ?? {};
 
   const usePexels  = stockSource === "pexels"  || stockSource === "both";
@@ -261,7 +263,8 @@ export async function POST(req: Request) {
   const srcLabel = usePexels && usePixabay ? "Pexels+Pixabay" : usePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
-  const isPerSubtitleMode = overrideClipCount > 0 && overrideClipCount === keywords.length;
+  // perSubtitleMode: explicit flag (survives retry with subset) OR clip count exactly matches keyword count
+  const isPerSubtitleMode = perSubtitleFlag || (overrideClipCount > 0 && overrideClipCount === keywords.length);
   const basePerPage = isPerSubtitleMode ? 15 : Math.min(30, clipsPerKeyword * 3);
 
   // ── Search phase — collect ALL candidates per keyword (no usedIds filtering yet) ──
@@ -322,9 +325,27 @@ export async function POST(req: Request) {
     const hasAnyCandidates = candidateTitles.some(t => t.length > 0);
     if (hasAnyCandidates) {
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
-      bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini);
-      console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
+      try {
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini);
+        console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
+      } catch (e) {
+        console.error(`[fetch-stock] LLM ranking failed, falling back to best-duration pick:`, e);
+        // Fallback: pick candidate with longest duration (more content = better match than index 0)
+        bestIdxByKeyword = candidatesByKeyword.map(cs => {
+          let best = 0;
+          for (let i = 1; i < cs.length; i++) { if (cs[i].duration > cs[best].duration) best = i; }
+          return best;
+        });
+      }
     }
+  } else if (isPerSubtitleMode) {
+    // No LLM key or subtitle texts mismatch — pick longest-duration candidate instead of index 0
+    bestIdxByKeyword = candidatesByKeyword.map(cs => {
+      let best = 0;
+      for (let i = 1; i < cs.length; i++) { if (cs[i].duration > cs[best].duration) best = i; }
+      return best;
+    });
+    if (!llmKey) console.warn(`[fetch-stock] no LLM key — using longest-duration fallback`);
   }
 
   // ── Pick phase — apply LLM choice first, then fill remaining slots, dedup globally ──

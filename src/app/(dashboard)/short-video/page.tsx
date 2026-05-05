@@ -804,10 +804,16 @@ export default function ShortVideoPage() {
       // Wait for tab to be visible before fetching (prevents ERR_NETWORK_IO_SUSPENDED)
       if (document.visibilityState === "hidden") {
         await new Promise<void>(resolve => {
-          const handler = () => { if (document.visibilityState === "visible") { document.removeEventListener("visibilitychange", handler); resolve(); } };
+          const handler = () => {
+            if (abortRef.current || document.visibilityState === "visible") {
+              document.removeEventListener("visibilitychange", handler);
+              resolve();
+            }
+          };
           document.addEventListener("visibilitychange", handler);
         });
       }
+      if (abortRef.current) throw new Error("__ABORTED__");
       let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
       try {
         const pollRes = await fetch("/api/videos/poll-avatar", {
@@ -1087,7 +1093,7 @@ export default function ShortVideoPage() {
 
           for (let attempt = 0; attempt < 3 && missingIdxs.length > 0; attempt++) {
             try {
-              const kwsToFetch  = missingIdxs.map(i => perSubKws[i]);
+              const kwsToFetch   = missingIdxs.map(i => perSubKws[i]);
               const textsToFetch = missingIdxs.map(i => subTexts[i] ?? perSubKws[i]);
               const stockRes = await fetch("/api/videos/fetch-stock", {
                 method: "POST",
@@ -1099,6 +1105,7 @@ export default function ShortVideoPage() {
                   totalDurationSec: audioDurSec,
                   stockSource,
                   overrideClipCount: kwsToFetch.length,
+                  perSubtitleMode: true,
                 }),
               });
               if (!stockRes.ok) break;
@@ -1106,10 +1113,13 @@ export default function ShortVideoPage() {
               const fetched: StockVideo[] = (stockData.results ?? []).filter(
                 (r: StockVideo) => r.localUrl || r.videoUrl
               );
-              // Map fetched clips back to original perSubKws index by position
-              for (let fi = 0; fi < fetched.length; fi++) {
-                const origIdx = missingIdxs[fi];
-                if (origIdx !== undefined) clipAtIdx.set(origIdx, fetched[fi]);
+              // Map by keyword text — server returns 1 clip per keyword in same order.
+              // Using keyword as key avoids position mismatch when server returns fewer results.
+              const kwToOrigIdx = new Map<string, number>();
+              missingIdxs.forEach(i => { if (!kwToOrigIdx.has(perSubKws[i])) kwToOrigIdx.set(perSubKws[i], i); });
+              for (const clip of fetched) {
+                const origIdx = kwToOrigIdx.get(clip.keyword);
+                if (origIdx !== undefined && !clipAtIdx.has(origIdx)) clipAtIdx.set(origIdx, clip);
               }
               missingIdxs = missingIdxs.filter(i => !clipAtIdx.has(i));
               if (missingIdxs.length === 0) break;
@@ -1118,7 +1128,7 @@ export default function ShortVideoPage() {
           }
 
           // ── Step D: Build ordered clips — clipAtIdx[i] is already LLM-ranked best match ──
-          // Backfill gaps with any available clip (front-to-back, no modulo repeat)
+          // Backfill gaps with unused clips first, then allow reuse only if nothing else available.
           const allFetched: StockVideo[] = [];
           const seenIds = new Set<number>();
           for (const clip of clipAtIdx.values()) {
@@ -1126,14 +1136,31 @@ export default function ShortVideoPage() {
           }
 
           const orderedClips: StockVideo[] = [];
+          const usedInOrder = new Set<number>();
           let backfillIdx = 0;
           for (let i = 0; i < N; i++) {
             const clip = clipAtIdx.get(i);
             if (clip) {
               orderedClips.push(clip);
+              usedInOrder.add(clip.pexelsId);
             } else if (allFetched.length > 0) {
-              orderedClips.push(allFetched[backfillIdx % allFetched.length]);
-              backfillIdx++;
+              // Prefer unused clip, fall back to least-recently-used
+              let found = false;
+              for (let j = 0; j < allFetched.length; j++) {
+                const candidate = allFetched[(backfillIdx + j) % allFetched.length];
+                if (!usedInOrder.has(candidate.pexelsId)) {
+                  orderedClips.push(candidate);
+                  usedInOrder.add(candidate.pexelsId);
+                  backfillIdx = (backfillIdx + j + 1) % allFetched.length;
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                // All clips used — cycle through pool
+                orderedClips.push(allFetched[backfillIdx % allFetched.length]);
+                backfillIdx++;
+              }
             }
           }
 
@@ -1187,12 +1214,9 @@ export default function ShortVideoPage() {
         // Re-include
         next.delete(pexelsId);
       } else {
-        // Exclude — but if targetClipCount is set, enforce max selected
+        // Exclude — only if we'd still have at least 1 clip active (or no limit set)
         const currentActive = pipeStockVideos.filter(v => !next.has(v.pexelsId)).length;
-        if (targetClipCount > 0 && currentActive <= targetClipCount) {
-          // Already at or below limit — can't exclude more (would go under)
-          // Instead swap: exclude this one is fine since user is reducing
-        }
+        if (targetClipCount > 0 && currentActive <= 1) return prev; // can't go below 1
         next.add(pexelsId);
       }
       // If targetClipCount is set and active count now exceeds limit,
@@ -1327,6 +1351,7 @@ export default function ShortVideoPage() {
         }
         if (perSubKws2.length === 0) { setStep("fetchStock", "done", "ไม่สามารถ mapping keyword ได้"); return; }
 
+        pipe.current.keywords = perSubKws2;         // sync so generate-config uses correct count
         pipe.current.sceneClipCounts = perSubKws2.map(() => 1);
         setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws2.length} คลิป...`);
 
@@ -1334,21 +1359,27 @@ export default function ShortVideoPage() {
         let missingIdxs2 = perSubKws2.map((_, i) => i);
         for (let attempt = 0; attempt < 3 && missingIdxs2.length > 0; attempt++) {
           try {
+            const kwsToFetch2   = missingIdxs2.map(i => perSubKws2[i]);
+            const textsToFetch2 = missingIdxs2.map(i => subTexts2[i] ?? perSubKws2[i]);
             const r = await fetch("/api/videos/fetch-stock", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                keywords: missingIdxs2.map(i => perSubKws2[i]),
-                subtitleTexts: missingIdxs2.map(i => subTexts2[i] ?? perSubKws2[i]),
+                keywords: kwsToFetch2,
+                subtitleTexts: textsToFetch2,
                 download: true, totalDurationSec: audioDurSec2, stockSource,
-                overrideClipCount: missingIdxs2.length,
+                overrideClipCount: perSubKws2.length, // full count keeps isPerSubtitleMode true on server
+                perSubtitleMode: true,
               }),
             });
             if (!r.ok) break;
             const d = await r.json();
             const fetched: StockVideo[] = (d.results ?? []).filter((x: StockVideo) => x.localUrl || x.videoUrl);
-            for (let fi = 0; fi < fetched.length; fi++) {
-              const origIdx = missingIdxs2[fi];
-              if (origIdx !== undefined) clipAtIdx2.set(origIdx, fetched[fi]);
+            // Map by keyword text to avoid position mismatch when server returns fewer results
+            const kwToOrigIdx2 = new Map<string, number>();
+            missingIdxs2.forEach(i => { if (!kwToOrigIdx2.has(perSubKws2[i])) kwToOrigIdx2.set(perSubKws2[i], i); });
+            for (const clip of fetched) {
+              const origIdx = kwToOrigIdx2.get(clip.keyword);
+              if (origIdx !== undefined && !clipAtIdx2.has(origIdx)) clipAtIdx2.set(origIdx, clip);
             }
             missingIdxs2 = missingIdxs2.filter(i => !clipAtIdx2.has(i));
           } catch { break; }
@@ -1356,11 +1387,27 @@ export default function ShortVideoPage() {
 
         const allFetched2 = [...new Map([...clipAtIdx2.values()].map(c => [c.pexelsId, c])).values()];
         const ordered2: StockVideo[] = [];
+        const usedInOrder2 = new Set<number>();
         let bfIdx = 0;
         for (let i = 0; i < N2; i++) {
           const c = clipAtIdx2.get(i);
-          if (c) ordered2.push(c);
-          else if (allFetched2.length > 0) { ordered2.push(allFetched2[bfIdx % allFetched2.length]); bfIdx++; }
+          if (c) {
+            ordered2.push(c);
+            usedInOrder2.add(c.pexelsId);
+          } else if (allFetched2.length > 0) {
+            let found2 = false;
+            for (let j = 0; j < allFetched2.length; j++) {
+              const candidate = allFetched2[(bfIdx + j) % allFetched2.length];
+              if (!usedInOrder2.has(candidate.pexelsId)) {
+                ordered2.push(candidate);
+                usedInOrder2.add(candidate.pexelsId);
+                bfIdx = (bfIdx + j + 1) % allFetched2.length;
+                found2 = true;
+                break;
+              }
+            }
+            if (!found2) { ordered2.push(allFetched2[bfIdx % allFetched2.length]); bfIdx++; }
+          }
         }
 
         if (ordered2.length > 0) {

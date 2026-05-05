@@ -272,15 +272,15 @@ export async function POST(req: Request) {
       // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
       // so each clip plays from the beginning — no offset accumulation needed.
       console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
-      let stockIdx = 0;
+      // Use caption index ci directly as stock index so skipped captions don't shift mapping.
+      // validStocks[ci] is the LLM-ranked clip built for caption[ci] in page.tsx.
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
         const capStartSec = cap.startMs / 1000;
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        const sv  = validStocks[stockIdx % n];
-        stockIdx++;
+        const sv  = validStocks[ci % n];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
@@ -399,7 +399,7 @@ export async function POST(req: Request) {
         const isPerSubtitle = Array.isArray(sceneClipCounts) &&
           sceneClipCounts.length > 0 &&
           sceneClipCounts.every(c => c === 1) &&
-          validStocks.length >= Math.floor(sceneCaptions.length * 0.5);
+          validStocks.length >= Math.floor(gapFilled.length * 0.5);
 
         if (isPerSubtitle) {
           // Direct 1:1 mapping: caption[i] → stock[i % stocks.length]
