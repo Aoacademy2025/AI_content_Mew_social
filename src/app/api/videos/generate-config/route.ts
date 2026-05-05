@@ -255,25 +255,30 @@ export async function POST(req: Request) {
 
     // Per-subtitle mode: every caption has exactly 1 dedicated clip (sceneClipCounts all = 1).
     // Must be detected BEFORE useEvenSplit — otherwise even-split fires and ignores caption timestamps.
+    // Use gapFilled.length (sorted, non-empty captions) as the reference count.
     const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
       sceneClipCounts.length > 0 &&
       sceneClipCounts.every(c => c === 1) &&
-      sceneCaptions.length > 0 &&
-      n >= Math.floor(sceneCaptions.length * 0.5);
+      gapFilled.length > 0 &&
+      n >= Math.floor(gapFilled.length * 0.5);
 
     const useEvenSplit = !isPerSubtitleTop && n <= numScenes * 4; // few clips → guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Direct 1:1 mapping: caption[i] → stock[i % n], using caption timestamps as cut points
-      console.log(`[config] per-subtitle-top mode: ${n} clips for ${sceneCaptions.length} captions`);
+      // Per-subtitle 1:1: gapFilled[i] → validStocks[i], using sorted+gap-filled caption timestamps.
+      // gapFilled is already sorted by startMs (same order as orderedClips built in page.tsx).
+      // clipOffset advances independently per src so the clip plays from where it left off.
+      console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
       const clipNextOffsetTop = new Map<string, number>();
-      for (let ci = 0; ci < sceneCaptions.length; ci++) {
-        const cap = sceneCaptions[ci];
+      let stockIdx = 0; // independent counter — skips only when cap dur < 0.1s
+      for (let ci = 0; ci < gapFilled.length; ci++) {
+        const cap = gapFilled[ci];
         const capStartSec = cap.startMs / 1000;
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
-        if (dur < 0.1) continue;
-        const sv  = validStocks[ci % n];
+        if (dur < 0.1) continue; // skip zero-length caps without consuming a stock slot
+        const sv  = validStocks[stockIdx % n];
+        stockIdx++;
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         const clipOffset   = clipNextOffsetTop.get(src) ?? 0;
