@@ -1076,26 +1076,29 @@ export default function ShortVideoPage() {
           setKeywords(perSubKws);
           setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
 
-          // ── Step C: Fetch stocks, retry missing keywords up to 3x ──
-          setStep("fetchStock", "running", `ดึง stock ${perSubKws.length} คลิปตรงซับ...`);
+          // ── Step C: Fetch stocks with LLM ranking — send full perSubKws+subTexts in 1 call ──
+          // fetch-stock will do: search 15 candidates per keyword → LLM pick best index → dedup
+          setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws.length} คลิปตรงซับ...`);
 
-          // Unique keywords deduplicated — fetch-stock needs distinct queries
-          const uniqueKws = [...new Set(perSubKws)];
-          // clips keyed by keyword → array (multiple clips per kw possible, consumed in order)
-          const clipPoolByKw = new Map<string, StockVideo[]>();
-          let missingKws = [...uniqueKws];
+          // clips keyed by position index (perSubKws[i] → clip) since LLM ranking already picked best
+          const clipAtIdx = new Map<number, StockVideo>();
+          // Track keywords that got no clip for retry
+          let missingIdxs = perSubKws.map((_, i) => i);
 
-          for (let attempt = 0; attempt < 3 && missingKws.length > 0; attempt++) {
+          for (let attempt = 0; attempt < 3 && missingIdxs.length > 0; attempt++) {
             try {
+              const kwsToFetch  = missingIdxs.map(i => perSubKws[i]);
+              const textsToFetch = missingIdxs.map(i => subTexts[i] ?? perSubKws[i]);
               const stockRes = await fetch("/api/videos/fetch-stock", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  keywords: missingKws,
+                  keywords: kwsToFetch,
+                  subtitleTexts: textsToFetch,
                   download: true,
                   totalDurationSec: audioDurSec,
                   stockSource,
-                  overrideClipCount: missingKws.length,
+                  overrideClipCount: kwsToFetch.length,
                 }),
               });
               if (!stockRes.ok) break;
@@ -1103,43 +1106,32 @@ export default function ShortVideoPage() {
               const fetched: StockVideo[] = (stockData.results ?? []).filter(
                 (r: StockVideo) => r.localUrl || r.videoUrl
               );
-              for (const clip of fetched) {
-                const pool = clipPoolByKw.get(clip.keyword) ?? [];
-                pool.push(clip);
-                clipPoolByKw.set(clip.keyword, pool);
+              // Map fetched clips back to original perSubKws index by position
+              for (let fi = 0; fi < fetched.length; fi++) {
+                const origIdx = missingIdxs[fi];
+                if (origIdx !== undefined) clipAtIdx.set(origIdx, fetched[fi]);
               }
-              missingKws = missingKws.filter(kw => !clipPoolByKw.has(kw));
-              if (missingKws.length === 0) break;
-              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${missingKws.length} keywords ยังขาด...`);
+              missingIdxs = missingIdxs.filter(i => !clipAtIdx.has(i));
+              if (missingIdxs.length === 0) break;
+              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${missingIdxs.length} ซับยังขาด clip...`);
             } catch { break; }
           }
 
-          // ── Step D: Build ordered clips — 1 clip per subtitle, unique first, backfill last ──
-          // Track how many times each keyword's pool has been consumed
-          const kwConsumeIdx = new Map<string, number>();
-          // All fetched clips as fallback pool (unique by pexelsId, ordered)
+          // ── Step D: Build ordered clips — clipAtIdx[i] is already LLM-ranked best match ──
+          // Backfill gaps with any available clip (front-to-back, no modulo repeat)
           const allFetched: StockVideo[] = [];
           const seenIds = new Set<number>();
-          for (const pool of clipPoolByKw.values()) {
-            for (const clip of pool) {
-              if (!seenIds.has(clip.pexelsId)) { allFetched.push(clip); seenIds.add(clip.pexelsId); }
-            }
+          for (const clip of clipAtIdx.values()) {
+            if (!seenIds.has(clip.pexelsId)) { allFetched.push(clip); seenIds.add(clip.pexelsId); }
           }
 
           const orderedClips: StockVideo[] = [];
-          // Backfill pool: clips not yet assigned (consume front-to-back, no repeat until exhausted)
           let backfillIdx = 0;
-
           for (let i = 0; i < N; i++) {
-            const kw = perSubKws[i];
-            const pool = clipPoolByKw.get(kw);
-            if (pool && pool.length > 0) {
-              // Take next unused clip in this keyword's pool
-              const idx = kwConsumeIdx.get(kw) ?? 0;
-              orderedClips.push(pool[idx % pool.length]);
-              kwConsumeIdx.set(kw, idx + 1);
+            const clip = clipAtIdx.get(i);
+            if (clip) {
+              orderedClips.push(clip);
             } else if (allFetched.length > 0) {
-              // Keyword had no match — pick next unused clip from global pool
               orderedClips.push(allFetched[backfillIdx % allFetched.length]);
               backfillIdx++;
             }
@@ -1151,12 +1143,12 @@ export default function ShortVideoPage() {
             setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
             setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
           } else {
-            const missing = N - clipPoolByKw.size;
+            const missing = N - clipAtIdx.size;
             if (missing > 0) toast(`Backfill ${missing} คลิป — บางซับใช้คลิปซ้ำ`);
             pipe.current.stockVideos = orderedClips;
             setPipeStockVideos(orderedClips);
             setExcludedClipIds(new Set());
-            setStep("fetchStock", "done", `ได้ ${orderedClips.length} คลิป (ตรงซับ)`);
+            setStep("fetchStock", "done", `ได้ ${orderedClips.length} คลิป (LLM ranked)`);
             toast.success(`Stock พร้อม ${orderedClips.length} คลิป — กด Generate Video ได้เลย`);
             fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
           }

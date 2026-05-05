@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { geminiGenerateText } from "@/lib/gemini";
 import path from "path";
 import fs from "fs";
 
@@ -21,7 +22,20 @@ interface PexelsVideo {
   duration: number;
   width: number;
   height: number;
+  url: string;   // e.g. https://www.pexels.com/video/woman-cooking-soup-1234567/
   video_files: PexelsVideoFile[];
+}
+
+// Extract human-readable slug from Pexels video URL
+// "https://www.pexels.com/video/woman-cooking-soup-1234567/" → "woman cooking soup"
+function slugToTitle(url: string): string {
+  try {
+    const slug = new URL(url).pathname.replace(/^\/video\//, "").replace(/\/$/, "");
+    // Remove trailing numeric ID
+    return slug.replace(/-\d+$/, "").replace(/-/g, " ").trim();
+  } catch {
+    return "";
+  }
 }
 
 // Search Pexels for portrait videos ≥ minDuration seconds
@@ -46,15 +60,13 @@ async function searchPexels(query: string, apiKey: string, minDuration = 3, perP
 // Pick best video file: prefer HD portrait, fallback to any
 function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   const files = video.video_files.filter(f => f.file_type === "video/mp4");
-  // Prefer HD portrait (height > width)
   const portrait = files.filter(f => f.height > f.width);
   const hd = portrait.find(f => f.quality === "hd") ?? portrait[0];
   if (hd) return hd;
-  // Fallback: any hd
   return files.find(f => f.quality === "hd") ?? files[0] ?? null;
 }
 
-// Download video directly (no ffmpeg crop — Remotion handles cropping at render time)
+// Download video directly
 function downloadAndCrop(url: string, outPath: string): Promise<void> {
   return new Promise(async (resolve, reject) => {
     try {
@@ -90,9 +102,65 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
   })).filter((v: { videoUrl: string }) => v.videoUrl);
 }
 
+// LLM rank: given subtitle texts and candidate titles per keyword,
+// return the best-matching candidate index for each keyword.
+// Single batched call — returns number[] same length as keywords.
+async function llmRankCandidates(
+  keywords: string[],
+  subtitleTexts: string[],
+  candidateTitles: string[][], // [kwIdx][candidateIdx] = title
+  llmKey: string,
+  useGemini: boolean,
+): Promise<number[]> {
+  // Build compact prompt — one line per keyword
+  const lines = keywords.map((kw, ki) => {
+    const sub = subtitleTexts[ki] ?? kw;
+    const titles = candidateTitles[ki].map((t, i) => `${i}:${t || "untitled"}`).join("|");
+    return `${ki}. subtitle="${sub}" candidates=[${titles}]`;
+  });
+
+  const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content.
+
+RULES:
+- Output ONLY a JSON array of integers, one per subtitle, same order
+- Pick the index whose title most literally matches what is described in the subtitle
+- Prefer concrete, specific matches over generic ones
+- If no candidate fits well, pick index 0
+
+${lines.join("\n")}
+
+OUTPUT (JSON array of ${keywords.length} integers):`;
+
+  try {
+    let text = "[]";
+    if (useGemini) {
+      text = await geminiGenerateText(llmKey, prompt, 512, 0);
+    } else {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${llmKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 512,
+          temperature: 0,
+        }),
+      });
+      if (r.ok) { const d = await r.json(); text = d.choices?.[0]?.message?.content ?? "[]"; }
+    }
+    const match = text.match(/\[[\s\S]*?\]/);
+    const parsed: unknown[] = JSON.parse(match?.[0] ?? "[]");
+    return parsed.map((v, i) => {
+      const n = typeof v === "number" ? v : parseInt(String(v), 10);
+      const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
+      return isNaN(n) ? 0 : Math.max(0, Math.min(n, maxIdx));
+    });
+  } catch {
+    return keywords.map(() => 0);
+  }
+}
+
 // POST /api/videos/fetch-stock
-// Body: { keywords: string[], download?: boolean, totalDurationSec?: number }
-// Returns: { results: { keyword, videoUrl, localPath?, duration, pexelsId }[] }
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -103,40 +171,52 @@ export async function POST(req: Request) {
     download = false,
     totalDurationSec = 0,
     overrideClipCount = 0,
-    stockSource = "both",  // "pexels" | "pixabay" | "both"
-  }: { keywords: string[]; download?: boolean; totalDurationSec?: number; overrideClipCount?: number; stockSource?: string } = body ?? {};
+    stockSource = "both",
+    subtitleTexts,       // string[] — subtitle text per keyword, for LLM ranking
+  }: {
+    keywords: string[];
+    download?: boolean;
+    totalDurationSec?: number;
+    overrideClipCount?: number;
+    stockSource?: string;
+    subtitleTexts?: string[];
+  } = body ?? {};
 
   const usePexels  = stockSource === "pexels"  || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
 
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { pixabayKey: true, pexelsKey: true } });
-  const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { pixabayKey: true, pexelsKey: true, geminiKey: true, openaiKey: true, ttsProvider: true },
+  });
+  const pexelsKey  = user?.pexelsKey  ? Buffer.from(user.pexelsKey,  "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
 
-  if (usePexels && !pexelsKey) return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" }, { status: 400 });
-  if (usePixabay && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings", missingKey: "pixabay" }, { status: 400 });
+  if (usePexels  && !pexelsKey)  return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" },   { status: 400 });
+  if (usePixabay && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings",              missingKey: "pixabay" }, { status: 400 });
 
-  // Adaptive cut duration: short scripts get longer cuts (fewer clips), long scripts get snappier cuts
-  // ≤10s → avg 5s/cut, 20s → 4s, 30s → 3.5s, 60s+ → 2.5s
+  // Resolve LLM key for ranking (optional — falls back to position 0 if unavailable)
+  let llmKey: string | null = null;
+  let useGemini = false;
+  if (user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+  else if (user?.openaiKey) { llmKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+
   function avgCutSec(dur: number): number {
     if (dur <= 10) return 5;
     if (dur <= 20) return 4;
     if (dur <= 40) return 3.5;
     return 2.5;
   }
+  void avgCutSec; // used for future adaptive logic
 
-  // Estimate ~1 clip per 2s of speech (Thai subtitle density)
   const BUFFER = 1.4;
   const autoClipsNeeded = totalDurationSec > 0
     ? Math.max(2, Math.ceil((totalDurationSec / 2.0) * BUFFER))
     : keywords.length;
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
-
-  // Cap: override up to 200, auto up to 150
   const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 200 : 150);
-  // How many clips per keyword — distribute evenly, min 1, max 8
   const clipsPerKeyword = keywords.length > 0
     ? Math.min(8, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
     : 1;
@@ -146,7 +226,6 @@ export async function POST(req: Request) {
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
 
-  // Auto-delete stock files older than 1 day
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
   try {
     for (const f of fs.readdirSync(rendersDir)) {
@@ -165,10 +244,8 @@ export async function POST(req: Request) {
     localUrl?: string;
   }[] = [];
 
-  // Track used video IDs globally — no duplicates across all keywords
   const usedIds = new Set<number>();
 
-  // Concurrency helper
   async function withConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
     const queue = [...items];
     const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
@@ -178,85 +255,58 @@ export async function POST(req: Request) {
   }
 
   type FoundVideo = { keyword: string; id: number; duration: number; link: string };
+  // Extended candidate that keeps Pexels URL slug for LLM ranking
+  type CandidateVideo = FoundVideo & { title: string };
 
-  // Search phase: query selected sources (Pexels / Pixabay / Both) simultaneously per keyword
-  // then merge and pick up to clipsPerKeyword unique clips
   const srcLabel = usePexels && usePixabay ? "Pexels+Pixabay" : usePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
-  // Per-subtitle mode: every keyword maps to exactly 1 clip needed.
-  // Always fetch perPage=15 so Pexels has enough candidates to find a relevant match.
-  // Normal mode uses perPage proportional to clipsPerKeyword (can be 1→3 which is too few).
   const isPerSubtitleMode = overrideClipCount > 0 && overrideClipCount === keywords.length;
   const basePerPage = isPerSubtitleMode ? 15 : Math.min(30, clipsPerKeyword * 3);
 
-  const searchResults = await Promise.all(
-    keywords.map(async (keyword): Promise<FoundVideo[]> => {
+  // ── Search phase — collect ALL candidates per keyword (no usedIds filtering yet) ──
+  // In per-subtitle mode we want the full candidate list for LLM ranking before deduplication.
+  const candidatesByKeyword: CandidateVideo[][] = await Promise.all(
+    keywords.map(async (keyword): Promise<CandidateVideo[]> => {
       try {
-        console.log(`[fetch-stock] searching "${keyword}" (want ${clipsPerKeyword}, perPage=${basePerPage}) from ${srcLabel}`);
+        console.log(`[fetch-stock] searching "${keyword}" (perPage=${basePerPage}) from ${srcLabel}`);
         const shortQuery = keyword.split(" ").slice(0, 2).join(" ");
-        // Broader 1-word fallback for when specific query returns nothing
         const broadQuery = keyword.split(" ")[0];
 
-        // Fire only selected sources in parallel
         const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
           usePexels
             ? searchPexels(keyword, pexelsKey!, 3, basePerPage).then(r => {
                 if (r.length) return r;
-                // Fallback 1: shorter query
                 if (shortQuery !== keyword) return searchPexels(shortQuery, pexelsKey!, 3, basePerPage);
                 return r;
               }).then(r => {
                 if (r.length) return r;
-                // Fallback 2: single broadest word with more results
                 if (broadQuery !== shortQuery) return searchPexels(broadQuery, pexelsKey!, 3, 15);
                 return r;
               })
             : Promise.resolve([] as PexelsVideo[]),
           usePixabay && pixabayKey
-            ? searchPixabay(keyword, pixabayKey)
-                .catch(() => [] as { id: number; duration: number; videoUrl: string }[])
+            ? searchPixabay(keyword, pixabayKey).catch(() => [] as { id: number; duration: number; videoUrl: string }[])
             : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
         ]);
 
         const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
         const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
 
-        // Convert both to FoundVideo candidates (interleave for variety)
-        const candidates: FoundVideo[] = [];
+        const candidates: CandidateVideo[] = [];
 
-        const pexelsCandidates: FoundVideo[] = [];
         for (const v of pexelsVideos) {
-          if (usedIds.has(v.id)) continue;
           const file = pickBestFile(v);
           if (!file) continue;
-          pexelsCandidates.push({ keyword, id: v.id, duration: v.duration, link: file.link });
+          const title = slugToTitle(v.url ?? "");
+          candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title });
         }
-
-        const pixabayCandidates: FoundVideo[] = [];
         for (const pv of pixabayVideos) {
-          if (usedIds.has(pv.id + 9_000_000)) continue; // offset to avoid ID collision with Pexels
-          pixabayCandidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+          candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: keyword });
         }
 
-        // Interleave: Pexels, Pixabay, Pexels, Pixabay... for variety
-        const maxLen = Math.max(pexelsCandidates.length, pixabayCandidates.length);
-        for (let i = 0; i < maxLen; i++) {
-          if (pexelsCandidates[i]) candidates.push(pexelsCandidates[i]);
-          if (pixabayCandidates[i]) candidates.push(pixabayCandidates[i]);
-        }
-
-        // Pick up to clipsPerKeyword, marking IDs as used
-        const picked: FoundVideo[] = [];
-        for (const c of candidates) {
-          if (picked.length >= clipsPerKeyword) break;
-          if (usedIds.has(c.id)) continue;
-          usedIds.add(c.id);
-          picked.push(c);
-        }
-
-        console.log(`[fetch-stock] "${keyword}": pexels=${pexelsCandidates.length} pixabay=${pixabayCandidates.length} picked=${picked.length}`);
-        return picked;
+        console.log(`[fetch-stock] "${keyword}": ${candidates.length} candidates`);
+        return candidates;
       } catch (err) {
         console.error(`[fetch-stock] error for "${keyword}":`, err);
         return [];
@@ -264,18 +314,62 @@ export async function POST(req: Request) {
     })
   );
 
-  const found = searchResults.flat();
-  console.log(`[fetch-stock] found ${found.length} clips total`);
+  // ── LLM ranking phase (per-subtitle mode only, 1 batched call) ──
+  let bestIdxByKeyword: number[] = keywords.map(() => 0);
 
+  if (isPerSubtitleMode && llmKey && subtitleTexts?.length === keywords.length) {
+    const candidateTitles = candidatesByKeyword.map(cs => cs.map(c => c.title));
+    const hasAnyCandidates = candidateTitles.some(t => t.length > 0);
+    if (hasAnyCandidates) {
+      console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
+      bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini);
+      console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
+    }
+  }
+
+  // ── Pick phase — apply LLM choice first, then fill remaining slots, dedup globally ──
+  const found: FoundVideo[] = [];
+
+  for (let ki = 0; ki < keywords.length; ki++) {
+    const candidates = candidatesByKeyword[ki];
+    if (!candidates.length) continue;
+
+    if (isPerSubtitleMode) {
+      // Per-subtitle: pick LLM-chosen index first, skip if already used, then try others
+      const preferred = bestIdxByKeyword[ki] ?? 0;
+      const ordered = [
+        preferred,
+        ...candidates.map((_, i) => i).filter(i => i !== preferred),
+      ];
+      for (const idx of ordered) {
+        const c = candidates[idx];
+        if (!c || usedIds.has(c.id)) continue;
+        usedIds.add(c.id);
+        found.push({ keyword: c.keyword, id: c.id, duration: c.duration, link: c.link });
+        break; // 1 clip per subtitle
+      }
+    } else {
+      // Normal mode: pick up to clipsPerKeyword, interleave Pexels+Pixabay
+      let picked = 0;
+      for (const c of candidates) {
+        if (picked >= clipsPerKeyword) break;
+        if (usedIds.has(c.id)) continue;
+        usedIds.add(c.id);
+        found.push({ keyword: c.keyword, id: c.id, duration: c.duration, link: c.link });
+        picked++;
+      }
+    }
+  }
+
+  console.log(`[fetch-stock] found ${found.length} clips total`);
   if (!found.length) return NextResponse.json({ results: [] });
 
-  // Download phase: max 1 concurrent to avoid VPS timeout
+  // ── Download phase ──
   await withConcurrency(found, 1, async ({ keyword, id, duration, link }) => {
     if (download) {
       const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
       const outFile = `stock-${slug}-${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
-      // Reuse cached file if already downloaded
       if (fs.existsSync(outPath) && fs.statSync(outPath).size >= 1000) {
         console.log(`[fetch-stock] cache hit: ${outFile}`);
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
