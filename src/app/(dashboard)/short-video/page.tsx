@@ -2216,25 +2216,33 @@ export default function ShortVideoPage() {
                 running={running}
                 onRerun={rerunFrom}
                 action={
-                  <div className="flex items-center gap-1.5">
-                    {editedSceneCaptions.length > 0 && (
-                      <button onClick={runMatchStock} disabled={running}
-                        title={`จับคู่ stock 1:1 กับ ${editedSceneCaptions.length} ซับ`}
-                        className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
-                        style={{ background: "linear-gradient(135deg, hsl(280 80% 50%), hsl(310 80% 50%))" }}>
-                        {running && (steps.keywords === "running" || steps.fetchStock === "running") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
-                        Match Stock
-                      </button>
-                    )}
-                    <button onClick={runAll} disabled={running || !script.trim()}
-                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
-                      style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
-                      {running && ["keywords","fetchStock","tts","transcribe"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-                      Run
-                    </button>
-                  </div>
+                  <button onClick={runAll} disabled={running || !script.trim()}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+                    {running && ["keywords","fetchStock","tts","transcribe"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                    Run
+                  </button>
                 }
               />
+
+              {/* Match Stock to ซับ — optional 1:1 caption→clip mapping after Transcribe */}
+              {editedSceneCaptions.length > 0 && (
+                <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 mt-1"
+                  style={{ background: "hsl(280 80% 50% / 0.08)", border: "1px dashed hsl(280 80% 50% / 0.3)" }}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="text-[11px] text-white/70 leading-tight">
+                      <span className="font-bold text-purple-300">🎯 Match Stock to ซับ</span>
+                      <span className="text-white/40 ml-1.5">— จับคู่ stock ให้ตรงทุกซับ ({editedSceneCaptions.length} clips)</span>
+                    </div>
+                  </div>
+                  <button onClick={runMatchStock} disabled={running}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90 shrink-0"
+                    style={{ background: "linear-gradient(135deg, hsl(280 80% 50%), hsl(310 80% 50%))" }}>
+                    {running && (steps.keywords === "running" || steps.fetchStock === "running") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+                    Match Stock
+                  </button>
+                </div>
+              )}
 
               {/* Phase 2 — Render */}
               <PhaseRow
