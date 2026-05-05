@@ -132,7 +132,9 @@ RULES:
    - Action/conflict → fire, explosion, running, crash, debris
    - Wealth/money → gold coins, luxury car, mansion interior, cash stack
    - Technology → circuit board close-up, server room, typing hands, drone aerial
-8. BANNED words: concept, idea, success, growth, abstract, metaphor, symbol, innovation
+8. BANNED single-word category labels: PEOPLE, NATURE, CITY, OFFICE, TECHNOLOGY, BUSINESS, FOOD, TRAVEL, SPORT, ANIMAL — these are useless. Write descriptive 2-4 word phrases instead.
+   BAD: "PEOPLE" / "NATURE" / "CITY"
+   GOOD: "crowd rushing street", "mountain waterfall forest", "skyscraper aerial night"
 
 OUTPUT FORMAT — return ONLY valid JSON, no markdown, no explanation:
 [
@@ -144,7 +146,7 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown, no explanation:
   }
 ]
 
-CRITICAL: The total number of queries across all scenes must equal ${totalClips}. Every query must be unique.`;
+CRITICAL: The total number of queries across all scenes must equal ${totalClips}. Every query must be unique. Each query must be 2-4 words minimum.`;
 
   let text = "[]";
   if (useGemini) {
@@ -190,7 +192,13 @@ CRITICAL: The total number of queries across all scenes must equal ${totalClips}
       sceneClipCounts = [nested[0].length];
     }
 
-    const keywords: string[] = nested.flat();
+    const BANNED_SINGLE = new Set(["people","nature","city","office","technology","business","food","travel","sport","animal","abstract","concept","idea","success","growth"]);
+    const keywords: string[] = nested.flat().filter(k => {
+      const w = k.trim().toLowerCase();
+      // reject single-word category labels
+      if (!w.includes(" ") && BANNED_SINGLE.has(w)) return false;
+      return w.length > 1;
+    });
     // keywordsPerScene: max clips in any single scene (used by generate-config for window mapping)
     const keywordsPerScene = sceneClipCounts.length > 0
       ? Math.max(...sceneClipCounts)
