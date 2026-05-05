@@ -1373,7 +1373,7 @@ export default function ShortVideoPage() {
 
   const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
   const isVideoOnly = !useAvatar;
-  const STEP_ORDER: (keyof StepState)[] = ["keywords","fetchStock","tts","transcribe","config","render","avatar","composite"]
+  const STEP_ORDER: (keyof StepState)[] = ["keywords","tts","transcribe","fetchStock","config","render","avatar","composite"]
     .filter(k => {
       if (isVideoOnly && (k === "avatar" || k === "composite")) return false;
       if (!isVideoOnly && isDirectMode && k === "avatar") return false;
@@ -2212,10 +2212,10 @@ export default function ShortVideoPage() {
                 label="Prepare"
                 color="cyan"
                 steps={[
-                  { key: "keywords" as const,   label: "Keywords", icon: Wand2, canRun: !!script.trim() },
-                  { key: "fetchStock" as const, label: "Stock",    icon: Film,  canRun: !!script.trim() },
-                  { key: "tts" as const,        label: "TTS Voice",  icon: Mic,      canRun: !!script.trim() },
-                  { key: "transcribe" as const, label: "Transcribe", icon: Captions, canRun: !!pipe.current.voiceUrl },
+                  { key: "keywords" as const,   label: "Keywords",  icon: Wand2,     canRun: !!script.trim() },
+                  { key: "tts" as const,        label: "TTS Voice", icon: Mic,       canRun: !!script.trim() },
+                  { key: "transcribe" as const, label: "Transcribe",icon: Captions,  canRun: !!pipe.current.voiceUrl },
+                  { key: "fetchStock" as const, label: "Stock",     icon: Film,      canRun: !!script.trim() },
                 ]}
                 stepStates={steps}
                 running={running}
@@ -2224,7 +2224,7 @@ export default function ShortVideoPage() {
                   <button onClick={runAll} disabled={running || !script.trim()}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
                     style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
-                    {running && ["keywords","fetchStock","tts","transcribe"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                    {running && ["keywords","tts","transcribe","fetchStock"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
                     Run
                   </button>
                 }
@@ -2604,7 +2604,7 @@ export default function ShortVideoPage() {
                           )}
 
                           {/* log line fallback */}
-                          {logs[key] && !["keywords","fetchStock","tts","transcribe","config","render","avatar","composite"].includes(key) && (
+                          {logs[key] && !["keywords","tts","transcribe","fetchStock","config","render","avatar","composite"].includes(key) && (
                             <p className="text-[9px] font-mono text-white/35 break-all">{logs[key]}</p>
                           )}
                         </div>
