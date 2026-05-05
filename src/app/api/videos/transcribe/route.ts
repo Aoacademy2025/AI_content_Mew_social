@@ -781,20 +781,20 @@ ${sourceText.trim()}`;
       } // end if (captions.length === 0) — GPT split + alignment path
 
       if (captions.length === 0) {
-        // Last resort: use raw Whisper segments grouped by duration
-        const merged: { text: string; startMs: number; endMs: number }[] = [];
-        let buf = "", bufStart = 0, bufEnd = 0;
-        for (const seg of segments) {
-          const text = seg.text.trim();
-          if (!text) continue;
-          if (!buf) { buf = text; bufStart = seg.start; bufEnd = seg.end; continue; }
-          if (buf.length + text.length > 20 || seg.end - bufStart > 4) {
-            merged.push({ text: buf, startMs: Math.round(bufStart * 1000), endMs: Math.round(bufEnd * 1000) });
-            buf = text; bufStart = seg.start; bufEnd = seg.end;
-          } else { buf += text; bufEnd = seg.end; }
-        }
-        if (buf) merged.push({ text: buf, startMs: Math.round(bufStart * 1000), endMs: Math.round(bufEnd * 1000) });
-        captions = merged.map(g => ({ text: g.text, startMs: g.startMs, endMs: g.endMs, timestampMs: g.startMs, confidence: 1 }));
+        // Last resort: split script text evenly by char proportion over total audio duration
+        // Never use STT text here — script is always the source of truth
+        const fallbackPhrases = sourceText.split(/(?<=[.!?ฯ])\s+|(?<=[฀-๿]{8,})\s+(?=[฀-๿])/).filter(Boolean);
+        const fp = fallbackPhrases.length > 1 ? fallbackPhrases : [sourceText];
+        const charLens = fp.map(p => Math.max(1, p.replace(/\s+/g, "").length));
+        const totalC = charLens.reduce((a, b) => a + b, 0);
+        let cum = 0;
+        captions = fp.map((p, i) => {
+          const startSec = (cum / totalC) * audioDur;
+          cum += charLens[i];
+          const endSec = (cum / totalC) * audioDur;
+          return { text: p.trim(), startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000), timestampMs: Math.round(startSec * 1000), confidence: 0.5 };
+        });
+        console.log(`[transcribe] last-resort char-split: ${captions.length} captions from script text`);
       } // end if (captions.length === 0) last-resort
     } else if (words.length > 0) {
       // Word-level grouping for non-Thai (English, etc.)
