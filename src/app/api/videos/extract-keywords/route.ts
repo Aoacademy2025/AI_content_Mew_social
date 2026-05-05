@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 
-export const maxDuration = 30;
+export const maxDuration = 300; // 5 min — batched LLM calls for 100+ subtitles
 export const runtime = "nodejs";
 
 function decrypt(k: string) {

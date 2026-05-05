@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset } from "@/remotion/types";
 
-export const maxDuration = 60;
+export const maxDuration = 120; // 2 min — 100+ captions config generation
 export const runtime = "nodejs";
 
 function normalizeBgVideos(raw: BrollVideo[], audioDurationSec: number, fps: number): BrollVideo[] {

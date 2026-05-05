@@ -8,7 +8,7 @@ import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 
-export const maxDuration = 300;  // local Whisper can take longer
+export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
 const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
@@ -408,7 +408,7 @@ RULES:
 - start/end = seconds (float, accurate to 0.1s)
 - fullText = complete transcription joined together
 - NEVER fabricate timestamps — only use what you can hear
-- If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 500)}` : ""}`;
+- If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
@@ -494,7 +494,7 @@ RULES:
       form.append("response_format", "verbose_json");
       form.append("timestamp_granularities[]", "word");
       form.append("timestamp_granularities[]", "segment");
-      if (scriptPrompt?.trim()) form.append("prompt", scriptPrompt.trim().slice(0, 800));
+      if (scriptPrompt?.trim()) form.append("prompt", scriptPrompt.trim().slice(0, 224)); // Whisper prompt hard-limit is 224 tokens
 
       const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -605,8 +605,8 @@ Return ONLY valid JSON — no markdown, no explanation:
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
 
-          // max_tokens: each phrase ~25 chars × maxPhrases, plus JSON overhead
-          const splitMaxTokens = Math.min(8192, Math.max(1024, maxPhrases * 30 + 300));
+          // max_tokens: each phrase ~30 tokens × maxPhrases, plus JSON overhead; cap at 16k for long scripts
+          const splitMaxTokens = Math.min(16000, Math.max(1024, maxPhrases * 30 + 300));
 
           let gptRawText = "{}";
           if (useGemini) {

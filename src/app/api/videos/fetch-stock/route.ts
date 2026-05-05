@@ -224,9 +224,9 @@ export async function POST(req: Request) {
     ? Math.max(2, Math.ceil((totalDurationSec / 2.0) * BUFFER))
     : keywords.length;
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
-  const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 200 : 150);
+  const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 500 : 400);
   const clipsPerKeyword = keywords.length > 0
-    ? Math.min(8, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
+    ? Math.min(10, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
     : 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
@@ -431,7 +431,7 @@ export async function POST(req: Request) {
   if (!found.length) return NextResponse.json({ results: [] });
 
   // ── Download phase ──
-  await withConcurrency(found, 1, async ({ keyword, id, duration, link }) => {
+  await withConcurrency(found, 5, async ({ keyword, id, duration, link }) => {
     if (download) {
       const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
       const outFile = `${userPrefix}${slug}-${id}.mp4`;
