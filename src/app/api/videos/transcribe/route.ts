@@ -733,45 +733,79 @@ ${sourceText.trim()}`;
         //   This is less accurate but better than pure char-proportion over full audio.
 
         const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
+        const charLen = (s: string) => Math.max(1, thaiOnly(s).length || s.replace(/\s+/g, "").length);
+        const cleanText = (s: string) => s.replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
         const result: { text: string; startMs: number; endMs: number }[] = [];
 
         if (segments.length > 0) {
-          // Strategy A: segment-proportional alignment using Whisper/Gemini segment boundaries.
-          // Thai has no word spaces so word-level char counting is unreliable.
-          // Instead: distribute phrases proportionally across segment timeline by char count.
-          // This guarantees subtitle text = real script, timing = STT segment boundaries.
-          type TimePoint = { sec: number };
-          const tlA: TimePoint[] = [];
-          for (const seg of segments) { tlA.push({ sec: seg.start }); tlA.push({ sec: seg.end }); }
-          if (tlA.length === 0 || tlA[0].sec > 0.1) tlA.unshift({ sec: 0 });
-          if (tlA[tlA.length - 1].sec < audioDur - 0.1) tlA.push({ sec: audioDur });
+          // Strategy A: assign each LLM phrase to the STT segment it overlaps most,
+          // using cumulative char proportion to map phrases → segment boundaries.
+          //
+          // Step 1: map each phrase index → a segment index using char proportion.
+          //   phraseCharFrac[i] = cumulative fraction of total chars up to end of phrase i.
+          //   segmentCharFrac[j] = cumulative fraction of total audio time up to end of seg j.
+          //   Phrase i belongs to segment j where segmentCharFrac[j] >= phraseCharFrac[i].
+          //
+          // Step 2: for phrases that land in the same segment, distribute their time
+          //   proportionally within that segment’s start→end window.
+          //
+          // This ensures: (a) phrase text = real script, (b) timing honours actual STT boundaries.
 
-          const timeAtFracA = (frac: number): number => {
-            const f = Math.max(0, Math.min(1, frac));
-            if (f === 0) return tlA[0].sec;
-            if (f === 1) return tlA[tlA.length - 1].sec;
-            const idx = f * (tlA.length - 1);
-            const lo = Math.floor(idx);
-            const hi = Math.min(lo + 1, tlA.length - 1);
-            return tlA[lo].sec + (idx - lo) * (tlA[hi].sec - tlA[lo].sec);
+          const segsWithBounds = [
+            ...segments,
+          ];
+          // Ensure coverage: clamp first start to 0, last end to audioDur
+          if (segsWithBounds[0].start > 0.05) segsWithBounds[0] = { ...segsWithBounds[0], start: 0 };
+          if (segsWithBounds[segsWithBounds.length - 1].end < audioDur - 0.1) {
+            segsWithBounds[segsWithBounds.length - 1] = { ...segsWithBounds[segsWithBounds.length - 1], end: audioDur };
+          }
+
+          // Distribute phrases proportionally across total audio time,
+          // then snap each phrase boundary to the nearest segment boundary.
+          const phraseLens = phrases.map(charLen);
+          const totalPhraseChars = phraseLens.reduce((a, b) => a + b, 0);
+
+          // Build a flat timeline of segment start/end points (deduplicated, sorted)
+          const segBoundaries = Array.from(new Set(
+            segsWithBounds.flatMap(s => [s.start, s.end])
+          )).sort((a, b) => a - b);
+
+          // For each phrase, compute its proportional time window in [0, audioDur],
+          // then find the nearest segment boundary for start and end.
+          const snapToSegBoundary = (sec: number): number => {
+            let best = segBoundaries[0];
+            let bestDist = Math.abs(sec - best);
+            for (const b of segBoundaries) {
+              const d = Math.abs(sec - b);
+              if (d < bestDist) { bestDist = d; best = b; }
+            }
+            return best;
           };
 
-          const charLensA = phrases.map(p => Math.max(1, thaiOnly(p).length || p.replace(/\s+/g, "").length));
-          const totalCharsA = charLensA.reduce((a, b) => a + b, 0);
-          let cumA = 0;
+          let cumCharsA = 0;
           for (let i = 0; i < phrases.length; i++) {
-            const startSec = timeAtFracA(cumA / totalCharsA);
-            cumA += charLensA[i];
-            const endSec = timeAtFracA(cumA / totalCharsA);
-            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-            result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
+            const f0 = cumCharsA / totalPhraseChars;
+            cumCharsA += phraseLens[i];
+            const f1 = cumCharsA / totalPhraseChars;
+            const rawStart = f0 * audioDur;
+            const rawEnd   = f1 * audioDur;
+            // Snap to nearest segment boundary (within 1.5s tolerance)
+            const snapStart = Math.abs(snapToSegBoundary(rawStart) - rawStart) < 1.5
+              ? snapToSegBoundary(rawStart) : rawStart;
+            const snapEnd   = Math.abs(snapToSegBoundary(rawEnd) - rawEnd) < 1.5
+              ? snapToSegBoundary(rawEnd) : rawEnd;
+            result.push({
+              text: cleanText(phrases[i]),
+              startMs: Math.round(snapStart * 1000),
+              endMs: Math.round(Math.max(snapEnd, snapStart + 0.3) * 1000),
+            });
           }
-          console.log(`[transcribe] segment-proportional alignment: ${result.length} phrases over ${segments.length} segments`);
+          console.log(`[transcribe] segment-snapped alignment: ${result.length} phrases snapped to ${segBoundaries.length} boundaries`);
         } else if (words.length > 0) {
-          // Strategy B: word-level proportional (non-Thai or when no segments available)
+          // Strategy B: word-level proportional (when no segments available)
           const wordTimeline = words.map(w => ({ sec: w.start }));
           wordTimeline.push({ sec: words[words.length - 1].end });
-          const charLensB = phrases.map(p => Math.max(1, p.replace(/\s+/g, "").length));
+          const charLensB = phrases.map(charLen);
           const totalCharsB = charLensB.reduce((a, b) => a + b, 0);
           let cumB = 0;
           for (let i = 0; i < phrases.length; i++) {
@@ -780,22 +814,27 @@ ${sourceText.trim()}`;
             const f1 = cumB / totalCharsB;
             const idxStart = Math.floor(f0 * (wordTimeline.length - 1));
             const idxEnd   = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
-            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-            result.push({ text: cleanedText, startMs: Math.round(wordTimeline[idxStart].sec * 1000), endMs: Math.round(wordTimeline[idxEnd].sec * 1000) });
+            result.push({
+              text: cleanText(phrases[i]),
+              startMs: Math.round(wordTimeline[idxStart].sec * 1000),
+              endMs: Math.round(wordTimeline[idxEnd].sec * 1000),
+            });
           }
           console.log(`[transcribe] word-proportional alignment: ${result.length} phrases over ${words.length} words`);
         } else {
-          // Strategy C: no timestamps at all (Gemini path) — distribute evenly by char count
-          // Thai TTS speaks at roughly constant rate, so char proportion ≈ time proportion
-          const charLengths = phrases.map(p => Math.max(1, thaiOnly(p).length || p.replace(/\s+/g, "").length));
+          // Strategy C: no timestamps — distribute by char count over total audio duration
+          const charLengths = phrases.map(charLen);
           const totalChars = charLengths.reduce((a, b) => a + b, 0);
           let cumChars = 0;
           for (let i = 0; i < phrases.length; i++) {
             const startSec = (cumChars / totalChars) * audioDur;
             cumChars += charLengths[i];
             const endSec = (cumChars / totalChars) * audioDur;
-            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-            result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
+            result.push({
+              text: cleanText(phrases[i]),
+              startMs: Math.round(startSec * 1000),
+              endMs: Math.round(endSec * 1000),
+            });
           }
           console.log(`[transcribe] char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
         }
