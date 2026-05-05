@@ -1030,62 +1030,118 @@ export default function ShortVideoPage() {
 
       toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
 
-      // Background: re-fetch stock with 1 keyword per subtitle for better visual match
-      // Don't await — runs in background so user can see subtitles immediately
+      // ── Per-subtitle stock matching (blocking — must finish before pipeline ends) ──
       if (sceneCaptions.length > 0) {
-        const prevKwCount = (pipe.current.keywords ?? []).length;
-        const prevStockCount = (pipe.current.stockVideos ?? []).length;
-        const restoreKw = () => setStep("keywords", "done", `${prevKwCount} keywords (เดิม)`);
-        const restoreStock = () => setStep("fetchStock", "done", `${prevStockCount} คลิป (เดิม)`);
+        const prevKws      = pipe.current.keywords ?? [];
+        const prevStocks   = pipe.current.stockVideos ?? [];
+        const N            = sceneCaptions.length;
+        const subTexts     = sceneCaptions.map(c => c.text);
+        const audioDurSec  = (pipe.current.audioDurationMs ?? 60000) / 1000;
 
-        (async () => {
-          let kwsDone = false;
+        // ── Step A: Fetch per-subtitle keywords (retry up to 2x if count < N) ──
+        let perSubKws: string[] = [];
+        setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
+        for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            setStep("keywords", "running", `mapping ${sceneCaptions.length} ซับ → keyword...`);
             const kwRes = await fetch("/api/videos/extract-keywords", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
+              body: JSON.stringify({ scenes: subTexts, perSubtitle: true }),
             });
-            if (!kwRes.ok) { restoreKw(); return; }
+            if (!kwRes.ok) break;
             const kwData = await kwRes.json();
-            const kws: string[] = kwData.keywords ?? [];
-            if (kws.length === 0) { restoreKw(); return; }
-            pipe.current.keywords = kws;
-            pipe.current.sceneClipCounts = kws.map(() => 1);
-            setKeywords(kws);
-            setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
-            kwsDone = true;
+            const got: string[] = kwData.keywords ?? [];
+            if (got.length >= N) { perSubKws = got; break; }
+            if (got.length > perSubKws.length) perSubKws = got;
+          } catch { break; }
+        }
 
-            setStep("fetchStock", "running", `ดึง stock ${kws.length} คลิปตรงซับ...`);
-            const stockRes = await fetch("/api/videos/fetch-stock", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                keywords: kws,
-                download: true,
-                totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
-                stockSource,
-                overrideClipCount: kws.length,
-              }),
-            });
-            if (!stockRes.ok) { restoreStock(); return; }
-            const stockData = await stockRes.json();
-            const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
-            if (clips.length > 0) {
-              pipe.current.stockVideos = clips;
-              setPipeStockVideos(clips);
-              setExcludedClipIds(new Set());
-              setStep("fetchStock", "done", `ได้ ${clips.length}`);
-              toast.success(`อัพเดต stock ${clips.length}  — กด Generate Video ได้เลย`);
-            } else {
-              restoreStock();
-            }
-          } catch {
-            if (!kwsDone) restoreKw();
-            restoreStock();
+        // ── Step B: Pad keywords to N using scene keywords as filler ──
+        if (perSubKws.length < N) {
+          const sceneKwPool = prevKws.length > 0 ? prevKws : ["people", "nature", "city", "office", "technology"];
+          const padded = [...perSubKws];
+          while (padded.length < N) padded.push(sceneKwPool[padded.length % sceneKwPool.length]);
+          if (perSubKws.length > 0 && perSubKws.length < N)
+            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติม scene keyword แทน`);
+          perSubKws = padded;
+        }
+
+        if (perSubKws.length === 0) {
+          // Total keyword failure → keep original stocks
+          setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
+          setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
+        } else {
+          pipe.current.keywords = perSubKws;
+          pipe.current.sceneClipCounts = perSubKws.map(() => 1);
+          setKeywords(perSubKws);
+          setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
+
+          // ── Step C: Fetch stocks, retry missing keywords up to 3x ──
+          setStep("fetchStock", "running", `ดึง stock ${perSubKws.length} คลิปตรงซับ...`);
+
+          // clips keyed by keyword — reorder matches perSubKws order
+          const clipByKw = new Map<string, { localUrl?: string; videoUrl: string; duration: number; pexelsId: number; keyword: string }>();
+          let remainingKws = [...perSubKws];
+
+          for (let attempt = 0; attempt < 3 && remainingKws.length > 0; attempt++) {
+            try {
+              const stockRes = await fetch("/api/videos/fetch-stock", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  keywords: remainingKws,
+                  download: true,
+                  totalDurationSec: audioDurSec,
+                  stockSource,
+                  overrideClipCount: remainingKws.length,
+                }),
+              });
+              if (!stockRes.ok) break;
+              const stockData = await stockRes.json();
+              const fetched: StockVideo[] = (stockData.results ?? []).filter(
+                (r: StockVideo) => r.localUrl || r.videoUrl
+              );
+              for (const clip of fetched) {
+                if (!clipByKw.has(clip.keyword)) clipByKw.set(clip.keyword, clip);
+              }
+              // Find still-missing keywords for next retry
+              remainingKws = remainingKws.filter(kw => !clipByKw.has(kw));
+              if (remainingKws.length === 0) break;
+              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${remainingKws.length} keywords ยังขาด...`);
+            } catch { break; }
           }
-        })();
+
+          // ── Step D: Build ordered clips array — reorder by keyword text, backfill gaps ──
+          const availableClips = [...clipByKw.values()];
+          const orderedClips: StockVideo[] = [];
+
+          for (let i = 0; i < N; i++) {
+            const kw = perSubKws[i];
+            const match = clipByKw.get(kw);
+            if (match) {
+              orderedClips.push(match as StockVideo);
+            } else if (availableClips.length > 0) {
+              // Backfill: rotate through available clips
+              orderedClips.push(availableClips[i % availableClips.length] as StockVideo);
+            }
+          }
+
+          // ── Step E: Fail-safe — if no clips at all, restore original scene-based stocks ──
+          if (orderedClips.length === 0) {
+            toast("ไม่พบ stock ตรงซับ — ใช้ stock เดิมแทน");
+            setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
+            setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
+          } else {
+            const missing = N - clipByKw.size;
+            if (missing > 0) toast(`Backfill ${missing} คลิป — บางซับใช้คลิปซ้ำ`);
+            pipe.current.stockVideos = orderedClips;
+            setPipeStockVideos(orderedClips);
+            setExcludedClipIds(new Set());
+            setStep("fetchStock", "done", `ได้ ${orderedClips.length} คลิป (ตรงซับ)`);
+            toast.success(`Stock พร้อม ${orderedClips.length} คลิป — กด Generate Video ได้เลย`);
+            fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
+          }
+        }
       }
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
