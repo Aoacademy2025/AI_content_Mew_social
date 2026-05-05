@@ -668,7 +668,10 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+• Each phrase = one complete thought unit.
+• Prefer balanced line lengths: aim each phrase around similar length (roughly 18–45 Thai chars for Thai text, 12–24 words for English/mixed text).
+• Avoid single-word/very short phrases (<10 chars) unless it is a standalone name, number, date, or key term.
+• Keep total phrase count in a consistent density: no jumps of +1 then -1 between neighboring lines unless punctuation forces it.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
 • NEVER split mid-sentence just to hit a char limit.
 • Short punchy lines → keep as ONE phrase.
@@ -812,10 +815,10 @@ ${sourceText.trim()}`;
         //   Distribute phrases proportionally by char count across Whisper segment timeline.
         //   This is less accurate but better than pure char-proportion over full audio.
 
-        const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
-        const charLen = (s: string) => Math.max(1, thaiOnly(s).length || s.replace(/\s+/g, "").length);
-        const cleanText = (s: string) => s.replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-        const result: { text: string; startMs: number; endMs: number }[] = [];
+      const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
+      const charLen = (s: string) => Math.max(1, thaiOnly(s).length || s.replace(/\s+/g, "").length);
+      const cleanText = (s: string) => s.replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
+      const result: { text: string; startMs: number; endMs: number }[] = [];
 
         if (segments.length > 0) {
           // Strategy A: assign each LLM phrase to the STT segment it overlaps most,
