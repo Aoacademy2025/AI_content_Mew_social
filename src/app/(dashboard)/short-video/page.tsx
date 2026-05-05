@@ -10,7 +10,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   Mic, Captions, Film, Settings2, Video, Download,
-  CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square, X,
+  CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
@@ -2026,19 +2026,10 @@ export default function ShortVideoPage() {
                     {/* Step 1: URL / Upload */}
                     <div className="space-y-1.5">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Video URL or Upload</p>
-                      <div className="relative">
-                        <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); }}
-                          placeholder="https://... หรือวาง URL วิดีโอ"
-                          className="text-xs font-mono text-white border-0 focus-visible:ring-0 pr-9"
-                          style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
-                        {avatarDirectUrl && (
-                          <button onClick={() => { setAvatarDirectUrl(""); setDirectCompositeUrl(""); }}
-                            title="ลบ URL"
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-md text-white/50 hover:text-white hover:bg-white/10 transition-colors">
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
+                      <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }}
+                        placeholder="https://... หรือวาง URL วิดีโอ"
+                        className="text-xs font-mono text-white border-0 focus-visible:ring-0"
+                        style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
                       <label className="flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer transition-colors"
                         style={{ background: "var(--sv-input)", border: "1px dashed var(--sv-border2)" }}>
                         <input type="file" accept="video/mp4,video/mov,video/webm,.mp4,.mov,.webm" className="hidden"
