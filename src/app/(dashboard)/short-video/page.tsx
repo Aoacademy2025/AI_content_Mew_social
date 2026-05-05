@@ -1064,13 +1064,12 @@ export default function ShortVideoPage() {
           } catch { continue; }
         }
 
-        // ── Step B: Pad keywords to N using scene keywords as filler ──
+        // ── Step B: Pad keywords to N using subtitle text as fallback (no hardcode) ──
         if (perSubKws.length < N) {
-          const sceneKwPool = prevKws.length > 0 ? prevKws : ["people", "nature", "city", "office", "technology"];
           const padded = [...perSubKws];
-          while (padded.length < N) padded.push(sceneKwPool[padded.length % sceneKwPool.length]);
+          while (padded.length < N) padded.push(subTexts[padded.length] ?? subTexts[padded.length % subTexts.length]);
           if (perSubKws.length > 0 && perSubKws.length < N)
-            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติม scene keyword แทน`);
+            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติม subtitle text แทน`);
           perSubKws = padded;
         }
 
@@ -1346,9 +1345,8 @@ export default function ShortVideoPage() {
           } catch { continue; }
         }
         if (perSubKws2.length < N2) {
-          const pool = sceneKwPool.length > 0 ? sceneKwPool : ["people", "nature", "city", "office", "technology"];
           const padded = [...perSubKws2];
-          while (padded.length < N2) padded.push(pool[padded.length % pool.length]);
+          while (padded.length < N2) padded.push(subTexts2[padded.length] ?? subTexts2[padded.length % subTexts2.length]);
           perSubKws2 = padded;
         }
         if (perSubKws2.length === 0) { setStep("fetchStock", "done", "ไม่สามารถ mapping keyword ได้"); return; }
