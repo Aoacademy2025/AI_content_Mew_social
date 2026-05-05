@@ -1174,13 +1174,18 @@ export default function ShortVideoPage() {
             }
           }
 
-          // ── Step E: Fail-safe — per-subtitle fetch failed entirely, fall back to scene-based ──
+          // ── Step E: Fail-safe — per-subtitle fetch got 0 clips, fall back to scene-based ──
           if (orderedClips.length === 0) {
-            toast("ไม่พบ stock ตรงซับ — ใช้ scene keyword แทน");
-            setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
+            const fallbackKws = prevKws.length > 0 ? prevKws : (pipe.current.keywords ?? []);
+            if (fallbackKws.length === 0) {
+              setStep("fetchStock", "error", "ไม่พบ stock และไม่มี keyword สำรอง");
+              throw new Error("ไม่พบ stock video ที่เหมาะสม และไม่มี keyword สำรอง");
+            }
+            setStep("fetchStock", "running", "ค้นด้วย scene keyword สำรอง...");
             try {
-              await runFetchStock(prevKws.length > 0 ? prevKws : (pipe.current.keywords ?? []));
-            } catch {
+              await runFetchStock(fallbackKws);
+            } catch (fallbackErr) {
+              if (fallbackErr instanceof ApiCallError) throw fallbackErr;
               setStep("fetchStock", "done", `ไม่พบ stock`);
             }
           } else {
