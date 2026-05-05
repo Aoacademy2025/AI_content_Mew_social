@@ -1,39 +1,19 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-function getTransporter() {
-  const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT ?? "587", 10);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-
-  if (!host || !user || !pass) {
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: { user, pass },
-  });
-}
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function sendPasswordResetEmail(to: string, resetUrl: string): Promise<boolean> {
-  const transporter = getTransporter();
-
-  if (!transporter) {
-    console.warn("[send-email] SMTP not configured — reset URL:", resetUrl);
+  if (!process.env.RESEND_API_KEY) {
+    console.warn("[send-email] RESEND_API_KEY not set — reset URL:", resetUrl);
     return false;
   }
 
-  const fromName = process.env.SMTP_FROM_NAME ?? "AI Content Studio";
-  const fromEmail = process.env.SMTP_USER!;
+  const fromEmail = process.env.RESEND_FROM ?? "onboarding@resend.dev";
 
-  await transporter.sendMail({
-    from: `"${fromName}" <${fromEmail}>`,
+  const { error } = await resend.emails.send({
+    from: `AI Content Studio <${fromEmail}>`,
     to,
     subject: "รีเซ็ตรหัสผ่าน — AI Content Studio",
-    text: `คลิกลิงก์นี้เพื่อรีเซ็ตรหัสผ่านของคุณ:\n\n${resetUrl}\n\nลิงก์จะหมดอายุใน 1 ชั่วโมง`,
     html: `
 <!DOCTYPE html>
 <html lang="th">
@@ -62,6 +42,11 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
 </body>
 </html>`,
   });
+
+  if (error) {
+    console.error("[send-email] Resend error:", error);
+    return false;
+  }
 
   return true;
 }
