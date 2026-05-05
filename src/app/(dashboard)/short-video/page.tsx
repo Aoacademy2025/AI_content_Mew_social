@@ -1103,10 +1103,9 @@ export default function ShortVideoPage() {
                 }),
               });
               if (!stockRes.ok) {
-                const errData = (await stockRes.json().catch(() => ({}))) as { missingKey?: RequiredKeyType };
+                const errData = (await stockRes.json().catch(() => ({}))) as Record<string, unknown>;
                 if (errData.missingKey) {
-                  setMissingKey({ type: errData.missingKey as RequiredKeyType, retryStep: "fetchStock" });
-                  return;
+                  throw new ApiCallError("Stock", errData);
                 }
                 break;
               }
@@ -1125,7 +1124,10 @@ export default function ShortVideoPage() {
               missingIdxs = missingIdxs.filter(i => !clipAtIdx.has(i));
               if (missingIdxs.length === 0) break;
               if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${missingIdxs.length} ซับยังขาด clip...`);
-            } catch { break; }
+            } catch (fetchErr) {
+              if (fetchErr instanceof ApiCallError) throw fetchErr;
+              break;
+            }
           }
 
           // ── Step D: Build ordered clips — clipAtIdx[i] is already LLM-ranked best match ──
@@ -1372,10 +1374,9 @@ export default function ShortVideoPage() {
               }),
             });
             if (!r.ok) {
-              const errData = (await r.json().catch(() => ({}))) as { missingKey?: RequiredKeyType };
+              const errData = (await r.json().catch(() => ({}))) as Record<string, unknown>;
               if (errData.missingKey) {
-                setMissingKey({ type: errData.missingKey as RequiredKeyType, retryStep: "fetchStock" });
-                return;
+                throw new ApiCallError("Stock", errData);
               }
               break;
             }
@@ -1389,7 +1390,10 @@ export default function ShortVideoPage() {
               if (origIdx !== undefined && !clipAtIdx2.has(origIdx)) clipAtIdx2.set(origIdx, clip);
             }
             missingIdxs2 = missingIdxs2.filter(i => !clipAtIdx2.has(i));
-          } catch { break; }
+          } catch (fetchErr2) {
+            if (fetchErr2 instanceof ApiCallError) throw fetchErr2;
+            break;
+          }
         }
 
         const allFetched2 = [...new Map([...clipAtIdx2.values()].map(c => [c.pexelsId, c])).values()];
