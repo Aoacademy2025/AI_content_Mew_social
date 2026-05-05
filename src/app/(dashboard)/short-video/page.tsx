@@ -978,13 +978,25 @@ export default function ShortVideoPage() {
     if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
-    // Check if any LLM key exists — if not, show picker before starting
+    // Check keys before starting — show modal immediately instead of failing mid-pipeline
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
+        // LLM key check
         if (!keys.geminiKey && !keys.openaiKey) {
           setShowLLMPicker(true);
+          return;
+        }
+        // Stock key check — match the selected stockSource
+        const needPexels  = stockSource === "pexels"  || stockSource === "both";
+        const needPixabay = stockSource === "pixabay" || stockSource === "both";
+        if (needPexels && !keys.pexelsKey) {
+          setMissingKey({ type: "pexels", retryStep: "runAll" });
+          return;
+        }
+        if (needPixabay && !keys.pixabayKey) {
+          setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
         }
       }
@@ -1319,6 +1331,21 @@ export default function ShortVideoPage() {
 
   async function rerunFrom(step: keyof StepState) {
     if (running) return;
+
+    // Pre-check stock keys if step involves stock fetch
+    if (step === "fetchStock" || step === "keywords" || step === "transcribe") {
+      try {
+        const keysRes = await fetch("/api/user/api-keys");
+        if (keysRes.ok) {
+          const keys = await keysRes.json();
+          const needPexels  = stockSource === "pexels"  || stockSource === "both";
+          const needPixabay = stockSource === "pixabay" || stockSource === "both";
+          if (needPexels && !keys.pexelsKey) { setMissingKey({ type: "pexels", retryStep: step }); return; }
+          if (needPixabay && !keys.pixabayKey) { setMissingKey({ type: "pixabay", retryStep: step }); return; }
+        }
+      } catch {}
+    }
+
     setRunning(true);
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
