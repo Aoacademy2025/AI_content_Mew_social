@@ -1079,21 +1079,23 @@ export default function ShortVideoPage() {
           // ── Step C: Fetch stocks, retry missing keywords up to 3x ──
           setStep("fetchStock", "running", `ดึง stock ${perSubKws.length} คลิปตรงซับ...`);
 
-          // clips keyed by keyword — reorder matches perSubKws order
-          const clipByKw = new Map<string, { localUrl?: string; videoUrl: string; duration: number; pexelsId: number; keyword: string }>();
-          let remainingKws = [...perSubKws];
+          // Unique keywords deduplicated — fetch-stock needs distinct queries
+          const uniqueKws = [...new Set(perSubKws)];
+          // clips keyed by keyword → array (multiple clips per kw possible, consumed in order)
+          const clipPoolByKw = new Map<string, StockVideo[]>();
+          let missingKws = [...uniqueKws];
 
-          for (let attempt = 0; attempt < 3 && remainingKws.length > 0; attempt++) {
+          for (let attempt = 0; attempt < 3 && missingKws.length > 0; attempt++) {
             try {
               const stockRes = await fetch("/api/videos/fetch-stock", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  keywords: remainingKws,
+                  keywords: missingKws,
                   download: true,
                   totalDurationSec: audioDurSec,
                   stockSource,
-                  overrideClipCount: remainingKws.length,
+                  overrideClipCount: missingKws.length,
                 }),
               });
               if (!stockRes.ok) break;
@@ -1102,27 +1104,44 @@ export default function ShortVideoPage() {
                 (r: StockVideo) => r.localUrl || r.videoUrl
               );
               for (const clip of fetched) {
-                if (!clipByKw.has(clip.keyword)) clipByKw.set(clip.keyword, clip);
+                const pool = clipPoolByKw.get(clip.keyword) ?? [];
+                pool.push(clip);
+                clipPoolByKw.set(clip.keyword, pool);
               }
-              // Find still-missing keywords for next retry
-              remainingKws = remainingKws.filter(kw => !clipByKw.has(kw));
-              if (remainingKws.length === 0) break;
-              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${remainingKws.length} keywords ยังขาด...`);
+              missingKws = missingKws.filter(kw => !clipPoolByKw.has(kw));
+              if (missingKws.length === 0) break;
+              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${missingKws.length} keywords ยังขาด...`);
             } catch { break; }
           }
 
-          // ── Step D: Build ordered clips array — reorder by keyword text, backfill gaps ──
-          const availableClips = [...clipByKw.values()];
+          // ── Step D: Build ordered clips — 1 clip per subtitle, unique first, backfill last ──
+          // Track how many times each keyword's pool has been consumed
+          const kwConsumeIdx = new Map<string, number>();
+          // All fetched clips as fallback pool (unique by pexelsId, ordered)
+          const allFetched: StockVideo[] = [];
+          const seenIds = new Set<number>();
+          for (const pool of clipPoolByKw.values()) {
+            for (const clip of pool) {
+              if (!seenIds.has(clip.pexelsId)) { allFetched.push(clip); seenIds.add(clip.pexelsId); }
+            }
+          }
+
           const orderedClips: StockVideo[] = [];
+          // Backfill pool: clips not yet assigned (consume front-to-back, no repeat until exhausted)
+          let backfillIdx = 0;
 
           for (let i = 0; i < N; i++) {
             const kw = perSubKws[i];
-            const match = clipByKw.get(kw);
-            if (match) {
-              orderedClips.push(match as StockVideo);
-            } else if (availableClips.length > 0) {
-              // Backfill: rotate through available clips
-              orderedClips.push(availableClips[i % availableClips.length] as StockVideo);
+            const pool = clipPoolByKw.get(kw);
+            if (pool && pool.length > 0) {
+              // Take next unused clip in this keyword's pool
+              const idx = kwConsumeIdx.get(kw) ?? 0;
+              orderedClips.push(pool[idx % pool.length]);
+              kwConsumeIdx.set(kw, idx + 1);
+            } else if (allFetched.length > 0) {
+              // Keyword had no match — pick next unused clip from global pool
+              orderedClips.push(allFetched[backfillIdx % allFetched.length]);
+              backfillIdx++;
             }
           }
 
@@ -1132,7 +1151,7 @@ export default function ShortVideoPage() {
             setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
             setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
           } else {
-            const missing = N - clipByKw.size;
+            const missing = N - clipPoolByKw.size;
             if (missing > 0) toast(`Backfill ${missing} คลิป — บางซับใช้คลิปซ้ำ`);
             pipe.current.stockVideos = orderedClips;
             setPipeStockVideos(orderedClips);
@@ -1798,7 +1817,7 @@ export default function ShortVideoPage() {
                     {/* Colors */}
                     {([
                       { label: "สีตัวอักษร", val: subColor, set: setSubColor },
-                      { label: "สีไฮไลต์", val: subAccentColor, set: setSubAccentColor },
+                      { label: "สีไฮไลท์", val: subAccentColor, set: setSubAccentColor },
                     ] as const).map(({ label, val, set }) => (
                       <div key={label} className="space-y-1.5">
                         <div className="flex items-center justify-between">
@@ -1911,7 +1930,7 @@ export default function ShortVideoPage() {
                       </div>
                       <div className="flex items-center gap-1.5">
                         <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subAccentColor }} />
-                        <span className="text-[10px] text-white/35">เน้น</span>
+                        <span className="text-[10px] text-white/35">ไฮไลท์</span>
                       </div>
                     </div>
                   </div>
