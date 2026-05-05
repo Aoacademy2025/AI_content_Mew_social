@@ -2009,10 +2009,21 @@ export default function ShortVideoPage() {
                     {/* Step 1: URL / Upload */}
                     <div className="space-y-1.5">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Video URL or Upload</p>
-                      <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }}
-                        placeholder="https://... หรือวาง URL วิดีโอ"
-                        className="text-xs font-mono text-white border-0 focus-visible:ring-0"
-                        style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
+                      <div className="relative flex items-center">
+                        <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); }}
+                          placeholder="https://... หรือวาง URL วิดีโอ"
+                          className="text-xs font-mono text-white border-0 focus-visible:ring-0 pr-7"
+                          style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
+                        {avatarDirectUrl && (
+                          <button
+                            type="button"
+                            onClick={() => { setAvatarDirectUrl(""); setDirectCompositeUrl(""); }}
+                            className="absolute right-2 flex items-center justify-center rounded-full h-4 w-4 transition-opacity hover:opacity-100 opacity-50"
+                            title="ล้างข้อความ">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3 text-white/60"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        )}
+                      </div>
                       <label className="flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer transition-colors"
                         style={{ background: "var(--sv-input)", border: "1px dashed var(--sv-border2)" }}>
                         <input type="file" accept="video/mp4,video/mov,video/webm,.mp4,.mov,.webm" className="hidden"
