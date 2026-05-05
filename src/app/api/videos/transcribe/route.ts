@@ -482,7 +482,7 @@ RULES:
     // but quality varies. Use segment-level grouping for Thai; word-level for Latin scripts.
     const isThai = /[\u0E00-\u0E7F]/.test(fullText);
 
-    let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number }[] = [];
+    let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" }[] = [];
 
     if (isThai || words.length === 0) {
       // Always use the real script as source text — STT text may be inaccurate.
@@ -676,66 +676,55 @@ ${sourceText.trim()}`;
         const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
         const result: { text: string; startMs: number; endMs: number }[] = [];
 
-        if (words.length > 0) {
-          // Strategy A: forced alignment
-          // Each Whisper word contributes its Thai char count to consuming phrase chars.
-          // When cumulative chars >= phrase chars, close that phrase and open next.
-          let wi = 0; // whisper word index
-          for (let pi = 0; pi < phrases.length; pi++) {
-            const phraseChars = thaiOnly(phrases[pi]).length || 1;
-            let consumed = 0;
-            const startSec = wi < words.length ? words[wi].start : audioDur;
-            let endSec = startSec;
-
-            while (wi < words.length && (consumed < phraseChars || pi === phrases.length - 1)) {
-              const wChars = thaiOnly(words[wi].word).length || 1;
-              consumed += wChars;
-              endSec = words[wi].end;
-              wi++;
-              // stop consuming once phrase satisfied, unless it’s the last phrase
-              if (consumed >= phraseChars && pi < phrases.length - 1) break;
-            }
-
-            const cleanedText = phrases[pi].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-            result.push({
-              text: cleanedText,
-              startMs: Math.round(startSec * 1000),
-              endMs: Math.round(endSec * 1000),
-            });
-          }
-          console.log(`[transcribe] forced-alignment ${result.length} captions from ${words.length} words`);
-        } else if (segments.length > 0) {
-          // Strategy B: segment-level proportional — use Whisper segment boundaries
+        if (segments.length > 0) {
+          // Strategy A: segment-proportional alignment using Whisper/Gemini segment boundaries.
+          // Thai has no word spaces so word-level char counting is unreliable.
+          // Instead: distribute phrases proportionally across segment timeline by char count.
+          // This guarantees subtitle text = real script, timing = STT segment boundaries.
           type TimePoint = { sec: number };
-          const timeline: TimePoint[] = [];
-          for (const seg of segments) {
-            timeline.push({ sec: seg.start });
-            timeline.push({ sec: seg.end });
-          }
-          if (timeline[0].sec > 0.1) timeline.unshift({ sec: 0 });
-          if (timeline[timeline.length - 1].sec < audioDur - 0.1) timeline.push({ sec: audioDur });
+          const tlA: TimePoint[] = [];
+          for (const seg of segments) { tlA.push({ sec: seg.start }); tlA.push({ sec: seg.end }); }
+          if (tlA.length === 0 || tlA[0].sec > 0.1) tlA.unshift({ sec: 0 });
+          if (tlA[tlA.length - 1].sec < audioDur - 0.1) tlA.push({ sec: audioDur });
 
-          const timeAtFrac = (frac: number): number => {
+          const timeAtFracA = (frac: number): number => {
             const f = Math.max(0, Math.min(1, frac));
-            if (f === 0) return timeline[0].sec;
-            if (f === 1) return timeline[timeline.length - 1].sec;
-            const idx = f * (timeline.length - 1);
+            if (f === 0) return tlA[0].sec;
+            if (f === 1) return tlA[tlA.length - 1].sec;
+            const idx = f * (tlA.length - 1);
             const lo = Math.floor(idx);
-            const hi = Math.min(lo + 1, timeline.length - 1);
-            return timeline[lo].sec + (idx - lo) * (timeline[hi].sec - timeline[lo].sec);
+            const hi = Math.min(lo + 1, tlA.length - 1);
+            return tlA[lo].sec + (idx - lo) * (tlA[hi].sec - tlA[lo].sec);
           };
 
-          const charLengths = phrases.map(p => Math.max(1, p.replace(/\s+/g, "").length));
-          const totalChars = charLengths.reduce((a, b) => a + b, 0);
-          let cumChars = 0;
+          const charLensA = phrases.map(p => Math.max(1, thaiOnly(p).length || p.replace(/\s+/g, "").length));
+          const totalCharsA = charLensA.reduce((a, b) => a + b, 0);
+          let cumA = 0;
           for (let i = 0; i < phrases.length; i++) {
-            const startSec = timeAtFrac(cumChars / totalChars);
-            cumChars += charLengths[i];
-            const endSec = timeAtFrac(cumChars / totalChars);
+            const startSec = timeAtFracA(cumA / totalCharsA);
+            cumA += charLensA[i];
+            const endSec = timeAtFracA(cumA / totalCharsA);
             const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
             result.push({ text: cleanedText, startMs: Math.round(startSec * 1000), endMs: Math.round(endSec * 1000) });
           }
-          console.log(`[transcribe] segment-proportional ${result.length} captions, ${timeline.length} points`);
+          console.log(`[transcribe] segment-proportional alignment: ${result.length} phrases over ${segments.length} segments`);
+        } else if (words.length > 0) {
+          // Strategy B: word-level proportional (non-Thai or when no segments available)
+          const wordTimeline = words.map(w => ({ sec: w.start }));
+          wordTimeline.push({ sec: words[words.length - 1].end });
+          const charLensB = phrases.map(p => Math.max(1, p.replace(/\s+/g, "").length));
+          const totalCharsB = charLensB.reduce((a, b) => a + b, 0);
+          let cumB = 0;
+          for (let i = 0; i < phrases.length; i++) {
+            const f0 = cumB / totalCharsB;
+            cumB += charLensB[i];
+            const f1 = cumB / totalCharsB;
+            const idxStart = Math.floor(f0 * (wordTimeline.length - 1));
+            const idxEnd   = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
+            const cleanedText = phrases[i].replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
+            result.push({ text: cleanedText, startMs: Math.round(wordTimeline[idxStart].sec * 1000), endMs: Math.round(wordTimeline[idxEnd].sec * 1000) });
+          }
+          console.log(`[transcribe] word-proportional alignment: ${result.length} phrases over ${words.length} words`);
         } else {
           // Strategy C: no timestamps at all (Gemini path) — distribute evenly by char count
           // Thai TTS speaks at roughly constant rate, so char proportion ≈ time proportion

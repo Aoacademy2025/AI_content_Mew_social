@@ -375,7 +375,8 @@ export async function POST(req: Request) {
         break; // 1 clip per subtitle
       }
       if (!picked) {
-        const fallbackKeyword = keyword.split(" ")[0];
+        const kw = keywords[ki];
+        const fallbackKeyword = kw.split(" ")[0];
         try {
           const [fallbackPexels, fallbackPixabay] = await Promise.all([
             usePexels
@@ -390,7 +391,7 @@ export async function POST(req: Request) {
             if (!file) continue;
             if (usedIds.has(v.id)) continue;
             usedIds.add(v.id);
-            found.push({ keyword, id: v.id, duration: v.duration, link: file.link });
+            found.push({ keyword: kw, id: v.id, duration: v.duration, link: file.link });
             picked = true;
             break;
           }
@@ -398,7 +399,7 @@ export async function POST(req: Request) {
             for (const pv of fallbackPixabay) {
               if (usedIds.has(pv.id + 9_000_000)) continue;
               usedIds.add(pv.id + 9_000_000);
-              found.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+              found.push({ keyword: kw, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
               picked = true;
               break;
             }

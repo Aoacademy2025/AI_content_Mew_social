@@ -256,11 +256,13 @@ export async function POST(req: Request) {
     // Per-subtitle mode: every caption has exactly 1 dedicated clip (sceneClipCounts all = 1).
     // Must be detected BEFORE useEvenSplit — otherwise even-split fires and ignores caption timestamps.
     // Use gapFilled.length (sorted, non-empty captions) as the reference count.
+    // Per-subtitle: every caption has exactly 1 dedicated clip.
+    // Require at least 70% clips vs captions — clips can be fewer if some subtitles had no match.
     const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
       sceneClipCounts.length > 0 &&
       sceneClipCounts.every(c => c === 1) &&
       gapFilled.length > 0 &&
-      n >= Math.floor(gapFilled.length * 0.5);
+      n >= Math.ceil(gapFilled.length * 0.7);
 
     const useEvenSplit = !isPerSubtitleTop && n <= numScenes * 4; // few clips → guaranteed equal airtime
 
@@ -280,7 +282,8 @@ export async function POST(req: Request) {
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        const sv  = validStocks[ci % n];
+        // Use ci directly — clamp to last clip if caption count > clip count (avoids silent wrapping)
+        const sv  = validStocks[Math.min(ci, n - 1)];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });

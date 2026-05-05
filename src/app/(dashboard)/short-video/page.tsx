@@ -679,7 +679,7 @@ export default function ShortVideoPage() {
       }
     };
 
-    renderPollTimer = window.setInterval(async () => {
+    renderPollTimer = setInterval(async () => {
       try {
         const progressRes = await fetch("/api/videos/render-progress", {
           cache: "no-store",
