@@ -579,24 +579,10 @@ export default function ShortVideoPage() {
     const fullAudioUrl = voiceUrl.startsWith("http://") || voiceUrl.startsWith("https://")
       ? voiceUrl
       : `${window.location.origin}${voiceUrl}`;
-    // In Direct URL mode, the audio source is the user's own video — its actual
-    // spoken words may differ from the script field. Don't pass script as truth;
-    // let the transcriber produce captions from what it actually hears.
-    const directMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
-    const txBody: Record<string, unknown> = { audioUrl: fullAudioUrl };
-    if (!directMode && cleanScript.trim()) {
-      txBody.scriptPrompt = cleanScript.slice(0, 800);
-      txBody.script = cleanScript;
-    }
-    if (directMode) {
-      // For user-uploaded video: tell server to prefer word-level Whisper
-      // so timestamps follow what's actually said in the video.
-      txBody.directAudio = true;
-    }
     const txRes = await fetch("/api/videos/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(txBody),
+      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript }),
       signal: abortControllerRef.current?.signal,
     });
     const txData = await txRes.json();
@@ -1042,104 +1028,64 @@ export default function ShortVideoPage() {
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
 
-      // ── Per-subtitle Stock Fetch (BLOCKING, single pass) ──
-      // 1 keyword per caption → 1 stock clip per caption, mapped by index.
-      // No nested retry loops — keep it simple and bounded.
+      toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
+
+      // Background: re-fetch stock with 1 keyword per subtitle for better visual match
+      // Don't await — runs in background so user can see subtitles immediately
       if (sceneCaptions.length > 0) {
-        const N = sceneCaptions.length;
-        toast.success(`Transcribe เสร็จ — กำลังจับคู่ stock กับ ${N} ซับ...`);
+        const prevKwCount = (pipe.current.keywords ?? []).length;
+        const prevStockCount = (pipe.current.stockVideos ?? []).length;
+        const restoreKw = () => setStep("keywords", "done", `${prevKwCount} keywords (เดิม)`);
+        const restoreStock = () => setStep("fetchStock", "done", `${prevStockCount} คลิป (เดิม)`);
 
-        // Step A: extract 1 keyword per caption
-        setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
-        let perSubKws: string[] = [];
-        try {
-          const kwRes = await fetch("/api/videos/extract-keywords", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
-            signal: abortControllerRef.current?.signal,
-          });
-          if (kwRes.ok) {
+        (async () => {
+          let kwsDone = false;
+          try {
+            setStep("keywords", "running", `mapping ${sceneCaptions.length} ซับ → keyword...`);
+            const kwRes = await fetch("/api/videos/extract-keywords", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
+            });
+            if (!kwRes.ok) { restoreKw(); return; }
             const kwData = await kwRes.json();
-            perSubKws = (kwData.keywords ?? []).filter((k: unknown) => typeof k === "string" && (k as string).trim().length > 0);
-          }
-        } catch (e) {
-          if ((e as Error)?.name === "AbortError") throw e;
-        }
+            const kws: string[] = kwData.keywords ?? [];
+            if (kws.length === 0) { restoreKw(); return; }
+            pipe.current.keywords = kws;
+            pipe.current.sceneClipCounts = kws.map(() => 1);
+            setKeywords(kws);
+            setStep("keywords", "done", `${kws.length} keywords (1/ซับ)`);
+            kwsDone = true;
 
-        // Pad missing keywords from scene-level fallback (or caption text itself)
-        if (perSubKws.length < N) {
-          const sceneKws = pipe.current.keywords ?? [];
-          const padCount = N - perSubKws.length;
-          while (perSubKws.length < N) {
-            perSubKws.push(
-              sceneKws[perSubKws.length % Math.max(1, sceneKws.length)] ??
-              sceneCaptions[perSubKws.length].text.slice(0, 30)
-            );
-          }
-          toast(`Keyword ขาด ${padCount} — เติมจาก scene keywords`);
-        }
-
-        pipe.current.keywords = perSubKws;
-        pipe.current.sceneClipCounts = perSubKws.map(() => 1);
-        setKeywords(perSubKws);
-        setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
-
-        // Step B: fetch 1 clip per keyword in a SINGLE call (server handles parallelism)
-        setStep("fetchStock", "running", `ดึง stock ${N} คลิป...`);
-        let clipsByKw: { keyword: string; pexelsId: number; duration: number; videoUrl: string; localPath?: string; localUrl?: string }[] = [];
-        try {
-          const stockRes = await fetch("/api/videos/fetch-stock", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              keywords: perSubKws,
-              download: true,
-              totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
-              stockSource,
-              overrideClipCount: N,
-            }),
-            signal: abortControllerRef.current?.signal,
-          });
-          if (stockRes.ok) {
+            setStep("fetchStock", "running", `ดึง stock ${kws.length} คลิปตรงซับ...`);
+            const stockRes = await fetch("/api/videos/fetch-stock", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                keywords: kws,
+                download: true,
+                totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
+                stockSource,
+                overrideClipCount: kws.length,
+              }),
+            });
+            if (!stockRes.ok) { restoreStock(); return; }
             const stockData = await stockRes.json();
-            clipsByKw = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
+            const clips = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
+            if (clips.length > 0) {
+              pipe.current.stockVideos = clips;
+              setPipeStockVideos(clips);
+              setExcludedClipIds(new Set());
+              setStep("fetchStock", "done", `ได้ ${clips.length}`);
+              toast.success(`อัพเดต stock ${clips.length}  — กด Generate Video ได้เลย`);
+            } else {
+              restoreStock();
+            }
+          } catch {
+            if (!kwsDone) restoreKw();
+            restoreStock();
           }
-        } catch (e) {
-          if ((e as Error)?.name === "AbortError") throw e;
-        }
-
-        // Reorder: orderedClips[i] = clip whose keyword === perSubKws[i]
-        const orderedClips: typeof clipsByKw = [];
-        const usedIds = new Set<number>();
-        for (let i = 0; i < N; i++) {
-          const kw = perSubKws[i];
-          const match = clipsByKw.find(c => c.keyword === kw && !usedIds.has(c.pexelsId));
-          if (match) { orderedClips.push(match); usedIds.add(match.pexelsId); }
-        }
-        // Backfill remaining slots by reusing earlier clips (so stocks.length === N)
-        if (orderedClips.length < N && orderedClips.length > 0) {
-          const reusable = [...orderedClips];
-          while (orderedClips.length < N) orderedClips.push(reusable[orderedClips.length % reusable.length]);
-        }
-
-        if (orderedClips.length === N) {
-          pipe.current.stockVideos = orderedClips;
-          setPipeStockVideos(orderedClips);
-          setExcludedClipIds(new Set());
-          setStep("fetchStock", "done", `${N} clips (ครบทุกซับ)`);
-          toast.success(`Stock ครบ ${N} — ตรงกับซับแล้ว`);
-        } else {
-          // Couldn't get any per-subtitle clip — keep scene-based stocks if available
-          const prevStock = pipe.current.stockVideos ?? [];
-          if (prevStock.length > 0) {
-            setStep("fetchStock", "done", `${prevStock.length} clips (scene-based)`);
-            toast("Per-subtitle fetch ล้มเหลว — ใช้ stock เดิม (scene-based)");
-          } else {
-            setStep("fetchStock", "error", "ไม่ได้ stock เลย");
-            throw new Error("ดึง stock ไม่สำเร็จ — เช็ค Pexels/Pixabay key");
-          }
-        }
+        })();
       }
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
@@ -2153,15 +2099,6 @@ export default function ShortVideoPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {stockCacheInfo && stockCacheInfo.count > 0 && (
-                  <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-40 shrink-0"
-                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                    Cache {stockCacheInfo.sizeMb}MB
-                  </button>
-                )}
                 {running && (
                   <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
                     className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold text-white transition-all hover:opacity-90 shadow-lg"
@@ -2196,6 +2133,15 @@ export default function ShortVideoPage() {
                 stepStates={steps}
                 running={running}
                 onRerun={rerunFrom}
+                beforeStock={stockCacheInfo && stockCacheInfo.count > 0 ? (
+                  <button onClick={clearStockCache} disabled={clearingCache}
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40 shrink-0"
+                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
+                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
+                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                    Cache {stockCacheInfo.sizeMb}MB
+                  </button>
+                ) : undefined}
                 action={
                   <button onClick={runAll} disabled={running || !script.trim()}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"

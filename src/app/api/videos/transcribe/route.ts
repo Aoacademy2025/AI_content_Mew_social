@@ -243,7 +243,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { audioUrl, scriptPrompt, script, directAudio } = await req.json();
+    const { audioUrl, scriptPrompt, script } = await req.json();
     if (!audioUrl) {
       return NextResponse.json({ error: "audioUrl is required" }, { status: 400 });
     }
@@ -265,10 +265,6 @@ export async function POST(req: Request) {
     let useGeminiTranscribe = false;
     let useOpenAITranscribe = false;
     if (hasServerKey) {
-      useOpenAITranscribe = true;
-    } else if (directAudio && user?.openaiKey) {
-      // Direct mode (user-uploaded video): always prefer Whisper for word-level
-      // timestamps — Gemini segment timestamps drift on real human speech.
       useOpenAITranscribe = true;
     } else if (preferGemini && user?.geminiKey) {
       useGeminiTranscribe = true;
