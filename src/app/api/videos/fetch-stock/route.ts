@@ -184,18 +184,34 @@ export async function POST(req: Request) {
   const srcLabel = usePexels && usePixabay ? "Pexels+Pixabay" : usePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
+  // Per-subtitle mode: every keyword maps to exactly 1 clip needed.
+  // Always fetch perPage=15 so Pexels has enough candidates to find a relevant match.
+  // Normal mode uses perPage proportional to clipsPerKeyword (can be 1→3 which is too few).
+  const isPerSubtitleMode = overrideClipCount > 0 && overrideClipCount === keywords.length;
+  const basePerPage = isPerSubtitleMode ? 15 : Math.min(30, clipsPerKeyword * 3);
+
   const searchResults = await Promise.all(
     keywords.map(async (keyword): Promise<FoundVideo[]> => {
       try {
-        console.log(`[fetch-stock] searching "${keyword}" (want ${clipsPerKeyword}) from ${srcLabel}`);
-        const perPage = Math.min(30, clipsPerKeyword * 3);
+        console.log(`[fetch-stock] searching "${keyword}" (want ${clipsPerKeyword}, perPage=${basePerPage}) from ${srcLabel}`);
         const shortQuery = keyword.split(" ").slice(0, 2).join(" ");
+        // Broader 1-word fallback for when specific query returns nothing
+        const broadQuery = keyword.split(" ")[0];
 
         // Fire only selected sources in parallel
         const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
           usePexels
-            ? searchPexels(keyword, pexelsKey!, 3, perPage)
-                .then(r => r.length ? r : shortQuery !== keyword ? searchPexels(shortQuery, pexelsKey!, 3, perPage) : r)
+            ? searchPexels(keyword, pexelsKey!, 3, basePerPage).then(r => {
+                if (r.length) return r;
+                // Fallback 1: shorter query
+                if (shortQuery !== keyword) return searchPexels(shortQuery, pexelsKey!, 3, basePerPage);
+                return r;
+              }).then(r => {
+                if (r.length) return r;
+                // Fallback 2: single broadest word with more results
+                if (broadQuery !== shortQuery) return searchPexels(broadQuery, pexelsKey!, 3, 15);
+                return r;
+              })
             : Promise.resolve([] as PexelsVideo[]),
           usePixabay && pixabayKey
             ? searchPixabay(keyword, pixabayKey)
