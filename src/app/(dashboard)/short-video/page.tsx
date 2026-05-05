@@ -1074,7 +1074,7 @@ export default function ShortVideoPage() {
             const kwRes = await fetch("/api/videos/extract-keywords", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: subTexts, perSubtitle: true }),
+              body: JSON.stringify({ scenes: subTexts, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
             if (!kwRes.ok) continue;
             const kwData = await kwRes.json();
@@ -1127,6 +1127,7 @@ export default function ShortVideoPage() {
                   stockSource,
                   overrideClipCount: kwsToFetch.length,
                   perSubtitleMode: true,
+                  preferredLLM: preferredLLMRef.current,
                 }),
               });
               if (!stockRes.ok) {
@@ -1387,7 +1388,7 @@ export default function ShortVideoPage() {
           try {
             const r = await fetch("/api/videos/extract-keywords", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: subTexts2, perSubtitle: true }),
+              body: JSON.stringify({ scenes: subTexts2, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
             if (!r.ok) continue;
             const d = await r.json();
@@ -1419,8 +1420,9 @@ export default function ShortVideoPage() {
                 keywords: kwsToFetch2,
                 subtitleTexts: textsToFetch2,
                 download: true, totalDurationSec: audioDurSec2, stockSource,
-                overrideClipCount: perSubKws2.length, // full count keeps isPerSubtitleMode true on server
+                overrideClipCount: perSubKws2.length,
                 perSubtitleMode: true,
+                preferredLLM: preferredLLMRef.current,
               }),
             });
             if (!r.ok) {
