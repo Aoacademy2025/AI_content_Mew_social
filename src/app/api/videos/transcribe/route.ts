@@ -300,7 +300,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { audioUrl, scriptPrompt, script } = await req.json();
+    const { audioUrl, scriptPrompt, script, preferredLLM } = await req.json();
     if (!audioUrl) {
       return NextResponse.json({ error: "audioUrl is required" }, { status: 400 });
     }
@@ -310,29 +310,28 @@ export async function POST(req: Request) {
       select: { openaiKey: true, geminiKey: true, ttsProvider: true },
     });
 
-    // Mirror Extract Keywords (LLM) step 1 strategy exactly:
-    //   1. SERVER_OPENAI_API_KEY (if set) → OpenAI
-    //   2. preferGemini (ttsProvider=gemini) + geminiKey → Gemini
-    //   3. preferOpenAI (ttsProvider=elevenlabs/openai) + openaiKey → OpenAI
-    //   4. fallback: whichever key user has (geminiKey takes priority)
+    // LLM selection priority:
+    //   1. SERVER_OPENAI_API_KEY (server override) → OpenAI
+    //   2. preferredLLM from client ("gemini" | "openai") — user picked in picker
+    //   3. fallback: geminiKey first, then openaiKey
     const hasServerKey = !!process.env.SERVER_OPENAI_API_KEY;
-    const preferGemini = user?.ttsProvider === "gemini";
-    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
+    const wantGemini = preferredLLM === "gemini";
+    const wantOpenAI = preferredLLM === "openai";
 
     let useGeminiTranscribe = false;
     let useOpenAITranscribe = false;
     if (hasServerKey) {
       useOpenAITranscribe = true;
-    } else if (preferGemini && user?.geminiKey) {
+    } else if (wantGemini && user?.geminiKey) {
       useGeminiTranscribe = true;
-    } else if (preferOpenAI && user?.openaiKey) {
+    } else if (wantOpenAI && user?.openaiKey) {
       useOpenAITranscribe = true;
     } else if (user?.geminiKey) {
       useGeminiTranscribe = true;
     } else if (user?.openaiKey) {
       useOpenAITranscribe = true;
     }
-    console.log(`[transcribe] strategy: ttsProvider=${user?.ttsProvider} hasOpenAI=${!!user?.openaiKey} hasGemini=${!!user?.geminiKey} hasServerKey=${hasServerKey} → ${useGeminiTranscribe ? "Gemini" : useOpenAITranscribe ? "OpenAI" : "LocalWhisper"}`);
+    console.log(`[transcribe] preferredLLM=${preferredLLM ?? "auto"} hasOpenAI=${!!user?.openaiKey} hasGemini=${!!user?.geminiKey} → ${useGeminiTranscribe ? "Gemini" : useOpenAITranscribe ? "OpenAI" : "LocalWhisper"}`);
 
     // Resolve local file path or download remote
     const ts = Date.now();
@@ -527,11 +526,13 @@ RULES:
       }
     }
 
-    // ── Get LLM key for subtitle splitting (Gemini preferred, fallback OpenAI) ──
+    // ── Get LLM key for subtitle splitting — respects preferredLLM from client ──
     let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
     let useGemini = false;
     if (!apiKey) {
-      if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+      if (wantGemini && user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+      else if (wantOpenAI && user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+      else if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
       else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
     }
 

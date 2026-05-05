@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false } = body ?? {};
+  const { script, scenes, perSubtitle = false, preferredLLM } = body ?? {};
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
@@ -34,10 +34,10 @@ export async function POST(req: Request) {
   let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
   let useGemini = false;
   if (!apiKey) {
-    const preferGemini = user?.ttsProvider === "gemini";
-    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
-    if (preferGemini && user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
-    else if (preferOpenAI && user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
+    const wantGemini = preferredLLM === "gemini";
+    const wantOpenAI = preferredLLM === "openai";
+    if (wantGemini && user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    else if (wantOpenAI && user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
     else if (user?.geminiKey) { apiKey = decrypt(user.geminiKey); useGemini = true; }
     else if (user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });

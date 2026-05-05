@@ -214,8 +214,11 @@ export default function ShortVideoPage() {
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
-  // LLM provider picker — shown when no key is set at all before runAll
+  // LLM provider picker — shown before runAll to choose Gemini or OpenAI
   const [showLLMPicker, setShowLLMPicker] = useState(false);
+  // Which LLM the user chose — "gemini" | "openai" | null (auto = prefer Gemini)
+  const [preferredLLM, setPreferredLLM] = useState<"gemini" | "openai" | null>(null);
+  const preferredLLMRef = useRef<"gemini" | "openai" | null>(null);
   const [showClearCacheDialog, setShowClearCacheDialog] = useState(false);
 
   // Stored pipeline data for partial re-runs
@@ -479,7 +482,7 @@ export default function ShortVideoPage() {
     const kwRes = await fetch("/api/videos/extract-keywords", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenes: sc }),
+      body: JSON.stringify({ scenes: sc, preferredLLM: preferredLLMRef.current }),
       signal: abortControllerRef.current?.signal,
     });
     const kwData = await kwRes.json();
@@ -515,6 +518,7 @@ export default function ShortVideoPage() {
         download: true,
         totalDurationSec,
         stockSource,
+        preferredLLM: preferredLLMRef.current,
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
       }),
       signal: abortControllerRef.current?.signal,
@@ -582,7 +586,7 @@ export default function ShortVideoPage() {
     const txRes = await fetch("/api/videos/transcribe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript }),
+      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript, preferredLLM: preferredLLMRef.current }),
       signal: abortControllerRef.current?.signal,
     });
     const txData = await txRes.json();
@@ -983,8 +987,12 @@ export default function ShortVideoPage() {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
-        // LLM key check
+        // LLM key check — show picker if no key at all, or if both keys exist and no preference yet
         if (!keys.geminiKey && !keys.openaiKey) {
+          setShowLLMPicker(true);
+          return;
+        }
+        if (keys.geminiKey && keys.openaiKey && !preferredLLMRef.current) {
           setShowLLMPicker(true);
           return;
         }
@@ -1225,6 +1233,9 @@ export default function ShortVideoPage() {
       abortRef.current = false;
       abortControllerRef.current = null;
       setRunning(false);
+      // Reset so next Run All asks again
+      preferredLLMRef.current = null;
+      setPreferredLLM(null);
     }
   }
 
@@ -1673,11 +1684,16 @@ export default function ShortVideoPage() {
             style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
             <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
               <p className="text-sm font-bold text-white">เลือก AI Provider</p>
-              <p className="text-[11px] text-white/40 mt-0.5">ต้องมี API Key อย่างน้อย 1 ตัวเพื่อใช้งาน pipeline</p>
+              <p className="text-[11px] text-white/40 mt-0.5">เลือก LLM ที่ต้องการใช้สำหรับ pipeline นี้</p>
             </div>
             <div className="p-5 space-y-3">
               <button
-                onClick={() => { setShowLLMPicker(false); setMissingKey({ type: "gemini", retryStep: "runAll" }); }}
+                onClick={() => {
+                  preferredLLMRef.current = "gemini";
+                  setPreferredLLM("gemini");
+                  setShowLLMPicker(false);
+                  setTimeout(runAll, 50);
+                }}
                 className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
                 style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
@@ -1690,7 +1706,12 @@ export default function ShortVideoPage() {
                 </div>
               </button>
               <button
-                onClick={() => { setShowLLMPicker(false); setMissingKey({ type: "openai", retryStep: "runAll" }); }}
+                onClick={() => {
+                  preferredLLMRef.current = "openai";
+                  setPreferredLLM("openai");
+                  setShowLLMPicker(false);
+                  setTimeout(runAll, 50);
+                }}
                 className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
                 style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
