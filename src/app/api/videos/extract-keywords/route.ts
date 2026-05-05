@@ -20,6 +20,89 @@ function preprocessScript(raw: string): string {
     .trim();
 }
 
+function buildFallbackKeyword(phrase: string, index: number, batchOffset: number): string {
+  const fallbackPool = [
+    "cinematic wide street shot",
+    "person walking by cars",
+    "nature landscape scene",
+    "office workspace close up",
+    "business team meeting",
+    "city skyline at dusk",
+    "close up hands on laptop",
+    "document papers on desk",
+    "abstract tech data screen",
+    "dramatic light portrait",
+    "coffee shop crowd",
+    "sunset road travel",
+  ];
+
+  const cleaned = phrase
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = cleaned.split(" ").filter(Boolean);
+  if (words.length === 0) {
+    return `${fallbackPool[(batchOffset + index) % fallbackPool.length]} #${batchOffset + index + 1}`;
+  }
+
+  const base = words.slice(0, 3).join(" ").toLowerCase();
+  const suffix = (index + batchOffset) % fallbackPool.length;
+  return `${base} ${fallbackPool[suffix]}`;
+}
+
+function extractQuotedStringArray(raw: string): string[] {
+  const inObj = raw.match(/\{[\s\S]*\}/)?.[0];
+  try {
+    const parsed = inObj ? JSON.parse(inObj) : null;
+    const arr: unknown[] = Array.isArray(parsed?.keywords) ? parsed.keywords : Array.isArray(parsed) ? parsed : [];
+    return arr.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map((k) => k.trim());
+  } catch {
+    // Fallback: parse manually quoted strings
+    const arr = raw.match(/"([^"]{3,200})"/g);
+    if (!arr) return [];
+    return arr.map((s) => s.replace(/^"|"$/g, "").trim()).filter(Boolean);
+  }
+}
+
+function normalizeKeyword(keyword: string): string {
+  return keyword
+    .replace(/\s+/g, " ")
+    .replace(/[^a-zA-Z0-9\s-]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function ensureKeywordsShape(keywords: string[], expectedCount: number, batch: string[], batchOffset: number): string[] {
+  const normalized = keywords.map(normalizeKeyword).filter((k, i) => {
+    const wordCount = k.split(" ").filter(Boolean).length;
+    const ok = k.length >= 8 && wordCount >= 2 && wordCount <= 6;
+    if (!ok) {
+      console.warn(`[extract-keywords] dropping invalid keyword "${keywords[i]}"`);
+      return false;
+    }
+    return true;
+  });
+
+  const out: string[] = [];
+  const used = new Set<string>();
+  for (let i = 0; i < normalized.length; i++) {
+    const k = normalized[i];
+    if (out.length >= expectedCount) break;
+    if (used.has(k)) {
+      out.push(buildFallbackKeyword(batch[i], i, batchOffset));
+      continue;
+    }
+    used.add(k);
+    out.push(k);
+  }
+
+  for (let i = out.length; i < expectedCount; i++) {
+    out.push(buildFallbackKeyword(batch[i], i, batchOffset));
+  }
+
+  return out.slice(0, expectedCount);
+}
+
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -96,18 +179,9 @@ Return ONLY valid JSON object with exactly ${batch.length} strings in the keywor
         if (r.ok) { const d = await r.json(); kwText = d.choices?.[0]?.message?.content ?? "{}"; }
       }
 
-      try {
-        const match = kwText.match(/\{[\s\S]*\}/);
-        const parsed = JSON.parse(match?.[0] ?? "{}");
-        // Accept both {"keywords":[...]} and raw array fallback
-        const arr: unknown[] = Array.isArray(parsed.keywords)
-          ? parsed.keywords
-          : Array.isArray(parsed) ? parsed : [];
-        const keywords = arr.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
-        return keywords;
-      } catch {
-        return [];
-      }
+      const keywords = extractQuotedStringArray(kwText);
+      if (keywords.length > 0) return keywords.slice(0, batch.length);
+      return [];
     }
 
     // Split into batches and call LLM for each
@@ -126,18 +200,36 @@ Return ONLY valid JSON object with exactly ${batch.length} strings in the keywor
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           batchKws = await fetchKeywordBatch(batch, b * BATCH_SIZE);
-          if (batchKws.length >= batch.length) break;
+          batchKws = ensureKeywordsShape(batchKws, batch.length, batch, b * BATCH_SIZE);
+          if (batchKws.length === batch.length) break;
         } catch (e) {
           console.error(`[extract-keywords] batch ${b} attempt ${attempt} error:`, e);
         }
       }
-      // Pad batch result to expected length by cycling valid keywords
-      if (batchKws.length < batch.length) {
-        const pool = batchKws.length > 0 ? batchKws : ["person walking", "city street", "nature landscape"];
-        while (batchKws.length < batch.length) batchKws.push(pool[batchKws.length % pool.length]);
+      batchKws = ensureKeywordsShape(batchKws, batch.length, batch, b * BATCH_SIZE);
+      // Guarantee unique and valid keywords for this batch
+      const finalBatch = new Set<string>();
+      const deduped: string[] = [];
+      for (let i = 0; i < batchKws.length; i++) {
+        const k = normalizeKeyword(batchKws[i]) || buildFallbackKeyword(batch[i], i, b * BATCH_SIZE);
+        if (!finalBatch.has(k)) {
+          finalBatch.add(k);
+          deduped.push(k);
+        } else {
+          deduped.push(buildFallbackKeyword(batch[i], i + 1000, b * BATCH_SIZE));
+        }
       }
+
+      // Pad batch result to expected length if duplicates removed
+      if (batchKws.length < batch.length) {
+        for (let i = deduped.length; i < batch.length; i++) {
+          deduped.push(buildFallbackKeyword(batch[i], i, b * BATCH_SIZE));
+        }
+      }
+      batchKws = ensureKeywordsShape(deduped, batch.length, batch, b * BATCH_SIZE);
+
       // Trim to batch size in case LLM returned extras
-      allKeywords.push(...batchKws.slice(0, batch.length));
+      allKeywords.push(...batchKws);
     }
 
     console.log(`[extract-keywords] perSubtitle: ${allKeywords.length} keywords for ${subtitleList.length} subtitles`);
