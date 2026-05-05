@@ -485,9 +485,12 @@ RULES:
     let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number }[] = [];
 
     if (isThai || words.length === 0) {
+      // Always use the real script as source text — STT text may be inaccurate.
+      // STT (Whisper/Gemini) is used ONLY for timestamps, never for subtitle text.
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
         ? script.trim() : fullText;
       const sourceText = sanitizeTranscriptionText(sourceRaw);
+      console.log(`[transcribe] sourceText from ${typeof script === "string" && script.trim().length > 0 ? "script (real)" : "STT fullText (fallback)"}: ${sourceText.slice(0, 80)}`);
       const fallbackDur = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 1000 : 30;
       const audioDur = Math.max(
         segments.length > 0 ? segments[segments.length - 1].end : 0,
@@ -495,28 +498,9 @@ RULES:
         fallbackDur
       );
 
-      // ── Fast path: Gemini segments only (no word timestamps available)
-      // When Gemini returns timestamped segments but no word-level data,
-      // use segments directly — GPT split + forced alignment would only drift.
-      // OpenAI Whisper has word timestamps → always use the full GPT split + alignment path.
-      if (segments.length >= 2 && words.length === 0) {
-        const segCaptions = segments.map((seg, i) => {
-          const text = sanitizePhraseText(seg.text);
-          const startMs = Math.round(seg.start * 1000);
-          const endMs = i < segments.length - 1
-            ? Math.round(segments[i + 1].start * 1000)  // end = next segment start (no gap)
-            : Math.round(audioDur * 1000);
-          return { text, startMs, endMs, timestampMs: startMs, confidence: 1 as const };
-        }).filter(c => c.text.length > 0);
-
-        if (segCaptions.length > 0) {
-          segCaptions[0].startMs = 0;
-          segCaptions[segCaptions.length - 1].endMs = Math.round(audioDur * 1000);
-          captions = segCaptions;
-          console.log(`[transcribe] direct-segments: ${captions.length} captions from ${segments.length} segments`);
-          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
-        }
-      }
+      // NOTE: Gemini/Whisper fast-path (direct segments) is intentionally removed.
+      // STT text may be inaccurate — we always use the real script text + LLM split,
+      // then map onto STT timestamps. STT is only used for timing, never for text.
 
       // ── Step 1: Get phrases from GPT (only if we don't already have segment timestamps) ──
       // When Gemini/Whisper returned segments with timestamps, captions is already populated above.
