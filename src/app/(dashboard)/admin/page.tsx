@@ -25,6 +25,7 @@ interface CleanupInfo {
     older7d: { count: number; sizeMb: number };
   };
   stocks: { older1d: { count: number; sizeMb: number } };
+  tmp: { sizeMb: number; count: number };
   protectedCount: number;
 }
 
@@ -55,6 +56,7 @@ export default function AdminDashboardPage() {
   const [cleaning, setCleaning] = useState(false);
   const [cleanDays, setCleanDays] = useState(3);
   const [includeStocks, setIncludeStocks] = useState(false);
+  const [includeTmp, setIncludeTmp] = useState(false);
   const [showCleanConfirm, setShowCleanConfirm] = useState(false);
 
   function loadCleanupInfo() {
@@ -73,7 +75,7 @@ export default function AdminDashboardPage() {
       const res = await fetch("/api/admin/cleanup", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ olderThanDays: cleanDays, includeStocks }),
+        body: JSON.stringify({ olderThanDays: cleanDays, includeStocks, includeTmp }),
       });
       const d = await res.json();
       if (res.ok) {
@@ -337,27 +339,53 @@ export default function AdminDashboardPage() {
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-5">
             {/* Stats row */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[
-                { label: "ทั้งหมดใน /renders", val: cleanupInfo?.renders.total, color: "zinc" },
-                { label: "เกิน 1 วัน (ลบได้)", val: cleanupInfo?.renders.older1d, color: "yellow" },
-                { label: "เกิน 3 วัน (ลบได้)", val: cleanupInfo?.renders.older3d, color: "orange" },
-                { label: "เกิน 7 วัน (ลบได้)", val: cleanupInfo?.renders.older7d, color: "red" },
-              ].map(({ label, val, color }) => (
-                <div key={label} className="rounded-xl bg-white/5 border border-white/10 p-3 text-center">
-                  <p className="text-xs text-zinc-500 mb-1">{label}</p>
-                  {cleanupLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-zinc-600 mx-auto" />
-                  ) : (
-                    <>
-                      <p className={`text-xl font-bold ${color === "red" ? "text-red-400" : color === "orange" ? "text-orange-400" : color === "yellow" ? "text-yellow-400" : "text-zinc-300"}`}>
-                        {val?.sizeMb ?? 0} MB
+            {/* /renders stats */}
+            <div>
+              <p className="text-xs text-zinc-500 mb-2 font-semibold uppercase tracking-wider">/renders (วิดีโอ render)</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "ทั้งหมด", val: cleanupInfo?.renders.total, color: "zinc" },
+                  { label: "เกิน 1 วัน", val: cleanupInfo?.renders.older1d, color: "yellow" },
+                  { label: "เกิน 3 วัน", val: cleanupInfo?.renders.older3d, color: "orange" },
+                  { label: "เกิน 7 วัน", val: cleanupInfo?.renders.older7d, color: "red" },
+                ].map(({ label, val, color }) => (
+                  <div key={label} className="rounded-xl bg-white/5 border border-white/10 p-3 text-center">
+                    <p className="text-xs text-zinc-500 mb-1">{label}</p>
+                    {cleanupLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-zinc-600 mx-auto" />
+                    ) : (
+                      <>
+                        <p className={`text-xl font-bold ${color === "red" ? "text-red-400" : color === "orange" ? "text-orange-400" : color === "yellow" ? "text-yellow-400" : "text-zinc-300"}`}>
+                          {val?.sizeMb ?? 0} MB
+                        </p>
+                        <p className="text-[10px] text-zinc-600">{val?.count ?? 0} ไฟล์</p>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* /tmp stats */}
+            <div>
+              <p className="text-xs text-zinc-500 mb-2 font-semibold uppercase tracking-wider">/tmp (Remotion temp files)</p>
+              <div className="rounded-xl bg-white/5 border border-white/10 p-3 flex items-center gap-4">
+                {cleanupLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-zinc-600" />
+                ) : (
+                  <>
+                    <div>
+                      <p className={`text-2xl font-bold ${(cleanupInfo?.tmp.sizeMb ?? 0) > 1000 ? "text-red-400" : (cleanupInfo?.tmp.sizeMb ?? 0) > 500 ? "text-orange-400" : "text-zinc-300"}`}>
+                        {cleanupInfo?.tmp.sizeMb ?? 0} MB
                       </p>
-                      <p className="text-[10px] text-zinc-600">{val?.count ?? 0} ไฟล์</p>
-                    </>
-                  )}
-                </div>
-              ))}
+                      <p className="text-[10px] text-zinc-600">{cleanupInfo?.tmp.count ?? 0} temp folders</p>
+                    </div>
+                    <p className="text-xs text-zinc-500 flex-1">
+                      remotion-webpack-bundle, react-motion-render, puppeteer_dev_chrome_profile
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Gallery protection notice */}
@@ -388,6 +416,15 @@ export default function AdminDashboardPage() {
                 <input type="checkbox" checked={includeStocks} onChange={e => setIncludeStocks(e.target.checked)}
                   className="accent-orange-500 h-3.5 w-3.5" />
                 <span className="text-xs text-zinc-400">รวม /stocks (stock video cache)</span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={includeTmp} onChange={e => setIncludeTmp(e.target.checked)}
+                  className="accent-red-500 h-3.5 w-3.5" />
+                <span className="text-xs text-zinc-400">
+                  รวม /tmp Remotion temp
+                  {cleanupInfo?.tmp.sizeMb ? <span className="text-red-400 font-semibold ml-1">({cleanupInfo.tmp.sizeMb} MB)</span> : ""}
+                </span>
               </label>
             </div>
 
