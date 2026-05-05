@@ -61,6 +61,63 @@ function normalizeForCompare(input: string): string {
     .replace(/[.,!?·•…฿"'\-–—()]/g, "");
 }
 
+/**
+ * Re-maps LLM-generated phrases back onto the real script text.
+ *
+ * The LLM may paraphrase, drop, or reorder words. This function uses the
+ * proportional character positions of each LLM phrase (relative to the
+ * concatenated LLM output) to cut the SAME proportional slice from sourceText.
+ * Result: subtitle text is always verbatim from the script, never from LLM.
+ */
+function snapPhrasesToScript(llmPhrases: string[], sourceText: string): string[] {
+  if (!llmPhrases.length || !sourceText.trim()) return llmPhrases;
+
+  const src = sourceText.trim();
+  // Strip to bare chars for proportion calculation (spaces included so splits land on word boundaries)
+  const srcChars = [...src];
+  const srcLen = srcChars.length;
+  if (srcLen === 0) return llmPhrases;
+
+  // Total chars in LLM output (no-space stripped for proportion)
+  const llmNoSpace = llmPhrases.map(p => p.replace(/\s+/g, ""));
+  const llmTotalChars = llmNoSpace.reduce((a, b) => a + b.length, 0);
+  if (llmTotalChars === 0) return llmPhrases;
+
+  // Build cumulative char positions in sourceText matching LLM phrase proportions.
+  // We advance through src char-by-char counting non-space chars to find split points.
+  const snapped: string[] = [];
+  let llmCum = 0;
+  let srcPos = 0; // position in srcChars (with spaces)
+  let srcNonSpaceCounted = 0; // non-space chars consumed so far in src
+
+  for (let i = 0; i < llmPhrases.length; i++) {
+    llmCum += llmNoSpace[i].length;
+    // Target non-space char count in src at end of this phrase
+    const targetNS = Math.round((llmCum / llmTotalChars) * srcLen);
+
+    const startPos = srcPos;
+    // Advance srcPos until we've consumed targetNS non-space src chars
+    while (srcPos < srcChars.length && srcNonSpaceCounted < targetNS) {
+      if (srcChars[srcPos] !== " ") srcNonSpaceCounted++;
+      srcPos++;
+    }
+    // Snap to word boundary: advance past any partial word
+    while (srcPos < srcChars.length && srcChars[srcPos] !== " ") srcPos++;
+
+    let slice = srcChars.slice(startPos, srcPos).join("").trim();
+    if (!slice) slice = llmPhrases[i]; // last-resort: keep LLM phrase
+    snapped.push(slice);
+  }
+
+  // Ensure last phrase covers the rest of the script
+  if (snapped.length > 0 && srcPos < srcChars.length) {
+    snapped[snapped.length - 1] = (snapped[snapped.length - 1] + " " + srcChars.slice(srcPos).join("")).trim();
+  }
+
+  console.log(`[transcribe] snapPhrasesToScript: ${llmPhrases.length} → ${snapped.length} phrases from real script`);
+  return snapped;
+}
+
 function splitTextByTargetLen(input: string, targetLen: number, minChunk: number): string[] {
   const text = sanitizeTranscriptionText(input);
   if (!text) return [];
@@ -581,8 +638,10 @@ ${sourceText.trim()}`;
               const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
               if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                const expanded = expandPhrasesToTargetDensity(raw, minPhrases, sourceText);
-                phrases = expanded.length > 0 ? expanded : raw;
+                // Snap LLM split positions onto real script text — subtitle text must be verbatim from script
+                const snapped = snapPhrasesToScript(raw, sourceText);
+                const expanded = expandPhrasesToTargetDensity(snapped, minPhrases, sourceText);
+                phrases = expanded.length > 0 ? expanded : snapped;
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
