@@ -189,8 +189,10 @@ export default function ShortVideoPage() {
   const [targetClipCount, setTargetClipCount] = useState(0);
   // Auto clip count returned by the last fetch (so UI can show "Auto (12)")
   const [autoClipCount, setAutoClipCount] = useState(0);
-  // Stock source selection
+  // Stock source selection (used for API fetch)
   const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  // Grid display filter (independent from fetch source — doesn't affect API calls)
+  const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
   // Clips excluded by user (pexelsId set)
   const [excludedClipIds, setExcludedClipIds] = useState<Set<number>>(new Set());
 
@@ -2497,16 +2499,16 @@ export default function ShortVideoPage() {
 
                               {/* Row 1: Source + clip count inline */}
                               <div className="flex items-center gap-2">
-                                {/* Source pills */}
+                                {/* Source pills — filter grid only, does NOT change fetch source */}
                                 <div className="flex gap-1">
                                   {([
                                     { v: "both",    label: "All",     color: "hsl(190 100% 50%)" },
                                     { v: "pexels",  label: "Pexels",  color: "hsl(142 72% 50%)" },
                                     { v: "pixabay", label: "Pixabay", color: "hsl(262 80% 65%)" },
                                   ] as const).map(({ v, label, color }) => (
-                                    <button key={v} onClick={() => setStockSource(v)}
+                                    <button key={v} onClick={() => setGridFilter(v)}
                                       className="rounded-lg px-2.5 py-1 text-[10px] font-bold transition-all"
-                                      style={stockSource === v
+                                      style={gridFilter === v
                                         ? { background: `${color}20`, color, border: `1px solid ${color}55` }
                                         : { background: "var(--sv-input)", color: "color-mix(in srgb, var(--sv-text) 45%, transparent)", border: "1px solid var(--sv-border2)" }
                                       }>{label}</button>
@@ -2529,10 +2531,10 @@ export default function ShortVideoPage() {
 
                               {/* Grid clip picker — video thumbnails */}
                               {pipeStockVideos.length > 0 && (() => {
-                                // Filter grid by selected source tab (All/Pexels/Pixabay)
-                                const visibleClips = stockSource === "pexels"
+                                // Filter grid by selected tab (All/Pexels/Pixabay) — independent from fetch source
+                                const visibleClips = gridFilter === "pexels"
                                   ? pipeStockVideos.filter(v => v.pexelsId < 9_000_000)
-                                  : stockSource === "pixabay"
+                                  : gridFilter === "pixabay"
                                   ? pipeStockVideos.filter(v => v.pexelsId >= 9_000_000)
                                   : pipeStockVideos;
                                 const activeCnt = pipeStockVideos.filter(v => !excludedClipIds.has(v.pexelsId)).length;
