@@ -999,19 +999,16 @@ export default function ShortVideoPage() {
     const videoOnly = !useAvatar;
 
     try {
-      if (!videoOnly) {
-        const kws = await runKeywords();
-        if (abortRef.current) throw new Error("__ABORTED__");
-        await runFetchStock(kws);
-      } else {
+      if (videoOnly) {
         setStep("avatar", "skip", "ข้าม (Video Only)");
         setStep("composite", "skip", "ข้าม (Video Only)");
-        const kws = await runKeywords();
-        if (abortRef.current) throw new Error("__ABORTED__");
-        await runFetchStock(kws);
       }
 
+      // 1. Keywords (scene-based — used for padding/fallback later)
+      await runKeywords();
       if (abortRef.current) throw new Error("__ABORTED__");
+
+      // 2. TTS
       let voiceUrl: string;
       if (isDirectMode) {
         setStep("tts", "skip", "ข้าม (Direct URL mode)");
@@ -1024,10 +1021,13 @@ export default function ShortVideoPage() {
         voiceUrl = await runTts();
       }
 
+      // 3. Transcribe
       if (abortRef.current) throw new Error("__ABORTED__");
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
 
+      // 4. Stock — per-subtitle fetch (after transcribe so we have captions)
+      // scene-based pre-fetch removed: per-subtitle fetch below replaces it entirely
       toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
 
       // ── Per-subtitle stock matching (blocking — must finish before pipeline ends) ──
@@ -1137,11 +1137,15 @@ export default function ShortVideoPage() {
             }
           }
 
-          // ── Step E: Fail-safe — if no clips at all, restore original scene-based stocks ──
+          // ── Step E: Fail-safe — per-subtitle fetch failed entirely, fall back to scene-based ──
           if (orderedClips.length === 0) {
-            toast("ไม่พบ stock ตรงซับ — ใช้ stock เดิมแทน");
+            toast("ไม่พบ stock ตรงซับ — ใช้ scene keyword แทน");
             setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
-            setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
+            try {
+              await runFetchStock(prevKws.length > 0 ? prevKws : (pipe.current.keywords ?? []));
+            } catch {
+              setStep("fetchStock", "done", `ไม่พบ stock`);
+            }
           } else {
             const missing = N - clipAtIdx.size;
             if (missing > 0) toast(`Backfill ${missing} คลิป — บางซับใช้คลิปซ้ำ`);
