@@ -209,6 +209,9 @@ export default function ShortVideoPage() {
   const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
 
+  // Render progress popup (0–100, null = not rendering)
+  const [renderProgress, setRenderProgress] = useState<number | null>(null);
+
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
   // LLM provider picker — shown when no key is set at all before runAll
@@ -671,6 +674,7 @@ export default function ShortVideoPage() {
 
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
+    setRenderProgress(0);
     let renderPollTimer: ReturnType<typeof setInterval> | null = null;
     const stopRenderPoll = () => {
       if (renderPollTimer !== null) {
@@ -689,6 +693,7 @@ export default function ShortVideoPage() {
         const progressData = await progressRes.json();
         const progress = Number(progressData?.progress);
         if (Number.isFinite(progress)) {
+          setRenderProgress(progress);
           setStep("render", "running", `Rendering... ${progress}%`);
         }
       } catch {
@@ -710,9 +715,11 @@ export default function ShortVideoPage() {
       setPreRenderUrl(url);
       if (!useAvatar) setVideoUrl(url);
       setStep("render", "done", url);
+      setRenderProgress(null);
       return url;
     } finally {
       stopRenderPoll();
+      setRenderProgress(null);
     }
   }
 
@@ -1543,6 +1550,25 @@ export default function ShortVideoPage() {
 
   return (
     <DashboardLayout noPadding>
+      {renderProgress !== null && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-8 w-80 flex flex-col items-center gap-5">
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
+              <span className="text-sm text-zinc-400">กำลัง Render วิดีโอ...</span>
+            </div>
+            {/* Progress bar */}
+            <div className="w-full h-3 bg-zinc-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-violet-500 rounded-full transition-all duration-500"
+                style={{ width: `${renderProgress}%` }}
+              />
+            </div>
+            <p className="text-xs text-zinc-500 text-center">กรุณารอสักครู่ อย่าปิดหน้าต่างนี้</p>
+          </div>
+        </div>
+      )}
+
       {missingKey && (
         <ApiKeyModal
           keyType={missingKey.type}
