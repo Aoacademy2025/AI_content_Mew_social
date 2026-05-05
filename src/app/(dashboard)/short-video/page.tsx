@@ -1296,11 +1296,90 @@ export default function ShortVideoPage() {
 
       const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
+      // Helper: per-subtitle stock fetch (same logic as runAll) — reused across re-run cases
+      async function rerunPerSubtitleStock(caps: Caption[]) {
+        if (caps.length === 0) return;
+        const N2 = caps.length;
+        const subTexts2 = caps.map(c => c.text);
+        const audioDurSec2 = (pipe.current.audioDurationMs ?? 60000) / 1000;
+        const sceneKwPool = (pipe.current.keywords ?? []);
+
+        let perSubKws2: string[] = [];
+        setStep("keywords", "running", `mapping ${N2} ซับ → keyword...`);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch("/api/videos/extract-keywords", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scenes: subTexts2, perSubtitle: true }),
+            });
+            if (!r.ok) continue;
+            const d = await r.json();
+            const got: string[] = d.keywords ?? [];
+            if (got.length >= N2) { perSubKws2 = got; break; }
+            if (got.length > perSubKws2.length) perSubKws2 = got;
+          } catch { continue; }
+        }
+        if (perSubKws2.length < N2) {
+          const pool = sceneKwPool.length > 0 ? sceneKwPool : ["people", "nature", "city", "office", "technology"];
+          const padded = [...perSubKws2];
+          while (padded.length < N2) padded.push(pool[padded.length % pool.length]);
+          perSubKws2 = padded;
+        }
+        if (perSubKws2.length === 0) { setStep("keywords", "done", "ไม่สามารถ mapping ได้"); return; }
+
+        pipe.current.keywords = perSubKws2;
+        pipe.current.sceneClipCounts = perSubKws2.map(() => 1);
+        setKeywords(perSubKws2);
+        setStep("keywords", "done", `${perSubKws2.length} keywords (1/ซับ)`);
+        setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws2.length} คลิป...`);
+
+        const clipAtIdx2 = new Map<number, StockVideo>();
+        let missingIdxs2 = perSubKws2.map((_, i) => i);
+        for (let attempt = 0; attempt < 3 && missingIdxs2.length > 0; attempt++) {
+          try {
+            const r = await fetch("/api/videos/fetch-stock", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                keywords: missingIdxs2.map(i => perSubKws2[i]),
+                subtitleTexts: missingIdxs2.map(i => subTexts2[i] ?? perSubKws2[i]),
+                download: true, totalDurationSec: audioDurSec2, stockSource,
+                overrideClipCount: missingIdxs2.length,
+              }),
+            });
+            if (!r.ok) break;
+            const d = await r.json();
+            const fetched: StockVideo[] = (d.results ?? []).filter((x: StockVideo) => x.localUrl || x.videoUrl);
+            for (let fi = 0; fi < fetched.length; fi++) {
+              const origIdx = missingIdxs2[fi];
+              if (origIdx !== undefined) clipAtIdx2.set(origIdx, fetched[fi]);
+            }
+            missingIdxs2 = missingIdxs2.filter(i => !clipAtIdx2.has(i));
+          } catch { break; }
+        }
+
+        const allFetched2 = [...new Map([...clipAtIdx2.values()].map(c => [c.pexelsId, c])).values()];
+        const ordered2: StockVideo[] = [];
+        let bfIdx = 0;
+        for (let i = 0; i < N2; i++) {
+          const c = clipAtIdx2.get(i);
+          if (c) ordered2.push(c);
+          else if (allFetched2.length > 0) { ordered2.push(allFetched2[bfIdx % allFetched2.length]); bfIdx++; }
+        }
+
+        if (ordered2.length > 0) {
+          pipe.current.stockVideos = ordered2;
+          setPipeStockVideos(ordered2);
+          setExcludedClipIds(new Set());
+          setStep("fetchStock", "done", `ได้ ${ordered2.length} คลิป (LLM ranked)`);
+          fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
+        } else {
+          setStep("fetchStock", "done", "ไม่พบ stock");
+        }
+      }
+
       // keywords/tts/transcribe re-runs stop after transcribe — user must review captions then hit Generate
       if (step === "keywords") {
         kws = await runKeywords();
-        stocks = await runFetchStock(kws);
-
         if (isDirectMode) {
           voice = avatarDirectUrl.trim();
           pipe.current.voiceUrl = voice;
@@ -1308,14 +1387,22 @@ export default function ShortVideoPage() {
         } else {
           voice = await runTts();
         }
-        const { sceneCaptions } = await runTranscribe(voice);
-        setEditedSceneCaptions(sceneCaptions);
-        toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+        if (abortRef.current) throw new Error("__ABORTED__");
+        const { sceneCaptions: sc1 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc1);
+        await rerunPerSubtitleStock(sc1);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "fetchStock") {
-        if (!kws.length) kws = pipe.current.keywords ?? [];
-        if (!kws.length) kws = await runKeywords();
-        if (!kws.length) throw new Error("ไม่สามารถดึง keywords ได้ กรุณากด Run All ใหม่");
-        stocks = await runFetchStock(kws);
+        // Re-fetch stock for current captions with LLM ranking
+        const caps = editedSceneCaptions.length > 0 ? editedSceneCaptions : (pipe.current.sceneCaptions ?? []);
+        if (caps.length > 0) {
+          await rerunPerSubtitleStock(caps);
+        } else {
+          // No captions yet — fall back to scene-based stock
+          if (!kws.length) kws = await runKeywords();
+          stocks = await runFetchStock(kws);
+        }
+        stocks = getActiveStocks();
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
         const url1 = await runRender(cfg);
         if (!useAvatar) { await saveToGallery(url1); toast.success("เสร็จแล้ว!"); }
@@ -1328,13 +1415,16 @@ export default function ShortVideoPage() {
         } else {
           voice = await runTts();
         }
-        const { sceneCaptions } = await runTranscribe(voice);
-        setEditedSceneCaptions(sceneCaptions);
-        toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+        if (abortRef.current) throw new Error("__ABORTED__");
+        const { sceneCaptions: sc2 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc2);
+        await rerunPerSubtitleStock(sc2);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "transcribe") {
-        const { sceneCaptions } = await runTranscribe(voice);
-        setEditedSceneCaptions(sceneCaptions);
-        toast.success("Transcribe เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+        const { sceneCaptions: sc3 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc3);
+        await rerunPerSubtitleStock(sc3);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
       } else if (step === "config") {
         cfg = await runConfig(stocks, voice, durMs, scCaps, false);
         const url2 = await runRender(cfg);
