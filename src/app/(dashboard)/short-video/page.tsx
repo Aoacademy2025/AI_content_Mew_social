@@ -2099,6 +2099,15 @@ export default function ShortVideoPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {stockCacheInfo && stockCacheInfo.count > 0 && (
+                  <button onClick={clearStockCache} disabled={clearingCache}
+                    className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:opacity-40"
+                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
+                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
+                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RotateCcw className="h-3 w-3 mr-1" />}
+                    Cache {stockCacheInfo.sizeMb}MB
+                  </button>
+                )}
                 {running && (
                   <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
                     className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold text-white transition-all hover:opacity-90 shadow-lg"
@@ -2133,15 +2142,6 @@ export default function ShortVideoPage() {
                 stepStates={steps}
                 running={running}
                 onRerun={rerunFrom}
-                beforeStock={stockCacheInfo && stockCacheInfo.count > 0 ? (
-                  <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40 shrink-0"
-                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                    Cache {stockCacheInfo.sizeMb}MB
-                  </button>
-                ) : undefined}
                 action={
                   <button onClick={runAll} disabled={running || !script.trim()}
                     className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"

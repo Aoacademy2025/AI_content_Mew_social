@@ -252,9 +252,36 @@ export async function POST(req: Request) {
     // Use this when clips are few (≤ scenes count × 3) — user manually curated them.
     // Each clip plays from second 0 for its slice; <Video loop> fills short clips.
     const numScenes = Math.max(1, scenes.length);
-    const useEvenSplit = n <= numScenes * 4; // few clips → guaranteed equal airtime
 
-    if (useEvenSplit) {
+    // Per-subtitle mode: every caption has exactly 1 dedicated clip (sceneClipCounts all = 1).
+    // Must be detected BEFORE useEvenSplit — otherwise even-split fires and ignores caption timestamps.
+    const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
+      sceneClipCounts.length > 0 &&
+      sceneClipCounts.every(c => c === 1) &&
+      sceneCaptions.length > 0 &&
+      n >= Math.floor(sceneCaptions.length * 0.5);
+
+    const useEvenSplit = !isPerSubtitleTop && n <= numScenes * 4; // few clips → guaranteed equal airtime
+
+    if (isPerSubtitleTop) {
+      // Direct 1:1 mapping: caption[i] → stock[i % n], using caption timestamps as cut points
+      console.log(`[config] per-subtitle-top mode: ${n} clips for ${sceneCaptions.length} captions`);
+      const clipNextOffsetTop = new Map<string, number>();
+      for (let ci = 0; ci < sceneCaptions.length; ci++) {
+        const cap = sceneCaptions[ci];
+        const capStartSec = cap.startMs / 1000;
+        const capEndSec   = cap.endMs   / 1000;
+        const dur = capEndSec - capStartSec;
+        if (dur < 0.1) continue;
+        const sv  = validStocks[ci % n];
+        const src = sv.localUrl ?? sv.videoUrl;
+        const clipDuration = sv.duration > 0 ? sv.duration : 10;
+        const clipOffset   = clipNextOffsetTop.get(src) ?? 0;
+        const safeOffset   = clipDuration > 0 ? clipOffset % clipDuration : 0;
+        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+        clipNextOffsetTop.set(src, safeOffset + dur);
+      }
+    } else if (useEvenSplit) {
       const sliceSec = audioDurationSec / n;
       console.log(`[config] even-split: ${n} clips × ${sliceSec.toFixed(2)}s each`);
       for (let i = 0; i < n; i++) {
