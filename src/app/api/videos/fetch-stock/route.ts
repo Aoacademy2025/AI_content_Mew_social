@@ -268,7 +268,7 @@ export async function POST(req: Request) {
 
   // perSubtitleMode: explicit flag (survives retry with subset) OR clip count exactly matches keyword count
   const isPerSubtitleMode = perSubtitleFlag || (overrideClipCount > 0 && overrideClipCount === keywords.length);
-  const basePerPage = isPerSubtitleMode ? 15 : Math.min(30, clipsPerKeyword * 3);
+  const basePerPage = isPerSubtitleMode ? 25 : Math.min(30, clipsPerKeyword * 3);
 
   // ── Search phase — collect ALL candidates per keyword (no usedIds filtering yet) ──
   // In per-subtitle mode we want the full candidate list for LLM ranking before deduplication.
@@ -365,12 +365,47 @@ export async function POST(req: Request) {
         preferred,
         ...candidates.map((_, i) => i).filter(i => i !== preferred),
       ];
+      let picked = false;
       for (const idx of ordered) {
         const c = candidates[idx];
         if (!c || usedIds.has(c.id)) continue;
         usedIds.add(c.id);
         found.push({ keyword: c.keyword, id: c.id, duration: c.duration, link: c.link });
+        picked = true;
         break; // 1 clip per subtitle
+      }
+      if (!picked) {
+        const fallbackKeyword = keyword.split(" ")[0];
+        try {
+          const [fallbackPexels, fallbackPixabay] = await Promise.all([
+            usePexels
+              ? searchPexels(fallbackKeyword, pexelsKey!, 3, basePerPage)
+              : Promise.resolve([] as PexelsVideo[]),
+            usePixabay && pixabayKey
+              ? searchPixabay(fallbackKeyword, pixabayKey)
+              : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+          ]);
+          for (const v of fallbackPexels) {
+            const file = pickBestFile(v);
+            if (!file) continue;
+            if (usedIds.has(v.id)) continue;
+            usedIds.add(v.id);
+            found.push({ keyword, id: v.id, duration: v.duration, link: file.link });
+            picked = true;
+            break;
+          }
+          if (!picked) {
+            for (const pv of fallbackPixabay) {
+              if (usedIds.has(pv.id + 9_000_000)) continue;
+              usedIds.add(pv.id + 9_000_000);
+              found.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+              picked = true;
+              break;
+            }
+          }
+        } catch {
+          // ignore fallback failures
+        }
       }
     } else {
       // Normal mode: pick up to clipsPerKeyword, interleave Pexels+Pixabay

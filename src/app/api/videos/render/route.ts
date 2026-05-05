@@ -63,6 +63,7 @@ export async function POST(req: Request) {
     const durationInFrames = Math.max(Math.round(safeDuration * fps), fps);
     // Note: AvatarComposition uses calculateMetadata to auto-detect duration from video,
     // so durationInFrames below is only used as fallback for non-avatar mode.
+    const progressFile = path.join("/tmp", `render-progress-${session.user.id}.json`);
 
     // webpackIgnore prevents Turbopack from statically analyzing these imports
     // and traversing into esbuild native binaries (README.md, .node files).
@@ -273,6 +274,7 @@ export async function POST(req: Request) {
     const renderConcurrency = cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1);
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount})`);
 
+    let lastProgress = -1;
     await renderMedia({
       composition,
       serveUrl: bundleLocation,
@@ -286,8 +288,15 @@ export async function POST(req: Request) {
       offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
       chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true, gl: "swiftshader" },
       onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
+        const p = Math.round(progress * 100);
+        if (p !== lastProgress) {
+          lastProgress = p;
+          try {
+            fs.writeFileSync(progressFile, JSON.stringify({ progress: p }));
+          } catch {}
+        }
         if (Math.round(progress * 100) % 5 === 0) {
-          console.log(`[Render] ${Math.round(progress * 100)}% (${renderedFrames ?? "?"} frames)`);
+          console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames)`);
         }
       },
     });

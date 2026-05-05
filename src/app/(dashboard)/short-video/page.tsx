@@ -707,20 +707,49 @@ export default function ShortVideoPage() {
 
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
-    const renderRes = await fetch("/api/videos/render", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shortVideoConfig: config }),
-      signal: abortControllerRef.current?.signal,
-    });
-    const renderData = await renderRes.json();
-    assertOk("Render", renderRes, renderData);
-    const url = renderData.videoUrl as string;
-    pipe.current.renderedVideoUrl = url;
-    setPreRenderUrl(url);
-    if (!useAvatar) setVideoUrl(url);
-    setStep("render", "done", url);
-    return url;
+    let renderPollTimer: ReturnType<typeof setInterval> | null = null;
+    const stopRenderPoll = () => {
+      if (renderPollTimer !== null) {
+        clearInterval(renderPollTimer);
+        renderPollTimer = null;
+      }
+    };
+
+    renderPollTimer = window.setInterval(async () => {
+      try {
+        const progressRes = await fetch("/api/videos/render-progress", {
+          cache: "no-store",
+          signal: abortControllerRef.current?.signal,
+        });
+        if (!progressRes.ok) return;
+        const progressData = await progressRes.json();
+        const progress = Number(progressData?.progress);
+        if (Number.isFinite(progress)) {
+          setStep("render", "running", `Rendering... ${progress}%`);
+        }
+      } catch {
+        // ignore transient progress fetch errors
+      }
+    }, 2000);
+
+    try {
+      const renderRes = await fetch("/api/videos/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shortVideoConfig: config }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const renderData = await renderRes.json();
+      assertOk("Render", renderRes, renderData);
+      const url = renderData.videoUrl as string;
+      pipe.current.renderedVideoUrl = url;
+      setPreRenderUrl(url);
+      if (!useAvatar) setVideoUrl(url);
+      setStep("render", "done", url);
+      return url;
+    } finally {
+      stopRenderPoll();
+    }
   }
 
   async function saveToGallery(videoUrl: string) {
@@ -1109,7 +1138,14 @@ export default function ShortVideoPage() {
                   perSubtitleMode: true,
                 }),
               });
-              if (!stockRes.ok) break;
+              if (!stockRes.ok) {
+                const errData = (await stockRes.json().catch(() => ({}))) as { missingKey?: RequiredKeyType };
+                if (errData.missingKey) {
+                  setMissingKey({ type: errData.missingKey as RequiredKeyType, retryStep: "fetchStock" });
+                  return;
+                }
+                break;
+              }
               const stockData = await stockRes.json();
               const fetched: StockVideo[] = (stockData.results ?? []).filter(
                 (r: StockVideo) => r.localUrl || r.videoUrl
@@ -1371,7 +1407,14 @@ export default function ShortVideoPage() {
                 perSubtitleMode: true,
               }),
             });
-            if (!r.ok) break;
+            if (!r.ok) {
+              const errData = (await r.json().catch(() => ({}))) as { missingKey?: RequiredKeyType };
+              if (errData.missingKey) {
+                setMissingKey({ type: errData.missingKey as RequiredKeyType, retryStep: "fetchStock" });
+                return;
+              }
+              break;
+            }
             const d = await r.json();
             const fetched: StockVideo[] = (d.results ?? []).filter((x: StockVideo) => x.localUrl || x.videoUrl);
             // Map by keyword text to avoid position mismatch when server returns fewer results
