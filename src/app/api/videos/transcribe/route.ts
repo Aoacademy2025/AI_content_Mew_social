@@ -556,14 +556,13 @@ RULES:
         fallbackDur
       );
 
-      // NOTE: Gemini/Whisper fast-path (direct segments) is intentionally removed.
-      // STT text may be inaccurate — we always use the real script text + LLM split,
-      // then map onto STT timestamps. STT is only used for timing, never for text.
+      // STT is used ONLY for timestamps — never for subtitle text.
+      // Always run LLM split on the real script, then map onto STT timestamps.
+      // Reset captions so we always go through LLM split regardless of STT output.
+      captions = [];
 
-      // ── Step 1: Get phrases from GPT (only if we don't already have segment timestamps) ──
-      // When Gemini/Whisper returned segments with timestamps, captions is already populated above.
-      // Skip GPT split in that case — it would only drift the timing.
-      if (captions.length === 0) {
+      // ── Step 1: LLM split — always runs, uses real script text ──
+      if (true) {
       let phrases: string[] = [];
       let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;

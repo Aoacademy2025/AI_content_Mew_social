@@ -490,6 +490,9 @@ export async function POST(req: Request) {
   // 3. Normalize and ensure coverage: clamp invalid segment times, remove zero-length,
   // merge/trim overlaps, and fill gaps with nearest clip so the timeline stays continuous.
   bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
+  if (validStocks.length === 0) {
+    return NextResponse.json({ error: "ไม่มี stock video — กรุณา fetch stock ก่อน generate config", retryable: false }, { status: 400 });
+  }
   if (!bgVideos.length && validStocks.length > 0) {
     const first = validStocks[0];
     bgVideos.push({

@@ -172,8 +172,9 @@ export async function POST(req: Request) {
     totalDurationSec = 0,
     overrideClipCount = 0,
     stockSource = "both",
-    subtitleTexts,       // string[] — subtitle text per keyword, for LLM ranking
+    subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
+    preferredLLM,
   }: {
     keywords: string[];
     download?: boolean;
@@ -182,6 +183,7 @@ export async function POST(req: Request) {
     stockSource?: string;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
+    preferredLLM?: string;
   } = body ?? {};
 
   const usePexels  = stockSource === "pexels"  || stockSource === "both";
@@ -199,10 +201,14 @@ export async function POST(req: Request) {
   if (usePexels  && !pexelsKey)  return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" },   { status: 400 });
   if (usePixabay && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings",              missingKey: "pixabay" }, { status: 400 });
 
-  // Resolve LLM key for ranking (optional — falls back to position 0 if unavailable)
+  // Resolve LLM key for ranking — respects preferredLLM from client
   let llmKey: string | null = null;
   let useGemini = false;
-  if (user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+  const wantGemini = preferredLLM === "gemini";
+  const wantOpenAI = preferredLLM === "openai";
+  if (wantGemini && user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
+  else if (wantOpenAI && user?.openaiKey) { llmKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+  else if (user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
   else if (user?.openaiKey) { llmKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
 
   function avgCutSec(dur: number): number {
