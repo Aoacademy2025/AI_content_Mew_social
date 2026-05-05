@@ -7,12 +7,25 @@ import { Button } from "@/components/ui/button";
 import {
   Users, Crown, Ban, FileText, Video, Images, UserPlus, CalendarDays,
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
+  Trash2, HardDrive, ShieldCheck, AlertTriangle,
 } from "lucide-react";
+import { toast } from "sonner";
 import Link from "next/link";
 
 interface AdminStats {
   totalUsers: number; freeUsers: number; paidUsers: number; suspendedUsers: number;
   totalContents: number; totalVideos: number; totalImages: number; newToday: number; newThisWeek: number;
+}
+
+interface CleanupInfo {
+  renders: {
+    total: { count: number; sizeMb: number };
+    older1d: { count: number; sizeMb: number };
+    older3d: { count: number; sizeMb: number };
+    older7d: { count: number; sizeMb: number };
+  };
+  stocks: { older1d: { count: number; sizeMb: number } };
+  protectedCount: number;
 }
 
 interface SupportTicket {
@@ -36,8 +49,49 @@ export default function AdminDashboardPage() {
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [replying, setReplying] = useState<string | null>(null);
 
+  // Disk cleanup
+  const [cleanupInfo, setCleanupInfo] = useState<CleanupInfo | null>(null);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanDays, setCleanDays] = useState(3);
+  const [includeStocks, setIncludeStocks] = useState(false);
+  const [showCleanConfirm, setShowCleanConfirm] = useState(false);
+
+  function loadCleanupInfo() {
+    setCleanupLoading(true);
+    fetch("/api/admin/cleanup")
+      .then(r => r.json())
+      .then(d => setCleanupInfo(d))
+      .catch(() => {})
+      .finally(() => setCleanupLoading(false));
+  }
+
+  async function runCleanup() {
+    setCleaning(true);
+    setShowCleanConfirm(false);
+    try {
+      const res = await fetch("/api/admin/cleanup", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ olderThanDays: cleanDays, includeStocks }),
+      });
+      const d = await res.json();
+      if (res.ok) {
+        toast.success(d.message);
+        loadCleanupInfo();
+      } else {
+        toast.error(d.error ?? "ลบไม่สำเร็จ");
+      }
+    } catch {
+      toast.error("เกิดข้อผิดพลาด");
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   useEffect(() => {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
+    loadCleanupInfo();
   }, []);
 
   useEffect(() => {
@@ -265,6 +319,106 @@ export default function AdminDashboardPage() {
               })}
             </div>
           )}
+        </div>
+
+        {/* Disk Cleanup */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <HardDrive className="h-5 w-5 text-orange-400" />
+              จัดการพื้นที่ดิสก์
+            </h2>
+            <button onClick={loadCleanupInfo} disabled={cleanupLoading}
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1">
+              {cleanupLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3 -rotate-90" />}
+              รีเฟรช
+            </button>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-5">
+            {/* Stats row */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: "ทั้งหมดใน /renders", val: cleanupInfo?.renders.total, color: "zinc" },
+                { label: "เกิน 1 วัน (ลบได้)", val: cleanupInfo?.renders.older1d, color: "yellow" },
+                { label: "เกิน 3 วัน (ลบได้)", val: cleanupInfo?.renders.older3d, color: "orange" },
+                { label: "เกิน 7 วัน (ลบได้)", val: cleanupInfo?.renders.older7d, color: "red" },
+              ].map(({ label, val, color }) => (
+                <div key={label} className="rounded-xl bg-white/5 border border-white/10 p-3 text-center">
+                  <p className="text-xs text-zinc-500 mb-1">{label}</p>
+                  {cleanupLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-zinc-600 mx-auto" />
+                  ) : (
+                    <>
+                      <p className={`text-xl font-bold ${color === "red" ? "text-red-400" : color === "orange" ? "text-orange-400" : color === "yellow" ? "text-yellow-400" : "text-zinc-300"}`}>
+                        {val?.sizeMb ?? 0} MB
+                      </p>
+                      <p className="text-[10px] text-zinc-600">{val?.count ?? 0} ไฟล์</p>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Gallery protection notice */}
+            <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs"
+              style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
+              <ShieldCheck className="h-4 w-4 text-green-400 shrink-0" />
+              <span className="text-green-400/80">
+                ไฟล์ที่บันทึกใน Gallery จะ<strong className="text-green-400"> ไม่ถูกลบ</strong> เด็ดขาด
+                {cleanupInfo && ` (ปกป้องอยู่ ${cleanupInfo.protectedCount} ไฟล์)`}
+              </span>
+            </div>
+
+            {/* Controls */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-400">ลบไฟล์เกิน</span>
+                <div className="flex gap-1">
+                  {[1, 3, 7].map(d => (
+                    <button key={d} onClick={() => setCleanDays(d)}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${cleanDays === d ? "bg-orange-500/30 text-orange-300 border border-orange-500/40" : "bg-white/5 text-zinc-500 border border-white/10 hover:text-zinc-300"}`}>
+                      {d} วัน
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={includeStocks} onChange={e => setIncludeStocks(e.target.checked)}
+                  className="accent-orange-500 h-3.5 w-3.5" />
+                <span className="text-xs text-zinc-400">รวม /stocks (stock video cache)</span>
+              </label>
+            </div>
+
+            {/* Confirm / Delete button */}
+            {!showCleanConfirm ? (
+              <button onClick={() => setShowCleanConfirm(true)} disabled={cleaning || cleanupLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40"
+                style={{ background: "hsl(14 90% 50% / 0.2)", border: "1px solid hsl(14 90% 50% / 0.4)" }}>
+                <Trash2 className="h-4 w-4" />
+                ลบไฟล์เก่าที่ไม่ใช้
+              </button>
+            ) : (
+              <div className="flex items-center gap-3 rounded-xl px-4 py-3"
+                style={{ background: "hsl(14 90% 50% / 0.1)", border: "1px solid hsl(14 90% 50% / 0.3)" }}>
+                <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0" />
+                <p className="text-xs text-orange-300 flex-1">
+                  ยืนยันลบไฟล์ใน /renders ที่เก่ากว่า {cleanDays} วัน
+                  {includeStocks ? " + /stocks" : ""} ?
+                </p>
+                <button onClick={runCleanup} disabled={cleaning}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-red-500/80 hover:bg-red-500 transition-all flex items-center gap-1.5">
+                  {cleaning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                  ยืนยัน
+                </button>
+                <button onClick={() => setShowCleanConfirm(false)}
+                  className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+                  ยกเลิก
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Quick Links */}
