@@ -14,11 +14,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { toast } from "sonner";
+import { Eye, EyeOff } from "lucide-react";
 
 function ResetPasswordForm() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const token = searchParams.get("token");
 
   if (!token) {
@@ -74,27 +77,49 @@ function ResetPasswordForm() {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-2">
         <Label htmlFor="password">รหัสผ่านใหม่</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          placeholder="อย่างน้อย 6 ตัวอักษร"
-          minLength={6}
-          required
-          disabled={loading}
-        />
+        <div className="relative">
+          <Input
+            id="password"
+            name="password"
+            type={showPassword ? "text" : "password"}
+            placeholder="อย่างน้อย 6 ตัวอักษร"
+            minLength={6}
+            required
+            disabled={loading}
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 transition-colors"
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
       <div className="space-y-2">
         <Label htmlFor="confirmPassword">ยืนยันรหัสผ่านใหม่</Label>
-        <Input
-          id="confirmPassword"
-          name="confirmPassword"
-          type="password"
-          placeholder="กรอกรหัสผ่านอีกครั้ง"
-          minLength={6}
-          required
-          disabled={loading}
-        />
+        <div className="relative">
+          <Input
+            id="confirmPassword"
+            name="confirmPassword"
+            type={showConfirm ? "text" : "password"}
+            placeholder="กรอกรหัสผ่านอีกครั้ง"
+            minLength={6}
+            required
+            disabled={loading}
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => setShowConfirm((v) => !v)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 transition-colors"
+            tabIndex={-1}
+          >
+            {showConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? "กำลังรีเซ็ต..." : "รีเซ็ตรหัสผ่าน"}

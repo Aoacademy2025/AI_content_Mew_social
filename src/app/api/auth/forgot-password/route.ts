@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { sendPasswordResetEmail } from "@/lib/send-email";
 
 export async function POST(req: Request) {
   try {
@@ -18,12 +19,14 @@ export async function POST(req: Request) {
       where: { email },
     });
 
+    // Always return success to prevent email enumeration
+    const successResponse = NextResponse.json(
+      { message: "หากอีเมลนี้มีอยู่ในระบบ เราได้ส่งลิงก์รีเซ็ตรหัสผ่านแล้ว" },
+      { status: 200 }
+    );
+
     if (!user) {
-      // Return success anyway to prevent email enumeration
-      return NextResponse.json(
-        { message: "หากอีเมลนี้มีอยู่ในระบบ เราได้ส่งลิงก์รีเซ็ตรหัสผ่านแล้ว" },
-        { status: 200 }
-      );
+      return successResponse;
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
@@ -31,27 +34,19 @@ export async function POST(req: Request) {
 
     await prisma.user.update({
       where: { email },
-      data: {
-        resetToken,
-        resetExpires,
-      },
+      data: { resetToken, resetExpires },
     });
 
-    // In development, just log the reset URL
-    const resetUrl = `${process.env.NEXTAUTH_URL}/reset-password?token=${resetToken}`;
-    console.log("Password reset URL:", resetUrl);
+    const baseUrl = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+    const resetUrl = `${baseUrl}/reset-password?token=${resetToken}`;
 
-    // TODO: Send email with nodemailer in production
-    // await sendEmail({
-    //   to: email,
-    //   subject: "รีเซ็ตรหัสผ่าน - Intelligent Media Studio",
-    //   text: `คลิกลิงก์นี้เพื่อรีเซ็ตรหัสผ่าน: ${resetUrl}`,
-    // });
+    const sent = await sendPasswordResetEmail(email, resetUrl);
+    if (!sent) {
+      // SMTP not configured — log for manual recovery
+      console.warn("[forgot-password] SMTP not configured. Reset URL for", email, ":", resetUrl);
+    }
 
-    return NextResponse.json(
-      { message: "ส่งลิงก์รีเซ็ตรหัสผ่านแล้ว" },
-      { status: 200 }
-    );
+    return successResponse;
   } catch (error) {
     return apiError({ route: "auth/forgot-password", error });
   }
