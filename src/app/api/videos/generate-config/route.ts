@@ -111,6 +111,64 @@ function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
 type StockVideo = { keyword: string; localUrl?: string; videoUrl: string; duration: number };
 
+function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameMs: number): Cap[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+
+  const EPS = 1;
+  const captions = raw
+    .map((c) => ({
+      ...c,
+      text: typeof c?.text === "string" ? c.text.trim() : "",
+      startMs: Number.isFinite(Number(c?.startMs)) ? Number(c.startMs) : NaN,
+      endMs: Number.isFinite(Number(c?.endMs)) ? Number(c.endMs) : NaN,
+    }))
+    .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs))
+    .sort((a, b) => a.startMs - b.startMs);
+
+  if (!captions.length) return [];
+
+  const totalMs = Math.max(0, Number(audioDurationMs));
+  const out: Cap[] = [];
+  let cursor = 0;
+
+  for (const cap of captions) {
+    let start = Math.min(Math.max(0, cap.startMs), totalMs);
+    let end = Number.isFinite(cap.endMs) ? cap.endMs : start + minFrameMs;
+
+    if (start < cursor + EPS) start = cursor + EPS;
+    if (start < 0) start = 0;
+
+    // clamp to at least one frame and to audio duration
+    end = Math.max(start + minFrameMs, end);
+    if (end > totalMs) end = totalMs;
+    if (end <= start) {
+      end = Math.min(totalMs, start + minFrameMs);
+    }
+
+    // if no room to render at minimum length, skip
+    if (start + minFrameMs > totalMs) break;
+
+    out.push({
+      ...cap,
+      startMs: Math.round(start),
+      endMs: Math.round(end),
+    });
+    cursor = end;
+  }
+
+  // ensure strictly non-overlapping for render order
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i].endMs > out[i + 1].startMs) {
+      out[i].endMs = Math.min(Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs - EPS), totalMs);
+    }
+    if (out[i].endMs <= out[i].startMs) {
+      out[i].endMs = Math.min(totalMs, out[i].startMs + minFrameMs);
+    }
+  }
+
+  return out;
+}
+
 // Auto-scale font size down for longer phrases so they fit on one line (1080px wide, 88% usable = ~950px)
 // Thai chars ~= fontSize * 0.85 wide on average (Kanit/Leelawadee)
 // Max chars that fit on one line at baseSize: floor(950 / (baseSize * 0.85))
@@ -198,13 +256,15 @@ export async function POST(req: Request) {
 
   // 1. Build keywordPopups
   // Sort by startMs first so overlapping/out-of-order captions don't break alignment
-  const validCaptions = sceneCaptions
-    .filter(c => c.text.trim().length > 0)
-    .sort((a, b) => a.startMs - b.startMs);
+  const minFrameMs = Math.max(1, Math.ceil(1000 / fps));
+  const validCaptions = normalizeCaptionTimeline(
+    sceneCaptions.map((c) => ({ ...c, text: c.text.trim() })),
+    audioDurationMs,
+    minFrameMs,
+  );
 
   // Fill gaps: each caption ends exactly when the next one starts.
   // Also clamp endMs so it never equals startMs (minimum 1 frame = 1000/fps ms).
-  const minFrameMs = Math.ceil(1000 / fps);
   const gapFilled = validCaptions.map((c, i) => {
     const nextStart = i < validCaptions.length - 1 ? validCaptions[i + 1].startMs : audioDurationMs;
     const endMs = Math.max(c.endMs, nextStart, c.startMs + minFrameMs);

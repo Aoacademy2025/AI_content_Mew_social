@@ -267,6 +267,87 @@ interface LocalWhisperResult {
   language: string;
 }
 
+type SubtitleItem = {
+  text: string;
+  startMs: number;
+  endMs: number;
+  timestampMs?: number;
+  confidence?: number;
+  tag?: "hook" | "body" | "cta";
+};
+
+function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, fps = 30): SubtitleItem[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+
+  const minMs = Math.max(1, Math.ceil(1000 / Math.max(1, fps)));
+  const totalMs = Math.max(0, Number(audioDurationMs));
+  const EPS = 1;
+
+  const normalized: SubtitleItem[] = raw
+    .map((c) => ({
+      ...c,
+      text: typeof c?.text === "string" ? c.text.trim() : "",
+      startMs: Number.isFinite(Number(c?.startMs)) ? Number(c.startMs) : NaN,
+      endMs: Number.isFinite(Number(c?.endMs)) ? Number(c.endMs) : NaN,
+    }))
+    .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs))
+    .sort((a, b) => a.startMs - b.startMs);
+
+  if (!normalized.length) return [];
+
+  const out: SubtitleItem[] = [];
+  let cursor = 0;
+
+  for (const cap of normalized) {
+    let start = Math.min(Math.max(0, cap.startMs), totalMs);
+    let end = Math.max(start + minMs, cap.endMs);
+    if (!Number.isFinite(end)) end = start + minMs;
+
+    if (start < cursor + EPS) start = cursor + EPS;
+    end = Math.max(start + minMs, end);
+    if (end > totalMs) end = totalMs;
+
+    if (end <= start) {
+      end = Math.min(totalMs, start + minMs);
+    }
+
+    if (start + minMs > totalMs) break;
+
+    out.push({
+      ...cap,
+      text: cap.text.trim(),
+      startMs: Math.round(start),
+      endMs: Math.round(end),
+      timestampMs: Math.round(start),
+    });
+    cursor = end;
+  }
+
+  // Final pass: ensure strict order and no overlap.
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i].endMs >= out[i + 1].startMs) {
+      const safeEnd = out[i + 1].startMs - EPS;
+      if (safeEnd > out[i].startMs) {
+        out[i].endMs = safeEnd;
+      } else {
+        out[i + 1].startMs = out[i].endMs + EPS;
+      }
+    }
+    if (out[i].endMs <= out[i].startMs) {
+      out[i].endMs = Math.min(totalMs, out[i].startMs + minMs);
+    }
+  }
+
+  if (out.length > 0) {
+    out[0].startMs = 0;
+    if (out[out.length - 1].endMs > totalMs) {
+      out[out.length - 1].endMs = totalMs;
+    }
+  }
+
+  return out;
+}
+
 function runLocalWhisper(audioPath: string): Promise<LocalWhisperResult | null> {
   return new Promise((resolve) => {
     if (!fs.existsSync(WHISPER_SCRIPT)) { resolve(null); return; }
@@ -640,10 +721,10 @@ ${sourceText.trim()}`;
               const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
               if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                // Use LLM phrases directly — prompt instructs COPY EXACT so no remapping needed.
-                // snapPhrasesToScript caused mid-word cuts for Thai/mixed text; removed.
-                const expanded = expandPhrasesToTargetDensity(raw, minPhrases, sourceText);
-                phrases = expanded.length > 0 ? expanded : raw;
+                // Use LLM phrases directly — prompt instructs COPY EXACT.
+                // Do NOT call expandPhrasesToTargetDensity: it re-splits by char count
+                // and breaks mixed Thai/English phrases (e.g. "enterprise product" → two lines).
+                phrases = raw;
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
@@ -657,9 +738,8 @@ ${sourceText.trim()}`;
         }
       }
 
-      if (phrases.length > 0 && phrases.length < minPhrases) {
-        phrases = expandPhrasesToTargetDensity(phrases, minPhrases, sourceText);
-      }
+      // Do NOT forcibly expand phrases to minPhrases — expandPhrasesToTargetDensity
+      // splits by char count and breaks Thai/English phrases mid-word.
 
       // ── Fallback: split by sentence punctuation or newlines ─────────────────
       if (phrases.length === 0) {
@@ -710,9 +790,7 @@ ${sourceText.trim()}`;
           phrases.push(cur);
         }
         console.log(`[transcribe] fallback split → ${phrases.length} phrases`);
-        if (phrases.length > 0 && phrases.length < minPhrases) {
-          phrases = expandPhrasesToTargetDensity(phrases, minPhrases, sourceText);
-        }
+        // Do NOT expand here — char-based splitting breaks mixed Thai/English phrases.
       }
 
       // ── Step 2: Align phrases → Whisper timestamps ──────────────────────────
@@ -952,9 +1030,10 @@ ${sourceText.trim()}`;
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
+    const timelineFixedCaptions = sanitizeCaptionsTimeline(captions, resolvedDurationMs);
 
     return NextResponse.json({
-      captions,
+      captions: timelineFixedCaptions,
       segments: rawSegments,
       words: wordTimestamps,
       fullText: safeFullText,
