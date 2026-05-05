@@ -1041,106 +1041,7 @@ export default function ShortVideoPage() {
       if (abortRef.current) throw new Error("__ABORTED__");
       const { sceneCaptions } = await runTranscribe(voiceUrl);
       setEditedSceneCaptions(sceneCaptions);
-
-      // ── Per-subtitle Stock Fetch (BLOCKING, single pass) ──
-      // 1 keyword per caption → 1 stock clip per caption, mapped by index.
-      // No nested retry loops — keep it simple and bounded.
-      if (sceneCaptions.length > 0) {
-        const N = sceneCaptions.length;
-        toast.success(`Transcribe เสร็จ — กำลังจับคู่ stock กับ ${N} ซับ...`);
-
-        // Step A: extract 1 keyword per caption
-        setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
-        let perSubKws: string[] = [];
-        try {
-          const kwRes = await fetch("/api/videos/extract-keywords", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scenes: sceneCaptions.map(c => c.text), perSubtitle: true }),
-            signal: abortControllerRef.current?.signal,
-          });
-          if (kwRes.ok) {
-            const kwData = await kwRes.json();
-            perSubKws = (kwData.keywords ?? []).filter((k: unknown) => typeof k === "string" && (k as string).trim().length > 0);
-          }
-        } catch (e) {
-          if ((e as Error)?.name === "AbortError") throw e;
-        }
-
-        // Pad missing keywords from scene-level fallback (or caption text itself)
-        if (perSubKws.length < N) {
-          const sceneKws = pipe.current.keywords ?? [];
-          const padCount = N - perSubKws.length;
-          while (perSubKws.length < N) {
-            perSubKws.push(
-              sceneKws[perSubKws.length % Math.max(1, sceneKws.length)] ??
-              sceneCaptions[perSubKws.length].text.slice(0, 30)
-            );
-          }
-          toast(`Keyword ขาด ${padCount} — เติมจาก scene keywords`);
-        }
-
-        pipe.current.keywords = perSubKws;
-        pipe.current.sceneClipCounts = perSubKws.map(() => 1);
-        setKeywords(perSubKws);
-        setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
-
-        // Step B: fetch 1 clip per keyword in a SINGLE call (server handles parallelism)
-        setStep("fetchStock", "running", `ดึง stock ${N} คลิป...`);
-        let clipsByKw: { keyword: string; pexelsId: number; duration: number; videoUrl: string; localPath?: string; localUrl?: string }[] = [];
-        try {
-          const stockRes = await fetch("/api/videos/fetch-stock", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              keywords: perSubKws,
-              download: true,
-              totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
-              stockSource,
-              overrideClipCount: N,
-            }),
-            signal: abortControllerRef.current?.signal,
-          });
-          if (stockRes.ok) {
-            const stockData = await stockRes.json();
-            clipsByKw = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
-          }
-        } catch (e) {
-          if ((e as Error)?.name === "AbortError") throw e;
-        }
-
-        // Reorder: orderedClips[i] = clip whose keyword === perSubKws[i]
-        const orderedClips: typeof clipsByKw = [];
-        const usedIds = new Set<number>();
-        for (let i = 0; i < N; i++) {
-          const kw = perSubKws[i];
-          const match = clipsByKw.find(c => c.keyword === kw && !usedIds.has(c.pexelsId));
-          if (match) { orderedClips.push(match); usedIds.add(match.pexelsId); }
-        }
-        // Backfill remaining slots by reusing earlier clips (so stocks.length === N)
-        if (orderedClips.length < N && orderedClips.length > 0) {
-          const reusable = [...orderedClips];
-          while (orderedClips.length < N) orderedClips.push(reusable[orderedClips.length % reusable.length]);
-        }
-
-        if (orderedClips.length === N) {
-          pipe.current.stockVideos = orderedClips;
-          setPipeStockVideos(orderedClips);
-          setExcludedClipIds(new Set());
-          setStep("fetchStock", "done", `${N} clips (ครบทุกซับ)`);
-          toast.success(`Stock ครบ ${N} — ตรงกับซับแล้ว`);
-        } else {
-          // Couldn't get any per-subtitle clip — keep scene-based stocks if available
-          const prevStock = pipe.current.stockVideos ?? [];
-          if (prevStock.length > 0) {
-            setStep("fetchStock", "done", `${prevStock.length} clips (scene-based)`);
-            toast("Per-subtitle fetch ล้มเหลว — ใช้ stock เดิม (scene-based)");
-          } else {
-            setStep("fetchStock", "error", "ไม่ได้ stock เลย");
-            throw new Error("ดึง stock ไม่สำเร็จ — เช็ค Pexels/Pixabay key");
-          }
-        }
-      }
+      toast.success(`Transcribe เสร็จ — มี ${sceneCaptions.length} ซับ. กด "Match Stock to ซับ" เพื่อจับคู่คลิปให้ตรง หรือ Generate Video ใช้ stock scene-based`);
     } catch (err) {
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
@@ -1190,6 +1091,124 @@ export default function ShortVideoPage() {
       }
       return next;
     });
+  }
+
+  // Match Stock to ซับ — re-run keywords + stock per-subtitle so each caption
+  // gets its own clip (1:1 mapping). Manual button so user understands why
+  // step Keywords/Stock runs twice.
+  async function runMatchStock() {
+    const captions = editedSceneCaptions;
+    if (!captions.length) {
+      toast.error("ยังไม่มีซับ — กด Run All ก่อน");
+      return;
+    }
+    const N = captions.length;
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    try {
+      // Step A: 1 keyword per caption
+      setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
+      let perSubKws: string[] = [];
+      try {
+        const kwRes = await fetch("/api/videos/extract-keywords", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scenes: captions.map(c => c.text), perSubtitle: true }),
+          signal: abortControllerRef.current?.signal,
+        });
+        if (kwRes.ok) {
+          const kwData = await kwRes.json();
+          perSubKws = (kwData.keywords ?? []).filter((k: unknown) => typeof k === "string" && (k as string).trim().length > 0);
+        }
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") throw e;
+      }
+
+      if (perSubKws.length < N) {
+        const sceneKws = pipe.current.keywords ?? [];
+        const padCount = N - perSubKws.length;
+        while (perSubKws.length < N) {
+          perSubKws.push(
+            sceneKws[perSubKws.length % Math.max(1, sceneKws.length)] ??
+            captions[perSubKws.length].text.slice(0, 30)
+          );
+        }
+        toast(`Keyword ขาด ${padCount} — เติมจาก scene keywords`);
+      }
+
+      pipe.current.keywords = perSubKws;
+      pipe.current.sceneClipCounts = perSubKws.map(() => 1);
+      setKeywords(perSubKws);
+      setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
+
+      // Step B: 1 clip per keyword
+      setStep("fetchStock", "running", `ดึง stock ${N} คลิป...`);
+      let clipsByKw: { keyword: string; pexelsId: number; duration: number; videoUrl: string; localPath?: string; localUrl?: string }[] = [];
+      try {
+        const stockRes = await fetch("/api/videos/fetch-stock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            keywords: perSubKws,
+            download: true,
+            totalDurationSec: (pipe.current.audioDurationMs ?? 60000) / 1000,
+            stockSource,
+            overrideClipCount: N,
+          }),
+          signal: abortControllerRef.current?.signal,
+        });
+        if (stockRes.ok) {
+          const stockData = await stockRes.json();
+          clipsByKw = (stockData.results ?? []).filter((r: { localUrl?: string; videoUrl: string }) => r.localUrl || r.videoUrl);
+        }
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError") throw e;
+      }
+
+      const orderedClips: typeof clipsByKw = [];
+      const usedIds = new Set<number>();
+      for (let i = 0; i < N; i++) {
+        const kw = perSubKws[i];
+        const match = clipsByKw.find(c => c.keyword === kw && !usedIds.has(c.pexelsId));
+        if (match) { orderedClips.push(match); usedIds.add(match.pexelsId); }
+      }
+      if (orderedClips.length < N && orderedClips.length > 0) {
+        const reusable = [...orderedClips];
+        while (orderedClips.length < N) orderedClips.push(reusable[orderedClips.length % reusable.length]);
+      }
+
+      if (orderedClips.length === N) {
+        pipe.current.stockVideos = orderedClips;
+        setPipeStockVideos(orderedClips);
+        setExcludedClipIds(new Set());
+        setStep("fetchStock", "done", `${N} clips (ครบทุกซับ)`);
+        toast.success(`Stock ครบ ${N} — ตรงกับซับแล้ว`);
+      } else {
+        const prevStock = pipe.current.stockVideos ?? [];
+        if (prevStock.length > 0) {
+          setStep("fetchStock", "done", `${prevStock.length} clips (scene-based)`);
+          toast("Per-subtitle fetch ล้มเหลว — ใช้ stock เดิม");
+        } else {
+          setStep("fetchStock", "error", "ไม่ได้ stock เลย");
+          toast.error("ดึง stock ไม่สำเร็จ — เช็ค Pexels/Pixabay key");
+        }
+      }
+    } catch (err) {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว");
+        markError("ยกเลิกโดยผู้ใช้");
+      } else {
+        const msg = friendlyError(err);
+        toast.error(msg);
+        markError(msg);
+      }
+    } finally {
+      abortRef.current = false;
+      abortControllerRef.current = null;
+      setRunning(false);
+    }
   }
 
   // Pipeline Phase 1b: Render preview WITHOUT subtitles — user previews CSS overlay first
@@ -2205,6 +2224,25 @@ export default function ShortVideoPage() {
                   </button>
                 }
               />
+
+              {/* Match Stock to ซับ — optional 1:1 caption→clip mapping after Transcribe */}
+              {editedSceneCaptions.length > 0 && (
+                <div className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 mt-1"
+                  style={{ background: "hsl(280 80% 50% / 0.08)", border: "1px dashed hsl(280 80% 50% / 0.3)" }}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="text-[11px] text-white/70 leading-tight">
+                      <span className="font-bold text-purple-300">🎯 Match Stock to ซับ</span>
+                      <span className="text-white/40 ml-1.5">— จับคู่ stock ให้ตรงทุกซับ ({editedSceneCaptions.length} clips)</span>
+                    </div>
+                  </div>
+                  <button onClick={runMatchStock} disabled={running}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90 shrink-0"
+                    style={{ background: "linear-gradient(135deg, hsl(280 80% 50%), hsl(310 80% 50%))" }}>
+                    {running && (steps.keywords === "running" || steps.fetchStock === "running") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+                    Match Stock
+                  </button>
+                </div>
+              )}
 
               {/* Phase 2 — Render */}
               <PhaseRow
