@@ -1066,10 +1066,10 @@ export default function ShortVideoPage() {
         const subTexts     = sceneCaptions.map(c => c.text);
         const audioDurSec  = (pipe.current.audioDurationMs ?? 60000) / 1000;
 
-        // ── Step A: Fetch per-subtitle keywords (retry up to 2x if count < N) ──
+        // ── Step A: Fetch per-subtitle keywords (API handles batching for long scripts) ──
         let perSubKws: string[] = [];
         setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < 2; attempt++) {
           try {
             const kwRes = await fetch("/api/videos/extract-keywords", {
               method: "POST",
@@ -1084,13 +1084,11 @@ export default function ShortVideoPage() {
           } catch { continue; }
         }
 
-        // ── Step B: Pad keywords to N — reuse last valid English keyword cyclically ──
+        // ── Step B: Safety pad — API guarantees N but guard against total failure ──
         if (perSubKws.length < N) {
           const padded = [...perSubKws];
-          const fallbackPool = padded.length > 0 ? padded : ["lifestyle scene"];
-          while (padded.length < N) padded.push(fallbackPool[padded.length % fallbackPool.length]);
-          if (perSubKws.length > 0 && perSubKws.length < N)
-            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติมซ้ำ keyword เดิม`);
+          const genericFallbacks = ["person walking", "city street", "nature landscape", "people talking", "outdoor scene"];
+          while (padded.length < N) padded.push(genericFallbacks[padded.length % genericFallbacks.length]);
           perSubKws = padded;
         }
 

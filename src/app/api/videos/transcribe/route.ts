@@ -605,10 +605,13 @@ Return ONLY valid JSON — no markdown, no explanation:
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
 
+          // max_tokens: each phrase ~25 chars × maxPhrases, plus JSON overhead
+          const splitMaxTokens = Math.min(8192, Math.max(1024, maxPhrases * 30 + 300));
+
           let gptRawText = "{}";
           if (useGemini) {
             try {
-              const raw = await geminiGenerateText(apiKey, splitPrompt, 4096);
+              const raw = await geminiGenerateText(apiKey, splitPrompt, splitMaxTokens);
               console.log(`[transcribe] Gemini split raw:`, raw.slice(0, 300));
               gptRawText = parseSplitPhrasesFromRaw(raw).length > 0 ? raw : "{}";
             } catch (e) {
@@ -618,7 +621,7 @@ ${sourceText.trim()}`;
             const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
               method: "POST",
               headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ model: openAiSplitModel, messages: [{ role: "user", content: splitPrompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+              body: JSON.stringify({ model: openAiSplitModel, messages: [{ role: "user", content: splitPrompt }], max_tokens: splitMaxTokens, temperature: 0, response_format: { type: "json_object" } }),
             });
             if (gptRes.ok) {
               const d = await gptRes.json();
@@ -630,7 +633,6 @@ ${sourceText.trim()}`;
             try {
               const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
               const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
-              // store tags if LLM returned them
               if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
                 llmTags = parsed.tags as ("hook" | "body" | "cta")[];
               }
@@ -638,10 +640,10 @@ ${sourceText.trim()}`;
               const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
               if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                // Snap LLM split positions onto real script text — subtitle text must be verbatim from script
-                const snapped = snapPhrasesToScript(raw, sourceText);
-                const expanded = expandPhrasesToTargetDensity(snapped, minPhrases, sourceText);
-                phrases = expanded.length > 0 ? expanded : snapped;
+                // Use LLM phrases directly — prompt instructs COPY EXACT so no remapping needed.
+                // snapPhrasesToScript caused mid-word cuts for Thai/mixed text; removed.
+                const expanded = expandPhrasesToTargetDensity(raw, minPhrases, sourceText);
+                phrases = expanded.length > 0 ? expanded : raw;
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);

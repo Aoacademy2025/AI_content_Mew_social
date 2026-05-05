@@ -52,53 +52,101 @@ export async function POST(req: Request) {
 
     if (!subtitleList.length) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
-    const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
+    // For long videos (many subtitles), split into batches of 30 to avoid token limits.
+    // Each batch is a separate LLM call; results are concatenated in order.
+    const BATCH_SIZE = 30;
+
+    async function fetchKeywordBatch(batch: string[], startIdx: number): Promise<string[]> {
+      const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
 I have a Thai script split into subtitle phrases. For each phrase, choose the single best English Pexels search query that visually represents that moment on screen.
 
 RULES:
-- Output ONLY a valid JSON array of strings — one query per subtitle, same order, same count
+- Output ONLY a valid JSON object: {"keywords":["query1","query2",...]}
+- One query per subtitle, same order, same count (exactly ${batch.length} queries)
 - Each query must be 2-5 English words describing something a camera can physically film
 - Translate Thai content into concrete English visuals (people, places, objects, actions)
-- Vary shots across phrases: wide shot, close-up, aerial, slow motion, action
-- Make each query unique — no two phrases should have the same query
-- Match the mood: dramatic → tense scene, happy → bright colorful scene, financial → money/charts
+- Vary shots: wide shot, close-up, aerial, slow motion, action shot
+- Each query must be unique — no duplicates
+- Match the mood: dramatic → tense scene, happy → bright scene, financial → money/charts
 
-SUBTITLE PHRASES:
-${subtitleList.map((s, i) => `${i + 1}. ${s}`).join("\n")}
+SUBTITLE PHRASES (${startIdx + 1}–${startIdx + batch.length}):
+${batch.map((s, i) => `${startIdx + i + 1}. ${s}`).join("\n")}
 
-Return ONLY JSON array with exactly ${subtitleList.length} strings:`;
+Return ONLY valid JSON object with exactly ${batch.length} strings in the keywords array:`;
 
-    let kwText = "[]";
-    try {
+      // max_tokens: ~20 chars per keyword × batch size, plus overhead
+      const maxTokens = Math.min(4096, batch.length * 25 + 200);
+
+      let kwText = "{}";
       if (useGemini) {
-        kwText = await geminiGenerateText(apiKey!, prompt, 2048);
+        kwText = await geminiGenerateText(apiKey!, prompt, maxTokens);
       } else {
         const r = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], max_tokens: 2048, temperature: 0.5, response_format: { type: "json_object" } }),
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: maxTokens,
+            temperature: 0.5,
+            response_format: { type: "json_object" },
+          }),
         });
-        if (r.ok) { const d = await r.json(); kwText = d.choices?.[0]?.message?.content ?? "[]"; }
+        if (r.ok) { const d = await r.json(); kwText = d.choices?.[0]?.message?.content ?? "{}"; }
       }
-    } catch (e) {
-      console.error("[extract-keywords] perSubtitle LLM error:", e);
+
+      try {
+        const match = kwText.match(/\{[\s\S]*\}/);
+        const parsed = JSON.parse(match?.[0] ?? "{}");
+        // Accept both {"keywords":[...]} and raw array fallback
+        const arr: unknown[] = Array.isArray(parsed.keywords)
+          ? parsed.keywords
+          : Array.isArray(parsed) ? parsed : [];
+        const keywords = arr.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
+        return keywords;
+      } catch {
+        return [];
+      }
     }
 
-    try {
-      const match = kwText.match(/\[[\s\S]*\]/);
-      const parsed: string[] = JSON.parse(match?.[0] ?? "[]");
-      const keywords = parsed.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
-      console.log(`[extract-keywords] perSubtitle: ${keywords.length} keywords for ${subtitleList.length} subtitles`);
-      return NextResponse.json({
-        keywords,
-        sceneClipCounts: keywords.map(() => 1),
-        sceneDurations: subtitleList.map(() => 3),
-        keywordsPerScene: 1,
-      });
-    } catch {
-      return NextResponse.json({ keywords: [], sceneClipCounts: [], sceneDurations: [], keywordsPerScene: 1 });
+    // Split into batches and call LLM for each
+    const allKeywords: string[] = [];
+    const batches: string[][] = [];
+    for (let i = 0; i < subtitleList.length; i += BATCH_SIZE) {
+      batches.push(subtitleList.slice(i, i + BATCH_SIZE));
     }
+
+    console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches`);
+
+    for (let b = 0; b < batches.length; b++) {
+      const batch = batches[b];
+      let batchKws: string[] = [];
+      // Up to 2 retries per batch if count mismatch
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          batchKws = await fetchKeywordBatch(batch, b * BATCH_SIZE);
+          if (batchKws.length >= batch.length) break;
+        } catch (e) {
+          console.error(`[extract-keywords] batch ${b} attempt ${attempt} error:`, e);
+        }
+      }
+      // Pad batch result to expected length by cycling valid keywords
+      if (batchKws.length < batch.length) {
+        const pool = batchKws.length > 0 ? batchKws : ["person walking", "city street", "nature landscape"];
+        while (batchKws.length < batch.length) batchKws.push(pool[batchKws.length % pool.length]);
+      }
+      // Trim to batch size in case LLM returned extras
+      allKeywords.push(...batchKws.slice(0, batch.length));
+    }
+
+    console.log(`[extract-keywords] perSubtitle: ${allKeywords.length} keywords for ${subtitleList.length} subtitles`);
+    return NextResponse.json({
+      keywords: allKeywords,
+      sceneClipCounts: allKeywords.map(() => 1),
+      sceneDurations: subtitleList.map(() => 3),
+      keywordsPerScene: 1,
+    });
   }
 
   // Normal mode: send full script to LLM, let it decide everything
