@@ -1084,12 +1084,13 @@ export default function ShortVideoPage() {
           } catch { continue; }
         }
 
-        // ── Step B: Pad keywords to N using subtitle text as fallback (no hardcode) ──
+        // ── Step B: Pad keywords to N — reuse last valid English keyword cyclically ──
         if (perSubKws.length < N) {
           const padded = [...perSubKws];
-          while (padded.length < N) padded.push(subTexts[padded.length] ?? subTexts[padded.length % subTexts.length]);
+          const fallbackPool = padded.length > 0 ? padded : ["lifestyle scene"];
+          while (padded.length < N) padded.push(fallbackPool[padded.length % fallbackPool.length]);
           if (perSubKws.length > 0 && perSubKws.length < N)
-            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติม subtitle text แทน`);
+            toast(`Keywords ไม่ครบ (${perSubKws.length}/${N}) — เติมซ้ำ keyword เดิม`);
           perSubKws = padded;
         }
 
@@ -1399,7 +1400,8 @@ export default function ShortVideoPage() {
         }
         if (perSubKws2.length < N2) {
           const padded = [...perSubKws2];
-          while (padded.length < N2) padded.push(subTexts2[padded.length] ?? subTexts2[padded.length % subTexts2.length]);
+          const fallbackPool2 = padded.length > 0 ? padded : ["lifestyle scene"];
+          while (padded.length < N2) padded.push(fallbackPool2[padded.length % fallbackPool2.length]);
           perSubKws2 = padded;
         }
         if (perSubKws2.length === 0) { setStep("fetchStock", "done", "ไม่สามารถ mapping keyword ได้"); return; }
