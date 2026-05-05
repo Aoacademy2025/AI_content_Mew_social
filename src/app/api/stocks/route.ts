@@ -35,12 +35,18 @@ export async function GET() {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const userId = (session.user as { id: string }).id;
+  console.log(`[stocks GET] userId=${userId} prefix=${userPrefix(userId)}`);
 
   if (!fs.existsSync(STOCKS_DIR)) return NextResponse.json({ count: 0, sizeMb: 0 });
 
   cleanOldUserStocks(userId);
 
-  const files = fs.readdirSync(STOCKS_DIR).filter(f => isUserStock(f, userId));
+  const allFiles = fs.readdirSync(STOCKS_DIR).filter(f => f.endsWith(".mp4"));
+  const files = allFiles.filter(f => isUserStock(f, userId));
+  console.log(`[stocks GET] total mp4=${allFiles.length} thisUser=${files.length} (prefix=${userPrefix(userId)})`);
+  if (allFiles.length > 0 && files.length === 0) {
+    console.log(`[stocks GET] sample filenames: ${allFiles.slice(0, 3).join(", ")}`);
+  }
   const totalBytes = files.reduce((sum, f) => {
     try { return sum + fs.statSync(path.join(STOCKS_DIR, f)).size; } catch { return sum; }
   }, 0);
