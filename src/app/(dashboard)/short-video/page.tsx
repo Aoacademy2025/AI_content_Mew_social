@@ -1305,7 +1305,7 @@ export default function ShortVideoPage() {
         const sceneKwPool = (pipe.current.keywords ?? []);
 
         let perSubKws2: string[] = [];
-        setStep("keywords", "running", `mapping ${N2} ซับ → keyword...`);
+        setStep("fetchStock", "running", `mapping ${N2} ซับ → keyword...`);
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             const r = await fetch("/api/videos/extract-keywords", {
@@ -1325,12 +1325,9 @@ export default function ShortVideoPage() {
           while (padded.length < N2) padded.push(pool[padded.length % pool.length]);
           perSubKws2 = padded;
         }
-        if (perSubKws2.length === 0) { setStep("keywords", "done", "ไม่สามารถ mapping ได้"); return; }
+        if (perSubKws2.length === 0) { setStep("fetchStock", "done", "ไม่สามารถ mapping keyword ได้"); return; }
 
-        pipe.current.keywords = perSubKws2;
         pipe.current.sceneClipCounts = perSubKws2.map(() => 1);
-        setKeywords(perSubKws2);
-        setStep("keywords", "done", `${perSubKws2.length} keywords (1/ซับ)`);
         setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws2.length} คลิป...`);
 
         const clipAtIdx2 = new Map<number, StockVideo>();
@@ -2485,6 +2482,12 @@ export default function ShortVideoPage() {
 
                               {/* Grid clip picker — video thumbnails */}
                               {pipeStockVideos.length > 0 && (() => {
+                                // Filter grid by selected source tab (All/Pexels/Pixabay)
+                                const visibleClips = stockSource === "pexels"
+                                  ? pipeStockVideos.filter(v => v.pexelsId < 9_000_000)
+                                  : stockSource === "pixabay"
+                                  ? pipeStockVideos.filter(v => v.pexelsId >= 9_000_000)
+                                  : pipeStockVideos;
                                 const activeCnt = pipeStockVideos.filter(v => !excludedClipIds.has(v.pexelsId)).length;
                                 const limit = targetClipCount > 0 ? targetClipCount : pipeStockVideos.length;
                                 const atLimit = targetClipCount > 0 && activeCnt >= targetClipCount;
@@ -2584,7 +2587,7 @@ export default function ShortVideoPage() {
 
                                     {/* 3-col video grid */}
                                     <div className="grid grid-cols-3 gap-1.5 max-h-80 overflow-y-auto pr-0.5">
-                                      {pipeStockVideos.map((v, i) => {
+                                      {visibleClips.map((v, i) => {
                                         const excluded = excludedClipIds.has(v.pexelsId);
                                         const selected = !excluded;
                                         const isPixabay = v.pexelsId >= 9_000_000;
