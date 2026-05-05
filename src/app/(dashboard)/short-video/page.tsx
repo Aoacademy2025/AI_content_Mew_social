@@ -134,12 +134,7 @@ export default function ShortVideoPage() {
   function preprocessScript(raw: string): string {
     return raw
       .replace(/\r?\n/g, " ")
-      .replace(/\([A-Za-z][^)]{0,80}\)/g, "")
-      .replace(/\.{3,}/g, "\n")
-      .split("\n")
-      .map(l => l.trim())
-      .filter(l => l.length > 0)
-      .join("\n")
+      .replace(/\s{2,}/g, " ")
       .trim();
   }
 
