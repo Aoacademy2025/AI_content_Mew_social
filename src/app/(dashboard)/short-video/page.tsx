@@ -2438,9 +2438,9 @@ export default function ShortVideoPage() {
                 label="Prepare"
                 color="cyan"
                 steps={[
-                  { key: "keywords" as const,   label: "Keywords",  icon: Wand2,     canRun: !!script.trim() },
                   { key: "tts" as const,        label: "TTS Voice", icon: Mic,       canRun: !!script.trim() },
                   { key: "transcribe" as const, label: "Transcribe",icon: Captions,  canRun: !!pipe.current.voiceUrl },
+                  { key: "keywords" as const,   label: "Keywords",  icon: Wand2,     canRun: !!pipe.current.voiceUrl },
                   { key: "fetchStock" as const, label: "Stock",     icon: Film,      canRun: !!script.trim() },
                 ]}
                 stepStates={steps}
