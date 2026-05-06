@@ -2592,8 +2592,8 @@ export default function ShortVideoPage() {
                   <Layers className="h-3.5 w-3.5 text-cyan-400" />
                 </div>
                 <div className="min-w-0">
-                  <p className="font-bold text-white text-sm leading-none">Execution Pipeline</p>
-                  <p className="text-[10px] text-white/30 mt-0.5 hidden sm:block">กดแต่ละขั้นตอนเพื่อ run หรือ re-run</p>
+                  <p className="font-bold text-white text-sm leading-none">Live Status</p>
+                  <p className="text-[10px] text-white/30 mt-0.5 hidden sm:block">กดแต่ละขั้นตอนเพื่อรันหรือรันใหม่</p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -2629,13 +2629,13 @@ export default function ShortVideoPage() {
               {/* Phase 1 — Prepare */}
               <PhaseRow
                 phaseNum={1}
-                label="Prepare"
+                label="เตรียมข้อมูล"
                 color="cyan"
                 steps={[
-                  { key: "tts" as const,        label: "TTS Voice", icon: Mic,       canRun: !!script.trim() },
-                  { key: "transcribe" as const, label: "Transcribe",icon: Captions,  canRun: !!pipe.current.voiceUrl },
-                  { key: "keywords" as const,   label: "Keywords",  icon: Wand2,     canRun: !!pipe.current.voiceUrl },
-                  { key: "fetchStock" as const, label: "Stock",     icon: Film,      canRun: !!script.trim() },
+                  { key: "tts" as const,        label: "สร้างเสียง",   icon: Mic,       canRun: !!script.trim() },
+                  { key: "transcribe" as const, label: "แปลงซับ",      icon: Captions,  canRun: !!pipe.current.voiceUrl },
+                  { key: "keywords" as const,   label: "คีย์เวิร์ด",   icon: Wand2,     canRun: !!pipe.current.voiceUrl },
+                  { key: "fetchStock" as const, label: "ดึงวิดีโอ",    icon: Film,      canRun: !!script.trim() },
                 ]}
                 stepStates={steps}
                 running={running}
@@ -2653,11 +2653,11 @@ export default function ShortVideoPage() {
               {/* Phase 2 — Render */}
               <PhaseRow
                 phaseNum={2}
-                label="Render"
+                label="เรนเดอร์วิดีโอ"
                 color="blue"
                 steps={[
-                  { key: "config", label: "Config", icon: Settings2, canRun: !!pipe.current.captions?.length },
-                  { key: "render", label: "Render",  icon: Video,    canRun: !!pipe.current.config },
+                  { key: "config", label: "ตั้งค่า",     icon: Settings2, canRun: !!pipe.current.captions?.length },
+                  { key: "render", label: "เรนเดอร์",    icon: Video,     canRun: !!pipe.current.config },
                 ]}
                 stepStates={steps}
                 running={running}
@@ -2676,11 +2676,11 @@ export default function ShortVideoPage() {
               {useAvatar && (
                 <PhaseRow
                   phaseNum={3}
-                  label="Avatar"
+                  label="อวตาร"
                   color="purple"
                   steps={[
-                    { key: "avatar",    label: "Avatar",    icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
-                    { key: "composite", label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
+                    { key: "avatar",    label: "อวตาร",      icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
+                    { key: "composite", label: "รวมวิดีโอ",  icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
                   ]}
                   stepStates={steps}
                   running={running}
