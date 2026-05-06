@@ -1336,19 +1336,7 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy A: direct 1-to-1 segment alignment
-        if (phrases.length === segments.length && segments.length >= 2) {
-          for (let i = 0; i < phrases.length; i++) {
-            result.push({
-              text: normalizeCaptionText(phrases[i]),
-              startMs: Math.round(segments[i].start * 1000),
-              endMs:   Math.round(segments[i].end   * 1000),
-            });
-          }
-          console.log(`[transcribe] Strategy A direct segment alignment: ${result.length} phrases`);
-        }
-
-        // Strategy B: segment-anchored alignment (preferred when phrase count ≠ segment count)
+        // Strategy B: segment-anchored alignment via char proportion
         if (result.length === 0 && segments.length >= 2) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
