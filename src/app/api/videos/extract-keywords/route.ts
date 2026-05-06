@@ -225,13 +225,19 @@ JSON only:`;
       const batch = batches[b];
       let rawKws: string[] = [];
 
-      for (let attempt = 0; attempt < 3; attempt++) {
+      // Wait between batches to avoid Gemini 503 rate limit
+      if (b > 0) await new Promise(r => setTimeout(r, 2000));
+
+      for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
+          if (attempt > 0) await new Promise(r => setTimeout(r, 3000 * attempt));
           rawKws = await fetchKeywordBatch(batch, b * BATCH_SIZE, [...allKeywords]);
           if (rawKws.length >= batch.length) break;
-        } catch (e) {
-          console.error(`[extract-keywords] batch ${b} attempt ${attempt} error:`, e);
+        } catch (e: unknown) {
+          const status = (e as { status?: number })?.status ?? 0;
+          console.error(`[extract-keywords] batch ${b} attempt ${attempt} error (status=${status}):`, e);
+          // 503 = Gemini overloaded — wait longer before retry
+          if (status === 503) await new Promise(r => setTimeout(r, 5000));
         }
       }
 
