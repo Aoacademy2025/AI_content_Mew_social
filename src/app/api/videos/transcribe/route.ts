@@ -58,6 +58,45 @@ function sanitizePhraseText(input: string): string {
     .trim();
 }
 
+// Remove words that appear at both the END of phrase[i] and START of phrase[i+1].
+// This fixes STT/LLM duplication like:
+//   phrase[4] = "...ชื่อ Anthropic Anthropic"
+//   phrase[5] = "Anthropic ก่อตั้งโดย..."
+// → strips trailing "Anthropic" from phrase[4]
+function deduplicatePhraseEdges(phrases: string[]): string[] {
+  if (phrases.length < 2) return phrases;
+  const out = [...phrases];
+  for (let i = 0; i < out.length - 1; i++) {
+    const cur = out[i].trim();
+    const next = out[i + 1].trim();
+    if (!cur || !next) continue;
+
+    // Tokenize both phrases into words (split on spaces)
+    const curWords = cur.split(/\s+/);
+    const nextWords = next.split(/\s+/);
+
+    // Find longest suffix of cur[] that matches a prefix of next[]
+    let overlapLen = 0;
+    const maxCheck = Math.min(curWords.length, nextWords.length, 5);
+    for (let k = maxCheck; k >= 1; k--) {
+      const suffix = curWords.slice(-k).join(" ").toLowerCase();
+      const prefix = nextWords.slice(0, k).join(" ").toLowerCase();
+      if (suffix === prefix && suffix.length >= 2) {
+        overlapLen = k;
+        break;
+      }
+    }
+
+    if (overlapLen > 0) {
+      // Remove the overlap from the end of cur
+      out[i] = curWords.slice(0, curWords.length - overlapLen).join(" ").trim();
+      console.log(`[transcribe] dedup edge: removed "${curWords.slice(-overlapLen).join(" ")}" from phrase[${i}]`);
+    }
+  }
+  // Filter out any phrase that became empty after dedup
+  return out.filter(p => p.trim().length > 0);
+}
+
 function splitToSentencePhrases(raw: string): string[] {
   if (!raw.trim()) return [];
 
@@ -997,7 +1036,7 @@ ${sourceText.trim()}`;
                 } else {
                   phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
                 }
-                phrases = mergeDateAndConnectorBreaks(phrases);
+                phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
@@ -1083,7 +1122,7 @@ ${sourceText.trim()}`;
           }
           phrases.push(cur);
         }
-        phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases));
+        phrases = deduplicatePhraseEdges(mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases)));
       }
         console.log(`[transcribe] fallback split → ${phrases.length} phrases`);
         // Do NOT expand here — char-based splitting breaks mixed Thai/English phrases.
