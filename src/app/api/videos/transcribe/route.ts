@@ -70,6 +70,13 @@ function deduplicatePhraseEdges(phrases: string[]): string[] {
     const cur = out[i].trim();
     const next = out[i + 1].trim();
     if (!cur || !next) continue;
+    const curCompare = normalizeForCompare(cur);
+    const nextCompare = normalizeForCompare(next);
+    if (curCompare && nextCompare && curCompare === nextCompare) {
+      out.splice(i + 1, 1);
+      i = Math.max(-1, i - 1);
+      continue;
+    }
 
     // Tokenize both phrases into words (split on spaces)
     const curWords = cur.split(/\s+/);
@@ -88,13 +95,57 @@ function deduplicatePhraseEdges(phrases: string[]): string[] {
     }
 
     if (overlapLen > 0) {
-      // Remove the overlap from the end of cur
-      out[i] = curWords.slice(0, curWords.length - overlapLen).join(" ").trim();
-      console.log(`[transcribe] dedup edge: removed "${curWords.slice(-overlapLen).join(" ")}" from phrase[${i}]`);
+      // Remove overlap from start of next to avoid duplicated words.
+      const trimmedNext = nextWords.slice(overlapLen).join(" ").trim();
+      if (!trimmedNext) {
+        out.splice(i + 1, 1);
+        i = Math.max(-1, i - 1);
+        console.log(`[transcribe] dedup edge: removed duplicated phrase[${i + 1}]`);
+      } else {
+        out[i + 1] = trimmedNext;
+        console.log(`[transcribe] dedup edge: removed "${nextWords.slice(0, overlapLen).join(" ")}" from start of phrase[${i + 1}]`);
+      }
     }
   }
   // Filter out any phrase that became empty after dedup
   return out.filter(p => p.trim().length > 0);
+}
+
+function collapseConsecutiveDuplicateWords(input: string): string {
+  const words = sanitizePhraseText(input).split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return sanitizePhraseText(input);
+  const out: string[] = [words[0]];
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    const prev = out[out.length - 1];
+    if (w.toLowerCase() !== prev.toLowerCase()) {
+      out.push(w);
+    }
+  }
+  return out.join(" ").trim();
+}
+
+function limitPhraseCountByDuration(phrases: string[], audioDurSec: number): string[] {
+  const maxByDuration = Math.max(2, Math.min(7, Math.ceil(audioDurSec / 2.4)));
+  if (phrases.length <= maxByDuration) return phrases;
+  const out = [...phrases];
+  while (out.length > maxByDuration) {
+    let mergeIndex = 0;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < out.length - 1; i++) {
+      const merged = `${out[i]} ${out[i + 1]}`.trim();
+      const score = merged.length;
+      if (score < bestScore) {
+        bestScore = score;
+        mergeIndex = i;
+      }
+    }
+
+    out[mergeIndex] = `${out[mergeIndex]} ${out[mergeIndex + 1]}`.trim();
+    out.splice(mergeIndex + 1, 1);
+  }
+  return out;
 }
 
 function splitToSentencePhrases(raw: string): string[] {
@@ -735,7 +786,11 @@ RULES:
                   { inlineData: { mimeType: "audio/mp3", data: audioB64 } },
                 ],
               }],
-              generationConfig: { temperature: 0 },
+              generationConfig: {
+                temperature: 0,
+                responseMimeType: "application/json",
+                thinkingConfig: { thinkingBudget: 0 },  // disable thinking — prevents JSON prefix corruption
+              },
             }),
           }
         );
@@ -1153,6 +1208,17 @@ ${sourceText.trim()}`;
         // Do NOT expand here — char-based splitting breaks mixed Thai/English phrases.
       }
 
+      phrases = phrases
+        .map((p) => collapseConsecutiveDuplicateWords(p))
+        .map((p) => sanitizePhraseText(p))
+        .filter(Boolean);
+      phrases = deduplicatePhraseEdges(mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases)));
+      phrases = limitPhraseCountByDuration(phrases, audioDur);
+      phrases = phrases
+        .map((p) => sanitizePhraseText(p))
+        .filter(Boolean);
+      console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
+
       // ── Step 2: Align phrases → Whisper timestamps ──────────────────────────
       // Strategy A (preferred): word-level forced alignment
       //   Strip each phrase and each whisper word to bare Thai chars,
@@ -1397,4 +1463,3 @@ ${sourceText.trim()}`;
     return apiError({ route: "videos/transcribe", error, notifyUser: true });
   }
 }
-
