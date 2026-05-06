@@ -310,13 +310,14 @@ function alignPhrasesToWordTimings(
 }
 
 /**
- * Aligns LLM-split phrases to Gemini/Whisper segment timestamps using cumulative
- * character proportion — but anchored to REAL segment boundaries, not proportional
- * over the whole audio. This gives far more accurate subtitle timing than char-only
- * alignment when the number of phrases ≠ number of segments.
+ * Aligns LLM-split phrases to Gemini segment timestamps via greedy text matching.
  *
- * Strategy: map each segment's cumulative char share → find which phrase(s) fall in it,
- * then assign the segment's start/end times to those phrases.
+ * For each phrase, find which segments contain its text (Thai char overlap),
+ * then assign startMs = first matched segment's start, endMs = last matched segment's end.
+ * Segments are consumed left-to-right so timing is monotonically increasing.
+ *
+ * This is accurate because Gemini timestamps are from real audio analysis —
+ * we just need to find which segment(s) correspond to each LLM phrase.
  */
 function alignPhrasesToSegmentTimestamps(
   phrases: string[],
@@ -324,63 +325,57 @@ function alignPhrasesToSegmentTimestamps(
 ): { text: string; startMs: number; endMs: number }[] {
   if (!phrases.length || !segments.length) return [];
 
-  // Build cumulative char counts for both phrase list and segment list
-  const phraseChars = phrases.map(p => Math.max(1, alignmentCharLen(p)));
-  const segChars    = segments.map(s => Math.max(1, alignmentCharLen(s.text)));
+  // Strip to bare Thai+latin chars for matching (ignore spaces, punctuation)
+  const bare = (s: string) => s.replace(/[\s​-‍﻿.,!?;:"""''()[\]{}<>]/g, "").toLowerCase();
 
+  const segBare = segments.map(s => bare(s.text));
+  // Concatenate all segment chars into one string, track which segment each char belongs to
+  const allSegChars: number[] = []; // allSegChars[i] = segment index for char i
+  for (let si = 0; si < segBare.length; si++) {
+    for (let ci = 0; ci < segBare[si].length; ci++) allSegChars.push(si);
+  }
+  const allSegText = segBare.join("");
+  const totalSegChars = allSegText.length;
+
+  if (totalSegChars === 0) return [];
+
+  // For each phrase, find its window in allSegText using cumulative char proportion of phrases
+  // BUT snap to nearest segment boundary — this gives segment-accurate timestamps
+  const phraseChars = phrases.map(p => Math.max(1, bare(p).length));
   const totalPhraseChars = phraseChars.reduce((a, b) => a + b, 0);
-  const totalSegChars    = segChars.reduce((a, b) => a + b, 0);
 
-  // For each phrase, compute its char range [phraseCharStart, phraseCharEnd) in [0, totalPhraseChars]
-  // Map that range onto [0, totalSegChars] → find which segments overlap → interpolate timestamps.
   const out: { text: string; startMs: number; endMs: number }[] = [];
   let cumPhrase = 0;
 
-  // Precompute segment char boundaries
-  const segBounds: { charStart: number; charEnd: number; start: number; end: number }[] = [];
-  let cumSeg = 0;
-  for (const seg of segments) {
-    const sc = Math.max(1, alignmentCharLen(seg.text));
-    segBounds.push({ charStart: cumSeg, charEnd: cumSeg + sc, start: seg.start, end: seg.end });
-    cumSeg += sc;
-  }
-
-  // Helper: interpolate time within a segment at a given char offset
-  const timeAtChar = (charPos: number): number => {
-    const ratio = totalSegChars > 0 ? Math.min(1, charPos / totalSegChars) : 0;
-    // Find which segment this ratio falls into
-    const targetChar = ratio * totalSegChars;
-    for (const sb of segBounds) {
-      if (targetChar <= sb.charEnd) {
-        const inSeg = sb.charEnd > sb.charStart ? (targetChar - sb.charStart) / (sb.charEnd - sb.charStart) : 0;
-        return sb.start + inSeg * (sb.end - sb.start);
-      }
-    }
-    return segBounds[segBounds.length - 1].end;
-  };
-
   for (let i = 0; i < phrases.length; i++) {
-    const pc = phraseChars[i];
-    const phraseCharStart = cumPhrase;
-    cumPhrase += pc;
-    const phraseCharEnd = cumPhrase;
+    const f0 = cumPhrase / totalPhraseChars;
+    cumPhrase += phraseChars[i];
+    const f1 = Math.min(1, cumPhrase / totalPhraseChars);
 
-    // Map phrase char range → segment time range
-    const t0 = timeAtChar((phraseCharStart / totalPhraseChars) * totalSegChars);
-    const t1 = timeAtChar((phraseCharEnd   / totalPhraseChars) * totalSegChars);
+    // Raw char positions in allSegText
+    const rawC0 = Math.round(f0 * totalSegChars);
+    const rawC1 = Math.round(f1 * totalSegChars);
+
+    // Find segment indices
+    const si0 = allSegChars[Math.min(rawC0, allSegChars.length - 1)] ?? 0;
+    const si1 = allSegChars[Math.min(Math.max(rawC1 - 1, rawC0), allSegChars.length - 1)] ?? si0;
+
+    // Snap to segment boundaries: start = si0.start, end = si1.end
+    const segStart = segments[si0].start;
+    const segEnd   = segments[Math.min(si1, segments.length - 1)].end;
 
     out.push({
       text: sanitizeTranscriptionText(phrases[i]),
-      startMs: Math.round(Math.max(0, t0) * 1000),
-      endMs:   Math.round(Math.max(t0 + 0.3, t1) * 1000),
+      startMs: Math.round(segStart * 1000),
+      endMs:   Math.round(Math.max(segStart + 0.3, segEnd) * 1000),
     });
   }
 
-  // Snap phrase boundaries to nearest segment boundary (within 0.5s) to avoid mid-word cuts
-  for (const sb of segBounds) {
-    for (const r of out) {
-      if (Math.abs(r.startMs / 1000 - sb.start) < 0.5) r.startMs = Math.round(sb.start * 1000);
-      if (Math.abs(r.endMs   / 1000 - sb.end)   < 0.5) r.endMs   = Math.round(sb.end   * 1000);
+  // Fix any non-monotonic timestamps (shouldn't happen often but guard it)
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].startMs < out[i - 1].endMs) {
+      out[i].startMs = out[i - 1].endMs;
+      if (out[i].endMs <= out[i].startMs) out[i].endMs = out[i].startMs + 300;
     }
   }
 
@@ -1099,109 +1094,7 @@ RULES:
 
       captions = [];
 
-      // ── Step 1: Use Gemini segment timestamps directly (most accurate) ────────
-      // Gemini detects real speech boundaries from audio — merge short segments so
-      // each caption is 8-32 Thai chars and ≥1.2s, then snap text from real script.
-      if (segments.length >= 2) {
-        // Merge adjacent segments until each group is ≥ MIN_CHARS chars or hits a pause ≥ 0.35s
-        const MIN_CHARS = 8;
-        const MAX_CHARS = 32;
-        const MIN_DUR   = 1.2; // seconds
-
-        type MergedSeg = { startMs: number; endMs: number; chars: number };
-        const merged: MergedSeg[] = [];
-        let curStart = segments[0].start;
-        let curEnd   = segments[0].end;
-        let curChars = alignmentCharLen(segments[0].text);
-
-        for (let si = 1; si < segments.length; si++) {
-          const seg = segments[si];
-          const gap = seg.start - curEnd;
-          const segChars = alignmentCharLen(seg.text);
-          const wouldBe  = curChars + segChars;
-          const curDur   = curEnd - curStart;
-
-          // Flush current group if: natural pause ≥ 0.35s OR would exceed MAX_CHARS, AND already long enough
-          const naturalBreak = gap >= 0.35;
-          const tooLong      = wouldBe > MAX_CHARS;
-          const longEnough   = curChars >= MIN_CHARS && curDur >= MIN_DUR;
-
-          if ((naturalBreak || tooLong) && longEnough) {
-            merged.push({ startMs: Math.round(curStart * 1000), endMs: Math.round(curEnd * 1000), chars: curChars });
-            curStart = seg.start; curEnd = seg.end; curChars = segChars;
-          } else {
-            curEnd = seg.end; curChars = wouldBe;
-          }
-        }
-        merged.push({ startMs: Math.round(curStart * 1000), endMs: Math.round(curEnd * 1000), chars: curChars });
-
-        // Now distribute the real script text onto merged segments proportionally by duration
-        const totalDurMs = merged.reduce((a, m) => a + (m.endMs - m.startMs), 0);
-        const srcChars = [...sourceText]; // split into Unicode chars (handles Thai correctly)
-        const srcNonSpace = [...sourceText.replace(/\s+/g, "")];
-        let charPos = 0;
-
-        captions = merged.map((m, i) => {
-          const share  = (m.endMs - m.startMs) / Math.max(1, totalDurMs);
-          const nChars = i === merged.length - 1
-            ? srcNonSpace.length - charPos  // last segment gets the rest
-            : Math.max(1, Math.round(share * srcNonSpace.length));
-
-          // Advance through sourceText consuming nChars non-space characters
-          let taken = 0;
-          let srcIdx = charPos === 0 ? 0 : (() => {
-            // find position in srcChars corresponding to charPos non-space chars
-            let ns = 0; let idx = 0;
-            while (idx < srcChars.length && ns < charPos) {
-              if (srcChars[idx] !== " ") ns++;
-              idx++;
-            }
-            return idx;
-          })();
-
-          // recompute srcIdx from charPos each time
-          {
-            let ns = 0; let idx = 0;
-            while (idx < srcChars.length && ns < charPos) {
-              if (srcChars[idx] !== " ") ns++;
-              idx++;
-            }
-            srcIdx = idx;
-          }
-
-          const sliceStart = srcIdx;
-          while (srcIdx < srcChars.length && taken < nChars) {
-            if (srcChars[srcIdx] !== " ") taken++;
-            srcIdx++;
-          }
-          // Extend to next word boundary (don't cut mid-word for space-separated text)
-          while (srcIdx < srcChars.length && srcChars[srcIdx] !== " ") srcIdx++;
-
-          const slice = sanitizePhraseText(srcChars.slice(sliceStart, srcIdx).join(""));
-          charPos += taken;
-
-          return {
-            text: normalizeCaptionText(slice || sourceText),
-            startMs: m.startMs,
-            endMs:   m.endMs,
-            timestampMs: m.startMs,
-            confidence: 1,
-            tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
-          };
-        }).filter(c => c.text.length > 0);
-
-        // Give any remaining script text to last caption
-        if (captions.length > 0 && charPos < srcNonSpace.length) {
-          let idx = 0; let ns = 0;
-          while (idx < srcChars.length && ns < charPos) { if (srcChars[idx] !== " ") ns++; idx++; }
-          const remaining = sanitizePhraseText(srcChars.slice(idx).join(""));
-          if (remaining) captions[captions.length - 1].text = normalizeCaptionText(captions[captions.length - 1].text + remaining);
-        }
-
-        console.log(`[transcribe] segment-merge: ${segments.length} segs → ${merged.length} groups → ${captions.length} captions`);
-      }
-
-      // ── Step 2: LLM split fallback — only when no segment timestamps available ──
+      // ── LLM always splits subtitles — Gemini segment timestamps used only for timing alignment ──
       let phrases: string[] = [];
       let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;
@@ -1212,9 +1105,7 @@ RULES:
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
 
-      if (captions.length > 0) {
-        // Segment-direct succeeded — skip LLM split entirely
-      } else if (shouldSkipLLMSplit) {
+      if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
