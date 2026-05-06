@@ -50,7 +50,8 @@ function sanitizeTranscriptionText(input: string): string {
 
 function sanitizePhraseText(input: string): string {
   return sanitizeTranscriptionText(input)
-    .replace(/^[·•…]{2,}$/g, "")
+    .replace(/^[·•…\.]+\s*/g, "")        // strip leading ellipsis/dots
+    .replace(/\s*[·•…\.]+$/g, "")         // strip trailing ellipsis/dots
     .replace(/^\s*✕+\s*$/g, "")
     .replace(/["“”'’]/g, "")
     .replace(/\.{2,}/g, "")
@@ -874,6 +875,27 @@ RULES:
           minPhrases = Math.max(3, targetPhrases - 1);
           maxPhrases = targetPhrases + 2;
 
+          // ── Build speech rhythm hint from Whisper segment timestamps ──
+          // Whisper detects natural breath/pause points — feed these to LLM so it
+          // splits subtitles at the same points the speaker actually paused.
+          let rhythmHint = "";
+          if (segments.length >= 2) {
+            const breathPoints: string[] = [];
+            for (let si = 0; si < segments.length - 1; si++) {
+              const gap = segments[si + 1].start - segments[si].end;
+              // Mark gaps ≥ 200ms as breath/pause boundaries
+              if (gap >= 0.2) {
+                const at = segments[si].end.toFixed(2);
+                breathPoints.push(`${at}s (after: "${segments[si].text.trim().slice(-30)}")`);
+              }
+            }
+            if (breathPoints.length > 0) {
+              rhythmHint = `\n\n━━━ SPEECH RHYTHM HINTS ━━━
+The speaker pauses (breath points) at these moments — split subtitles at or near these points to match speech rhythm:
+${breathPoints.slice(0, 60).map((p, i) => `  ${i + 1}. pause at ${p}`).join("\n")}`;
+            }
+          }
+
           const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
 TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NOT rewrite or remove any words.
@@ -885,12 +907,13 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = one complete thought unit.
-• Prefer balanced line lengths: aim each phrase around similar length (roughly 18–45 Thai chars for Thai text, 12–24 words for English/mixed text).
-• Avoid single-word/very short phrases (<10 chars) unless it is a standalone name, number, date, or key term.
-• Keep total phrase count in a consistent density: no jumps of +1 then -1 between neighboring lines unless punctuation forces it.
+• Each phrase MUST fit in 2 lines on screen — 9:16 vertical video.
+  - Thai text: 8–28 chars ideal, HARD MAX 32 chars per phrase.
+  - English/mixed: 6–18 words, HARD MAX 22 words per phrase.
+  - If a phrase exceeds these limits, MUST split it.
+• PRIORITY: Match speech rhythm — split where the speaker actually pauses (see SPEECH RHYTHM HINTS below).
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
-• NEVER split mid-sentence just to hit a char limit.
+• NEVER split mid-sentence just to hit a char limit (split between words/conjunctions only).
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 
@@ -901,7 +924,7 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
-{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}
+{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}${rhythmHint}
 
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
@@ -1062,7 +1085,7 @@ ${sourceText.trim()}`;
         if (canDirectSegmentAlign) {
           for (let i = 0; i < phrases.length; i++) {
             result.push({
-              text: sanitizeTranscriptionText(phrases[i]),
+              text: sanitizePhraseText(phrases[i]),
               startMs: Math.round(segments[i].start * 1000),
               endMs: Math.round(segments[i].end * 1000),
             });
@@ -1078,7 +1101,7 @@ ${sourceText.trim()}`;
 
         if (result.length === 0 && segments.length > 0) {
           const charLen = alignmentCharLen;
-          const cleanText = (s: string) => sanitizeTranscriptionText(s);
+          const cleanText = (s: string) => sanitizePhraseText(s);
           const segsWithBounds = [...segments];
           // Ensure coverage: clamp first start to 0, last end to audioDur
           if (segsWithBounds[0].start > 0.05) segsWithBounds[0] = { ...segsWithBounds[0], start: 0 };
@@ -1138,7 +1161,7 @@ ${sourceText.trim()}`;
             const idxStart = Math.floor(f0 * (wordTimeline.length - 1));
             const idxEnd = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
             result.push({
-              text: sanitizeTranscriptionText(phrases[i]),
+              text: sanitizePhraseText(phrases[i]),
               startMs: Math.round(wordTimeline[idxStart] * 1000),
               endMs: Math.round(wordTimeline[idxEnd] * 1000),
             });
@@ -1156,7 +1179,7 @@ ${sourceText.trim()}`;
             cumChars += charLengths[i];
             const endSec = (cumChars / totalChars) * audioDur;
             result.push({
-              text: sanitizeTranscriptionText(phrases[i]),
+              text: sanitizePhraseText(phrases[i]),
               startMs: Math.round(startSec * 1000),
               endMs: Math.round(endSec * 1000),
             });

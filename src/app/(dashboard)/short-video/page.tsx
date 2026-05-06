@@ -1196,6 +1196,9 @@ export default function ShortVideoPage() {
 
         // ── Step A: Fetch per-subtitle keywords (API handles batching for long scripts) ──
         let perSubKws: string[] = [];
+        // Clear stale scene-based keywords so UI doesn't display them while perSubtitle runs
+        setKeywords([]);
+        pipe.current.keywords = [];
         setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
         for (let attempt = 0; attempt < 2; attempt++) {
           try {

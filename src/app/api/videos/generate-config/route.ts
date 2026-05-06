@@ -324,10 +324,11 @@ export async function POST(req: Request) {
     // Use gapFilled.length (sorted, non-empty captions) as the reference count.
     // Per-subtitle: every caption has exactly 1 dedicated clip.
     // Require at least 70% clips vs captions â€” clips can be fewer if some subtitles had no match.
+    // Per-subtitle: sceneClipCounts all=1, count matches captions (allow ±2 tolerance for normalize/filter drift)
     const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
       sceneClipCounts.length > 0 &&
       sceneClipCounts.every(c => c === 1) &&
-      sceneClipCounts.length === gapFilled.length &&
+      Math.abs(sceneClipCounts.length - gapFilled.length) <= 2 &&
       gapFilled.length > 0 &&
       n > 0;
 
@@ -349,7 +350,8 @@ export async function POST(req: Request) {
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        const sv  = validStocks[ci % n];
+        // Use exact index — if clips fewer than captions, reuse last clip rather than looping from start
+        const sv  = validStocks[Math.min(ci, n - 1)];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
