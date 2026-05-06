@@ -1232,34 +1232,69 @@ ${sourceText.trim()}`;
                   c => typeof c.text === "string" && typeof c.seg_start === "number" && typeof c.seg_end === "number"
                 );
                 if (llmCaps.length > 0) {
-                  // Validate segment indices are monotonically increasing and in range
+                  // Clamp and sort by seg_start, remove overlaps
                   const maxSi = segments.length - 1;
+                  const clamped = llmCaps.map(c => ({
+                    ...c,
+                    seg_start: Math.max(0, Math.min(c.seg_start!, maxSi)),
+                    seg_end:   Math.max(0, Math.min(c.seg_end!,   maxSi)),
+                  })).sort((a, b) => a.seg_start - b.seg_start);
+
+                  // Remove overlapping entries (keep first, skip any whose seg_start <= prev seg_end)
+                  const validCaps: typeof clamped = [];
                   let prevEnd = -1;
-                  const validCaps = llmCaps.filter(c => {
-                    const s0 = Math.max(0, Math.min(c.seg_start!, maxSi));
-                    const s1 = Math.max(s0, Math.min(c.seg_end!, maxSi));
-                    if (s0 <= prevEnd) return false; // overlapping — skip
+                  for (const c of clamped) {
+                    const s0 = Math.max(c.seg_start, prevEnd + 1); // push start past prev end
+                    const s1 = Math.max(s0, c.seg_end);
+                    validCaps.push({ ...c, seg_start: s0, seg_end: s1 });
                     prevEnd = s1;
-                    return true;
-                  });
+                  }
 
                   if (validCaps.length > 0) {
+                    // Distribute script text across captions by segment duration proportion
+                    // so text is always verbatim from script, never from LLM (which may truncate)
+                    const srcChars = [...sourceText];
+                    const srcNonSpace = sourceText.replace(/\s+/g, "");
+                    const totalSegDurMs = validCaps.reduce((a, c) => {
+                      const s0 = c.seg_start, s1 = c.seg_end;
+                      return a + Math.round((segments[s1].end - segments[s0].start) * 1000);
+                    }, 0);
+                    let charPos = 0; // non-space chars consumed from script
+                    let srcIdx = 0;  // position in srcChars
+
                     captions = validCaps.map((c, i) => {
-                      const s0 = Math.max(0, Math.min(c.seg_start!, maxSi));
-                      const s1 = Math.max(s0, Math.min(c.seg_end!, maxSi));
+                      const s0 = c.seg_start, s1 = c.seg_end;
                       const startMs = Math.round(segments[s0].start * 1000);
                       const endMs   = Math.round(Math.max(segments[s0].start + 0.3, segments[s1].end) * 1000);
                       const tag: "hook" | "body" | "cta" = (c.tag === "hook" || c.tag === "body" || c.tag === "cta") ? c.tag : (i === 0 ? "hook" : "body");
-                      return {
-                        text: normalizeCaptionText(sanitizePhraseText(c.text!)),
-                        startMs,
-                        endMs,
-                        timestampMs: startMs,
-                        confidence: 1,
-                        tag,
-                      };
+
+                      // How many non-space script chars belong to this caption
+                      const segDurMs = Math.round((segments[s1].end - segments[s0].start) * 1000);
+                      const nChars = i === validCaps.length - 1
+                        ? srcNonSpace.length - charPos
+                        : Math.max(1, Math.round((segDurMs / Math.max(1, totalSegDurMs)) * srcNonSpace.length));
+
+                      const sliceStart = srcIdx;
+                      let taken = 0;
+                      while (srcIdx < srcChars.length && taken < nChars) {
+                        if (srcChars[srcIdx] !== " ") taken++;
+                        srcIdx++;
+                      }
+                      // Extend to word boundary
+                      while (srcIdx < srcChars.length && srcChars[srcIdx] !== " ") srcIdx++;
+                      charPos += taken;
+
+                      const slice = sanitizePhraseText(srcChars.slice(sliceStart, srcIdx).join("")) || sanitizePhraseText(c.text!);
+                      return { text: normalizeCaptionText(slice), startMs, endMs, timestampMs: startMs, confidence: 1, tag };
                     }).filter(c => c.text.length > 0);
-                    console.log(`[transcribe] Mode A: LLM assigned ${captions.length} captions to exact segment timestamps`);
+
+                    // Give any remaining script text to last caption
+                    if (captions.length > 0 && srcIdx < srcChars.length) {
+                      const remaining = sanitizePhraseText(srcChars.slice(srcIdx).join(""));
+                      if (remaining) captions[captions.length - 1].text = normalizeCaptionText(captions[captions.length - 1].text + remaining);
+                    }
+
+                    console.log(`[transcribe] Mode A: ${validCaps.length} captions with exact segment timestamps + script text`);
                   }
                 }
               }
