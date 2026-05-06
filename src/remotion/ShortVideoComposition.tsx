@@ -54,12 +54,12 @@ function VideoClip({
         startFrom={startFrom}
         style={{
           position: "absolute",
-          top: 0,
-          left: 0,
-          width,
-          height,
+          top: "50%",
+          left: "50%",
+          width: "100%",
+          height: "100%",
           objectFit: "cover",
-          transform: `scale(${scale})`,
+          transform: `translate(-50%, -50%) scale(${scale})`,
           transformOrigin: `${kb.originX} ${kb.originY}`,
         }}
         muted
