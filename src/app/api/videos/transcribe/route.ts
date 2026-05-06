@@ -310,14 +310,21 @@ function alignPhrasesToWordTimings(
 }
 
 /**
- * Aligns LLM-split phrases to Gemini segment timestamps via greedy text matching.
+ * Aligns LLM-split phrases to Gemini segment timestamps.
  *
- * For each phrase, find which segments contain its text (Thai char overlap),
- * then assign startMs = first matched segment's start, endMs = last matched segment's end.
- * Segments are consumed left-to-right so timing is monotonically increasing.
+ * Strategy: treat Gemini segments as the ground-truth timeline. Each segment
+ * has accurate start/end from real audio analysis. We distribute LLM phrases
+ * across segments by char proportion, then snap each phrase's boundaries to
+ * the nearest real segment boundary.
  *
- * This is accurate because Gemini timestamps are from real audio analysis —
- * we just need to find which segment(s) correspond to each LLM phrase.
+ * Two modes:
+ *   1. Script provided → phrases come from script, segments come from STT.
+ *      We map phrase proportion against segment text chars (STT-relative) so
+ *      the script position translates into audio position correctly.
+ *   2. No script → phrases were split from STT text itself, so char proportion
+ *      of phrases maps directly onto segment chars.
+ *
+ * Result: startMs/endMs are always real Gemini audio timestamps, never guessed.
  */
 function alignPhrasesToSegmentTimestamps(
   phrases: string[],
@@ -325,22 +332,22 @@ function alignPhrasesToSegmentTimestamps(
 ): { text: string; startMs: number; endMs: number }[] {
   if (!phrases.length || !segments.length) return [];
 
-  // Strip to bare Thai+latin chars for matching (ignore spaces, punctuation)
-  const bare = (s: string) => s.replace(/[\s​-‍﻿.,!?;:"""''()[\]{}<>]/g, "").toLowerCase();
+  // Bare chars: strip spaces + punctuation, lowercase — for proportion counting
+  const bare = (s: string) =>
+    s.replace(/[\s​-‍﻿.,!?;:"""''()[\]{}<>]/g, "").toLowerCase();
 
-  const segBare = segments.map(s => bare(s.text));
-  // Concatenate all segment chars into one string, track which segment each char belongs to
-  const allSegChars: number[] = []; // allSegChars[i] = segment index for char i
-  for (let si = 0; si < segBare.length; si++) {
-    for (let ci = 0; ci < segBare[si].length; ci++) allSegChars.push(si);
+  // Build a flat array: for each char position in concat(all segment bare texts),
+  // record which segment index it belongs to and the char index within that segment.
+  type SegChar = { si: number };
+  const segCharsMap: SegChar[] = [];
+  for (let si = 0; si < segments.length; si++) {
+    const b = bare(segments[si].text);
+    for (let ci = 0; ci < b.length; ci++) segCharsMap.push({ si });
   }
-  const allSegText = segBare.join("");
-  const totalSegChars = allSegText.length;
-
+  const totalSegChars = segCharsMap.length;
   if (totalSegChars === 0) return [];
 
-  // For each phrase, find its window in allSegText using cumulative char proportion of phrases
-  // BUT snap to nearest segment boundary — this gives segment-accurate timestamps
+  // Each phrase's bare char count (minimum 1 to avoid zero-width phrases)
   const phraseChars = phrases.map(p => Math.max(1, bare(p).length));
   const totalPhraseChars = phraseChars.reduce((a, b) => a + b, 0);
 
@@ -352,15 +359,13 @@ function alignPhrasesToSegmentTimestamps(
     cumPhrase += phraseChars[i];
     const f1 = Math.min(1, cumPhrase / totalPhraseChars);
 
-    // Raw char positions in allSegText
-    const rawC0 = Math.round(f0 * totalSegChars);
-    const rawC1 = Math.round(f1 * totalSegChars);
+    // Map phrase char fraction → position in flat segment char array
+    const c0 = Math.min(Math.round(f0 * totalSegChars), totalSegChars - 1);
+    const c1 = Math.min(Math.max(Math.round(f1 * totalSegChars) - 1, c0), totalSegChars - 1);
 
-    // Find segment indices
-    const si0 = allSegChars[Math.min(rawC0, allSegChars.length - 1)] ?? 0;
-    const si1 = allSegChars[Math.min(Math.max(rawC1 - 1, rawC0), allSegChars.length - 1)] ?? si0;
+    const si0 = segCharsMap[c0].si;
+    const si1 = segCharsMap[c1].si;
 
-    // Snap to segment boundaries: start = si0.start, end = si1.end
     const segStart = segments[si0].start;
     const segEnd   = segments[Math.min(si1, segments.length - 1)].end;
 
@@ -371,7 +376,7 @@ function alignPhrasesToSegmentTimestamps(
     });
   }
 
-  // Fix any non-monotonic timestamps (shouldn't happen often but guard it)
+  // Enforce monotonic timestamps
   for (let i = 1; i < out.length; i++) {
     if (out[i].startMs < out[i - 1].endMs) {
       out[i].startMs = out[i - 1].endMs;
@@ -1119,26 +1124,27 @@ RULES:
           minPhrases = Math.max(3, targetPhrases - 2);
           maxPhrases = targetPhrases + 4;
 
-          // ── Build speech rhythm hint from Whisper segment timestamps ──
-          // Whisper detects natural breath/pause points — feed these to LLM so it
-          // splits subtitles at the same points the speaker actually paused.
-          let rhythmHint = "";
-          if (segments.length >= 2) {
-            const breathPoints: string[] = [];
-            for (let si = 0; si < segments.length - 1; si++) {
-              const gap = segments[si + 1].start - segments[si].end;
-              // Mark gaps ≥ 200ms as breath/pause boundaries
-              if (gap >= 0.2) {
-                const at = segments[si].end.toFixed(2);
-                breathPoints.push(`${at}s (after: "${segments[si].text.trim().slice(-30)}")`);
-              }
-            }
-            if (breathPoints.length > 0) {
-              rhythmHint = `\n\n━━━ SPEECH RHYTHM HINTS ━━━
-The speaker pauses (breath points) at these moments — split subtitles at or near these points to match speech rhythm:
-${breathPoints.slice(0, 60).map((p, i) => `  ${i + 1}. pause at ${p}`).join("\n")}`;
-            }
+          // ── When Gemini segments available: ask LLM to assign each subtitle to a segment range ──
+          // This gives exact timestamps instead of proportional estimation.
+          const hasSegments = segments.length >= 2;
+          let segmentContext = "";
+          if (hasSegments) {
+            // Show LLM numbered segments with timestamps so it can assign seg_start/seg_end
+            const segLines = segments.slice(0, 120).map((s, i) =>
+              `  [${i}] ${s.start.toFixed(2)}s–${s.end.toFixed(2)}s: "${s.text.trim()}"`
+            ).join("\n");
+            segmentContext = `\n\n━━━ AUDIO SEGMENTS (from speech recognition) ━━━
+Each segment is a real audio timestamp. For each subtitle phrase, output which segments it covers:
+  seg_start = index of FIRST segment whose speech matches this phrase
+  seg_end   = index of LAST  segment whose speech matches this phrase
+
+Segments (0-indexed, total ${segments.length}):
+${segLines}`;
           }
+
+          const outputFormat = hasSegments
+            ? `{"captions":[{"text":"phrase","seg_start":0,"seg_end":2,"tag":"hook"},...]}`
+            : `{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}`;
 
           const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
@@ -1157,7 +1163,7 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
   - If a phrase exceeds these limits, MUST split it.
 
 กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี
-• PRIORITY: Split where the speaker actually pauses (จุดหายใจ) — see SPEECH RHYTHM HINTS below.
+• Split at speech pauses — use seg_start/seg_end to mark which audio segments each subtitle covers.
 • Split after punctuation (. ? ! ฯ ,) or conjunctions (แต่, และ, เพราะ, จึง, ดังนั้น).
 • NEVER cut mid-phrase where meaning is still hanging — the thought must be complete.
   ✗ ผิด: "มึงเคยคิดปะ ว่า" / "ความรู้ที่เรียนมา"
@@ -1170,7 +1176,6 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 กฎ 3 — ซับช็อก ให้สั้นพิเศษ
 • Impact/twist/punchline lines: keep to 3–8 words, show alone on screen.
-  ✓ "แม่งแหกทุกกฎที่เคยมีมา" → 1 subtitle by itself.
 
 กฎ 4 — ห้ามซับค้างนานเกิน 7 วินาที
 • If a shot is long with no new subtitle, split into more phrases to keep the viewer engaged.
@@ -1178,6 +1183,7 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 กฎ 5 — gap ระหว่างซับ
 • Subtitles must NOT be identical back-to-back. Every subtitle must have unique text.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
+• seg_start of phrase[i+1] must be > seg_end of phrase[i] — no overlapping segments.
 
 ━━━ TAGGING RULES ━━━
 • "hook" = opening attention-grabbing line(s) — FIRST 1–2 phrases only.
@@ -1186,7 +1192,7 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
-{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}${rhythmHint}
+${outputFormat}${segmentContext}
 
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
@@ -1218,37 +1224,75 @@ ${sourceText.trim()}`;
           if (gptRawText !== "{}") {
             try {
               const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
-              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
-              if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
-                llmTags = parsed.tags as ("hook" | "body" | "cta")[];
-              }
-              const scriptSentences = splitToSentencePhrases(sourceRaw);
-              const shouldUseSentenceSplit = scriptSentences.length > 1 &&
-                scriptSentences.length <= Math.max(3, raw.length + 3) &&
-                scriptSentences.length <= 20;
-              const origStripped = normalizeForCompare(sourceText);
-              const outStripped = normalizeForCompare(raw.join(""));
-              const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
-          if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                // Use LLM phrases directly — prompt instructs COPY EXACT.
-                // Do NOT call expandPhrasesToTargetDensity: it re-splits by char count
-                // and breaks mixed Thai/English phrases (e.g. "enterprise product" → two lines).
-                const sentenceLenOk = scriptSentences.every((s) => alignmentCharLen(s) >= 10) && scriptSentences.length <= 20;
-                if ((shouldUseSentenceSplit || scriptSentences.length === 2) && sentenceLenOk) {
-                  phrases = mergeTinyPhrases(scriptSentences);
-                  if (llmTags.length > phrases.length) llmTags = llmTags.slice(0, phrases.length);
-                  console.log(`[transcribe] sentence-anchored split override -> ${phrases.length} phrases`);
-                } else if (isThai) {
-                  // Thai has no spaces between words — snapPhrasesToScript cuts mid-syllable.
-                  // LLM prompt instructs COPY EXACT, so use LLM phrases directly.
-                  phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
-                } else {
-                  phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
+
+              // ── Mode A: LLM returned captions with seg_start/seg_end (exact timestamp mode) ──
+              if (hasSegments && Array.isArray(parsed.captions) && parsed.captions.length > 0) {
+                type LLMCaption = { text?: string; seg_start?: number; seg_end?: number; tag?: string };
+                const llmCaps = (parsed.captions as LLMCaption[]).filter(
+                  c => typeof c.text === "string" && typeof c.seg_start === "number" && typeof c.seg_end === "number"
+                );
+                if (llmCaps.length > 0) {
+                  // Validate segment indices are monotonically increasing and in range
+                  const maxSi = segments.length - 1;
+                  let prevEnd = -1;
+                  const validCaps = llmCaps.filter(c => {
+                    const s0 = Math.max(0, Math.min(c.seg_start!, maxSi));
+                    const s1 = Math.max(s0, Math.min(c.seg_end!, maxSi));
+                    if (s0 <= prevEnd) return false; // overlapping — skip
+                    prevEnd = s1;
+                    return true;
+                  });
+
+                  if (validCaps.length > 0) {
+                    captions = validCaps.map((c, i) => {
+                      const s0 = Math.max(0, Math.min(c.seg_start!, maxSi));
+                      const s1 = Math.max(s0, Math.min(c.seg_end!, maxSi));
+                      const startMs = Math.round(segments[s0].start * 1000);
+                      const endMs   = Math.round(Math.max(segments[s0].start + 0.3, segments[s1].end) * 1000);
+                      const tag: "hook" | "body" | "cta" = (c.tag === "hook" || c.tag === "body" || c.tag === "cta") ? c.tag : (i === 0 ? "hook" : "body");
+                      return {
+                        text: normalizeCaptionText(sanitizePhraseText(c.text!)),
+                        startMs,
+                        endMs,
+                        timestampMs: startMs,
+                        confidence: 1,
+                        tag,
+                      };
+                    }).filter(c => c.text.length > 0);
+                    console.log(`[transcribe] Mode A: LLM assigned ${captions.length} captions to exact segment timestamps`);
+                  }
                 }
-                phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
-                console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
-              } else {
-                console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
+              }
+
+              // ── Mode B: LLM returned phrases[] (proportional alignment fallback) ──
+              if (captions.length === 0) {
+                const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
+                if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
+                  llmTags = parsed.tags as ("hook" | "body" | "cta")[];
+                }
+                const scriptSentences = splitToSentencePhrases(sourceRaw);
+                const shouldUseSentenceSplit = scriptSentences.length > 1 &&
+                  scriptSentences.length <= Math.max(3, raw.length + 3) &&
+                  scriptSentences.length <= 20;
+                const origStripped = normalizeForCompare(sourceText);
+                const outStripped = normalizeForCompare(raw.join(""));
+                const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
+                if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
+                  const sentenceLenOk = scriptSentences.every((s) => alignmentCharLen(s) >= 10) && scriptSentences.length <= 20;
+                  if ((shouldUseSentenceSplit || scriptSentences.length === 2) && sentenceLenOk) {
+                    phrases = mergeTinyPhrases(scriptSentences);
+                    if (llmTags.length > phrases.length) llmTags = llmTags.slice(0, phrases.length);
+                    console.log(`[transcribe] sentence-anchored split override -> ${phrases.length} phrases`);
+                  } else if (isThai) {
+                    phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
+                  } else {
+                    phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
+                  }
+                  phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
+                  console.log(`[transcribe] Mode B: LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
+                } else {
+                  console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
+                }
               }
             } catch (e) {
               console.warn("[transcribe] LLM parse failed:", e);
