@@ -2776,18 +2776,6 @@ export default function ShortVideoPage() {
                                   ))}
                                 </div>
                                 <div className="flex-1" />
-                                {/* Clip count: Auto badge or number input */}
-                                <div className="flex items-center gap-1.5 rounded-lg px-2 py-1"
-                                  style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
-                                  <span className="text-[9px] text-white/35 uppercase tracking-widest">คลิป</span>
-                                  <select value={targetClipCount}
-                                    onChange={e => setTargetClipCount(Number(e.target.value))}
-                                    className="bg-transparent text-[10px] font-mono text-cyan-400 outline-none cursor-pointer"
-                                    style={{ minWidth: 52 }}>
-                                    <option value={0}>Auto{autoClipCount > 0 ? ` (${autoClipCount})` : ""}</option>
-                                    {[3,5,8,10,15,20,25,30].map(n => <option key={n} value={n}>{n} คลิป</option>)}
-                                  </select>
-                                </div>
                               </div>
 
                               {/* Grid clip picker — video thumbnails */}
