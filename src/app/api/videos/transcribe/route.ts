@@ -309,6 +309,84 @@ function alignPhrasesToWordTimings(
   return out;
 }
 
+/**
+ * Aligns LLM-split phrases to Gemini/Whisper segment timestamps using cumulative
+ * character proportion — but anchored to REAL segment boundaries, not proportional
+ * over the whole audio. This gives far more accurate subtitle timing than char-only
+ * alignment when the number of phrases ≠ number of segments.
+ *
+ * Strategy: map each segment's cumulative char share → find which phrase(s) fall in it,
+ * then assign the segment's start/end times to those phrases.
+ */
+function alignPhrasesToSegmentTimestamps(
+  phrases: string[],
+  segments: { text: string; start: number; end: number }[],
+): { text: string; startMs: number; endMs: number }[] {
+  if (!phrases.length || !segments.length) return [];
+
+  // Build cumulative char counts for both phrase list and segment list
+  const phraseChars = phrases.map(p => Math.max(1, alignmentCharLen(p)));
+  const segChars    = segments.map(s => Math.max(1, alignmentCharLen(s.text)));
+
+  const totalPhraseChars = phraseChars.reduce((a, b) => a + b, 0);
+  const totalSegChars    = segChars.reduce((a, b) => a + b, 0);
+
+  // For each phrase, compute its char range [phraseCharStart, phraseCharEnd) in [0, totalPhraseChars]
+  // Map that range onto [0, totalSegChars] → find which segments overlap → interpolate timestamps.
+  const out: { text: string; startMs: number; endMs: number }[] = [];
+  let cumPhrase = 0;
+
+  // Precompute segment char boundaries
+  const segBounds: { charStart: number; charEnd: number; start: number; end: number }[] = [];
+  let cumSeg = 0;
+  for (const seg of segments) {
+    const sc = Math.max(1, alignmentCharLen(seg.text));
+    segBounds.push({ charStart: cumSeg, charEnd: cumSeg + sc, start: seg.start, end: seg.end });
+    cumSeg += sc;
+  }
+
+  // Helper: interpolate time within a segment at a given char offset
+  const timeAtChar = (charPos: number): number => {
+    const ratio = totalSegChars > 0 ? Math.min(1, charPos / totalSegChars) : 0;
+    // Find which segment this ratio falls into
+    const targetChar = ratio * totalSegChars;
+    for (const sb of segBounds) {
+      if (targetChar <= sb.charEnd) {
+        const inSeg = sb.charEnd > sb.charStart ? (targetChar - sb.charStart) / (sb.charEnd - sb.charStart) : 0;
+        return sb.start + inSeg * (sb.end - sb.start);
+      }
+    }
+    return segBounds[segBounds.length - 1].end;
+  };
+
+  for (let i = 0; i < phrases.length; i++) {
+    const pc = phraseChars[i];
+    const phraseCharStart = cumPhrase;
+    cumPhrase += pc;
+    const phraseCharEnd = cumPhrase;
+
+    // Map phrase char range → segment time range
+    const t0 = timeAtChar((phraseCharStart / totalPhraseChars) * totalSegChars);
+    const t1 = timeAtChar((phraseCharEnd   / totalPhraseChars) * totalSegChars);
+
+    out.push({
+      text: sanitizeTranscriptionText(phrases[i]),
+      startMs: Math.round(Math.max(0, t0) * 1000),
+      endMs:   Math.round(Math.max(t0 + 0.3, t1) * 1000),
+    });
+  }
+
+  // Snap phrase boundaries to nearest segment boundary (within 0.5s) to avoid mid-word cuts
+  for (const sb of segBounds) {
+    for (const r of out) {
+      if (Math.abs(r.startMs / 1000 - sb.start) < 0.5) r.startMs = Math.round(sb.start * 1000);
+      if (Math.abs(r.endMs   / 1000 - sb.end)   < 0.5) r.endMs   = Math.round(sb.end   * 1000);
+    }
+  }
+
+  return out;
+}
+
 function buildFallbackWordsFromSegments(
   segments: { text: string; start: number; end: number }[],
 ): { word: string; start: number; end: number }[] {
@@ -1281,103 +1359,50 @@ ${sourceText.trim()}`;
         console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
       }
 
-      // ── Step 2: Align phrases → Whisper timestamps ──────────────────────────
-      // Strategy A (preferred): word-level forced alignment
-      //   Strip each phrase and each whisper word to bare Thai chars,
-      //   greedily consume words until phrase chars are covered → use word start/end.
-      // Strategy B (fallback): segment-level char-weighted mapping
-      //   Use Whisper segment start/end times, weighted by phrase char length.
+      // ── Step 2: Align phrases → real timestamps ─────────────────────────────
+      // Priority order:
+      //   A. 1-to-1: phrases count == segments count → direct map (best accuracy)
+      //   B. Segment-anchored: use Gemini/Whisper segment timestamps as anchors,
+      //      distribute phrases proportionally within those anchors (main path)
+      //   C. Word-level: Whisper word timestamps available → char-proportional word map
+      //   D. Char-proportional over total duration (no timestamps at all)
 
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
-        const alignWords = words.length > 0 ? words : buildFallbackWordsFromSegments(segments);
 
-        const canDirectSegmentAlign = phrases.length === segments.length && phrases.length >= 2;
-        if (canDirectSegmentAlign) {
+        // Strategy A: direct 1-to-1 segment alignment
+        if (phrases.length === segments.length && segments.length >= 2) {
           for (let i = 0; i < phrases.length; i++) {
             result.push({
               text: normalizeCaptionText(phrases[i]),
               startMs: Math.round(segments[i].start * 1000),
-              endMs: Math.round(segments[i].end * 1000),
+              endMs:   Math.round(segments[i].end   * 1000),
             });
           }
-          console.log(`[transcribe] direct segment alignment: ${result.length} phrases`);
-        } else {
+          console.log(`[transcribe] Strategy A direct segment alignment: ${result.length} phrases`);
+        }
+
+        // Strategy B: segment-anchored alignment (preferred when phrase count ≠ segment count)
+        if (result.length === 0 && segments.length >= 2) {
+          const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
+          if (segAligned.length === phrases.length) {
+            result = segAligned;
+            console.log(`[transcribe] Strategy B segment-anchored alignment: ${result.length} phrases over ${segments.length} segs`);
+          }
+        }
+
+        // Strategy C: word-level alignment (Whisper word timestamps)
+        if (result.length === 0) {
+          const alignWords = words.length > 0 ? words : buildFallbackWordsFromSegments(segments);
           const alignedByWord = alignWords.length > 0 ? alignPhrasesToWordTimings(phrases, alignWords) : [];
           if (alignedByWord.length === phrases.length) {
-            result.push(...alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) })));
-            console.log(`[transcribe] word-timing alignment: ${result.length} phrases`);
+            result = alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) }));
+            console.log(`[transcribe] Strategy C word-timing alignment: ${result.length} phrases`);
           }
         }
 
-        if (result.length === 0 && segments.length > 0) {
-          const charLen = alignmentCharLen;
-          const cleanText = (s: string) => normalizeCaptionText(s);
-          const segsWithBounds = [...segments];
-          // Ensure coverage: clamp first start to 0, last end to audioDur
-          if (segsWithBounds[0].start > 0.05) segsWithBounds[0] = { ...segsWithBounds[0], start: 0 };
-          if (segsWithBounds[segsWithBounds.length - 1].end < audioDur - 0.1) {
-            segsWithBounds[segsWithBounds.length - 1] = { ...segsWithBounds[segsWithBounds.length - 1], end: audioDur };
-          }
-
-          const phraseLens = phrases.map((p) => charLen(p));
-          const totalPhraseChars = phraseLens.reduce((a, b) => a + b, 0);
-          const segBoundaries = Array.from(new Set(
-            segsWithBounds.flatMap((s) => [s.start, s.end])
-          )).sort((a, b) => a - b);
-
-          const snapToSegBoundary = (sec: number): number => {
-            let best = segBoundaries[0];
-            let bestDist = Math.abs(sec - best);
-            for (const b of segBoundaries) {
-              const d = Math.abs(sec - b);
-              if (d < bestDist) { bestDist = d; best = b; }
-            }
-            return best;
-          };
-
-          let cumCharsA = 0;
-          for (let i = 0; i < phrases.length; i++) {
-            const f0 = cumCharsA / totalPhraseChars;
-            cumCharsA += phraseLens[i];
-            const f1 = cumCharsA / totalPhraseChars;
-            const rawStart = f0 * audioDur;
-            const rawEnd = f1 * audioDur;
-            const snapStart = snapToSegBoundary(rawStart);
-            const snapEnd = snapToSegBoundary(rawEnd);
-            result.push({
-              text: cleanText(phrases[i]),
-              startMs: Math.round(snapStart * 1000),
-              endMs: Math.round(Math.max(snapEnd, rawStart + 0.3) * 1000),
-            });
-          }
-          console.log(`[transcribe] segment-snapped alignment: ${result.length} phrases snapped to ${segBoundaries.length} boundaries`);
-        }
-
-        if (result.length === 0 && words.length > 0) {
-          // Strategy B fallback: word-level proportional
-          const wordTimeline = words.map((w) => w.start);
-          wordTimeline.push(words[words.length - 1].end);
-          const charLensB = phrases.map((p) => alignmentCharLen(p));
-          const totalCharsB = charLensB.reduce((a, b) => a + b, 0);
-          let cumB = 0;
-          for (let i = 0; i < phrases.length; i++) {
-            const f0 = cumB / totalCharsB;
-            cumB += charLensB[i];
-            const f1 = cumB / totalCharsB;
-            const idxStart = Math.floor(f0 * (wordTimeline.length - 1));
-            const idxEnd = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
-            result.push({
-              text: sanitizePhraseText(phrases[i]),
-              startMs: Math.round(wordTimeline[idxStart] * 1000),
-              endMs: Math.round(wordTimeline[idxEnd] * 1000),
-            });
-          }
-          console.log(`[transcribe] word-proportional fallback alignment: ${result.length} phrases over ${words.length} words`);
-        }
-
+        // Strategy D: no timestamps at all — char proportion over total duration
         if (result.length === 0) {
-          // Strategy C: no timestamps — distribute by char count over total audio duration
           const charLengths = phrases.map(alignmentCharLen);
           const totalChars = charLengths.reduce((a, b) => a + b, 0);
           let cumChars = 0;
@@ -1391,7 +1416,7 @@ ${sourceText.trim()}`;
               endMs: Math.round(endSec * 1000),
             });
           }
-          console.log(`[transcribe] char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
+          console.log(`[transcribe] Strategy D char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
         }
 
         // Keep mapped caption boundaries from source timings, then clamp and dedupe overlaps.
