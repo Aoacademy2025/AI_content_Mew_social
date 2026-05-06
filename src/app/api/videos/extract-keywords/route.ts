@@ -75,36 +75,47 @@ function normalizeKeyword(keyword: string): string {
 
 const THAI_RE = /[฀-๿]/;
 
-function ensureKeywordsShape(keywords: string[], expectedCount: number, batch: string[], batchOffset: number): string[] {
-  const normalized = keywords.map(normalizeKeyword).filter((k, i) => {
-    const wordCount = k.split(" ").filter(Boolean).length;
-    const hasThai = THAI_RE.test(keywords[i]);
-    const ok = !hasThai && k.length >= 8 && wordCount >= 2 && wordCount <= 6;
-    if (!ok) {
-      console.warn(`[extract-keywords] dropping invalid keyword "${keywords[i]}"`);
-      return false;
-    }
-    return true;
-  });
+// Angle suffixes to make near-duplicate keywords unique while keeping meaning
+const ANGLE_SUFFIXES = ["close up", "wide shot", "aerial view", "slow motion", "detail shot", "action shot", "portrait", "establishing shot"];
 
+function ensureKeywordsShape(keywords: string[], expectedCount: number, batch: string[], batchOffset: number): string[] {
   const out: string[] = [];
   const used = new Set<string>();
-  for (let i = 0; i < normalized.length; i++) {
-    const k = normalized[i];
-    if (out.length >= expectedCount) break;
-    if (used.has(k)) {
-      out.push(buildFallbackKeyword(batch[i], i, batchOffset));
+
+  for (let i = 0; i < expectedCount; i++) {
+    const raw = keywords[i] ?? "";
+    const hasThai = THAI_RE.test(raw);
+    const norm = normalizeKeyword(raw);
+    const wordCount = norm.split(" ").filter(Boolean).length;
+    const isValid = !hasThai && norm.length >= 4 && wordCount >= 2 && wordCount <= 7;
+
+    if (isValid && !used.has(norm)) {
+      used.add(norm);
+      out.push(norm);
       continue;
     }
-    used.add(k);
-    out.push(k);
+
+    // Try angle suffix variation to make it unique instead of falling back to pool
+    if (isValid) {
+      for (const suffix of ANGLE_SUFFIXES) {
+        const variant = `${norm} ${suffix}`;
+        if (!used.has(variant)) {
+          used.add(variant);
+          out.push(variant);
+          break;
+        }
+      }
+      if (out.length === i + 1) continue;
+    }
+
+    // Last resort: fallback pool (only when LLM gave Thai or empty)
+    const fb = buildFallbackKeyword(batch[i] ?? "", batchOffset + i, batchOffset);
+    const fbVariant = used.has(fb) ? `${fb} ${ANGLE_SUFFIXES[i % ANGLE_SUFFIXES.length]}` : fb;
+    used.add(fbVariant);
+    out.push(fbVariant);
   }
 
-  for (let i = out.length; i < expectedCount; i++) {
-    out.push(buildFallbackKeyword(batch[i], i, batchOffset));
-  }
-
-  return out.slice(0, expectedCount);
+  return out;
 }
 
 export async function POST(req: Request) {
@@ -143,7 +154,11 @@ export async function POST(req: Request) {
     // Each batch is a separate LLM call; results are concatenated in order.
     const BATCH_SIZE = 30;
 
-    async function fetchKeywordBatch(batch: string[], startIdx: number): Promise<string[]> {
+    async function fetchKeywordBatch(batch: string[], startIdx: number, usedKeywords: string[]): Promise<string[]> {
+      const avoidList = usedKeywords.length > 0
+        ? `\nALREADY USED (do NOT repeat these): ${usedKeywords.slice(-60).join(", ")}\n`
+        : "";
+
       const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
 I have a Thai script split into subtitle phrases. For each phrase, choose the single best English Pexels search query that visually represents that moment on screen.
@@ -154,13 +169,10 @@ CRITICAL RULES — FOLLOW EXACTLY:
 - ALL queries MUST be in ENGLISH ONLY — never output Thai characters (ก-๙) in any query
 - Each query must be 2-5 English words describing something a camera can physically film
 - Translate Thai text into concrete English visuals (people, places, objects, actions)
-- Vary shots: wide shot, close-up, aerial, slow motion, action shot
-- Each query must be unique — no duplicates
-- Match the mood: dramatic → tense scene, happy → bright scene, financial → money/charts
-
-EXAMPLES of correct queries: "scientist in laboratory", "city skyline sunset", "hands on keyboard", "crowd cheering concert"
-WRONG (never do this): "นักวิทยาศาสตร์", "เมือง sunset", mixed Thai-English strings
-
+- Vary shots: wide shot, close-up, aerial, slow motion, action shot, time lapse, underwater, drone
+- Every query must be UNIQUE across ALL ${startIdx + batch.length} subtitles — no repeats at all
+- Match the mood: dramatic → tense scene, happy → bright scene, science → lab/experiment, physics → particles/energy
+${avoidList}
 SUBTITLE PHRASES (${startIdx + 1}–${startIdx + batch.length}):
 ${batch.map((s, i) => `${startIdx + i + 1}. ${s}`).join("\n")}
 
@@ -203,43 +215,66 @@ Return ONLY valid JSON object with exactly ${batch.length} English-only strings 
 
     console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches`);
 
+    // Global used set — no keyword may repeat across all batches
+    const globalUsed = new Set<string>();
+
     for (let b = 0; b < batches.length; b++) {
       const batch = batches[b];
-      let batchKws: string[] = [];
-      // Up to 2 retries per batch if count mismatch
+      let rawKws: string[] = [];
+
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          batchKws = await fetchKeywordBatch(batch, b * BATCH_SIZE);
-          batchKws = ensureKeywordsShape(batchKws, batch.length, batch, b * BATCH_SIZE);
-          if (batchKws.length === batch.length) break;
+          rawKws = await fetchKeywordBatch(batch, b * BATCH_SIZE, [...allKeywords]);
+          if (rawKws.length >= batch.length) break;
         } catch (e) {
           console.error(`[extract-keywords] batch ${b} attempt ${attempt} error:`, e);
         }
       }
-      batchKws = ensureKeywordsShape(batchKws, batch.length, batch, b * BATCH_SIZE);
-      // Guarantee unique and valid keywords for this batch
-      const finalBatch = new Set<string>();
-      const deduped: string[] = [];
-      for (let i = 0; i < batchKws.length; i++) {
-        const k = normalizeKeyword(batchKws[i]) || buildFallbackKeyword(batch[i], i, b * BATCH_SIZE);
-        if (!finalBatch.has(k)) {
-          finalBatch.add(k);
-          deduped.push(k);
-        } else {
-          deduped.push(buildFallbackKeyword(batch[i], i + 1000, b * BATCH_SIZE));
+
+      // Resolve each slot: use LLM answer if valid+unique, else angle-variant, else fallback
+      const batchOut: string[] = [];
+      for (let i = 0; i < batch.length; i++) {
+        const raw = rawKws[i] ?? "";
+        const hasThai = THAI_RE.test(raw);
+        const norm = normalizeKeyword(raw);
+        const wc = norm.split(" ").filter(Boolean).length;
+        const valid = !hasThai && norm.length >= 4 && wc >= 2 && wc <= 7;
+
+        if (valid && !globalUsed.has(norm)) {
+          globalUsed.add(norm);
+          batchOut.push(norm);
+          continue;
         }
+
+        // Try angle suffix variants to keep meaning while making unique
+        let pushed = false;
+        if (valid) {
+          for (const suffix of ANGLE_SUFFIXES) {
+            const v = `${norm} ${suffix}`;
+            if (!globalUsed.has(v)) {
+              globalUsed.add(v);
+              batchOut.push(v);
+              pushed = true;
+              break;
+            }
+          }
+        }
+        if (pushed) continue;
+
+        // Fallback from pool — try until unique
+        for (let fi = 0; fi < 48; fi++) {
+          const fb = buildFallbackKeyword(batch[i], b * BATCH_SIZE + i + fi, b * BATCH_SIZE);
+          if (!globalUsed.has(fb)) {
+            globalUsed.add(fb);
+            batchOut.push(fb);
+            break;
+          }
+        }
+        if (batchOut.length < i + 1) batchOut.push(`${norm || "scene"} shot ${b * BATCH_SIZE + i}`);
       }
 
-      // Pad batch result to expected length if duplicates removed
-      if (batchKws.length < batch.length) {
-        for (let i = deduped.length; i < batch.length; i++) {
-          deduped.push(buildFallbackKeyword(batch[i], i, b * BATCH_SIZE));
-        }
-      }
-      batchKws = ensureKeywordsShape(deduped, batch.length, batch, b * BATCH_SIZE);
-
-      // Trim to batch size in case LLM returned extras
-      allKeywords.push(...batchKws);
+      console.log(`[extract-keywords] batch ${b}: ${batchOut.length}/${batch.length} keywords`);
+      allKeywords.push(...batchOut);
     }
 
     console.log(`[extract-keywords] perSubtitle: ${allKeywords.length} keywords for ${subtitleList.length} subtitles`);
