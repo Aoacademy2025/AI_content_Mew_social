@@ -1159,38 +1159,38 @@ ${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}`;
             }
           }
 
+          // Estimate ~seconds per phrase from pause points to warn LLM about short phrases
+          const avgSecPerPhrase = durationSec / Math.max(1, targetPhrases);
+
           const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels short videos.
 
 TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never drop, rewrite, or summarize.
 
-━━━ HARD RULES (never break these) ━━━
+━━━ HARD RULES ━━━
 
-1. COMPLETE THOUGHT — every phrase must be a complete idea on its own
-   ✗ "และ OpenAI" / "ของบริษัทชื่อ" / "อาจไม่ใช่เบอร์" ← dangling, incomplete
-   ✓ "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
+1. COMPLETE THOUGHT — every phrase must stand alone as a complete idea
+   ✗ BAD: "และ OpenAI" / "ของบริษัทชื่อ" / "โดย Dario" ← dangling fragments
+   ✓ GOOD: "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
 
-2. NEVER start a phrase with a connector word alone
-   ✗ phrase starts with: และ / แต่ / ของ / ที่ / ว่า / จึง / เพราะ / โดย
-   → merge it with the previous phrase instead
+2. NEVER start a phrase with these words — merge with previous phrase instead:
+   และ, แต่, ของ, ที่, ว่า, จึง, เพราะ, โดย, ซึ่ง, หรือ, แล้ว, ก็
 
-3. ONE screen line per phrase — max 32 Thai chars OR 22 English words
-   If LLM output would wrap to 2 lines → SPLIT into 2 separate phrases
+3. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s
+   Phrases shorter than this will be too fast to read — merge them with adjacent phrase
 
-4. Split at PAUSE POINTS — see below — these are real breath boundaries in the audio
+4. Max 32 Thai chars OR 22 English words per phrase (one screen line)
 
-5. Max ~6s per subtitle. If a phrase covers more than 6s of audio → split it
+5. Split at PAUSE POINTS below — real breath boundaries from audio
 
 ━━━ GUIDELINES ━━━
-• Audio duration: ${durationSec.toFixed(1)}s → aim for ${minPhrases}–${maxPhrases} phrases
-• Impact/punchline lines: keep short (5–10 words), alone on screen
-• Date expressions (วันที่ + เดือน + ปี) = ONE phrase, never split
+• Audio: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases (~${avgSecPerPhrase.toFixed(1)}s each)
+• Punchlines / impact: short phrase alone on screen is OK if ≥1.5s
+• Date (วันที่+เดือน+ปี) = ONE phrase
 
 ━━━ TAGS ━━━
-• "hook" = first 1–2 phrases only
-• "body" = everything else
-• "cta"  = กดติดตาม / like / share / subscribe lines only
+• "hook" = first 1–2 phrases • "body" = main • "cta" = กดติดตาม/like/share
 
-━━━ OUTPUT — valid JSON, no markdown ━━━
+━━━ OUTPUT — valid JSON only, no markdown ━━━
 {"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}${rhythmHint}
 
 ━━━ SCRIPT ━━━
@@ -1388,6 +1388,33 @@ ${sourceText.trim()}`;
             });
           }
           console.log(`[transcribe] Strategy D char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
+        }
+
+        // Merge captions that are too short to read (< 1200ms) into adjacent
+        if (result.length > 1) {
+          const MIN_DUR_MS = 1200;
+          let merged = true;
+          while (merged && result.length > 1) {
+            merged = false;
+            for (let i = 0; i < result.length; i++) {
+              const dur = result[i].endMs - result[i].startMs;
+              if (dur < MIN_DUR_MS) {
+                // merge into shorter neighbor
+                const mergeNext = i < result.length - 1 &&
+                  (i === 0 || (result[i + 1].endMs - result[i + 1].startMs) <= (result[i - 1].endMs - result[i - 1].startMs));
+                if (mergeNext) {
+                  result[i + 1] = { ...result[i + 1], text: `${result[i].text} ${result[i + 1].text}`.trim(), startMs: result[i].startMs };
+                  result.splice(i, 1);
+                } else {
+                  result[i - 1] = { ...result[i - 1], text: `${result[i - 1].text} ${result[i].text}`.trim(), endMs: result[i].endMs };
+                  result.splice(i, 1);
+                }
+                merged = true;
+                break;
+              }
+            }
+          }
+          console.log(`[transcribe] after short-merge: ${result.length} captions`);
         }
 
         // Keep mapped caption boundaries from source timings, then clamp and dedupe overlaps.
