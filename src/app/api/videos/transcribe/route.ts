@@ -55,6 +55,7 @@ function sanitizePhraseText(input: string): string {
     .replace(/^\s*✕+\s*$/g, "")
     .replace(/["“”'’]/g, "")
     .replace(/\.{2,}/g, "")
+    .replace(/([\u0E00-\u0E7F])\s+([\u0E00-\u0E7F])/g, "$1$2")
     .trim();
 }
 
@@ -313,9 +314,9 @@ function snapPhrasesToScript(llmPhrases: string[], sourceText: string): string[]
   if (!llmPhrases.length || !sourceText.trim()) return llmPhrases;
 
   const src = sourceText.trim();
-  // Strip to bare chars for proportion calculation (spaces included so splits land on word boundaries)
+  // Strip to bare chars for proportion calculation (count non-space chars)
   const srcChars = [...src];
-  const srcLen = srcChars.length;
+  const srcLen = srcChars.filter((c) => c.trim().length > 0).length;
   if (srcLen === 0) return llmPhrases;
 
   // Total chars in LLM output (no-space stripped for proportion)
@@ -344,7 +345,7 @@ function snapPhrasesToScript(llmPhrases: string[], sourceText: string): string[]
     // Snap to word boundary: advance past any partial word
     while (srcPos < srcChars.length && srcChars[srcPos] !== " ") srcPos++;
 
-    let slice = srcChars.slice(startPos, srcPos).join("").trim();
+    let slice = sanitizePhraseText(srcChars.slice(startPos, srcPos).join(""));
     if (!slice) slice = llmPhrases[i]; // last-resort: keep LLM phrase
     snapped.push(slice);
   }
@@ -942,6 +943,7 @@ RULES:
       // STT (Whisper/Gemini) is used ONLY for timestamps, never for subtitle text.
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
         ? script.trim() : fullText;
+      const isScriptProvided = typeof script === "string" && script.trim().length > 0;
       const sourceText = sanitizeTranscriptionText(sourceRaw);
       console.log(`[transcribe] sourceText from ${typeof script === "string" && script.trim().length > 0 ? "script (real)" : "STT fullText (fallback)"}: ${sourceText.slice(0, 80)}`);
       const fallbackDur = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 1000 : 30;
@@ -979,7 +981,9 @@ RULES:
 
       if (shouldUseSegmentSplit) {
         if (segmentTexts.length > 1) {
-          phrases = segmentTexts;
+          phrases = isScriptProvided
+            ? snapPhrasesToScript(segmentTexts, sourceText)
+            : segmentTexts;
           llmTags = phrases.map((_, i) => (i === 0 ? "hook" : "body"));
           console.log(`[transcribe] fallback segment-based split from Whisper timestamps: ${phrases.length} phrases`);
         }
