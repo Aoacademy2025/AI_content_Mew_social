@@ -42,28 +42,15 @@ const FALLBACK_POOL = [
 ];
 
 const THAI_RE = /[฀-๿]/;
-const ANGLE_SUFFIXES = ["close up", "wide shot", "aerial view", "slow motion", "detail shot", "action shot"];
 
 function normalizeKeyword(k: string): string {
   return k.replace(/\s+/g, " ").replace(/[^a-zA-Z0-9\s-]/g, "").trim().toLowerCase();
 }
 
-function isValidKeyword(raw: string): boolean {
-  if (THAI_RE.test(raw)) return false;
-  const norm = normalizeKeyword(raw);
-  const wc = norm.split(" ").filter(Boolean).length;
-  return norm.length >= 4 && wc >= 2 && wc <= 8;
-}
-
-// Strip markdown code fences Gemini sometimes adds
-function stripFences(raw: string): string {
-  return raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-}
-
-function parseKeywordsFromLLM(raw: string): string[] {
-  const cleaned = stripFences(raw);
-  // Try JSON object with keywords array
-  const objMatch = cleaned.match(/\{[\s\S]*\}/);
+function extractQuotedStringArray(raw: string): string[] {
+  // Strip markdown code fences Gemini sometimes adds
+  const stripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const objMatch = stripped.match(/\{[\s\S]*\}/);
   if (objMatch) {
     try {
       const parsed = JSON.parse(objMatch[0]);
@@ -74,25 +61,49 @@ function parseKeywordsFromLLM(raw: string): string[] {
       if (result.length > 0) return result;
     } catch { /* fall through */ }
   }
-  // Try bare array
-  const arrMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (arrMatch) {
-    try {
-      const parsed = JSON.parse(arrMatch[0]);
-      if (Array.isArray(parsed)) {
-        const result = parsed.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map(k => k.trim());
-        if (result.length > 0) return result;
-      }
-    } catch { /* fall through */ }
-  }
   // Fallback: extract quoted strings
-  const quoted = cleaned.match(/"([^"]{3,150})"/g);
-  if (quoted) return quoted.map(s => s.slice(1, -1).trim()).filter(Boolean);
-  return [];
+  const quoted = stripped.match(/"([^"]{3,200})"/g);
+  if (!quoted) return [];
+  return quoted.map(s => s.slice(1, -1).trim()).filter(Boolean);
 }
 
-async function sleep(ms: number) {
-  return new Promise(r => setTimeout(r, ms));
+function buildFallbackKeyword(index: number): string {
+  return FALLBACK_POOL[index % FALLBACK_POOL.length];
+}
+
+function ensureKeywordsShape(keywords: string[], expectedCount: number, globalUsed: Set<string>, batchOffset: number): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < expectedCount; i++) {
+    const raw = keywords[i] ?? "";
+    const hasThai = THAI_RE.test(raw);
+    const norm = normalizeKeyword(raw);
+    const wc = norm.split(" ").filter(Boolean).length;
+    const valid = !hasThai && norm.length >= 4 && wc >= 2 && wc <= 8;
+
+    if (valid && !globalUsed.has(norm)) {
+      globalUsed.add(norm);
+      out.push(norm);
+      continue;
+    }
+
+    // Find next unused fallback
+    let pushed = false;
+    for (let fi = 0; fi < FALLBACK_POOL.length * 2; fi++) {
+      const fb = buildFallbackKeyword(batchOffset + i + fi);
+      if (!globalUsed.has(fb)) {
+        globalUsed.add(fb);
+        out.push(fb);
+        pushed = true;
+        break;
+      }
+    }
+    if (!pushed) {
+      const unique = `${norm || "scene"} ${batchOffset + i}`;
+      globalUsed.add(unique);
+      out.push(unique);
+    }
+  }
+  return out;
 }
 
 export async function POST(req: Request) {
@@ -107,70 +118,35 @@ export async function POST(req: Request) {
     select: { geminiKey: true, openaiKey: true, ttsProvider: true },
   });
 
-  let geminiKey: string | null = null;
-  let openaiKey: string | null = null;
-  const serverOpenAI = process.env.SERVER_OPENAI_API_KEY || null;
-
-  if (user?.geminiKey) geminiKey = decrypt(user.geminiKey);
-  if (user?.openaiKey) openaiKey = decrypt(user.openaiKey);
-  if (serverOpenAI) openaiKey = serverOpenAI;
-
-  // Determine primary LLM
+  let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
   let useGemini = false;
-  let apiKey: string | null = null;
-  if (serverOpenAI) {
-    apiKey = serverOpenAI; useGemini = false;
-  } else if (preferredLLM === "gemini" && geminiKey) {
-    apiKey = geminiKey; useGemini = true;
-  } else if (preferredLLM === "openai" && openaiKey) {
-    apiKey = openaiKey; useGemini = false;
-  } else if (geminiKey) {
-    apiKey = geminiKey; useGemini = true;
-  } else if (openaiKey) {
-    apiKey = openaiKey; useGemini = false;
-  } else {
-    return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
+  if (!apiKey) {
+    const wantGemini = preferredLLM === "gemini";
+    const wantOpenAI = preferredLLM === "openai";
+    if (wantGemini && user?.geminiKey)       { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    else if (wantOpenAI && user?.openaiKey)  { apiKey = decrypt(user.openaiKey); }
+    else if (user?.geminiKey)                { apiKey = decrypt(user.geminiKey); useGemini = true; }
+    else if (user?.openaiKey)                { apiKey = decrypt(user.openaiKey); }
+    else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
   async function callLLM(prompt: string, maxTokens: number): Promise<string> {
     if (useGemini) {
-      try {
-        return await geminiGenerateText(apiKey!, prompt, maxTokens);
-      } catch (e: unknown) {
-        const status = (e as { status?: number })?.status ?? 0;
-        // Fallback to OpenAI if Gemini 503 and OpenAI key available
-        if ((status === 503 || status === 429) && openaiKey) {
-          console.warn(`[extract-keywords] Gemini ${status} — falling back to OpenAI`);
-          const r = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [{ role: "user", content: prompt }],
-              max_tokens: maxTokens,
-              temperature: 0.5,
-              response_format: { type: "json_object" },
-            }),
-          });
-          if (r.ok) { const d = await r.json(); return d.choices?.[0]?.message?.content ?? "{}"; }
-        }
-        throw e;
-      }
-    } else {
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: maxTokens,
-          temperature: 0.5,
-          response_format: { type: "json_object" },
-        }),
-      });
-      if (r.ok) { const d = await r.json(); return d.choices?.[0]?.message?.content ?? "{}"; }
-      return "{}";
+      return await geminiGenerateText(apiKey!, prompt, maxTokens);
     }
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: maxTokens,
+        temperature: 0.5,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (r.ok) { const d = await r.json(); return d.choices?.[0]?.message?.content ?? "{}"; }
+    throw new Error(`OpenAI ${r.status}`);
   }
 
   // ── perSubtitle mode ──
@@ -181,116 +157,62 @@ export async function POST(req: Request) {
 
     if (!subtitleList.length) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
-    const BATCH_SIZE = 20; // smaller = less likely to hit rate limit
+    const BATCH_SIZE = 30;
     const batches: string[][] = [];
     for (let i = 0; i < subtitleList.length; i += BATCH_SIZE) {
       batches.push(subtitleList.slice(i, i + BATCH_SIZE));
     }
 
-    console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches`);
+    console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches (${useGemini ? "Gemini" : "OpenAI"})`);
 
     const allKeywords: string[] = [];
     const globalUsed = new Set<string>();
 
-    // Pre-populate fallback pool into globalUsed tracking (not blocking, just for awareness)
-    let fallbackIdx = 0;
-
-    function nextFallback(): string {
-      // Cycle through pool with index tracking to ensure uniqueness
-      for (let i = 0; i < FALLBACK_POOL.length * 2; i++) {
-        const candidate = FALLBACK_POOL[(fallbackIdx + i) % FALLBACK_POOL.length];
-        if (!globalUsed.has(candidate)) {
-          globalUsed.add(candidate);
-          fallbackIdx = (fallbackIdx + i + 1) % FALLBACK_POOL.length;
-          return candidate;
-        }
-        // Try with angle suffix
-        for (const suffix of ANGLE_SUFFIXES) {
-          const v = `${candidate} ${suffix}`;
-          if (!globalUsed.has(v)) {
-            globalUsed.add(v);
-            fallbackIdx = (fallbackIdx + i + 1) % FALLBACK_POOL.length;
-            return v;
-          }
-        }
-      }
-      // Absolute last resort
-      const unique = `scene ${globalUsed.size}`;
-      globalUsed.add(unique);
-      return unique;
-    }
-
     for (let b = 0; b < batches.length; b++) {
       const batch = batches[b];
 
-      // Delay between batches to avoid rate limiting
-      if (b > 0) await sleep(3000);
+      // Delay between batches to stay within rate limits
+      if (b > 0) await new Promise(r => setTimeout(r, 3000));
 
-      const avoidHint = allKeywords.length > 0
-        ? `Already used (avoid repeating): ${allKeywords.slice(-15).join(", ")}`
-        : "";
+      const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
-      const prompt = `You are a B-roll video editor. For each Thai subtitle phrase below, write ONE English Pexels search query that visually matches it.
+For each Thai subtitle phrase below, write ONE English Pexels search query that visually matches it.
 
-OUTPUT FORMAT: {"keywords":["query1","query2",...]}
-- Exactly ${batch.length} queries, same order
+RULES:
+- Output ONLY: {"keywords":["query1","query2",...]}
+- Exactly ${batch.length} queries, same order as subtitles
 - English only — no Thai characters
-- 2-5 words per query, something a camera can film
+- 2-5 words per query, something a camera can physically film
 - Translate Thai meaning into visual English (person/place/object/action)
 - All queries must be unique
-- Vary shot styles (close-up, wide, aerial, slow motion, action)
-${avoidHint ? `- ${avoidHint}` : ""}
-SUBTITLES:
+- Vary shot styles: wide, close-up, aerial, slow motion, action
+
+SUBTITLE PHRASES (${b * BATCH_SIZE + 1}–${b * BATCH_SIZE + batch.length}):
 ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}
 
-Respond with JSON only:`;
+JSON only:`;
 
       const maxTokens = Math.min(2048, batch.length * 30 + 200);
       let rawKws: string[] = [];
 
-      for (let attempt = 0; attempt < 4; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          if (attempt > 0) await sleep(4000 * attempt);
+          if (attempt > 0) await new Promise(r => setTimeout(r, 4000 * attempt));
           const text = await callLLM(prompt, maxTokens);
-          console.log(`[extract-keywords] b${b} attempt${attempt} raw:`, text.slice(0, 150));
-          rawKws = parseKeywordsFromLLM(text);
-          if (rawKws.length >= Math.floor(batch.length * 0.8)) break; // accept if ≥80% returned
+          console.log(`[extract-keywords] b${b} attempt${attempt}:`, text.slice(0, 120));
+          rawKws = extractQuotedStringArray(text);
+          if (rawKws.length > 0) break;
         } catch (e) {
           console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
         }
       }
 
-      console.log(`[extract-keywords] b${b}: LLM returned ${rawKws.length}/${batch.length}`);
-
-      // Resolve each subtitle slot
-      for (let i = 0; i < batch.length; i++) {
-        const raw = rawKws[i] ?? "";
-        if (isValidKeyword(raw)) {
-          const norm = normalizeKeyword(raw);
-          if (!globalUsed.has(norm)) {
-            globalUsed.add(norm);
-            allKeywords.push(norm);
-            continue;
-          }
-          // Try angle suffix variants
-          let found = false;
-          for (const suffix of ANGLE_SUFFIXES) {
-            const v = `${norm} ${suffix}`;
-            if (!globalUsed.has(v)) {
-              globalUsed.add(v);
-              allKeywords.push(v);
-              found = true;
-              break;
-            }
-          }
-          if (found) continue;
-        }
-        // Use fallback pool
-        allKeywords.push(nextFallback());
-      }
+      const batchOut = ensureKeywordsShape(rawKws, batch.length, globalUsed, b * BATCH_SIZE);
+      console.log(`[extract-keywords] b${b}: ${batchOut.length}/${batch.length} keywords`);
+      allKeywords.push(...batchOut);
     }
 
-    console.log(`[extract-keywords] done: ${allKeywords.length} keywords for ${subtitleList.length} subtitles`);
+    console.log(`[extract-keywords] done: ${allKeywords.length}/${subtitleList.length}`);
     return NextResponse.json({
       keywords: allKeywords,
       sceneClipCounts: allKeywords.map(() => 1),
@@ -299,38 +221,30 @@ Respond with JSON only:`;
     });
   }
 
-  // ── Normal mode (scene-based) ──
+  // ── Normal mode ──
   const rawScript = Array.isArray(scenes) && scenes.length > 0 ? scenes.join(" ") : (script ?? "");
   const cleanScript = preprocessScript(rawScript);
   if (!cleanScript) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
   const prompt = `You are a professional video editor for TikTok/Reels short-form videos.
 
-Given this Thai script, decide how many B-roll clips are needed (roughly 1 clip per 3-5 seconds) and write the best English Pexels search query for each clip.
+Given this Thai script, decide how many B-roll clips are needed (roughly 1 clip per 3-5 seconds) and write the best English Pexels search query for each.
 
 RULES:
 - Each query: 2-5 English words, something a camera can physically film
-- Translate Thai → concrete English visuals (people, places, objects, actions)
-- Vary shots: wide → close → action → aerial → crowd
+- Translate Thai → concrete English visuals
+- Vary shots: wide → close → action → aerial
 - Every query must be unique
-- Match mood: dramatic=intense, financial=money/trading, science=lab
 
 SCRIPT: "${cleanScript}"
 
 Return ONLY valid JSON:
 {"totalClips":<number>,"queries":["query1","query2",...]}`;
 
-  let text = "{}";
   try {
-    text = await callLLM(prompt, 4096);
-    console.log(`[extract-keywords] normal mode raw:`, text.slice(0, 200));
-  } catch (e) {
-    console.error("[extract-keywords] LLM error:", e);
-    return NextResponse.json({ error: `LLM failed: ${e instanceof Error ? e.message : e}` }, { status: 500 });
-  }
-
-  try {
-    const queries = parseKeywordsFromLLM(text);
+    const text = await callLLM(prompt, 4096);
+    console.log(`[extract-keywords] normal mode:`, text.slice(0, 200));
+    const queries = extractQuotedStringArray(text);
     if (queries.length === 0) throw new Error("empty queries");
 
     const sceneList: string[] = Array.isArray(scenes) && scenes.length > 0
@@ -343,7 +257,7 @@ Return ONLY valid JSON:
     console.log(`[extract-keywords] ${queries.length} keywords for ${numScenes} scenes`);
     return NextResponse.json({ keywords: queries, scenes: sceneList, keywordsPerScene: perScene, sceneClipCounts, sceneDurations });
   } catch (e) {
-    console.error("[extract-keywords] parse error:", e, "raw:", text.slice(0, 300));
+    console.error("[extract-keywords] error:", e);
     return NextResponse.json({ keywords: [], scenes: [], keywordsPerScene: 3, sceneClipCounts: [], sceneDurations: [] });
   }
 }
