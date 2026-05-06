@@ -52,14 +52,16 @@ function buildFallbackKeyword(_phrase: string, index: number, batchOffset: numbe
 }
 
 function extractQuotedStringArray(raw: string): string[] {
-  const inObj = raw.match(/\{[\s\S]*\}/)?.[0];
+  // Strip markdown code fences that Gemini sometimes wraps around JSON
+  const stripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const inObj = stripped.match(/\{[\s\S]*\}/)?.[0];
   try {
     const parsed = inObj ? JSON.parse(inObj) : null;
     const arr: unknown[] = Array.isArray(parsed?.keywords) ? parsed.keywords : Array.isArray(parsed) ? parsed : [];
     return arr.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map((k) => k.trim());
   } catch {
     // Fallback: parse manually quoted strings
-    const arr = raw.match(/"([^"]{3,200})"/g);
+    const arr = stripped.match(/"([^"]{3,200})"/g);
     if (!arr) return [];
     return arr.map((s) => s.replace(/^"|"$/g, "").trim()).filter(Boolean);
   }
@@ -223,8 +225,9 @@ JSON only:`;
       const batch = batches[b];
       let rawKws: string[] = [];
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt));
           rawKws = await fetchKeywordBatch(batch, b * BATCH_SIZE, [...allKeywords]);
           if (rawKws.length >= batch.length) break;
         } catch (e) {
