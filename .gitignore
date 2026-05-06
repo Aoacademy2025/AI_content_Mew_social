@@ -46,3 +46,9 @@ next-env.d.ts
 # large media files
 /stocks/
 /public/renders/
+
+# database — each environment uses its own file, never share via git
+/prisma/*.db
+/prisma/*.db-journal
+/prisma/*.db-wal
+/prisma/*.db-shm
