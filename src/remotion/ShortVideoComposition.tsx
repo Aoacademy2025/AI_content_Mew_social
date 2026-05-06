@@ -4,7 +4,6 @@ import {
   Audio,
   OffthreadVideo,
   Sequence,
-  interpolate,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -13,51 +12,24 @@ import type { ShortVideoConfig, SubtitleStylePreset } from "./types";
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
 
-// Ken Burns zoom directions — alternate per clip for visual variety
-const KB_CONFIGS = [
-  { startScale: 1.0, endScale: 1.08, originX: "50%", originY: "50%" },
-  { startScale: 1.08, endScale: 1.0, originX: "55%", originY: "45%" },
-  { startScale: 1.0, endScale: 1.08, originX: "45%", originY: "55%" },
-  { startScale: 1.06, endScale: 1.0, originX: "50%", originY: "40%" },
-  { startScale: 1.0, endScale: 1.06, originX: "52%", originY: "52%" },
-];
-
 function VideoClip({
   src,
   startFrom,
-  clipIndex,
   segDurFrames,
   clipDurFrames,
-  isFirst,
 }: {
   src: string;
   startFrom: number;
-  clipIndex: number;
   segDurFrames: number;
   clipDurFrames: number | null;
-  isFirst: boolean;
 }) {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-
-  const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
-  const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
-  const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
-
-  // Fade in only — no fade out. The next clip's fade-in overlaps this clip via z-index stacking.
-  const fadeFrames = Math.min(6, Math.floor(segDurFrames / 2));
-  const opacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
-
-  // Clamp playback to the minimum of segment length and clip length.
-  // Without this, OffthreadVideo's ffmpeg proxy wraps around (loops) past end-of-file.
-  // Subtract 2 frames as safety margin for clips with slightly inaccurate reported duration.
   const effectiveDur = clipDurFrames != null
     ? Math.min(segDurFrames, clipDurFrames) - 2
     : segDurFrames - 1;
   const endAt = startFrom + Math.max(1, effectiveDur);
 
   return (
-    <AbsoluteFill style={{ opacity }}>
+    <AbsoluteFill>
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
@@ -69,8 +41,7 @@ function VideoClip({
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          transform: `translate(-50%, -50%) scale(${scale})`,
-          transformOrigin: `${kb.originX} ${kb.originY}`,
+          transform: "translate(-50%, -50%)",
         }}
         muted
       />
@@ -266,10 +237,8 @@ export function ShortVideoComposition({
             <VideoClip
               src={v.src}
               startFrom={startFromFrame}
-              clipIndex={i}
               segDurFrames={segDurFrames}
               clipDurFrames={clipDurFrames}
-              isFirst={i === 0}
             />
           </Sequence>
         );
