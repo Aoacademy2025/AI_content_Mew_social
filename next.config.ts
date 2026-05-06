@@ -11,6 +11,11 @@ if (process.platform === "win32") {
 }
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
+    workerThreads: false,
+    cpus: 1,
+  },
   async rewrites() {
     return [
       // Serve dynamically-written renders via API route (static public/ doesn't serve runtime files in prod)
