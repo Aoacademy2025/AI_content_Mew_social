@@ -754,33 +754,58 @@ RULES:
 
         // Try to parse structured JSON response with timestamps
         try {
-          const jsonMatch = rawGeminiText.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-          const match = jsonMatch.match(/\{[\s\S]*\}/);
+          // Strip markdown fences and find outermost JSON object
+          const stripped = rawGeminiText
+            .replace(/```json\s*/gi, "")
+            .replace(/```\s*/g, "")
+            .trim();
+
+          // Try longest JSON match first (greedy), then fallback to first match
+          const allMatches = [...stripped.matchAll(/\{[\s\S]*?\}/g)];
+          const match = stripped.match(/\{[\s\S]*\}/) ?? (allMatches.length > 0 ? allMatches[allMatches.length - 1] : null);
+
           if (match) {
-            const parsed = JSON.parse(match[0]);
-            fullText = parsed.fullText?.trim() ?? rawGeminiText;
-            if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
-              segments = parsed.segments
-                .filter((s: { text?: string; start?: number; end?: number }) =>
-                  typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"
-                )
-                .map((s: { text: string; start: number; end: number }) => ({
-                  text: s.text.trim(),
-                  start: s.start,
-                  end: s.end,
-                }));
-              console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments with timestamps`);
+            let parsed: { fullText?: string; segments?: unknown[] } | null = null;
+            try {
+              parsed = JSON.parse(match[0]);
+            } catch {
+              // Try to salvage by removing trailing incomplete segments
+              const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}")
+                .replace(/,\s*$/, "")
+                .replace(/\]\s*$/, "]}");
+              try { parsed = JSON.parse(truncated); } catch { /* give up */ }
+            }
+
+            if (parsed) {
+              fullText = parsed.fullText?.trim() ?? rawGeminiText;
+              if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+                segments = (parsed.segments as { text?: string; start?: number; end?: number }[])
+                  .filter((s) =>
+                    typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"
+                  )
+                  .map((s) => ({
+                    text: (s.text as string).trim(),
+                    start: s.start as number,
+                    end: s.end as number,
+                  }));
+                console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments with timestamps`);
+              } else {
+                console.warn("[transcribe] Gemini returned no segments, falling back to text-only");
+                fullText = parsed.fullText?.trim() || stripped;
+              }
             } else {
-              console.warn("[transcribe] Gemini returned no segments, falling back to text-only");
-              fullText = rawGeminiText;
+              console.warn("[transcribe] Gemini JSON repair failed, raw:", rawGeminiText.slice(0, 200));
+              fullText = stripped;
             }
           } else {
-            fullText = rawGeminiText;
+            // No JSON object found — Gemini returned plain text
+            console.warn("[transcribe] Gemini no JSON found, raw:", rawGeminiText.slice(0, 200));
+            fullText = stripped;
           }
         } catch {
-          // JSON parse failed → use raw text, no timestamps
+          // JSON parse failed → log raw for debugging
+          console.warn("[transcribe] Gemini JSON parse failed, raw:", rawGeminiText.slice(0, 300));
           fullText = rawGeminiText;
-          console.warn("[transcribe] Gemini JSON parse failed, using text-only mode");
         }
       } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
