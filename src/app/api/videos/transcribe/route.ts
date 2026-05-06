@@ -7,6 +7,10 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
+import { setGlobalDispatcher, Agent } from "undici";
+
+// Extend undici's default headersTimeout so large Gemini payloads don't timeout
+setGlobalDispatcher(new Agent({ headersTimeout: 300_000, bodyTimeout: 300_000 }));
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -811,17 +815,11 @@ RULES:
 - NEVER fabricate timestamps — only use what you can hear
 - If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
 
-        // Use undici Agent with extended headersTimeout to prevent UND_ERR_HEADERS_TIMEOUT
-        // on large audio payloads (Gemini can take 30-60s to respond with headers for 6min audio)
-        const { Agent, fetch: undiciFetch } = await import("undici");
-        const longTimeoutAgent = new Agent({ headersTimeout: 300_000, bodyTimeout: 300_000 });
-
-        const geminiRes = await undiciFetch(
+        const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            dispatcher: longTimeoutAgent,
             body: JSON.stringify({
               contents: [{
                 parts: [
@@ -846,9 +844,9 @@ RULES:
           }
           throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const geminiData = await geminiRes.json() as any;
-        const rawGeminiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+        const geminiData = await geminiRes.json() as Record<string, unknown>;
+        const candidates = geminiData?.candidates as Array<{content:{parts:Array<{text:string}>}}> | undefined;
+        const rawGeminiText = candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
         console.log(`[transcribe] Gemini raw: ${rawGeminiText.slice(0, 300)}`);
 
         // Try to parse structured JSON response with timestamps
