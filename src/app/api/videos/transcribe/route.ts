@@ -1211,7 +1211,7 @@ ${sourceText.trim()}`;
       // splits by char count and breaks Thai/English phrases mid-word.
 
       // ── Fallback: split by sentence punctuation or newlines ─────────────────
-      if (phrases.length === 0) {
+      if (phrases.length === 0 && captions.length === 0) {
         const sentenceFallback = splitToSentencePhrases(sourceRaw);
         if (sentenceFallback.length > 1) {
           phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(sentenceFallback));
@@ -1268,16 +1268,18 @@ ${sourceText.trim()}`;
         // Do NOT expand here — char-based splitting breaks mixed Thai/English phrases.
       }
 
-      phrases = phrases
-        .map((p) => collapseConsecutiveDuplicateWords(p))
-        .map((p) => normalizeCaptionText(p))
-        .filter(Boolean);
-      phrases = deduplicatePhraseEdges(mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases)));
-      phrases = limitPhraseCountByDuration(phrases, audioDur);
-      phrases = phrases
-        .map((p) => normalizeCaptionText(p))
-        .filter(Boolean);
-      console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
+      if (captions.length === 0) {
+        phrases = phrases
+          .map((p) => collapseConsecutiveDuplicateWords(p))
+          .map((p) => normalizeCaptionText(p))
+          .filter(Boolean);
+        phrases = deduplicatePhraseEdges(mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases)));
+        phrases = limitPhraseCountByDuration(phrases, audioDur);
+        phrases = phrases
+          .map((p) => normalizeCaptionText(p))
+          .filter(Boolean);
+        console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
+      }
 
       // ── Step 2: Align phrases → Whisper timestamps ──────────────────────────
       // Strategy A (preferred): word-level forced alignment
