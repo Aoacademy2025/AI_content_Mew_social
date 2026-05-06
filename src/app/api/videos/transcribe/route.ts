@@ -139,24 +139,19 @@ function collapseConsecutiveDuplicateWords(input: string): string {
 }
 
 function limitPhraseCountByDuration(phrases: string[], audioDurSec: number): string[] {
-  const maxByDuration = Math.max(8, Math.min(20, Math.ceil(audioDurSec / 1.2)));
-  if (phrases.length <= 8) return phrases;
-  if (phrases.length <= maxByDuration) return phrases;
+  // Allow ~4s per subtitle, no hard cap — LLM decides phrase boundaries.
+  // Only merge if we have drastically more phrases than time allows (< 1s each).
+  const minDurPerPhrase = 1.0;
+  const maxByDuration = Math.max(8, Math.ceil(audioDurSec / minDurPerPhrase));
   if (phrases.length <= maxByDuration) return phrases;
   const out = [...phrases];
   while (out.length > maxByDuration) {
     let mergeIndex = 0;
     let bestScore = Number.POSITIVE_INFINITY;
-
     for (let i = 0; i < out.length - 1; i++) {
-      const merged = `${out[i]} ${out[i + 1]}`.trim();
-      const score = merged.length;
-      if (score < bestScore) {
-        bestScore = score;
-        mergeIndex = i;
-      }
+      const score = `${out[i]} ${out[i + 1]}`.trim().length;
+      if (score < bestScore) { bestScore = score; mergeIndex = i; }
     }
-
     out[mergeIndex] = `${out[mergeIndex]} ${out[mergeIndex + 1]}`.trim();
     out.splice(mergeIndex + 1, 1);
   }
@@ -1039,53 +1034,21 @@ RULES:
       const hasSentencePunctuation = /[.!?…]/.test(sourceText);
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
-      const segmentTexts = segments
-        .map((s) => sanitizeTranscriptionText(s.text))
-        .filter(Boolean);
-      const hasSegmentPhrases = segmentTexts.length >= 2;
-      const normalizedSource = normalizeForCompare(sourceText);
-      const normalizedSegment = normalizeForCompare(segmentTexts.join(" "));
-      const segmentSplitCoverage = normalizedSource.length > 0 ? normalizedSegment.length / normalizedSource.length : 0;
-      const shouldUseSegmentSplit = segments.length >= 2 && hasSegmentPhrases
-        && segmentSplitCoverage >= 0.55 && segmentSplitCoverage <= 1.35
-        && segmentTexts.length <= 18;
-
-      if (shouldUseSegmentSplit) {
-        if (segmentTexts.length > 1) {
-          // Use Gemini segment timestamps directly — most accurate timing.
-          // For Thai: use segment text directly (snapPhrasesToScript cuts mid-syllable).
-          // For non-Thai with script: snap text to script wording but keep segment timestamps.
-          const segPhrases = (isThai || !isScriptProvided)
-            ? segmentTexts
-            : snapPhrasesToScript(segmentTexts, sourceText);
-
-          // Build captions directly from segment timestamps — skip alignment phase entirely.
-          // This preserves exact Gemini timestamps rather than re-distributing by char count.
-          captions = segments.slice(0, segPhrases.length).map((seg, i) => ({
-            text: normalizeCaptionText(segPhrases[i] ?? segmentTexts[i] ?? ""),
-            startMs: Math.round(seg.start * 1000),
-            endMs: Math.round(seg.end * 1000),
-            timestampMs: Math.round(seg.start * 1000),
-            confidence: 1,
-            tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
-          })).filter(c => c.text.length > 0);
-          console.log(`[transcribe] segment-direct: ${captions.length} captions with real timestamps (thai=${isThai})`);
-          // phrases stays empty — captions already built, skip alignment phase below
-        }
-      } else if (shouldSkipLLMSplit) {
+      // Always use LLM to split — it produces natural, readable phrases.
+      // Segment timestamps from Gemini/Whisper are used only for timing alignment after LLM splits.
+      if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
         try {
           const durationSec = audioDur;
           const sourceLen = sourceText.replace(/\s+/g, "").length;
-          // Target ~20-30 Thai chars per subtitle phrase (comfortable reading speed)
-          const byChars = Math.round(sourceLen / 25);
-          // Target ~3-4s per phrase based on duration
+          // Thai reading: ~20 chars/subtitle, ~3-4s/subtitle — take whichever gives more phrases
+          const byChars = Math.round(sourceLen / 20);
           const byDur = Math.round(durationSec / 3.5);
           const targetPhrases = Math.max(byChars, byDur, 3);
-          minPhrases = Math.max(3, targetPhrases - 1);
-          maxPhrases = targetPhrases + 2;
+          minPhrases = Math.max(3, targetPhrases - 2);
+          maxPhrases = targetPhrases + 4;
 
           // ── Build speech rhythm hint from Whisper segment timestamps ──
           // Whisper detects natural breath/pause points — feed these to LLM so it

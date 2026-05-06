@@ -4,7 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-export const maxDuration = 180;
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 function decrypt(encrypted: string): string {

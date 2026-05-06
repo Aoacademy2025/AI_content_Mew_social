@@ -6,8 +6,12 @@ import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import path from "path";
 import fs from "fs";
+import { setGlobalDispatcher, Agent } from "undici";
 
-export const maxDuration = 120;
+// Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
+setGlobalDispatcher(new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 }));
+
+export const maxDuration = 300;
 export const runtime = "nodejs";
 
 // POST /api/videos/tts-gemini
