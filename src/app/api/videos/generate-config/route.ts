@@ -342,9 +342,8 @@ export async function POST(req: Request) {
       // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
       // so each clip plays from the beginning â€” no offset accumulation needed.
       console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
-      // Track cumulative playback offset per src so consecutive segments of the same clip
-      // continue from where they left off instead of restarting from 0.
-      const srcOffsetMap = new Map<string, number>();
+      // Merge consecutive captions that share the same stock clip into one bgVideo segment.
+      // Each unique stock clip gets exactly one continuous Sequence on the timeline.
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
         const capStartSec = cap.startMs / 1000;
@@ -354,10 +353,13 @@ export async function POST(req: Request) {
         const sv  = validStocks[Math.min(ci, n - 1)];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
-        const clipOffset = srcOffsetMap.get(src) ?? 0;
-        const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
-        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
-        srcOffsetMap.set(src, clipOffset + dur);
+        const last = bgVideos[bgVideos.length - 1];
+        if (last && last.src === src) {
+          // extend existing segment instead of creating a new one
+          last.end = capEndSec;
+        } else {
+          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
+        }
       }
     } else if (useEvenSplit) {
       const splitCount = Math.max(1, Math.min(n, clipCountHint));
