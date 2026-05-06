@@ -27,31 +27,37 @@ function VideoClip({
   startFrom,
   clipIndex,
   segDurFrames,
+  clipDurFrames,
   isFirst,
 }: {
   src: string;
   startFrom: number;
   clipIndex: number;
   segDurFrames: number;
+  clipDurFrames: number | null;
   isFirst: boolean;
 }) {
   const frame = useCurrentFrame();
-  const { width, height } = useVideoConfig();
+  const { fps } = useVideoConfig();
 
   const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
   const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
   const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
 
   // Fade in only — no fade out. The next clip's fade-in overlaps this clip via z-index stacking.
-  // Fading out causes a black gap when the next Sequence hasn't started yet.
   const fadeFrames = Math.min(6, Math.floor(segDurFrames / 2));
   const opacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
+
+  // Clamp playback to the actual clip duration so it freezes on last frame
+  // instead of looping when the segment is longer than the source video.
+  const endAt = clipDurFrames != null ? startFrom + clipDurFrames - 1 : undefined;
 
   return (
     <AbsoluteFill style={{ opacity }}>
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
+        {...(endAt != null ? { endAt } : {})}
         style={{
           position: "absolute",
           top: "50%",
@@ -258,6 +264,7 @@ export function ShortVideoComposition({
               startFrom={startFromFrame}
               clipIndex={i}
               segDurFrames={segDurFrames}
+              clipDurFrames={clipDurFrames}
               isFirst={i === 0}
             />
           </Sequence>
