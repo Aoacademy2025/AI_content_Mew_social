@@ -811,12 +811,18 @@ RULES:
 - NEVER fabricate timestamps — only use what you can hear
 - If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
 
-        const geminiRes = await fetch(
+        // Use undici Agent with extended headersTimeout to prevent UND_ERR_HEADERS_TIMEOUT
+        // on large audio payloads (Gemini can take 30-60s to respond with headers for 6min audio)
+        const { Agent, fetch: undiciFetch } = await import("undici");
+        const longTimeoutAgent = new Agent({ headersTimeout: 300_000, bodyTimeout: 300_000 });
+
+        const geminiRes = await undiciFetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(300_000),
+            // @ts-expect-error undici dispatcher not in standard fetch types
+            dispatcher: longTimeoutAgent,
             body: JSON.stringify({
               contents: [{
                 parts: [
