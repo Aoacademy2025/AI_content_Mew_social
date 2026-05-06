@@ -52,6 +52,7 @@ function VideoClip({
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
+        loop
         style={{
           position: "absolute",
           top: 0,
@@ -234,7 +235,7 @@ export function ShortVideoComposition({
       <link rel="stylesheet" href={FONTS_CSS} />
 
       {/* Stock video segments with Ken Burns zoom + crossfade */}
-      {bgVideos.flatMap((v, i) => {
+      {bgVideos.map((v, i) => {
         const startFrame = Math.max(0, Math.round(v.start * fps));
         const endFrame = Math.max(startFrame + 1, Math.round(v.end * fps));
         const segDurFrames = endFrame - startFrame;
@@ -242,39 +243,26 @@ export function ShortVideoComposition({
           ? Math.max(1, Math.round(v.clipDuration * fps))
           : null;
         const clipOffsetFrames = Math.round((v.clipOffset ?? 0) * fps);
-        const initialStartFrom = (() => {
-          if (!clipDurFrames) return 0;
-          return ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames;
-        })();
+        const startFromFrame = clipDurFrames
+          ? ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames
+          : 0;
 
-        const iterations = clipDurFrames ? Math.ceil(segDurFrames / clipDurFrames) : 1;
-
-        return Array.from({ length: iterations }, (_, iter) => {
-          const iterStart = iter * (clipDurFrames ?? segDurFrames);
-          const iterDur = clipDurFrames
-            ? Math.min(clipDurFrames, segDurFrames - iterStart)
-            : segDurFrames;
-          if (iterDur <= 0) return null;
-
-          const startFromFrame = iter === 0 ? initialStartFrom : 0;
-
-          return (
-            <Sequence
-              key={`${i}-${iter}`}
-              from={startFrame + iterStart}
-              durationInFrames={iterDur}
-              layout="none"
-            >
-              <VideoClip
-                src={v.src}
-                startFrom={startFromFrame}
-                clipIndex={i}
-                segDurFrames={iterDur}
-                isFirst={i === 0 && iter === 0}
-              />
-            </Sequence>
-          );
-        });
+        return (
+          <Sequence
+            key={`${i}-${v.src}-${startFrame}`}
+            from={startFrame}
+            durationInFrames={segDurFrames}
+            layout="none"
+          >
+            <VideoClip
+              src={v.src}
+              startFrom={startFromFrame}
+              clipIndex={i}
+              segDurFrames={segDurFrames}
+              isFirst={i === 0}
+            />
+          </Sequence>
+        );
       })}
 
       {/* Vignette overlay — darkens edges for cinematic look */}
