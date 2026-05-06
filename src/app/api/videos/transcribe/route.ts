@@ -303,7 +303,7 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
     let end = Math.max(start + minMs, cap.endMs);
     if (!Number.isFinite(end)) end = start + minMs;
 
-    if (start < cursor + EPS) start = cursor + EPS;
+    if (start < cursor) start = cursor;
     end = Math.max(start + minMs, end);
     if (end > totalMs) end = totalMs;
 
@@ -326,24 +326,14 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   // Final pass: ensure strict order and no overlap.
   for (let i = 0; i < out.length - 1; i++) {
     if (out[i].endMs >= out[i + 1].startMs) {
-      const safeEnd = out[i + 1].startMs - EPS;
-      if (safeEnd > out[i].startMs) {
-        out[i].endMs = safeEnd;
-      } else {
-        out[i + 1].startMs = out[i].endMs + EPS;
-      }
+      out[i].endMs = Math.min(Math.max(out[i + 1].startMs, out[i].startMs + EPS), totalMs);
     }
     if (out[i].endMs <= out[i].startMs) {
       out[i].endMs = Math.min(totalMs, out[i].startMs + minMs);
     }
   }
 
-  if (out.length > 0) {
-    out[0].startMs = 0;
-    if (out[out.length - 1].endMs > totalMs) {
-      out[out.length - 1].endMs = totalMs;
-    }
-  }
+  if (out.length > 0 && out[out.length - 1].endMs > totalMs) out[out.length - 1].endMs = totalMs;
 
   return out;
 }
@@ -922,17 +912,18 @@ ${sourceText.trim()}`;
           console.log(`[transcribe] char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
         }
 
-        // Pin first to 0, last to audioDur, ensure no overlap
+        // Keep mapped caption boundaries from source timings; only enforce basic safety later.
         if (result.length > 0) {
-          result[0].startMs = 0;
-          result[result.length - 1].endMs = Math.round(audioDur * 1000);
-          // ensure each caption ends before next starts
+          // ensure start/end are in order and each duration > 0
+          for (let i = 0; i < result.length; i++) {
+            if (!Number.isFinite(result[i].startMs)) result[i].startMs = 0;
+            if (!Number.isFinite(result[i].endMs)) result[i].endMs = result[i].startMs + 500;
+            if (result[i].endMs <= result[i].startMs) result[i].endMs = result[i].startMs + 500;
+            if (result[i].endMs > audioDur * 1000) result[i].endMs = Math.round(audioDur * 1000);
+          }
           for (let i = 0; i < result.length - 1; i++) {
             if (result[i].endMs > result[i + 1].startMs) {
               result[i].endMs = result[i + 1].startMs;
-            }
-            if (result[i].startMs >= result[i].endMs) {
-              result[i].endMs = result[i].startMs + 500;
             }
           }
         }
