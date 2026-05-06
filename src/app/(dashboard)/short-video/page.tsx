@@ -1196,6 +1196,7 @@ export default function ShortVideoPage() {
 
         // ── Step A: Fetch per-subtitle keywords (API handles batching for long scripts) ──
         let perSubKws: string[] = [];
+        let perSubAlts: string[][] = [];
         // Clear stale scene-based keywords so UI doesn't display them while perSubtitle runs
         setKeywords([]);
         pipe.current.keywords = [];
@@ -1210,18 +1211,26 @@ export default function ShortVideoPage() {
             if (!kwRes.ok) continue;
             const kwData = await kwRes.json();
             const got: string[] = kwData.keywords ?? [];
-            if (got.length >= N) { perSubKws = got; break; }
-            if (got.length > perSubKws.length) perSubKws = got;
+            const gotAlts: string[][] = kwData.keywordAlternatives ?? [];
+            if (got.length >= N) { perSubKws = got; perSubAlts = gotAlts; break; }
+            if (got.length > perSubKws.length) { perSubKws = got; perSubAlts = gotAlts; }
           } catch { continue; }
         }
 
         // ── Step B: Safety pad — API guarantees N but guard against total failure ──
         if (perSubKws.length < N) {
           const padded = [...perSubKws];
+          const paddedAlts = [...perSubAlts];
           const genericFallbacks = ["person walking", "city street", "nature landscape", "people talking", "outdoor scene"];
-          while (padded.length < N) padded.push(genericFallbacks[padded.length % genericFallbacks.length]);
+          while (padded.length < N) {
+            const fb = genericFallbacks[padded.length % genericFallbacks.length];
+            padded.push(fb);
+            paddedAlts.push([fb]);  // sync alternatives for padded entries
+          }
           perSubKws = padded;
+          perSubAlts = paddedAlts;
         }
+        pipe.current.keywordAlternatives = perSubAlts;
 
         if (perSubKws.length === 0) {
           // Total keyword failure → keep original stocks
@@ -1273,12 +1282,16 @@ export default function ShortVideoPage() {
               const fetched: StockVideo[] = (stockData.results ?? []).filter(
                 (r: StockVideo) => r.localUrl || r.videoUrl
               );
-              // Map by keyword text — server returns 1 clip per keyword in same order.
-              // Using keyword as key avoids position mismatch when server returns fewer results.
+              // Map by keyword text (lowercase to avoid case mismatch).
+              // Server returns clips with same keyword string it received.
               const kwToOrigIdx = new Map<string, number>();
-              missingIdxs.forEach(i => { if (!kwToOrigIdx.has(perSubKws[i])) kwToOrigIdx.set(perSubKws[i], i); });
+              missingIdxs.forEach(i => {
+                const key = perSubKws[i].toLowerCase().trim();
+                if (!kwToOrigIdx.has(key)) kwToOrigIdx.set(key, i);
+              });
               for (const clip of fetched) {
-                const origIdx = kwToOrigIdx.get(clip.keyword);
+                const key = (clip.keyword ?? "").toLowerCase().trim();
+                const origIdx = kwToOrigIdx.get(key);
                 if (origIdx !== undefined && !clipAtIdx.has(origIdx)) clipAtIdx.set(origIdx, clip);
               }
               missingIdxs = missingIdxs.filter(i => !clipAtIdx.has(i));

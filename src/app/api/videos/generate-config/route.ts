@@ -470,7 +470,8 @@ export async function POST(req: Request) {
         const isPerSubtitle = Array.isArray(sceneClipCounts) &&
           sceneClipCounts.length > 0 &&
           sceneClipCounts.every(c => c === 1) &&
-          sceneClipCounts.length === gapFilled.length &&
+          Math.abs(sceneClipCounts.length - gapFilled.length) <= 2 &&
+          gapFilled.length > 0 &&
           validStocks.length > 0;
 
         if (isPerSubtitle) {
@@ -484,14 +485,10 @@ export async function POST(req: Request) {
             const dur = capEndSec - capStartSec;
             if (dur < 0.1) continue;
 
-            const sv = validStocks[ci % validStocks.length];
+            const sv = validStocks[Math.min(ci, validStocks.length - 1)];
             const src = sv.localUrl ?? sv.videoUrl;
             const clipDuration = sv.duration > 0 ? sv.duration : 10;
-            const clipOffset = clipNextOffset.get(src) ?? 0;
-            const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
-
-            bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
-            clipNextOffset.set(src, safeOffset + dur);
+            bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
           }
         } else {
         // Scene-aware pool mode: group clips by scene and cut by scene/segment count.
