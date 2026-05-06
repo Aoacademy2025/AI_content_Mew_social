@@ -126,7 +126,9 @@ function collapseConsecutiveDuplicateWords(input: string): string {
 }
 
 function limitPhraseCountByDuration(phrases: string[], audioDurSec: number): string[] {
-  const maxByDuration = Math.max(2, Math.min(7, Math.ceil(audioDurSec / 2.4)));
+  const maxByDuration = Math.max(8, Math.min(20, Math.ceil(audioDurSec / 1.2)));
+  if (phrases.length <= 8) return phrases;
+  if (phrases.length <= maxByDuration) return phrases;
   if (phrases.length <= maxByDuration) return phrases;
   const out = [...phrases];
   while (out.length > maxByDuration) {
@@ -961,23 +963,25 @@ RULES:
       let maxPhrases = 6;
       const openAiSplitModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
       const scriptSentencesInitial = splitToSentencePhrases(sourceRaw);
-      const hasScriptSource = typeof script === "string" && script.trim().length > 0;
       const hasSentencePunctuation = /[.!?…]/.test(sourceText);
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
-      const shouldUseSegmentSplit = !hasScriptSource && !hasSentencePunctuation && segments.length >= 2;
+      const segmentTexts = segments
+        .map((s) => sanitizeTranscriptionText(s.text))
+        .filter(Boolean);
+      const hasSegmentPhrases = segmentTexts.length >= 2;
+      const normalizedSource = normalizeForCompare(sourceText);
+      const normalizedSegment = normalizeForCompare(segmentTexts.join(" "));
+      const segmentSplitCoverage = normalizedSource.length > 0 ? normalizedSegment.length / normalizedSource.length : 0;
+      const shouldUseSegmentSplit = segments.length >= 2 && hasSegmentPhrases
+        && segmentSplitCoverage >= 0.55 && segmentSplitCoverage <= 1.35
+        && segmentTexts.length <= 18;
 
       if (shouldUseSegmentSplit) {
-        const segmentTexts = segments
-          .map((s) => sanitizeTranscriptionText(s.text))
-          .filter(Boolean);
         if (segmentTexts.length > 1) {
           phrases = segmentTexts;
           llmTags = phrases.map((_, i) => (i === 0 ? "hook" : "body"));
           console.log(`[transcribe] fallback segment-based split from Whisper timestamps: ${phrases.length} phrases`);
-        } else if (shouldSkipLLMSplit) {
-          phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
-          console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
         }
       } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
