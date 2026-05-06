@@ -191,32 +191,38 @@ export async function POST(req: Request) {
       if (url.startsWith("http://") || url.startsWith("https://")) {
         try {
           const u = new URL(url);
-          if (u.pathname.startsWith("/api/stocks/") || u.pathname.startsWith("/api/renders/stock-")) {
-            url = u.pathname;
-          } else {
-            return url; // external URL, leave as-is
-          }
-        } catch {
-          return url;
-        }
+      if (
+        u.pathname.startsWith("/api/stocks/") ||
+        u.pathname.startsWith("/api/renders/stock-") ||
+        u.pathname.startsWith("/renders/stock-")
+      ) {
+        url = u.pathname;
+      } else {
+        return url; // external URL, leave as-is
       }
-      // Client may send old /api/renders/stock-xxx.mp4 URLs — redirect to stocks/
-      if (url.startsWith("/api/renders/stock-")) {
-        const filename = url.slice("/api/renders/".length);
-        const stockPath = path.join(stocksDir, filename);
-        if (fs.existsSync(stockPath) && fs.statSync(stockPath).size > 1_500) {
-          url = `/api/stocks/${filename}`;
-        } else {
+    } catch {
+      return url;
+    }
+  }
+  // Client may send old /api/renders/stock-xxx.mp4 or /renders/stock-xxx.mp4 URLs — redirect to stocks/
+  if (url.startsWith("/api/renders/stock-") || url.startsWith("/renders/stock-")) {
+    const filename = url.startsWith("/api/renders/")
+      ? url.slice("/api/renders/".length)
+      : url.slice("/renders/".length);
+    const stockPath = path.join(stocksDir, filename);
+    if (fs.existsSync(stockPath) && fs.statSync(stockPath).size > 1_500) {
+      url = `/api/stocks/${filename}`;
+    } else {
           // File not in stocks/ — copy from renders/ symlink target if it exists there
           const renderPath = path.join(rendersDir, filename);
           if (fs.existsSync(renderPath) && fs.statSync(renderPath).size > 1_500) {
             fs.copyFileSync(renderPath, stockPath);
             url = `/api/stocks/${filename}`;
           } else {
-            throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
-          }
+          throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
         }
       }
+    }
       if (!url.startsWith("/api/stocks/")) return url;
 
       const filename = url.slice("/api/stocks/".length);
@@ -227,37 +233,18 @@ export async function POST(req: Request) {
       }
 
       const symlinkPath = path.join(rendersDir, filename);
-      try {
-        if (fs.existsSync(symlinkPath)) {
-          const st = fs.lstatSync(symlinkPath);
-          if (st.isSymbolicLink()) {
-            const linkTarget = fs.readlinkSync(symlinkPath);
-            const fullTarget = path.isAbsolute(linkTarget)
-              ? linkTarget
-              : path.join(path.dirname(symlinkPath), linkTarget);
-            if (!fs.existsSync(fullTarget) || fs.statSync(fullTarget).size !== srcStat.size) {
-              fs.unlinkSync(symlinkPath);
-              throw new Error("stale stock symlink");
-            }
-          } else if (!st.isFile() || fs.statSync(symlinkPath).size !== srcStat.size) {
-            fs.unlinkSync(symlinkPath);
-            throw new Error("stale stock copy");
-          }
+      if (!fs.existsSync(symlinkPath)) {
+        try {
+          fs.copyFileSync(srcPath, symlinkPath);
+        } catch {
+          // Failing to mirror into renders is non-fatal because /api/stocks is now the primary path.
         }
-
-        if (!fs.existsSync(symlinkPath)) {
-          try {
-            fs.symlinkSync(srcPath, symlinkPath, "file");
-          } catch {
-            fs.copyFileSync(srcPath, symlinkPath);
-          }
-        }
-      } catch (error) {
-        console.error(`[render] failed to expose stock via renders path (${url}):`, error);
-        throw new Error(`Cannot expose stock asset: ${url}`);
+      }
+      if (!fs.existsSync(symlinkPath)) {
+        throw new Error("Failed to mirror stock asset for browser access");
       }
 
-      return `${baseUrl}/api/renders/${filename}`;
+      return `${baseUrl}/api/stocks/${filename}`;
     }
 
     function toLocalFilePath(url: string): string | null {
