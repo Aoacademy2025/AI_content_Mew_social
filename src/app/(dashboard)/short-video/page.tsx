@@ -2704,7 +2704,7 @@ export default function ShortVideoPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 items-start">
 
             {/* Col 1 — Live Status (narrow) — full width on mobile (order-last), col on md+ */}
-            <div className="md:col-span-2 lg:col-span-3 order-last md:order-none rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+            <div className="md:col-span-2 lg:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
                 <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Live Status</p>
