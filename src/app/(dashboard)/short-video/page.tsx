@@ -1570,7 +1570,7 @@ export default function ShortVideoPage() {
 
   const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
   const isVideoOnly = !useAvatar;
-  const STEP_ORDER: (keyof StepState)[] = ["keywords","tts","transcribe","fetchStock","config","render","avatar","composite"]
+  const STEP_ORDER: (keyof StepState)[] = ["tts","transcribe","keywords","fetchStock","config","render","avatar","composite"]
     .filter(k => {
       if (isVideoOnly && (k === "avatar" || k === "composite")) return false;
       if (!isVideoOnly && isDirectMode && k === "avatar") return false;
