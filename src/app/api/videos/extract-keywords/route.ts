@@ -368,32 +368,41 @@ export async function POST(req: Request) {
 
       const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
-For each subtitle phrase below, write 3 English Pexels search queries ordered from MOST to LEAST specific.
-The system will try query 1 first, then 2, then 3 if no video is found.
+For each subtitle phrase below, write 3 English Pexels/stock search queries from MOST to LEAST specific.
+The system tries query 1 → 2 → 3 until a clip is found.
 
-RULES:
-- Output ONLY: {"keywords":[["q1a","q1b","q1c"],["q2a","q2b","q2c"],...]}
-- Exactly ${batch.length} arrays, same order as subtitles
-- Each array has exactly 3 queries, most specific → most generic
-- English only — no Thai characters
-- 2-5 words per query, something a camera can physically film
-- Think: what VIDEO CLIP would a viewer expect to see while hearing this subtitle?
-- Use VISUAL METAPHORS for abstract concepts:
-  * AI / technology → ["developer coding screen", "tech startup office", "computer screen typing"]
-  * competition / ranking → ["chess match closeup", "race track finish line", "leaderboard display"]
-  * money / economy → ["stock market trading floor", "financial chart growth", "business meeting handshake"]
-  * people / society → ["crowd walking city street", "diverse team meeting", "people gathering outdoors"]
-  * change / transition → ["door opening bright light", "sunrise time lapse", "before after transformation"]
-  * surprise / discovery → ["person shocked reaction screen", "lightbulb idea moment", "excited person news"]
-- Query 3 should always be a safe broad fallback (1-2 words) that Pexels will definitely have results for
+━━━ HOW TO BUILD EACH QUERY ━━━
+Think like a cinematographer — what would a camera lens actually point at?
+
+STEP 1 — Extract: noun (what) + adjective (how it looks) + action (what it does)
+  "แช่แข็งถึงศูนย์องศา" → noun: liquid nitrogen | adj: freezing cold | action: pour cloud
+  → query 1: "liquid nitrogen freeze pour cloud"
+
+STEP 2 — If too abstract, use a VISUAL METAPHOR that can be filmed in one shot:
+  AI / เอไอ           → "developer coding dark screen"
+  quantum / อนุภาค    → "glowing particle wave abstract"
+  ranking / อันดับ    → "race track finish line winner"
+  money / การเงิน     → "stock market trading floor chart"
+  emotion / ความรู้สึก → "person deep thinking alone window"
+  discovery / ค้นพบ   → "scientist eureka lightbulb moment"
+  society / สังคม     → "crowd city street daytime"
+  danger / ภัย        → "warning sign red alert flashing"
+  energy / พลังงาน    → "electric spark lightning bolt close"
+  change / เปลี่ยน     → "door opening bright sunlight outside"
+
+STEP 3 — Query 3 MUST be a safe broad 1-2 word fallback Pexels always has:
+  "city", "ocean", "technology", "nature", "office", "people", "science", "light"
+
+━━━ OUTPUT FORMAT ━━━
+{"keywords":[["q1a","q1b","q1c"],["q2a","q2b","q2c"],...]}
+- Exactly ${batch.length} arrays — one per subtitle, same order
+- Each array: exactly 3 queries (specific → medium → broad)
+- English only, no Thai
+- 2–5 words per query
+- Every query must describe something a camera can physically film
 
 SUBTITLE PHRASES (${b * BATCH_SIZE + 1}–${b * BATCH_SIZE + batch.length}):
 ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}
-
-Important:
-- Keep each output query tightly grounded to the same subtitle line.
-- Do not use generic words like "news", "technology", "people" if a more specific visual exists.
-- If subtitle is abstract, use strong visual metaphors that can be filmed in one shot.
 
 JSON only:`;
 
