@@ -1742,14 +1742,14 @@ export default function ShortVideoPage() {
       return true;
     }) as (keyof StepState)[];
   const STEP_DISPLAY: Record<keyof StepState, string> = {
-    keywords: "คีย์เวิร์ด (LLM)",
-    fetchStock: "ดึงวิดีโอ Stock",
-    tts: "สร้างเสียง (TTS)",
-    transcribe: "แปลงซับ (Whisper)",
-    config: "ตั้งค่าเรนเดอร์",
-    render: "เรนเดอร์วิดีโอ",
-    avatar: "สร้างอวตาร (HeyGen)",
-    composite: "รวมวิดีโอ (FFmpeg)",
+    keywords: "Keyword Extract (LLM)",
+    fetchStock: "Stock Video Fetch",
+    tts: "Voice Generate (TTS)",
+    transcribe: "Subtitle Sync (Whisper)",
+    config: "Render Config",
+    render: "Remotion Render",
+    avatar: "Avatar Generate (HeyGen)",
+    composite: "Video Composite (FFmpeg)",
   };
 
   if (plan !== "PRO") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
