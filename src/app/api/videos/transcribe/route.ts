@@ -1097,12 +1097,111 @@ RULES:
         fallbackDur
       );
 
-      // STT is used ONLY for timestamps — never for subtitle text.
-      // Always run LLM split on the real script, then map onto STT timestamps.
-      // Reset captions so we always go through LLM split regardless of STT output.
       captions = [];
 
-      // ── Step 1: LLM split — always runs, uses real script text ──
+      // ── Step 1: Use Gemini segment timestamps directly (most accurate) ────────
+      // Gemini detects real speech boundaries from audio — merge short segments so
+      // each caption is 8-32 Thai chars and ≥1.2s, then snap text from real script.
+      if (segments.length >= 2) {
+        // Merge adjacent segments until each group is ≥ MIN_CHARS chars or hits a pause ≥ 0.35s
+        const MIN_CHARS = 8;
+        const MAX_CHARS = 32;
+        const MIN_DUR   = 1.2; // seconds
+
+        type MergedSeg = { startMs: number; endMs: number; chars: number };
+        const merged: MergedSeg[] = [];
+        let curStart = segments[0].start;
+        let curEnd   = segments[0].end;
+        let curChars = alignmentCharLen(segments[0].text);
+
+        for (let si = 1; si < segments.length; si++) {
+          const seg = segments[si];
+          const gap = seg.start - curEnd;
+          const segChars = alignmentCharLen(seg.text);
+          const wouldBe  = curChars + segChars;
+          const curDur   = curEnd - curStart;
+
+          // Flush current group if: natural pause ≥ 0.35s OR would exceed MAX_CHARS, AND already long enough
+          const naturalBreak = gap >= 0.35;
+          const tooLong      = wouldBe > MAX_CHARS;
+          const longEnough   = curChars >= MIN_CHARS && curDur >= MIN_DUR;
+
+          if ((naturalBreak || tooLong) && longEnough) {
+            merged.push({ startMs: Math.round(curStart * 1000), endMs: Math.round(curEnd * 1000), chars: curChars });
+            curStart = seg.start; curEnd = seg.end; curChars = segChars;
+          } else {
+            curEnd = seg.end; curChars = wouldBe;
+          }
+        }
+        merged.push({ startMs: Math.round(curStart * 1000), endMs: Math.round(curEnd * 1000), chars: curChars });
+
+        // Now distribute the real script text onto merged segments proportionally by duration
+        const totalDurMs = merged.reduce((a, m) => a + (m.endMs - m.startMs), 0);
+        const srcChars = [...sourceText]; // split into Unicode chars (handles Thai correctly)
+        const srcNonSpace = [...sourceText.replace(/\s+/g, "")];
+        let charPos = 0;
+
+        captions = merged.map((m, i) => {
+          const share  = (m.endMs - m.startMs) / Math.max(1, totalDurMs);
+          const nChars = i === merged.length - 1
+            ? srcNonSpace.length - charPos  // last segment gets the rest
+            : Math.max(1, Math.round(share * srcNonSpace.length));
+
+          // Advance through sourceText consuming nChars non-space characters
+          let taken = 0;
+          let srcIdx = charPos === 0 ? 0 : (() => {
+            // find position in srcChars corresponding to charPos non-space chars
+            let ns = 0; let idx = 0;
+            while (idx < srcChars.length && ns < charPos) {
+              if (srcChars[idx] !== " ") ns++;
+              idx++;
+            }
+            return idx;
+          })();
+
+          // recompute srcIdx from charPos each time
+          {
+            let ns = 0; let idx = 0;
+            while (idx < srcChars.length && ns < charPos) {
+              if (srcChars[idx] !== " ") ns++;
+              idx++;
+            }
+            srcIdx = idx;
+          }
+
+          const sliceStart = srcIdx;
+          while (srcIdx < srcChars.length && taken < nChars) {
+            if (srcChars[srcIdx] !== " ") taken++;
+            srcIdx++;
+          }
+          // Extend to next word boundary (don't cut mid-word for space-separated text)
+          while (srcIdx < srcChars.length && srcChars[srcIdx] !== " ") srcIdx++;
+
+          const slice = sanitizePhraseText(srcChars.slice(sliceStart, srcIdx).join(""));
+          charPos += taken;
+
+          return {
+            text: normalizeCaptionText(slice || sourceText),
+            startMs: m.startMs,
+            endMs:   m.endMs,
+            timestampMs: m.startMs,
+            confidence: 1,
+            tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
+          };
+        }).filter(c => c.text.length > 0);
+
+        // Give any remaining script text to last caption
+        if (captions.length > 0 && charPos < srcNonSpace.length) {
+          let idx = 0; let ns = 0;
+          while (idx < srcChars.length && ns < charPos) { if (srcChars[idx] !== " ") ns++; idx++; }
+          const remaining = sanitizePhraseText(srcChars.slice(idx).join(""));
+          if (remaining) captions[captions.length - 1].text = normalizeCaptionText(captions[captions.length - 1].text + remaining);
+        }
+
+        console.log(`[transcribe] segment-merge: ${segments.length} segs → ${merged.length} groups → ${captions.length} captions`);
+      }
+
+      // ── Step 2: LLM split fallback — only when no segment timestamps available ──
       let phrases: string[] = [];
       let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;
@@ -1112,9 +1211,10 @@ RULES:
       const hasSentencePunctuation = /[.!?…]/.test(sourceText);
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
-      // Always use LLM to split — it produces natural, readable phrases.
-      // Segment timestamps from Gemini/Whisper are used only for timing alignment after LLM splits.
-      if (shouldSkipLLMSplit) {
+
+      if (captions.length > 0) {
+        // Segment-direct succeeded — skip LLM split entirely
+      } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
