@@ -42,6 +42,7 @@ const DEFAULT_STEPS: StepState = {
 interface PipelineData {
   scenes: string[];
   keywords: string[];
+  keywordAlternatives: string[][];
   keywordsPerScene: number;
   sceneClipCounts: number[];  // how many clips each scene needs
   sceneDurations: number[];   // estimated duration per scene (seconds)
@@ -211,6 +212,7 @@ export default function ShortVideoPage() {
 
   // Render progress popup (0–100, null = not rendering)
   const [renderProgress, setRenderProgress] = useState<number | null>(null);
+  const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
@@ -489,6 +491,7 @@ export default function ShortVideoPage() {
     assertOk("Keywords", kwRes, kwData);
     const kws: string[] = kwData.keywords ?? [];
     pipe.current.keywords = kws;
+    pipe.current.keywordAlternatives = kwData.keywordAlternatives ?? [];
     pipe.current.keywordsPerScene = kwData.keywordsPerScene ?? 5;
     pipe.current.sceneClipCounts = kwData.sceneClipCounts ?? [];
     pipe.current.sceneDurations = kwData.sceneDurations ?? [];
@@ -605,17 +608,100 @@ export default function ShortVideoPage() {
         ? Math.max(...captions.map(c => c.endMs))
         : (txData.segments?.at(-1)?.endMs ?? 60000);
 
-    // ── Use captions from server (already GPT-split + tagged + Whisper-timestamped) ──
-    // Server now returns tags (hook/body/cta) directly in each caption from transcribe LLM call
+    // ── Use captions from server first, then harden by splitting overly long lines to
+    // keep subtitle timing readable per scene/segment on short-form output.
     let sceneCaptions: Caption[] = [];
 
+    const forceSplitByLength = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
+      const src = (cap.text ?? "").trim();
+      const capTag = tag ?? (cap.tag as "hook" | "body" | "cta" | undefined);
+      if (!src) return [];
+      const MAX_CHARS = 52;
+      const MIN_CHARS = 10;
+      if (src.length <= MAX_CHARS) return [{ ...cap, text: src, tag: capTag }];
+
+      const chunks: string[] = [];
+      const words = src.split(/\s+/).filter(Boolean);
+      if (words.length <= 1) {
+        for (let i = 0; i < src.length; i += MAX_CHARS) chunks.push(src.slice(i, i + MAX_CHARS).trim());
+      } else {
+        let buf = "";
+        for (const p of words) {
+          if (!p.trim()) continue;
+          const next = buf ? `${buf} ${p}` : p;
+          if (next.length > MAX_CHARS && buf) {
+            chunks.push(buf.trim());
+            buf = p;
+          } else {
+            buf = next;
+          }
+        }
+        if (buf.trim()) chunks.push(buf.trim());
+      }
+
+      if (!chunks.length) chunks.push(src);
+      // Merge tiny tail chunks back to previous chunk to avoid super-short subtitles.
+      const rebalance: string[] = [];
+      for (const piece of chunks) {
+        if (piece.length < MIN_CHARS && rebalance.length > 0) {
+          const merged = `${rebalance[rebalance.length - 1]} ${piece}`.trim();
+          if (merged.length <= MAX_CHARS * 2) {
+            rebalance[rebalance.length - 1] = merged;
+            continue;
+          }
+        }
+        rebalance.push(piece);
+      }
+      const finalChunks = rebalance.filter(Boolean);
+
+      if (finalChunks.length === 1) {
+        return [{ ...cap, text: src, tag: capTag }];
+      }
+
+      const span = Math.max(cap.endMs - cap.startMs, 1);
+      return finalChunks.map((t, i) => {
+        const start = cap.startMs + Math.floor((span * i) / finalChunks.length);
+        const end = i === finalChunks.length - 1 ? cap.endMs : cap.startMs + Math.floor((span * (i + 1)) / finalChunks.length);
+        return { text: t, startMs: start, endMs: Math.max(start + 240, end), tag: capTag };
+      });
+    };
+
+    const splitCaption = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
+      const src = (cap.text ?? "").trim();
+      if (!src) return [];
+      return forceSplitByLength({ ...cap, text: src }, tag);
+    };
+
     if (captions.length > 0) {
-      sceneCaptions = captions.map((cap, i) => ({
-        ...cap,
-        tag: cap.tag ?? (i === 0 ? "hook" : "body"),
-      }));
+      sceneCaptions = captions.flatMap((cap, i) => {
+        const tag = (cap.tag as "hook" | "body" | "cta" | undefined) ?? (i === 0 ? "hook" : "body");
+        const split = splitCaption(cap, tag);
+        return split.length ? split : [];
+      });
     }
 
+      sceneCaptions = sceneCaptions
+        .map((c, idx) => ({
+          ...c,
+          text: (c.text ?? "").trim(),
+          tag: c.tag ?? (idx === 0 ? "hook" : "body"),
+        startMs: Number.isFinite(c.startMs) ? Math.max(0, Math.floor(c.startMs)) : 0,
+        endMs: Number.isFinite(c.endMs) ? Math.floor(c.endMs) : 0,
+      }))
+        .filter((c) => c.text.length > 0)
+        .sort((a, b) => a.startMs - b.startMs)
+        .reduce<Caption[]>((acc, c) => {
+          if (!acc.length) {
+            return [{ ...c, endMs: c.endMs > c.startMs ? c.endMs : c.startMs + 240 }];
+          }
+          const last = acc[acc.length - 1];
+          const safeStart = Math.max(c.startMs, Math.min(c.endMs - 1, last.endMs + 1));
+          const safeEnd = safeStart < c.endMs ? c.endMs : safeStart + Math.max(240, c.endMs - c.startMs);
+          if (safeStart >= safeEnd) {
+            return [...acc, { ...c, startMs: safeStart, endMs: safeStart + 240 }];
+          }
+          return [...acc, { ...c, startMs: safeStart, endMs: safeEnd }];
+        }, []);
     // Fallback for non-Thai word-level grouping
     if (!sceneCaptions.length && whisperWords.length > 0) {
       const groups: Caption[] = [];
@@ -623,7 +709,7 @@ export default function ShortVideoPage() {
       let chars = 0;
       const flush = () => {
         if (!bucket.length) return;
-        groups.push({ text: bucket.map(w => w.word).join(""), startMs: bucket[0].startMs, endMs: bucket[bucket.length - 1].endMs });
+        groups.push({ text: bucket.map(w => w.word).join(" "), startMs: bucket[0].startMs, endMs: bucket[bucket.length - 1].endMs, tag: groups.length === 0 ? "hook" : "body" });
         bucket = []; chars = 0;
       };
       for (const w of whisperWords) {
@@ -679,31 +765,65 @@ export default function ShortVideoPage() {
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
     setRenderProgress(0);
+    setRenderProgressError(null);
+
     let renderPollTimer: ReturnType<typeof setInterval> | null = null;
+    let renderTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollFailCount = 0;
+    let renderFailedMessage: string | null = null;
+    const markRenderError = (msg: string) => {
+      if (renderFailedMessage) return;
+      renderFailedMessage = msg;
+      setRenderProgressError(msg);
+      setStep("render", "error", msg);
+    };
+
     const stopRenderPoll = () => {
       if (renderPollTimer !== null) {
         clearInterval(renderPollTimer);
         renderPollTimer = null;
       }
+      if (renderTimeoutTimer !== null) {
+        clearTimeout(renderTimeoutTimer);
+        renderTimeoutTimer = null;
+      }
     };
 
     renderPollTimer = setInterval(async () => {
+      if (renderFailedMessage) return;
       try {
         const progressRes = await fetch("/api/videos/render-progress", {
           cache: "no-store",
           signal: abortControllerRef.current?.signal,
         });
-        if (!progressRes.ok) return;
+        if (!progressRes.ok) {
+          pollFailCount += 1;
+          if (pollFailCount >= 6) {
+            markRenderError("ไม่สามารถดึงความคืบหน้า Render ได้ต่อเนื่อง กรุณาลองใหม่อีกครั้ง");
+          }
+          return;
+        }
         const progressData = await progressRes.json();
         const progress = Number(progressData?.progress);
         if (Number.isFinite(progress)) {
-          setRenderProgress(progress);
-          setStep("render", "running", `Rendering... ${progress}%`);
+          pollFailCount = 0;
+          const normalized = Math.min(100, Math.max(0, Math.round(progress)));
+          setRenderProgress(normalized);
+          setStep("render", "running", `Rendering... ${normalized}%`);
         }
       } catch {
-        // ignore transient progress fetch errors
+        pollFailCount += 1;
+        if (pollFailCount >= 6) {
+          markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
+        }
       }
     }, 2000);
+
+    renderTimeoutTimer = setTimeout(() => {
+      if (!renderFailedMessage) {
+        markRenderError("Render ใช้เวลานานผิดปกติ (อาจติดขัดที่ขั้นตอนดาวน์โหลด/ประมวลผลวิดีโอ)");
+      }
+    }, 15 * 60 * 1000);
 
     try {
       const renderRes = await fetch("/api/videos/render", {
@@ -712,6 +832,7 @@ export default function ShortVideoPage() {
         body: JSON.stringify({ shortVideoConfig: config }),
         signal: abortControllerRef.current?.signal,
       });
+      if (renderFailedMessage) throw new Error(renderFailedMessage);
       const renderData = await renderRes.json();
       assertOk("Render", renderRes, renderData);
       const url = renderData.videoUrl as string;
@@ -719,11 +840,24 @@ export default function ShortVideoPage() {
       setPreRenderUrl(url);
       if (!useAvatar) setVideoUrl(url);
       setStep("render", "done", url);
+      setRenderProgressError(null);
       setRenderProgress(null);
       return url;
+    } catch (err) {
+      if (!renderFailedMessage && err instanceof Error && err.name === "AbortError") {
+        throw err;
+      }
+      if (!renderFailedMessage) {
+        const msg = friendlyError(err);
+        markRenderError(msg);
+      }
+      throw err;
     } finally {
       stopRenderPoll();
-      setRenderProgress(null);
+      if (!renderFailedMessage || abortRef.current) {
+        setRenderProgress(null);
+        if (!renderFailedMessage) setRenderProgressError(null);
+      }
     }
   }
 
@@ -997,16 +1131,14 @@ export default function ShortVideoPage() {
           return;
         }
         // Stock key check — match the selected stockSource
-        const needPexels  = stockSource === "pexels"  || stockSource === "both";
-        const needPixabay = stockSource === "pixabay" || stockSource === "both";
-        if (needPexels && !keys.pexelsKey) {
-          setMissingKey({ type: "pexels", retryStep: "runAll" });
-          return;
-        }
-        if (needPixabay && !keys.pixabayKey) {
-          setMissingKey({ type: "pixabay", retryStep: "runAll" });
-          return;
-        }
+         const needPexels  = stockSource === "pexels" || stockSource === "both";
+         const needPixabay = stockSource === "pixabay" || stockSource === "both";
+         const canUsePexels = !needPexels || !!keys.pexelsKey;
+         const canUsePixabay = !needPixabay || !!keys.pixabayKey;
+         if (!canUsePexels && !canUsePixabay) {
+           setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
+           return;
+         }
       }
     } catch { /* ignore — let pipeline fail naturally if keys really missing */ }
 
@@ -1111,11 +1243,13 @@ export default function ShortVideoPage() {
             try {
               const kwsToFetch   = missingIdxs.map(i => perSubKws[i]);
               const textsToFetch = missingIdxs.map(i => subTexts[i] ?? perSubKws[i]);
+              const altsToFetch  = missingIdxs.map(i => pipe.current.keywordAlternatives?.[i] ?? []);
               const stockRes = await fetch("/api/videos/fetch-stock", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   keywords: kwsToFetch,
+                  keywordAlternatives: altsToFetch,
                   subtitleTexts: textsToFetch,
                   download: true,
                   totalDurationSec: audioDurSec,
@@ -1345,10 +1479,14 @@ export default function ShortVideoPage() {
         const keysRes = await fetch("/api/user/api-keys");
         if (keysRes.ok) {
           const keys = await keysRes.json();
-          const needPexels  = stockSource === "pexels"  || stockSource === "both";
+          const needPexels  = stockSource === "pexels" || stockSource === "both";
           const needPixabay = stockSource === "pixabay" || stockSource === "both";
-          if (needPexels && !keys.pexelsKey) { setMissingKey({ type: "pexels", retryStep: step }); return; }
-          if (needPixabay && !keys.pixabayKey) { setMissingKey({ type: "pixabay", retryStep: step }); return; }
+          const canUsePexels = !needPexels || !!keys.pexelsKey;
+          const canUsePixabay = !needPixabay || !!keys.pixabayKey;
+          if (!canUsePexels && !canUsePixabay) {
+            setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: step });
+            return;
+          }
         }
       } catch {}
     }
@@ -1410,10 +1548,12 @@ export default function ShortVideoPage() {
           try {
             const kwsToFetch2   = missingIdxs2.map(i => perSubKws2[i]);
             const textsToFetch2 = missingIdxs2.map(i => subTexts2[i] ?? perSubKws2[i]);
+            const altsToFetch2  = missingIdxs2.map(i => pipe.current.keywordAlternatives?.[i] ?? []);
             const r = await fetch("/api/videos/fetch-stock", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 keywords: kwsToFetch2,
+                keywordAlternatives: altsToFetch2,
                 subtitleTexts: textsToFetch2,
                 download: true, totalDurationSec: audioDurSec2, stockSource,
                 overrideClipCount: perSubKws2.length,
@@ -1593,10 +1733,12 @@ export default function ShortVideoPage() {
     <DashboardLayout noPadding>
       {renderProgress !== null && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-8 w-80 flex flex-col items-center gap-5">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-[min(90vw,20rem)] sm:w-80 p-5 sm:p-8 flex flex-col items-center gap-5">
             <div className="flex flex-col items-center gap-1">
               <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
-              <span className="text-sm text-zinc-400">กำลัง Render วิดีโอ...</span>
+              <span className="text-sm text-zinc-400">
+                {renderProgressError ? "Render error" : "Rendering..."}
+              </span>
             </div>
             {/* Progress bar */}
             <div className="w-full h-3 bg-zinc-700 rounded-full overflow-hidden">
@@ -1605,7 +1747,24 @@ export default function ShortVideoPage() {
                 style={{ width: `${renderProgress}%` }}
               />
             </div>
-            <p className="text-xs text-zinc-500 text-center">กรุณารอสักครู่ อย่าปิดหน้าต่างนี้</p>
+            {renderProgressError ? (
+              <p className="text-xs text-red-400 text-center">{renderProgressError}</p>
+            ) : (
+              <p className="text-xs text-zinc-500 text-center">Please wait while render is running. Do not close popup.</p>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (!renderProgressError) {
+                  abortRef.current = true;
+                  abortControllerRef.current?.abort();
+                }
+                setRenderProgress(null);
+              }}
+              className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm"
+            >
+              {renderProgressError ? "Close" : "Cancel"}
+            </button>
           </div>
         </div>
       )}
@@ -1763,7 +1922,7 @@ export default function ShortVideoPage() {
           </div>
 
           {/* ── All inputs: 2-column layout ── */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-stretch">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
 
             {/* LEFT column: Content + ElevenLabs */}
             <div className="flex flex-col gap-4">
@@ -1959,7 +2118,7 @@ export default function ShortVideoPage() {
                 </div>
 
                 {/* Two-column body: controls left, preview right */}
-                <div className="flex gap-0">
+                <div className="flex flex-col gap-3 lg:flex-row lg:gap-0">
 
                   {/* Controls */}
                   <div className="flex-1 p-5 space-y-4 min-w-0">
@@ -2087,13 +2246,13 @@ export default function ShortVideoPage() {
                   </div>
 
                   {/* 9:16 preview panel — wider for legible subtitle */}
-                  <div className="shrink-0 flex flex-col items-center justify-start gap-3 border-l p-4"
-                    style={{ borderColor: "var(--sv-border)", width: 180 }}>
+                  <div className="shrink-0 flex flex-col items-center justify-start gap-3 border-t border-l-0 lg:border-t-0 lg:border-l p-4"
+                    style={{ borderColor: "var(--sv-border)", width: "100%", maxWidth: 180 }}>
                     <p className="text-xs font-semibold uppercase tracking-widest text-white/30 self-start">Preview</p>
 
                     {/* Mock phone frame */}
-                    <div className="relative rounded-2xl overflow-hidden cursor-pointer group/prev"
-                      style={{ width: 152, aspectRatio: "9/16", background: "#000", border: "2px solid hsl(220 30% 20%)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
+                    <div className="relative rounded-2xl overflow-hidden cursor-pointer group/prev w-full max-w-[152px]"
+                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(220 30% 20%)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
                     >
                       {(preRenderUrl) ? (
                         <video src={preRenderUrl} className="absolute inset-0 w-full h-full object-cover" muted playsInline />
@@ -2279,14 +2438,14 @@ export default function ShortVideoPage() {
 
                     {/* Preview video */}
                     {avatarDirectUrl.trim() && (
-                      <video src={avatarDirectUrl.trim()} controls className="w-full rounded-lg" style={{ maxHeight: 220, background: "#000" }} />
+                      <video src={avatarDirectUrl.trim()} controls className="w-full rounded-lg" style={{ maxHeight: "min(220px, 48vh)", background: "#000" }} />
                     )}
 
 
                     {/* Composite + Download */}
                     {directCompositeUrl && (
                       <div className="space-y-2">
-                        <video src={directCompositeUrl} controls className="w-full rounded-lg" style={{ maxHeight: 300, background: "#000" }} />
+                        <video src={directCompositeUrl} controls className="w-full rounded-lg" style={{ maxHeight: "min(300px, 60vh)", background: "#000" }} />
                         <a href={directCompositeUrl} download
                           className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold text-white"
                           style={{ background: "linear-gradient(135deg, hsl(142 72% 35%), hsl(160 80% 40%))" }}>
@@ -2329,10 +2488,10 @@ export default function ShortVideoPage() {
                   )}
                 </div>}
 
-                <div className="flex gap-4">
+                <div className="flex flex-col gap-4 lg:flex-row">
                   {/* Canvas (position editor) — generate mode only */}
-                  {avatarInputMode === "generate" && <div ref={posCanvasRef} className="relative shrink-0 rounded-lg overflow-hidden cursor-crosshair select-none"
-                    style={{ width: 260, aspectRatio: "720/1280", background: "#080e1c", border: "1px solid var(--sv-border2)" }}
+                   {avatarInputMode === "generate" && <div ref={posCanvasRef} className="relative w-full max-w-[260px] shrink-0 rounded-lg overflow-hidden cursor-crosshair select-none"
+                    style={{ width: "min(260px, 100%)", aspectRatio: "720/1280", background: "#080e1c", border: "1px solid var(--sv-border2)" }}
                     onMouseDown={(e) => { setIsDragging(true); updatePosFromPointer(e.clientX, e.clientY); }}
                     onMouseMove={(e) => { if (isDragging) updatePosFromPointer(e.clientX, e.clientY); }}
                     onMouseUp={() => setIsDragging(false)} onMouseLeave={() => setIsDragging(false)}
@@ -2507,10 +2666,10 @@ export default function ShortVideoPage() {
           </div>
 
           {/* ── Bottom panels ── */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
 
             {/* Col 1 — Live Status (narrow) */}
-            <div className="xl:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+            <div className="lg:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
                 <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Live Status</p>
@@ -2849,7 +3008,7 @@ export default function ShortVideoPage() {
             </div>
 
             {/* Col 2 — Subtitle Review + BG Removal stacked */}
-            <div className="xl:col-span-4 flex flex-col gap-4">
+            <div className="lg:col-span-4 flex flex-col gap-4">
 
             {/* Subtitle Review — edit before generate */}
             <div className="rounded-2xl overflow-hidden flex flex-col" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
@@ -2904,7 +3063,7 @@ export default function ShortVideoPage() {
               ) : (
                 <>
                   <div className="flex-1 overflow-hidden">
-                    <div className="overflow-y-auto" style={{ maxHeight: 340 }}>
+                    <div className="overflow-y-auto" style={{ maxHeight: "min(340px, 45vh)" }}>
                       {editedSceneCaptions.map((cap, i) => {
                         const fmt = (ms: number) => {
                           const s = Math.floor(ms / 1000);
@@ -3106,8 +3265,8 @@ export default function ShortVideoPage() {
 
                 {testRemoveUrl && (
                   <div className="space-y-1.5">
-                    <video src={testRemoveUrl} controls autoPlay muted loop
-                      className="w-full rounded-lg" style={{ maxHeight: 240, background: "#000" }} />
+                      <video src={testRemoveUrl} controls autoPlay muted loop
+                      className="w-full rounded-lg" style={{ maxHeight: "min(240px, 45vh)", background: "#000" }} />
                     <a href={testRemoveUrl} download
                       className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[10px] font-semibold text-green-400"
                       style={{ background: "hsl(120 60% 20% / 0.2)", border: "1px solid hsl(120 60% 40% / 0.25)" }}>
@@ -3122,7 +3281,7 @@ export default function ShortVideoPage() {
             </div>{/* end col-2 */}
 
             {/* Col 3 — Preview (full height) */}
-            <div className="xl:col-span-5 rounded-2xl overflow-hidden flex flex-col" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)", minHeight: 600 }}>
+            <div className="lg:col-span-5 rounded-2xl overflow-hidden flex flex-col min-h-[280px] lg:min-h-[600px]" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
@@ -3139,7 +3298,7 @@ export default function ShortVideoPage() {
               {(videoUrl || compositePreviewUrl || preRenderUrl) ? (
                 <div className="flex flex-col flex-1 min-h-0 p-3 gap-2">
                   <div className="flex flex-col flex-1 min-h-0">
-                    <div ref={videoContainerRef} className="relative rounded-xl overflow-hidden bg-black flex-1 min-h-0" style={{ minHeight: 420 }}>
+                    <div ref={videoContainerRef} className="relative rounded-xl overflow-hidden bg-black flex-1 min-h-[220px] lg:min-h-[420px]">
                       <video
                         ref={videoRef}
                         src={videoUrl || compositePreviewUrl || preRenderUrl}
@@ -3258,3 +3417,6 @@ function PhaseRow({
     </div>
   );
 }
+
+
+

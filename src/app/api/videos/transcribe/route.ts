@@ -12,6 +12,8 @@ export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper p
 
 const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
+const MIN_GAP_MS = 1;
+const MIN_CAPTION_MS = 400;
 
 function stripSrtArtifacts(input: string): string {
   return input
@@ -55,10 +57,155 @@ function sanitizePhraseText(input: string): string {
     .trim();
 }
 
+function splitToSentencePhrases(raw: string): string[] {
+  if (!raw.trim()) return [];
+
+  const normalized = raw
+    .replace(/\r/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\([A-Za-z][^)]*\)/g, "")
+    .replace(/\.{3,}/g, "…")
+    .trim();
+
+  if (!normalized) return [];
+
+  const sentencePieces = normalized.match(/[^.!?…ฯ]+(?:[.!?…ฯ])?/g);
+  const fromPunctuation = (sentencePieces ?? [])
+    .map((p) => sanitizeTranscriptionText(p))
+    .filter(Boolean);
+  if (fromPunctuation.length > 1) return fromPunctuation;
+
+  const breathPieces = normalized
+    .split(/(?=\s(?:แต่|และ|เพราะ|จึง|ดังนั้น|เพราะว่า|ในขณะที่|ทั้งนี้|นอกจากนี้)\b)/g)
+    .map((p) => sanitizeTranscriptionText(p))
+    .filter(Boolean);
+
+  return breathPieces.length > 1 ? breathPieces : fromPunctuation;
+}
+
+function splitToPunctuationSentences(raw: string): string[] {
+  if (!raw.trim()) return [];
+
+  const normalized = raw
+    .replace(/\r/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\([A-Za-z][^)]*\)/g, "")
+    .replace(/\.{3,}/g, "…")
+    .trim();
+
+  if (!normalized) return [];
+
+  const sentencePieces = normalized.match(/[^.!?…ฯ]+(?:[.!?…ฯ])?/g);
+  return (sentencePieces ?? [])
+    .map((p) => sanitizeTranscriptionText(p))
+    .filter(Boolean);
+}
+
 function normalizeForCompare(input: string): string {
   return sanitizeTranscriptionText(input)
     .replace(/\s+/g, "")
     .replace(/[.,!?·•…฿"'\-–—()]/g, "");
+}
+
+function alignmentCharLen(input: string): number {
+  const cleaned = sanitizeTranscriptionText(input)
+    .replace(/["""''“”’‘]/g, "")
+    .replace(/\.{2,}/g, "");
+  if (!cleaned) return 0;
+  const thai = cleaned.replace(/[^\u0E00-\u0E7F]/g, "").length;
+  return Math.max(1, thai || cleaned.replace(/\s+/g, "").length);
+}
+
+function mergeTinyPhrases(phrases: string[], minChars = 8): string[] {
+  const out: string[] = [];
+  for (const raw of phrases) {
+    const p = raw.trim();
+    if (!p) continue;
+    if (out.length > 0) {
+      const last = out[out.length - 1];
+      if (p.length < minChars && (last + " " + p).length <= 40) {
+        out[out.length - 1] = `${last} ${p}`.trim();
+        continue;
+      }
+    }
+    out.push(p);
+  }
+  return out;
+}
+
+const THAI_MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
+
+function mergeDateAndConnectorBreaks(phrases: string[]): string[] {
+  if (!phrases.length) return [];
+  const merged: string[] = [];
+  const yearStart = (s: string) => /^(ปี\s*\d{2,4}|พ.ศ\.?\s*\d{2,4}|\d{4})\b/.test(s.trim());
+  const monthTail = (s: string) => THAI_MONTHS.some((m) => s.trim().endsWith(m));
+
+  for (const raw of phrases) {
+    const p = raw.trim();
+    if (!p) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && ((monthTail(prev) && yearStart(p)) || (yearStart(prev) && /^(มี|มีนัก|นัก|ทีมนัก|ที|ทีม)/.test(p)))) {
+      merged[merged.length - 1] = `${prev} ${p}`.trim();
+      continue;
+    }
+    merged.push(p);
+  }
+  return merged;
+}
+
+function alignPhrasesToWordTimings(
+  phrases: string[],
+  words: { word: string; start: number; end: number }[],
+): { text: string; startMs: number; endMs: number }[] {
+  const validWords = words
+    .map((w) => ({ text: w.word, start: w.start, end: w.end, chars: alignmentCharLen(w.word) }))
+    .filter((w) => w.chars > 0);
+
+  if (!validWords.length || phrases.length === 0) return [];
+
+  const cumulativeChars: number[] = [];
+  let totalChars = 0;
+  for (const w of validWords) {
+    totalChars += w.chars;
+    cumulativeChars.push(totalChars);
+  }
+
+  const indexAtChar = (charPos: number): number => {
+    if (charPos <= 0) return 0;
+    if (charPos >= totalChars) return validWords.length - 1;
+    for (let i = 0; i < cumulativeChars.length; i++) {
+      if (charPos <= cumulativeChars[i]) return i;
+    }
+    return validWords.length - 1;
+  };
+
+  const phraseLens = phrases.map((p) => alignmentCharLen(p));
+  const totalPhraseChars = Math.max(1, phraseLens.reduce((a, b) => a + b, 0));
+
+  const out: { text: string; startMs: number; endMs: number }[] = [];
+  let consumedChars = 0;
+  for (let i = 0; i < phrases.length; i++) {
+    const startChar = Math.round((i === 0 ? 0 : consumedChars));
+    consumedChars += phraseLens[i];
+    const endChar = Math.min(totalChars, Math.round((consumedChars / totalPhraseChars) * totalChars));
+    const startIdx = indexAtChar(startChar);
+    const endIdx = Math.max(startIdx, indexAtChar(endChar));
+
+    const startMs = Math.round(validWords[startIdx].start * 1000);
+    const endMs = Math.max(
+      Math.round(validWords[endIdx].end * 1000),
+      Math.round(validWords[startIdx].start * 1000) + 300,
+    );
+
+    out.push({
+      text: sanitizeTranscriptionText(phrases[i]),
+      startMs,
+      endMs,
+    });
+  }
+
+  return out;
 }
 
 /**
@@ -282,6 +429,38 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   const minMs = Math.max(1, Math.ceil(1000 / Math.max(1, fps)));
   const totalMs = Math.max(0, Number(audioDurationMs));
   const EPS = 1;
+  const minCaptionMs = Math.max(MIN_CAPTION_MS, minMs);
+  const clampSegment = (start: number, end: number): { startMs: number; endMs: number } => {
+    let startMs = Math.max(0, Math.round(start));
+    let endMs = Math.max(startMs, Math.round(end));
+
+    if (endMs <= startMs) {
+      endMs = startMs + minCaptionMs;
+    }
+
+    if (endMs > totalMs) {
+      endMs = totalMs;
+      if (endMs - startMs < minCaptionMs) {
+        startMs = Math.max(0, endMs - minCaptionMs);
+      }
+    }
+
+    if (endMs <= startMs) {
+      endMs = startMs + Math.max(minCaptionMs, 240);
+      if (endMs > totalMs) {
+        endMs = totalMs;
+        startMs = Math.max(0, endMs - Math.max(minCaptionMs, 240));
+      }
+    }
+
+    if (endMs <= startMs) {
+      endMs = startMs + 1;
+      if (endMs > totalMs) endMs = totalMs;
+      startMs = Math.max(0, endMs - 1);
+    }
+
+    return { startMs, endMs };
+  };
 
   const normalized: SubtitleItem[] = raw
     .map((c) => ({
@@ -300,18 +479,28 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
 
   for (const cap of normalized) {
     let start = Math.min(Math.max(0, cap.startMs), totalMs);
-    let end = Math.max(start + minMs, cap.endMs);
-    if (!Number.isFinite(end)) end = start + minMs;
+    let end = cap.endMs;
+    if (!Number.isFinite(end)) end = start + minCaptionMs;
 
-    if (start < cursor) start = cursor;
-    end = Math.max(start + minMs, end);
-    if (end > totalMs) end = totalMs;
-
-    if (end <= start) {
-      end = Math.min(totalMs, start + minMs);
+    if (start < cursor) {
+      start = cursor;
     }
 
-    if (start + minMs > totalMs) break;
+    const clipped = clampSegment(start, Math.max(start, end));
+    start = clipped.startMs;
+    end = clipped.endMs;
+
+    if (end - start < minCaptionMs) {
+      end = Math.min(totalMs, start + Math.max(minCaptionMs, 2 * minMs));
+      if (end - start < minCaptionMs) {
+        start = Math.max(0, totalMs - Math.max(minCaptionMs, 2 * minMs));
+        end = Math.min(totalMs, start + Math.max(minCaptionMs, 2 * minMs));
+      }
+    }
+
+    if (start >= totalMs) {
+      continue;
+    }
 
     out.push({
       ...cap,
@@ -326,10 +515,23 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   // Final pass: ensure strict order and no overlap.
   for (let i = 0; i < out.length - 1; i++) {
     if (out[i].endMs >= out[i + 1].startMs) {
-      out[i].endMs = Math.min(Math.max(out[i + 1].startMs, out[i].startMs + EPS), totalMs);
+      const safeEnd = Math.max(out[i].startMs + minCaptionMs, out[i + 1].startMs - EPS);
+      out[i].endMs = Math.min(totalMs - MIN_GAP_MS, safeEnd);
+      out[i + 1].startMs = Math.min(totalMs, Math.max(out[i].endMs + MIN_GAP_MS, out[i + 1].startMs));
     }
     if (out[i].endMs <= out[i].startMs) {
-      out[i].endMs = Math.min(totalMs, out[i].startMs + minMs);
+      const restored = clampSegment(out[i].startMs, out[i].startMs + minCaptionMs);
+      out[i].startMs = restored.startMs;
+      out[i].endMs = restored.endMs;
+    }
+  }
+
+  if (out.length > 0) {
+    const lastIdx = out.length - 1;
+    if (out[lastIdx].endMs <= out[lastIdx].startMs) {
+      const restored = clampSegment(out[lastIdx].startMs, out[lastIdx].startMs + minCaptionMs);
+      out[lastIdx].startMs = restored.startMs;
+      out[lastIdx].endMs = restored.endMs;
     }
   }
 
@@ -638,13 +840,38 @@ RULES:
       let minPhrases = 4;
       let maxPhrases = 6;
       const openAiSplitModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
+      const scriptSentencesInitial = splitToSentencePhrases(sourceRaw);
+      const hasSentencePunctuation = /[.!?…]/.test(sourceText);
+      const strictSentences = splitToPunctuationSentences(sourceText);
+      const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && segments.length <= 1;
+      const shouldUseSegmentSplit = !hasSentencePunctuation && segments.length >= 2;
 
-      if (apiKey) {
+      if (shouldUseSegmentSplit) {
+        const segmentTexts = segments
+          .map((s) => sanitizeTranscriptionText(s.text))
+          .filter(Boolean);
+        if (segmentTexts.length > 1) {
+          phrases = segmentTexts;
+          llmTags = phrases.map((_, i) => (i === 0 ? "hook" : "body"));
+          console.log(`[transcribe] fallback segment-based split from Whisper timestamps: ${phrases.length} phrases`);
+        } else if (shouldSkipLLMSplit) {
+          phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
+          console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
+        }
+      } else if (shouldSkipLLMSplit) {
+        phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
+        console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
+      } else if (apiKey) {
         try {
           const durationSec = audioDur;
           const sourceLen = sourceText.replace(/\s+/g, "").length;
-          minPhrases = Math.max(4, Math.floor(durationSec / 5));
-          maxPhrases = Math.max(minPhrases + 2, Math.ceil(durationSec / 2));
+          // Target ~20-30 Thai chars per subtitle phrase (comfortable reading speed)
+          const byChars = Math.round(sourceLen / 25);
+          // Target ~3-4s per phrase based on duration
+          const byDur = Math.round(durationSec / 3.5);
+          const targetPhrases = Math.max(byChars, byDur, 3);
+          minPhrases = Math.max(3, targetPhrases - 1);
+          maxPhrases = targetPhrases + 2;
 
           const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
@@ -709,14 +936,26 @@ ${sourceText.trim()}`;
               if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
                 llmTags = parsed.tags as ("hook" | "body" | "cta")[];
               }
+              const scriptSentences = splitToSentencePhrases(sourceRaw);
+              const shouldUseSentenceSplit = scriptSentences.length > 1 &&
+                scriptSentences.length <= Math.max(3, raw.length + 3) &&
+                scriptSentences.length <= 20;
               const origStripped = normalizeForCompare(sourceText);
               const outStripped = normalizeForCompare(raw.join(""));
               const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
-              if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
+          if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
                 // Use LLM phrases directly — prompt instructs COPY EXACT.
                 // Do NOT call expandPhrasesToTargetDensity: it re-splits by char count
                 // and breaks mixed Thai/English phrases (e.g. "enterprise product" → two lines).
-                phrases = raw;
+                const sentenceLenOk = scriptSentences.every((s) => alignmentCharLen(s) >= 10) && scriptSentences.length <= 20;
+                if ((shouldUseSentenceSplit || scriptSentences.length === 2) && sentenceLenOk) {
+                  phrases = mergeTinyPhrases(scriptSentences);
+                  if (llmTags.length > phrases.length) llmTags = llmTags.slice(0, phrases.length);
+                  console.log(`[transcribe] sentence-anchored split override -> ${phrases.length} phrases`);
+                } else {
+                  phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
+                }
+                phrases = mergeDateAndConnectorBreaks(phrases);
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
@@ -735,6 +974,10 @@ ${sourceText.trim()}`;
 
       // ── Fallback: split by sentence punctuation or newlines ─────────────────
       if (phrases.length === 0) {
+        const sentenceFallback = splitToSentencePhrases(sourceRaw);
+        if (sentenceFallback.length > 1) {
+          phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(sentenceFallback));
+        } else {
         const MONTHS = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
         const isMonth = (s: string) => MONTHS.some(m => s.trim().startsWith(m));
         const isYear  = (s: string) => /^\d{4}$/.test(s.trim());
@@ -781,6 +1024,8 @@ ${sourceText.trim()}`;
           }
           phrases.push(cur);
         }
+        phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases));
+      }
         console.log(`[transcribe] fallback split → ${phrases.length} phrases`);
         // Do NOT expand here — char-based splitting breaks mixed Thai/English phrases.
       }
@@ -793,57 +1038,42 @@ ${sourceText.trim()}`;
       //   Use Whisper segment start/end times, weighted by phrase char length.
 
       if (phrases.length > 0) {
-        // ── Timestamp mapping: forced alignment via Whisper word/segment timestamps ──
-        //
-        // Strategy A — word-level forced alignment (preferred when words available):
-        //   Strip Thai chars only from both phrase and whisper words, then greedily
-        //   consume whisper words until the phrase’s char count is satisfied.
-        //   Use first consumed word’s start and last consumed word’s end as timestamps.
-        //
-        // Strategy B — segment-level proportional (fallback when no word timestamps):
-        //   Distribute phrases proportionally by char count across Whisper segment timeline.
-        //   This is less accurate but better than pure char-proportion over full audio.
+        let result: { text: string; startMs: number; endMs: number }[] = [];
 
-      const thaiOnly = (s: string) => s.replace(/[^฀-๿]/g, "");
-      const charLen = (s: string) => Math.max(1, thaiOnly(s).length || s.replace(/\s+/g, "").length);
-      const cleanText = (s: string) => s.replace(/["""’’]/g, "").replace(/\.{2,}/g, "").trim();
-      const result: { text: string; startMs: number; endMs: number }[] = [];
+        const canDirectSegmentAlign = phrases.length === segments.length && phrases.length >= 2;
+        if (canDirectSegmentAlign) {
+          for (let i = 0; i < phrases.length; i++) {
+            result.push({
+              text: sanitizeTranscriptionText(phrases[i]),
+              startMs: Math.round(segments[i].start * 1000),
+              endMs: Math.round(segments[i].end * 1000),
+            });
+          }
+          console.log(`[transcribe] direct segment alignment: ${result.length} phrases`);
+        } else {
+          const alignedByWord = alignPhrasesToWordTimings(phrases, words);
+          if (alignedByWord.length === phrases.length) {
+            result.push(...alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) })));
+            console.log(`[transcribe] word-timing alignment: ${result.length} phrases`);
+          }
+        }
 
-        if (segments.length > 0) {
-          // Strategy A: assign each LLM phrase to the STT segment it overlaps most,
-          // using cumulative char proportion to map phrases → segment boundaries.
-          //
-          // Step 1: map each phrase index → a segment index using char proportion.
-          //   phraseCharFrac[i] = cumulative fraction of total chars up to end of phrase i.
-          //   segmentCharFrac[j] = cumulative fraction of total audio time up to end of seg j.
-          //   Phrase i belongs to segment j where segmentCharFrac[j] >= phraseCharFrac[i].
-          //
-          // Step 2: for phrases that land in the same segment, distribute their time
-          //   proportionally within that segment’s start→end window.
-          //
-          // This ensures: (a) phrase text = real script, (b) timing honours actual STT boundaries.
-
-          const segsWithBounds = [
-            ...segments,
-          ];
+        if (result.length === 0 && segments.length > 0) {
+          const charLen = alignmentCharLen;
+          const cleanText = (s: string) => sanitizeTranscriptionText(s);
+          const segsWithBounds = [...segments];
           // Ensure coverage: clamp first start to 0, last end to audioDur
           if (segsWithBounds[0].start > 0.05) segsWithBounds[0] = { ...segsWithBounds[0], start: 0 };
           if (segsWithBounds[segsWithBounds.length - 1].end < audioDur - 0.1) {
             segsWithBounds[segsWithBounds.length - 1] = { ...segsWithBounds[segsWithBounds.length - 1], end: audioDur };
           }
 
-          // Distribute phrases proportionally across total audio time,
-          // then snap each phrase boundary to the nearest segment boundary.
-          const phraseLens = phrases.map(charLen);
+          const phraseLens = phrases.map((p) => charLen(p));
           const totalPhraseChars = phraseLens.reduce((a, b) => a + b, 0);
-
-          // Build a flat timeline of segment start/end points (deduplicated, sorted)
           const segBoundaries = Array.from(new Set(
-            segsWithBounds.flatMap(s => [s.start, s.end])
+            segsWithBounds.flatMap((s) => [s.start, s.end])
           )).sort((a, b) => a - b);
 
-          // For each phrase, compute its proportional time window in [0, audioDur],
-          // then find the nearest segment boundary for start and end.
           const snapToSegBoundary = (sec: number): number => {
             let best = segBoundaries[0];
             let bestDist = Math.abs(sec - best);
@@ -860,24 +1090,27 @@ ${sourceText.trim()}`;
             cumCharsA += phraseLens[i];
             const f1 = cumCharsA / totalPhraseChars;
             const rawStart = f0 * audioDur;
-            const rawEnd   = f1 * audioDur;
-            // Snap to nearest segment boundary (within 1.5s tolerance)
+            const rawEnd = f1 * audioDur;
             const snapStart = Math.abs(snapToSegBoundary(rawStart) - rawStart) < 1.5
-              ? snapToSegBoundary(rawStart) : rawStart;
-            const snapEnd   = Math.abs(snapToSegBoundary(rawEnd) - rawEnd) < 1.5
-              ? snapToSegBoundary(rawEnd) : rawEnd;
+              ? snapToSegBoundary(rawStart)
+              : rawStart;
+            const snapEnd = Math.abs(snapToSegBoundary(rawEnd) - rawEnd) < 1.5
+              ? snapToSegBoundary(rawEnd)
+              : rawEnd;
             result.push({
               text: cleanText(phrases[i]),
               startMs: Math.round(snapStart * 1000),
-              endMs: Math.round(Math.max(snapEnd, snapStart + 0.3) * 1000),
+              endMs: Math.round(Math.max(snapEnd, rawStart + 0.3) * 1000),
             });
           }
           console.log(`[transcribe] segment-snapped alignment: ${result.length} phrases snapped to ${segBoundaries.length} boundaries`);
-        } else if (words.length > 0) {
-          // Strategy B: word-level proportional (when no segments available)
-          const wordTimeline = words.map(w => ({ sec: w.start }));
-          wordTimeline.push({ sec: words[words.length - 1].end });
-          const charLensB = phrases.map(charLen);
+        }
+
+        if (result.length === 0 && words.length > 0) {
+          // Strategy B fallback: word-level proportional
+          const wordTimeline = words.map((w) => w.start);
+          wordTimeline.push(words[words.length - 1].end);
+          const charLensB = phrases.map((p) => alignmentCharLen(p));
           const totalCharsB = charLensB.reduce((a, b) => a + b, 0);
           let cumB = 0;
           for (let i = 0; i < phrases.length; i++) {
@@ -885,17 +1118,19 @@ ${sourceText.trim()}`;
             cumB += charLensB[i];
             const f1 = cumB / totalCharsB;
             const idxStart = Math.floor(f0 * (wordTimeline.length - 1));
-            const idxEnd   = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
+            const idxEnd = Math.min(Math.floor(f1 * (wordTimeline.length - 1)), wordTimeline.length - 1);
             result.push({
-              text: cleanText(phrases[i]),
-              startMs: Math.round(wordTimeline[idxStart].sec * 1000),
-              endMs: Math.round(wordTimeline[idxEnd].sec * 1000),
+              text: sanitizeTranscriptionText(phrases[i]),
+              startMs: Math.round(wordTimeline[idxStart] * 1000),
+              endMs: Math.round(wordTimeline[idxEnd] * 1000),
             });
           }
-          console.log(`[transcribe] word-proportional alignment: ${result.length} phrases over ${words.length} words`);
-        } else {
+          console.log(`[transcribe] word-proportional fallback alignment: ${result.length} phrases over ${words.length} words`);
+        }
+
+        if (result.length === 0) {
           // Strategy C: no timestamps — distribute by char count over total audio duration
-          const charLengths = phrases.map(charLen);
+          const charLengths = phrases.map(alignmentCharLen);
           const totalChars = charLengths.reduce((a, b) => a + b, 0);
           let cumChars = 0;
           for (let i = 0; i < phrases.length; i++) {
@@ -903,7 +1138,7 @@ ${sourceText.trim()}`;
             cumChars += charLengths[i];
             const endSec = (cumChars / totalChars) * audioDur;
             result.push({
-              text: cleanText(phrases[i]),
+              text: sanitizeTranscriptionText(phrases[i]),
               startMs: Math.round(startSec * 1000),
               endMs: Math.round(endSec * 1000),
             });
@@ -911,21 +1146,24 @@ ${sourceText.trim()}`;
           console.log(`[transcribe] char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
         }
 
-        // Keep mapped caption boundaries from source timings; only enforce basic safety later.
+        // Keep mapped caption boundaries from source timings, then clamp and dedupe overlaps.
         if (result.length > 0) {
-          // ensure start/end are in order and each duration > 0
-          for (let i = 0; i < result.length; i++) {
-            if (!Number.isFinite(result[i].startMs)) result[i].startMs = 0;
-            if (!Number.isFinite(result[i].endMs)) result[i].endMs = result[i].startMs + 500;
-            if (result[i].endMs <= result[i].startMs) result[i].endMs = result[i].startMs + 500;
-            if (result[i].endMs > audioDur * 1000) result[i].endMs = Math.round(audioDur * 1000);
-          }
-          for (let i = 0; i < result.length - 1; i++) {
-            if (result[i].endMs > result[i + 1].startMs) {
-              result[i].endMs = result[i + 1].startMs;
-            }
+          const totalAudioMs = Math.max(1, Math.round(audioDur * 1000));
+          const safeResult = sanitizeCaptionsTimeline(
+            result.map((r) => ({ ...r, timestampMs: r.startMs, confidence: 1, tag: (r as { tag?: "hook" | "body" | "cta" }).tag })),
+            totalAudioMs,
+            30,
+          );
+          if (safeResult.length > 0) {
+            result = safeResult.map((r) => ({ text: r.text, startMs: r.startMs, endMs: r.endMs, tag: r.tag }));
+          } else {
+            console.warn("[transcribe] sanitizeCaptionsTimeline emptied captions; fallback to raw result");
           }
         }
+
+          const safeTags = llmTags.length >= result.length
+            ? llmTags
+            : [...llmTags, ...Array.from({ length: Math.max(0, result.length - llmTags.length) }, () => "body" as "hook" | "body" | "cta")];
 
           captions = result.map((g, i) => ({
             text: g.text,
@@ -933,7 +1171,7 @@ ${sourceText.trim()}`;
             endMs: g.endMs,
             timestampMs: g.startMs,
             confidence: 1,
-            tag: llmTags[i] ?? undefined,
+            tag: g.tag ?? safeTags[i] ?? "body",
           }));
           captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s [${c.tag ?? "body"}] "${c.text.slice(0,30)}"`));
         } // end if (phrases.length > 0) — alignment path
@@ -941,7 +1179,9 @@ ${sourceText.trim()}`;
       if (captions.length === 0) {
         // Last resort: split script text evenly by char proportion over total audio duration
         // Never use STT text here — script is always the source of truth
-        const fallbackPhrases = sourceText.split(/(?<=[.!?ฯ])\s+|(?<=[฀-๿]{8,})\s+(?=[฀-๿])/).filter(Boolean);
+        const fallbackPhrases = splitToSentencePhrases(sourceRaw).length > 0
+          ? splitToSentencePhrases(sourceRaw)
+          : sourceText.split(/(?<=[.!?ฯ])\s+|(?<=[฀-๿]{8,})\s+(?=[฀-๿])/).filter(Boolean);
         const fp = fallbackPhrases.length > 1 ? fallbackPhrases : [sourceText];
         const charLens = fp.map(p => Math.max(1, p.replace(/\s+/g, "").length));
         const totalC = charLens.reduce((a, b) => a + b, 0);
