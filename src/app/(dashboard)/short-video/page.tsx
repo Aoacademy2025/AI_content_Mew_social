@@ -1123,12 +1123,21 @@ export default function ShortVideoPage() {
         const keys = await keysRes.json();
         // LLM key check — show picker if no key at all, or if both keys exist and no preference yet
         if (!keys.geminiKey && !keys.openaiKey) {
-          setShowLLMPicker(true);
+          setMissingKey({ type: "gemini", retryStep: "runAll" });
           return;
         }
-        if (keys.geminiKey && keys.openaiKey && !preferredLLMRef.current) {
-          setShowLLMPicker(true);
-          return;
+        if (!preferredLLMRef.current) {
+          if (keys.geminiKey && !keys.openaiKey) {
+            preferredLLMRef.current = "gemini";
+            setPreferredLLM("gemini");
+          } else if (keys.openaiKey && !keys.geminiKey) {
+            preferredLLMRef.current = "openai";
+            setPreferredLLM("openai");
+          } else {
+            // both keys exist — let user pick
+            setShowLLMPicker(true);
+            return;
+          }
         }
         // Stock key check — match the selected stockSource
          const needPexels  = stockSource === "pexels" || stockSource === "both";
