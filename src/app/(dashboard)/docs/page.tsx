@@ -137,7 +137,7 @@ export default function DocsPage() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-white">คู่มือการใช้งาน</h1>
-                <p className="text-sm text-white/50 mt-0.5">Short Video Pipeline — ai.mewsocial.com</p>
+                <p className="text-sm text-white/50 mt-0.5">Video Creator Pipeline — ai.mewsocial.com</p>
               </div>
             </div>
 
@@ -239,7 +239,7 @@ function ApiSetupDoc() {
       <Section title="เช็ค key ว่าทำงานได้มั้ย" icon={CheckCircle2}>
         <p>หลังบันทึก key แล้ว ให้ทดสอบโดย:</p>
         <ul className="space-y-1.5 list-disc list-inside ml-1">
-          <li>ไปที่หน้า <b className="text-white">Short Video</b></li>
+          <li>ไปที่หน้า <b className="text-white">Video Creator</b></li>
           <li>วาง script สั้นๆ แล้วกด <b className="text-white">Run All</b></li>
           <li>ถ้า key ถูกต้อง pipeline จะรันผ่าน — ถ้า key ผิดจะขึ้น popup ให้กรอก key ใหม่ทันที</li>
         </ul>

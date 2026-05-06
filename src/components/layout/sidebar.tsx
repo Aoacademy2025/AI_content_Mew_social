@@ -25,7 +25,7 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Dashboard",     href: "/dashboard",  icon: LayoutDashboard },
   { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
-  { title: "Avatar Cloning",href: "/short-video", icon: Film,   locked: true },
+  { title: "Video Creator", href: "/short-video", icon: Film,   locked: true },
   { title: "Gallery",       href: "/videos",      icon: Video },
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];

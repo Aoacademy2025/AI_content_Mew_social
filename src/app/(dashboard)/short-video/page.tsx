@@ -1926,7 +1926,7 @@ export default function ShortVideoPage() {
                 <Video className="h-4 w-4 text-cyan-400" />
               </div>
               <div>
-                <h1 className="text-base font-bold text-white leading-none">Short Video</h1>
+                <h1 className="text-base font-bold text-white leading-none">Video Creator</h1>
                 <p className="text-[10px] text-white/30 mt-0.5">AI-powered pipeline · TTS + Stock + Avatar + Subtitles</p>
               </div>
             </div>
