@@ -319,8 +319,8 @@ export async function POST(req: Request) {
       console.log("[render] stock assets prepared from stocks -> renders");
       console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
       console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
-      resolvedShortConfig.bgVideos?.forEach((v: { src: string }, i: number) =>
-        console.log(`[render] bgVideo[${i}]: ${v.src}`)
+      resolvedShortConfig.bgVideos?.forEach((v: { src: string; start: number; end: number; clipDuration?: number; clipOffset?: number }, i: number) =>
+        console.log(`[render] bgVideo[${i}]: start=${v.start.toFixed(2)} end=${v.end.toFixed(2)} dur=${((v.end-v.start)).toFixed(2)} clipDuration=${v.clipDuration ?? "?"} clipOffset=${v.clipOffset ?? 0} src=${v.src.split("/").pop()}`)
       );
     }
 
