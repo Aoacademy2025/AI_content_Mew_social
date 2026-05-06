@@ -155,31 +155,32 @@ export async function POST(req: Request) {
     const BATCH_SIZE = 30;
 
     async function fetchKeywordBatch(batch: string[], startIdx: number, usedKeywords: string[]): Promise<string[]> {
+      // Keep avoid list short to not bloat prompt — last 20 keywords only
       const avoidList = usedKeywords.length > 0
-        ? `\nALREADY USED (do NOT repeat these): ${usedKeywords.slice(-60).join(", ")}\n`
+        ? `ALREADY USED — pick different visuals: ${usedKeywords.slice(-20).join("; ")}`
         : "";
 
       const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
 I have a Thai script split into subtitle phrases. For each phrase, choose the single best English Pexels search query that visually represents that moment on screen.
 
-CRITICAL RULES — FOLLOW EXACTLY:
-- Output ONLY a valid JSON object: {"keywords":["query1","query2",...]}
-- One query per subtitle, same order, same count (exactly ${batch.length} queries)
-- ALL queries MUST be in ENGLISH ONLY — never output Thai characters (ก-๙) in any query
-- Each query must be 2-5 English words describing something a camera can physically film
-- Translate Thai text into concrete English visuals (people, places, objects, actions)
-- Vary shots: wide shot, close-up, aerial, slow motion, action shot, time lapse, underwater, drone
-- Every query must be UNIQUE across ALL ${startIdx + batch.length} subtitles — no repeats at all
-- Match the mood: dramatic → tense scene, happy → bright scene, science → lab/experiment, physics → particles/energy
-${avoidList}
+RULES:
+- Output ONLY: {"keywords":["query1","query2",...]}
+- Exactly ${batch.length} queries, same order as subtitles
+- ENGLISH ONLY — never output Thai (ก-๙)
+- 2-5 English words per query, something a camera can physically film
+- Translate Thai → concrete English visuals (people, places, objects, actions)
+- Each query MUST be unique — no duplicates within this response
+- Vary shot types: wide, close-up, aerial, slow motion, action, drone, time lapse
+- Match mood: dramatic=tense, science=lab/particles, financial=money/charts
+${avoidList ? `- ${avoidList}` : ""}
 SUBTITLE PHRASES (${startIdx + 1}–${startIdx + batch.length}):
 ${batch.map((s, i) => `${startIdx + i + 1}. ${s}`).join("\n")}
 
-Return ONLY valid JSON object with exactly ${batch.length} English-only strings in the keywords array:`;
+JSON only:`;
 
-      // max_tokens: ~20 chars per keyword × batch size, plus overhead
-      const maxTokens = Math.min(4096, batch.length * 25 + 200);
+      // output tokens: ~25 per keyword + buffer
+      const maxTokens = Math.min(4096, batch.length * 30 + 300);
 
       let kwText = "{}";
       if (useGemini) {
