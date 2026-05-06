@@ -20,34 +20,35 @@ function preprocessScript(raw: string): string {
     .trim();
 }
 
-function buildFallbackKeyword(phrase: string, index: number, batchOffset: number): string {
+function buildFallbackKeyword(_phrase: string, index: number, batchOffset: number): string {
   const fallbackPool = [
     "cinematic wide street shot",
-    "person walking by cars",
-    "nature landscape scene",
+    "person walking in city",
+    "nature landscape aerial view",
     "office workspace close up",
-    "business team meeting",
+    "business team meeting room",
     "city skyline at dusk",
-    "close up hands on laptop",
-    "document papers on desk",
-    "abstract tech data screen",
-    "dramatic light portrait",
-    "coffee shop crowd",
-    "sunset road travel",
+    "hands typing on laptop",
+    "documents on office desk",
+    "futuristic technology screen",
+    "dramatic portrait lighting studio",
+    "coffee shop busy crowd",
+    "sunset highway road trip",
+    "scientist working laboratory",
+    "athlete running stadium",
+    "chef cooking restaurant kitchen",
+    "drone aerial cityscape shot",
+    "stock market trading floor",
+    "mountain summit sunrise fog",
+    "underwater ocean coral reef",
+    "engineer inspecting machinery factory",
+    "crowd cheering concert stage",
+    "child playing outdoor park",
+    "doctor hospital medical equipment",
+    "rocket launch space debris",
   ];
-
-  const cleaned = phrase
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const words = cleaned.split(" ").filter(Boolean);
-  if (words.length === 0) {
-    return `${fallbackPool[(batchOffset + index) % fallbackPool.length]} #${batchOffset + index + 1}`;
-  }
-
-  const base = words.slice(0, 3).join(" ").toLowerCase();
-  const suffix = (index + batchOffset) % fallbackPool.length;
-  return `${base} ${fallbackPool[suffix]}`;
+  // Always return pure English from the pool — never prepend Thai phrase text
+  return fallbackPool[(batchOffset + index) % fallbackPool.length];
 }
 
 function extractQuotedStringArray(raw: string): string[] {
@@ -72,10 +73,13 @@ function normalizeKeyword(keyword: string): string {
     .toLowerCase();
 }
 
+const THAI_RE = /[฀-๿]/;
+
 function ensureKeywordsShape(keywords: string[], expectedCount: number, batch: string[], batchOffset: number): string[] {
   const normalized = keywords.map(normalizeKeyword).filter((k, i) => {
     const wordCount = k.split(" ").filter(Boolean).length;
-    const ok = k.length >= 8 && wordCount >= 2 && wordCount <= 6;
+    const hasThai = THAI_RE.test(keywords[i]);
+    const ok = !hasThai && k.length >= 8 && wordCount >= 2 && wordCount <= 6;
     if (!ok) {
       console.warn(`[extract-keywords] dropping invalid keyword "${keywords[i]}"`);
       return false;
@@ -144,19 +148,23 @@ export async function POST(req: Request) {
 
 I have a Thai script split into subtitle phrases. For each phrase, choose the single best English Pexels search query that visually represents that moment on screen.
 
-RULES:
+CRITICAL RULES — FOLLOW EXACTLY:
 - Output ONLY a valid JSON object: {"keywords":["query1","query2",...]}
 - One query per subtitle, same order, same count (exactly ${batch.length} queries)
+- ALL queries MUST be in ENGLISH ONLY — never output Thai characters (ก-๙) in any query
 - Each query must be 2-5 English words describing something a camera can physically film
-- Translate Thai content into concrete English visuals (people, places, objects, actions)
+- Translate Thai text into concrete English visuals (people, places, objects, actions)
 - Vary shots: wide shot, close-up, aerial, slow motion, action shot
 - Each query must be unique — no duplicates
 - Match the mood: dramatic → tense scene, happy → bright scene, financial → money/charts
 
+EXAMPLES of correct queries: "scientist in laboratory", "city skyline sunset", "hands on keyboard", "crowd cheering concert"
+WRONG (never do this): "นักวิทยาศาสตร์", "เมือง sunset", mixed Thai-English strings
+
 SUBTITLE PHRASES (${startIdx + 1}–${startIdx + batch.length}):
 ${batch.map((s, i) => `${startIdx + i + 1}. ${s}`).join("\n")}
 
-Return ONLY valid JSON object with exactly ${batch.length} strings in the keywords array:`;
+Return ONLY valid JSON object with exactly ${batch.length} English-only strings in the keywords array:`;
 
       // max_tokens: ~20 chars per keyword × batch size, plus overhead
       const maxTokens = Math.min(4096, batch.length * 25 + 200);

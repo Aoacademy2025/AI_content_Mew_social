@@ -135,7 +135,7 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
     let start = Math.min(Math.max(0, cap.startMs), totalMs);
     let end = Number.isFinite(cap.endMs) ? cap.endMs : start + minFrameMs;
 
-    if (start < cursor + EPS) start = cursor + EPS;
+    if (start < cursor) start = cursor;
     if (start < 0) start = 0;
 
     // clamp to at least one frame and to audio duration
@@ -159,7 +159,7 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
   // ensure strictly non-overlapping for render order
   for (let i = 0; i < out.length - 1; i++) {
     if (out[i].endMs > out[i + 1].startMs) {
-      out[i].endMs = Math.min(Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs - EPS), totalMs);
+      out[i].endMs = Math.min(Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs), totalMs);
     }
     if (out[i].endMs <= out[i].startMs) {
       out[i].endMs = Math.min(totalMs, out[i].startMs + minFrameMs);
@@ -267,8 +267,10 @@ export async function POST(req: Request) {
   // Also clamp endMs so it never equals startMs (minimum 1 frame = 1000/fps ms).
   const gapFilled = validCaptions.map((c, i) => {
     const nextStart = i < validCaptions.length - 1 ? validCaptions[i + 1].startMs : audioDurationMs;
-    const endMs = Math.max(c.endMs, nextStart, c.startMs + minFrameMs);
-    return { ...c, endMs: Math.min(endMs, audioDurationMs) };
+    let endMs = Math.min(c.endMs, nextStart);
+    endMs = Math.max(endMs, c.startMs + minFrameMs);
+    if (endMs > audioDurationMs) endMs = audioDurationMs;
+    return { ...c, endMs: Math.min(endMs, Math.max(c.startMs + minFrameMs, nextStart)) };
   });
 
   const keywordPopups: KeywordPopupItem[] = gapFilled

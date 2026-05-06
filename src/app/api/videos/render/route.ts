@@ -33,12 +33,41 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 export const maxDuration = 3600;
 export const runtime = "nodejs";
 
-// Cache the Remotion webpack bundle across requests so each render reuses the same
-// 7GB bundle instead of creating a new one. Invalidated on process restart.
+// Cache the Remotion webpack bundle across requests AND across pm2 restarts.
+// Bundle path + mtime saved to /tmp/remotion-bundle-cache.json so pm2 restarts
+// don't re-bundle from scratch (bundling takes 2-5 min on low-CPU VPS).
 let cachedBundleLocation: string | null = null;
 let cachedBundleMtime: number = 0;
 
+function loadBundleCache() {
+  if (cachedBundleLocation) return; // already loaded in this process
+  try {
+    const cacheFile = "/tmp/remotion-bundle-cache.json";
+    if (!fs.existsSync(cacheFile)) return;
+    const data = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+    if (
+      data.bundleLocation &&
+      data.entryMtime &&
+      fs.existsSync(path.join(data.bundleLocation, "index.html"))
+    ) {
+      cachedBundleLocation = data.bundleLocation;
+      cachedBundleMtime = data.entryMtime;
+      console.log(`[Render] restored bundle cache from disk: ${cachedBundleLocation}`);
+    }
+  } catch {}
+}
+
+function saveBundleCache() {
+  try {
+    fs.writeFileSync(
+      "/tmp/remotion-bundle-cache.json",
+      JSON.stringify({ bundleLocation: cachedBundleLocation, entryMtime: cachedBundleMtime })
+    );
+  } catch {}
+}
+
 export async function POST(req: Request) {
+  loadBundleCache();
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
@@ -107,6 +136,7 @@ export async function POST(req: Request) {
       console.log("[Render] building new webpack bundle...");
       cachedBundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
       cachedBundleMtime = entryMtime;
+      saveBundleCache();
       console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
     }
     const bundleLocation = cachedBundleLocation;
