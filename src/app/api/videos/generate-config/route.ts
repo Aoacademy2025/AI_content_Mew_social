@@ -67,45 +67,24 @@ function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
   if (!raw.length) return [];
 
   raw.sort((a, b) => a.start - b.start);
-  const filled: BrollVideo[] = [];
-  let cursor = 0;
 
-  for (const seg of raw) {
-    const start = Math.max(0, Math.min(seg.start, audioDurationSec));
-    const end = Math.min(audioDurationSec, Math.max(seg.end, start + EPS));
-
-    if (start > cursor + EPS) {
-      const filler = filled.length > 0 ? filled[filled.length - 1] : raw[0];
-      filled.push({
-        src: filler.src,
-        start: cursor,
-        end: start,
-        clipOffset: 0,
-        clipDuration: filler.clipDuration,
-      });
-    }
-
-    const safeStart = Math.max(cursor, start);
-    if (end > safeStart + EPS) {
-      filled.push({ ...seg, start: safeStart, end });
-      cursor = Math.max(cursor, end);
+  // Extend each segment to reach the next one (no filler inserts — avoids duplicate segments)
+  for (let i = 0; i < raw.length - 1; i++) {
+    const cur = raw[i];
+    const next = raw[i + 1];
+    if (next.start > cur.end + EPS) {
+      cur.end = next.start;
     }
   }
 
-  if (cursor < audioDurationSec - EPS) {
-    const filler = filled[filled.length - 1];
-    if (filler) {
-      filled.push({
-        src: filler.src,
-        start: cursor,
-        end: audioDurationSec,
-        clipOffset: 0,
-        clipDuration: filler.clipDuration,
-      });
-    }
-  }
+  // Extend first segment back to 0 if needed
+  if (raw[0].start > EPS) raw[0].start = 0;
 
-  return filled;
+  // Extend last segment to audio end if needed
+  const last = raw[raw.length - 1];
+  if (last.end < audioDurationSec - EPS) last.end = audioDurationSec;
+
+  return raw;
 }
 
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
@@ -342,6 +321,7 @@ export async function POST(req: Request) {
       // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
       // so each clip plays from the beginning â€” no offset accumulation needed.
       console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
+      gapFilled.forEach((c, i) => console.log(`[config] caption[${i}]: ${c.startMs}ms-${c.endMs}ms stock=${validStocks[Math.min(i,n-1)]?.localUrl?.split("/").pop() ?? validStocks[Math.min(i,n-1)]?.videoUrl?.split("/").pop()}`));
       // Merge consecutive captions that share the same stock clip into one bgVideo segment.
       // Each unique stock clip gets exactly one continuous Sequence on the timeline.
       for (let ci = 0; ci < gapFilled.length; ci++) {
