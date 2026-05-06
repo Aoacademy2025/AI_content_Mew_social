@@ -56,7 +56,15 @@ function sanitizePhraseText(input: string): string {
     .replace(/["“”'’]/g, "")
     .replace(/\.{2,}/g, "")
     .replace(/([\u0E00-\u0E7F])\s+([\u0E00-\u0E7F])/g, "$1$2")
+    .replace(/\s{2,}/g, " ")
+    .replace(/([?!ฯ])\s*([ก-๿])/g, "$1 $2")
+    .replace(/\s*([,.:;!?])\s*/g, "$1 ")
     .trim();
+}
+
+function normalizeCaptionText(input: string): string {
+  const noBOM = input.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return sanitizePhraseText(noBOM);
 }
 
 // Remove words that appear at both the END of phrase[i] and START of phrase[i+1].
@@ -299,6 +307,32 @@ function alignPhrasesToWordTimings(
     });
   }
 
+  return out;
+}
+
+function buildFallbackWordsFromSegments(
+  segments: { text: string; start: number; end: number }[],
+): { word: string; start: number; end: number }[] {
+  const out: { word: string; start: number; end: number }[] = [];
+  for (const seg of segments) {
+    const words = seg.text
+      .replace(/\r/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .filter(Boolean);
+    if (words.length === 0) continue;
+    const start = Math.max(0, seg.start);
+    const end = Math.max(start + 0.001, seg.end);
+    const width = (end - start) / words.length;
+    let cursor = start;
+    for (let i = 0; i < words.length; i++) {
+      const isLast = i === words.length - 1;
+      const wEnd = isLast ? end : cursor + width;
+      out.push({ word: words[i], start: cursor, end: wEnd });
+      cursor = wEnd;
+    }
+  }
   return out;
 }
 
@@ -1121,6 +1155,10 @@ ${sourceText.trim()}`;
                   phrases = mergeTinyPhrases(scriptSentences);
                   if (llmTags.length > phrases.length) llmTags = llmTags.slice(0, phrases.length);
                   console.log(`[transcribe] sentence-anchored split override -> ${phrases.length} phrases`);
+                } else if (isThai) {
+                  // Thai has no spaces between words — snapPhrasesToScript cuts mid-syllable.
+                  // LLM prompt instructs COPY EXACT, so use LLM phrases directly.
+                  phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
                 } else {
                   phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
                 }
@@ -1218,12 +1256,12 @@ ${sourceText.trim()}`;
 
       phrases = phrases
         .map((p) => collapseConsecutiveDuplicateWords(p))
-        .map((p) => sanitizePhraseText(p))
+        .map((p) => normalizeCaptionText(p))
         .filter(Boolean);
       phrases = deduplicatePhraseEdges(mergeTinyPhrases(mergeDateAndConnectorBreaks(phrases)));
       phrases = limitPhraseCountByDuration(phrases, audioDur);
       phrases = phrases
-        .map((p) => sanitizePhraseText(p))
+        .map((p) => normalizeCaptionText(p))
         .filter(Boolean);
       console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
 
@@ -1236,19 +1274,20 @@ ${sourceText.trim()}`;
 
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
+        const alignWords = words.length > 0 ? words : buildFallbackWordsFromSegments(segments);
 
         const canDirectSegmentAlign = phrases.length === segments.length && phrases.length >= 2;
         if (canDirectSegmentAlign) {
           for (let i = 0; i < phrases.length; i++) {
             result.push({
-              text: sanitizePhraseText(phrases[i]),
+              text: normalizeCaptionText(phrases[i]),
               startMs: Math.round(segments[i].start * 1000),
               endMs: Math.round(segments[i].end * 1000),
             });
           }
           console.log(`[transcribe] direct segment alignment: ${result.length} phrases`);
         } else {
-          const alignedByWord = alignPhrasesToWordTimings(phrases, words);
+          const alignedByWord = alignWords.length > 0 ? alignPhrasesToWordTimings(phrases, alignWords) : [];
           if (alignedByWord.length === phrases.length) {
             result.push(...alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) })));
             console.log(`[transcribe] word-timing alignment: ${result.length} phrases`);
@@ -1257,7 +1296,7 @@ ${sourceText.trim()}`;
 
         if (result.length === 0 && segments.length > 0) {
           const charLen = alignmentCharLen;
-          const cleanText = (s: string) => sanitizePhraseText(s);
+          const cleanText = (s: string) => normalizeCaptionText(s);
           const segsWithBounds = [...segments];
           // Ensure coverage: clamp first start to 0, last end to audioDur
           if (segsWithBounds[0].start > 0.05) segsWithBounds[0] = { ...segsWithBounds[0], start: 0 };
@@ -1288,12 +1327,8 @@ ${sourceText.trim()}`;
             const f1 = cumCharsA / totalPhraseChars;
             const rawStart = f0 * audioDur;
             const rawEnd = f1 * audioDur;
-            const snapStart = Math.abs(snapToSegBoundary(rawStart) - rawStart) < 1.5
-              ? snapToSegBoundary(rawStart)
-              : rawStart;
-            const snapEnd = Math.abs(snapToSegBoundary(rawEnd) - rawEnd) < 1.5
-              ? snapToSegBoundary(rawEnd)
-              : rawEnd;
+            const snapStart = snapToSegBoundary(rawStart);
+            const snapEnd = snapToSegBoundary(rawEnd);
             result.push({
               text: cleanText(phrases[i]),
               startMs: Math.round(snapStart * 1000),
@@ -1352,7 +1387,8 @@ ${sourceText.trim()}`;
             30,
           );
           if (safeResult.length > 0) {
-            result = safeResult.map((r) => ({ text: r.text, startMs: r.startMs, endMs: r.endMs, tag: r.tag }));
+            const safeResultTyped = safeResult as Array<{ text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }>;
+            result = safeResultTyped.map((r) => ({ text: normalizeCaptionText(r.text), startMs: r.startMs, endMs: r.endMs, tag: r.tag }));
           } else {
             console.warn("[transcribe] sanitizeCaptionsTimeline emptied captions; fallback to raw result");
           }

@@ -239,8 +239,9 @@ export function ShortVideoComposition({
 
       {/* Stock video segments with Ken Burns zoom + crossfade */}
       {bgVideos.flatMap((v, i) => {
-        const startFrame = Math.round(v.start * fps);
-        const segDurFrames = Math.max(1, Math.round((v.end - v.start) * fps));
+        const startFrame = Math.max(0, Math.round(v.start * fps));
+        const endFrame = Math.max(startFrame + 1, Math.round(v.end * fps));
+        const segDurFrames = endFrame - startFrame;
         const clipDurFrames = v.clipDuration && v.clipDuration > 0
           ? Math.max(1, Math.round(v.clipDuration * fps))
           : null;

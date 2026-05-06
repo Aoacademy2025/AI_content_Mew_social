@@ -6,6 +6,7 @@ import { apiError } from "@/lib/api-error";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
+import os from "os";
 
 function getRenderTmpDir(): string {
   const base =
@@ -178,41 +179,50 @@ export async function POST(req: Request) {
 
     // For ShortVideo: resolve all relative paths → absolute URL so Remotion's Chromium can fetch
     // Remotion runs its own Chromium instance on a separate port — it cannot use relative paths.
-    // Stock files (/api/stocks/*) are copied to public/renders/ before resolving so they survive
-    // the beforeunload cleanup that deletes stocks/ while the render is still running.
     const stocksDir = path.join(process.cwd(), "stocks");
-    const stockCopyMap = new Map<string, string>(); // /api/stocks/<f> → /renders/<f>
-
     function resolveStockUrl(url: string | undefined | null): string {
       if (!url) return url ?? "";
       if (!url.startsWith("/api/stocks/")) return url;
-      if (stockCopyMap.has(url)) return stockCopyMap.get(url)!;
 
       const filename = url.slice("/api/stocks/".length);
       const srcPath = path.join(stocksDir, filename);
-      const destPath = path.join(rendersDir, filename);
-      const srcValid = fs.existsSync(srcPath) && fs.statSync(srcPath).size > 1_500;
-      if (!srcValid) {
+      const srcStat = fs.existsSync(srcPath) ? fs.statSync(srcPath) : null;
+      if (!srcStat || srcStat.size <= 1_500) {
         throw new Error(`Stock file missing or too small: ${url}`);
       }
 
-      // Copy stock file to public/renders/ so it survives the beforeunload cleanup
-      // and is served via /api/renders/* (Remotion only supports http(s):// URLs)
-      if (srcValid) {
-        const destExists = fs.existsSync(destPath) && fs.statSync(destPath).size === fs.statSync(srcPath).size;
-        if (!destExists) {
-          try {
-            fs.copyFileSync(srcPath, destPath);
-          } catch (e) {
-            console.warn(`[render] copy stock failed: ${filename}`, e);
-            throw new Error(`Cannot copy stock into renders: ${filename}`);
+      const symlinkPath = path.join(rendersDir, filename);
+      try {
+        if (fs.existsSync(symlinkPath)) {
+          const st = fs.lstatSync(symlinkPath);
+          if (st.isSymbolicLink()) {
+            const linkTarget = fs.readlinkSync(symlinkPath);
+            const fullTarget = path.isAbsolute(linkTarget)
+              ? linkTarget
+              : path.join(path.dirname(symlinkPath), linkTarget);
+            if (!fs.existsSync(fullTarget) || fs.statSync(fullTarget).size !== srcStat.size) {
+              fs.unlinkSync(symlinkPath);
+              throw new Error("stale stock symlink");
+            }
+          } else if (!st.isFile() || fs.statSync(symlinkPath).size !== srcStat.size) {
+            fs.unlinkSync(symlinkPath);
+            throw new Error("stale stock copy");
           }
         }
+
+        if (!fs.existsSync(symlinkPath)) {
+          try {
+            fs.symlinkSync(srcPath, symlinkPath, "file");
+          } catch {
+            fs.copyFileSync(srcPath, symlinkPath);
+          }
+        }
+      } catch (error) {
+        console.error(`[render] failed to expose stock via renders path (${url}):`, error);
+        throw new Error(`Cannot expose stock asset: ${url}`);
       }
 
-      const resolved = `/api/renders/${filename}`;
-      stockCopyMap.set(url, resolved);
-      return resolved;
+      return `${baseUrl}/api/renders/${filename}`;
     }
 
     function toLocalFilePath(url: string): string | null {
@@ -276,7 +286,7 @@ export async function POST(req: Request) {
       for (const v of resolvedShortConfig.bgVideos ?? []) {
         assertExistingAsset(v.src, "bg");
       }
-      console.log(`[render] copied ${stockCopyMap.size} stock file(s) to renders/`);
+      console.log("[render] stock assets prepared from stocks -> renders");
       console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
       console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
       resolvedShortConfig.bgVideos?.forEach((v: { src: string }, i: number) =>
@@ -326,18 +336,29 @@ export async function POST(req: Request) {
     const filename = `render-${Date.now()}.mp4`;
     const outputLocation = path.join(rendersDir, filename);
 
-    const cpuCount = (await import("os")).cpus().length;
+    const cpuCount = os.cpus().length;
+    const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
+    const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 1.5;
+
     // Remotion caps concurrency at cpuCount — cannot exceed it.
     // Use full cpuCount on small VPS (<=2 cores), leave 1 for OS on larger machines.
     const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
     const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
       ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-      : cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1);
+      : isLowResourceHost ? 1 : (cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1));
     const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
     const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
       ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-      : 256 * 1024 * 1024;
-    console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount})`);
+      : isLowResourceHost ? 64 * 1024 * 1024 : 192 * 1024 * 1024;
+    const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isLowResourceHost ? 60 : 70);
+    const chromiumArgs = [
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+      "--single-process",
+      "--no-sandbox",
+    ];
+    console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 
     let lastProgress = -1;
     await renderMedia({
@@ -349,9 +370,14 @@ export async function POST(req: Request) {
       timeoutInMilliseconds: 3600000,
       concurrency: renderConcurrency,
       x264Preset: "ultrafast",
-      jpegQuality: 70,
+      jpegQuality,
       offthreadVideoCacheSizeInBytes,
-      chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true, gl: "swiftshader" },
+      chromiumOptions: {
+        disableWebSecurity: true,
+        ignoreCertificateErrors: true,
+        gl: "swiftshader",
+        args: chromiumArgs,
+      },
       onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
         const p = Math.round(progress * 100);
         if (p !== lastProgress) {

@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 
-const GEMINI_MODEL = "gemini-3-flash-preview";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 export async function geminiGenerateText(
   apiKey: string,
@@ -12,7 +12,11 @@ export async function geminiGenerateText(
   const response = await ai.models.generateContent({
     model: GEMINI_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { maxOutputTokens, temperature },
+    config: {
+      maxOutputTokens,
+      temperature,
+      thinkingConfig: { thinkingBudget: 0 },  // disable thinking — JSON output must not be prefixed with thought text
+    },
   });
   return response.text ?? "";
 }

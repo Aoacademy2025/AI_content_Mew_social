@@ -4,6 +4,28 @@ import fs from "fs";
 
 export const runtime = "nodejs";
 
+function parseByteRange(rangeHeader: string, total: number): { start: number; end: number } | null {
+  const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+  if (!m) return null;
+
+  const rawStart = m[1] ?? "";
+  const rawEnd = m[2] ?? "";
+  const start = rawStart === "" ? 0 : Number.parseInt(rawStart, 10);
+  const end = rawEnd === "" ? total - 1 : Number.parseInt(rawEnd, 10);
+
+  if (
+    Number.isNaN(start) ||
+    Number.isNaN(end) ||
+    start < 0 ||
+    end < start ||
+    start >= total
+  ) {
+    return null;
+  }
+
+  return { start, end: Math.min(end, total - 1) };
+}
+
 const MIME: Record<string, string> = {
   mp4: "video/mp4",
   mp3: "audio/mpeg",
@@ -30,8 +52,15 @@ export async function GET(
 
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   const contentType = MIME[ext] ?? "application/octet-stream";
-  const stat = fs.statSync(filePath);
-  const total = stat.size;
+
+  let total = 0;
+  try {
+    const stat = fs.statSync(filePath);
+    total = stat.size;
+  } catch (error) {
+    console.error("[renders] stat failed:", error);
+    return NextResponse.json({ error: "Failed to read render file" }, { status: 500 });
+  }
   const rangeHeader = req.headers.get("range");
 
   const cors = {
@@ -40,38 +69,58 @@ export async function GET(
   };
 
   if (rangeHeader) {
-    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-    if (match) {
-      const start = parseInt(match[1], 10);
-      const end = match[2] ? parseInt(match[2], 10) : total - 1;
+    const parsed = parseByteRange(rangeHeader, total);
+    if (parsed) {
+      const { start, end } = parsed;
       const chunkSize = end - start + 1;
-      const buf = Buffer.allocUnsafe(chunkSize);
-      const fd = fs.openSync(filePath, "r");
-      fs.readSync(fd, buf, 0, chunkSize, start);
-      fs.closeSync(fd);
-      return new NextResponse(buf, {
-        status: 206,
-        headers: {
-          "Content-Type": contentType,
-          "Content-Range": `bytes ${start}-${end}/${total}`,
-          "Content-Length": String(chunkSize),
-          "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=86400",
-          ...cors,
-        },
-      });
+      let fd: number | null = null;
+
+      try {
+        fd = fs.openSync(filePath, "r");
+        const buf = Buffer.allocUnsafe(chunkSize);
+        const read = fs.readSync(fd, buf, 0, chunkSize, start);
+        const body = read === chunkSize ? buf : buf.slice(0, read);
+
+        return new NextResponse(body, {
+          status: 206,
+          headers: {
+            "Content-Type": contentType,
+            "Content-Range": `bytes ${start}-${start + body.length - 1}/${total}`,
+            "Content-Length": String(body.length),
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=86400",
+            ...cors,
+          },
+        });
+      } catch (error) {
+        console.error("[renders] range read failed:", error);
+        return NextResponse.json({ error: "Failed to read render range" }, { status: 500 });
+      } finally {
+        if (fd !== null) {
+          try {
+            fs.closeSync(fd);
+          } catch {}
+        }
+      }
     }
+
+    return NextResponse.json({ error: "Invalid range" }, { status: 416 });
   }
 
-  const fileBuffer = fs.readFileSync(filePath);
-  return new NextResponse(fileBuffer, {
-    status: 200,
-    headers: {
-      "Content-Type": contentType,
-      "Content-Length": String(total),
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "public, max-age=86400",
-      ...cors,
-    },
-  });
+  try {
+    const fileBuffer = fs.readFileSync(filePath);
+    return new NextResponse(fileBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(total),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=86400",
+        ...cors,
+      },
+    });
+  } catch (error) {
+    console.error("[renders] full read failed:", error);
+    return NextResponse.json({ error: "Failed to read render file" }, { status: 500 });
+  }
 }

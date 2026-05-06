@@ -125,8 +125,9 @@ export function VideoComposition({ scenes, captionSegments }: VideoCompositionPr
 
       {scenes.map((scene, i) => {
         const { startSec, durationSec } = parseTime(scene.time);
-        const fromFrame = Math.round(startSec * fps);
-        const durationFrames = Math.max(Math.round(durationSec * fps), 1);
+        const fromFrame = Math.max(0, Math.round(startSec * fps));
+        const toFrame = Math.max(fromFrame + 1, Math.round((startSec + durationSec) * fps));
+        const durationFrames = Math.max(1, toFrame - fromFrame);
 
         return (
           <Sequence key={i} from={fromFrame} durationInFrames={durationFrames}>
@@ -156,8 +157,9 @@ export function VideoComposition({ scenes, captionSegments }: VideoCompositionPr
       })}
 
       {captionSegments && captionSegments.map((seg, i) => {
-        const fromFrame = Math.round(seg.start * fps);
-        const durationFrames = Math.max(Math.round((seg.end - seg.start) * fps), 1);
+        const fromFrame = Math.max(0, Math.round(seg.start * fps));
+        const toFrame = Math.max(fromFrame + 1, Math.round(seg.end * fps));
+        const durationFrames = Math.max(1, toFrame - fromFrame);
         return (
           <Sequence key={`cap-${i}`} from={fromFrame} durationInFrames={durationFrames}>
             <Caption text={seg.text} totalFrames={durationFrames} />
