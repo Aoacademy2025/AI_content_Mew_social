@@ -633,7 +633,6 @@ RULES:
       captions = [];
 
       // ── Step 1: LLM split — always runs, uses real script text ──
-      if (true) {
       let phrases: string[] = [];
       let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;
@@ -938,8 +937,6 @@ ${sourceText.trim()}`;
           }));
           captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s [${c.tag ?? "body"}] "${c.text.slice(0,30)}"`));
         } // end if (phrases.length > 0) — alignment path
-
-      } // end if (captions.length === 0) — GPT split + alignment path
 
       if (captions.length === 0) {
         // Last resort: split script text evenly by char proportion over total audio duration

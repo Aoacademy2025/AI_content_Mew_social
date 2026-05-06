@@ -285,9 +285,9 @@ export async function POST(req: Request) {
 
     // For non-avatar mode: override duration (and optionally dimensions) from client-supplied values.
     // For avatar mode: calculateMetadata already set the correct duration from the video.
-    if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames) {
+    if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
       composition.durationInFrames = resolvedSubtitleConfig.durationInFrames;
-    } else if (isShortVideo && resolvedShortConfig?.durationInFrames) {
+    } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
       composition.durationInFrames = resolvedShortConfig.durationInFrames;
     } else if (!isAvatarMode && !isSubtitleOverlay) {
       composition.durationInFrames = durationInFrames;

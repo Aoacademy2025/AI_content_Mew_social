@@ -384,7 +384,8 @@ export async function POST(req: Request) {
 
     if (isPerSubtitleMode) {
       // Per-subtitle: pick LLM-chosen index first, skip if already used, then try others
-      const preferred = bestIdxByKeyword[ki] ?? 0;
+      const rawPreferred = bestIdxByKeyword[ki] ?? 0;
+      const preferred = Math.max(0, Math.min(rawPreferred, candidates.length - 1));
       const ordered = [
         preferred,
         ...candidates.map((_, i) => i).filter(i => i !== preferred),
