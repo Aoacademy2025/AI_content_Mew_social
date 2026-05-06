@@ -1032,11 +1032,7 @@ export default function ShortVideoPage() {
         setStep("composite", "skip", "ข้าม (Video Only)");
       }
 
-      // 1. Keywords (scene-based — used for padding/fallback later)
-      await runKeywords();
-      if (abortRef.current) throw new Error("__ABORTED__");
-
-      // 2. TTS
+      // 1. TTS (keywords run after transcribe in perSubtitle mode)
       let voiceUrl: string;
       if (isDirectMode) {
         setStep("tts", "skip", "ข้าม (Direct URL mode)");
