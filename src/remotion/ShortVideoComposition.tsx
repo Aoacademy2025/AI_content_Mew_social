@@ -52,7 +52,6 @@ function VideoClip({
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
-        loop
         style={{
           position: "absolute",
           top: 0,
