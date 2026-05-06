@@ -23,6 +23,7 @@ function VideoClip({
   segDurFrames: number;
   clipDurFrames: number | null;
 }) {
+  const { width, height } = useVideoConfig();
   const effectiveDur = clipDurFrames != null
     ? Math.min(segDurFrames, clipDurFrames) - 2
     : segDurFrames - 1;
@@ -34,14 +35,14 @@ function VideoClip({
         src={src}
         startFrom={startFrom}
         endAt={endAt}
+        loop={false}
         style={{
           position: "absolute",
-          top: "50%",
-          left: "50%",
-          width: "100%",
-          height: "100%",
+          top: 0,
+          left: 0,
+          width,
+          height,
           objectFit: "cover",
-          transform: "translate(-50%, -50%)",
         }}
         muted
       />
