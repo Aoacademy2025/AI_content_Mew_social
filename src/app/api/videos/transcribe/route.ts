@@ -911,10 +911,28 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
   - Thai text: 8–28 chars ideal, HARD MAX 32 chars per phrase.
   - English/mixed: 6–18 words, HARD MAX 22 words per phrase.
   - If a phrase exceeds these limits, MUST split it.
-• PRIORITY: Match speech rhythm — split where the speaker actually pauses (see SPEECH RHYTHM HINTS below).
-• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
-• NEVER split mid-sentence just to hit a char limit (split between words/conjunctions only).
-• Short punchy lines → keep as ONE phrase.
+
+กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี
+• PRIORITY: Split where the speaker actually pauses (จุดหายใจ) — see SPEECH RHYTHM HINTS below.
+• Split after punctuation (. ? ! ฯ ,) or conjunctions (แต่, และ, เพราะ, จึง, ดังนั้น).
+• NEVER cut mid-phrase where meaning is still hanging — the thought must be complete.
+  ✗ ผิด: "มึงเคยคิดปะ ว่า" / "ความรู้ที่เรียนมา"
+  ✓ ถูก: "มึงเคยคิดปะ..." / "ว่าความรู้ที่เรียนมา"
+
+กฎ 2 — 1 ซับ = 1 ความคิด
+• If a sentence contains 2 ideas, split into 2 subtitles even if short.
+  ✗ ผิด: "อิเล็กตรอนหนีออก ทิ้งหลุมว่าง เรียกว่าโฮล จับคู่กลายเป็นเอ็กซิตอน"
+  ✓ ถูก: "อิเล็กตรอนหนี" / 'ทิ้งหลุมว่าง "โฮล"' / "จับคู่กัน" / "กลายเป็นเอ็กซิตอน"
+
+กฎ 3 — ซับช็อก ให้สั้นพิเศษ
+• Impact/twist/punchline lines: keep to 3–8 words, show alone on screen.
+  ✓ "แม่งแหกทุกกฎที่เคยมีมา" → 1 subtitle by itself.
+
+กฎ 4 — ห้ามซับค้างนานเกิน 7 วินาที
+• If a shot is long with no new subtitle, split into more phrases to keep the viewer engaged.
+
+กฎ 5 — gap ระหว่างซับ
+• Subtitles must NOT be identical back-to-back. Every subtitle must have unique text.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 
 ━━━ TAGGING RULES ━━━
