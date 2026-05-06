@@ -97,123 +97,169 @@ export default function DocsPage() {
   );
 }
 
+function Tip({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex gap-2">
+      <span className="text-cyan-400 shrink-0">•</span>
+      <span>{children}</span>
+    </li>
+  );
+}
+
+function Warn({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2 rounded-lg p-3 text-[13px]" style={{ background: "hsl(35 100% 50% / 0.08)", border: "1px solid hsl(35 100% 50% / 0.25)" }}>
+      <span className="text-amber-400 shrink-0 font-bold">⚠</span>
+      <span className="text-amber-200/80">{children}</span>
+    </div>
+  );
+}
+
+function Info({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2 rounded-lg p-3 text-[13px]" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+      <span className="text-cyan-400 shrink-0 font-bold">ℹ</span>
+      <span className="text-cyan-200/80">{children}</span>
+    </div>
+  );
+}
+
 function VideoOnlyDoc() {
   return (
     <>
-        {/* Overview */}
-        <Section title="โหมดวิดีโออย่างเดียว (Video Only)" icon={Film}>
-          <p>
-            โหมดนี้สร้างวิดีโอสั้นแนวตั้ง <b className="text-white">9:16 (1080×1920)</b> จากบทพูดที่คุณพิมพ์เข้าไป
-            ระบบจะแปลงเป็นเสียง AI, ดึงคลิป stock มาเรียง, ใส่ subtitle และ render เป็นไฟล์ MP4 พร้อมโพสต์
-          </p>
-          <p>
-            <b className="text-white">ผลลัพธ์:</b> วิดีโอ MP4 แนวตั้งที่มีเสียงบรรยาย + ฟุตเทจ stock + subtitle ฝังในวิดีโอ
-          </p>
-        </Section>
+      {/* Overview */}
+      <Section title="โหมดวิดีโออย่างเดียว (Video Only)" icon={Film}>
+        <p>
+          โหมดนี้สร้างวิดีโอแนวตั้ง <b className="text-white">9:16 (1080×1920)</b> จากบทพูดที่คุณพิมพ์เข้าไป
+          ระบบจะแปลงเป็นเสียง AI, ดึงคลิป stock มาเรียงตรงกับแต่ละประโยค, ใส่ subtitle และ render เป็น MP4
+        </p>
+        <Info>รองรับทั้งวิดีโอสั้น (30 วิ) และวิดีโอยาว (5–10 นาที) — ระบบจะปรับจำนวนซับและคลิปให้อัตโนมัติ</Info>
+      </Section>
 
-        {/* Step-by-step input */}
-        <Section title="ขั้นตอนการเตรียม Input (ก่อนกด Run All)" icon={Wand2}>
-          <Step num={1} title="ใส่ Script (บทพูด)">
-            <p>พิมพ์บทพูดในช่อง Script เป็นข้อความอิสระ ไม่มีรูปแบบบังคับ</p>
-            <p>เขียนเหมือนเล่าเรื่อง / อธิบาย ระบบจะตัดจังหวะให้เองตอน transcribe</p>
-          </Step>
+      {/* Before running */}
+      <Section title="ขั้นตอนก่อนกด Run All" icon={Wand2}>
+        <Step num={1} title="ใส่ Script (บทพูด)">
+          <p>พิมพ์บทพูดในช่อง Script เป็นข้อความอิสระ ภาษาไทย / อังกฤษ / ผสมกันได้</p>
+          <p>เขียนเหมือนเล่าเรื่อง ระบบจะส่ง script เข้า LLM เพื่อตัดเป็นซับ subtitle แต่ละประโยคให้เอง</p>
+          <Warn>อย่าใส่ stage direction เช่น (pause) หรือ [music] เพราะจะปนออกมาในซับ</Warn>
+        </Step>
 
-          <Step num={2} title="เลือก Stock Source (แหล่งคลิป)">
-            <p>ในการ์ด <b className="text-white">Stock Source</b> (อยู่ใต้ Script) เลือกแหล่งดึงคลิป:</p>
-            <ul className="list-disc list-inside space-y-0.5 ml-1">
-              <li><b className="text-white">Pexels</b> — ดึงจาก Pexels เท่านั้น</li>
-              <li><b className="text-white">Pixabay</b> — ดึงจาก Pixabay เท่านั้น</li>
-              <li><b className="text-white">Both</b> — ดึงจากทั้งสองแหล่ง (default)</li>
-            </ul>
-            <p className="text-cyan-400/80">⚡ ตั้งค่าตรงนี้ก่อนกด Run All เพื่อไม่ต้องดึงซ้ำหลังจากนั้น</p>
-          </Step>
-
-          <Step num={3} title="เลือก Voice Model (เสียงพูด)">
-            <p>ในการ์ด <b className="text-white">Voice Model</b> เลือก provider:</p>
-            <ul className="list-disc list-inside space-y-0.5 ml-1">
-              <li><b className="text-white">ElevenLabs</b> — เสียงธรรมชาติคุณภาพสูง ใส่ Voice ID เอง</li>
-              <li><b className="text-white">Gemini</b> — เสียงจาก Google เลือกชื่อ voice จาก dropdown (เช่น Kore, Puck)</li>
-            </ul>
-            <p>กดปุ่ม <b className="text-white">Preview</b> เพื่อฟังเสียงตัวอย่างก่อนใช้จริง</p>
-          </Step>
-
-          <Step num={4} title="(ออปชัน) ตั้งค่าจำนวนคลิป">
-            <p><b className="text-white">ปล่อยว่าง</b> = ระบบคำนวณจำนวนคลิปจากความยาวของเสียงให้อัตโนมัติ</p>
-            <p><b className="text-white">กำหนดเอง</b> = บังคับให้ดึงตามจำนวนที่ระบุ</p>
-          </Step>
-
-          <Step num={5} title="(ออปชัน) เลือก Subtitle Style">
-            <p>เลือกฟอนต์, ขนาด, สี, ตำแหน่ง และ preset (stroke / box / glow / outline-only ฯลฯ)</p>
-            <p>ตั้งค่าก่อน render หรือปรับทีหลังแล้ว re-render Phase 2 ได้</p>
-          </Step>
-        </Section>
-
-        {/* Pipeline */}
-        <Section title="ขั้นตอน Pipeline เมื่อกด Run All" icon={Layers}>
-          <p>ระบบจะรัน 6 ขั้นตอนต่อเนื่อง:</p>
-          <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-            <PipelineRow num={1} name="Keywords" desc="วิเคราะห์ script → แยกเป็น scene + ดึง keyword สำหรับค้น stock" />
-            <PipelineRow num={2} name="Stock (Pexels Asset Fetch)" desc="ค้นและดาวน์โหลดคลิปจากแหล่งที่เลือก ตัดความยาวแต่ละคลิปให้พอดีจังหวะ" />
-            <PipelineRow num={3} name="TTS Voice" desc="สังเคราะห์เสียงพูดจาก script ด้วย provider ที่เลือก" />
-            <PipelineRow num={4} name="Transcribe" desc="ส่งเสียงให้ Whisper ถอดเป็นข้อความระดับคำ + timestamp ใช้สำหรับ subtitle และจัดจังหวะ scene" />
-            <PipelineRow num={5} name="Config" desc="ประกอบ config: เรียงคลิป stock ตามไทม์ไลน์, สร้าง subtitle popup, ตั้งความยาวรวม" />
-            <PipelineRow num={6} name="Render" desc="ส่งเข้า Remotion render ออกมาเป็น MP4 พร้อมเสียง + subtitle ฝังในวิดีโอ" />
-          </div>
-        </Section>
-
-        {/* After run */}
-        <Section title="หลัง Run เสร็จ" icon={Captions}>
-          <Step num="A" title="เลือกคลิป Stock เองและ Re-render">
-            <p>
-              ในขั้น <b className="text-white">Pexels Asset Fetch (Stock)</b> ถ้าคลิปที่ระบบเลือกมาให้ไม่โดนใจ
-              คุณสามารถเลือกใหม่เองได้:
-            </p>
-            <ol className="list-decimal list-inside space-y-1 ml-1">
-              <li>เปิด Live Status panel ของขั้น Stock — จะเห็นคลิปทั้งหมดที่ระบบดึงมาเรียงเป็นรายการ</li>
-              <li>กดที่คลิปเพื่อ <b className="text-white">เลือก / ไม่เลือก</b> ได้อิสระ — คลิปที่ไม่เลือกจะถูกตัดออกจากไทม์ไลน์ตอน render</li>
-              <li>เมื่อเลือกครบแล้ว กดปุ่ม <b className="text-white">Re-run Phase 2 (Render)</b> เพื่อสร้างวิดีโอใหม่โดยใช้เฉพาะคลิปที่คุณเลือก</li>
-            </ol>
-            <p className="text-cyan-400/80">
-              ⚡ ข้อดี: ไม่ต้องรัน Phase 1 ใหม่ทั้งหมด — ไม่เปลือกโควต้า TTS และ Stock API ซ้ำ ใช้เวลาเฉพาะขั้น render เท่านั้น
-            </p>
-          </Step>
-
-          <Step num="B" title="แก้ Subtitle / Caption">
-            <p>ในส่วน <b className="text-white">Caption Editor</b> แก้ข้อความ, ปรับ timestamp, ลบประโยคที่ไม่ต้องการได้</p>
-            <p>กด <b className="text-white">Re-run Phase 2</b> เพื่อ render ใหม่ตามที่แก้</p>
-          </Step>
-
-          <Step num="C" title="ปรับ Style แล้ว Re-render">
-            <p>เปลี่ยนฟอนต์, สี, ขนาด, ตำแหน่ง subtitle</p>
-            <p>กด <b className="text-white">Re-run Phase 2</b> อีกครั้งเพื่อ render ตาม style ใหม่</p>
-          </Step>
-
-          <Step num="D" title="ดาวน์โหลด">
-            <p>กดปุ่มดาวน์โหลดในหน้า preview เพื่อบันทึกไฟล์ MP4</p>
-          </Step>
-        </Section>
-
-        {/* Tips */}
-        <Section title="เคล็ดลับ" icon={Settings2}>
-          <ul className="space-y-2">
-            <li className="flex gap-2">
-              <span className="text-cyan-400 shrink-0">•</span>
-              <span>เลือก <b className="text-white">Stock Source</b> ก่อนกด Run All เสมอ — ถ้าเลือก Both จะใช้เวลานานขึ้นและกินโควต้า API ทั้งสองแหล่ง</span>
-            </li>
-            <li className="flex gap-2">
-              <span className="text-cyan-400 shrink-0">•</span>
-              <span>ถ้าอยากเปลี่ยนเสียงอย่างเดียว → re-run Phase 1 (TTS + Transcribe) แล้ว Phase 2</span>
-            </li>
-            <li className="flex gap-2">
-              <span className="text-cyan-400 shrink-0">•</span>
-              <span>ถ้าอยากเปลี่ยนแค่ subtitle หรือคลิปที่เลือก → re-run Phase 2 พอ ไม่ต้องเสียโควต้า TTS / Stock ใหม่</span>
-            </li>
-            <li className="flex gap-2">
-              <span className="text-cyan-400 shrink-0">•</span>
-              <span>ใช้ปุ่ม <b className="text-white">Preview</b> ในการ์ด Voice Model ฟังเสียงก่อนรันจริง จะได้ไม่ต้องเสียเวลา re-run</span>
-            </li>
+        <Step num={2} title="เลือก Stock Source (แหล่งคลิป)">
+          <p>ในการ์ด <b className="text-white">Stock Source</b> เลือกแหล่งดึงคลิป B-roll:</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li><b className="text-white">Pexels</b> — ดึงจาก Pexels เท่านั้น</li>
+            <li><b className="text-white">Pixabay</b> — ดึงจาก Pixabay เท่านั้น</li>
+            <li><b className="text-white">Both</b> — ดึงจากทั้งสองแหล่ง (แนะนำ — คลิปหลากหลายกว่า)</li>
           </ul>
-        </Section>
+          <Info>ตั้งค่าตรงนี้ก่อนกด Run All เสมอ — เปลี่ยนทีหลังต้องรัน Phase 1 ใหม่ทั้งหมด</Info>
+        </Step>
+
+        <Step num={3} title="เลือก Voice Model (เสียงพูด)">
+          <p>ในการ์ด <b className="text-white">Voice Model</b> เลือก provider:</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li><b className="text-white">ElevenLabs</b> — เสียงธรรมชาติคุณภาพสูง (ใส่ Voice ID จาก ElevenLabs)</li>
+            <li><b className="text-white">Gemini TTS</b> — เสียงจาก Google เลือก voice จาก dropdown</li>
+          </ul>
+          <p>กดปุ่ม <b className="text-white">Preview</b> เพื่อฟังเสียงตัวอย่างก่อนใช้จริง ประหยัดเวลามากถ้าไม่ชอบเสียงนั้น</p>
+        </Step>
+
+        <Step num={4} title="(ออปชัน) เลือก Subtitle Style">
+          <p>เลือกฟอนต์, ขนาด, สี, ตำแหน่ง และ preset ก่อน render</p>
+          <p>ปรับทีหลังและกด <b className="text-white">Re-run Phase 2</b> ได้โดยไม่เสียโควต้า TTS / Stock</p>
+        </Step>
+
+        <Step num={5} title="(ออปชัน) เคลียร์ Cache ก่อนรัน">
+          <p>กดปุ่ม <b className="text-white">Cache</b> ข้างปุ่ม Run All เพื่อลบไฟล์ stock เก่าออก</p>
+          <p>แนะนำให้กดทุกครั้งก่อนสร้างวิดีโอใหม่ เพื่อไม่ให้คลิปเก่าค้างในระบบ</p>
+        </Step>
+      </Section>
+
+      {/* How pipeline works */}
+      <Section title="ระบบทำงานยังไง — Pipeline ทั้ง 6 ขั้น" icon={Layers}>
+        <p className="text-white/50 text-[12px]">เมื่อกด Run All ระบบจะรันต่อเนื่องตามลำดับนี้:</p>
+        <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+          <PipelineRow num={1} name="Extract Keywords (LLM)" desc="LLM อ่าน script → แบ่งเป็น scene → หา keyword ภาษาอังกฤษสำหรับค้น B-roll แต่ละฉาก" />
+          <PipelineRow num={2} name="Stock Fetch" desc="ค้น Pexels / Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลดไฟล์ MP4 ลงเซิร์ฟเวอร์" />
+          <PipelineRow num={3} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สังเคราะห์เสียงพูด → ได้ไฟล์ WAV / MP3" />
+          <PipelineRow num={4} name="Transcribe (Whisper)" desc="ส่งไฟล์เสียงให้ Whisper หรือ Gemini ถอดเป็น timestamp ต่อประโยค → LLM แบ่ง script เป็นซับพร้อม timestamp จาก STT" />
+          <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป stock แต่ละตัวเข้ากับ timestamp ของซับ → สร้าง timeline config ให้ Remotion" />
+          <PipelineRow num={6} name="Render (Remotion)" desc="Remotion render frame-by-frame: คลิป B-roll เล่นตรงช่วงเวลาของซับนั้น + ซับ popup ตรงจังหวะเสียง → ออกมาเป็น MP4" />
+        </div>
+        <Info>
+          คลิป B-roll และซับ <b className="text-white">ตรงกัน</b> — ทั้งคู่ใช้ timestamp เดียวกัน คลิปที่ 1 เล่นช่วงเดียวกับซับที่ 1 เสมอ
+        </Info>
+      </Section>
+
+      {/* After run */}
+      <Section title="หลัง Run เสร็จ — สิ่งที่ทำได้" icon={Captions}>
+        <Step num="A" title="ดู Subtitle Review และแก้ซับ">
+          <p>ใน <b className="text-white">Subtitle Review</b> จะเห็น subtitle ทุกฉากพร้อม timestamp</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li>แก้ข้อความซับได้โดยตรง</li>
+            <li>ปรับ start/end time ของแต่ละฉาก</li>
+            <li>ลบฉากที่ไม่ต้องการ กด <b className="text-white">✕</b></li>
+            <li>เพิ่มฉากใหม่ได้ด้วยปุ่ม + ด้านล่าง</li>
+          </ul>
+          <p>กด <b className="text-white">Re-run Phase 2</b> เพื่อ render ใหม่ตามซับที่แก้</p>
+        </Step>
+
+        <Step num="B" title="เลือก / สลับคลิป Stock">
+          <p>ในการ์ด Stock ดู thumbnail คลิปทั้งหมดที่ระบบดึงมา:</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li>กดคลิปเพื่อ <b className="text-white">ตัดออก</b> จากวิดีโอ</li>
+            <li>คลิปที่ตัดออกจะ fallback ไปคลิปใกล้เคียงอัตโนมัติ</li>
+          </ul>
+          <p>กด <b className="text-white">Re-run Phase 2</b> เพื่อ render ด้วยคลิปชุดใหม่</p>
+          <Info>ไม่เสียโควต้า Stock API ใหม่ — ใช้คลิปที่ดาวน์โหลดไว้แล้ว</Info>
+        </Step>
+
+        <Step num="C" title="ปรับ Subtitle Style แล้ว Re-render">
+          <p>เปลี่ยนฟอนต์, สี, ขนาด, ตำแหน่ง subtitle แล้วกด <b className="text-white">Re-run Phase 2</b></p>
+          <p>ไม่ต้องรัน Phase 1 ใหม่ ไม่เสียโควต้าใดเลย</p>
+        </Step>
+
+        <Step num="D" title="ดาวน์โหลดและบันทึกลง Gallery">
+          <p>วิดีโอที่ render เสร็จจะบันทึกลง Gallery อัตโนมัติ</p>
+          <p>กดปุ่มดาวน์โหลดในหน้า preview เพื่อบันทึกเป็น MP4 ลงเครื่อง</p>
+        </Step>
+      </Section>
+
+      {/* Error handling */}
+      <Section title="แก้ปัญหาที่พบบ่อย" icon={Settings2}>
+        <div className="space-y-3">
+          <div className="rounded-lg p-3" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+            <p className="text-white font-bold text-[13px] mb-1">ขึ้น &quot;Unexpected token&quot; หรือ error แปลกๆ</p>
+            <p>กดรัน Phase ที่ error ใหม่อีกครั้ง ถ้ายังขึ้นอีก 2–3 ครั้ง ให้กดรีเฟรชหน้าต่างแล้วเริ่มใหม่ตั้งแต่ต้น</p>
+          </div>
+          <div className="rounded-lg p-3" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+            <p className="text-white font-bold text-[13px] mb-1">Stock: keywords required / ไม่พบ stock</p>
+            <p>ตรวจสอบว่าใส่ Pexels หรือ Pixabay API key ใน Settings แล้ว กดรัน Retry ที่ขั้น Stock</p>
+          </div>
+          <div className="rounded-lg p-3" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+            <p className="text-white font-bold text-[13px] mb-1">Transcribe: Failed to fetch audio file (404)</p>
+            <p>ไฟล์เสียงถูกลบออกจาก cache แล้ว กดรัน Phase 1 ใหม่ตั้งแต่ TTS Voice</p>
+          </div>
+          <div className="rounded-lg p-3" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+            <p className="text-white font-bold text-[13px] mb-1">ซับผิดหรือตัดแบ่งประโยคไม่ตรง</p>
+            <p>แก้ได้ใน Subtitle Review โดยตรง แล้ว Re-run Phase 2 — ไม่ต้องรัน Phase 1 ใหม่</p>
+          </div>
+          <div className="rounded-lg p-3" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+            <p className="text-white font-bold text-[13px] mb-1">Cache ใหญ่มาก (หลาย GB)</p>
+            <p>กดปุ่ม Cache ข้าง Run All เพื่อลบไฟล์ stock เก่า แต่ละ user เห็นเฉพาะ cache ของตัวเอง</p>
+          </div>
+        </div>
+      </Section>
+
+      {/* Tips */}
+      <Section title="เคล็ดลับ" icon={Play}>
+        <ul className="space-y-2">
+          <Tip>กดปุ่ม <b className="text-white">Cache</b> ก่อนรัน Run All ทุกครั้ง เพื่อเคลียร์ stock เก่า</Tip>
+          <Tip>ฟัง <b className="text-white">Preview Voice</b> ก่อนกด Run All จะได้ไม่ต้องรัน TTS ซ้ำ</Tip>
+          <Tip>สคริปยาว 5–10 นาที รองรับได้ แต่ขั้น Stock จะใช้เวลานานขึ้น (ดึงคลิป 200–400 คลิป)</Tip>
+          <Tip>ถ้าต้องการเปลี่ยนแค่ subtitle style หรือคลิป → Re-run Phase 2 พอ ประหยัดโควต้า API</Tip>
+          <Tip>ถ้าต้องการเปลี่ยนเสียงหรือ script → Re-run Phase 1 ทั้งหมด</Tip>
+        </ul>
+      </Section>
     </>
   );
 }
