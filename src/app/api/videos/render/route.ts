@@ -141,9 +141,14 @@ export async function POST(req: Request) {
       }
     } catch {}
 
-    // Derive base URL from request so Remotion's Chromium can fetch assets from Next.js server
+    // Derive base URL from request so Remotion's Chromium can fetch assets from Next.js server.
+    // Force http for localhost — Next.js runs plain HTTP internally even behind an HTTPS reverse proxy.
+    // Using https://localhost causes SSL handshake failures (EPROTO wrong version number).
     const reqUrl = new URL(req.url);
-    const baseUrl = `${reqUrl.protocol}//${reqUrl.host}`;
+    const isLocalhost = reqUrl.hostname === "localhost" || reqUrl.hostname === "127.0.0.1";
+    const baseUrl = isLocalhost
+      ? `http://${reqUrl.host}`
+      : `${reqUrl.protocol}//${reqUrl.host}`;
 
 
     const entryPoint = path.resolve(process.cwd(), "src/remotion/index.tsx");
