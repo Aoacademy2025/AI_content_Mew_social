@@ -20,6 +20,14 @@ function preprocessScript(raw: string): string {
     .trim();
 }
 
+function sanitizeSubtitleForKeyword(raw: string): string {
+  return raw
+    .replace(/\r?\n/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[^a-zA-Z0-9\u0E00-\u0E7F]+|[^a-zA-Z0-9\u0E00-\u0E7F\s.,!?()"']+$/g, "")
+    .trim();
+}
+
 const FALLBACK_POOL = [
   "cinematic wide street shot", "person walking in city", "nature landscape aerial view",
   "office workspace close up", "business team meeting room", "city skyline at dusk",
@@ -43,12 +51,86 @@ const FALLBACK_POOL = [
 
 const THAI_RE = /[฀-๿]/;
 
+const NOISE_KEYWORD_RE = /^(scene|scenes|keywords?|keyword|clips?|shot|shots|video|videos)\s*[:\-]?\s*\d+$/i;
+const LOW_VALUE_KEYWORD_RE = /^(one|two|three|four|five|six|seven|eight|nine|ten)\s+word$/i;
+
+function isNoiseKeyword(keyword: string): boolean {
+  if (!keyword) return true;
+  if (NOISE_KEYWORD_RE.test(keyword)) return true;
+  if (/^["'`(]?(scene|keywords?|keyword|clip|clips?|shot|shots|video|videos)[)"'`]?$/i.test(keyword)) return true;
+  if (/^\d+$/.test(keyword)) return true;
+  if (/^(scene|keywords?)/i.test(keyword)) return true;
+  if (LOW_VALUE_KEYWORD_RE.test(keyword)) return true;
+  return false;
+}
+
+function hashText(input: string): number {
+  let hash = 2166136261;
+  const str = input.toLowerCase();
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function buildFallbackKeyword(seedText: string, i: number): string {
+  const baseSeed = (hashText(seedText) + i * 97) % FALLBACK_POOL.length;
+  return FALLBACK_POOL[baseSeed];
+}
+
 function normalizeKeyword(k: string): string {
   return k.replace(/\s+/g, " ").replace(/[^a-zA-Z0-9\s-]/g, "").trim().toLowerCase();
 }
 
-function extractQuotedStringArray(raw: string): string[] {
-  // Strip markdown code fences Gemini sometimes adds
+function sanitizeKeywordCandidate(raw: string): string {
+  const normalized = normalizeKeyword(raw);
+  if (!normalized) return "";
+  if (isNoiseKeyword(normalized)) return "";
+  if (THAI_RE.test(normalized)) return "";
+  if (!/[a-z]/i.test(normalized)) return "";
+  const words = normalized.split(" ").filter(Boolean);
+  if (words.length < 2 || words.length > 8) return "";
+  return normalized;
+}
+
+function splitLooseLinesIntoGroups(raw: string): string[][] {
+  const lines = raw
+    .replace(/`/g, "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const out: string[][] = [];
+  for (const line of lines) {
+    const noLeading = line
+      .replace(/^\s*[\-\*\u2022]\s*/, "")
+      .replace(/^\s*\d+\s*[)\].:,-]?\s*/, "")
+      .replace(/^\s*\[?\d+\s*\]\s*/, "")
+      .trim();
+
+    if (!noLeading) continue;
+    if (/^(hook|subtitle|subtitles|output|result|scene|keyword|keywords)\b/i.test(noLeading)) continue;
+
+    const parts = noLeading
+      .split(/\s*[|,;]\s*/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const rawCandidates = parts.length > 0 ? parts : [noLeading];
+    const sanitized = rawCandidates
+      .map((p) => sanitizeKeywordCandidate(p))
+      .filter((p) => p.length > 0);
+    if (sanitized.length > 0) out.push(sanitized);
+  }
+
+  return out;
+}
+
+// Parse LLM response that returns array of string arrays: {"keywords":[["a","b","c"],...]}
+// Returns string[][] — one array of alternatives per subtitle.
+// Falls back to wrapping flat strings if LLM returns old format.
+function extractKeywordAlternatives(raw: string): string[][] {
   const stripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   const objMatch = stripped.match(/\{[\s\S]*\}/);
   if (objMatch) {
@@ -57,30 +139,71 @@ function extractQuotedStringArray(raw: string): string[] {
       const arr: unknown[] = Array.isArray(parsed?.keywords) ? parsed.keywords
         : Array.isArray(parsed?.queries) ? parsed.queries
         : Array.isArray(parsed) ? parsed : [];
-      const result = arr.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map(k => k.trim());
-      if (result.length > 0) return result;
+      if (arr.length > 0) {
+        // New format: array of arrays
+        if (Array.isArray(arr[0])) {
+          return arr.map(group =>
+            (Array.isArray(group) ? group : [group])
+              .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+              .map(k => sanitizeKeywordCandidate(k))
+              .filter((k) => k.length > 0)
+          ).filter(g => g.length > 0);
+        }
+        // Old format: flat array of strings — wrap each in single-element array
+        return arr
+          .filter((k): k is string => typeof k === "string" && k.trim().length > 0)
+          .map(k => sanitizeKeywordCandidate(k))
+          .filter((k) => k.length > 0)
+          .map(k => [k]);
+      }
     } catch { /* fall through */ }
   }
-  // Fallback: extract quoted strings
+  // Fallback: extract quoted strings as flat list
   const quoted = stripped.match(/"([^"]{3,200})"/g);
-  if (!quoted) return [];
-  return quoted.map(s => s.slice(1, -1).trim()).filter(Boolean);
+  if (quoted?.length) {
+    return quoted
+      .map(s => sanitizeKeywordCandidate(s.slice(1, -1).trim()))
+      .filter((s) => s.length > 0)
+      .map(s => [s]);
+  }
+
+  // Last resort: parse loose numbered/text lines
+  const loose = splitLooseLinesIntoGroups(stripped);
+  if (loose.length > 0) return loose;
+
+  return [];
 }
 
-function buildFallbackKeyword(index: number): string {
-  return FALLBACK_POOL[index % FALLBACK_POOL.length];
+function extractQuotedStringArray(raw: string, expectedCount = 0): string[] {
+  const arr = extractKeywordAlternatives(raw)
+    .map(g => g[0])
+    .filter((s): s is string => typeof s === "string");
+
+  if (expectedCount > 0 && arr.length < expectedCount) {
+    const seed = raw.split(/\s+/).slice(0, 8).join(" ");
+    const out: string[] = [];
+    for (let i = arr.length; i < expectedCount; i++) {
+      out.push(buildFallbackKeyword(seed, i));
+    }
+    return [...arr, ...out];
+  }
+
+  return arr;
 }
 
-function ensureKeywordsShape(keywords: string[], expectedCount: number, globalUsed: Set<string>, batchOffset: number): string[] {
+function ensureKeywordsShape(
+  keywords: string[],
+  subtitleHints: string[],
+  expectedCount: number,
+  globalUsed: Set<string>,
+): string[] {
   const out: string[] = [];
   for (let i = 0; i < expectedCount; i++) {
-    const raw = keywords[i] ?? "";
-    const hasThai = THAI_RE.test(raw);
-    const norm = normalizeKeyword(raw);
+    const norm = sanitizeKeywordCandidate(keywords[i] ?? "");
     const wc = norm.split(" ").filter(Boolean).length;
-    const valid = !hasThai && norm.length >= 4 && wc >= 2 && wc <= 8;
+    const valid = norm.length > 0 && wc >= 2 && wc <= 8;
 
-    if (valid && !globalUsed.has(norm)) {
+    if (valid && !out.includes(norm)) {
       globalUsed.add(norm);
       out.push(norm);
       continue;
@@ -89,7 +212,8 @@ function ensureKeywordsShape(keywords: string[], expectedCount: number, globalUs
     // Find next unused fallback
     let pushed = false;
     for (let fi = 0; fi < FALLBACK_POOL.length * 2; fi++) {
-      const fb = buildFallbackKeyword(batchOffset + i + fi);
+      const seed = `${subtitleHints[i] ?? "fallback"}-${i}-${fi}`;
+      const fb = buildFallbackKeyword(seed, fi + i);
       if (!globalUsed.has(fb)) {
         globalUsed.add(fb);
         out.push(fb);
@@ -98,7 +222,10 @@ function ensureKeywordsShape(keywords: string[], expectedCount: number, globalUs
       }
     }
     if (!pushed) {
-      const unique = `${norm || "scene"} ${batchOffset + i}`;
+      let unique = buildFallbackKeyword(`${subtitleHints[i] ?? "fallback"}-${i}`, globalUsed.size + i);
+      while (globalUsed.has(unique)) {
+        unique = `${unique}-${globalUsed.size}`;
+      }
       globalUsed.add(unique);
       out.push(unique);
     }
@@ -152,8 +279,8 @@ export async function POST(req: Request) {
   // ── perSubtitle mode ──
   if (perSubtitle) {
     const subtitleList: string[] = Array.isArray(scenes) && scenes.length > 0
-      ? scenes
-      : (script ?? "").split(/\n+/).map((s: string) => s.trim()).filter(Boolean);
+      ? scenes.map((s: string) => sanitizeSubtitleForKeyword(s)).filter(Boolean)
+      : (script ?? "").split(/\n+/).map((s: string) => sanitizeSubtitleForKeyword(s)).filter(Boolean);
 
     if (!subtitleList.length) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
 
@@ -166,55 +293,89 @@ export async function POST(req: Request) {
     console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches (${useGemini ? "Gemini" : "OpenAI"})`);
 
     const allKeywords: string[] = [];
+    const allAlternatives: string[][] = [];
     const globalUsed = new Set<string>();
 
     for (let b = 0; b < batches.length; b++) {
       const batch = batches[b];
 
-      // Delay between batches to stay within rate limits
-      if (b > 0) await new Promise(r => setTimeout(r, 3000));
+      // Delay between batches to stay within Gemini rate limits
+      if (b > 0) await new Promise(r => setTimeout(r, 8000));
 
       const prompt = `You are a professional B-roll video editor for TikTok/Reels short-form videos.
 
-For each Thai subtitle phrase below, write ONE English Pexels search query that visually matches it.
+For each subtitle phrase below, write 3 English Pexels search queries ordered from MOST to LEAST specific.
+The system will try query 1 first, then 2, then 3 if no video is found.
 
 RULES:
-- Output ONLY: {"keywords":["query1","query2",...]}
-- Exactly ${batch.length} queries, same order as subtitles
+- Output ONLY: {"keywords":[["q1a","q1b","q1c"],["q2a","q2b","q2c"],...]}
+- Exactly ${batch.length} arrays, same order as subtitles
+- Each array has exactly 3 queries, most specific → most generic
 - English only — no Thai characters
 - 2-5 words per query, something a camera can physically film
-- Translate Thai meaning into visual English (person/place/object/action)
-- All queries must be unique
-- Vary shot styles: wide, close-up, aerial, slow motion, action
+- Think: what VIDEO CLIP would a viewer expect to see while hearing this subtitle?
+- Use VISUAL METAPHORS for abstract concepts:
+  * AI / technology → ["developer coding screen", "tech startup office", "computer screen typing"]
+  * competition / ranking → ["chess match closeup", "race track finish line", "leaderboard display"]
+  * money / economy → ["stock market trading floor", "financial chart growth", "business meeting handshake"]
+  * people / society → ["crowd walking city street", "diverse team meeting", "people gathering outdoors"]
+  * change / transition → ["door opening bright light", "sunrise time lapse", "before after transformation"]
+  * surprise / discovery → ["person shocked reaction screen", "lightbulb idea moment", "excited person news"]
+- Query 3 should always be a safe broad fallback (1-2 words) that Pexels will definitely have results for
 
 SUBTITLE PHRASES (${b * BATCH_SIZE + 1}–${b * BATCH_SIZE + batch.length}):
 ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}
 
+Important:
+- Keep each output query tightly grounded to the same subtitle line.
+- Do not use generic words like "news", "technology", "people" if a more specific visual exists.
+- If subtitle is abstract, use strong visual metaphors that can be filmed in one shot.
+
 JSON only:`;
 
-      const maxTokens = Math.min(2048, batch.length * 30 + 200);
-      let rawKws: string[] = [];
+      const maxTokens = Math.min(4096, batch.length * 80 + 200);
+      let rawAlts: string[][] = [];
 
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         try {
-          if (attempt > 0) await new Promise(r => setTimeout(r, 4000 * attempt));
+          if (attempt > 0) await new Promise(r => setTimeout(r, 8000 * attempt));
           const text = await callLLM(prompt, maxTokens);
           console.log(`[extract-keywords] b${b} attempt${attempt}:`, text.slice(0, 120));
-          rawKws = extractQuotedStringArray(text);
-          if (rawKws.length > 0) break;
+          rawAlts = extractKeywordAlternatives(text);
+          const readyCount = rawAlts.filter(g => g.length > 0).length;
+          if (rawAlts.length === batch.length && readyCount >= Math.max(1, Math.floor(batch.length * 0.3))) break;
         } catch (e) {
           console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
         }
       }
 
-      const batchOut = ensureKeywordsShape(rawKws, batch.length, globalUsed, b * BATCH_SIZE);
+      // Primary keywords (first alternative) go through ensureKeywordsShape for dedup/fallback
+      const primaryKws = rawAlts.map(g => g[0] ?? "");
+      const batchOut = ensureKeywordsShape(primaryKws, batch, batch.length, globalUsed);
       console.log(`[extract-keywords] b${b}: ${batchOut.length}/${batch.length} keywords`);
+      if (rawAlts.length < batch.length) {
+        console.log(`[extract-keywords] b${b}: rawAlts only ${rawAlts.length}/${batch.length}, fallback used for ${batch.length - rawAlts.length} lines (or invalid lines)`);
+      }
       allKeywords.push(...batchOut);
+
+      // Store all alternatives per subtitle (pad/trim to batch.length)
+      for (let i = 0; i < batch.length; i++) {
+        const alts = rawAlts[i] ?? [];
+        // Filter Thai, normalize; keep up to 3 unique alternatives
+        const cleaned = alts
+          .map(k => sanitizeKeywordCandidate(k))
+          .filter((k, idx, arr) => k.length > 0 && arr.indexOf(k) === idx)
+          .slice(0, 3);
+        // Always ensure first alt matches what ensureKeywordsShape picked
+        if (cleaned[0] !== batchOut[i]) cleaned.unshift(batchOut[i]);
+        allAlternatives.push(cleaned.slice(0, 3));
+      }
     }
 
     console.log(`[extract-keywords] done: ${allKeywords.length}/${subtitleList.length}`);
     return NextResponse.json({
       keywords: allKeywords,
+      keywordAlternatives: allAlternatives,
       sceneClipCounts: allKeywords.map(() => 1),
       sceneDurations: subtitleList.map(() => 3),
       keywordsPerScene: 1,
@@ -235,6 +396,7 @@ RULES:
 - Translate Thai → concrete English visuals
 - Vary shots: wide → close → action → aerial
 - Every query must be unique
+- Never output placeholders or indexes like "scene 12", "clip 1", "keywords 12"
 
 SCRIPT: "${cleanScript}"
 
@@ -244,12 +406,19 @@ Return ONLY valid JSON:
   try {
     const text = await callLLM(prompt, 4096);
     console.log(`[extract-keywords] normal mode:`, text.slice(0, 200));
-    const queries = extractQuotedStringArray(text);
-    if (queries.length === 0) throw new Error("empty queries");
-
     const sceneList: string[] = Array.isArray(scenes) && scenes.length > 0
       ? scenes : cleanScript.split(/\n+/).filter(Boolean);
     const numScenes = Math.max(1, sceneList.length);
+    const queriesRaw = extractQuotedStringArray(text, numScenes);
+    const queries = [...(queriesRaw.length > numScenes ? queriesRaw.slice(0, numScenes) : queriesRaw)];
+    if (queries.length === 0) throw new Error("empty queries");
+
+    if (queries.length < numScenes) {
+      const seed = cleanScript.slice(0, 140);
+      while (queries.length < numScenes) {
+        queries.push(buildFallbackKeyword(seed, queries.length));
+      }
+    }
     const perScene = Math.ceil(queries.length / numScenes);
     const sceneClipCounts = sceneList.map((_, i) => Math.min(perScene, queries.length - i * perScene)).filter(c => c > 0);
     const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
