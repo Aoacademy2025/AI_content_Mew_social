@@ -801,7 +801,34 @@ export async function POST(req: Request) {
         const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
         const audioBuffer = fs.readFileSync(mp3Path);
         try { fs.unlinkSync(mp3Path); } catch {}
-        const audioB64 = audioBuffer.toString("base64");
+        const audioBytes = audioBuffer.length;
+
+        // Upload audio to Gemini File API — avoids sending large base64 inline which causes
+        // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
+        console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
+        const uploadRes = await fetch(
+          `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${geminiKey}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "audio/mp3",
+              "X-Goog-Upload-Protocol": "raw",
+              "X-Goog-Upload-Command": "upload, finalize",
+              "X-Goog-Upload-Header-Content-Length": String(audioBytes),
+              "X-Goog-Upload-Header-Content-Type": "audio/mp3",
+            },
+            body: audioBuffer,
+          }
+        );
+        if (!uploadRes.ok) {
+          const errBody = await uploadRes.text().catch(() => "");
+          throw new Error(`Gemini File API upload failed: ${uploadRes.status} — ${errBody.slice(0, 200)}`);
+        }
+        const uploadData = await uploadRes.json() as { file?: { uri?: string; name?: string } };
+        const fileUri = uploadData?.file?.uri;
+        const fileName = uploadData?.file?.name;
+        if (!fileUri) throw new Error("Gemini File API did not return file URI");
+        console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
         const timestampPrompt = `Transcribe this Thai audio into segments with timestamps.
 
@@ -824,17 +851,22 @@ RULES:
               contents: [{
                 parts: [
                   { text: timestampPrompt },
-                  { inlineData: { mimeType: "audio/mp3", data: audioB64 } },
+                  { fileData: { mimeType: "audio/mp3", fileUri } },
                 ],
               }],
               generationConfig: {
                 temperature: 0,
                 responseMimeType: "application/json",
-                thinkingConfig: { thinkingBudget: 0 },  // disable thinking — prevents JSON prefix corruption
+                thinkingConfig: { thinkingBudget: 0 },
               },
             }),
           }
         );
+
+        // Clean up uploaded file from Gemini (best-effort)
+        if (fileName) {
+          fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${geminiKey}`, { method: "DELETE" }).catch(() => {});
+        }
 
         if (!geminiRes.ok) {
           const errBody = await geminiRes.text().catch(() => "");
