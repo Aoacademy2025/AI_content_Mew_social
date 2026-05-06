@@ -821,7 +821,6 @@ RULES:
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            // @ts-expect-error undici dispatcher not in standard fetch types
             dispatcher: longTimeoutAgent,
             body: JSON.stringify({
               contents: [{
