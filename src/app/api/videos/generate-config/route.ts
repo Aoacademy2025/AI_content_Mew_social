@@ -342,19 +342,22 @@ export async function POST(req: Request) {
       // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
       // so each clip plays from the beginning â€” no offset accumulation needed.
       console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
-      // Use caption index ci directly as stock index so skipped captions don't shift mapping.
-      // validStocks[ci] is the LLM-ranked clip built for caption[ci] in page.tsx.
+      // Track cumulative playback offset per src so consecutive segments of the same clip
+      // continue from where they left off instead of restarting from 0.
+      const srcOffsetMap = new Map<string, number>();
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
         const capStartSec = cap.startMs / 1000;
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        // Use exact index — if clips fewer than captions, reuse last clip rather than looping from start
         const sv  = validStocks[Math.min(ci, n - 1)];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
-        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
+        const clipOffset = srcOffsetMap.get(src) ?? 0;
+        const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+        srcOffsetMap.set(src, clipOffset + dur);
       }
     } else if (useEvenSplit) {
       const splitCount = Math.max(1, Math.min(n, clipCountHint));
