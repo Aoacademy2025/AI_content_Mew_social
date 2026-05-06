@@ -1015,11 +1015,25 @@ RULES:
 
       if (shouldUseSegmentSplit) {
         if (segmentTexts.length > 1) {
-          phrases = isScriptProvided
-            ? snapPhrasesToScript(segmentTexts, sourceText)
-            : segmentTexts;
-          llmTags = phrases.map((_, i) => (i === 0 ? "hook" : "body"));
-          console.log(`[transcribe] fallback segment-based split from Whisper timestamps: ${phrases.length} phrases`);
+          // Use Gemini segment timestamps directly — most accurate timing.
+          // For Thai: use segment text directly (snapPhrasesToScript cuts mid-syllable).
+          // For non-Thai with script: snap text to script wording but keep segment timestamps.
+          const segPhrases = (isThai || !isScriptProvided)
+            ? segmentTexts
+            : snapPhrasesToScript(segmentTexts, sourceText);
+
+          // Build captions directly from segment timestamps — skip alignment phase entirely.
+          // This preserves exact Gemini timestamps rather than re-distributing by char count.
+          captions = segments.slice(0, segPhrases.length).map((seg, i) => ({
+            text: normalizeCaptionText(segPhrases[i] ?? segmentTexts[i] ?? ""),
+            startMs: Math.round(seg.start * 1000),
+            endMs: Math.round(seg.end * 1000),
+            timestampMs: Math.round(seg.start * 1000),
+            confidence: 1,
+            tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
+          })).filter(c => c.text.length > 0);
+          console.log(`[transcribe] segment-direct: ${captions.length} captions with real timestamps (thai=${isThai})`);
+          // phrases stays empty — captions already built, skip alignment phase below
         }
       } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));

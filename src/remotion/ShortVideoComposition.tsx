@@ -42,14 +42,10 @@ function VideoClip({
   const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
   const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
 
-  // Fade windows: cap at half segment so they never overlap on short clips
+  // Fade in only — no fade out. The next clip's fade-in overlaps this clip via z-index stacking.
+  // Fading out causes a black gap when the next Sequence hasn't started yet.
   const fadeFrames = Math.min(6, Math.floor(segDurFrames / 2));
-  const fadeInOpacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
-  const fadeOutStart = Math.max(0, segDurFrames - fadeFrames);
-  const fadeOutOpacity = fadeFrames > 0
-    ? interpolate(frame, [fadeOutStart, segDurFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
-    : 1;
-  const opacity = Math.min(fadeInOpacity, fadeOutOpacity);
+  const opacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
 
   return (
     <AbsoluteFill style={{ opacity }}>
