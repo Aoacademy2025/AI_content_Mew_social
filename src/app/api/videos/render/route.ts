@@ -5,6 +5,27 @@ import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
+
+function getRenderTmpDir(): string {
+  const base =
+    process.env.RENDER_TMP_ROOT
+      ? path.resolve(process.env.RENDER_TMP_ROOT)
+      : path.join(process.cwd(), ".tmp", "remotion");
+  try {
+    fs.mkdirSync(base, { recursive: true });
+  } catch {}
+  return base;
+}
+
+function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number) {
+  if (process.platform === "win32") return;
+  try {
+    const escaped = pattern.replace(/'/g, "'\\''");
+    const cmd = `find '${baseDir}' -maxdepth 1 -name '${escaped}' -mmin +${minMinutes} -exec rm -rf {} + 2>/dev/null`;
+    execSync(cmd);
+  } catch {}
+}
 
 /** Download external image URL to local public/renders and return a full absolute URL
  *  so Remotion's Chromium (which runs on its own port) can fetch from Next.js server */
@@ -34,15 +55,16 @@ export const maxDuration = 3600;
 export const runtime = "nodejs";
 
 // Cache the Remotion webpack bundle across requests AND across pm2 restarts.
-// Bundle path + mtime saved to /tmp/remotion-bundle-cache.json so pm2 restarts
+// Bundle path + mtime saved to the render tmp dir so pm2 restarts
 // don't re-bundle from scratch (bundling takes 2-5 min on low-CPU VPS).
 let cachedBundleLocation: string | null = null;
 let cachedBundleMtime: number = 0;
 
 function loadBundleCache() {
+  const tmpDir = getRenderTmpDir();
+  const cacheFile = path.join(tmpDir, "remotion-bundle-cache.json");
   if (cachedBundleLocation) return; // already loaded in this process
   try {
-    const cacheFile = "/tmp/remotion-bundle-cache.json";
     if (!fs.existsSync(cacheFile)) return;
     const data = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
     if (
@@ -58,9 +80,11 @@ function loadBundleCache() {
 }
 
 function saveBundleCache() {
+  const tmpDir = getRenderTmpDir();
+  const cacheFile = path.join(tmpDir, "remotion-bundle-cache.json");
   try {
     fs.writeFileSync(
-      "/tmp/remotion-bundle-cache.json",
+      cacheFile,
       JSON.stringify({ bundleLocation: cachedBundleLocation, entryMtime: cachedBundleMtime })
     );
   } catch {}
@@ -74,6 +98,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const renderTmpDir = getRenderTmpDir();
+    process.env.TMPDIR = renderTmpDir;
+    const progressFile = path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -92,7 +119,6 @@ export async function POST(req: Request) {
     const durationInFrames = Math.max(Math.round(safeDuration * fps), fps);
     // Note: AvatarComposition uses calculateMetadata to auto-detect duration from video,
     // so durationInFrames below is only used as fallback for non-avatar mode.
-    const progressFile = path.join("/tmp", `render-progress-${session.user.id}.json`);
 
     // webpackIgnore prevents Turbopack from statically analyzing these imports
     // and traversing into esbuild native binaries (README.md, .node files).
@@ -104,16 +130,13 @@ export async function POST(req: Request) {
     const rendersDir = path.join(process.cwd(), "public", "renders");
     fs.mkdirSync(rendersDir, { recursive: true });
 
-    // Clean up stale Remotion bundles from /tmp to prevent disk full
+    // Clean up stale Remotion bundles from render temp dir to prevent disk full
     try {
-      const { execSync } = await import("child_process");
-      if (process.platform === "win32") {
-        // Windows does not support shell fallback commands used above.
-        // Keep cleanup lightweight to avoid noisy shell failures on Windows.
-      } else {
+      if (process.platform !== "win32") {
         // Clean assets older than 30 min and webpack bundles older than 60 min
-        execSync("find /tmp -maxdepth 1 -name 'remotion-*assets*' -mmin +30 -exec rm -rf {} + 2>/dev/null");
-        execSync("find /tmp -maxdepth 1 -name 'remotion-webpack-bundle-*' -mmin +60 -exec rm -rf {} + 2>/dev/null");
+        runTmpCleanup(renderTmpDir, "remotion-*assets*", 30);
+        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60);
+        runTmpCleanup(renderTmpDir, "react-motion-render*", 60);
       }
     } catch {}
 
