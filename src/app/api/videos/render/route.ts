@@ -187,6 +187,19 @@ export async function POST(req: Request) {
     const stocksDir = path.join(process.cwd(), "stocks");
     function resolveStockUrl(url: string | undefined | null): string {
       if (!url) return url ?? "";
+      // Normalise absolute URLs pointing to our own server → relative path
+      if (url.startsWith("http://") || url.startsWith("https://")) {
+        try {
+          const u = new URL(url);
+          if (u.pathname.startsWith("/api/stocks/")) {
+            url = u.pathname; // strip host → "/api/stocks/..."
+          } else {
+            return url; // external URL, leave as-is
+          }
+        } catch {
+          return url;
+        }
+      }
       if (!url.startsWith("/api/stocks/")) return url;
 
       const filename = url.slice("/api/stocks/".length);
