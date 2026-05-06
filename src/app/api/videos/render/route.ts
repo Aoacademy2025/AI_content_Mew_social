@@ -191,13 +191,30 @@ export async function POST(req: Request) {
       if (url.startsWith("http://") || url.startsWith("https://")) {
         try {
           const u = new URL(url);
-          if (u.pathname.startsWith("/api/stocks/")) {
-            url = u.pathname; // strip host → "/api/stocks/..."
+          if (u.pathname.startsWith("/api/stocks/") || u.pathname.startsWith("/api/renders/stock-")) {
+            url = u.pathname;
           } else {
             return url; // external URL, leave as-is
           }
         } catch {
           return url;
+        }
+      }
+      // Client may send old /api/renders/stock-xxx.mp4 URLs — redirect to stocks/
+      if (url.startsWith("/api/renders/stock-")) {
+        const filename = url.slice("/api/renders/".length);
+        const stockPath = path.join(stocksDir, filename);
+        if (fs.existsSync(stockPath) && fs.statSync(stockPath).size > 1_500) {
+          url = `/api/stocks/${filename}`;
+        } else {
+          // File not in stocks/ — copy from renders/ symlink target if it exists there
+          const renderPath = path.join(rendersDir, filename);
+          if (fs.existsSync(renderPath) && fs.statSync(renderPath).size > 1_500) {
+            fs.copyFileSync(renderPath, stockPath);
+            url = `/api/stocks/${filename}`;
+          } else {
+            throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
+          }
         }
       }
       if (!url.startsWith("/api/stocks/")) return url;
@@ -206,7 +223,7 @@ export async function POST(req: Request) {
       const srcPath = path.join(stocksDir, filename);
       const srcStat = fs.existsSync(srcPath) ? fs.statSync(srcPath) : null;
       if (!srcStat || srcStat.size <= 1_500) {
-        throw new Error(`Stock file missing or too small: ${url}`);
+        throw new Error(`Stock file missing or too small: ${url} — please re-fetch stock videos`);
       }
 
       const symlinkPath = path.join(rendersDir, filename);
@@ -290,20 +307,28 @@ export async function POST(req: Request) {
 
     let resolvedShortConfig = shortVideoConfig;
     if (isShortVideo && shortVideoConfig) {
+      // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
+      const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
+      for (const v of shortVideoConfig.bgVideos ?? []) {
+        try {
+          const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
+          resolvedBgVideos.push({ ...v, src: resolvedSrc });
+        } catch (e) {
+          console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
+        }
+      }
+      if (resolvedBgVideos.length === 0) {
+        throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
+      }
+
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile)),
-        bgVideos: (shortVideoConfig.bgVideos ?? []).map((v: { src: string; start: number; end: number; clipOffset?: number }) => ({
-          ...v,
-          src: toAbsolute(resolveStockUrl(v.src)),
-        })),
+        bgVideos: resolvedBgVideos,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
-      for (const v of resolvedShortConfig.bgVideos ?? []) {
-        assertExistingAsset(v.src, "bg");
-      }
       console.log("[render] stock assets prepared from stocks -> renders");
       console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
       console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
