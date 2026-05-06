@@ -215,35 +215,47 @@ export function ShortVideoComposition({
     >
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Stock video segments with Ken Burns zoom + crossfade */}
-      {bgVideos.map((v, i) => {
-        const startFrame = Math.max(0, Math.round(v.start * fps));
-        const endFrame = Math.max(startFrame + 1, Math.round(v.end * fps));
-        const segDurFrames = endFrame - startFrame;
-        const clipDurFrames = v.clipDuration && v.clipDuration > 0
-          ? Math.max(1, Math.round(v.clipDuration * fps))
-          : null;
-        const clipOffsetFrames = Math.round((v.clipOffset ?? 0) * fps);
-        const startFromFrame = clipDurFrames
-          ? ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames
-          : 0;
-
-        return (
-          <Sequence
-            key={`${i}-${v.src}-${startFrame}`}
-            from={startFrame}
-            durationInFrames={segDurFrames}
-            layout="none"
-          >
-            <VideoClip
-              src={v.src}
-              startFrom={startFromFrame}
-              segDurFrames={segDurFrames}
-              clipDurFrames={clipDurFrames}
-            />
-          </Sequence>
-        );
-      })}
+      {/* Stock video segments — merge consecutive segments with same src into one Sequence */}
+      {(() => {
+        // Merge adjacent bgVideos with the same src into a single continuous Sequence
+        type Merged = { src: string; startFrame: number; endFrame: number; clipOffset: number; clipDuration: number | null };
+        const merged: Merged[] = [];
+        for (const v of bgVideos) {
+          const startFrame = Math.max(0, Math.round(v.start * fps));
+          const endFrame = Math.max(startFrame + 1, Math.round(v.end * fps));
+          const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
+          const clipOffset = v.clipOffset ?? 0;
+          const last = merged[merged.length - 1];
+          if (last && last.src === v.src && last.endFrame === startFrame) {
+            last.endFrame = endFrame;
+          } else {
+            merged.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
+          }
+        }
+        return merged.map((v, i) => {
+          const segDurFrames = v.endFrame - v.startFrame;
+          const clipDurFrames = v.clipDuration ? Math.max(1, Math.round(v.clipDuration * fps)) : null;
+          const clipOffsetFrames = Math.round(v.clipOffset * fps);
+          const startFromFrame = clipDurFrames
+            ? ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames
+            : 0;
+          return (
+            <Sequence
+              key={`${i}-${v.src}-${v.startFrame}`}
+              from={v.startFrame}
+              durationInFrames={segDurFrames}
+              layout="none"
+            >
+              <VideoClip
+                src={v.src}
+                startFrom={startFromFrame}
+                segDurFrames={segDurFrames}
+                clipDurFrames={clipDurFrames}
+              />
+            </Sequence>
+          );
+        });
+      })()}
 
       {/* Vignette overlay — darkens edges for cinematic look */}
       <Vignette />
