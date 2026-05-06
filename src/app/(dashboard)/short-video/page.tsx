@@ -1742,14 +1742,14 @@ export default function ShortVideoPage() {
       return true;
     }) as (keyof StepState)[];
   const STEP_DISPLAY: Record<keyof StepState, string> = {
-    keywords: "Extract Keywords (LLM)",
-    fetchStock: "Pexels Asset Fetch",
-    tts: "TTS Gen",
-    transcribe: "Whisper Transcribe",
-    config: "Build Render Config",
-    render: "Remotion Render Engine",
-    avatar: "HeyGen API Process",
-    composite: "FFMPEG Composite",
+    keywords: "คีย์เวิร์ด (LLM)",
+    fetchStock: "ดึงวิดีโอ Stock",
+    tts: "สร้างเสียง (TTS)",
+    transcribe: "แปลงซับ (Whisper)",
+    config: "ตั้งค่าเรนเดอร์",
+    render: "เรนเดอร์วิดีโอ",
+    avatar: "สร้างอวตาร (HeyGen)",
+    composite: "รวมวิดีโอ (FFmpeg)",
   };
 
   if (plan !== "PRO") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
