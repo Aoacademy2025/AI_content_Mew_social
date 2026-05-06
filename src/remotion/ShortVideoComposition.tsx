@@ -13,25 +13,50 @@ import type { ShortVideoConfig, SubtitleStylePreset } from "./types";
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
 
+// Ken Burns configs — alternate per clip index
+const KB_CONFIGS = [
+  { startScale: 1.0,  endScale: 1.08, tx: 0,    ty: 0 },
+  { startScale: 1.08, endScale: 1.0,  tx: -2,   ty: -1 },
+  { startScale: 1.0,  endScale: 1.08, tx: 2,    ty: 1 },
+  { startScale: 1.06, endScale: 1.0,  tx: -1.5, ty: 0 },
+  { startScale: 1.0,  endScale: 1.06, tx: 1.5,  ty: -1 },
+];
+
 function VideoClip({
   src,
   startFrom,
   segDurFrames,
   clipDurFrames,
+  clipIndex,
+  isFirst,
 }: {
   src: string;
   startFrom: number;
   segDurFrames: number;
   clipDurFrames: number | null;
+  clipIndex: number;
+  isFirst: boolean;
 }) {
+  const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
+
   const effectiveDur = clipDurFrames != null
     ? Math.min(segDurFrames, clipDurFrames) - 2
     : segDurFrames - 1;
   const endAt = startFrom + Math.max(1, effectiveDur);
 
+  const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
+  const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
+  const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
+  const tx = interpolate(progress, [0, 1], [0, kb.tx]);
+  const ty = interpolate(progress, [0, 1], [0, kb.ty]);
+
+  // Crossfade in — first clip starts at full opacity, others fade in over 8 frames
+  const fadeFrames = Math.min(8, Math.floor(segDurFrames / 3));
+  const opacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
+
   return (
-    <AbsoluteFill>
+    <AbsoluteFill style={{ opacity }}>
       <Video
         src={src}
         startFrom={startFrom}
@@ -44,6 +69,8 @@ function VideoClip({
           width,
           height,
           objectFit: "cover",
+          transform: `scale(${scale}) translate(${tx}%, ${ty}%)`,
+          transformOrigin: "center center",
         }}
         muted
       />
@@ -252,6 +279,8 @@ export function ShortVideoComposition({
                 startFrom={startFromFrame}
                 segDurFrames={segDurFrames}
                 clipDurFrames={clipDurFrames}
+                clipIndex={i}
+                isFirst={i === 0}
               />
             </Sequence>
           );
