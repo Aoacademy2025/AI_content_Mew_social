@@ -11,7 +11,10 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const progressFile = path.join("/tmp", `render-progress-${session.user.id}.json`);
+  const renderTmpDir = process.env.RENDER_TMP_ROOT
+    ? path.resolve(process.env.RENDER_TMP_ROOT)
+    : path.join(process.cwd(), ".tmp", "remotion");
+  const progressFile = path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");
     const parsed = JSON.parse(raw) as { progress?: number };
