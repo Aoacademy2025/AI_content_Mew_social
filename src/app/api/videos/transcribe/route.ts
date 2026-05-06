@@ -1142,37 +1142,38 @@ ${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}`;
             }
           }
 
-          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
+          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels short videos.
 
-TASK: Split the SCRIPT below into subtitle phrases. COPY every word EXACTLY — do NOT drop, rewrite, or summarize anything.
+TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never drop, rewrite, or summarize.
 
-━━━ SPLITTING RULES ━━━
-• Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases
-• Thai text: 8–28 chars per phrase ideal, HARD MAX 32 chars
-• English/mixed: up to 18 words, HARD MAX 22 words
+━━━ HARD RULES (never break these) ━━━
 
-กฎ 1 — ตัดที่จุดหยุด
-• Split where speaker PAUSES — see SPEECH PAUSE POINTS below
-• Split after punctuation (. ? ! ฯ) or conjunctions (แต่ และ เพราะ จึง ดังนั้น)
-• NEVER cut mid-thought
-  ✗ "OpenAI อาจไม่ใช่เบอร์" ← incomplete
-  ✓ "OpenAI อาจไม่ใช่เบอร์หนึ่งอีกต่อไป" ← complete thought
+1. COMPLETE THOUGHT — every phrase must be a complete idea on its own
+   ✗ "และ OpenAI" / "ของบริษัทชื่อ" / "อาจไม่ใช่เบอร์" ← dangling, incomplete
+   ✓ "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
 
-กฎ 2 — 1 subtitle = 1 idea
-• Two ideas → two subtitles even if short
+2. NEVER start a phrase with a connector word alone
+   ✗ phrase starts with: และ / แต่ / ของ / ที่ / ว่า / จึง / เพราะ / โดย
+   → merge it with the previous phrase instead
 
-กฎ 3 — impact lines short
-• Punchlines: 3–8 words alone on screen
+3. ONE screen line per phrase — max 32 Thai chars OR 22 English words
+   If LLM output would wrap to 2 lines → SPLIT into 2 separate phrases
 
-กฎ 4 — max 6s per subtitle
-• Long pauses → split into more phrases
+4. Split at PAUSE POINTS — see below — these are real breath boundaries in the audio
 
-━━━ TAGGING ━━━
+5. Max ~6s per subtitle. If a phrase covers more than 6s of audio → split it
+
+━━━ GUIDELINES ━━━
+• Audio duration: ${durationSec.toFixed(1)}s → aim for ${minPhrases}–${maxPhrases} phrases
+• Impact/punchline lines: keep short (5–10 words), alone on screen
+• Date expressions (วันที่ + เดือน + ปี) = ONE phrase, never split
+
+━━━ TAGS ━━━
 • "hook" = first 1–2 phrases only
-• "body" = main content
-• "cta"  = กดติดตาม / like / share / subscribe
+• "body" = everything else
+• "cta"  = กดติดตาม / like / share / subscribe lines only
 
-━━━ OUTPUT — valid JSON only, no markdown ━━━
+━━━ OUTPUT — valid JSON, no markdown ━━━
 {"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}${rhythmHint}
 
 ━━━ SCRIPT ━━━
