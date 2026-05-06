@@ -1745,7 +1745,7 @@ export default function ShortVideoPage() {
     keywords: "Keyword Extract (LLM)",
     fetchStock: "Stock Video Fetch",
     tts: "Voice Generate (TTS)",
-    transcribe: "Subtitle Sync (Whisper)",
+    transcribe: "Subtitle Sync (STT)",
     config: "Render Config",
     render: "Remotion Render",
     avatar: "Avatar Generate (HeyGen)",
