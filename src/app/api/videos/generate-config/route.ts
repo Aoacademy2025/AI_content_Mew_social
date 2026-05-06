@@ -263,14 +263,12 @@ export async function POST(req: Request) {
     minFrameMs,
   );
 
-  // Fill gaps: each caption ends exactly when the next one starts.
-  // Also clamp endMs so it never equals startMs (minimum 1 frame = 1000/fps ms).
+  // Fill gaps: each caption ends exactly when the next one starts (no overlap, no gap).
   const gapFilled = validCaptions.map((c, i) => {
     const nextStart = i < validCaptions.length - 1 ? validCaptions[i + 1].startMs : audioDurationMs;
-    let endMs = Math.min(c.endMs, nextStart);
-    endMs = Math.max(endMs, c.startMs + minFrameMs);
-    if (endMs > audioDurationMs) endMs = audioDurationMs;
-    return { ...c, endMs: Math.min(endMs, Math.max(c.startMs + minFrameMs, nextStart)) };
+    // endMs = next subtitle's startMs, but at least 1 frame, at most audioDuration
+    const endMs = Math.min(audioDurationMs, Math.max(c.startMs + minFrameMs, nextStart));
+    return { ...c, endMs };
   });
 
   const keywordPopups: KeywordPopupItem[] = gapFilled

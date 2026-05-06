@@ -148,8 +148,26 @@ OUTPUT (JSON array of ${keywords.length} integers):`;
       });
       if (r.ok) { const d = await r.json(); text = d.choices?.[0]?.message?.content ?? "[]"; }
     }
-    const match = text.match(/\[[\s\S]*?\]/);
-    const parsed: unknown[] = JSON.parse(match?.[0] ?? "[]");
+
+    // Try bare array first, then extract from object like {"indices":[...]} or {"result":[...]}
+    let parsed: unknown[] = [];
+    const arrMatch = text.match(/\[[\d,\s]+\]/);
+    if (arrMatch) {
+      parsed = JSON.parse(arrMatch[0]);
+    } else {
+      const objMatch = text.match(/\{[\s\S]*\}/);
+      if (objMatch) {
+        const obj = JSON.parse(objMatch[0]);
+        const arr = Array.isArray(obj) ? obj : Object.values(obj).find(v => Array.isArray(v));
+        if (Array.isArray(arr)) parsed = arr;
+      }
+    }
+
+    if (parsed.length !== keywords.length) {
+      console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using longest-duration fallback`);
+      return keywords.map(() => 0);
+    }
+
     return parsed.map((v, i) => {
       const n = typeof v === "number" ? v : parseInt(String(v), 10);
       const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
