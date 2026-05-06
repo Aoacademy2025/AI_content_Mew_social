@@ -2,8 +2,8 @@ import React from "react";
 import {
   AbsoluteFill,
   Audio,
-  OffthreadVideo,
   Sequence,
+  Video,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -30,7 +30,7 @@ function VideoClip({
 
   return (
     <AbsoluteFill>
-      <OffthreadVideo
+      <Video
         src={src}
         startFrom={startFrom}
         endAt={endAt}
