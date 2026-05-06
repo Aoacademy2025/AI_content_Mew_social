@@ -846,7 +846,8 @@ RULES:
           }
           throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
         }
-        const geminiData = await geminiRes.json() as Record<string, unknown>;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const geminiData = await geminiRes.json() as any;
         const rawGeminiText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
         console.log(`[transcribe] Gemini raw: ${rawGeminiText.slice(0, 300)}`);
 
