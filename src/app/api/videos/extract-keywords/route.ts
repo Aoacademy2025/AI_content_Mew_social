@@ -188,6 +188,8 @@ Return ONLY valid JSON object with exactly ${batch.length} English-only strings 
       }
 
       const keywords = extractQuotedStringArray(kwText);
+      console.log(`[extract-keywords] batch raw sample:`, kwText.slice(0, 200));
+      console.log(`[extract-keywords] batch parsed ${keywords.length}/${batch.length}:`, keywords.slice(0, 3));
       if (keywords.length > 0) return keywords.slice(0, batch.length);
       return [];
     }
