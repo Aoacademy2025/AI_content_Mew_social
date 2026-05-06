@@ -1124,77 +1124,58 @@ RULES:
           minPhrases = Math.max(3, targetPhrases - 2);
           maxPhrases = targetPhrases + 4;
 
-          // ── When Gemini segments available: ask LLM to assign each subtitle to a segment range ──
-          // This gives exact timestamps instead of proportional estimation.
-          const hasSegments = segments.length >= 2;
-          let segmentContext = "";
-          if (hasSegments) {
-            // Show LLM numbered segments with timestamps so it can assign seg_start/seg_end
-            const segLines = segments.slice(0, 120).map((s, i) =>
-              `  [${i}] ${s.start.toFixed(2)}s–${s.end.toFixed(2)}s: "${s.text.trim()}"`
-            ).join("\n");
-            segmentContext = `\n\n━━━ AUDIO SEGMENTS (from speech recognition) ━━━
-Each segment is a real audio timestamp. For each subtitle phrase, output which segments it covers:
-  seg_start = index of FIRST segment whose speech matches this phrase
-  seg_end   = index of LAST  segment whose speech matches this phrase
-
-Segments (0-indexed, total ${segments.length}):
-${segLines}`;
+          // Build speech rhythm hint from Gemini segment pause points
+          // LLM uses this to split at real breath boundaries in the audio
+          let rhythmHint = "";
+          if (segments.length >= 2) {
+            const breathPoints: string[] = [];
+            for (let si = 0; si < segments.length - 1; si++) {
+              const gap = segments[si + 1].start - segments[si].end;
+              if (gap >= 0.2) {
+                breathPoints.push(`${segments[si].end.toFixed(2)}s — "${segments[si].text.trim().slice(-25)}"`);
+              }
+            }
+            if (breathPoints.length > 0) {
+              rhythmHint = `\n\n━━━ SPEECH PAUSE POINTS ━━━
+Split subtitles at or near these natural pause points (detected from audio):
+${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}`;
+            }
           }
-
-          const outputFormat = hasSegments
-            ? `{"captions":[{"text":"phrase","seg_start":0,"seg_end":2,"tag":"hook"},...]}`
-            : `{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}`;
 
           const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
-TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NOT rewrite or remove any words.
-
-━━━ CRITICAL ━━━
-• COPY words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any words.
-• Every word in the script must appear in the output — nothing removed.
-• Only decide WHERE to split into subtitle lines.
+TASK: Split the SCRIPT below into subtitle phrases. COPY every word EXACTLY — do NOT drop, rewrite, or summarize anything.
 
 ━━━ SPLITTING RULES ━━━
-• Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase MUST fit in 2 lines on screen — 9:16 vertical video.
-  - Thai text: 8–28 chars ideal, HARD MAX 32 chars per phrase.
-  - English/mixed: 6–18 words, HARD MAX 22 words per phrase.
-  - If a phrase exceeds these limits, MUST split it.
+• Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases
+• Thai text: 8–28 chars per phrase ideal, HARD MAX 32 chars
+• English/mixed: up to 18 words, HARD MAX 22 words
 
-กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี
-• Split at speech pauses — use seg_start/seg_end to mark which audio segments each subtitle covers.
-• Split after punctuation (. ? ! ฯ ,) or conjunctions (แต่, และ, เพราะ, จึง, ดังนั้น).
-• NEVER cut mid-phrase where meaning is still hanging — the thought must be complete.
-  ✗ ผิด: "มึงเคยคิดปะ ว่า" / "ความรู้ที่เรียนมา"
-  ✓ ถูก: "มึงเคยคิดปะ..." / "ว่าความรู้ที่เรียนมา"
+กฎ 1 — ตัดที่จุดหยุด
+• Split where speaker PAUSES — see SPEECH PAUSE POINTS below
+• Split after punctuation (. ? ! ฯ) or conjunctions (แต่ และ เพราะ จึง ดังนั้น)
+• NEVER cut mid-thought
+  ✗ "OpenAI อาจไม่ใช่เบอร์" ← incomplete
+  ✓ "OpenAI อาจไม่ใช่เบอร์หนึ่งอีกต่อไป" ← complete thought
 
-กฎ 2 — 1 ซับ = 1 ความคิด
-• If a sentence contains 2 ideas, split into 2 subtitles even if short.
-  ✗ ผิด: "อิเล็กตรอนหนีออก ทิ้งหลุมว่าง เรียกว่าโฮล จับคู่กลายเป็นเอ็กซิตอน"
-  ✓ ถูก: "อิเล็กตรอนหนี" / 'ทิ้งหลุมว่าง "โฮล"' / "จับคู่กัน" / "กลายเป็นเอ็กซิตอน"
+กฎ 2 — 1 subtitle = 1 idea
+• Two ideas → two subtitles even if short
 
-กฎ 3 — ซับช็อก ให้สั้นพิเศษ
-• Impact/twist/punchline lines: keep to 3–8 words, show alone on screen.
+กฎ 3 — impact lines short
+• Punchlines: 3–8 words alone on screen
 
-กฎ 4 — ห้ามซับค้างนานเกิน 7 วินาที
-• If a shot is long with no new subtitle, split into more phrases to keep the viewer engaged.
+กฎ 4 — max 6s per subtitle
+• Long pauses → split into more phrases
 
-กฎ 5 — gap ระหว่างซับ
-• Subtitles must NOT be identical back-to-back. Every subtitle must have unique text.
-• NEVER split a date expression (Thai month name + date + year = ONE phrase).
-• seg_start of phrase[i+1] must be > seg_end of phrase[i] — no overlapping segments.
+━━━ TAGGING ━━━
+• "hook" = first 1–2 phrases only
+• "body" = main content
+• "cta"  = กดติดตาม / like / share / subscribe
 
-━━━ TAGGING RULES ━━━
-• "hook" = opening attention-grabbing line(s) — FIRST 1–2 phrases only.
-• "body" = main content — the majority of phrases.
-• "cta"  = explicit action words only: กดติดตาม, กด like, กดแชร์, สมัครเลย, subscribe, follow.
+━━━ OUTPUT — valid JSON only, no markdown ━━━
+{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}${rhythmHint}
 
-━━━ OUTPUT FORMAT ━━━
-Return ONLY valid JSON — no markdown, no explanation:
-${outputFormat}${segmentContext}
-
-━━━ SCRIPT TO PROCESS ━━━
+━━━ SCRIPT ━━━
 ${sourceText.trim()}`;
 
           // max_tokens: each phrase ~30 tokens × maxPhrases, plus JSON overhead; cap at 16k for long scripts
@@ -1224,110 +1205,24 @@ ${sourceText.trim()}`;
           if (gptRawText !== "{}") {
             try {
               const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
-
-              // ── Mode A: LLM returned captions with seg_start/seg_end (exact timestamp mode) ──
-              if (hasSegments && Array.isArray(parsed.captions) && parsed.captions.length > 0) {
-                type LLMCaption = { text?: string; seg_start?: number; seg_end?: number; tag?: string };
-                const llmCaps = (parsed.captions as LLMCaption[]).filter(
-                  c => typeof c.text === "string" && typeof c.seg_start === "number" && typeof c.seg_end === "number"
-                );
-                if (llmCaps.length > 0) {
-                  // Clamp and sort by seg_start, remove overlaps
-                  const maxSi = segments.length - 1;
-                  const clamped = llmCaps.map(c => ({
-                    ...c,
-                    seg_start: Math.max(0, Math.min(c.seg_start!, maxSi)),
-                    seg_end:   Math.max(0, Math.min(c.seg_end!,   maxSi)),
-                  })).sort((a, b) => a.seg_start - b.seg_start);
-
-                  // Remove overlapping entries (keep first, skip any whose seg_start <= prev seg_end)
-                  const validCaps: typeof clamped = [];
-                  let prevEnd = -1;
-                  for (const c of clamped) {
-                    const s0 = Math.max(c.seg_start, prevEnd + 1); // push start past prev end
-                    const s1 = Math.max(s0, c.seg_end);
-                    validCaps.push({ ...c, seg_start: s0, seg_end: s1 });
-                    prevEnd = s1;
-                  }
-
-                  if (validCaps.length > 0) {
-                    // Distribute script text across captions by segment duration proportion
-                    // so text is always verbatim from script, never from LLM (which may truncate)
-                    const srcChars = [...sourceText];
-                    const srcNonSpace = sourceText.replace(/\s+/g, "");
-                    const totalSegDurMs = validCaps.reduce((a, c) => {
-                      const s0 = c.seg_start, s1 = c.seg_end;
-                      return a + Math.round((segments[s1].end - segments[s0].start) * 1000);
-                    }, 0);
-                    let charPos = 0; // non-space chars consumed from script
-                    let srcIdx = 0;  // position in srcChars
-
-                    captions = validCaps.map((c, i) => {
-                      const s0 = c.seg_start, s1 = c.seg_end;
-                      const startMs = Math.round(segments[s0].start * 1000);
-                      const endMs   = Math.round(Math.max(segments[s0].start + 0.3, segments[s1].end) * 1000);
-                      const tag: "hook" | "body" | "cta" = (c.tag === "hook" || c.tag === "body" || c.tag === "cta") ? c.tag : (i === 0 ? "hook" : "body");
-
-                      // How many non-space script chars belong to this caption
-                      const segDurMs = Math.round((segments[s1].end - segments[s0].start) * 1000);
-                      const nChars = i === validCaps.length - 1
-                        ? srcNonSpace.length - charPos
-                        : Math.max(1, Math.round((segDurMs / Math.max(1, totalSegDurMs)) * srcNonSpace.length));
-
-                      const sliceStart = srcIdx;
-                      let taken = 0;
-                      while (srcIdx < srcChars.length && taken < nChars) {
-                        if (srcChars[srcIdx] !== " ") taken++;
-                        srcIdx++;
-                      }
-                      // Extend to word boundary
-                      while (srcIdx < srcChars.length && srcChars[srcIdx] !== " ") srcIdx++;
-                      charPos += taken;
-
-                      const slice = sanitizePhraseText(srcChars.slice(sliceStart, srcIdx).join("")) || sanitizePhraseText(c.text!);
-                      return { text: normalizeCaptionText(slice), startMs, endMs, timestampMs: startMs, confidence: 1, tag };
-                    }).filter(c => c.text.length > 0);
-
-                    // Give any remaining script text to last caption
-                    if (captions.length > 0 && srcIdx < srcChars.length) {
-                      const remaining = sanitizePhraseText(srcChars.slice(srcIdx).join(""));
-                      if (remaining) captions[captions.length - 1].text = normalizeCaptionText(captions[captions.length - 1].text + remaining);
-                    }
-
-                    console.log(`[transcribe] Mode A: ${validCaps.length} captions with exact segment timestamps + script text`);
-                  }
-                }
+              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
+              if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
+                llmTags = parsed.tags as ("hook" | "body" | "cta")[];
               }
-
-              // ── Mode B: LLM returned phrases[] (proportional alignment fallback) ──
-              if (captions.length === 0) {
-                const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
-                if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
-                  llmTags = parsed.tags as ("hook" | "body" | "cta")[];
-                }
-                const scriptSentences = splitToSentencePhrases(sourceRaw);
-                const shouldUseSentenceSplit = scriptSentences.length > 1 &&
-                  scriptSentences.length <= Math.max(3, raw.length + 3) &&
-                  scriptSentences.length <= 20;
-                const origStripped = normalizeForCompare(sourceText);
-                const outStripped = normalizeForCompare(raw.join(""));
-                const charRatio = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
-                if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                  const sentenceLenOk = scriptSentences.every((s) => alignmentCharLen(s) >= 10) && scriptSentences.length <= 20;
-                  if ((shouldUseSentenceSplit || scriptSentences.length === 2) && sentenceLenOk) {
-                    phrases = mergeTinyPhrases(scriptSentences);
-                    if (llmTags.length > phrases.length) llmTags = llmTags.slice(0, phrases.length);
-                    console.log(`[transcribe] sentence-anchored split override -> ${phrases.length} phrases`);
-                  } else if (isThai) {
-                    phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
-                  } else {
-                    phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
-                  }
-                  phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
-                  console.log(`[transcribe] Mode B: LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)})`);
+              const origStripped = normalizeForCompare(sourceText);
+              const outStripped  = normalizeForCompare(raw.join(""));
+              const charRatio    = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
+              if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
+                if (isThai) {
+                  // Thai has no spaces — use LLM phrases directly (prompt says COPY EXACT)
+                  phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
                 } else {
-                  console.warn(`[transcribe] LLM mismatch — orig:${origStripped.length} out:${outStripped.length} ratio=${charRatio.toFixed(3)}, using fallback`);
+                  phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
                 }
+                phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
+                console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
+              } else {
+                console.warn(`[transcribe] LLM ratio mismatch orig=${origStripped.length} out=${outStripped.length} ratio=${charRatio.toFixed(3)}`);
               }
             } catch (e) {
               console.warn("[transcribe] LLM parse failed:", e);
