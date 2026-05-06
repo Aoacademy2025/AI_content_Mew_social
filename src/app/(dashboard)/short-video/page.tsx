@@ -1758,24 +1758,33 @@ export default function ShortVideoPage() {
     <DashboardLayout noPadding>
       {renderProgress !== null && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl w-[min(90vw,20rem)] sm:w-80 p-5 sm:p-8 flex flex-col items-center gap-5">
+          <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"
+            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
             <div className="flex flex-col items-center gap-1">
               <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
-              <span className="text-sm text-zinc-400">
-                {renderProgressError ? "Render error" : "Rendering..."}
+              <span className="text-sm" style={{ color: renderProgressError ? "hsl(0 80% 65%)" : renderProgress >= 100 ? "hsl(190 100% 60%)" : "rgba(255,255,255,0.45)" }}>
+                {renderProgressError ? "Render error" : renderProgress >= 100 ? "Finalizing file..." : "Rendering..."}
               </span>
             </div>
-            {/* Progress bar */}
-            <div className="w-full h-3 bg-zinc-700 rounded-full overflow-hidden">
+            <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "hsl(220 30% 14%)" }}>
               <div
-                className="h-full bg-gradient-to-r from-blue-500 to-violet-500 rounded-full transition-all duration-500"
-                style={{ width: `${renderProgress}%` }}
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${renderProgress}%`,
+                  background: renderProgressError
+                    ? "hsl(0 80% 50%)"
+                    : renderProgress >= 100
+                    ? "linear-gradient(90deg, hsl(190 100% 50%), hsl(142 72% 50%))"
+                    : "linear-gradient(90deg, hsl(220 100% 55%), hsl(190 100% 50%))",
+                }}
               />
             </div>
             {renderProgressError ? (
               <p className="text-xs text-red-400 text-center">{renderProgressError}</p>
+            ) : renderProgress >= 100 ? (
+              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.35)" }}>กำลัง export ไฟล์วิดีโอ — รอสักครู่...</p>
             ) : (
-              <p className="text-xs text-zinc-500 text-center">Please wait while render is running. Do not close popup.</p>
+              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.3)" }}>กรุณารอจนเสร็จ อย่าปิดหน้านี้</p>
             )}
             <button
               type="button"
@@ -1786,7 +1795,8 @@ export default function ShortVideoPage() {
                 }
                 setRenderProgress(null);
               }}
-              className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm"
+              className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+              style={{ background: "hsl(220 30% 14%)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(220 30% 20%)" }}
             >
               {renderProgressError ? "Close" : "Cancel"}
             </button>
@@ -1917,28 +1927,28 @@ export default function ShortVideoPage() {
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Bai+Jamjuree:wght@600;700&family=Krub:wght@600;700&family=Pridi:wght@600;700&family=Chonburi&family=Itim&display=swap" />
 
       <div className="sv-dark flex h-full overflow-hidden sv-bg">
-        <div className="flex-1 overflow-y-auto px-5 pt-4 pb-8 space-y-4">
+        <div className="flex-1 overflow-y-auto px-3 sm:px-5 pt-4 pb-8 space-y-4">
 
           {/* ── Page header ── */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: "linear-gradient(135deg, hsl(190 100% 40% / 0.2), hsl(230 100% 55% / 0.15))", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ background: "linear-gradient(135deg, hsl(190 100% 40% / 0.2), hsl(230 100% 55% / 0.15))", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
                 <Video className="h-4 w-4 text-cyan-400" />
               </div>
-              <div>
-                <h1 className="text-base font-bold text-white leading-none">Video Creator</h1>
-                <p className="text-[10px] text-white/30 mt-0.5">AI-powered pipeline · TTS + Stock + Avatar + Subtitles</p>
+              <div className="min-w-0">
+                <h1 className="text-sm font-bold text-white leading-none">Video Creator</h1>
+                <p className="text-[9px] text-white/30 mt-0.5 hidden sm:block">AI-powered pipeline · TTS + Stock + Avatar + Subtitles</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {running && (
-                <div className="flex items-center gap-1.5 rounded-full px-3 py-1" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+                <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
                   <Loader2 className="h-3 w-3 animate-spin text-cyan-400" />
                   <span className="text-[10px] font-semibold text-cyan-400">Running...</span>
                 </div>
               )}
               {preRenderUrl && !running && (
-                <div className="flex items-center gap-1.5 rounded-full px-3 py-1" style={{ background: "hsl(142 72% 29% / 0.15)", border: "1px solid hsl(142 72% 29% / 0.3)" }}>
+                <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1" style={{ background: "hsl(142 72% 29% / 0.15)", border: "1px solid hsl(142 72% 29% / 0.3)" }}>
                   <CheckCircle2 className="h-3 w-3 text-green-400" />
                   <span className="text-[10px] font-semibold text-green-400">Ready</span>
                 </div>
@@ -1947,7 +1957,7 @@ export default function ShortVideoPage() {
           </div>
 
           {/* ── All inputs: 2-column layout ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
 
             {/* LEFT column: Content + ElevenLabs */}
             <div className="flex flex-col gap-4">
@@ -2576,38 +2586,38 @@ export default function ShortVideoPage() {
           <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
 
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-3.5" style={{ background: "hsl(190 100% 50% / 0.04)", borderBottom: "1px solid var(--sv-border)" }}>
-              <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.22)" }}>
+            <div className="flex flex-wrap items-center gap-2 px-4 py-3" style={{ background: "hsl(190 100% 50% / 0.04)", borderBottom: "1px solid var(--sv-border)" }}>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.22)" }}>
                   <Layers className="h-3.5 w-3.5 text-cyan-400" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="font-bold text-white text-sm leading-none">Execution Pipeline</p>
-                  <p className="text-[10px] text-white/30 mt-0.5">กดแต่ละขั้นตอนเพื่อ run หรือ re-run</p>
+                  <p className="text-[10px] text-white/30 mt-0.5 hidden sm:block">กดแต่ละขั้นตอนเพื่อ run หรือ re-run</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 {stockCacheInfo && stockCacheInfo.count > 0 && (
                   <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:opacity-40"
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40"
                     style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
                     title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RotateCcw className="h-3 w-3 mr-1" />}
-                    Cache {stockCacheInfo.sizeMb}MB
+                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                    <span className="hidden sm:inline ml-1">Cache</span> {stockCacheInfo.sizeMb}MB
                   </button>
                 )}
                 {running && (
                   <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
-                    className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold text-white transition-all hover:opacity-90 shadow-lg"
-                    style={{ background: "linear-gradient(135deg, hsl(0 80% 45%), hsl(20 90% 45%))", boxShadow: "0 4px 16px hsl(0 80% 40% / 0.3)" }}>
-                    <Square className="h-3.5 w-3.5 fill-white" />
-                    Stop
+                    className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, hsl(0 80% 45%), hsl(20 90% 45%))" }}>
+                    <Square className="h-3 w-3 fill-white" />
+                    <span className="hidden sm:inline ml-1">Stop</span>
                   </button>
                 )}
                 <button onClick={runAll} disabled={running || !script.trim()}
-                  className="flex items-center gap-2 rounded-xl px-5 py-2 text-sm font-bold text-white transition-all hover:opacity-90 disabled:opacity-40 shadow-lg"
-                  style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))", boxShadow: "0 4px 16px hsl(190 100% 40% / 0.25)" }}>
-                  {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:opacity-90 disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+                  {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
                   Run All
                 </button>
               </div>
@@ -2691,10 +2701,10 @@ export default function ShortVideoPage() {
           </div>
 
           {/* ── Bottom panels ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 items-start">
 
-            {/* Col 1 — Live Status (narrow) */}
-            <div className="lg:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+            {/* Col 1 — Live Status (narrow) — full width on mobile (order-last), col on md+ */}
+            <div className="md:col-span-2 lg:col-span-3 order-last md:order-none rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
                 <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Live Status</p>
@@ -3021,7 +3031,7 @@ export default function ShortVideoPage() {
             </div>
 
             {/* Col 2 — Subtitle Review + BG Removal stacked */}
-            <div className="lg:col-span-4 flex flex-col gap-4">
+            <div className="md:col-span-1 lg:col-span-4 flex flex-col gap-4">
 
             {/* Subtitle Review — edit before generate */}
             <div className="rounded-2xl overflow-hidden flex flex-col" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
@@ -3294,7 +3304,7 @@ export default function ShortVideoPage() {
             </div>{/* end col-2 */}
 
             {/* Col 3 — Preview (full height) */}
-            <div className="lg:col-span-5 rounded-2xl overflow-hidden flex flex-col min-h-[280px] lg:min-h-[600px]" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+            <div className="md:col-span-1 lg:col-span-5 rounded-2xl overflow-hidden flex flex-col min-h-[280px] lg:min-h-[600px]" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
               <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: "1px solid var(--sv-border)" }}>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
