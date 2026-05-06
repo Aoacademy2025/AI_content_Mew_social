@@ -4,6 +4,7 @@ import {
   Audio,
   Sequence,
   Video,
+  interpolate,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
