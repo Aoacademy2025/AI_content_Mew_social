@@ -301,22 +301,21 @@ function VideoOnlyDoc() {
         <Step num={6} title="กด Run All">
           <p>ตรวจสอบทุกอย่างให้เรียบร้อยแล้วกด <b className="text-white">Run All</b></p>
           <Warn>ห้ามกดเปลี่ยนหน้าระหว่างที่ระบบรัน Phase 1 — จะทำให้ pipeline หยุดกลางทาง</Warn>
-          <p>ระบบจะรัน Phase 1 (Keywords → Stock → TTS → Transcribe → Config → Render) ให้เสร็จครบก่อน</p>
-          <p>หลังรันเสร็จถึงขั้นสุดท้าย วิดีโอจะถูกบันทึกลง <b className="text-white">Gallery</b> อัตโนมัติ</p>
+          <p>ระบบรัน Phase 1 อัตโนมัติตามลำดับ → จบที่ Render แล้วบันทึกลง <b className="text-white">Gallery</b></p>
         </Step>
       </Section>
 
       <Section title="ขั้นตอน Pipeline ภายใน" icon={Layers}>
         <p className="text-[12px] text-white/40">เมื่อกด Run All ระบบรันลำดับนี้อัตโนมัติ:</p>
         <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-          <PipelineRow num={1} name="Extract Keywords" desc="LLM อ่าน script → หา keyword ภาษาอังกฤษสำหรับค้น B-roll แต่ละฉาก" />
-          <PipelineRow num={2} name="Stock Fetch" desc="ค้น Pexels/Pixabay → LLM rank คลิปที่ตรงซับที่สุด → ดาวน์โหลด MP4 ลงเซิร์ฟเวอร์" />
-          <PipelineRow num={3} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สร้างไฟล์เสียงพูด" />
-          <PipelineRow num={4} name="Transcribe" desc="Whisper/Gemini ถอดเสียง → LLM แบ่ง script เป็นซับพร้อม timestamp ตรงกับเสียง" />
+          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สังเคราะห์เสียงพูด → ได้ไฟล์ audio MP3" />
+          <PipelineRow num={2} name="Whisper Transcribe" desc="ส่ง audio ให้ Whisper/Gemini ถอดเสียง → LLM แบ่ง script เป็นซับพร้อม timestamp ตรงกับเสียง" />
+          <PipelineRow num={3} name="Extract Keywords" desc="LLM อ่านซับแต่ละประโยค → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 ซับ = 1 keyword)" />
+          <PipelineRow num={4} name="Stock Fetch" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลด MP4 ลงเซิร์ฟเวอร์" />
           <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับแต่ละประโยค → สร้าง timeline ให้ Remotion" />
-          <PipelineRow num={6} name="Render" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → MP4" />
+          <PipelineRow num={6} name="Render" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → MP4 สุดท้าย" />
         </div>
-        <InfoBox>คลิป B-roll และซับตรงกันเสมอ — ทั้งคู่ใช้ timestamp เดียวกัน คลิปที่ 1 เล่นพร้อมซับที่ 1</InfoBox>
+        <InfoBox>คลิป B-roll และซับ sync กันเสมอ — ซับที่ 1 ได้ keyword จากประโยคที่ 1 → คลิปที่ 1 ตรงกับซับที่ 1</InfoBox>
       </Section>
 
       <Section title="หลัง Run เสร็จ — สิ่งที่ทำได้" icon={Captions}>
@@ -443,16 +442,18 @@ function AvatarDoc() {
       </Section>
 
       <Section title="ขั้นตอน Pipeline — 8 ขั้น" icon={Layers}>
-        <div className="rounded-xl p-4" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-          <PipelineRow num={1} name="Extract Keywords" desc="LLM หา keyword B-roll จาก script" />
-          <PipelineRow num={2} name="Stock Fetch" desc="ดาวน์โหลดคลิป background จาก Pexels/Pixabay" />
-          <PipelineRow num={3} name="TTS Voice" desc="สังเคราะห์เสียงพูดจาก script" />
-          <PipelineRow num={4} name="Transcribe" desc="Whisper/Gemini ถอดเสียง → timestamp ต่อประโยค" />
-          <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป + timestamp สร้าง timeline" />
-          <PipelineRow num={6} name="Render (BG)" desc="Remotion render วิดีโอ background พร้อมเสียง + subtitle" />
-          <PipelineRow num={7} name="Avatar (HeyGen)" desc="HeyGen สร้างวิดีโอ avatar พูดบนพื้นเขียว" />
+        <p className="text-[12px] text-white/40">เมื่อกด Run All ระบบรันลำดับนี้อัตโนมัติ:</p>
+        <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สังเคราะห์เสียงพูด → ได้ไฟล์ audio MP3" />
+          <PipelineRow num={2} name="Whisper Transcribe" desc="ส่ง audio ให้ Whisper/Gemini ถอดเสียง → LLM แบ่ง script เป็นซับพร้อม timestamp ตรงกับเสียง" />
+          <PipelineRow num={3} name="Extract Keywords" desc="LLM อ่านซับแต่ละประโยค → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 ซับ = 1 keyword)" />
+          <PipelineRow num={4} name="Stock Fetch" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลด MP4 ลงเซิร์ฟเวอร์" />
+          <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับแต่ละประโยค → สร้าง timeline ให้ Remotion" />
+          <PipelineRow num={6} name="Render (BG)" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → วิดีโอ background" />
+          <PipelineRow num={7} name="Avatar (HeyGen)" desc="HeyGen สร้างวิดีโอ avatar พูดบนพื้นหลังสีเขียว (ใช้เฉพาะโหมด Generate)" />
           <PipelineRow num={8} name="Composite (FFmpeg)" desc="ลบพื้นเขียว (chromakey) → overlay avatar บน background → MP4 สุดท้าย" />
         </div>
+        <InfoBox>คลิป B-roll และซับ sync กันเสมอ — ซับที่ 1 ได้ keyword จากประโยคที่ 1 → คลิปที่ 1 ตรงกับซับที่ 1</InfoBox>
       </Section>
 
       <Section title="หลัง Run Phase 2 — ปรับ Background Removal" icon={Captions}>

@@ -1,9 +1,9 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset } from "@/remotion/types";
 
-export const maxDuration = 120; // 2 min — 100+ captions config generation
+export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
 
 function normalizeBgVideos(raw: BrollVideo[], audioDurationSec: number, fps: number): BrollVideo[] {
@@ -159,7 +159,7 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
   // ensure strictly non-overlapping for render order
   for (let i = 0; i < out.length - 1; i++) {
     if (out[i].endMs > out[i + 1].startMs) {
-      out[i].endMs = Math.min(Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs), totalMs);
+      out[i + 1].startMs = Math.min(totalMs, Math.max(out[i].endMs + EPS, out[i + 1].startMs));
     }
     if (out[i].endMs <= out[i].startMs) {
       out[i].endMs = Math.min(totalMs, out[i].startMs + minFrameMs);
@@ -191,13 +191,13 @@ function detectStyle(
   accentColor: string,
 ): { color: string; size: number; isHighlight: boolean } {
   const scaled = autoScaleSize(text, baseSize);
-  // CTA → accent color
+  // CTA â†’ accent color
   if (tag === "cta") return { color: accentColor, size: scaled, isHighlight: true };
-  // Hook → primary color (slightly larger)
+  // Hook â†’ primary color (slightly larger)
   if (tag === "hook") return { color: primaryColor, size: Math.round(scaled * 1.05), isHighlight: false };
-  // Numbers/stats → accent
-  if (/[0-9๐-๙]/.test(text)) return { color: accentColor, size: Math.round(scaled * 1.1), isHighlight: true };
-  // Default (body) → primary
+  // Numbers/stats â†’ accent
+  if (/[0-9à¹-à¹™]/.test(text)) return { color: accentColor, size: Math.round(scaled * 1.1), isHighlight: true };
+  // Default (body) â†’ primary
   return { color: primaryColor, size: scaled, isHighlight: false };
 }
 
@@ -263,11 +263,14 @@ export async function POST(req: Request) {
     minFrameMs,
   );
 
-  // Fill gaps: each caption ends exactly when the next one starts (no overlap, no gap).
+  // Keep caption timing closer to real transcript timing (do not force each caption to next start).
+  // - preserve native endMs where possible,
+  // - prevent overlap by clipping to next caption start,
+  // - keep minimum frame duration.
   const gapFilled = validCaptions.map((c, i) => {
-    const nextStart = i < validCaptions.length - 1 ? validCaptions[i + 1].startMs : audioDurationMs;
-    // endMs = next subtitle's startMs, but at least 1 frame, at most audioDuration
-    const endMs = Math.min(audioDurationMs, Math.max(c.startMs + minFrameMs, nextStart));
+    let endMs = Number.isFinite(c.endMs) ? c.endMs : c.startMs + minFrameMs;
+    if (endMs <= c.startMs) endMs = c.startMs + minFrameMs;
+    if (endMs > audioDurationMs) endMs = Math.max(c.startMs + minFrameMs, audioDurationMs);
     return { ...c, endMs };
   });
 
@@ -275,8 +278,8 @@ export async function POST(req: Request) {
     .map((c) => {
       const text = c.text.trim();
       const { color, size, isHighlight } = detectStyle(text, c.tag, subtitleSize, primaryColor, accentColor);
-      const startFrame = Math.round((c.startMs / 1000) * fps);
-      const endFrame   = Math.max(startFrame + 1, Math.round((c.endMs / 1000) * fps));
+      const startFrame = Math.floor((c.startMs / 1000) * fps);
+      const endFrame = Math.max(startFrame + 1, Math.ceil((c.endMs / 1000) * fps));
       return {
         text,
         start: startFrame,
@@ -308,31 +311,35 @@ export async function POST(req: Request) {
   if (validStocks.length > 0) {
     const n = validStocks.length;
 
-    // ── EVEN-SPLIT: divide total duration equally across all selected clips ──
-    // Use this when clips are few (≤ scenes count × 3) — user manually curated them.
+    // â”€â”€ EVEN-SPLIT: divide total duration equally across all selected clips â”€â”€
+    // Use this when clips are few (â‰¤ scenes count Ã— 3) â€” user manually curated them.
     // Each clip plays from second 0 for its slice; <Video loop> fills short clips.
     const numScenes = Math.max(1, scenes.length);
+    const hasSceneClipCounts = Array.isArray(sceneClipCounts) && sceneClipCounts.length === numScenes;
+    const totalSceneClipCounts = hasSceneClipCounts ? sceneClipCounts.reduce((a, b) => a + b, 0) : 0;
+    const clipCountHint = totalSceneClipCounts > 0 ? totalSceneClipCounts : n;
 
     // Per-subtitle mode: every caption has exactly 1 dedicated clip (sceneClipCounts all = 1).
-    // Must be detected BEFORE useEvenSplit — otherwise even-split fires and ignores caption timestamps.
+    // Must be detected BEFORE useEvenSplit â€” otherwise even-split fires and ignores caption timestamps.
     // Use gapFilled.length (sorted, non-empty captions) as the reference count.
     // Per-subtitle: every caption has exactly 1 dedicated clip.
-    // Require at least 70% clips vs captions — clips can be fewer if some subtitles had no match.
+    // Require at least 70% clips vs captions â€” clips can be fewer if some subtitles had no match.
     const isPerSubtitleTop = Array.isArray(sceneClipCounts) &&
       sceneClipCounts.length > 0 &&
       sceneClipCounts.every(c => c === 1) &&
+      sceneClipCounts.length === gapFilled.length &&
       gapFilled.length > 0 &&
-      n >= Math.ceil(gapFilled.length * 0.7);
+      n > 0;
 
-    const useEvenSplit = !isPerSubtitleTop && n <= numScenes * 4; // few clips → guaranteed equal airtime
+    const useEvenSplit = !isPerSubtitleTop && clipCountHint <= numScenes * 4; // few clips â†’ guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Per-subtitle 1:1: gapFilled[i] → validStocks[i], using sorted+gap-filled caption timestamps.
+      // Per-subtitle 1:1: gapFilled[i] â†’ validStocks[i], using sorted+gap-filled caption timestamps.
       // gapFilled is already sorted by startMs (same order as orderedClips built in page.tsx).
       // clipOffset advances independently per src so the clip plays from where it left off.
       // Each caption gets its own dedicated clip starting from offset 0.
       // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
-      // so each clip plays from the beginning — no offset accumulation needed.
+      // so each clip plays from the beginning â€” no offset accumulation needed.
       console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
       // Use caption index ci directly as stock index so skipped captions don't shift mapping.
       // validStocks[ci] is the LLM-ranked clip built for caption[ci] in page.tsx.
@@ -342,16 +349,16 @@ export async function POST(req: Request) {
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        // Use ci directly — clamp to last clip if caption count > clip count (avoids silent wrapping)
-        const sv  = validStocks[Math.min(ci, n - 1)];
+        const sv  = validStocks[ci % n];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
       }
     } else if (useEvenSplit) {
-      const sliceSec = audioDurationSec / n;
-      console.log(`[config] even-split: ${n} clips × ${sliceSec.toFixed(2)}s each`);
-      for (let i = 0; i < n; i++) {
+      const splitCount = Math.max(1, Math.min(n, clipCountHint));
+      const sliceSec = audioDurationSec / splitCount;
+      console.log(`[config] even-split: ${splitCount} clips × ${sliceSec.toFixed(2)}s each`);
+      for (let i = 0; i < splitCount; i++) {
         const sv  = validStocks[i];
         const src = sv.localUrl ?? sv.videoUrl;
         bgVideos.push({
@@ -363,10 +370,10 @@ export async function POST(req: Request) {
         });
       }
     } else {
-      // ── SCENE-AWARE: map clips to scenes, adaptive cut cycling ──
+      // â”€â”€ SCENE-AWARE: map clips to scenes, adaptive cut cycling â”€â”€
       console.log(`[config] scene-aware: ${n} clips across ${numScenes} scenes`);
 
-      // Build scene time boundaries — prefer sceneDurations from extract-keywords,
+      // Build scene time boundaries â€” prefer sceneDurations from extract-keywords,
       // fallback to equal splits. Then snap each boundary to nearest caption timestamp.
       const sceneBoundaries: { startSec: number; endSec: number }[] = [];
 
@@ -417,7 +424,6 @@ export async function POST(req: Request) {
       // Map clips to scenes by keyword
       // Each scene gets clips whose keywords were extracted for that scene (via sceneClipCounts offset)
       const uniqueKws = [...new Set(validStocks.map(s => s.keyword))];
-      const hasSceneClipCounts = Array.isArray(sceneClipCounts) && sceneClipCounts.length === numScenes;
       const kwOffsets: { start: number; end: number }[] = [];
       if (hasSceneClipCounts) {
         let cum = 0;
@@ -449,7 +455,7 @@ export async function POST(req: Request) {
         return validStocks.filter(s => sceneKws.has(s.keyword));
       });
 
-      // ── Caption-driven cuts: 1 subtitle = 1 stock video clip ──
+      // â”€â”€ Caption-driven cuts: 1 subtitle = 1 stock video clip â”€â”€
       // Use caption startMs/endMs directly as cut points.
       // Rotate through ALL available clips so each subtitle gets a unique clip.
       const clipNextOffset = new Map<string, number>();
@@ -457,15 +463,16 @@ export async function POST(req: Request) {
       function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
       if (sceneCaptions.length > 0) {
-        // ── Per-subtitle mode: keywords.length ≈ captions.length, each keyword maps 1:1 to caption ──
+        // â”€â”€ Per-subtitle mode: keywords.length â‰ˆ captions.length, each keyword maps 1:1 to caption â”€â”€
         // Detected when sceneClipCounts are all 1 (set by per-subtitle fetch in page.tsx)
         const isPerSubtitle = Array.isArray(sceneClipCounts) &&
           sceneClipCounts.length > 0 &&
           sceneClipCounts.every(c => c === 1) &&
-          validStocks.length >= Math.floor(gapFilled.length * 0.5);
+          sceneClipCounts.length === gapFilled.length &&
+          validStocks.length > 0;
 
         if (isPerSubtitle) {
-          // Direct 1:1 mapping: caption[i] → stock[i % stocks.length]
+          // Direct 1:1 mapping: caption[i] â†’ stock[i % stocks.length]
           // stocks are already ordered by keyword which matches caption order
           console.log(`[config] per-subtitle mode: ${validStocks.length} clips for ${sceneCaptions.length} captions`);
           for (let ci = 0; ci < sceneCaptions.length; ci++) {
@@ -485,7 +492,7 @@ export async function POST(req: Request) {
             clipNextOffset.set(src, safeOffset + dur);
           }
         } else {
-        // ── Scene-aware pool mode: group clips by scene, rotate through pool ──
+        // Scene-aware pool mode: group clips by scene and cut by scene/segment count.
         const globalPool: StockVideo[] = [];
         for (let si = 0; si < sceneBoundaries.length; si++) {
           const sceneClips = shuffle(clipsForScene[si] ?? []);
@@ -502,25 +509,57 @@ export async function POST(req: Request) {
           return sv;
         };
 
-        for (const cap of sceneCaptions) {
-          const capStartSec = cap.startMs / 1000;
-          const capEndSec = cap.endMs / 1000;
-          const dur = capEndSec - capStartSec;
-          if (dur < 0.1) continue;
+        for (let si = 0; si < sceneBoundaries.length; si++) {
+          const { startSec, endSec } = sceneBoundaries[si];
+          if (endSec - startSec <= 0.001) continue;
           if (!globalPool.length) continue;
 
-          const sv = getNextClip();
-          const src = sv.localUrl ?? sv.videoUrl;
-          const clipDuration = sv.duration > 0 ? sv.duration : 10;
-          const clipOffset = clipNextOffset.get(src) ?? 0;
-          const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+          const targetCount = Math.max(1, hasSceneClipCounts && Number.isFinite(sceneClipCounts[si]) ? sceneClipCounts[si] : 1);
+          const sceneCaps = sceneCaptions
+            .filter(c => c.startMs / 1000 >= startSec - 0.5 && c.startMs / 1000 < endSec + 0.5)
+            .map(c => ({ start: c.startMs / 1000, end: c.endMs / 1000 }));
 
-          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
-          clipNextOffset.set(src, safeOffset + dur);
+          if (sceneCaps.length === 0) {
+            const sceneDur = endSec - startSec;
+            const cutDur = sceneDur / targetCount;
+            for (let segment = 0; segment < targetCount; segment++) {
+              const cutStart = startSec + segment * cutDur;
+              const cutEnd = Math.min(endSec, cutStart + cutDur);
+              if (cutEnd - cutStart < 0.1) continue;
+
+              const sv = getNextClip();
+              const src = sv.localUrl ?? sv.videoUrl;
+              const clipDuration = sv.duration > 0 ? sv.duration : 10;
+              const clipOffset = clipNextOffset.get(src) ?? 0;
+              const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+              bgVideos.push({ src, start: cutStart, end: cutEnd, clipOffset: safeOffset, clipDuration });
+              clipNextOffset.set(src, safeOffset + (cutEnd - cutStart));
+            }
+            continue;
+          }
+
+          const buckets: { start: number; end: number }[][] = Array.from({ length: targetCount }, () => []);
+          for (let ci = 0; ci < sceneCaps.length; ci++) {
+            const bucket = Math.min(Math.floor((ci * targetCount) / sceneCaps.length), targetCount - 1);
+            buckets[bucket].push(sceneCaps[ci]);
+          }
+          for (const bucket of buckets) {
+            if (!bucket.length) continue;
+            const cutStart = bucket[0].start;
+            const cutEnd = bucket[bucket.length - 1].end;
+            if (cutEnd - cutStart < 0.1) continue;
+            const sv = getNextClip();
+            const src = sv.localUrl ?? sv.videoUrl;
+            const clipDuration = sv.duration > 0 ? sv.duration : 10;
+            const clipOffset = clipNextOffset.get(src) ?? 0;
+            const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+            bgVideos.push({ src, start: cutStart, end: cutEnd, clipOffset: safeOffset, clipDuration });
+            clipNextOffset.set(src, safeOffset + (cutEnd - cutStart));
+          }
         }
         } // end scene-aware pool mode
       } else {
-        // Fallback: no captions — use scene boundaries with fixed cut cycle
+        // Fallback: no captions â€” use scene boundaries with fixed cut cycle
         const CUT_CYCLE = audioDurationSec <= 20 ? [4, 3.5, 4.5] : [3, 2.5, 3.5, 2];
         for (let si = 0; si < sceneBoundaries.length; si++) {
           const { startSec, endSec } = sceneBoundaries[si];
@@ -551,7 +590,7 @@ export async function POST(req: Request) {
   // merge/trim overlaps, and fill gaps with nearest clip so the timeline stays continuous.
   bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
   if (validStocks.length === 0) {
-    return NextResponse.json({ error: "ไม่มี stock video — กรุณา fetch stock ก่อน generate config", retryable: false }, { status: 400 });
+    return NextResponse.json({ error: "à¹„à¸¡à¹ˆà¸¡à¸µ stock video â€” à¸à¸£à¸¸à¸“à¸² fetch stock à¸à¹ˆà¸­à¸™ generate config", retryable: false }, { status: 400 });
   }
   if (!bgVideos.length && validStocks.length > 0) {
     const first = validStocks[0];
@@ -581,3 +620,4 @@ export async function POST(req: Request) {
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);
   return NextResponse.json({ config });
 }
+

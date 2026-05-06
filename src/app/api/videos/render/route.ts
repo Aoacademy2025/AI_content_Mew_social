@@ -168,7 +168,10 @@ export async function POST(req: Request) {
       const filename = url.slice("/api/stocks/".length);
       const srcPath = path.join(stocksDir, filename);
       const destPath = path.join(rendersDir, filename);
-      const srcValid = fs.existsSync(srcPath) && fs.statSync(srcPath).size > 128;
+      const srcValid = fs.existsSync(srcPath) && fs.statSync(srcPath).size > 1_500;
+      if (!srcValid) {
+        throw new Error(`Stock file missing or too small: ${url}`);
+      }
 
       // Copy stock file to public/renders/ so it survives the beforeunload cleanup
       // and is served via /api/renders/* (Remotion only supports http(s):// URLs)
@@ -179,6 +182,7 @@ export async function POST(req: Request) {
             fs.copyFileSync(srcPath, destPath);
           } catch (e) {
             console.warn(`[render] copy stock failed: ${filename}`, e);
+            throw new Error(`Cannot copy stock into renders: ${filename}`);
           }
         }
       }
@@ -221,7 +225,7 @@ export async function POST(req: Request) {
     function assertExistingAsset(url: string, label: string) {
       const localPath = toLocalFilePathIfInternal(url);
       if (!localPath) return;
-      if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 128) {
+      if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 1_500) {
         throw new Error(`Missing ${label} asset: ${url}`);
       }
     }
@@ -265,6 +269,7 @@ export async function POST(req: Request) {
         ...subtitleOverlayConfig,
         videoUrl: videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl,
       };
+      if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(resolvedSubtitleConfig.videoUrl, "subtitle video");
     }
 
     const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
@@ -301,7 +306,14 @@ export async function POST(req: Request) {
     const cpuCount = (await import("os")).cpus().length;
     // Remotion caps concurrency at cpuCount — cannot exceed it.
     // Use full cpuCount on small VPS (<=2 cores), leave 1 for OS on larger machines.
-    const renderConcurrency = cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1);
+    const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
+    const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+      ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
+      : cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1);
+    const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
+    const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
+      ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
+      : 256 * 1024 * 1024;
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount})`);
 
     let lastProgress = -1;
@@ -315,7 +327,7 @@ export async function POST(req: Request) {
       concurrency: renderConcurrency,
       x264Preset: "ultrafast",
       jpegQuality: 70,
-      offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
+      offthreadVideoCacheSizeInBytes,
       chromiumOptions: { disableWebSecurity: true, ignoreCertificateErrors: true, gl: "swiftshader" },
       onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
         const p = Math.round(progress * 100);

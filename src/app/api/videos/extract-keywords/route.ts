@@ -29,25 +29,79 @@ function sanitizeSubtitleForKeyword(raw: string): string {
 }
 
 const FALLBACK_POOL = [
-  "cinematic wide street shot", "person walking in city", "nature landscape aerial view",
-  "office workspace close up", "business team meeting room", "city skyline at dusk",
-  "hands typing on laptop", "documents on office desk", "futuristic technology screen",
-  "dramatic portrait lighting studio", "coffee shop busy crowd", "sunset highway road trip",
-  "scientist working laboratory", "athlete running stadium", "chef cooking restaurant kitchen",
-  "drone aerial cityscape shot", "stock market trading floor", "mountain summit sunrise fog",
-  "underwater ocean coral reef", "engineer inspecting machinery factory",
-  "crowd cheering concert stage", "child playing outdoor park",
-  "doctor hospital medical equipment", "rocket launch space debris",
-  "man reading book library", "woman jogging park morning", "rain falling on window",
-  "teacher writing whiteboard classroom", "construction worker building site",
-  "airplane taking off runway", "hands holding smartphone", "coffee pouring into cup",
-  "traffic jam highway aerial", "solar panels rooftop", "fire burning campfire",
-  "chess pieces on board", "boxing match arena", "empty road desert horizon",
-  "neon lights city night", "hands shaking deal", "microscope laboratory closeup",
-  "crowd people walking station", "dog running grass field", "piano keys close up",
-  "astronaut space suit", "server room data center", "painter canvas art studio",
-  "waterfall jungle tropical", "map navigation digital", "hands clay pottery",
+  "person walking in city",
+  "office workspace close up",
+  "business team meeting room",
+  "hands typing on laptop",
+  "documents on office desk",
+  "futuristic technology screen",
+  "coffee shop busy crowd",
+  "sunset highway road trip",
+  "scientist working laboratory",
+  "chef cooking restaurant kitchen",
+  "drone aerial cityscape shot",
+  "stock market trading floor",
+  "engineer inspecting machinery factory",
+  "construction worker building site",
+  "teacher writing whiteboard classroom",
+  "server room data center",
+  "painter canvas art studio",
+  "map navigation digital",
+  "microscope laboratory closeup",
+  "hand holding smartphone",
 ];
+
+const FALLBACK_SUFFIXES = ["wide shot", "close up", "workspace", "visual", "scene", "footage", "b-roll"];
+
+const THAI_KEYWORD_FALLBACK_MAP: Array<{ keys: string[]; query: string }> = [
+  { keys: ["ai", "เอไอ", "ปัญญาประดิษฐ์", "machine", "learning", "deep", "model", "openai", "anthropic", "gpt", "claude"], query: "developer coding screen" },
+  { keys: ["นักฟิสิกส์", "ฟิสิกส์", "physic", "particle", "อนุภาค", "ทดลอง"], query: "scientist working laboratory" },
+  { keys: ["มหาวิทยาลัย", "university", "research", "ทีม", "นักศึกษา", "นักเรียน"], query: "university campus building" },
+  { keys: ["ประตู", "door", "เปิดประตู", "เข้าห้อง"], query: "hand opening dark door" },
+  { keys: ["ความลับ", "เผ่น", "sudden", "ตกใจ", "shock", "ตื่นตระหนก"], query: "person shocked reaction screen" },
+  { keys: ["รถ", "รถยนต์", "ทางด่วน", "highway", "ถนน"], query: "sunset highway road trip" },
+  { keys: ["คน", "คนงาน", "ทีม", "meeting", "ประชุม"], query: "office workspace close up" },
+  { keys: ["ชาร์จ", "ไฟ", "แบตเตอรี่", "ไฟฟ้า"], query: "battery charging icon animation" },
+  { keys: ["จักร", "ห้อง", "ห้องแล็บ", "ห้องปฏิบัติการ", "microscope", "โทรศัพท์"], query: "microscope laboratory closeup" },
+  { keys: ["เงิน", "หุ้น", "การเงิน", "เศรษฐ", "เศรษฐี", "ตลาด"], query: "stock market trading floor" },
+];
+
+function normalizeThaiHint(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[\u0E00-\u0E7F]/g, (ch) => ch)
+    .toLowerCase();
+}
+
+function buildContextualFallback(hint: string, i: number): string {
+  const norm = normalizeThaiHint(hint);
+  for (const item of THAI_KEYWORD_FALLBACK_MAP) {
+    for (const key of item.keys) {
+      if (norm.includes(key.toLowerCase())) {
+        return `${item.query} ${FALLBACK_SUFFIXES[i % FALLBACK_SUFFIXES.length]}`.trim();
+      }
+    }
+  }
+
+  const ascii = hint
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3)
+    .filter((w) => !["the", "and", "for", "with", "that", "this", "from", "have", "has", "are", "was", "will", "just", "only", "more", "than", "into"].includes(w));
+
+  if (ascii.length >= 2) {
+    const base = `${ascii[0]} ${ascii[1]}`;
+    const suffix = FALLBACK_SUFFIXES[i % FALLBACK_SUFFIXES.length];
+    return `${base} ${suffix}`;
+  }
+
+  if (ascii.length === 1) {
+    return `${ascii[0]} ${FALLBACK_SUFFIXES[i % FALLBACK_SUFFIXES.length]}`;
+  }
+
+  return "";
+}
 
 const THAI_RE = /[฀-๿]/;
 
@@ -209,10 +263,20 @@ function ensureKeywordsShape(
       continue;
     }
 
+    const hint = subtitleHints[i] ?? "fallback";
+    const contextual = buildContextualFallback(hint, i);
+    const contextualNorm = sanitizeKeywordCandidate(contextual);
+
+    if (contextualNorm.length > 0 && !globalUsed.has(contextualNorm)) {
+      globalUsed.add(contextualNorm);
+      out.push(contextualNorm);
+      continue;
+    }
+
     // Find next unused fallback
     let pushed = false;
     for (let fi = 0; fi < FALLBACK_POOL.length * 2; fi++) {
-      const seed = `${subtitleHints[i] ?? "fallback"}-${i}-${fi}`;
+      const seed = `${hint}-${i}-${fi}`;
       const fb = buildFallbackKeyword(seed, fi + i);
       if (!globalUsed.has(fb)) {
         globalUsed.add(fb);

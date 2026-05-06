@@ -66,20 +66,55 @@ function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   return files.find(f => f.quality === "hd") ?? files[0] ?? null;
 }
 
-// Download video directly
-function downloadAndCrop(url: string, outPath: string): Promise<void> {
-  return new Promise(async (resolve, reject) => {
+function safeUnlink(filePath: string) {
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {}
+}
+
+function isValidMp4Path(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const size = fs.statSync(filePath).size;
+    return size > 1_500; // ignore empty/truncated files
+  } catch {
+    return false;
+  }
+}
+
+async function downloadAndCrop(url: string, outPath: string): Promise<void> {
+  const MAX_ATTEMPTS = 3;
+  const attemptDelayMs = 1200;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const tmp = `${outPath}.part`;
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
       if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 1000) throw new Error(`Downloaded file too small: ${buf.length} bytes`);
-      fs.writeFileSync(outPath, buf);
-      return resolve();
-    } catch (e) {
-      reject(e);
+
+      const data = Buffer.from(await res.arrayBuffer());
+      if (data.length < 1_500) {
+        throw new Error(`Downloaded file too small: ${data.length} bytes`);
+      }
+
+      fs.writeFileSync(tmp, data);
+      fs.renameSync(tmp, outPath);
+
+      if (!isValidMp4Path(outPath)) {
+        throw new Error(`Downloaded file failed validation (${outPath})`);
+      }
+
+      return;
+    } catch (err) {
+      safeUnlink(tmp);
+      safeUnlink(outPath);
+      if (attempt >= MAX_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, attemptDelayMs * attempt));
+      console.warn(`[fetch-stock] download retry ${attempt + 1}/${MAX_ATTEMPTS}: ${url}`);
     }
-  });
+  }
+
+  throw new Error(`Download failed after ${MAX_ATTEMPTS} attempts`);
 }
 
 // Search Pixabay for portrait videos
@@ -186,6 +221,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const {
     keywords,
+    keywordAlternatives,
     download = false,
     totalDurationSec = 0,
     overrideClipCount = 0,
@@ -195,6 +231,7 @@ export async function POST(req: Request) {
     preferredLLM,
   }: {
     keywords: string[];
+    keywordAlternatives?: string[][];
     download?: boolean;
     totalDurationSec?: number;
     overrideClipCount?: number;
@@ -204,7 +241,7 @@ export async function POST(req: Request) {
     preferredLLM?: string;
   } = body ?? {};
 
-  const usePexels  = stockSource === "pexels"  || stockSource === "both";
+  const usePexels = stockSource === "pexels" || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
 
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
@@ -213,11 +250,31 @@ export async function POST(req: Request) {
     where: { id: session.user.id },
     select: { pixabayKey: true, pexelsKey: true, geminiKey: true, openaiKey: true, ttsProvider: true },
   });
-  const pexelsKey  = user?.pexelsKey  ? Buffer.from(user.pexelsKey,  "base64").toString("utf-8") : null;
+  const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
 
-  if (usePexels  && !pexelsKey)  return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" },   { status: 400 });
-  if (usePixabay && !pixabayKey) return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings",              missingKey: "pixabay" }, { status: 400 });
+  const canUsePexels = usePexels && !!pexelsKey;
+  const canUsePixabay = usePixabay && !!pixabayKey;
+
+  if (!canUsePexels && !canUsePixabay) {
+    const needPexels = usePexels;
+    const needPixabay = usePixabay;
+    if (needPexels && needPixabay) {
+      return NextResponse.json(
+        { error: "No usable stock source configured. Add Pexels or Pixabay key in Settings > API Keys", missingKey: stockSource === "both" ? "pexels" : (needPexels ? "pexels" : "pixabay") },
+        { status: 400 },
+      );
+    }
+    if (needPexels) return NextResponse.json({ error: "Pexels API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "pexels" }, { status: 400 });
+    return NextResponse.json({ error: "Pixabay API key ยังไม่ได้ตั้งค่า — ไปที่ Settings", missingKey: "pixabay" }, { status: 400 });
+  }
+
+  if (usePexels && !canUsePexels) {
+    console.log("[fetch-stock] Pexels requested but key missing; continuing with Pixabay only");
+  }
+  if (usePixabay && !canUsePixabay) {
+    console.log("[fetch-stock] Pixabay requested but key missing; continuing with Pexels only");
+  }
 
   // Resolve LLM key for ranking — respects preferredLLM from client
   let llmKey: string | null = null;
@@ -287,56 +344,60 @@ export async function POST(req: Request) {
   // Extended candidate that keeps Pexels URL slug for LLM ranking
   type CandidateVideo = FoundVideo & { title: string };
 
-  const srcLabel = usePexels && usePixabay ? "Pexels+Pixabay" : usePexels ? "Pexels" : "Pixabay";
+  const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
   // perSubtitleMode: explicit flag (survives retry with subset) OR clip count exactly matches keyword count
   const isPerSubtitleMode = perSubtitleFlag || (overrideClipCount > 0 && overrideClipCount === keywords.length);
   const basePerPage = isPerSubtitleMode ? 25 : Math.min(30, clipsPerKeyword * 3);
 
-  // ── Search phase — collect ALL candidates per keyword (no usedIds filtering yet) ──
-  // In per-subtitle mode we want the full candidate list for LLM ranking before deduplication.
+  // ── Search phase — try keyword alternatives in order until candidates found ──
   const candidatesByKeyword: CandidateVideo[][] = await Promise.all(
-    keywords.map(async (keyword): Promise<CandidateVideo[]> => {
+    keywords.map(async (keyword, ki): Promise<CandidateVideo[]> => {
+      // Build list of queries to try: alternatives first, then broad fallbacks
+      const alts = keywordAlternatives?.[ki] ?? [];
+      const queriesToTry = [
+        ...alts.filter(Boolean),
+        keyword,
+        keyword.split(" ").slice(0, 2).join(" "),
+        keyword.split(" ")[0],
+      ].filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
+
       try {
-        console.log(`[fetch-stock] searching "${keyword}" (perPage=${basePerPage}) from ${srcLabel}`);
-        const shortQuery = keyword.split(" ").slice(0, 2).join(" ");
-        const broadQuery = keyword.split(" ")[0];
+        for (const query of queriesToTry) {
+          console.log(`[fetch-stock] searching "${query}" (perPage=${basePerPage}) from ${srcLabel}`);
 
-        const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
-          usePexels
-            ? searchPexels(keyword, pexelsKey!, 3, basePerPage).then(r => {
-                if (r.length) return r;
-                if (shortQuery !== keyword) return searchPexels(shortQuery, pexelsKey!, 3, basePerPage);
-                return r;
-              }).then(r => {
-                if (r.length) return r;
-                if (broadQuery !== shortQuery) return searchPexels(broadQuery, pexelsKey!, 3, 15);
-                return r;
-              })
-            : Promise.resolve([] as PexelsVideo[]),
-          usePixabay && pixabayKey
-            ? searchPixabay(keyword, pixabayKey).catch(() => [] as { id: number; duration: number; videoUrl: string }[])
-            : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
-        ]);
+          const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
+            canUsePexels
+              ? searchPexels(query, pexelsKey!, 3, basePerPage)
+              : Promise.resolve([] as PexelsVideo[]),
+            canUsePixabay
+              ? searchPixabay(query, pixabayKey).catch(() => [] as { id: number; duration: number; videoUrl: string }[])
+              : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+          ]);
 
-        const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
-        const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+          const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
+          const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
 
-        const candidates: CandidateVideo[] = [];
+          const candidates: CandidateVideo[] = [];
+          for (const v of pexelsVideos) {
+            const file = pickBestFile(v);
+            if (!file) continue;
+            const title = slugToTitle(v.url ?? "");
+            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title });
+          }
+          for (const pv of pixabayVideos) {
+            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: query });
+          }
 
-        for (const v of pexelsVideos) {
-          const file = pickBestFile(v);
-          if (!file) continue;
-          const title = slugToTitle(v.url ?? "");
-          candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title });
-        }
-        for (const pv of pixabayVideos) {
-          candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: keyword });
+          if (candidates.length > 0) {
+            console.log(`[fetch-stock] "${query}": ${candidates.length} candidates (used alt ${queriesToTry.indexOf(query) + 1}/${queriesToTry.length})`);
+            return candidates;
+          }
         }
 
-        console.log(`[fetch-stock] "${keyword}": ${candidates.length} candidates`);
-        return candidates;
+        console.warn(`[fetch-stock] "${keyword}": no candidates found after ${queriesToTry.length} queries`);
+        return [];
       } catch (err) {
         console.error(`[fetch-stock] error for "${keyword}":`, err);
         return [];
@@ -404,10 +465,10 @@ export async function POST(req: Request) {
         const fallbackKeyword = kw.split(" ")[0];
         try {
           const [fallbackPexels, fallbackPixabay] = await Promise.all([
-            usePexels
+            canUsePexels
               ? searchPexels(fallbackKeyword, pexelsKey!, 3, basePerPage)
               : Promise.resolve([] as PexelsVideo[]),
-            usePixabay && pixabayKey
+            canUsePixabay
               ? searchPixabay(fallbackKeyword, pixabayKey)
               : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
           ]);
@@ -455,16 +516,19 @@ export async function POST(req: Request) {
       const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
       const outFile = `${userPrefix}${slug}-${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
-      if (fs.existsSync(outPath) && fs.statSync(outPath).size >= 1000) {
+      if (isValidMp4Path(outPath)) {
         console.log(`[fetch-stock] cache hit: ${outFile}`);
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
         return;
       }
       console.log(`[fetch-stock] downloading: ${outFile}`);
-      await downloadAndCrop(link, outPath);
-      const fileSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
-      if (fileSize < 1000) return;
-      results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
+      try {
+        await downloadAndCrop(link, outPath);
+        if (!isValidMp4Path(outPath)) return;
+        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
+      } catch (e) {
+        console.error(`[fetch-stock] failed to download ${outFile}:`, e);
+      }
     } else {
       results.push({ keyword, pexelsId: id, duration, videoUrl: link });
     }

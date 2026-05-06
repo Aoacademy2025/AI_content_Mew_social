@@ -841,10 +841,11 @@ RULES:
       let maxPhrases = 6;
       const openAiSplitModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
       const scriptSentencesInitial = splitToSentencePhrases(sourceRaw);
+      const hasScriptSource = typeof script === "string" && script.trim().length > 0;
       const hasSentencePunctuation = /[.!?…]/.test(sourceText);
       const strictSentences = splitToPunctuationSentences(sourceText);
-      const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && segments.length <= 1;
-      const shouldUseSegmentSplit = !hasSentencePunctuation && segments.length >= 2;
+      const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
+      const shouldUseSegmentSplit = !hasScriptSource && !hasSentencePunctuation && segments.length >= 2;
 
       if (shouldUseSegmentSplit) {
         const segmentTexts = segments
@@ -966,6 +967,23 @@ ${sourceText.trim()}`;
           }
         } catch (e) {
           console.warn("[transcribe] LLM split failed:", e);
+        }
+      }
+
+      // Guardrail: single long Thai sentence can silently become 1 oversized subtitle.
+      // Split it by character density so timing can be mapped naturally on segments/words.
+      if (!shouldSkipLLMSplit && phrases.length === 1 && strictSentences.length === 1 && !hasSentencePunctuation) {
+        const denseText = sourceText.replace(/\s+/g, "");
+        const thaiChars = (denseText.match(/[\u0E00-\u0E7F]/g) ?? []).length;
+        const thaiRatio = denseText.length > 0 ? thaiChars / denseText.length : 0;
+        if (thaiRatio >= 0.6 && denseText.length >= 70) {
+          const fallbackTarget = Math.max(2, Math.min(8, Math.max(2, Math.round(audioDur / 2.2)), 12));
+          const splitByTarget = splitTextByTargetLen(sourceText, Math.max(12, Math.floor(denseText.length / fallbackTarget)), 10);
+          if (splitByTarget.length > 1) {
+            phrases = mergeTinyPhrases(splitByTarget);
+            llmTags = phrases.map((_, i) => (i === 0 ? "hook" : "body"));
+            console.log(`[transcribe] guardrail split: ${phrases.length} phrases for long monolithic sentence`);
+          }
         }
       }
 
