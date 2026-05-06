@@ -1056,7 +1056,7 @@ ${sourceText.trim()}`;
       //   Use Whisper segment start/end times, weighted by phrase char length.
 
       if (phrases.length > 0) {
-        let result: { text: string; startMs: number; endMs: number }[] = [];
+        let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
         const canDirectSegmentAlign = phrases.length === segments.length && phrases.length >= 2;
         if (canDirectSegmentAlign) {
