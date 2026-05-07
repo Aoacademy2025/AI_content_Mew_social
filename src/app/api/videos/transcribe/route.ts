@@ -1206,25 +1206,27 @@ TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never 
 
 ━━━ HARD RULES ━━━
 
-1. COMPLETE THOUGHT — every phrase must stand alone as a complete idea
-   ✗ BAD: "และ OpenAI" / "ของบริษัทชื่อ" / "โดย Dario" ← dangling fragments
+1. COPY EXACTLY — never drop, rewrite, or summarize any word from the script
+
+2. SPLIT ONLY AT WORD BOUNDARIES — Thai has no spaces between words, so you MUST split only where a logical word ends
+   ✗ BAD: "...มึงเรียนมาตั้งแต่เ" + "ด็กท่อง..." ← cut in the MIDDLE of a word (เด็ก)
+   ✗ BAD: "...ทำความเข้าใจ" + "ได้แค่นั้น" ← cut mid-compound-word
+   ✗ BAD: "...เสือก" + "ไปเปิด..." ← cut mid-sentence with no boundary
+   ✓ GOOD: split after a complete word like "บราวน์" before "แม่งเสือกไปเปิด"
+   ✓ GOOD: split after punctuation or a natural pause in speech
+
+3. COMPLETE THOUGHT — every phrase must stand alone as a complete idea
+   ✗ BAD: "และ OpenAI" / "ของบริษัทชื่อ" ← dangling fragments
    ✓ GOOD: "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
 
-2. NEVER cut mid-word or mid-syllable — Thai words must not be split across phrases
-   ✗ BAD: phrase ends "...ทำความเข้าใจ" and next starts "ได้แค่นั้น" ← cut mid-thought
-   ✗ BAD: phrase ends "...กั" and next starts "นหัวแทบแตก" ← cut mid-word
-   ✓ Split only at natural pause/breath points between complete words
+4. NEVER start a phrase with: และ, แต่, ของ, ที่, ว่า, จึง, เพราะ, โดย, ซึ่ง, หรือ, แล้ว, ก็
+   → merge with previous phrase instead
 
-3. NEVER start a phrase with these words — merge with previous phrase instead:
-   และ, แต่, ของ, ที่, ว่า, จึง, เพราะ, โดย, ซึ่ง, หรือ, แล้ว, ก็
+5. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s — too short = unreadable, merge it
 
-4. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s
-   Phrases shorter than this will be too fast to read — merge them with adjacent phrase
+6. Max 25 Thai chars per phrase (one screen line) — split long sentences at natural pause points
 
-5. Max 25 Thai chars OR 15 English words per phrase (one screen line)
-   Long sentences MUST be split into 2–3 shorter phrases at natural pause points
-
-5. Split at PAUSE POINTS below — real breath boundaries from audio
+7. Split at PAUSE POINTS below — real breath boundaries from audio
 
 ━━━ GUIDELINES ━━━
 • Audio: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases (~${avgSecPerPhrase.toFixed(1)}s each)
