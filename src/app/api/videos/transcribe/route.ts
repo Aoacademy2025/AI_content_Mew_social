@@ -984,6 +984,7 @@ RULES:
               }],
               generationConfig: {
                 temperature: 0,
+                maxOutputTokens: 16384,
                 responseMimeType: "application/json",
                 thinkingConfig: { thinkingBudget: 0 },
               },
@@ -1026,15 +1027,29 @@ RULES:
             try {
               parsed = JSON.parse(match[0]);
             } catch {
-              // Try to salvage by removing trailing incomplete segments
-              const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}")
-                .replace(/,\s*$/, "")
-                .replace(/\]\s*$/, "]}");
-              try { parsed = JSON.parse(truncated); } catch { /* give up */ }
+              // Salvage: extract all complete segment objects before the truncation point
+              const completeSegs: string[] = [];
+              const segRegex = /\{"text":"((?:[^"\\]|\\.)*)","start":([\d.]+),"end":([\d.]+)\}/g;
+              let m2: RegExpExecArray | null;
+              while ((m2 = segRegex.exec(match[0])) !== null) {
+                completeSegs.push(m2[0]);
+              }
+              if (completeSegs.length > 0) {
+                const repairedJson = `{"segments":[${completeSegs.join(",")}],"fullText":""}`;
+                try { parsed = JSON.parse(repairedJson); } catch { /* give up */ }
+              } else {
+                // Last resort: close the array
+                const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}")
+                  .replace(/,\s*$/, "").replace(/\]\s*$/, "]}");
+                try { parsed = JSON.parse(truncated); } catch { /* give up */ }
+              }
             }
 
             if (parsed) {
-              fullText = parsed.fullText?.trim() ?? rawGeminiText;
+              fullText = parsed.fullText?.trim() ||
+                (Array.isArray(parsed.segments)
+                  ? (parsed.segments as { text?: string }[]).map(s => s.text ?? "").join(" ").trim()
+                  : rawGeminiText);
               if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
                 segments = (parsed.segments as { text?: string; start?: number; end?: number }[])
                   .filter((s) =>
