@@ -1262,8 +1262,8 @@ TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never 
 ━━━ SCRIPT ━━━
 ${sourceText.trim()}`;
 
-          // max_tokens: each phrase ~30 tokens × maxPhrases, plus JSON overhead; cap at 16k for long scripts
-          const splitMaxTokens = Math.min(16000, Math.max(1024, maxPhrases * 30 + 300));
+          // Thai phrases use ~60 tokens each (multi-byte chars + JSON overhead); cap at 32k
+          const splitMaxTokens = Math.min(32000, Math.max(1024, maxPhrases * 60 + 500));
 
           let gptRawText = "{}";
           if (useGemini) {
