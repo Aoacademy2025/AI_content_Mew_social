@@ -1192,7 +1192,41 @@ RULES:
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
 
-      if (shouldSkipLLMSplit) {
+      // For long scripts (>120s) with Gemini segments: use segments directly as phrases.
+      // Sending a 3000+ char script to Gemini for splitting causes JSON truncation because
+      // the prompt itself consumes most of the context window, leaving no room for output.
+      // Gemini segments already have good word boundaries — just merge short ones.
+      const scriptProvided = typeof script === "string" && script.trim().length > 0;
+      const useSegmentDirectly = segments.length >= 10 && audioDur > 120 && scriptProvided;
+
+      if (useSegmentDirectly) {
+        // Merge segments shorter than 1.5s into neighbours, cap at 25 Thai chars
+        const merged: { text: string; start: number; end: number }[] = [];
+        for (const seg of segments) {
+          const dur = seg.end - seg.start;
+          const last = merged[merged.length - 1];
+          const combinedLen = last ? (last.text + seg.text).replace(/\s+/g, "").length : 999;
+          if (last && (dur < 1.5 || combinedLen <= 25)) {
+            merged[merged.length - 1] = { text: last.text + seg.text, start: last.start, end: seg.end };
+          } else {
+            merged.push({ ...seg });
+          }
+        }
+        // Map each merged segment back to real script text via snapPhrasesToScript
+        const segTexts = merged.map(s => s.text.trim()).filter(Boolean);
+        phrases = snapPhrasesToScript(segTexts, sourceText);
+        phrases = mergeTinyPhrases(deduplicatePhraseEdges(phrases));
+        // Use segment timestamps directly — skip alignment strategies below
+        const segResult = merged.map((seg, i) => ({
+          text: sanitizeTranscriptionText(phrases[i] ?? seg.text),
+          startMs: Math.round(seg.start * 1000),
+          endMs: Math.round(seg.end * 1000),
+        }));
+        captions = segResult
+          .filter(r => r.text)
+          .map((r, i) => ({ ...r, timestampMs: r.startMs, confidence: 1, tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta" }));
+        console.log(`[transcribe] segment-direct: ${captions.length} captions from ${segments.length} Gemini segs`);
+      } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
