@@ -7,10 +7,6 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
-import { setGlobalDispatcher, Agent } from "undici";
-
-// Extend undici's default headersTimeout so large Gemini payloads don't timeout
-setGlobalDispatcher(new Agent({ headersTimeout: 300_000, bodyTimeout: 300_000 }));
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -482,8 +478,17 @@ function snapPhrasesToScript(llmPhrases: string[], sourceText: string): string[]
       if (srcChars[srcPos] !== " ") srcNonSpaceCounted++;
       srcPos++;
     }
-    // Snap to word boundary: advance past any partial word
-    while (srcPos < srcChars.length && srcChars[srcPos] !== " ") srcPos++;
+    // Snap to a space boundary if one exists nearby (within 3 chars).
+    // For Thai (no spaces), don't advance — cut at the char proportion point.
+    if (srcPos < srcChars.length && srcChars[srcPos] !== " ") {
+      const lookAhead = Math.min(srcPos + 3, srcChars.length);
+      let found = -1;
+      for (let j = srcPos; j < lookAhead; j++) {
+        if (srcChars[j] === " ") { found = j + 1; break; }
+      }
+      if (found !== -1) srcPos = found;
+      // else: no space nearby — keep current position (char-boundary is fine for Thai)
+    }
 
     let slice = sanitizePhraseText(srcChars.slice(startPos, srcPos).join(""));
     if (!slice) slice = llmPhrases[i]; // last-resort: keep LLM phrase
