@@ -1295,10 +1295,18 @@ ${sourceText.trim()}`;
 
           if (gptRawText !== "{}") {
             try {
-              const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
-              const raw: string[] = Array.isArray(parsed.phrases) ? parsed.phrases : parseSplitPhrasesFromRaw(gptRawText);
-              if (Array.isArray(parsed.tags) && parsed.tags.length === raw.length) {
-                llmTags = parsed.tags as ("hook" | "body" | "cta")[];
+              let raw: string[] = [];
+              let parsedTags: unknown[] = [];
+              try {
+                const parsed = JSON.parse(gptRawText.match(/\{[\s\S]*\}/)?.[0] ?? "{}");
+                raw = Array.isArray(parsed.phrases) ? parsed.phrases : [];
+                parsedTags = Array.isArray(parsed.tags) ? parsed.tags : [];
+              } catch { /* JSON truncated — fall through to repair */ }
+              if (raw.length === 0) {
+                raw = parseSplitPhrasesFromRaw(gptRawText);
+              }
+              if (Array.isArray(parsedTags) && parsedTags.length === raw.length) {
+                llmTags = parsedTags as ("hook" | "body" | "cta")[];
               }
               const origStripped = normalizeForCompare(sourceText);
               const outStripped  = normalizeForCompare(raw.join(""));
