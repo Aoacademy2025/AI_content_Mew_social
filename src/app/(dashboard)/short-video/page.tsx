@@ -823,7 +823,7 @@ export default function ShortVideoPage() {
       if (!renderFailedMessage) {
         markRenderError("Render ใช้เวลานานผิดปกติ (อาจติดขัดที่ขั้นตอนดาวน์โหลด/ประมวลผลวิดีโอ)");
       }
-    }, 15 * 60 * 1000);
+    }, 120 * 60 * 1000);
 
     try {
       const renderRes = await fetch("/api/videos/render", {

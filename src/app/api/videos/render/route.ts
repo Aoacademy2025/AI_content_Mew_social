@@ -52,7 +52,7 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
   return url;
 }
 
-export const maxDuration = 3600;
+export const maxDuration = 7200;
 export const runtime = "nodejs";
 
 // Cache the Remotion webpack bundle across requests AND across pm2 restarts.
@@ -421,7 +421,7 @@ export async function POST(req: Request) {
       codec: "h264",
       outputLocation,
       inputProps,
-      timeoutInMilliseconds: 3600000,
+      timeoutInMilliseconds: 7200000,
       concurrency: renderConcurrency,
       x264Preset: "ultrafast",
       jpegQuality,
