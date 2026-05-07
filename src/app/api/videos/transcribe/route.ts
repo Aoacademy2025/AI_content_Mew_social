@@ -1231,12 +1231,10 @@ ${sourceText.trim()}`;
               const outStripped  = normalizeForCompare(raw.join(""));
               const charRatio    = origStripped.length > 0 ? outStripped.length / origStripped.length : 0;
               if (raw.length > 0 && charRatio >= 0.45 && charRatio <= 1.80) {
-                if (isThai) {
-                  // Thai has no spaces — use LLM phrases directly (prompt says COPY EXACT)
-                  phrases = mergeTinyPhrases(raw.map(p => sanitizePhraseText(p)).filter(Boolean));
-                } else {
-                  phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
-                }
+                // Always slice text from real script using LLM phrase proportions.
+                // LLM decides WHERE to split; script is the source of truth for WHAT to show.
+                // This prevents LLM from dropping words like "และ", "ของ", etc.
+                phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
                 phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
@@ -1415,6 +1413,14 @@ ${sourceText.trim()}`;
             }
           }
           console.log(`[transcribe] after short-merge: ${result.length} captions`);
+        }
+
+        // Close gaps < 1000ms between captions by extending endMs to next startMs
+        for (let i = 0; i < result.length - 1; i++) {
+          const gap = result[i + 1].startMs - result[i].endMs;
+          if (gap > 0 && gap < 1000) {
+            result[i].endMs = result[i + 1].startMs;
+          }
         }
 
         // Keep mapped caption boundaries from source timings, then clamp and dedupe overlaps.
