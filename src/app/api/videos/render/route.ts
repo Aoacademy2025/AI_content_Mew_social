@@ -204,25 +204,27 @@ export async function POST(req: Request) {
       return url;
     }
   }
-  // Client may send old /api/renders/stock-xxx.mp4 or /renders/stock-xxx.mp4 URLs — redirect to stocks/
+  // Client may send old /api/renders/stock-xxx.mp4 or /renders/stock-xxx.mp4 URLs
+  // Only redirect to stocks/ if the file actually exists there — otherwise keep serving from renders/
   if (url.startsWith("/api/renders/stock-") || url.startsWith("/renders/stock-")) {
     const filename = url.startsWith("/api/renders/")
       ? url.slice("/api/renders/".length)
       : url.slice("/renders/".length);
     const stockPath = path.join(stocksDir, filename);
     if (fs.existsSync(stockPath) && fs.statSync(stockPath).size > 1_500) {
+      // File is a real stock video — serve from stocks/
       url = `/api/stocks/${filename}`;
     } else {
-          // File not in stocks/ — copy from renders/ symlink target if it exists there
-          const renderPath = path.join(rendersDir, filename);
-          if (fs.existsSync(renderPath) && fs.statSync(renderPath).size > 1_500) {
-            fs.copyFileSync(renderPath, stockPath);
-            url = `/api/stocks/${filename}`;
-          } else {
-          throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
-        }
+      // File only exists in renders/ (e.g. TTS voice file named with stock- prefix)
+      const renderPath = path.join(rendersDir, filename);
+      if (fs.existsSync(renderPath) && fs.statSync(renderPath).size > 1_500) {
+        // Keep as /api/renders/ — it will be served correctly
+        url = `/api/renders/${filename}`;
+      } else {
+        throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
       }
     }
+  }
       if (!url.startsWith("/api/stocks/")) return url;
 
       const filename = url.slice("/api/stocks/".length);
