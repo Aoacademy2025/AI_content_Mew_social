@@ -568,35 +568,43 @@ function splitTextByTargetLen(input: string, targetLen: number, minChunk: number
   return out;
 }
 
-function expandPhrasesToTargetDensity(phrases: string[], targetCount: number, fallbackText: string): string[] {
-  if (!Array.isArray(phrases) || phrases.length === 0) return [];
-  if (phrases.length >= targetCount) return phrases;
-  const combined = sanitizeTranscriptionText(phrases.join(" "));
-  const source = combined || sanitizeTranscriptionText(fallbackText);
-  if (!source) return phrases;
-  const targetLen = Math.max(10, Math.floor(source.replace(/\s+/g, "").length / targetCount));
-  return splitTextByTargetLen(source, targetLen, 10);
-}
 
 function parseSplitPhrasesFromRaw(raw: string): string[] {
   if (!raw) return [];
+  const stripped = raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .trim();
+  const match = stripped.match(/\{[\s\S]*\}/);
+  if (!match) return [];
+
+  // Try clean parse first
   try {
-    const stripped = raw
-      .replace(/```json\s*/gi, "")
-      .replace(/```\s*/g, "")
-      .trim();
-    const match = stripped.match(/\{[\s\S]*\}/);
-    if (!match) return [];
     const parsed = JSON.parse(match[0]);
-    const arr = Array.isArray(parsed?.phrases) ? parsed.phrases : [];
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((p): p is string => typeof p === "string")
-      .map((p) => sanitizePhraseText(p))
-      .filter((p) => p.length > 0);
-  } catch {
-    return [];
+    const arr: unknown[] = Array.isArray(parsed?.phrases) ? parsed.phrases : [];
+    if (arr.length > 0) {
+      return arr
+        .filter((p): p is string => typeof p === "string")
+        .map((p) => sanitizePhraseText(p))
+        .filter((p) => p.length > 0);
+    }
+  } catch { /* fall through to repair */ }
+
+  // JSON truncated — extract all complete quoted strings from the phrases array
+  // Matches: "any text without unescaped quote"
+  const phraseRegex = /"((?:[^"\\]|\\.)*)"/g;
+  // Find the phrases array section first
+  const phrasesSection = match[0].match(/"phrases"\s*:\s*\[([\s\S]*)/);
+  const searchIn = phrasesSection ? phrasesSection[1] : match[0];
+  const results: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = phraseRegex.exec(searchIn)) !== null) {
+    const p = sanitizePhraseText(m[1]);
+    // Skip the key name "phrases" itself and empty strings
+    if (p && p !== "phrases" && p !== "tags" && p.length > 1) results.push(p);
   }
+  console.log(`[transcribe] parseSplitPhrasesFromRaw repaired: ${results.length} phrases from truncated JSON`);
+  return results;
 }
 
 function getFfmpegPath(): string {
@@ -1162,7 +1170,6 @@ RULES:
       // STT (Whisper/Gemini) is used ONLY for timestamps, never for subtitle text.
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
         ? script.trim() : fullText;
-      const isScriptProvided = typeof script === "string" && script.trim().length > 0;
       const sourceText = sanitizeTranscriptionText(sourceRaw);
       console.log(`[transcribe] sourceText from ${typeof script === "string" && script.trim().length > 0 ? "script (real)" : "STT fullText (fallback)"}: ${sourceText.slice(0, 80)}`);
       const fallbackDur = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 1000 : 30;
