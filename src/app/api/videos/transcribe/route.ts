@@ -518,11 +518,32 @@ function splitTextByTargetLen(input: string, targetLen: number, minChunk: number
     }
     if (chunk.trim()) out.push(chunk.trim());
     if (out.length <= 1 && text.length > maxLen * 1.4) {
+      // Split at Thai syllable boundaries (vowel clusters) rather than raw char offset
+      // to avoid cutting mid-word. Fall back to space-based split if possible.
       const chars = [...text];
       const fixed: string[] = [];
-      for (let i = 0; i < chars.length; i += maxLen) {
-        fixed.push(chars.slice(i, i + maxLen).join("").trim());
+      let chunk = "";
+      for (let i = 0; i < chars.length; i++) {
+        chunk += chars[i];
+        if (chunk.replace(/\s+/g, "").length >= maxLen) {
+          // Try to find a safe break point: look ahead up to 4 chars for a space or Thai vowel boundary
+          let broke = false;
+          for (let j = i + 1; j < Math.min(i + 5, chars.length); j++) {
+            if (/\s/.test(chars[j]) || /[เ-ไ]/.test(chars[j])) {
+              chunk += chars.slice(i + 1, j).join("");
+              i = j - 1;
+              broke = true;
+              break;
+            }
+          }
+          if (!broke && /\s/.test(chars[i])) broke = true;
+          if (broke || chunk.replace(/\s+/g, "").length >= maxLen * 1.3) {
+            fixed.push(chunk.trim());
+            chunk = "";
+          }
+        }
       }
+      if (chunk.trim()) fixed.push(chunk.trim());
       return fixed.filter(Boolean);
     }
     return out;
@@ -933,17 +954,20 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
-        const timestampPrompt = `Transcribe this Thai audio into segments with timestamps.
+        const timestampPrompt = `Transcribe this Thai audio into short subtitle segments with timestamps.
 
 Return ONLY valid JSON, no markdown, no explanation:
 {"segments":[{"text":"...","start":0.0,"end":2.5},...],"fullText":"..."}
 
 RULES:
-- Each segment = one natural phrase or sentence (roughly 3–8 words)
+- Each segment = one short subtitle line — MAX 15 Thai characters or MAX 4 seconds
+- NEVER cut mid-word or mid-syllable — always break at a natural pause or sentence boundary
+- Split long sentences into multiple short segments, each with its own start/end time
 - start/end = seconds (float, accurate to 0.1s)
+- Add a space between Thai words where there is a natural word boundary (do not run all words together)
 - fullText = complete transcription joined together
 - NEVER fabricate timestamps — only use what you can hear
-- If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
+- If audio has silence/pause, keep that gap between segments${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`,
@@ -1186,13 +1210,19 @@ TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never 
    ✗ BAD: "และ OpenAI" / "ของบริษัทชื่อ" / "โดย Dario" ← dangling fragments
    ✓ GOOD: "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
 
-2. NEVER start a phrase with these words — merge with previous phrase instead:
+2. NEVER cut mid-word or mid-syllable — Thai words must not be split across phrases
+   ✗ BAD: phrase ends "...ทำความเข้าใจ" and next starts "ได้แค่นั้น" ← cut mid-thought
+   ✗ BAD: phrase ends "...กั" and next starts "นหัวแทบแตก" ← cut mid-word
+   ✓ Split only at natural pause/breath points between complete words
+
+3. NEVER start a phrase with these words — merge with previous phrase instead:
    และ, แต่, ของ, ที่, ว่า, จึง, เพราะ, โดย, ซึ่ง, หรือ, แล้ว, ก็
 
-3. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s
+4. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s
    Phrases shorter than this will be too fast to read — merge them with adjacent phrase
 
-4. Max 32 Thai chars OR 22 English words per phrase (one screen line)
+5. Max 25 Thai chars OR 15 English words per phrase (one screen line)
+   Long sentences MUST be split into 2–3 shorter phrases at natural pause points
 
 5. Split at PAUSE POINTS below — real breath boundaries from audio
 
