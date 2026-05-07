@@ -950,7 +950,7 @@ RULES:
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(300_000),
+            signal: AbortSignal.timeout(600_000),
             body: JSON.stringify({
               contents: [{
                 parts: [
