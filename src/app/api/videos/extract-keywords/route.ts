@@ -163,34 +163,37 @@ export async function POST(req: Request) {
       const batch = batches[b];
       if (b > 0) await new Promise(r => setTimeout(r, 5000));
 
-      const prompt = `You are a B-roll video editor. Your job is to find Pexels stock video search queries for each subtitle phrase.
+      const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
-FULL SCRIPT (understand the topic before picking visuals):
+═══ FULL SCRIPT — read this entire script first to understand the core message, tone, and theme ═══
 ${fullScript}
+═══ END SCRIPT ═══
 
-TASK:
-For each subtitle phrase below, write 3 English Pexels search queries:
-1. Most specific and on-topic
-2. Broader but still relevant
-3. Generic fallback (1-2 words only, e.g. "technology", "business", "city")
+YOUR JOB:
+For each subtitle phrase below, write exactly 3 Pexels stock video search queries that MATCH the script's overall visual theme AND the specific moment in that phrase.
+
+Query 1 — Most specific to the phrase's exact visual moment
+Query 2 — Broader visual that fits the script theme
+Query 3 — Generic scene fallback (1-2 words max, e.g. "technology", "city night")
 
 CRITICAL RULES:
-- NEVER use real people's names (e.g. "Dario Amodei", "Sam Altman", "Elon Musk") — Pexels has no photos of specific people
-- NEVER use brand/company names as search queries (e.g. "Anthropic", "OpenAI", "Google") — no results
-- Instead translate names/brands into what they REPRESENT visually:
-  - A CEO/founder → "executive presenting conference stage" or "entrepreneur whiteboard office"
-  - An AI company → "developer coding dark monitor" or "server room data center"
-  - A product launch → "product reveal stage spotlight audience"
-- English only, 2-6 words each
-- Must be something a camera can physically film in one shot
-- Base your choices on the FULL SCRIPT topic, not just the isolated phrase
-- Vary shot types: close-up → medium → wide
+▸ NO real person names (Dario Amodei, Elon Musk, Sam Altman…) — Pexels has none
+▸ NO brand/company names (OpenAI, Anthropic, Google…) — no useful results
+▸ Translate people/brands into what they LOOK LIKE visually:
+   CEO presenting → "executive keynote stage spotlight"
+   AI startup → "developer dark office multiple screens"
+   Robot/AI → "humanoid robot arm factory" or "glowing neural network animation"
+▸ Every query must describe something a camera can physically film in ONE SHOT
+▸ English only, 2–6 words per query
+▸ Vary shot styles across the batch: aerial, close-up, wide shot, slow-motion, time-lapse
+▸ Ground abstract concepts in concrete objects: "hope" → "child sunrise field", "growth" → "plant sprouting soil close-up"
+▸ Keep the visual MOOD consistent with the script's tone (dramatic, inspiring, calm, urgent…)
 
-OUTPUT (JSON only, no explanation):
+OUTPUT — JSON only, zero explanation:
 {"keywords":[["q1","q2","q3"],["q1","q2","q3"],...]}
-Exactly ${batch.length} arrays.
+Return exactly ${batch.length} arrays in the same order as the phrases.
 
-SUBTITLE PHRASES:
+SUBTITLE PHRASES (batch ${b + 1}):
 ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
       const maxTokens = Math.min(4096, batch.length * 120 + 300);
@@ -273,19 +276,24 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
     ? scenes : cleanScript.split(/\n+/).filter(Boolean);
   const numScenes = Math.max(1, sceneList.length);
 
-  const prompt = `You are a B-roll video editor for TikTok/Reels short videos.
+  const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
-Read this script and write one Pexels stock video search query per scene.
-
-CRITICAL: Never use real people's names or brand names in queries — Pexels won't find them.
-Translate names into what they visually represent (a CEO → "executive presenting stage", an AI company → "developer coding monitor").
-
-Each query must be filmable in one camera shot. English only, 2-5 words, unique.
-
-SCRIPT:
+═══ FULL SCRIPT ═══
 ${cleanScript}
+═══ END SCRIPT ═══
 
-OUTPUT (JSON only):
+STEP 1 — Understand the script's core message, tone, and main visual theme.
+STEP 2 — For each scene below, write ONE Pexels stock video search query that:
+  • Matches the scene's specific moment AND stays true to the script's overall visual theme
+  • Translates abstract ideas into concrete, filmable objects/actions
+  • NEVER uses real person names or brand names (Pexels has none)
+    - CEO/founder → "executive keynote stage spotlight"
+    - AI company → "server room glowing screens"
+    - Robot/AI → "humanoid robot arm factory"
+  • Is English only, 2–5 words, unique across all queries
+  • Varies shot style: aerial, close-up, wide, slow-motion, time-lapse
+
+OUTPUT (JSON only, no explanation):
 {"queries":["query1","query2",...]}
 Exactly ${numScenes} queries.`;
 

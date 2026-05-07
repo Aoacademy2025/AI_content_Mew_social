@@ -236,14 +236,11 @@ export async function POST(req: Request) {
       if (!fs.existsSync(symlinkPath)) {
         try {
           fs.copyFileSync(srcPath, symlinkPath);
-        } catch {
-          // Failing to mirror into renders is non-fatal because /api/stocks is now the primary path.
+        } catch (copyErr) {
+          console.warn(`[render] copy to renders/ failed for ${filename}, serving from stocks/ directly:`, copyErr);
         }
       }
-      if (!fs.existsSync(symlinkPath)) {
-        throw new Error("Failed to mirror stock asset for browser access");
-      }
-
+      // Always serve from /api/stocks/ — renders/ copy is just a convenience mirror, not required
       return `${baseUrl}/api/stocks/${filename}`;
     }
 
@@ -257,6 +254,7 @@ export async function POST(req: Request) {
         const u = new URL(url);
         if (u.pathname.startsWith("/renders/")) return path.join(rendersDir, u.pathname.slice("/renders/".length));
         if (u.pathname.startsWith("/api/renders/")) return path.join(rendersDir, u.pathname.slice("/api/renders/".length));
+        if (u.pathname.startsWith("/api/stocks/")) return path.join(stocksDir, u.pathname.slice("/api/stocks/".length));
       } catch {}
       return null;
     }
