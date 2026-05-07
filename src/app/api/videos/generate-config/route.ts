@@ -318,31 +318,31 @@ export async function POST(req: Request) {
     const useEvenSplit = !isPerSubtitleTop && clipCountHint <= numScenes * 4; // few clips â†’ guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Per-subtitle 1:1: gapFilled[i] â†’ validStocks[i], using sorted+gap-filled caption timestamps.
-      // gapFilled is already sorted by startMs (same order as orderedClips built in page.tsx).
-      // clipOffset advances independently per src so the clip plays from where it left off.
-      // Each caption gets its own dedicated clip starting from offset 0.
-      // Per-subtitle orderedClips are already unique per caption (built in page.tsx),
-      // so each clip plays from the beginning â€” no offset accumulation needed.
-      console.log(`[config] per-subtitle-top mode: ${n} clips for ${gapFilled.length} captions`);
-      gapFilled.forEach((c, i) => console.log(`[config] caption[${i}]: ${c.startMs}ms-${c.endMs}ms stock=${validStocks[Math.min(i,n-1)]?.localUrl?.split("/").pop() ?? validStocks[Math.min(i,n-1)]?.videoUrl?.split("/").pop()}`));
-      // Merge consecutive captions that share the same stock clip into one bgVideo segment.
-      // Each unique stock clip gets exactly one continuous Sequence on the timeline.
+      // Per-subtitle mode: cap unique video files to prevent Chromium from opening
+      // too many OffthreadVideo instances simultaneously (causes hang at ~15-20% render).
+      const MAX_UNIQUE_VIDEOS = 20;
+      const poolSize = Math.min(n, MAX_UNIQUE_VIDEOS);
+      const pool = validStocks.slice(0, poolSize);
+      console.log(`[config] per-subtitle-top mode: ${pool.length} unique clips (capped from ${n}) for ${gapFilled.length} captions`);
+      const clipOffsetMap = new Map<string, number>();
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
         const capStartSec = cap.startMs / 1000;
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        const sv  = validStocks[Math.min(ci, n - 1)];
+        const sv  = pool[ci % pool.length];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         const last = bgVideos[bgVideos.length - 1];
         if (last && last.src === src) {
-          // extend existing segment instead of creating a new one
+          // extend existing segment — clip plays continuously
           last.end = capEndSec;
         } else {
-          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
+          const offset = clipOffsetMap.get(src) ?? 0;
+          const safeOffset = clipDuration > 0 ? offset % clipDuration : 0;
+          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+          clipOffsetMap.set(src, safeOffset + dur);
         }
       }
     } else if (useEvenSplit) {
