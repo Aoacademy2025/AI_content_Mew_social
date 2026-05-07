@@ -370,23 +370,47 @@ export async function POST(req: Request) {
     const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
     const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 1.5;
 
-    // Remotion caps concurrency at cpuCount — cannot exceed it.
-    // Use full cpuCount on small VPS (<=2 cores), leave 1 for OS on larger machines.
+    // --single-process + --no-zygote causes "Target closed" crashes on Linux VPS because
+    // any one frame's crash kills all Chromium tabs. Use multi-process mode instead:
+    // keep --no-zygote only, drop --single-process, and limit concurrency so we don't
+    // exceed the number of stable Chromium instances the host can sustain.
     const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
+    const safeConcurrency = isLowResourceHost ? 1 : Math.min(2, Math.max(1, cpuCount - 1));
     const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
       ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-      : isLowResourceHost ? 1 : (cpuCount <= 2 ? cpuCount : Math.max(1, cpuCount - 1));
+      : safeConcurrency;
+
     const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
+    // OffthreadVideo cache: large enough to hold decoded frames across clips,
+    // small enough to avoid OOM on VPS. Tune via RENDER_OFFTHREAD_CACHE_MB env.
     const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
       ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-      : isLowResourceHost ? 64 * 1024 * 1024 : 192 * 1024 * 1024;
+      : isLowResourceHost ? 64 * 1024 * 1024 : 128 * 1024 * 1024;
+
     const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isLowResourceHost ? 60 : 70);
+
+    const isWindows = process.platform === "win32";
     const chromiumArgs = [
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      // --no-zygote without --single-process: each tab is its own process (stable),
+      // but we avoid the zygote fork overhead that fails on many VPS kernels.
       "--no-zygote",
-      "--single-process",
+      // --no-sandbox required on Linux VPS (no user namespace support).
+      // On Windows it's unnecessary but harmless.
       "--no-sandbox",
+      // Reduce per-tab memory footprint
+      "--js-flags=--max-old-space-size=512",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      // Prevent GPU process from being spawned (already disabled via --disable-gpu,
+      // but this ensures the GPU host doesn't linger and consume file descriptors)
+      "--gpu-process-limit=0",
+      ...(isWindows ? [] : [
+        // Linux: give each renderer its own shared memory namespace to avoid crashes
+        "--disable-features=OutOfBlinkCors",
+      ]),
     ];
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 

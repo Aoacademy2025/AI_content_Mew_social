@@ -48,12 +48,16 @@ function normalizeBgVideos(raw: BrollVideo[], audioDurationSec: number, fps: num
     const prev = deduped[deduped.length - 1];
     if (seg.start < prev.end - epsilon) {
       if (seg.src === prev.src) {
+        // Same clip — extend prev instead of adding duplicate
         prev.end = Math.max(prev.end, seg.end);
+        continue;
       } else {
+        // Different clip overlaps — push it back to start right after prev
         seg.start = prev.end;
       }
     }
 
+    // Only add if there's enough room (after potential start adjustment above)
     if (seg.end - seg.start >= minDuration) {
       deduped.push(seg);
     }
@@ -589,6 +593,25 @@ export async function POST(req: Request) {
 
   bgVideos = fillBgGaps(bgVideos, audioDurationSec);
   bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
+  // normalize may drop short segments and create new gaps — fill again
+  bgVideos = fillBgGaps(bgVideos, audioDurationSec);
+
+  // Final hard-clamp: brute-force close any remaining gap by extending prev clip
+  for (let i = 0; i < bgVideos.length - 1; i++) {
+    const gap = bgVideos[i + 1].start - bgVideos[i].end;
+    if (gap > 0.001) {
+      console.warn(`[config] GAP clip[${i}]→clip[${i+1}]: ${gap.toFixed(3)}s — closing`);
+      bgVideos[i].end = bgVideos[i + 1].start;
+    }
+  }
+  // Ensure first clip starts at exactly 0 and last ends at exactly audio end
+  if (bgVideos.length > 0) {
+    bgVideos[0].start = 0;
+    bgVideos[bgVideos.length - 1].end = audioDurationSec;
+  }
+
+  console.log(`[config] final bgVideos (${bgVideos.length}):`);
+  bgVideos.forEach((v, i) => console.log(`  [${i}] ${v.start.toFixed(2)}s–${v.end.toFixed(2)}s dur=${( v.end-v.start).toFixed(2)}s src=${v.src.split("/").pop()}`));
 
   const config: ShortVideoConfig = {
     bgVideos,

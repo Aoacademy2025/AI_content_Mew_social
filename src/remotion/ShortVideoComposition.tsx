@@ -2,9 +2,10 @@ import React from "react";
 import {
   AbsoluteFill,
   Audio,
+  OffthreadVideo,
   Sequence,
-  Video,
   interpolate,
+  spring,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -13,55 +14,94 @@ import type { ShortVideoConfig, SubtitleStylePreset } from "./types";
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
 
-// Ken Burns configs — alternate per clip index
+// ─── Ken Burns ────────────────────────────────────────────────────────────────
 const KB_CONFIGS = [
-  { startScale: 1.0,  endScale: 1.08, tx: 0,    ty: 0 },
-  { startScale: 1.08, endScale: 1.0,  tx: -2,   ty: -1 },
-  { startScale: 1.0,  endScale: 1.08, tx: 2,    ty: 1 },
-  { startScale: 1.06, endScale: 1.0,  tx: -1.5, ty: 0 },
-  { startScale: 1.0,  endScale: 1.06, tx: 1.5,  ty: -1 },
+  { startScale: 1.0,  endScale: 1.10, tx:  0,   ty:  0   },
+  { startScale: 1.10, endScale: 1.0,  tx: -2.5, ty: -1.5 },
+  { startScale: 1.0,  endScale: 1.10, tx:  2.5, ty:  1.5 },
+  { startScale: 1.08, endScale: 1.0,  tx: -2,   ty:  1   },
+  { startScale: 1.0,  endScale: 1.08, tx:  2,   ty: -1   },
+  { startScale: 1.05, endScale: 1.12, tx:  0,   ty: -2   },
+  { startScale: 1.12, endScale: 1.0,  tx:  2.5, ty:  0   },
 ];
 
+// ─── Crossfade ────────────────────────────────────────────────────────────────
+// CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
+//
+// Timeline diagram (F = CROSSFADE_FRAMES = 8):
+//
+//   clip A Sequence: [startA ──────────────────── endA+F]   ← extended by F
+//   clip B Sequence:              [endA ──────────────── endB+F]  ← starts at hard cut
+//                                  |←── F ──→|
+//                                  A fades out, B fades in — no gap
+//
+// Each clip's Sequence is extended by CROSSFADE_FRAMES beyond its nominal endFrame
+// so it stays visible while the NEXT clip fades in. The next clip starts exactly at
+// the hard cut point (v.startFrame) — never before, never after.
+const CROSSFADE_FRAMES = 4;
+
+const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
+
+// ─── VideoClip ────────────────────────────────────────────────────────────────
+// segDurFrames = nominal segment duration (hard-cut window)
+// tailFrames   = extra frames this clip must stay visible (= CROSSFADE_FRAMES,
+//                so next clip's fade-in has something to dissolve over)
+// headFrames   = frames at the start where THIS clip fades in over the previous
 function VideoClip({
   src,
   startFrom,
   segDurFrames,
+  tailFrames,
+  headFrames,
   clipDurFrames,
   clipIndex,
-  isFirst,
 }: {
   src: string;
   startFrom: number;
   segDurFrames: number;
+  tailFrames: number;
+  headFrames: number;
   clipDurFrames: number | null;
   clipIndex: number;
-  isFirst: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
-  const effectiveDur = clipDurFrames != null
-    ? Math.min(segDurFrames, clipDurFrames) - 2
-    : segDurFrames - 1;
-  const endAt = startFrom + Math.max(1, effectiveDur);
+  // Total frames this Sequence is active = segment + tail
+  const totalFrames = segDurFrames + tailFrames;
 
+  // OffthreadVideo freezes on last frame when clip ends — no black flash.
+  // endAt covers full tail so next clip can dissolve over this one.
+  const endAt = startFrom + totalFrames;
+
+  // Ken Burns — progress over the nominal segment only (not tail)
   const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
-  const progress = segDurFrames > 1 ? frame / (segDurFrames - 1) : 0;
-  const scale = interpolate(progress, [0, 1], [kb.startScale, kb.endScale]);
-  const tx = interpolate(progress, [0, 1], [0, kb.tx]);
-  const ty = interpolate(progress, [0, 1], [0, kb.ty]);
+  const kbProgress = segDurFrames > 1 ? Math.min(1, frame / (segDurFrames - 1)) : 0;
+  const scale = interpolate(kbProgress, [0, 1], [kb.startScale, kb.endScale]);
+  const tx    = interpolate(kbProgress, [0, 1], [0, kb.tx]);
+  const ty    = interpolate(kbProgress, [0, 1], [0, kb.ty]);
 
-  // Crossfade in — first clip starts at full opacity, others fade in over 8 frames
-  const fadeFrames = Math.min(8, Math.floor(segDurFrames / 3));
-  const opacity = isFirst ? 1 : interpolate(frame, [0, fadeFrames], [0, 1], { extrapolateRight: "clamp" });
+  // Fade in over headFrames (this clip dissolving in over the previous)
+  const fadeIn = headFrames > 0
+    ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" })
+    : 1;
+
+  // Fade out over the tail (so next clip dissolves in over this one)
+  const fadeOut = tailFrames > 0
+    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : 1;
+
+  const opacity = Math.min(fadeIn, fadeOut);
 
   return (
     <AbsoluteFill style={{ opacity }}>
-      <Video
+      <OffthreadVideo
         src={src}
         startFrom={startFrom}
         endAt={endAt}
-        loop={false}
         style={{
           position: "absolute",
           top: 0,
@@ -71,6 +111,7 @@ function VideoClip({
           objectFit: "cover",
           transform: `scale(${scale}) translate(${tx}%, ${ty}%)`,
           transformOrigin: "center center",
+          filter: GRADE_FILTER,
         }}
         muted
       />
@@ -78,6 +119,27 @@ function VideoClip({
   );
 }
 
+// ─── Cinematic overlay ────────────────────────────────────────────────────────
+function CinematicOverlay() {
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      <div style={{
+        position: "absolute",
+        inset: 0,
+        background: "rgba(20, 10, 40, 1)",
+        opacity: 0.06,
+        mixBlendMode: "multiply",
+      }} />
+      <div style={{
+        position: "absolute",
+        inset: 0,
+        background: "radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.60) 100%)",
+      }} />
+    </AbsoluteFill>
+  );
+}
+
+// ─── Subtitle rendering ───────────────────────────────────────────────────────
 function renderSubtitle(
   text: string,
   color: string,
@@ -103,13 +165,13 @@ function renderSubtitle(
   switch (preset) {
     case "box":
       return (
-        <div style={{ display: "block", background: "rgba(0,0,0,0.62)", padding: "6px 20px 8px", borderRadius: 0 }}>
+        <div style={{ display: "block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>
           <span style={{ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.9)" }}>{text}</span>
         </div>
       );
     case "box-rounded":
       return (
-        <div style={{ display: "block", background: "rgba(0,0,0,0.70)", padding: "8px 24px 10px", borderRadius: 16 }}>
+        <div style={{ display: "block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>
           <span style={{ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.8)" }}>{text}</span>
         </div>
       );
@@ -120,8 +182,7 @@ function renderSubtitle(
       return (
         <span style={{
           ...base,
-          textShadow: `0 0 20px rgba(${r},${g},${b},0.9), 0 0 40px rgba(${r},${g},${b},0.6), 0 0 60px rgba(${r},${g},${b},0.4), 0 2px 4px rgba(0,0,0,0.8)`,
-          WebkitTextStroke: "0px transparent",
+          textShadow: `0 0 20px rgba(${r},${g},${b},0.9), 0 0 40px rgba(${r},${g},${b},0.6), 0 2px 4px rgba(0,0,0,0.8)`,
         }}>{text}</span>
       );
     }
@@ -130,7 +191,6 @@ function renderSubtitle(
         <span style={{
           ...base,
           color: "#fff",
-          textShadow: "none",
           WebkitTextStroke: `3px ${color}`,
           paintOrder: "stroke fill",
         } as React.CSSProperties}>{text}</span>
@@ -140,16 +200,20 @@ function renderSubtitle(
       return (
         <span style={{
           ...base,
+          // Semi-transparent pill background so text is legible on any footage
+          background: "rgba(0,0,0,0.45)",
+          borderRadius: 6,
+          padding: "2px 10px",
           textShadow:
-            "0 3px 0 #000, 0 -1px 0 #000, 1px 0 0 #000, -1px 0 0 #000, " +
-            "0 4px 20px rgba(0,0,0,0.95), 0 8px 32px rgba(0,0,0,0.8)",
-          WebkitTextStroke: isHighlight ? "3px #000" : "2px #000",
+            "0 2px 0 rgba(0,0,0,0.9), 0 4px 16px rgba(0,0,0,0.95)",
+          WebkitTextStroke: isHighlight ? "2px rgba(0,0,0,0.6)" : "1px rgba(0,0,0,0.5)",
           paintOrder: "stroke fill",
         } as React.CSSProperties}>{text}</span>
       );
   }
 }
 
+// ─── Animated subtitle ────────────────────────────────────────────────────────
 function AnimatedSubtitle({
   popup,
   preset,
@@ -162,42 +226,34 @@ function AnimatedSubtitle({
   captionDurFrames: number;
 }) {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
 
-  // Pop in: scale 0.7→1.05→1.0 over first 8 frames + fade in
-  const popScale = interpolate(
+  const popSpring = spring({
     frame,
-    [0, 5, 8],
-    [0.7, 1.05, 1.0],
-    { extrapolateRight: "clamp" }
-  );
-  const popOpacity = interpolate(frame, [0, 4], [0, 1], { extrapolateRight: "clamp" });
-
-  // Fade out last 4 frames
-  const fadeOut = interpolate(
-    frame,
-    [captionDurFrames - 4, captionDurFrames],
-    [1, 0],
-    { extrapolateLeft: "clamp" }
-  );
-
-  const opacity = Math.min(popOpacity, fadeOut);
+    fps,
+    config: { mass: 0.6, damping: 10, stiffness: 180 },
+    durationInFrames: 12,
+  });
+  const popScale = interpolate(popSpring, [0, 1], [0.76, 1.0]);
+  const slideY   = interpolate(popSpring, [0, 1], [6, 0]);
+  const fadeIn   = interpolate(frame, [0, 5], [0, 1], { extrapolateRight: "clamp" });
+  const fadeOut  = interpolate(frame, [captionDurFrames - 4, captionDurFrames], [1, 0], { extrapolateLeft: "clamp" });
+  const opacity  = Math.min(fadeIn, fadeOut);
 
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
-      <div
-        style={{
-          position: "absolute",
-          top: `${popup.topPercent ?? 75}%`,
-          left: 0,
-          right: 0,
-          transform: `translateY(-50%) scale(${popScale})`,
-          transformOrigin: "center center",
-          opacity,
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-        }}
-      >
+      <div style={{
+        position: "absolute",
+        top: `${popup.topPercent ?? 72}%`,
+        left: 0,
+        right: 0,
+        transform: `translateY(calc(-50% + ${slideY}px)) scale(${popScale})`,
+        transformOrigin: "center center",
+        opacity,
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+      }}>
         <div style={{ maxWidth: "88%", width: "100%", textAlign: "center", paddingLeft: "6%", paddingRight: "6%" }}>
           {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900)}
         </div>
@@ -206,18 +262,7 @@ function AnimatedSubtitle({
   );
 }
 
-function Vignette() {
-  return (
-    <AbsoluteFill style={{ pointerEvents: "none" }}>
-      <div style={{
-        position: "absolute",
-        inset: 0,
-        background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%)",
-      }} />
-    </AbsoluteFill>
-  );
-}
-
+// ─── Main composition ─────────────────────────────────────────────────────────
 export function ShortVideoComposition({
   bgVideos,
   keywordPopups,
@@ -228,67 +273,74 @@ export function ShortVideoComposition({
   fontFamily,
   subtitleStylePreset = "stroke",
 }: ShortVideoConfig) {
-  const { fps, width, height } = useVideoConfig();
+  const { fps } = useVideoConfig();
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   const preset = subtitleStylePreset ?? "stroke";
 
   return (
-    <AbsoluteFill
-      style={{
-        backgroundColor: "#000",
-        fontFamily: resolvedFont,
-        overflow: "hidden",
-      }}
-    >
+    <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Stock video segments — merge consecutive segments with same src into one Sequence */}
+      {/* ── Stock video clips ─────────────────────────────────────────────── */}
       {(() => {
-        // Merge adjacent bgVideos with the same src into a single continuous Sequence
-        type Merged = { src: string; startFrame: number; endFrame: number; clipOffset: number; clipDuration: number | null };
-        const merged: Merged[] = [];
+        // 1. Convert bgVideos to integer frame ranges
+        type Seg = { src: string; startFrame: number; endFrame: number; clipOffset: number; clipDuration: number | null };
+        const segs: Seg[] = [];
         for (const v of bgVideos) {
           const startFrame = Math.max(0, Math.round(v.start * fps));
-          const endFrame = Math.max(startFrame + 1, Math.round(v.end * fps));
+          const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
-          const clipOffset = v.clipOffset ?? 0;
-          const last = merged[merged.length - 1];
-          if (last && last.src === v.src && last.endFrame === startFrame) {
+          const clipOffset   = v.clipOffset ?? 0;
+          // Merge adjacent segments with same src (tolerance 1 frame for rounding)
+          const last = segs[segs.length - 1];
+          if (last && last.src === v.src && Math.abs(last.endFrame - startFrame) <= 1) {
             last.endFrame = endFrame;
           } else {
-            merged.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
+            segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
           }
         }
-        return merged.map((v, i) => {
-          const segDurFrames = v.endFrame - v.startFrame;
+
+        // 2. Render each segment as a Sequence
+        //    - Each clip's Sequence starts AT its hard-cut frame (no early start)
+        //    - Each clip's Sequence extends CROSSFADE_FRAMES PAST its endFrame (tail)
+        //      so the next clip can dissolve in over it
+        //    - The next clip fades in over its first CROSSFADE_FRAMES (head)
+        //    - Result: both clips are always visible during the transition → no black gap
+        return segs.map((v, i) => {
+          const isLast        = i === segs.length - 1;
+          const segDurFrames  = v.endFrame - v.startFrame; // nominal duration
+          const tailFrames    = isLast ? 0 : CROSSFADE_FRAMES; // stay visible for next clip's fade-in
+          const headFrames    = i === 0 ? 0 : CROSSFADE_FRAMES; // fade in over previous clip
+
           const clipDurFrames = v.clipDuration ? Math.max(1, Math.round(v.clipDuration * fps)) : null;
           const clipOffsetFrames = Math.round(v.clipOffset * fps);
           const startFromFrame = clipDurFrames
             ? ((clipOffsetFrames % clipDurFrames) + clipDurFrames) % clipDurFrames
             : 0;
+
+          // Sequence starts at the hard-cut frame, runs for segDurFrames + tailFrames
+          const seqFrom = v.startFrame;
+          const seqDur  = segDurFrames + tailFrames;
+
           return (
-            <Sequence
-              key={`${i}-${v.src}-${v.startFrame}`}
-              from={v.startFrame}
-              durationInFrames={segDurFrames}
-              layout="none"
-            >
+            <Sequence key={`${i}-${v.src}-${v.startFrame}`} from={seqFrom} durationInFrames={seqDur} layout="none">
               <VideoClip
                 src={v.src}
                 startFrom={startFromFrame}
                 segDurFrames={segDurFrames}
+                tailFrames={tailFrames}
+                headFrames={headFrames}
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
-                isFirst={i === 0}
               />
             </Sequence>
           );
         });
       })()}
 
-      {/* Vignette overlay — darkens edges for cinematic look */}
-      <Vignette />
+      {/* Cinematic overlay */}
+      <CinematicOverlay />
 
       {/* TTS voice */}
       {voiceFile && <Audio src={voiceFile} volume={voiceVolume} />}
@@ -296,24 +348,14 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
-      {/* Animated subtitles — every caption gets its own Sequence */}
+      {/* Subtitles */}
       {keywordPopups.map((p) => {
         const dur = p.end - p.start;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
         return (
-          <Sequence
-            key={`sub-${p.start}-${p.end}`}
-            from={p.start}
-            durationInFrames={dur}
-            layout="none"
-          >
-            <AnimatedSubtitle
-              popup={p}
-              preset={capPreset}
-              resolvedFont={resolvedFont}
-              captionDurFrames={dur}
-            />
+          <Sequence key={`sub-${p.start}-${p.end}`} from={p.start} durationInFrames={dur} layout="none">
+            <AnimatedSubtitle popup={p} preset={capPreset} resolvedFont={resolvedFont} captionDurFrames={dur} />
           </Sequence>
         );
       })}

@@ -195,7 +195,7 @@ export default function ShortVideoPage() {
   // Subtitle style settings
   const [subFontFamily, setSubFontFamily] = useState("'Kanit', sans-serif");
   const [subFontSize, setSubFontSize] = useState(80);
-  const [subPosition, setSubPosition] = useState(75);
+  const [subPosition, setSubPosition] = useState(68);
   const [subColor, setSubColor] = useState("#FFFFFF");
   const [subAccentColor, setSubAccentColor] = useState("#FFE500");
   const [subStylePreset, setSubStylePreset] = useState<"stroke"|"box"|"box-rounded"|"glow"|"outline-only"|"plain"|"shadow"|"karaoke">("stroke");
@@ -1215,7 +1215,7 @@ export default function ShortVideoPage() {
             const kwRes = await fetch("/api/videos/extract-keywords", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: subTexts, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
+              body: JSON.stringify({ scenes: subTexts, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
             if (!kwRes.ok) continue;
             const kwData = await kwRes.json();
@@ -1546,7 +1546,7 @@ export default function ShortVideoPage() {
           try {
             const r = await fetch("/api/videos/extract-keywords", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ scenes: subTexts2, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
+              body: JSON.stringify({ scenes: subTexts2, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
             if (!r.ok) continue;
             const d = await r.json();

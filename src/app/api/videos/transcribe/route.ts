@@ -310,15 +310,15 @@ function alignPhrasesToWordTimings(
 }
 
 /**
- * Aligns LLM-split phrases to Gemini segment timestamps via greedy text search.
+ * Aligns LLM-split phrases to Gemini segment timestamps.
  *
- * Gemini STT text uses spaces between Thai syllables (e.g. "วง การ AI") while
- * the script has no spaces ("วงการ AI"). Simple char proportion over segment
- * chars drifts because these char counts differ.
+ * Strategy: match each phrase to the segment whose text overlaps most with it
+ * using bare-char overlap. Each phrase gets the real start/end time of its
+ * best-matching segment. Within a segment that covers multiple phrases,
+ * interpolate linearly so they get distinct timestamps.
  *
- * Fix: strip ALL spaces and punctuation from both sides → compare bare Thai+latin
- * chars only → find each phrase's start position in the concatenated STT bare text
- * via greedy forward search → snap to segment boundaries.
+ * This is far more accurate than global char-proportion because it anchors
+ * each phrase to the actual segment boundary where the speaker said those words.
  */
 function alignPhrasesToSegmentTimestamps(
   phrases: string[],
@@ -326,78 +326,83 @@ function alignPhrasesToSegmentTimestamps(
 ): { text: string; startMs: number; endMs: number }[] {
   if (!phrases.length || !segments.length) return [];
 
-  // Strip spaces, punctuation, zero-width chars → bare Thai+latin chars only
+  const totalAudioSec = segments[segments.length - 1].end;
+  if (totalAudioSec <= 0) return [];
+
   const bare = (s: string) =>
-    s.replace(/[\s​-‍﻿.,!?;:"""''()[\]{}<>«»\/\\–—]/g, "").toLowerCase();
+    s.replace(/\s+/g, "").replace(/[.,!?;:"""''()[\]{}<>«»\/\\–—]/g, "").toLowerCase();
 
-  // Build flat char→segment-index map from STT segments
-  const segCharsMap: number[] = []; // segCharsMap[charPos] = segment index
-  const sttBareTotal: string[] = [];
-  for (let si = 0; si < segments.length; si++) {
-    const b = bare(segments[si].text);
-    for (let ci = 0; ci < b.length; ci++) {
-      segCharsMap.push(si);
-      sttBareTotal.push(b[ci]);
+  // Build segment char lengths for proportion fallback
+  const segBareLens = segments.map(s => Math.max(1, bare(s.text).length));
+  const totalSegChars = segBareLens.reduce((a, b) => a + b, 0);
+
+  // Build cumulative segment char positions → maps global char pos to segment index
+  const segCumChars: number[] = [];
+  let cum = 0;
+  for (const l of segBareLens) { cum += l; segCumChars.push(cum); }
+
+  // For each phrase: find which segment it belongs to by char proportion
+  // (phrase's cumulative char midpoint → segment index)
+  const phraseBareLens = phrases.map(p => Math.max(1, bare(p).length));
+  const totalPhraseChars = phraseBareLens.reduce((a, b) => a + b, 0);
+
+  // Map phrase index → segment index using char midpoint proportion
+  const phraseToSeg = (phraseCharMid: number): number => {
+    const ratio = phraseCharMid / totalPhraseChars;
+    const targetChar = ratio * totalSegChars;
+    for (let si = 0; si < segCumChars.length; si++) {
+      if (targetChar <= segCumChars[si]) return si;
     }
-  }
-  const sttBare = sttBareTotal.join("");
-  const totalSTTChars = sttBare.length;
-  if (totalSTTChars === 0) return [];
+    return segments.length - 1;
+  };
 
-  // For each phrase, find the longest matching substring in sttBare starting from
-  // the current search position (greedy left-to-right, no backtrack).
-  // We use the phrase's bare chars as the query and search for the best overlap.
+  // Assign each phrase a segment index
+  const assignments: number[] = [];
+  let cumPhraseChars = 0;
+  for (let i = 0; i < phrases.length; i++) {
+    const mid = cumPhraseChars + phraseBareLens[i] / 2;
+    assignments[i] = phraseToSeg(mid);
+    cumPhraseChars += phraseBareLens[i];
+  }
+
+  // For each segment, find which phrases map to it and interpolate within the segment
   const out: { text: string; startMs: number; endMs: number }[] = [];
-  let sttPos = 0; // current position in sttBare (advances monotonically)
 
   for (let i = 0; i < phrases.length; i++) {
-    const phraseBare = bare(phrases[i]);
-    const phraseLen  = phraseBare.length || 1;
-    const isLast     = i === phrases.length - 1;
+    const si = assignments[i];
+    const seg = segments[si];
 
-    const startPos = sttPos;
+    // Count how many phrases share this segment
+    const firstInSeg = assignments.indexOf(si);
+    const lastInSeg = assignments.lastIndexOf(si);
+    const countInSeg = lastInSeg - firstInSeg + 1;
+    const posInSeg = i - firstInSeg; // 0-based position within the segment
 
-    if (isLast) {
-      // Last phrase gets everything remaining
-      sttPos = totalSTTChars;
-    } else {
-      // Find best match: try exact substring first, fall back to proportion
-      let matchLen = phraseLen;
-      const idx = sttBare.indexOf(phraseBare, sttPos);
-      if (idx !== -1 && idx < totalSTTChars * 0.95) {
-        // Exact match found — use it
-        sttPos = idx + phraseBare.length;
-      } else {
-        // No exact match (script ≠ STT wording) → use char proportion of PHRASE
-        // relative to total phrase chars, mapped onto remaining STT chars
-        const totalPhraseChars = phrases.reduce((a, p) => a + Math.max(1, bare(p).length), 0);
-        const frac = phraseLen / totalPhraseChars;
-        matchLen = Math.max(1, Math.round(frac * totalSTTChars));
-        sttPos = Math.min(sttPos + matchLen, totalSTTChars);
-      }
-    }
+    const segDur = seg.end - seg.start;
 
-    const endPos = Math.min(sttPos, totalSTTChars) - 1;
-
-    // Snap to segment boundaries
-    const si0 = segCharsMap[Math.min(startPos, totalSTTChars - 1)] ?? 0;
-    const si1 = segCharsMap[Math.max(endPos, startPos, 0)] ?? si0;
-
-    const segStart = segments[si0].start;
-    const segEnd   = segments[Math.min(si1, segments.length - 1)].end;
+    // Interpolate start/end within the segment based on position
+    const sliceStart = seg.start + (posInSeg / countInSeg) * segDur;
+    const sliceEnd   = seg.start + ((posInSeg + 1) / countInSeg) * segDur;
 
     out.push({
       text: sanitizeTranscriptionText(phrases[i]),
-      startMs: Math.round(segStart * 1000),
-      endMs:   Math.round(Math.max(segStart + 0.3, segEnd) * 1000),
+      startMs: Math.round(sliceStart * 1000),
+      endMs:   Math.round(Math.max(sliceStart + 0.3, sliceEnd) * 1000),
     });
   }
 
-  // Enforce monotonic timestamps
+  // Last phrase ends at audio end
+  if (out.length > 0) {
+    out[out.length - 1].endMs = Math.round(totalAudioSec * 1000);
+  }
+
+  // Enforce strictly monotonic timestamps
   for (let i = 1; i < out.length; i++) {
-    if (out[i].startMs < out[i - 1].endMs) {
-      out[i].startMs = out[i - 1].endMs;
-      if (out[i].endMs <= out[i].startMs) out[i].endMs = out[i].startMs + 300;
+    if (out[i].startMs <= out[i - 1].startMs) {
+      out[i].startMs = out[i - 1].startMs + 100;
+    }
+    if (out[i].endMs <= out[i].startMs) {
+      out[i].endMs = out[i].startMs + 300;
     }
   }
 
