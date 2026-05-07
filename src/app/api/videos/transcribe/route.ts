@@ -1250,71 +1250,31 @@ RULES:
           minPhrases = Math.max(3, targetPhrases - 2);
           maxPhrases = targetPhrases + 4;
 
-          // Build speech rhythm hint from Gemini segment pause points
-          // LLM uses this to split at real breath boundaries in the audio
-          let rhythmHint = "";
-          if (segments.length >= 2) {
-            const breathPoints: string[] = [];
-            for (let si = 0; si < segments.length - 1; si++) {
-              const gap = segments[si + 1].start - segments[si].end;
-              if (gap >= 0.2) {
-                breathPoints.push(`${segments[si].end.toFixed(2)}s — "${segments[si].text.trim().slice(-25)}"`);
-              }
-            }
-            if (breathPoints.length > 0) {
-              rhythmHint = `\n\n━━━ SPEECH PAUSE POINTS ━━━
-Split subtitles at or near these natural pause points (detected from audio):
-${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}`;
-            }
-          }
+          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
-          // Estimate ~seconds per phrase from pause points to warn LLM about short phrases
-          const avgSecPerPhrase = durationSec / Math.max(1, targetPhrases);
+TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NOT rewrite or remove any words.
 
-          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels short videos.
+━━━ CRITICAL ━━━
+• COPY words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any words.
+• Every word in the script must appear in the output — nothing removed.
+• Only decide WHERE to split into subtitle lines.
 
-TASK: Split the SCRIPT into subtitle phrases. COPY every word EXACTLY — never drop, rewrite, or summarize.
+━━━ SPLITTING RULES ━━━
+• Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
+• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+• Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
+• NEVER split mid-sentence just to hit a char limit.
+• Short punchy lines → keep as ONE phrase.
+• NEVER split a date expression (Thai month name + date + year = ONE phrase).
 
-━━━ HARD RULES ━━━
+━━━ OUTPUT FORMAT ━━━
+Return ONLY valid JSON — no markdown, no explanation:
+{"phrases":["phrase1","phrase2"]}
 
-1. COPY EXACTLY — never drop, rewrite, or summarize any word from the script
-
-2. SPLIT ONLY AT WORD BOUNDARIES — Thai has no spaces between words, so you MUST split only where a logical word ends
-   ✗ BAD: "...มึงเรียนมาตั้งแต่เ" + "ด็กท่อง..." ← cut in the MIDDLE of a word (เด็ก)
-   ✗ BAD: "...ทำความเข้าใจ" + "ได้แค่นั้น" ← cut mid-compound-word
-   ✗ BAD: "...เสือก" + "ไปเปิด..." ← cut mid-sentence with no boundary
-   ✓ GOOD: split after a complete word like "บราวน์" before "แม่งเสือกไปเปิด"
-   ✓ GOOD: split after punctuation or a natural pause in speech
-
-3. COMPLETE THOUGHT — every phrase must stand alone as a complete idea
-   ✗ BAD: "และ OpenAI" / "ของบริษัทชื่อ" ← dangling fragments
-   ✓ GOOD: "OpenAI อาจไม่ใช่เบอร์ 1 อีกต่อไป" ← complete
-
-4. NEVER start a phrase with: และ, แต่, ของ, ที่, ว่า, จึง, เพราะ, โดย, ซึ่ง, หรือ, แล้ว, ก็
-   → merge with previous phrase instead
-
-5. MINIMUM phrase duration ~${Math.max(1.5, avgSecPerPhrase * 0.5).toFixed(1)}s — too short = unreadable, merge it
-
-6. Max 25 Thai chars per phrase (one screen line) — split long sentences at natural pause points
-
-7. Split at PAUSE POINTS below — real breath boundaries from audio
-
-━━━ GUIDELINES ━━━
-• Audio: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases (~${avgSecPerPhrase.toFixed(1)}s each)
-• Punchlines / impact: short phrase alone on screen is OK if ≥1.5s
-• Date (วันที่+เดือน+ปี) = ONE phrase
-
-━━━ TAGS ━━━
-• "hook" = first 1–2 phrases • "body" = main • "cta" = กดติดตาม/like/share
-
-━━━ OUTPUT — valid JSON only, no markdown ━━━
-{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}${rhythmHint}
-
-━━━ SCRIPT ━━━
+━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
 
-          // Thai phrases use ~60 tokens each (multi-byte chars + JSON overhead); cap at 32k
-          const splitMaxTokens = Math.min(32000, Math.max(1024, maxPhrases * 60 + 500));
+          const splitMaxTokens = 4096;
 
           let gptRawText = "{}";
           if (useGemini) {
