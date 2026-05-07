@@ -946,7 +946,7 @@ RULES:
 - If audio has silence/pause, reflect that in timing${script ? `\n- Reference script (match wording): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -961,7 +961,6 @@ RULES:
               generationConfig: {
                 temperature: 0,
                 responseMimeType: "application/json",
-                thinkingConfig: { thinkingBudget: 0 },
               },
             }),
           }
