@@ -1116,38 +1116,32 @@ export default function ShortVideoPage() {
     if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
-    // Check keys before starting — show modal immediately instead of failing mid-pipeline
+    // Step 1: Always show LLM provider picker first (unless already chosen this session)
+    if (!preferredLLMRef.current) {
+      setShowLLMPicker(true);
+      return;
+    }
+
+    // Step 2: Check keys for the chosen provider — show key modal if missing
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
-        // LLM key check — show picker if no key at all, or if both keys exist and no preference yet
-        if (!keys.geminiKey && !keys.openaiKey) {
-          setMissingKey({ type: "gemini", retryStep: "runAll" });
+        const needGemini = preferredLLMRef.current === "gemini";
+        const hasLLMKey = needGemini ? !!keys.geminiKey : !!keys.openaiKey;
+        if (!hasLLMKey) {
+          setMissingKey({ type: needGemini ? "gemini" : "openai" as RequiredKeyType, retryStep: "runAll" });
           return;
         }
-        if (!preferredLLMRef.current) {
-          if (keys.geminiKey && !keys.openaiKey) {
-            preferredLLMRef.current = "gemini";
-            setPreferredLLM("gemini");
-          } else if (keys.openaiKey && !keys.geminiKey) {
-            preferredLLMRef.current = "openai";
-            setPreferredLLM("openai");
-          } else {
-            // both keys exist — let user pick
-            setShowLLMPicker(true);
-            return;
-          }
+        // Stock key check
+        const needPexels  = stockSource === "pexels" || stockSource === "both";
+        const needPixabay = stockSource === "pixabay" || stockSource === "both";
+        const canUsePexels = !needPexels || !!keys.pexelsKey;
+        const canUsePixabay = !needPixabay || !!keys.pixabayKey;
+        if (!canUsePexels && !canUsePixabay) {
+          setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
+          return;
         }
-        // Stock key check — match the selected stockSource
-         const needPexels  = stockSource === "pexels" || stockSource === "both";
-         const needPixabay = stockSource === "pixabay" || stockSource === "both";
-         const canUsePexels = !needPexels || !!keys.pexelsKey;
-         const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-         if (!canUsePexels && !canUsePixabay) {
-           setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
-           return;
-         }
       }
     } catch { /* ignore — let pipeline fail naturally if keys really missing */ }
 
@@ -1915,7 +1909,7 @@ export default function ShortVideoPage() {
                   <p className="text-[10px] text-white/40">GPT-4o-mini · ต้องชำระเงิน</p>
                 </div>
               </button>
-              <button onClick={() => setShowLLMPicker(false)}
+              <button onClick={() => { setShowLLMPicker(false); preferredLLMRef.current = null; setPreferredLLM(null); }}
                 className="w-full rounded-xl py-2 text-sm text-white/30 hover:text-white/60 transition-colors">
                 ยกเลิก
               </button>

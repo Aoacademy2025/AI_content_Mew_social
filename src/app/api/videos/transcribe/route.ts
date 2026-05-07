@@ -391,6 +391,13 @@ function alignPhrasesToSegmentTimestamps(
     });
   }
 
+  // Extend every caption to the next one's start — eliminates all gaps
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i + 1].startMs > out[i].endMs) {
+      out[i].endMs = out[i + 1].startMs;
+    }
+  }
+
   // Last phrase ends at audio end
   if (out.length > 0) {
     out[out.length - 1].endMs = Math.round(totalAudioSec * 1000);
@@ -1357,12 +1364,17 @@ ${sourceText.trim()}`;
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
         // Strategy B: segment-anchored alignment via char proportion
-        if (result.length === 0 && segments.length >= 2) {
+        // Skip if segments are too sparse (< 1 segment per 4 phrases) — char-proportion
+        // over sparse segments creates huge gaps where Gemini didn't detect speech.
+        const segmentDensityOk = segments.length >= 2 && (phrases.length / segments.length) <= 4;
+        if (result.length === 0 && segmentDensityOk) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
             result = segAligned;
             console.log(`[transcribe] Strategy B segment-anchored alignment: ${result.length} phrases over ${segments.length} segs`);
           }
+        } else if (segments.length >= 2) {
+          console.log(`[transcribe] Strategy B skipped — sparse segments (${segments.length} segs / ${phrases.length} phrases), using char-proportion`);
         }
 
         // Strategy C: word-level alignment (Whisper word timestamps)
@@ -1420,10 +1432,9 @@ ${sourceText.trim()}`;
           console.log(`[transcribe] after short-merge: ${result.length} captions`);
         }
 
-        // Close gaps < 1000ms between captions by extending endMs to next startMs
+        // Extend every caption's endMs to the next caption's startMs — eliminates all gaps
         for (let i = 0; i < result.length - 1; i++) {
-          const gap = result[i + 1].startMs - result[i].endMs;
-          if (gap > 0 && gap < 1000) {
+          if (result[i + 1].startMs > result[i].endMs) {
             result[i].endMs = result[i + 1].startMs;
           }
         }
