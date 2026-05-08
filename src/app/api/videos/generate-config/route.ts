@@ -97,7 +97,7 @@ type StockVideo = { keyword: string; localUrl?: string; videoUrl: string; durati
 function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameMs: number): Cap[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
-  const EPS = 1;
+  const totalMs = Math.max(0, Number(audioDurationMs));
   const captions = raw
     .map((c) => ({
       ...c,
@@ -110,47 +110,24 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
 
   if (!captions.length) return [];
 
-  const totalMs = Math.max(0, Number(audioDurationMs));
-  const out: Cap[] = [];
-  let cursor = 0;
+  // Preserve original transcript timing — only clamp to audio bounds and ensure minimum frame
+  const out: Cap[] = captions.map((cap) => {
+    const start = Math.max(0, Math.min(cap.startMs, totalMs));
+    let end = Math.max(start + minFrameMs, cap.endMs);
+    if (end > totalMs) end = Math.max(totalMs, start + minFrameMs);
+    return { ...cap, startMs: Math.round(start), endMs: Math.round(end) };
+  });
 
-  for (const cap of captions) {
-    let start = Math.min(Math.max(0, cap.startMs), totalMs);
-    let end = Number.isFinite(cap.endMs) ? cap.endMs : start + minFrameMs;
-
-    if (start < cursor) start = cursor;
-    if (start < 0) start = 0;
-
-    // clamp to at least one frame and to audio duration
-    end = Math.max(start + minFrameMs, end);
-    if (end > totalMs) end = totalMs;
-    if (end <= start) {
-      end = Math.min(totalMs, start + minFrameMs);
-    }
-
-    // if no room to render at minimum length, skip
-    if (start + minFrameMs > totalMs) break;
-
-    out.push({
-      ...cap,
-      startMs: Math.round(start),
-      endMs: Math.round(end),
-    });
-    cursor = end;
-  }
-
-  // ensure strictly non-overlapping for render order
+  // Trim endMs so it never overlaps the next caption start (but never push start)
   for (let i = 0; i < out.length - 1; i++) {
     if (out[i].endMs > out[i + 1].startMs) {
-      out[i + 1].startMs = Math.min(totalMs, Math.max(out[i].endMs + EPS, out[i + 1].startMs));
-    }
-    if (out[i].endMs <= out[i].startMs) {
-      out[i].endMs = Math.min(totalMs, out[i].startMs + minFrameMs);
+      out[i].endMs = Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs);
     }
   }
 
   return out;
 }
+
 
 // Auto-scale font size down for longer phrases so they fit on one line (1080px wide, 88% usable = ~950px)
 // Thai chars ~= fontSize * 0.85 wide on average (Kanit/Leelawadee)
@@ -168,19 +145,11 @@ function autoScaleSize(text: string, baseSize: number): number {
 
 function detectStyle(
   text: string,
-  tag: "hook" | "body" | "cta" | undefined,
   baseSize: number,
   primaryColor: string,
-  accentColor: string,
 ): { color: string; size: number; isHighlight: boolean } {
+  // Only auto-scale size for long text — color/highlight always come from user settings
   const scaled = autoScaleSize(text, baseSize);
-  // CTA â†’ accent color
-  if (tag === "cta") return { color: accentColor, size: scaled, isHighlight: true };
-  // Hook â†’ primary color (slightly larger)
-  if (tag === "hook") return { color: primaryColor, size: Math.round(scaled * 1.05), isHighlight: false };
-  // Numbers/stats â†’ accent
-  if (/[0-9à¹-à¹™]/.test(text)) return { color: accentColor, size: Math.round(scaled * 1.1), isHighlight: true };
-  // Default (body) â†’ primary
   return { color: primaryColor, size: scaled, isHighlight: false };
 }
 
@@ -260,7 +229,7 @@ export async function POST(req: Request) {
   const keywordPopups: KeywordPopupItem[] = gapFilled
     .map((c) => {
       const text = c.text.trim();
-      const { color, size, isHighlight } = detectStyle(text, c.tag, subtitleSize, primaryColor, accentColor);
+      const { color, size, isHighlight } = detectStyle(text, subtitleSize, primaryColor);
       const startFrame = Math.floor((c.startMs / 1000) * fps);
       const endFrame = Math.max(startFrame + 1, Math.ceil((c.endMs / 1000) * fps));
       return {
@@ -273,6 +242,7 @@ export async function POST(req: Request) {
         topPercent: subtitlePosition,
         fontWeight: subtitleFontWeight,
         tag: c.tag,
+        stylePreset: subtitleStylePreset,
       };
     });
 
