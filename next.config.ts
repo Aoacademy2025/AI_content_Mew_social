@@ -30,11 +30,12 @@ const nextConfig: NextConfig = {
     "@remotion/renderer",
     "esbuild",
     "puppeteer-core",
-    // fluent-ffmpeg + ffmpeg-installer
+    // fluent-ffmpeg + ffmpeg-installer (all platforms — never bundle native binaries)
     "fluent-ffmpeg",
     "@ffmpeg-installer/ffmpeg",
     "@ffmpeg-installer/win32-x64",
     "@ffmpeg-installer/win32-ia32",
+    "@ffmpeg-installer/win32-arm64",
     "@ffmpeg-installer/linux-x64",
     "@ffmpeg-installer/linux-arm64",
     "@ffmpeg-installer/darwin-x64",

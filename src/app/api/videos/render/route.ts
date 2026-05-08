@@ -52,8 +52,21 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
   return url;
 }
 
-export const maxDuration = 7200;
+export const maxDuration = 60; // only needs to start the background job, not wait for it
 export const runtime = "nodejs";
+
+// In-process job registry (survives within same pm2 process)
+type RenderJob = {
+  status: "running" | "done" | "error";
+  videoUrl?: string;
+  error?: string;
+  startedAt: number;
+};
+const renderJobs = new Map<string, RenderJob>();
+
+export function getRenderJob(jobId: string): RenderJob | undefined {
+  return renderJobs.get(jobId);
+}
 
 // Cache the Remotion webpack bundle across requests AND across pm2 restarts.
 // Bundle path + mtime saved to the render tmp dir so pm2 restarts
@@ -414,66 +427,80 @@ export async function POST(req: Request) {
     ];
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 
-    let lastProgress = -1;
-    await renderMedia({
-      composition,
-      serveUrl: bundleLocation,
-      codec: "h264",
-      outputLocation,
-      inputProps,
-      timeoutInMilliseconds: 7200000,
-      concurrency: renderConcurrency,
-      x264Preset: "ultrafast",
-      jpegQuality,
-      offthreadVideoCacheSizeInBytes,
-      chromiumOptions: {
-        disableWebSecurity: true,
-        ignoreCertificateErrors: true,
-        gl: "swiftshader",
-        args: chromiumArgs,
-      },
-      onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
-        const p = Math.round(progress * 100);
-        if (p !== lastProgress) {
-          lastProgress = p;
-          try {
-            fs.writeFileSync(progressFile, JSON.stringify({ progress: p }));
-          } catch {}
+    const jobId = `${session.user.id}-${Date.now()}`;
+    renderJobs.set(jobId, { status: "running", startedAt: Date.now() });
+
+    // Fire-and-forget: run render in background so HTTP response returns immediately.
+    // Nginx default proxy_read_timeout is 60s — keeping the connection open for 2h causes 504.
+    // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
+    (async () => {
+      let lastProgress = -1;
+      try {
+        await renderMedia({
+          composition,
+          serveUrl: bundleLocation,
+          codec: "h264",
+          outputLocation,
+          inputProps,
+          timeoutInMilliseconds: 7200000,
+          concurrency: renderConcurrency,
+          x264Preset: "ultrafast",
+          jpegQuality,
+          offthreadVideoCacheSizeInBytes,
+          chromiumOptions: {
+            disableWebSecurity: true,
+            ignoreCertificateErrors: true,
+            gl: "swiftshader",
+            args: chromiumArgs,
+          },
+          onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
+            const p = Math.round(progress * 100);
+            if (p !== lastProgress) {
+              lastProgress = p;
+              try {
+                fs.writeFileSync(progressFile, JSON.stringify({ progress: p, jobId }));
+              } catch {}
+            }
+            if (p % 5 === 0) {
+              console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
+            }
+          },
+        });
+
+        const videoUrl = `/api/renders/${filename}`;
+        renderJobs.set(jobId, { status: "done", videoUrl, startedAt: renderJobs.get(jobId)!.startedAt });
+        try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
+
+        const session2 = await getServerSession(authOptions);
+        if (session2?.user?.id) {
+          createNotification({
+            userId: session2.user.id,
+            type: "VIDEO_COMPLETED",
+            title: "วิดีโอสร้างเสร็จแล้ว",
+            body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
+          }).catch(() => {});
         }
-        if (Math.round(progress * 100) % 5 === 0) {
-          console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames)`);
+      } catch (error) {
+        console.error("Render error:", error);
+        const detail = error instanceof Error ? error.message : String(error);
+        renderJobs.set(jobId, { status: "error", error: detail, startedAt: renderJobs.get(jobId)!.startedAt });
+        try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
+
+        const session2 = await getServerSession(authOptions);
+        if (session2?.user?.id) {
+          createNotification({
+            userId: session2.user.id,
+            type: "VIDEO_FAILED",
+            title: "วิดีโอสร้างไม่สำเร็จ",
+            body: "เกิดข้อผิดพลาดระหว่างสร้างวิดีโอ กรุณาลองใหม่อีกครั้ง",
+          }).catch(() => {});
         }
-      },
-    });
+      }
+    })();
 
-    const videoUrl = `/api/renders/${filename}`;
-
-    // Notify user that render completed
-    const session2 = await getServerSession(authOptions);
-    if (session2?.user?.id) {
-      createNotification({
-        userId: session2.user.id,
-        type: "VIDEO_COMPLETED",
-        title: "วิดีโอสร้างเสร็จแล้ว",
-        body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
-      }).catch(() => {});
-    }
-
-    return NextResponse.json({ videoUrl });
+    return NextResponse.json({ jobId });
   } catch (error) {
-    console.error("Render error:", error);
-
-    // Notify user that render failed
-    const session2 = await getServerSession(authOptions);
-    if (session2?.user?.id) {
-      createNotification({
-        userId: session2.user.id,
-        type: "VIDEO_FAILED",
-        title: "วิดีโอสร้างไม่สำเร็จ",
-        body: "เกิดข้อผิดพลาดระหว่างสร้างวิดีโอ กรุณาลองใหม่อีกครั้ง",
-      }).catch(() => {});
-    }
-
+    console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่", detail }, { status: 500 });
   }

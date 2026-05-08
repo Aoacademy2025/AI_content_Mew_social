@@ -4,15 +4,18 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffmpeg = require("fluent-ffmpeg");
-// Use system ffmpeg on Linux, installer on Windows
-if (process.platform !== "win32") {
-  ffmpeg.setFfmpegPath("ffmpeg");
-} else {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getFfmpeg(): any {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
-  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  const ffmpeg = require(/* webpackIgnore: true */ "fluent-ffmpeg");
+  if (process.platform !== "win32") {
+    ffmpeg.setFfmpegPath("ffmpeg");
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const installer = require(/* webpackIgnore: true */ "@ffmpeg-installer/ffmpeg");
+    ffmpeg.setFfmpegPath(installer.path);
+  }
+  return ffmpeg;
 }
 
 export const maxDuration = 300;
@@ -71,7 +74,7 @@ async function uploadAsset(
 // Re-encode video to HeyGen-compatible H.264 baseline format
 function reencodeVideo(inputPath: string, outputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    getFfmpeg()(inputPath)
       .outputOptions([
         "-c:v libx264",
         "-profile:v baseline",

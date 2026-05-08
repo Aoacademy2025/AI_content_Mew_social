@@ -826,6 +826,8 @@ export default function ShortVideoPage() {
     }, 120 * 60 * 1000);
 
     try {
+      // Fire-and-forget: POST returns {jobId} immediately, then poll for result.
+      // This avoids Nginx 504 Gateway Timeout on long renders (default 60s proxy timeout).
       const renderRes = await fetch("/api/videos/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -835,7 +837,52 @@ export default function ShortVideoPage() {
       if (renderFailedMessage) throw new Error(renderFailedMessage);
       const renderData = await renderRes.json();
       assertOk("Render", renderRes, renderData);
-      const url = renderData.videoUrl as string;
+
+      // New: server returns jobId immediately and renders in background
+      const jobId = renderData.jobId as string | undefined;
+      const immediateUrl = renderData.videoUrl as string | undefined;
+
+      if (immediateUrl) {
+        // Legacy path (local dev without Nginx, render finished fast)
+        pipe.current.renderedVideoUrl = immediateUrl;
+        setPreRenderUrl(immediateUrl);
+        if (!useAvatar) setVideoUrl(immediateUrl);
+        setStep("render", "done", immediateUrl);
+        setRenderProgressError(null);
+        setRenderProgress(null);
+        return immediateUrl;
+      }
+
+      if (!jobId) throw new Error("Render server did not return jobId");
+
+      // Poll render-status until done or error
+      const url = await new Promise<string>((resolve, reject) => {
+        const statusInterval = setInterval(async () => {
+          if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
+          try {
+            const statusRes = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, {
+              cache: "no-store",
+              signal: abortControllerRef.current?.signal,
+            });
+            if (!statusRes.ok) return;
+            const statusData = await statusRes.json();
+            if (statusData.status === "done" && statusData.videoUrl) {
+              clearInterval(statusInterval);
+              resolve(statusData.videoUrl as string);
+            } else if (statusData.status === "error") {
+              clearInterval(statusInterval);
+              reject(new Error(statusData.error ?? "Render failed"));
+            }
+          } catch (e) {
+            if (e instanceof Error && e.name === "AbortError") {
+              clearInterval(statusInterval);
+              reject(e);
+            }
+            // network blip — keep polling
+          }
+        }, 3000);
+      });
+
       pipe.current.renderedVideoUrl = url;
       setPreRenderUrl(url);
       if (!useAvatar) setVideoUrl(url);

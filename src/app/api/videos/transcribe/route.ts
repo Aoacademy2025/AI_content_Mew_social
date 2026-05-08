@@ -694,7 +694,7 @@ type SubtitleItem = {
   tag?: "hook" | "body" | "cta";
 };
 
-function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, fps = 30): SubtitleItem[] {
+function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, fps = 30, skipCursorPush = false): SubtitleItem[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
   const minMs = Math.max(1, Math.ceil(1000 / Math.max(1, fps)));
@@ -753,7 +753,7 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
     let end = cap.endMs;
     if (!Number.isFinite(end)) end = start + minCaptionMs;
 
-    if (start < cursor) {
+    if (!skipCursorPush && start < cursor) {
       start = cursor;
     }
 
@@ -970,25 +970,30 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
-        const timestampPrompt = `Transcribe this Thai audio into subtitle segments with timestamps.
+        const timestampPrompt = `You are a professional Thai subtitle editor for TikTok/Reels short videos. Transcribe this audio and split into subtitle segments with PRECISE timestamps.
 
 Return ONLY valid JSON, no markdown, no explanation:
 {"segments":[{"text":"...","start":0.0,"end":2.5},...],"fullText":"..."}
 
-RULES:
-1. Each segment = one subtitle line, 2–5 seconds, 10–25 Thai characters
-2. CRITICAL — NEVER cut mid-word. Thai words have NO spaces — you must identify where each word ends.
-   ✗ BAD: "มึงเคยคิดปะว" + "่าความรู้" — "ว่า" was split mid-character
-   ✗ BAD: "เด็กท่อง" + "จำ" — "ท่องจำ" is one word, never split it
-   ✓ GOOD: "มึงเคยคิดปะ" | "ว่าความรู้ทั้งหมด" — split between complete words
-   ✓ GOOD: end segment after a complete word, start next segment with a complete word
-3. Split at: natural speech pauses, sentence endings (? ! .), or after 25 Thai chars max
-4. start/end = seconds (float, 0.1s precision) — use real audio timing, never fabricate
-5. fullText = all segments joined
-6. Keep English words/terms intact — never split "Exciton" or "(Bosons)" mid-word${script ? `\n7. Match this script's wording exactly: ${script.trim().slice(0, 1500)}` : ""}`;
+━━━ TIMESTAMP RULES (critical) ━━━
+1. start = exact second speaker starts the FIRST word of this segment (listen carefully to the audio)
+2. end = exact second speaker FINISHES the LAST word — wait until mouth closes / breath taken
+3. NEVER cut end early — subtitle must stay until speech is done, even if next segment starts right after
+4. next segment start = at or slightly after previous end (no overlap allowed)
+5. Use 0.05s precision. When unsure, round end UP (subtitle staying 0.1s too long is better than disappearing early)
+
+━━━ SPLITTING STYLE — TikTok/Reels dramatic pacing ━━━
+6. Split at EVERY natural pause or breath in the audio, even very short ones
+7. Short punchy phrases get their OWN segment — especially sentence-ending words that the speaker pauses after
+   EXAMPLE: "OpenAI อาจไม่ใช่เบอร์ 1 ของโลก..." → split → "...อีกต่อไป" (separate segment for dramatic effect)
+8. Each segment = one breath unit as spoken — not a fixed character count
+9. If the speaker pauses mid-sentence for effect, SPLIT there (dramatic pause = segment break)
+10. NEVER cut mid-word. Thai has no spaces — identify complete words before splitting
+11. Keep English brand names intact: Anthropic, OpenAI, GPT, Claude, Enterprise, etc.
+12. fullText = all segment texts joined in order${script ? `\n13. The script text for reference (match wording): ${script.trim().slice(0, 1500)}` : ""}`;
 
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1004,7 +1009,7 @@ RULES:
                 temperature: 0,
                 maxOutputTokens: 16384,
                 responseMimeType: "application/json",
-                thinkingConfig: { thinkingBudget: 0 },
+                thinkingConfig: { thinkingBudget: 1024 },
               },
             }),
           }
@@ -1218,9 +1223,10 @@ RULES:
           const combined = last ? last.text + seg.text : "";
           const combinedThai = combined.replace(/[^฀-๿]/g, "").length;
           const combinedDur = last ? seg.end - last.start : 0;
+          const segThai = seg.text.replace(/[^฀-๿]/g, "").length;
           const shouldMerge = last && (
-            dur < 1.2 ||                          // segment too short
-            (combinedThai <= 30 && combinedDur <= 5.0) // fits in one subtitle
+            (dur < 0.4 && segThai < 3) ||         // extremely short (< 0.4s AND < 3 Thai chars) — likely noise
+            (combinedThai <= 8 && combinedDur <= 3.0) // both segments tiny — merge for readability
           );
           if (shouldMerge) {
             merged[merged.length - 1] = { text: combined, start: last.start, end: seg.end };
@@ -1230,7 +1236,8 @@ RULES:
         }
         // Use merged segment text directly (Gemini's own words, accurate transcription)
         // Do NOT snapPhrasesToScript — proportion mapping cuts mid-character for Thai
-        captions = merged
+        // Extend each caption's endMs to the next caption's start — no gaps
+        const rawMerged = merged
           .map((seg, i) => ({
             text: sanitizePhraseText(seg.text),
             startMs: Math.round(seg.start * 1000),
@@ -1240,6 +1247,13 @@ RULES:
             tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
           }))
           .filter(r => r.text.length > 0);
+        // Bridge gaps between captions
+        for (let i = 0; i < rawMerged.length - 1; i++) {
+          if (rawMerged[i + 1].startMs > rawMerged[i].endMs) {
+            rawMerged[i].endMs = rawMerged[i + 1].startMs;
+          }
+        }
+        captions = rawMerged;
         console.log(`[transcribe] segment-direct: ${captions.length} captions from ${segments.length} Gemini segs`);
       } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
@@ -1633,7 +1647,10 @@ ${sourceText.trim()}`;
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
-    const timelineFixedCaptions = sanitizeCaptionsTimeline(captions, resolvedDurationMs);
+    // segment-direct captions already have Gemini's exact timestamps — skip cursor-push
+    // so subtitle starts are not delayed by the previous caption's end time.
+    const isSegmentDirect = isThai && segments.length >= 3;
+    const timelineFixedCaptions = sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect);
 
     return NextResponse.json({
       captions: timelineFixedCaptions,
