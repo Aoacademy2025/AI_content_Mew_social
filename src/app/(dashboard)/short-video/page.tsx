@@ -780,7 +780,9 @@ export default function ShortVideoPage() {
       setStep("render", "error", msg);
     };
 
+    let pollStopped = false;
     const stopRenderPoll = () => {
+      pollStopped = true;
       if (renderPollTimer !== null) {
         clearInterval(renderPollTimer);
         renderPollTimer = null;
@@ -792,12 +794,13 @@ export default function ShortVideoPage() {
     };
 
     renderPollTimer = setInterval(async () => {
-      if (renderFailedMessage) return;
+      if (pollStopped || renderFailedMessage) return;
       try {
         const progressRes = await fetch("/api/videos/render-progress", {
           cache: "no-store",
           signal: abortControllerRef.current?.signal,
         });
+        if (pollStopped) return; // stopped while awaiting fetch
         if (!progressRes.ok) {
           pollFailCount += 1;
           if (pollFailCount >= 6) {
@@ -806,6 +809,7 @@ export default function ShortVideoPage() {
           return;
         }
         const progressData = await progressRes.json();
+        if (pollStopped) return; // stopped while parsing
         const progress = Number(progressData?.progress);
         if (Number.isFinite(progress)) {
           pollFailCount = 0;
@@ -814,6 +818,7 @@ export default function ShortVideoPage() {
           setStep("render", "running", `Rendering... ${normalized}%`);
         }
       } catch {
+        if (pollStopped) return;
         pollFailCount += 1;
         if (pollFailCount >= 6) {
           markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
