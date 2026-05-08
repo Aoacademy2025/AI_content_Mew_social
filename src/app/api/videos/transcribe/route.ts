@@ -1249,7 +1249,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 
     // Detect if Thai — local Whisper large-v3-turbo has word-level for Thai too,
     // but quality varies. Use segment-level grouping for Thai; word-level for Latin scripts.
-    const isThai = /[\u0E00-\u0E7F]/.test(fullText);
+    const isThai = /[\u0E00-\u0E7F]/.test(fullText) || (typeof script === "string" && /[\u0E00-\u0E7F]/.test(script));
 
     let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" }[] = [];
 
@@ -1561,13 +1561,17 @@ ${sourceText.trim()}`;
         }
 
         // Strategy C: word-level alignment (Whisper word timestamps)
-        // Only for OpenAI when word timestamps are available (rare for Thai, common for English)
-        if (result.length === 0 && !useGeminiTranscribe && words.length > 0) {
+        // Only for OpenAI non-Thai when word count is sufficient (≥ phrases × 2)
+        // Thai: Whisper word timestamps are unreliable (no spaces) → skip, use Strategy D
+        const enoughWords = words.length >= phrases.length * 2;
+        if (result.length === 0 && !useGeminiTranscribe && !isThai && enoughWords) {
           const alignedByWord = alignPhrasesToWordTimings(phrases, words);
           if (alignedByWord.length === phrases.length) {
             result = alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) }));
             console.log(`[transcribe] Strategy C word-timing: ${result.length} phrases from ${words.length} words`);
           }
+        } else if (!enoughWords && words.length > 0) {
+          console.log(`[transcribe] Strategy C skipped — only ${words.length} words for ${phrases.length} phrases, using char-proportion`);
         }
 
         // Strategy D: char-proportion across segment timeline (OpenAI primary, Gemini fallback)
