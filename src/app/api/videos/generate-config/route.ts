@@ -570,7 +570,6 @@ export async function POST(req: Request) {
   for (let i = 0; i < bgVideos.length - 1; i++) {
     const gap = bgVideos[i + 1].start - bgVideos[i].end;
     if (gap > 0.001) {
-      console.warn(`[config] GAP clip[${i}]→clip[${i+1}]: ${gap.toFixed(3)}s — closing`);
       bgVideos[i].end = bgVideos[i + 1].start;
     }
   }
