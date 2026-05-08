@@ -1002,8 +1002,9 @@ Return ONLY valid JSON, no markdown, no explanation:
 8. Each segment = one breath unit as spoken — not a fixed character count
 9. If the speaker pauses mid-sentence for effect, SPLIT there (dramatic pause = segment break)
 10. NEVER cut mid-word. Thai has no spaces — identify complete words before splitting
-11. Keep English brand names intact: Anthropic, OpenAI, GPT, Claude, Enterprise, etc.
-12. fullText = all segment texts joined in order${script ? `\n13. The script text for reference (match wording): ${script.trim().slice(0, 1500)}` : ""}`;
+11. NEVER split in the middle of a phrase that flows without pause — wait for actual breath/pause
+12. Keep English brand names intact: Anthropic, OpenAI, GPT, Claude, Enterprise, etc.
+13. fullText = all segment texts joined in order${script ? `\n14. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
