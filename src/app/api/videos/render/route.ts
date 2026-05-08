@@ -55,17 +55,52 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 export const maxDuration = 60; // only needs to start the background job, not wait for it
 export const runtime = "nodejs";
 
-// In-process job registry (survives within same pm2 process)
+// Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
 type RenderJob = {
   status: "running" | "done" | "error";
   videoUrl?: string;
   error?: string;
   startedAt: number;
 };
+
+function jobsDir(): string {
+  const d = path.join(process.cwd(), ".tmp", "render-jobs");
+  try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+
+function jobFilePath(jobId: string): string {
+  return path.join(jobsDir(), `${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+
+function persistJob(jobId: string, job: RenderJob) {
+  try { fs.writeFileSync(jobFilePath(jobId), JSON.stringify(job)); } catch {}
+}
+
+function readPersistedJob(jobId: string): RenderJob | undefined {
+  try {
+    const raw = fs.readFileSync(jobFilePath(jobId), "utf-8");
+    return JSON.parse(raw) as RenderJob;
+  } catch { return undefined; }
+}
+
+// In-memory cache so same process doesn't re-read file on every poll
 const renderJobs = new Map<string, RenderJob>();
 
+function setRenderJob(jobId: string, job: RenderJob) {
+  renderJobs.set(jobId, job);
+  persistJob(jobId, job);
+}
+
 export function getRenderJob(jobId: string): RenderJob | undefined {
-  return renderJobs.get(jobId);
+  if (renderJobs.has(jobId)) return renderJobs.get(jobId);
+  // Fallback: read from disk (hot-reload created a new module instance)
+  const persisted = readPersistedJob(jobId);
+  if (persisted) {
+    renderJobs.set(jobId, persisted);
+    return persisted;
+  }
+  return undefined;
 }
 
 // Cache the Remotion webpack bundle across requests AND across pm2 restarts.
@@ -445,7 +480,7 @@ export async function POST(req: Request) {
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 
     const jobId = `${session.user.id}-${Date.now()}`;
-    renderJobs.set(jobId, { status: "running", startedAt: Date.now() });
+    setRenderJob(jobId, { status: "running", startedAt: Date.now() });
 
     // Fire-and-forget: run render in background so HTTP response returns immediately.
     // Nginx default proxy_read_timeout is 60s — keeping the connection open for 2h causes 504.
@@ -485,7 +520,7 @@ export async function POST(req: Request) {
         });
 
         const videoUrl = `/api/renders/${filename}`;
-        renderJobs.set(jobId, { status: "done", videoUrl, startedAt: renderJobs.get(jobId)!.startedAt });
+        setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
 
         const session2 = await getServerSession(authOptions);
@@ -500,7 +535,7 @@ export async function POST(req: Request) {
       } catch (error) {
         console.error("Render error:", error);
         const detail = error instanceof Error ? error.message : String(error);
-        renderJobs.set(jobId, { status: "error", error: detail, startedAt: renderJobs.get(jobId)!.startedAt });
+        setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
 
         const session2 = await getServerSession(authOptions);
