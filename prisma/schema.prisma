@@ -38,7 +38,8 @@ model User {
   videos        Video[]
   images        GeneratedImage[]
   notifications   Notification[]
-  supportTickets  SupportTicket[]
+  supportTickets     SupportTicket[]
+  couponRedemptions  CouponRedemption[]
 }
 
 model Style {
@@ -177,6 +178,7 @@ model CouponRedemption {
   couponId  String
   coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
   userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   redeemedAt DateTime @default(now())
 
   @@unique([couponId, userId])

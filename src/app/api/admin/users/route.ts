@@ -24,6 +24,11 @@ export async function GET() {
         _count: {
           select: { styles: true, contents: true, videos: true, images: true, supportTickets: true },
         },
+        couponRedemptions: {
+          select: { coupon: { select: { code: true, durationDays: true } }, redeemedAt: true },
+          orderBy: { redeemedAt: "desc" },
+          take: 3,
+        },
       },
     });
 

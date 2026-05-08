@@ -16,6 +16,7 @@ import {
   Search,
   HardDrive,
   MessageSquareWarning,
+  Ticket,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -28,6 +29,7 @@ interface AdminUser {
   suspended: boolean;
   createdAt: string;
   _count: { styles: number; contents: number; videos: number; images: number; supportTickets: number };
+  couponRedemptions: { coupon: { code: string; durationDays: number }; redeemedAt: string }[];
 }
 
 interface CacheInfo {
@@ -248,6 +250,20 @@ export default function AdminUsersPage() {
                           {user._count.styles} styles · {user._count.contents} contents ·{" "}
                           {user._count.videos} videos · {user._count.images} images
                         </p>
+                        {/* Coupon redemptions */}
+                        {user.couponRedemptions?.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {user.couponRedemptions.map((r, i) => (
+                              <span key={i} className="inline-flex items-center gap-1 rounded-full bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-400">
+                                <Ticket className="h-3 w-3" />
+                                {r.coupon.code}
+                                {r.coupon.durationDays === 0 ? " (ถาวร)" : ` (${r.coupon.durationDays}วัน)`}
+                                {" · "}{new Date(r.redeemedAt).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "2-digit" })}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Cache info row */}
                         {cacheInfo[user.id] && (
                           <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
