@@ -147,6 +147,25 @@ export async function POST(req: Request) {
       typeof script === "string" && script.trim() ? script : subtitleList.join(" ")
     );
 
+    // Step 0: Analyze script once to get visual direction for consistent B-roll tone
+    let visualDirection = "";
+    try {
+      const analysisPrompt = `Analyze this video script and describe its visual direction in ONE concise English sentence (max 20 words).
+Focus on: mood/tone, setting/environment, color palette, energy level, target emotion.
+Examples:
+- "Dark dramatic tech documentary — neon-lit servers, urgent energy, high-contrast monochrome city"
+- "Warm motivational lifestyle — golden hour outdoors, slow motion, bright optimistic energy"
+- "Educational calm explainer — clean office, moderate pace, neutral professional tone"
+
+Script: ${fullScript.slice(0, 1500)}
+
+Output ONLY the one-sentence visual direction, nothing else.`;
+      visualDirection = (await callLLM(analysisPrompt, 80)).trim().replace(/^["']|["']$/g, "");
+      console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
+    } catch (e) {
+      console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
+    }
+
     const BATCH_SIZE = 15;
     const batches: string[][] = [];
     for (let i = 0; i < subtitleList.length; i += BATCH_SIZE) {
@@ -163,17 +182,21 @@ export async function POST(req: Request) {
       const batch = batches[b];
       if (b > 0) await new Promise(r => setTimeout(r, 5000));
 
+      const directionBlock = visualDirection
+        ? `\n═══ VISUAL DIRECTION (apply to ALL queries) ═══\n${visualDirection}\n═══ END DIRECTION ═══\n`
+        : "";
+
       const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
 ═══ FULL SCRIPT — read this entire script first to understand the core message, tone, and theme ═══
 ${fullScript}
 ═══ END SCRIPT ═══
-
+${directionBlock}
 YOUR JOB:
-For each subtitle phrase below, write exactly 3 Pexels stock video search queries that MATCH the script's overall visual theme AND the specific moment in that phrase.
+For each subtitle phrase below, write exactly 3 Pexels stock video search queries that MATCH the VISUAL DIRECTION above AND the specific moment in that phrase.
 
-Query 1 — Most specific to the phrase's exact visual moment
-Query 2 — Broader visual that fits the script theme
+Query 1 — Most specific to the phrase's exact visual moment (must match visual direction tone)
+Query 2 — Broader visual that fits the script theme and visual direction
 Query 3 — Generic scene fallback (1-2 words max, e.g. "technology", "city night")
 
 CRITICAL RULES:
@@ -187,7 +210,7 @@ CRITICAL RULES:
 ▸ English only, 2–6 words per query
 ▸ Vary shot styles across the batch: aerial, close-up, wide shot, slow-motion, time-lapse
 ▸ Ground abstract concepts in concrete objects: "hope" → "child sunrise field", "growth" → "plant sprouting soil close-up"
-▸ Keep the visual MOOD consistent with the script's tone (dramatic, inspiring, calm, urgent…)
+▸ Keep the visual MOOD consistent with the VISUAL DIRECTION above
 
 OUTPUT — JSON only, zero explanation:
 {"keywords":[["q1","q2","q3"],["q1","q2","q3"],...]}
@@ -264,6 +287,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       sceneClipCounts: allKeywords.map(() => 1),
       sceneDurations: subtitleList.map(() => 3),
       keywordsPerScene: 1,
+      visualDirection,
     });
   }
 
@@ -276,15 +300,28 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
     ? scenes : cleanScript.split(/\n+/).filter(Boolean);
   const numScenes = Math.max(1, sceneList.length);
 
+  // Analyze script visual direction first
+  let visualDirection = "";
+  try {
+    const analysisPrompt = `Analyze this video script and describe its visual direction in ONE concise English sentence (max 20 words).
+Focus on: mood/tone, setting/environment, color palette, energy level, target emotion.
+Script: ${cleanScript.slice(0, 1500)}
+Output ONLY the one-sentence visual direction, nothing else.`;
+    visualDirection = (await callLLM(analysisPrompt, 80)).trim().replace(/^["']|["']$/g, "");
+    console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
+  } catch {}
+
+  const directionBlock = visualDirection ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n═══ END DIRECTION ═══\n` : "";
+
   const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
 ═══ FULL SCRIPT ═══
 ${cleanScript}
 ═══ END SCRIPT ═══
-
+${directionBlock}
 STEP 1 — Understand the script's core message, tone, and main visual theme.
 STEP 2 — For each scene below, write ONE Pexels stock video search query that:
-  • Matches the scene's specific moment AND stays true to the script's overall visual theme
+  • Matches the scene's specific moment AND the VISUAL DIRECTION above
   • Translates abstract ideas into concrete, filmable objects/actions
   • NEVER uses real person names or brand names (Pexels has none)
     - CEO/founder → "executive keynote stage spotlight"
@@ -304,10 +341,7 @@ Exactly ${numScenes} queries.`;
     const parsed = parseKeywordAlternatives(text);
     let queries = parsed.map(g => g[0]).filter(Boolean);
 
-    // Pad if needed
-    while (queries.length < numScenes) {
-      queries.push("technology office");
-    }
+    while (queries.length < numScenes) queries.push("technology office");
     queries = queries.slice(0, numScenes);
 
     const perScene = 1;
@@ -315,7 +349,7 @@ Exactly ${numScenes} queries.`;
     const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
 
     console.log(`[extract-keywords] ${queries.length} queries for ${numScenes} scenes`);
-    return NextResponse.json({ keywords: queries, scenes: sceneList, keywordsPerScene: perScene, sceneClipCounts, sceneDurations });
+    return NextResponse.json({ keywords: queries, scenes: sceneList, keywordsPerScene: perScene, sceneClipCounts, sceneDurations, visualDirection });
   } catch (e) {
     console.error("[extract-keywords] error:", e);
     return NextResponse.json({ keywords: [], scenes: [], keywordsPerScene: 1, sceneClipCounts: [], sceneDurations: [] });

@@ -46,6 +46,7 @@ interface PipelineData {
   keywordsPerScene: number;
   sceneClipCounts: number[];  // how many clips each scene needs
   sceneDurations: number[];   // estimated duration per scene (seconds)
+  visualDirection: string;    // LLM-analyzed visual tone/theme for consistent B-roll
   stockVideos: StockVideo[];
   voiceUrl: string;
   captions: Caption[];
@@ -495,6 +496,7 @@ export default function ShortVideoPage() {
     pipe.current.keywordsPerScene = kwData.keywordsPerScene ?? 5;
     pipe.current.sceneClipCounts = kwData.sceneClipCounts ?? [];
     pipe.current.sceneDurations = kwData.sceneDurations ?? [];
+    pipe.current.visualDirection = kwData.visualDirection ?? "";
     setKeywords(kws);
     const totalClips = (kwData.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
     setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
@@ -523,6 +525,7 @@ export default function ShortVideoPage() {
         stockSource,
         preferredLLM: preferredLLMRef.current,
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
+        ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -1262,6 +1265,7 @@ export default function ShortVideoPage() {
             const kwData = await kwRes.json();
             const got: string[] = kwData.keywords ?? [];
             const gotAlts: string[][] = kwData.keywordAlternatives ?? [];
+            if (kwData.visualDirection) pipe.current.visualDirection = kwData.visualDirection;
             if (got.length >= N) { perSubKws = got; perSubAlts = gotAlts; break; }
             if (got.length > perSubKws.length) { perSubKws = got; perSubAlts = gotAlts; }
           } catch { continue; }
@@ -1319,6 +1323,7 @@ export default function ShortVideoPage() {
                   overrideClipCount: kwsToFetch.length,
                   perSubtitleMode: true,
                   preferredLLM: preferredLLMRef.current,
+                  ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
                 }),
               });
               if (!stockRes.ok) {
@@ -1625,6 +1630,7 @@ export default function ShortVideoPage() {
                 overrideClipCount: perSubKws2.length,
                 perSubtitleMode: true,
                 preferredLLM: preferredLLMRef.current,
+                ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
               }),
             });
             if (!r.ok) {

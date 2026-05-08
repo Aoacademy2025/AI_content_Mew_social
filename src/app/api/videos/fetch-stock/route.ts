@@ -146,6 +146,7 @@ async function llmRankCandidates(
   candidateTitles: string[][], // [kwIdx][candidateIdx] = title
   llmKey: string,
   useGemini: boolean,
+  visualDirection?: string,
 ): Promise<number[]> {
   // Build compact prompt — one line per keyword
   const lines = keywords.map((kw, ki) => {
@@ -154,11 +155,16 @@ async function llmRankCandidates(
     return `${ki}. subtitle="${sub}" candidates=[${titles}]`;
   });
 
-  const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content.
+  const directionLine = visualDirection
+    ? `\nVIDEO DIRECTION: ${visualDirection}\nPrioritize candidates that match this overall visual tone/theme.\n`
+    : "";
 
+  const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content AND the overall video direction.
+${directionLine}
 RULES:
 - Output ONLY a JSON array of integers, one per subtitle, same order
 - Pick the index whose title most literally matches what is described in the subtitle
+- Prefer candidates that fit the VIDEO DIRECTION tone (mood, setting, energy)
 - Prefer concrete, specific matches over generic ones
 - If no candidate fits well, pick index 0
 
@@ -229,6 +235,8 @@ export async function POST(req: Request) {
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     preferredLLM,
+    fullScript,
+    visualDirection,
   }: {
     keywords: string[];
     keywordAlternatives?: string[][];
@@ -239,6 +247,8 @@ export async function POST(req: Request) {
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     preferredLLM?: string;
+    fullScript?: string;
+    visualDirection?: string;
   } = body ?? {};
 
   const usePexels = stockSource === "pexels" || stockSource === "both";
@@ -414,7 +424,7 @@ export async function POST(req: Request) {
     if (hasAnyCandidates) {
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini, visualDirection);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
       } catch (e) {
         console.error(`[fetch-stock] LLM ranking failed, falling back to best-duration pick:`, e);
