@@ -147,6 +147,7 @@ export default function ShortVideoPage() {
   const [running, setRunning] = useState(false);
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const stopRenderPollRef = useRef<(() => void) | null>(null);
   const [steps, setSteps] = useState<StepState>({ ...DEFAULT_STEPS });
   const stepsRef = useRef<StepState>({ ...DEFAULT_STEPS });
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
@@ -792,6 +793,7 @@ export default function ShortVideoPage() {
         renderTimeoutTimer = null;
       }
     };
+    stopRenderPollRef.current = stopRenderPoll;
 
     renderPollTimer = setInterval(async () => {
       if (pollStopped || renderFailedMessage) return;
@@ -908,6 +910,7 @@ export default function ShortVideoPage() {
       throw err;
     } finally {
       stopRenderPoll();
+      stopRenderPollRef.current = null;
       if (!renderFailedMessage || abortRef.current) {
         setRenderProgress(null);
         if (!renderFailedMessage) setRenderProgressError(null);
@@ -1843,16 +1846,13 @@ export default function ShortVideoPage() {
             <button
               type="button"
               onClick={() => {
-                if (!renderProgressError) {
-                  abortRef.current = true;
-                  abortControllerRef.current?.abort();
-                }
+                stopRenderPollRef.current?.();
                 setRenderProgress(null);
               }}
               className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
               style={{ background: "hsl(220 30% 14%)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(220 30% 20%)" }}
             >
-              {renderProgressError ? "Close" : "Cancel"}
+              {renderProgressError ? "Close" : "Hide"}
             </button>
           </div>
         </div>
