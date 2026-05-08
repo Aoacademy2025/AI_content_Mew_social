@@ -5,10 +5,12 @@ const { spawn } = require("child_process");
 
 // Limit Node heap to prevent WasmHash OOM on low-RAM VPS during webpack bundling.
 // 4096 MB ceiling — webpack's wasm hash runs in the main process and OOMs without this.
+const memFlag = "--max-old-space-size=12288";
 const env = {
   ...process.env,
-  NODE_OPTIONS: [process.env.NODE_OPTIONS, "--max-old-space-size=8192"].filter(Boolean).join(" "),
-  // Force single worker to prevent multiple Node processes each consuming ~8GB
+  NODE_OPTIONS: [process.env.NODE_OPTIONS, memFlag].filter(Boolean).join(" "),
+  // Next.js 15 spawns a worker process — pass memory flag to it too
+  NEXT_PRIVATE_WORKER_OPTIONS: memFlag,
   NEXT_CPU_PROF: "0",
 };
 
