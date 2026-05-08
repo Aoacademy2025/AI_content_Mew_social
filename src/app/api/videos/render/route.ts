@@ -224,17 +224,17 @@ export async function POST(req: Request) {
       ? url.slice("/api/renders/".length)
       : url.slice("/renders/".length);
 
-    // Helper: find file by exact name or fuzzy match on numeric suffix (e.g. -9001028.mp4)
-    // Stock filenames may have slightly different slugs across fetches but same numeric ID.
+    // Helper: find file by exact name, then fuzzy-match on numeric ID suffix
+    // (old stock files had slug in name, new ones use only numeric ID)
     function findStockFile(dir: string, target: string): string | null {
       if (fs.existsSync(path.join(dir, target))) return target;
-      // Fuzzy: match by numeric suffix (last -XXXXXXX before .mp4)
-      const numMatch = target.match(/-(\d{6,10})\.mp4$/);
+      // Fuzzy: match by numeric ID (supports old slug-based names and new ID-only names)
+      const numMatch = target.match(/-?(\d{6,10})\.mp4$/);
       if (!numMatch) return null;
       const numId = numMatch[1];
       try {
         const files = fs.readdirSync(dir);
-        const found = files.find(f => f.endsWith(`-${numId}.mp4`) && f.startsWith("stock-"));
+        const found = files.find(f => f.startsWith("stock-") && (f === `${f.split(numId)[0]}${numId}.mp4`) && f.includes(numId));
         return found ?? null;
       } catch { return null; }
     }

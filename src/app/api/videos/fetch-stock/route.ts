@@ -513,8 +513,7 @@ export async function POST(req: Request) {
   // ── Download phase ──
   await withConcurrency(found, 5, async ({ keyword, id, duration, link }) => {
     if (download) {
-      const slug = keyword.replace(/[^a-z0-9]/gi, "-").slice(0, 20).toLowerCase();
-      const outFile = `${userPrefix}${slug}-${id}.mp4`;
+      const outFile = `${userPrefix}${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
       if (isValidMp4Path(outPath)) {
         console.log(`[fetch-stock] cache hit: ${outFile}`);
