@@ -39,13 +39,14 @@ function slugToTitle(url: string): string {
 }
 
 // Search Pexels for portrait videos ≥ minDuration seconds
-async function searchPexels(query: string, apiKey: string, minDuration = 3, perPage = 15): Promise<PexelsVideo[]> {
+async function searchPexels(query: string, apiKey: string, minDuration = 3, perPage = 15, page = 1): Promise<PexelsVideo[]> {
   const params = new URLSearchParams({
     query,
     orientation: "portrait",
     size: "medium",
     per_page: String(perPage),
     min_duration: String(minDuration),
+    page: String(page),
   });
 
   const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
@@ -406,7 +407,23 @@ export async function POST(req: Request) {
           }
         }
 
-        console.warn(`[fetch-stock] "${keyword}": no candidates found after ${queriesToTry.length} queries`);
+        // Last resort: try page 2 of the first query for fresh IDs
+        if (canUsePexels && queriesToTry[0]) {
+          try {
+            const page2 = await searchPexels(queriesToTry[0], pexelsKey!, 3, basePerPage, 2);
+            const candidates: CandidateVideo[] = [];
+            for (const v of page2) {
+              const file = pickBestFile(v);
+              if (!file) continue;
+              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title: slugToTitle(v.url ?? "") });
+            }
+            if (candidates.length > 0) {
+              console.log(`[fetch-stock] "${keyword}": ${candidates.length} candidates from page 2`);
+              return candidates;
+            }
+          } catch {}
+        }
+        console.warn(`[fetch-stock] "${keyword}": no candidates found after ${queriesToTry.length} queries + page2`);
         return [];
       } catch (err) {
         console.error(`[fetch-stock] error for "${keyword}":`, err);
@@ -472,37 +489,49 @@ export async function POST(req: Request) {
       }
       if (!picked) {
         const kw = keywords[ki];
-        const fallbackKeyword = kw.split(" ")[0];
-        try {
-          const [fallbackPexels, fallbackPixabay] = await Promise.all([
-            canUsePexels
-              ? searchPexels(fallbackKeyword, pexelsKey!, 3, basePerPage)
-              : Promise.resolve([] as PexelsVideo[]),
-            canUsePixabay
-              ? searchPixabay(fallbackKeyword, pixabayKey)
-              : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
-          ]);
-          for (const v of fallbackPexels) {
-            const file = pickBestFile(v);
-            if (!file) continue;
-            if (usedIds.has(v.id)) continue;
-            usedIds.add(v.id);
-            found.push({ keyword: kw, id: v.id, duration: v.duration, link: file.link });
-            picked = true;
-            break;
-          }
-          if (!picked) {
-            for (const pv of fallbackPixabay) {
-              if (usedIds.has(pv.id + 9_000_000)) continue;
-              usedIds.add(pv.id + 9_000_000);
-              found.push({ keyword: kw, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+        // Build progressively broader fallback queries
+        const words = kw.split(" ");
+        const broadFallbacks = [
+          words.slice(0, 2).join(" "),          // first 2 words
+          words[0],                              // first word only
+          words[words.length - 1],              // last word (often the noun)
+          "people city street",                 // generic human activity
+          "nature landscape aerial",            // generic nature
+          "technology abstract dark",           // generic tech
+        ].filter((q, i, a) => q && q !== kw && a.indexOf(q) === i);
+
+        for (const fbQuery of broadFallbacks) {
+          if (picked) break;
+          try {
+            const [fbPexels, fbPixabay] = await Promise.all([
+              canUsePexels ? searchPexels(fbQuery, pexelsKey!, 3, 30) : Promise.resolve([] as PexelsVideo[]),
+              canUsePixabay ? searchPixabay(fbQuery, pixabayKey!) : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+            ]);
+            // Try page 2 of Pexels for more variety if page 1 all used
+            const fbPexels2 = canUsePexels && fbPexels.every(v => usedIds.has(v.id))
+              ? await searchPexels(fbQuery, pexelsKey!, 3, 30).catch(() => [] as PexelsVideo[])
+              : [];
+            const allPexels = [...fbPexels, ...fbPexels2];
+            for (const v of allPexels) {
+              const file = pickBestFile(v);
+              if (!file || usedIds.has(v.id)) continue;
+              usedIds.add(v.id);
+              found.push({ keyword: kw, id: v.id, duration: v.duration, link: file.link });
               picked = true;
               break;
             }
-          }
-        } catch {
-          // ignore fallback failures
+            if (!picked) {
+              for (const pv of fbPixabay) {
+                if (usedIds.has(pv.id + 9_000_000)) continue;
+                usedIds.add(pv.id + 9_000_000);
+                found.push({ keyword: kw, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+                picked = true;
+                break;
+              }
+            }
+          } catch { /* ignore, try next fallback */ }
         }
+        if (!picked) console.warn(`[fetch-stock] "${kw}": no unique clip found after all fallbacks`);
       }
     } else {
       // Normal mode: pick up to clipsPerKeyword, interleave Pexels+Pixabay
