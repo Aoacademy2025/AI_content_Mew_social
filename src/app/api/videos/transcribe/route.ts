@@ -1195,15 +1195,19 @@ Return ONLY valid JSON, no markdown, no explanation:
       }
     }
 
-    // ── Get LLM key for subtitle splitting — respects preferredLLM from client ──
-    let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
-    let useGemini = false;
-    if (!apiKey) {
-      if (wantGemini && user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-      else if (wantOpenAI && user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
-      else if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-      else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+    // ── LLM key for subtitle splitting = same provider as transcribe (no second decision tree) ──
+    let apiKey: string | null = null;
+    const useGemini = useGeminiTranscribe;
+    if (useGeminiTranscribe && user?.geminiKey) {
+      apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+    } else if (useOpenAITranscribe) {
+      apiKey = process.env.SERVER_OPENAI_API_KEY ?? (user?.openaiKey ? Buffer.from(user.openaiKey, "base64").toString("utf-8") : null);
+    } else if (user?.geminiKey) {
+      apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+    } else if (user?.openaiKey) {
+      apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
     }
+    console.log(`[transcribe] LLM split provider: ${useGemini ? "Gemini" : "OpenAI"} apiKey=${apiKey ? "ok" : "MISSING"}`);
 
     // Detect if Thai — local Whisper large-v3-turbo has word-level for Thai too,
     // but quality varies. Use segment-level grouping for Thai; word-level for Latin scripts.
@@ -1267,7 +1271,7 @@ Return ONLY valid JSON, no markdown, no explanation:
               }
             }
             if (breathPoints.length > 0) {
-              rhythmHint = `\n━━━ SPEECH PAUSE POINTS ━━━\nSplit subtitles at or near these natural pause points (detected from audio):\n${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}\n`;
+              rhythmHint = `\n━━━ SPEECH PAUSE POINTS ━━━\nSplit subtitles at or near these natural pause points (detected from audio):\n${breathPoints.slice(0, 20).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}\n`;
             }
           }
 
@@ -1360,6 +1364,10 @@ ${sourceText.trim()}`;
             if (gptRes.ok) {
               const d = await gptRes.json();
               gptRawText = d.choices?.[0]?.message?.content ?? "{}";
+              console.log(`[transcribe] OpenAI split raw (${gptRawText.length} chars):`, gptRawText.slice(0, 400));
+            } else {
+              const errText = await gptRes.text();
+              console.error(`[transcribe] OpenAI split error ${gptRes.status}:`, errText.slice(0, 300));
             }
           }
 
@@ -1375,6 +1383,7 @@ ${sourceText.trim()}`;
               if (raw.length === 0) {
                 raw = parseSplitPhrasesFromRaw(gptRawText);
               }
+              console.log(`[transcribe] LLM split parsed ${raw.length} phrases, first: "${raw[0]?.slice(0, 40) ?? ""}"`);
               if (Array.isArray(parsedTags) && parsedTags.length === raw.length) {
                 llmTags = parsedTags as ("hook" | "body" | "cta")[];
               }
