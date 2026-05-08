@@ -288,12 +288,14 @@ export async function POST(req: Request) {
     const useEvenSplit = !isPerSubtitleTop && clipCountHint <= numScenes * 4; // few clips â†’ guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Per-subtitle mode: cap unique video files to prevent Chromium from opening
-      // too many OffthreadVideo instances simultaneously (causes hang at ~15-20% render).
-      const MAX_UNIQUE_VIDEOS = 20;
-      const poolSize = Math.min(n, MAX_UNIQUE_VIDEOS);
-      const pool = validStocks.slice(0, poolSize);
-      console.log(`[config] per-subtitle-top mode: ${pool.length} unique clips (capped from ${n}) for ${gapFilled.length} captions`);
+      // Per-subtitle mode: 1 unique clip per subtitle, no repeats.
+      // If clips < subtitles, cycle through pool — but log a warning.
+      // MAX_UNIQUE_VIDEOS removed: we trust fetch-stock dedup to return enough unique clips.
+      const pool = validStocks.slice(0, n);
+      console.log(`[config] per-subtitle-top mode: ${pool.length} unique clips for ${gapFilled.length} captions`);
+
+      // Build a lookup: subtitle index → its own clip (1:1, no cycling within pool size)
+      // Only cycle if we truly have fewer clips than subtitles (last resort).
       const clipOffsetMap = new Map<string, number>();
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
@@ -301,12 +303,17 @@ export async function POST(req: Request) {
         const capEndSec   = cap.endMs   / 1000;
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
-        const sv  = pool[ci % pool.length];
+
+        // Strict 1:1 mapping — no cycling, no repeats
+        if (ci >= pool.length) {
+          console.warn(`[config] subtitle ${ci}: no unique clip available (pool=${pool.length}), skipping`);
+          continue;
+        }
+        const sv = pool[ci];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
         const last = bgVideos[bgVideos.length - 1];
         if (last && last.src === src) {
-          // extend existing segment — clip plays continuously
           last.end = capEndSec;
         } else {
           const offset = clipOffsetMap.get(src) ?? 0;

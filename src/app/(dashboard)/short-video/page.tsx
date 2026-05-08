@@ -1377,7 +1377,7 @@ export default function ShortVideoPage() {
               orderedClips.push(clip);
               usedInOrder.add(clip.pexelsId);
             } else if (allFetched.length > 0) {
-              // Prefer unused clip, fall back to least-recently-used
+              // Prefer unused clip for this gap
               let found = false;
               for (let j = 0; j < allFetched.length; j++) {
                 const candidate = allFetched[(backfillIdx + j) % allFetched.length];
@@ -1390,9 +1390,8 @@ export default function ShortVideoPage() {
                 }
               }
               if (!found) {
-                // All clips used — cycle through pool
-                orderedClips.push(allFetched[backfillIdx % allFetched.length]);
-                backfillIdx++;
+                // No unique clips left — skip this subtitle slot (no repeat allowed)
+                console.warn(`[fetchStock] subtitle ${i}: no unique clip available, skipping`);
               }
             }
           }
