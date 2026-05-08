@@ -224,28 +224,32 @@ export async function POST(req: Request) {
       ? url.slice("/api/renders/".length)
       : url.slice("/renders/".length);
 
-    // Helper: find file by exact name, then fuzzy-match on numeric ID suffix
-    // (old stock files had slug in name, new ones use only numeric ID)
-    function findStockFile(dir: string, target: string): string | null {
-      if (fs.existsSync(path.join(dir, target))) return target;
-      // Fuzzy: match by numeric ID (supports old slug-based names and new ID-only names)
-      const numMatch = target.match(/-?(\d{6,10})\.mp4$/);
+    // Helper: find file by exact name or fuzzy numeric ID match
+    function findInDir(dir: string, target: string): string | null {
+      const exact = path.join(dir, target);
+      if (fs.existsSync(exact) && fs.statSync(exact).size > 1_500) return target;
+      // Extract numeric ID suffix e.g. "9001028" from "stock-xxx-student-studying-tex-9001028.mp4"
+      const numMatch = target.match(/-(\d{5,10})\.mp4$/);
       if (!numMatch) return null;
       const numId = numMatch[1];
       try {
         const files = fs.readdirSync(dir);
-        const found = files.find(f => f.startsWith("stock-") && (f === `${f.split(numId)[0]}${numId}.mp4`) && f.includes(numId));
-        return found ?? null;
-      } catch { return null; }
+        const found = files.find(f => f.endsWith(".mp4") && f.includes(numId));
+        if (found) {
+          const fp = path.join(dir, found);
+          if (fs.statSync(fp).size > 1_500) return found;
+        }
+      } catch {}
+      return null;
     }
 
-    const stockMatch = findStockFile(stocksDir, filename);
-    if (stockMatch) {
-      url = `/api/stocks/${stockMatch}`;
+    const stockFound = findInDir(stocksDir, filename);
+    if (stockFound) {
+      url = `/api/stocks/${stockFound}`;
     } else {
-      const renderMatch = findStockFile(rendersDir, filename);
-      if (renderMatch) {
-        url = `/api/renders/${renderMatch}`;
+      const renderFound = findInDir(rendersDir, filename);
+      if (renderFound) {
+        url = `/api/renders/${renderFound}`;
       } else {
         throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
       }
@@ -322,42 +326,23 @@ export async function POST(req: Request) {
     if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
-      const fallbackSrc: string[] = []; // collect valid srcs for fallback
       for (const v of shortVideoConfig.bgVideos ?? []) {
         try {
           const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
           resolvedBgVideos.push({ ...v, src: resolvedSrc });
-          if (!fallbackSrc.includes(resolvedSrc)) fallbackSrc.push(resolvedSrc);
         } catch (e) {
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }
       }
-      // If some clips were skipped, fill gaps with the first available clip
       if (resolvedBgVideos.length === 0) {
         throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
       }
-      // Replace any gap left by skipped clips: use the nearest valid clip's src
-      const allBgVideos = shortVideoConfig.bgVideos ?? [];
-      const finalBgVideos: typeof shortVideoConfig.bgVideos = [];
-      let resolvedIdx = 0;
-      for (let i = 0; i < allBgVideos.length; i++) {
-        if (resolvedIdx < resolvedBgVideos.length && resolvedBgVideos[resolvedIdx].start === allBgVideos[i].start) {
-          finalBgVideos.push(resolvedBgVideos[resolvedIdx]);
-          resolvedIdx++;
-        } else {
-          // File was skipped — use fallback src with same timing
-          const fb = fallbackSrc[Math.min(resolvedIdx, fallbackSrc.length - 1)];
-          finalBgVideos.push({ ...allBgVideos[i], src: fb });
-          console.warn(`[render] fallback clip for missing ${allBgVideos[i].src} → ${fb}`);
-        }
-      }
-      const resolvedBgVideosFinal = finalBgVideos.length > 0 ? finalBgVideos : resolvedBgVideos;
 
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile)),
-        bgVideos: resolvedBgVideosFinal,
+        bgVideos: resolvedBgVideos,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
