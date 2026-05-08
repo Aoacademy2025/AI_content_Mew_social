@@ -415,6 +415,41 @@ function alignPhrasesToSegmentTimestamps(
   return out;
 }
 
+/**
+ * Align phrases to segment timeline purely by char-proportion.
+ * Does NOT do text matching — works correctly when Whisper text ≠ script text (Thai + OpenAI).
+ * Distributes phrases evenly across the audio timeline using segment boundaries as anchors.
+ */
+function alignPhrasesCharProportion(
+  phrases: string[],
+  segments: { start: number; end: number }[],
+  audioDur: number,
+): { text: string; startMs: number; endMs: number }[] {
+  if (!phrases.length) return [];
+
+  const timelineStart = segments.length > 0 ? segments[0].start : 0;
+  const timelineEnd = segments.length > 0 ? segments[segments.length - 1].end : audioDur;
+  const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.8, 1);
+
+  const charLengths = phrases.map(alignmentCharLen);
+  const totalChars = charLengths.reduce((a, b) => a + b, 0);
+  if (totalChars === 0) return [];
+
+  let cumChars = 0;
+  const out: { text: string; startMs: number; endMs: number }[] = [];
+  for (let i = 0; i < phrases.length; i++) {
+    const t0 = timelineStart + (cumChars / totalChars) * timelineLen;
+    cumChars += charLengths[i];
+    const t1 = timelineStart + (cumChars / totalChars) * timelineLen;
+    out.push({
+      text: sanitizePhraseText(phrases[i]),
+      startMs: Math.round(t0 * 1000),
+      endMs: Math.round(t1 * 1000),
+    });
+  }
+  return out;
+}
+
 function buildFallbackWordsFromSegments(
   segments: { text: string; start: number; end: number }[],
 ): { word: string; start: number; end: number }[] {
@@ -1514,68 +1549,36 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy B: segment-anchored alignment (Gemini + OpenAI)
-        // Uses segment start/end as timing anchors, char-proportion within each segment.
-        // Works for both providers — segment timing is reliable even when segment text is inaccurate.
-        const segmentDensityOk = segments.length >= 2 && (phrases.length / segments.length) <= 6;
-        if (result.length === 0 && segmentDensityOk) {
+        // Strategy B: Gemini only — text-match segment anchoring
+        // Gemini segment text closely matches script → text match works.
+        // OpenAI Whisper text ≠ script text for Thai → skip text-match, use char-proportion instead.
+        if (result.length === 0 && useGeminiTranscribe && segments.length >= 2 && (phrases.length / segments.length) <= 6) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
             result = segAligned;
-            console.log(`[transcribe] Strategy B segment-anchored alignment: ${result.length} phrases over ${segments.length} segs`);
+            console.log(`[transcribe] Strategy B Gemini segment-anchored: ${result.length} phrases over ${segments.length} segs`);
           }
-        } else if (result.length === 0 && segments.length === 1) {
-          // Single segment — distribute phrases by char-proportion within that segment's time range
-          const seg = segments[0];
-          const segStart = seg.start;
-          const segEnd = Math.max(seg.end, segStart + audioDur * 0.9);
-          const charLengths = phrases.map(alignmentCharLen);
-          const totalChars = charLengths.reduce((a, b) => a + b, 0);
-          let cumChars = 0;
-          for (let i = 0; i < phrases.length; i++) {
-            const t0 = segStart + (cumChars / totalChars) * (segEnd - segStart);
-            cumChars += charLengths[i];
-            const t1 = segStart + (cumChars / totalChars) * (segEnd - segStart);
-            result.push({ text: sanitizePhraseText(phrases[i]), startMs: Math.round(t0 * 1000), endMs: Math.round(t1 * 1000) });
-          }
-          console.log(`[transcribe] Strategy B1 single-segment char-proportion: ${result.length} phrases, ${segStart.toFixed(1)}s–${segEnd.toFixed(1)}s`);
-        } else if (segments.length >= 2) {
-          console.log(`[transcribe] Strategy B skipped — sparse segments (${segments.length} segs / ${phrases.length} phrases)`);
         }
 
-        // Strategy C: word-level alignment (Whisper word timestamps — primary path for OpenAI)
-        // Only use real Whisper word timestamps, not fallback-built ones (which are inaccurate for Thai)
-        if (result.length === 0 && words.length > 0) {
+        // Strategy C: word-level alignment (Whisper word timestamps)
+        // Only for OpenAI when word timestamps are available (rare for Thai, common for English)
+        if (result.length === 0 && !useGeminiTranscribe && words.length > 0) {
           const alignedByWord = alignPhrasesToWordTimings(phrases, words);
           if (alignedByWord.length === phrases.length) {
             result = alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) }));
-            console.log(`[transcribe] Strategy C word-timing alignment: ${result.length} phrases from ${words.length} words`);
+            console.log(`[transcribe] Strategy C word-timing: ${result.length} phrases from ${words.length} words`);
           }
         }
 
-        // Strategy D: char-proportion over audio timeline
-        // If segments ≥ 2, use segment boundaries as anchors for better accuracy
+        // Strategy D: char-proportion across segment timeline (OpenAI primary, Gemini fallback)
+        // Does NOT text-match — distributes phrases by char length across audio duration.
+        // For OpenAI: segments may be few but timing is reliable → use as timeline anchors.
         if (result.length === 0) {
-          const charLengths = phrases.map(alignmentCharLen);
-          const totalChars = charLengths.reduce((a, b) => a + b, 0);
-          let cumChars = 0;
-
-          // Build timeline: use segment boundaries if available (more accurate than flat proportion)
-          const timelineStart = segments.length >= 2 ? segments[0].start : 0;
-          const timelineEnd = segments.length >= 2 ? segments[segments.length - 1].end : audioDur;
-          const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.5);
-
-          for (let i = 0; i < phrases.length; i++) {
-            const startSec = timelineStart + (cumChars / totalChars) * timelineLen;
-            cumChars += charLengths[i];
-            const endSec = timelineStart + (cumChars / totalChars) * timelineLen;
-            result.push({
-              text: sanitizePhraseText(phrases[i]),
-              startMs: Math.round(startSec * 1000),
-              endMs: Math.round(endSec * 1000),
-            });
+          const aligned = alignPhrasesCharProportion(phrases, segments, audioDur);
+          if (aligned.length === phrases.length) {
+            result = aligned;
+            console.log(`[transcribe] Strategy D char-proportion: ${result.length} phrases, ${segments.length} segs, dur=${audioDur.toFixed(1)}s`);
           }
-          console.log(`[transcribe] Strategy D char-proportional: ${result.length} captions, timeline=${timelineStart.toFixed(1)}s–${timelineEnd.toFixed(1)}s (${segments.length} segs)`);
         }
 
         // Merge captions that are too short to read (< 1200ms) into adjacent
