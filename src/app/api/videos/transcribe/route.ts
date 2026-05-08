@@ -387,9 +387,24 @@ function alignPhrasesToSegmentTimestamps(
     });
   }
 
-  // Extend every caption to the next one's start — eliminates all gaps
+  // Extend each caption to cover all segments assigned to it (not to the next phrase's start,
+  // which may skip several segments and drift far from the actual speech timing).
+  for (let i = 0; i < out.length; i++) {
+    const si = assignments[i];
+    // Find the last segment assigned to this phrase
+    let lastSi = si;
+    if (i < out.length - 1) {
+      // Cover up to (but not including) the first segment of the next phrase
+      lastSi = Math.max(si, assignments[i + 1] - 1);
+    } else {
+      lastSi = segments.length - 1;
+    }
+    out[i].endMs = Math.round(segments[lastSi].end * 1000);
+  }
+
+  // Ensure no gap between consecutive captions
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i + 1].startMs > out[i].endMs) {
+    if (out[i].endMs < out[i + 1].startMs) {
       out[i].endMs = out[i + 1].startMs;
     }
   }
