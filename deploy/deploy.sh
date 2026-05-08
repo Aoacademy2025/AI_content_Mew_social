@@ -52,7 +52,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
 fi
 
 echo "=== [4/6] Prisma generate ==="
-if [ "$MIGRATE" != "1" ]; then
+if [ "$MIGRATE" = "1" ]; then
   npx prisma migrate deploy
 fi
 npx prisma generate
