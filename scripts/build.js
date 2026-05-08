@@ -6,8 +6,6 @@ const { spawn } = require("child_process");
 const env = {
   ...process.env,
   NODE_OPTIONS: [process.env.NODE_OPTIONS, "--max-old-space-size=4096"].filter(Boolean).join(" "),
-  // Signal next.config.ts to use md4 hash instead of WasmHash
-  NEXT_DISABLE_WASM_HASH: "1",
 };
 
 const child = spawn("npx", ["next", "build"], {
