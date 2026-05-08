@@ -1148,13 +1148,37 @@ Return ONLY valid JSON, no markdown, no explanation:
       });
       if (!whisperRes.ok) {
         const err = await whisperRes.text();
-        return NextResponse.json({ error: `OpenAI Whisper ไม่สำเร็จ: ${err.slice(0, 200)}` }, { status: 500 });
+        console.error(`[transcribe] whisper-large-v3 error ${whisperRes.status}:`, err.slice(0, 500));
+        // Fallback: retry with whisper-1 (supports all file sizes, word+segment timestamps)
+        console.log(`[transcribe] retrying with whisper-1 fallback...`);
+        const form1 = new FormData();
+        form1.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "audio.mp3");
+        form1.append("model", "whisper-1");
+        form1.append("response_format", "verbose_json");
+        form1.append("timestamp_granularities[]", "segment");
+        if (scriptPrompt?.trim()) form1.append("prompt", scriptPrompt.trim().slice(0, 224));
+        const whisperRes1 = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form1,
+        });
+        if (!whisperRes1.ok) {
+          const err1 = await whisperRes1.text();
+          console.error(`[transcribe] whisper-1 fallback error:`, err1.slice(0, 500));
+          return NextResponse.json({ error: `OpenAI Whisper ไม่สำเร็จ: ${err1.slice(0, 200)}` }, { status: 500 });
+        }
+        const data1 = await whisperRes1.json();
+        words    = data1.words    ?? [];
+        segments = data1.segments ?? [];
+        fullText = data1.text     ?? "";
+        console.log(`[transcribe] whisper-1 fallback OK — ${segments.length} segments`);
+      } else {
+        const data = await whisperRes.json();
+        words    = data.words    ?? [];
+        segments = data.segments ?? [];
+        fullText = data.text     ?? "";
+        console.log(`[transcribe] whisper-large-v3 OK — ${segments.length} segments`);
       }
-      const data = await whisperRes.json();
-      words    = data.words    ?? [];
-      segments = data.segments ?? [];
-      fullText = data.text     ?? "";
-      console.log(`[transcribe] OpenAI Whisper OK — ${words.length} words`);
     } else {
       // ── Strategy 3: Local Whisper (fallback) ──
       console.log(`[transcribe] trying local Whisper (model=${WHISPER_MODEL})...`);
@@ -1215,59 +1239,10 @@ Return ONLY valid JSON, no markdown, no explanation:
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
 
       // For long scripts (>120s) with Gemini segments: use segments directly as phrases.
-      // Sending a 3000+ char script to Gemini for splitting causes JSON truncation because
-      // the prompt itself consumes most of the context window, leaving no room for output.
-      // Gemini segments already have good word boundaries — just merge short ones.
-      // OpenAI Whisper: Thai text from Whisper is often inaccurate — NEVER use as subtitle text.
-      //   Flow: Whisper → word timestamps only → LLM splits real script → align to word timestamps.
-      // Gemini: text is accurate → use segments directly as subtitle text.
-      const useSegmentDirectly = useGeminiTranscribe && segments.length >= 3;
-
-      if (useSegmentDirectly) {
-        // Merge Gemini segments into subtitle-sized chunks:
-        // - merge if combined Thai chars <= 30 AND combined duration <= 5s
-        // - always merge if segment duration < 1.2s (too short to read)
-        // - never exceed 30 Thai chars or 6s per subtitle
-        const merged: { text: string; start: number; end: number }[] = [];
-        for (const seg of segments) {
-          const dur = seg.end - seg.start;
-          const last = merged[merged.length - 1];
-          const combined = last ? last.text + seg.text : "";
-          const combinedThai = combined.replace(/[^฀-๿]/g, "").length;
-          const combinedDur = last ? seg.end - last.start : 0;
-          const segThai = seg.text.replace(/[^฀-๿]/g, "").length;
-          const shouldMerge = last && (
-            (dur < 0.4 && segThai < 3) ||         // extremely short (< 0.4s AND < 3 Thai chars) — likely noise
-            (combinedThai <= 8 && combinedDur <= 3.0) // both segments tiny — merge for readability
-          );
-          if (shouldMerge) {
-            merged[merged.length - 1] = { text: combined, start: last.start, end: seg.end };
-          } else {
-            merged.push({ ...seg });
-          }
-        }
-        // Use merged segment text directly (Gemini's own words, accurate transcription)
-        // Do NOT snapPhrasesToScript — proportion mapping cuts mid-character for Thai
-        // Extend each caption's endMs to the next caption's start — no gaps
-        const rawMerged = merged
-          .map((seg, i) => ({
-            text: sanitizePhraseText(seg.text),
-            startMs: Math.round(seg.start * 1000),
-            endMs: Math.round(seg.end * 1000),
-            timestampMs: Math.round(seg.start * 1000),
-            confidence: 1,
-            tag: (i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
-          }))
-          .filter(r => r.text.length > 0);
-        // Bridge gaps between captions
-        for (let i = 0; i < rawMerged.length - 1; i++) {
-          if (rawMerged[i + 1].startMs > rawMerged[i].endMs) {
-            rawMerged[i].endMs = rawMerged[i + 1].startMs;
-          }
-        }
-        captions = rawMerged;
-        console.log(`[transcribe] segment-direct: ${captions.length} captions from ${segments.length} Gemini segs`);
-      } else if (shouldSkipLLMSplit) {
+      // Both Gemini and OpenAI go through LLM split using real script text.
+      // Gemini segments → timestamps only (for alignment); script → subtitle text.
+      // OpenAI Whisper segments → timestamps only; script → subtitle text.
+      if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
@@ -1718,8 +1693,7 @@ ${sourceText.trim()}`;
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
-    // segment-direct captions already have Gemini's exact timestamps — skip cursor-push
-    // so subtitle starts are not delayed by the previous caption's end time.
+    // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = isThai && segments.length >= 3;
     const timelineFixedCaptions = sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect);
 
