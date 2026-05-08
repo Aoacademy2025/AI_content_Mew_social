@@ -200,13 +200,9 @@ function renderSubtitle(
       return (
         <span style={{
           ...base,
-          // Semi-transparent pill background so text is legible on any footage
-          background: "rgba(0,0,0,0.45)",
-          borderRadius: 6,
-          padding: "2px 10px",
           textShadow:
-            "0 2px 0 rgba(0,0,0,0.9), 0 4px 16px rgba(0,0,0,0.95)",
-          WebkitTextStroke: isHighlight ? "2px rgba(0,0,0,0.6)" : "1px rgba(0,0,0,0.5)",
+            "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95)",
+          WebkitTextStroke: "2px #000",
           paintOrder: "stroke fill",
         } as React.CSSProperties}>{text}</span>
       );
