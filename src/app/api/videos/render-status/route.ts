@@ -22,6 +22,12 @@ export async function GET(req: Request) {
     return NextResponse.json({ status: "not_found" }, { status: 404 });
   }
 
+  // Stale job detection: if still "running" after 30min, the server process likely restarted mid-render
+  const staleMs = 30 * 60 * 1000;
+  if (job.status === "running" && job.startedAt && Date.now() - job.startedAt > staleMs) {
+    return NextResponse.json({ status: "error", error: "Render timed out — server may have restarted. Please try again." });
+  }
+
   return NextResponse.json({
     status: job.status,
     videoUrl: job.videoUrl,

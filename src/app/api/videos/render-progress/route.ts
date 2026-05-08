@@ -17,10 +17,14 @@ export async function GET() {
   const progressFile = path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");
-    const parsed = JSON.parse(raw) as { progress?: number };
+    const parsed = JSON.parse(raw) as { progress?: number; videoUrl?: string; error?: string };
     const progress = Number(parsed?.progress);
-    return NextResponse.json({ progress: Number.isFinite(progress) ? progress : 0 });
+    return NextResponse.json({
+      progress: Number.isFinite(progress) ? progress : 0,
+      videoUrl: parsed?.videoUrl ?? null,
+      error: parsed?.error ?? null,
+    });
   } catch {
-    return NextResponse.json({ progress: 0 });
+    return NextResponse.json({ progress: 0, videoUrl: null, error: null });
   }
 }

@@ -795,6 +795,8 @@ export default function ShortVideoPage() {
     };
     stopRenderPollRef.current = stopRenderPoll;
 
+    let resolveRenderUrl: ((url: string) => void) | null = null;
+
     renderPollTimer = setInterval(async () => {
       if (pollStopped || renderFailedMessage) return;
       try {
@@ -810,8 +812,18 @@ export default function ShortVideoPage() {
           }
           return;
         }
-        const progressData = await progressRes.json();
+        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
         if (pollStopped) return; // stopped while parsing
+        // If server already finished and wrote videoUrl to progress file, resolve immediately
+        if (progressData?.videoUrl && resolveRenderUrl) {
+          resolveRenderUrl(progressData.videoUrl);
+          resolveRenderUrl = null;
+          return;
+        }
+        if (progressData?.error) {
+          markRenderError(progressData.error);
+          return;
+        }
         const progress = Number(progressData?.progress);
         if (Number.isFinite(progress)) {
           pollFailCount = 0;
@@ -865,7 +877,10 @@ export default function ShortVideoPage() {
       if (!jobId) throw new Error("Render server did not return jobId");
 
       // Poll render-status until done or error
+      // Progress poll also resolves via resolveRenderUrl if it sees videoUrl first
+      let statusNotFoundCount = 0;
       const url = await new Promise<string>((resolve, reject) => {
+        resolveRenderUrl = resolve;
         const statusInterval = setInterval(async () => {
           if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
           try {
@@ -873,18 +888,27 @@ export default function ShortVideoPage() {
               cache: "no-store",
               signal: abortControllerRef.current?.signal,
             });
-            if (!statusRes.ok) return;
             const statusData = await statusRes.json();
             if (statusData.status === "done" && statusData.videoUrl) {
               clearInterval(statusInterval);
+              resolveRenderUrl = null;
               resolve(statusData.videoUrl as string);
             } else if (statusData.status === "error") {
               clearInterval(statusInterval);
+              resolveRenderUrl = null;
               reject(new Error(statusData.error ?? "Render failed"));
+            } else if (statusData.status === "not_found" || statusRes.status === 404) {
+              statusNotFoundCount += 1;
+              if (statusNotFoundCount >= 3) {
+                clearInterval(statusInterval);
+                resolveRenderUrl = null;
+                reject(new Error("Render job lost — server may have restarted. Please try again."));
+              }
             }
           } catch (e) {
             if (e instanceof Error && e.name === "AbortError") {
               clearInterval(statusInterval);
+              resolveRenderUrl = null;
               reject(e);
             }
             // network blip — keep polling
