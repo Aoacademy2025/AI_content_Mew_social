@@ -437,6 +437,7 @@ export async function POST(req: Request) {
           // Direct 1:1 mapping: caption[i] â†’ stock[i % stocks.length]
           // stocks are already ordered by keyword which matches caption order
           console.log(`[config] per-subtitle mode: ${validStocks.length} clips for ${sceneCaptions.length} captions`);
+          const clipNextOff = new Map<string, number>();
           for (let ci = 0; ci < sceneCaptions.length; ci++) {
             const cap = sceneCaptions[ci];
             const capStartSec = cap.startMs / 1000;
@@ -444,10 +445,15 @@ export async function POST(req: Request) {
             const dur = capEndSec - capStartSec;
             if (dur < 0.1) continue;
 
-            const sv = validStocks[Math.min(ci, validStocks.length - 1)];
+            // cycle through all clips — avoid repeating the same clip back-to-back
+            const sv = validStocks[ci % validStocks.length];
             const src = sv.localUrl ?? sv.videoUrl;
             const clipDuration = sv.duration > 0 ? sv.duration : 10;
-            bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: 0, clipDuration });
+            // Advance clipOffset so repeated clips play from where they left off
+            const clipOffset = clipNextOff.get(src) ?? 0;
+            const safeOffset = clipDuration > 0 ? clipOffset % clipDuration : 0;
+            bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+            clipNextOff.set(src, safeOffset + dur);
           }
         } else {
         // Scene-aware pool mode: group clips by scene and cut by scene/segment count.
