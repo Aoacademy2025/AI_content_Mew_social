@@ -733,15 +733,28 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
     return { startMs, endMs };
   };
 
-  const normalized: SubtitleItem[] = raw
+  const mapped = raw
     .map((c) => ({
       ...c,
       text: typeof c?.text === "string" ? c.text.trim() : "",
       startMs: Number.isFinite(Number(c?.startMs)) ? Number(c.startMs) : NaN,
       endMs: Number.isFinite(Number(c?.endMs)) ? Number(c.endMs) : NaN,
     }))
-    .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs))
-    .sort((a, b) => a.startMs - b.startMs);
+    .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs));
+
+  // segment-direct: preserve Gemini order, fix out-of-order timestamps by pushing forward
+  // sorting would reorder text content and cause subtitles to appear out of sync
+  const normalized: SubtitleItem[] = skipCursorPush
+    ? (() => {
+        let minStart = 0;
+        return mapped.map((c) => {
+          const startMs = Math.max(minStart, c.startMs);
+          const endMs = Math.max(startMs + 1, c.endMs);
+          minStart = startMs;
+          return { ...c, startMs, endMs };
+        });
+      })()
+    : [...mapped].sort((a, b) => a.startMs - b.startMs);
 
   if (!normalized.length) return [];
 
