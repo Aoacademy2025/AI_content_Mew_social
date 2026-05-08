@@ -479,6 +479,9 @@ export async function POST(req: Request) {
     ];
     console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 
+    // Clear stale progress file from previous render before starting new one
+    try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
+
     const jobId = `${session.user.id}-${Date.now()}`;
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
 

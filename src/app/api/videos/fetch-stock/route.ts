@@ -323,7 +323,7 @@ export async function POST(req: Request) {
   const userId = (session.user as { id: string }).id;
   const userPrefix = `stock-${userId}-`;
 
-  const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+  const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   try {
     for (const f of fs.readdirSync(rendersDir)) {
       if (!f.startsWith(userPrefix) || !f.endsWith(".mp4")) continue;
