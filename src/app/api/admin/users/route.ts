@@ -22,7 +22,7 @@ export async function GET() {
         suspended: true,
         createdAt: true,
         _count: {
-          select: { styles: true, contents: true, videos: true, images: true },
+          select: { styles: true, contents: true, videos: true, images: true, supportTickets: true },
         },
       },
     });

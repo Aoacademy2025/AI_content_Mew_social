@@ -5,7 +5,6 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
-  Users,
   Crown,
   Ban,
   ShieldCheck,
@@ -15,6 +14,8 @@ import {
   UserX,
   RefreshCw,
   Search,
+  HardDrive,
+  MessageSquareWarning,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,10 +27,16 @@ interface AdminUser {
   plan: "FREE" | "PRO";
   suspended: boolean;
   createdAt: string;
-  _count: { styles: number; contents: number; videos: number; images: number };
+  _count: { styles: number; contents: number; videos: number; images: number; supportTickets: number };
 }
 
-type ActionLoading = string | null; // userId being actioned
+interface CacheInfo {
+  stocks: { count: number; sizeMb: number };
+  renders: { count: number; sizeMb: number; protected: number };
+  openTickets: number;
+}
+
+type ActionLoading = string | null;
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -37,6 +44,9 @@ export default function AdminUsersPage() {
   const [actionLoading, setActionLoading] = useState<ActionLoading>(null);
   const [search, setSearch] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<Record<string, CacheInfo>>({});
+  const [cacheLoading, setCacheLoading] = useState<string | null>(null);
+  const [clearConfirm, setClearConfirm] = useState<string | null>(null);
 
   const fetchUsers = useCallback(() => {
     setLoading(true);
@@ -84,6 +94,42 @@ export default function AdminUsersPage() {
     } finally {
       setActionLoading(null);
       setDeleteConfirm(null);
+    }
+  }
+
+  async function loadCacheInfo(userId: string) {
+    setCacheLoading(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/cache`);
+      if (!res.ok) throw new Error("Failed");
+      const data: CacheInfo = await res.json();
+      setCacheInfo(prev => ({ ...prev, [userId]: data }));
+    } catch {
+      toast.error("โหลดข้อมูลแคชไม่สำเร็จ");
+    } finally {
+      setCacheLoading(null);
+    }
+  }
+
+  async function clearCache(userId: string, includeRenders: boolean) {
+    setCacheLoading(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/cache`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeRenders }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      toast.success(data.message);
+      // Reload cache info
+      const res2 = await fetch(`/api/admin/users/${userId}/cache`);
+      if (res2.ok) setCacheInfo(prev => ({ ...prev, [userId]: await res2.json() }));
+    } catch {
+      toast.error("เคลียร์แคชไม่สำเร็จ");
+    } finally {
+      setCacheLoading(null);
+      setClearConfirm(null);
     }
   }
 
@@ -182,6 +228,13 @@ export default function AdminUsersPage() {
                               ถูกระงับการใช้งาน
                             </span>
                           )}
+                          {/* Open tickets badge */}
+                          {user._count.supportTickets > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/20 px-2 py-0.5 text-xs font-medium text-orange-400">
+                              <MessageSquareWarning className="h-3 w-3" />
+                              {user._count.supportTickets} report
+                            </span>
+                          )}
                         </div>
                         <p className="mt-0.5 text-xs text-zinc-500">{user.email}</p>
                         <p className="mt-0.5 text-xs text-zinc-600">
@@ -195,11 +248,24 @@ export default function AdminUsersPage() {
                           {user._count.styles} styles · {user._count.contents} contents ·{" "}
                           {user._count.videos} videos · {user._count.images} images
                         </p>
+                        {/* Cache info row */}
+                        {cacheInfo[user.id] && (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+                            <span className="flex items-center gap-1">
+                              <HardDrive className="h-3 w-3 text-zinc-600" />
+                              Stock: {cacheInfo[user.id].stocks.count} ไฟล์ ({cacheInfo[user.id].stocks.sizeMb} MB)
+                            </span>
+                            <span>Render: {cacheInfo[user.id].renders.count} ไฟล์ ({cacheInfo[user.id].renders.sizeMb} MB)</span>
+                            {cacheInfo[user.id].openTickets > 0 && (
+                              <span className="text-orange-400">{cacheInfo[user.id].openTickets} ticket เปิดอยู่</span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       {/* Actions */}
                       <div className="flex flex-wrap items-center gap-2">
-                        {isActioning ? (
+                        {isActioning || cacheLoading === user.id ? (
                           <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
                         ) : (
                           <>
@@ -256,6 +322,28 @@ export default function AdminUsersPage() {
                                 </>
                               )}
                             </Button>
+
+                            {/* Cache */}
+                            {clearConfirm === user.id ? (
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-orange-400">เคลียร์ stock เท่านั้น?</span>
+                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, false)}
+                                  className="h-7 text-xs text-orange-400 hover:text-orange-300">Stock</Button>
+                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, true)}
+                                  className="h-7 text-xs text-red-400 hover:text-red-300">Stock+Render</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setClearConfirm(null)}
+                                  className="h-7 text-xs text-zinc-400">ยกเลิก</Button>
+                              </div>
+                            ) : (
+                              <Button size="sm" variant="ghost"
+                                onClick={() => { loadCacheInfo(user.id); setClearConfirm(user.id); }}
+                                className="h-7 gap-1 text-xs text-zinc-500 hover:text-orange-400"
+                                title="เช็คและเคลียร์แคช"
+                              >
+                                <HardDrive className="h-3 w-3" />
+                                แคช
+                              </Button>
+                            )}
 
                             {/* Delete */}
                             {deleteConfirm === user.id ? (
