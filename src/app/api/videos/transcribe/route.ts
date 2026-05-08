@@ -1150,12 +1150,13 @@ Return ONLY valid JSON, no markdown, no explanation:
         const err = await whisperRes.text();
         console.error(`[transcribe] whisper-large-v3 error ${whisperRes.status}:`, err.slice(0, 500));
         // Fallback: retry with whisper-1 (supports all file sizes, word+segment timestamps)
-        console.log(`[transcribe] retrying with whisper-1 fallback...`);
+        console.log(`[transcribe] retrying with whisper-1 fallback (word+segment)...`);
         const form1 = new FormData();
         form1.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "audio.mp3");
         form1.append("model", "whisper-1");
         form1.append("response_format", "verbose_json");
         form1.append("timestamp_granularities[]", "segment");
+        form1.append("timestamp_granularities[]", "word");
         if (scriptPrompt?.trim()) form1.append("prompt", scriptPrompt.trim().slice(0, 224));
         const whisperRes1 = await fetch("https://api.openai.com/v1/audio/transcriptions", {
           method: "POST",
@@ -1171,7 +1172,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         words    = data1.words    ?? [];
         segments = data1.segments ?? [];
         fullText = data1.text     ?? "";
-        console.log(`[transcribe] whisper-1 fallback OK — ${segments.length} segments`);
+        console.log(`[transcribe] whisper-1 fallback OK — ${segments.length} segments, ${words.length} words`);
       } else {
         const data = await whisperRes.json();
         words    = data.words    ?? [];
@@ -1525,31 +1526,38 @@ ${sourceText.trim()}`;
         }
 
         // Strategy C: word-level alignment (Whisper word timestamps — primary path for OpenAI)
-        if (result.length === 0) {
-          const alignWords = words.length > 0 ? words : buildFallbackWordsFromSegments(segments);
-          const alignedByWord = alignWords.length > 0 ? alignPhrasesToWordTimings(phrases, alignWords) : [];
+        // Only use real Whisper word timestamps, not fallback-built ones (which are inaccurate for Thai)
+        if (result.length === 0 && words.length > 0) {
+          const alignedByWord = alignPhrasesToWordTimings(phrases, words);
           if (alignedByWord.length === phrases.length) {
             result = alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) }));
-            console.log(`[transcribe] Strategy C word-timing alignment: ${result.length} phrases`);
+            console.log(`[transcribe] Strategy C word-timing alignment: ${result.length} phrases from ${words.length} words`);
           }
         }
 
-        // Strategy D: no timestamps at all — char proportion over total duration
+        // Strategy D: char-proportion over audio timeline
+        // If segments ≥ 2, use segment boundaries as anchors for better accuracy
         if (result.length === 0) {
           const charLengths = phrases.map(alignmentCharLen);
           const totalChars = charLengths.reduce((a, b) => a + b, 0);
           let cumChars = 0;
+
+          // Build timeline: use segment boundaries if available (more accurate than flat proportion)
+          const timelineStart = segments.length >= 2 ? segments[0].start : 0;
+          const timelineEnd = segments.length >= 2 ? segments[segments.length - 1].end : audioDur;
+          const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.5);
+
           for (let i = 0; i < phrases.length; i++) {
-            const startSec = (cumChars / totalChars) * audioDur;
+            const startSec = timelineStart + (cumChars / totalChars) * timelineLen;
             cumChars += charLengths[i];
-            const endSec = (cumChars / totalChars) * audioDur;
+            const endSec = timelineStart + (cumChars / totalChars) * timelineLen;
             result.push({
               text: sanitizePhraseText(phrases[i]),
               startMs: Math.round(startSec * 1000),
               endMs: Math.round(endSec * 1000),
             });
           }
-          console.log(`[transcribe] Strategy D char-proportional (no timestamps) ${result.length} captions over ${audioDur.toFixed(1)}s`);
+          console.log(`[transcribe] Strategy D char-proportional: ${result.length} captions, timeline=${timelineStart.toFixed(1)}s–${timelineEnd.toFixed(1)}s (${segments.length} segs)`);
         }
 
         // Merge captions that are too short to read (< 1200ms) into adjacent
