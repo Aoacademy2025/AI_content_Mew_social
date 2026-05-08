@@ -1201,8 +1201,10 @@ RULES:
       // Sending a 3000+ char script to Gemini for splitting causes JSON truncation because
       // the prompt itself consumes most of the context window, leaving no room for output.
       // Gemini segments already have good word boundaries — just merge short ones.
-      const scriptProvided = typeof script === "string" && script.trim().length > 0;
-      const useSegmentDirectly = segments.length >= 10 && audioDur > 120 && scriptProvided;
+      // Use Gemini segments directly whenever we have ≥3 segments — they are timestamped
+      // to the actual audio, so subtitle timing is always accurate. LLM split is only
+      // needed when Gemini returns too few segments (< 3) to cover the whole script.
+      const useSegmentDirectly = segments.length >= 3;
 
       if (useSegmentDirectly) {
         // Merge Gemini segments into subtitle-sized chunks:
