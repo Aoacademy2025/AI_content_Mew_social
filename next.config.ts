@@ -57,10 +57,13 @@ const nextConfig: NextConfig = {
     "@esbuild/darwin-arm64",
   ],
   webpack: (config) => {
+    // Replace WasmHash with xxhash-wasm-free md4 to avoid OOM on VPS.
+    // WasmHash requires a large contiguous WASM memory allocation that fails
+    // on low-RAM / restricted-VM VPS kernels even when physical RAM is available.
+    config.output = config.output ?? {};
+    config.output.hashFunction = "md4";
+
     // .node native addons must never enter webpack's module graph.
-    // WasmHash crashes with "Cannot read properties of undefined (reading 'length')"
-    // when webpack tries to hash a native binary as if it were a JS module.
-    // Mark them as externals so webpack never reads or hashes the binary content.
     const prevExternals = config.externals ?? [];
     config.externals = [
       ...(Array.isArray(prevExternals) ? prevExternals : [prevExternals]),
@@ -73,14 +76,12 @@ const nextConfig: NextConfig = {
     ];
 
     // Treat .wasm files as asset/resource so webpack emits them as separate files
-    // instead of inlining — inlining large WASM through WasmHash causes OOM/crash.
     config.module.rules.push({
       test: /\.wasm$/,
       type: "asset/resource",
     });
 
-    // Ignore non-JS files (README.md, .txt) that leak into the
-    // webpack dependency graph through esbuild sub-packages.
+    // Ignore non-JS files (README.md, .txt) that leak into the webpack graph
     config.module.rules.push({
       test: /\.(md|txt)$/,
       type: "asset/source",
