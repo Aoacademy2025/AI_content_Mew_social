@@ -223,16 +223,29 @@ export async function POST(req: Request) {
     const filename = url.startsWith("/api/renders/")
       ? url.slice("/api/renders/".length)
       : url.slice("/renders/".length);
-    const stockPath = path.join(stocksDir, filename);
-    if (fs.existsSync(stockPath) && fs.statSync(stockPath).size > 1_500) {
-      // File is a real stock video — serve from stocks/
-      url = `/api/stocks/${filename}`;
+
+    // Helper: find file by exact name or fuzzy match on numeric suffix (e.g. -9001028.mp4)
+    // Stock filenames may have slightly different slugs across fetches but same numeric ID.
+    function findStockFile(dir: string, target: string): string | null {
+      if (fs.existsSync(path.join(dir, target))) return target;
+      // Fuzzy: match by numeric suffix (last -XXXXXXX before .mp4)
+      const numMatch = target.match(/-(\d{6,10})\.mp4$/);
+      if (!numMatch) return null;
+      const numId = numMatch[1];
+      try {
+        const files = fs.readdirSync(dir);
+        const found = files.find(f => f.endsWith(`-${numId}.mp4`) && f.startsWith("stock-"));
+        return found ?? null;
+      } catch { return null; }
+    }
+
+    const stockMatch = findStockFile(stocksDir, filename);
+    if (stockMatch) {
+      url = `/api/stocks/${stockMatch}`;
     } else {
-      // File only exists in renders/ (e.g. TTS voice file named with stock- prefix)
-      const renderPath = path.join(rendersDir, filename);
-      if (fs.existsSync(renderPath) && fs.statSync(renderPath).size > 1_500) {
-        // Keep as /api/renders/ — it will be served correctly
-        url = `/api/renders/${filename}`;
+      const renderMatch = findStockFile(rendersDir, filename);
+      if (renderMatch) {
+        url = `/api/renders/${renderMatch}`;
       } else {
         throw new Error(`Stock file missing: ${url} — please re-fetch stock videos`);
       }
@@ -309,23 +322,42 @@ export async function POST(req: Request) {
     if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
+      const fallbackSrc: string[] = []; // collect valid srcs for fallback
       for (const v of shortVideoConfig.bgVideos ?? []) {
         try {
           const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
           resolvedBgVideos.push({ ...v, src: resolvedSrc });
+          if (!fallbackSrc.includes(resolvedSrc)) fallbackSrc.push(resolvedSrc);
         } catch (e) {
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }
       }
+      // If some clips were skipped, fill gaps with the first available clip
       if (resolvedBgVideos.length === 0) {
         throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
       }
+      // Replace any gap left by skipped clips: use the nearest valid clip's src
+      const allBgVideos = shortVideoConfig.bgVideos ?? [];
+      const finalBgVideos: typeof shortVideoConfig.bgVideos = [];
+      let resolvedIdx = 0;
+      for (let i = 0; i < allBgVideos.length; i++) {
+        if (resolvedIdx < resolvedBgVideos.length && resolvedBgVideos[resolvedIdx].start === allBgVideos[i].start) {
+          finalBgVideos.push(resolvedBgVideos[resolvedIdx]);
+          resolvedIdx++;
+        } else {
+          // File was skipped — use fallback src with same timing
+          const fb = fallbackSrc[Math.min(resolvedIdx, fallbackSrc.length - 1)];
+          finalBgVideos.push({ ...allBgVideos[i], src: fb });
+          console.warn(`[render] fallback clip for missing ${allBgVideos[i].src} → ${fb}`);
+        }
+      }
+      const resolvedBgVideosFinal = finalBgVideos.length > 0 ? finalBgVideos : resolvedBgVideos;
 
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile)),
-        bgVideos: resolvedBgVideos,
+        bgVideos: resolvedBgVideosFinal,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
