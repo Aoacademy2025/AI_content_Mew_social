@@ -5,11 +5,15 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/next",
       args: "start",
-      max_memory_restart: "1G",
+      max_memory_restart: "12G",
       env: {
         NODE_ENV: "production",
         PORT: 3000,
         NEXT_DISABLE_ESLINT: "1",
+        // Render tuning — increase concurrency and cache for faster renders
+        RENDER_CONCURRENCY: "4",
+        RENDER_OFFTHREAD_CACHE_MB: "512",
+        RENDER_JPEG_QUALITY: "70",
       },
       env_production: {
         NODE_ENV: "production",
