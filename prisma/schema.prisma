@@ -160,6 +160,28 @@ enum SupportTicketStatus {
   CLOSED
 }
 
+model Coupon {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  plan        Plan      @default(PRO)
+  durationDays Int      @default(30)  // 0 = permanent
+  maxUses     Int       @default(1)
+  usedCount   Int       @default(0)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  redemptions CouponRedemption[]
+}
+
+model CouponRedemption {
+  id        String   @id @default(cuid())
+  couponId  String
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId    String
+  redeemedAt DateTime @default(now())
+
+  @@unique([couponId, userId])
+}
+
 model GeneratedImage {
   id           String   @id @default(cuid())
   userId       String

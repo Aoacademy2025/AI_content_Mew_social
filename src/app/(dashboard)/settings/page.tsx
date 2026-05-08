@@ -7,14 +7,74 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { ProfileSettings } from "@/components/settings/profile-settings";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import {
-  User, Key, ExternalLink, Zap, TrendingUp, Cpu,
+  User, Key, ExternalLink, Zap, TrendingUp, Cpu, Ticket, Crown, Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const CARD: React.CSSProperties = {
   background: "var(--ui-card-bg)",
   border: "1px solid var(--ui-card-border)",
 };
+
+function CouponBox() {
+  const { update } = useSession();
+  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function redeem() {
+    if (!code.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch("/api/coupons/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "เกิดข้อผิดพลาด"); return; }
+      toast.success(data.message);
+      setCode("");
+      await update(); // refresh session plan
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl p-5" style={CARD}>
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ background: "hsl(45 100% 50% / 0.12)" }}>
+          <Ticket className="h-4 w-4 text-yellow-400" />
+        </div>
+        <h2 className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ใช้คูปอง</h2>
+      </div>
+      <p className="text-xs mb-3" style={{ color: "var(--ui-text-muted)" }}>
+        กรอกรหัสคูปองเพื่ออัปเกรดแผนการใช้งาน
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder="รหัสคูปอง เช่น PROMO2025"
+          value={code}
+          onChange={e => setCode(e.target.value.toUpperCase())}
+          onKeyDown={e => e.key === "Enter" && redeem()}
+          className="flex-1 rounded-lg border px-3 py-2 text-sm font-mono uppercase outline-none focus:border-yellow-500/50 focus:ring-1 focus:ring-yellow-500/30"
+          style={{ background: "var(--ui-input-bg, hsl(0 0% 10%))", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}
+        />
+        <button
+          onClick={redeem}
+          disabled={loading || !code.trim()}
+          className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
+          style={{ background: "hsl(45 100% 50% / 0.15)", border: "1px solid hsl(45 100% 50% / 0.3)", color: "#facc15" }}
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crown className="h-4 w-4" />}
+          ใช้คูปอง
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function SettingsContent() {
   const { data: session } = useSession();
@@ -89,6 +149,9 @@ function SettingsContent() {
             <ApiKeySettings />
           </div>
         )}
+
+        {/* Coupon */}
+        <CouponBox />
 
         {/* Stats row */}
         <div className="grid gap-4 sm:grid-cols-2">

@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 
@@ -17,8 +17,9 @@ interface SidebarProps {
 }
 
 const adminNavItems = [
-  { title: "Admin",       href: "/admin",       icon: Shield, proOnly: false },
-  { title: "จัดการผู้ใช้", href: "/admin/users", icon: Users,  proOnly: false },
+  { title: "Admin",       href: "/admin",         icon: Shield,  proOnly: false },
+  { title: "จัดการผู้ใช้", href: "/admin/users",  icon: Users,   proOnly: false },
+  { title: "คูปอง",        href: "/admin/coupons", icon: Ticket,  proOnly: false },
 ];
 
 const userNavItems: { title: string; href: string; icon: React.ElementType; locked?: boolean; adminOnly?: boolean }[] = [
