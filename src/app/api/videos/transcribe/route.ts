@@ -1581,23 +1581,27 @@ ${sourceText.trim()}`;
           }
         }
 
-        // Merge captions that are too short to read (< 1200ms) into adjacent
+        // Merge captions that are too short to read into adjacent — only if merged text won't be too long
         if (result.length > 1) {
-          const MIN_DUR_MS = 1200;
+          const MIN_DUR_MS = 700;   // captions ≥700ms are readable (Thai short phrases)
+          const MAX_MERGE_CHARS = 30; // don't merge if combined text exceeds this
           let merged = true;
           while (merged && result.length > 1) {
             merged = false;
             for (let i = 0; i < result.length; i++) {
               const dur = result[i].endMs - result[i].startMs;
               if (dur < MIN_DUR_MS) {
-                // merge into shorter neighbor
                 const mergeNext = i < result.length - 1 &&
                   (i === 0 || (result[i + 1].endMs - result[i + 1].startMs) <= (result[i - 1].endMs - result[i - 1].startMs));
                 if (mergeNext) {
-                  result[i + 1] = { ...result[i + 1], text: `${result[i].text} ${result[i + 1].text}`.trim(), startMs: result[i].startMs };
+                  const combined = `${result[i].text} ${result[i + 1].text}`.trim();
+                  if (combined.replace(/\s/g, "").length > MAX_MERGE_CHARS) break; // skip — would be too long
+                  result[i + 1] = { ...result[i + 1], text: combined, startMs: result[i].startMs };
                   result.splice(i, 1);
                 } else {
-                  result[i - 1] = { ...result[i - 1], text: `${result[i - 1].text} ${result[i].text}`.trim(), endMs: result[i].endMs };
+                  const combined = `${result[i - 1].text} ${result[i].text}`.trim();
+                  if (combined.replace(/\s/g, "").length > MAX_MERGE_CHARS) break;
+                  result[i - 1] = { ...result[i - 1], text: combined, endMs: result[i].endMs };
                   result.splice(i, 1);
                 }
                 merged = true;
