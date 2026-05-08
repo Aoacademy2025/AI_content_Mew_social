@@ -1129,18 +1129,17 @@ Return ONLY valid JSON, no markdown, no explanation:
     } else if (useOpenAITranscribe) {
       // ── Strategy 2: OpenAI Whisper API ──
       console.log("[transcribe] using OpenAI Whisper API...");
-      const rawKey = process.env.SERVER_OPENAI_API_KEY ?? (user?.openaiKey ? Buffer.from(user.openaiKey, "base64").toString("utf-8") : "");
-      const apiKey = rawKey;
+      const apiKey = process.env.SERVER_OPENAI_API_KEY ?? (user?.openaiKey ? Buffer.from(user.openaiKey, "base64").toString("utf-8") : "");
       const audioBuffer = fs.readFileSync(mp3Path);
       try { fs.unlinkSync(mp3Path); } catch {}
       const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
       const form = new FormData();
       form.append("file", audioBlob, "audio.mp3");
-      form.append("model", "whisper-1");
+      form.append("model", "whisper-large-v3");
       form.append("response_format", "verbose_json");
-      form.append("timestamp_granularities[]", "word");
+      // whisper-large-v3 supports segment-level only (word-level is whisper-1 only)
       form.append("timestamp_granularities[]", "segment");
-      if (scriptPrompt?.trim()) form.append("prompt", scriptPrompt.trim().slice(0, 224)); // Whisper prompt hard-limit is 224 tokens
+      if (scriptPrompt?.trim()) form.append("prompt", scriptPrompt.trim().slice(0, 224));
 
       const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -1219,10 +1218,10 @@ Return ONLY valid JSON, no markdown, no explanation:
       // Sending a 3000+ char script to Gemini for splitting causes JSON truncation because
       // the prompt itself consumes most of the context window, leaving no room for output.
       // Gemini segments already have good word boundaries — just merge short ones.
-      // Use Gemini segments directly whenever we have ≥3 segments — they are timestamped
-      // to the actual audio, so subtitle timing is always accurate. LLM split is only
-      // needed when Gemini returns too few segments (< 3) to cover the whole script.
-      const useSegmentDirectly = segments.length >= 3;
+      // OpenAI Whisper: Thai text from Whisper is often inaccurate — NEVER use as subtitle text.
+      //   Flow: Whisper → word timestamps only → LLM splits real script → align to word timestamps.
+      // Gemini: text is accurate → use segments directly as subtitle text.
+      const useSegmentDirectly = useGeminiTranscribe && segments.length >= 3;
 
       if (useSegmentDirectly) {
         // Merge Gemini segments into subtitle-sized chunks:
@@ -1282,7 +1281,26 @@ Return ONLY valid JSON, no markdown, no explanation:
           minPhrases = Math.max(3, targetPhrases - 2);
           maxPhrases = targetPhrases + 4;
 
-          const splitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
+          // Build pause-point hint from Whisper/Gemini segment gaps (breath ≥ 0.2s)
+          let rhythmHint = "";
+          if (segments.length >= 2) {
+            const breathPoints: string[] = [];
+            for (let si = 0; si < segments.length - 1; si++) {
+              const gap = segments[si + 1].start - segments[si].end;
+              if (gap >= 0.2) {
+                breathPoints.push(`${segments[si].end.toFixed(2)}s — "${segments[si].text.trim().slice(-25)}"`);
+              }
+            }
+            if (breathPoints.length > 0) {
+              rhythmHint = `\n━━━ SPEECH PAUSE POINTS ━━━\nSplit subtitles at or near these natural pause points (detected from audio):\n${breathPoints.slice(0, 50).map((p, i) => `  ${i + 1}. ${p}`).join("\n")}\n`;
+            }
+          }
+
+          // ══════════════════════════════════════════════════════════════════
+          // GEMINI split prompt — proven version (commit a8c9075/6d9da59)
+          // bullet style, no json_object constraint
+          // ══════════════════════════════════════════════════════════════════
+          const geminiSplitPrompt = `You are a Thai subtitle splitter for TikTok/Reels.
 
 TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NOT rewrite or remove any words.
 
@@ -1298,13 +1316,54 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 • NEVER split mid-sentence just to hit a char limit.
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
+• Max 6s per subtitle — long pauses → split into more phrases.
+${rhythmHint}
+━━━ TAGGING ━━━
+• "hook" = first 1–2 phrases only
+• "body" = main content
+• "cta"  = กดติดตาม / like / share / subscribe
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY valid JSON — no markdown, no explanation:
-{"phrases":["phrase1","phrase2"]}
+{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}
 
 ━━━ SCRIPT TO PROCESS ━━━
 ${sourceText.trim()}`;
+
+          // ══════════════════════════════════════════════════════════════════
+          // OPENAI split prompt — rewritten for Whisper-large-v3 flow:
+          //   Whisper → segments (timestamps only) → map to real script →
+          //   LLM splits real script → align to segment timestamps
+          // numbered rules, response_format: json_object
+          // ══════════════════════════════════════════════════════════════════
+          const openaiSplitPrompt = `You are a Thai subtitle editor for TikTok/Reels short-form video.
+
+CONTEXT:
+- The audio was transcribed by Whisper (timestamps only — Whisper Thai text may be inaccurate).
+- The SCRIPT below is the real content the speaker says. Use ONLY the script as subtitle text.
+- Your job: split the script into subtitle phrases that match the speaker's natural breath/pause rhythm.
+
+TASK: Split the SCRIPT into subtitle phrases. Each phrase = one subtitle card on screen.
+
+RULES:
+1. COPY every word from the SCRIPT exactly — do NOT drop, reorder, or paraphrase anything.
+2. Output ${minPhrases}–${maxPhrases} phrases for ${durationSec.toFixed(1)}s of audio (same count as Gemini would produce).
+3. Each phrase = 1 complete thought (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+4. NEVER split mid-word or mid-thought — Thai has no spaces, cut only at complete word/thought boundaries.
+5. Split at: sentence-end (. ? ! ฯ), major conjunctions (แต่, และ, เพราะ, จึง), or natural breath points.
+6. NEVER split mid-sentence just to hit a character limit.
+7. NEVER split a date expression — Thai month + year = one phrase.
+8. Remove English parenthetical pronunciation notes like (Anyons) — not subtitle text.
+9. Max 6s per subtitle — very long sections must split into more phrases.
+10. Tag each phrase: "hook" = first 1–2 phrases, "cta" = subscribe/like/share phrases, "body" = everything else.
+${rhythmHint}
+OUTPUT: valid JSON only — no markdown, no explanation:
+{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}
+
+SCRIPT:
+${sourceText.trim()}`;
+
+          const splitPrompt = useGemini ? geminiSplitPrompt : openaiSplitPrompt;
 
           const splitMaxTokens = 4096;
 
@@ -1468,21 +1527,20 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy B: segment-anchored alignment via char proportion
-        // Skip if segments are too sparse (< 1 segment per 4 phrases) — char-proportion
-        // over sparse segments creates huge gaps where Gemini didn't detect speech.
-        const segmentDensityOk = segments.length >= 2 && (phrases.length / segments.length) <= 4;
+        // Strategy B: segment-anchored alignment (Gemini only — Whisper segment text is inaccurate for Thai)
+        // Skip for OpenAI Whisper — use word-level alignment (Strategy C) instead which is more precise.
+        const segmentDensityOk = useGeminiTranscribe && segments.length >= 2 && (phrases.length / segments.length) <= 4;
         if (result.length === 0 && segmentDensityOk) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
             result = segAligned;
             console.log(`[transcribe] Strategy B segment-anchored alignment: ${result.length} phrases over ${segments.length} segs`);
           }
-        } else if (segments.length >= 2) {
+        } else if (useGeminiTranscribe && segments.length >= 2) {
           console.log(`[transcribe] Strategy B skipped — sparse segments (${segments.length} segs / ${phrases.length} phrases), using char-proportion`);
         }
 
-        // Strategy C: word-level alignment (Whisper word timestamps)
+        // Strategy C: word-level alignment (Whisper word timestamps — primary path for OpenAI)
         if (result.length === 0) {
           const alignWords = words.length > 0 ? words : buildFallbackWordsFromSegments(segments);
           const alignedByWord = alignWords.length > 0 ? alignPhrasesToWordTimings(phrases, alignWords) : [];

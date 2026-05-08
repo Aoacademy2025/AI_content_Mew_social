@@ -618,32 +618,33 @@ export default function ShortVideoPage() {
     const forceSplitByLength = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
       const src = (cap.text ?? "").trim();
       const capTag = tag ?? (cap.tag as "hook" | "body" | "cta" | undefined);
-      if (!src) return [];
+      if (!src) return [{ ...cap, text: src, tag: capTag }];
+
+      // Thai has no word spaces — splitting by char position cuts mid-word.
+      // Only split if there are actual space-separated tokens to split at.
       const MAX_CHARS = 52;
-      const MIN_CHARS = 10;
+      const MIN_CHARS = 12;
       if (src.length <= MAX_CHARS) return [{ ...cap, text: src, tag: capTag }];
 
-      const chunks: string[] = [];
       const words = src.split(/\s+/).filter(Boolean);
-      if (words.length <= 1) {
-        for (let i = 0; i < src.length; i += MAX_CHARS) chunks.push(src.slice(i, i + MAX_CHARS).trim());
-      } else {
-        let buf = "";
-        for (const p of words) {
-          if (!p.trim()) continue;
-          const next = buf ? `${buf} ${p}` : p;
-          if (next.length > MAX_CHARS && buf) {
-            chunks.push(buf.trim());
-            buf = p;
-          } else {
-            buf = next;
-          }
+      // If no spaces (pure Thai run) → don't split, keep as-is
+      if (words.length <= 1) return [{ ...cap, text: src, tag: capTag }];
+
+      const chunks: string[] = [];
+      let buf = "";
+      for (const p of words) {
+        const next = buf ? `${buf} ${p}` : p;
+        if (next.length > MAX_CHARS && buf) {
+          chunks.push(buf.trim());
+          buf = p;
+        } else {
+          buf = next;
         }
-        if (buf.trim()) chunks.push(buf.trim());
       }
+      if (buf.trim()) chunks.push(buf.trim());
 
       if (!chunks.length) chunks.push(src);
-      // Merge tiny tail chunks back to previous chunk to avoid super-short subtitles.
+      // Merge tiny tail chunks back to previous to avoid super-short subtitles
       const rebalance: string[] = [];
       for (const piece of chunks) {
         if (piece.length < MIN_CHARS && rebalance.length > 0) {
@@ -657,9 +658,7 @@ export default function ShortVideoPage() {
       }
       const finalChunks = rebalance.filter(Boolean);
 
-      if (finalChunks.length === 1) {
-        return [{ ...cap, text: src, tag: capTag }];
-      }
+      if (finalChunks.length <= 1) return [{ ...cap, text: src, tag: capTag }];
 
       const span = Math.max(cap.endMs - cap.startMs, 1);
       return finalChunks.map((t, i) => {
@@ -1275,11 +1274,14 @@ export default function ShortVideoPage() {
         if (perSubKws.length < N) {
           const padded = [...perSubKws];
           const paddedAlts = [...perSubAlts];
-          const genericFallbacks = ["person walking", "city street", "nature landscape", "people talking", "outdoor scene"];
+          // Derive fallback from the subtitle text itself rather than hardcoded generics
           while (padded.length < N) {
-            const fb = genericFallbacks[padded.length % genericFallbacks.length];
+            const missingIdx = padded.length;
+            const subtitleText = subTexts[missingIdx] ?? "";
+            const words = subtitleText.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+            const fb = words.length >= 2 ? words.join(" ") : (pipe.current.visualDirection?.split(" ").slice(0, 3).join(" ") || "scene");
             padded.push(fb);
-            paddedAlts.push([fb]);  // sync alternatives for padded entries
+            paddedAlts.push([fb]);
           }
           perSubKws = padded;
           perSubAlts = paddedAlts;
@@ -2632,8 +2634,8 @@ export default function ShortVideoPage() {
           {/* ── Execution Pipeline ── */}
           <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
 
-            {/* Header */}
-            <div className="flex flex-wrap items-center gap-2 px-4 py-3" style={{ background: "hsl(190 100% 50% / 0.04)", borderBottom: "1px solid var(--sv-border)" }}>
+            {/* Header — sticky so Stop button is always reachable while pipeline runs */}
+            <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 px-4 py-3" style={{ background: "var(--sv-card)", borderBottom: "1px solid var(--sv-border)" }}>
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.22)" }}>
                   <Layers className="h-3.5 w-3.5 text-cyan-400" />

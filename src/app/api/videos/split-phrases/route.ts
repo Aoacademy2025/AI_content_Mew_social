@@ -58,11 +58,10 @@ export async function POST(req: Request) {
     .filter((l: string) => l.length > 0)
     .join("\n");
 
-  // Target density is generous so captions can be rewritten and merged/split naturally.
-  // ~2–4s per subtitle for short clips, longer clips tend to need more chunks.
+  // Target density: ~3–5s per subtitle. Too-short phrases (1-2 words) are unfindable as B-roll.
   const durationSec = audioDurationMs ? audioDurationMs / 1000 : null;
-  const minPhrases = durationSec ? Math.max(2, Math.floor(durationSec / 5)) : 2;
-  const maxPhrases = durationSec ? Math.max(minPhrases + 2, Math.ceil(durationSec / 2)) : 8;
+  const minPhrases = durationSec ? Math.max(2, Math.floor(durationSec / 6)) : 2;
+  const maxPhrases = durationSec ? Math.max(minPhrases + 2, Math.ceil(durationSec / 3)) : 8;
   const targetRange = `${minPhrases}-${maxPhrases}`;
 
   const user = await prisma.user.findUnique({
@@ -82,46 +81,76 @@ export async function POST(req: Request) {
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
-  const prompt = `You are a Thai subtitle splitter for TikTok/Reels.
+  // ── Gemini prompt: dramatic pacing, NEVER rules, examples ──────────────────
+  const geminiPrompt = `You are a Thai subtitle splitter for TikTok/Reels short-form video.
 
-TASK: Split this Thai script into subtitle phrases exactly as written — DO NOT rewrite, rephrase, or remove words.
+GOAL: Split the script into subtitle phrases that each match ONE breath/pause in the audio.
+Each phrase will be shown on screen while the speaker says those exact words,
+AND will be used as a B-roll video search query — so it must be visually meaningful.
 
-━━━ CRITICAL RULE ━━━
-• COPY Thai words EXACTLY from the script. Do NOT paraphrase, summarize, or drop any Thai words.
-• Only task is to decide WHERE to split into subtitle lines.
-• English terms in parentheses like (Anyons), (Fractional Excitons) → REMOVE them from output (they are pronunciation guides, not subtitle content).
-• Remove any standalone English-only words or parenthetical terms that are just transliterations of Thai words already in the phrase.
+━━━ ABSOLUTE RULES ━━━
+• COPY every Thai word EXACTLY — do NOT paraphrase, summarize, or drop any word.
+• NEVER produce a phrase shorter than 10 Thai characters — merge with next/prev phrase instead.
+• NEVER split mid-word or mid-thought — split only at natural pause/breath points.
+• NEVER split a date (Thai month + year = one phrase).
+• English parenthetical notes like (Anyons), (Fractional Excitons) → REMOVE from output.
 
-━━━ SPLITTING RULES ━━━
-• Audio duration: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → target ${targetRange} phrases total
-• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). If a phrase exceeds 40 chars, you MUST split it.
-• Split at: sentence-ending punctuation (. ? ! ฯ), major conjunctions (แต่, และ, เพราะ, จึง), natural breath points (สรุป, โดย, ขณะที่, พร้อม, ระบุ, ชี้).
-• NEVER split mid-sentence just to hit a char limit.
-• Short punchy lines like "ผิดสัตว์", "ลองดูก่อน" → keep as ONE phrase.
-• Long sentences with numbers/stats: split before/after each stat unit.
-• NEVER split a date expression (keep Thai month name + date + year as ONE phrase).
+━━━ SPLITTING STYLE ━━━
+• Audio: ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown"} → aim for ${targetRange} phrases
+• Each phrase = 1 complete thought the speaker finishes before pausing (15–35 Thai chars ideal)
+• Split at: sentence-end (. ? ! ฯ), major conjunctions (แต่ / และ / เพราะ / จึง), dramatic pauses
+• Short punchy exclamations ("แม่งบ้าไปแล้ว", "สัตว์!") → MERGE with surrounding phrase
+• Numbers/stats → keep number + unit as ONE phrase
 
-━━━ TAGGING RULES ━━━
-• "hook" = opening attention-grabbing line(s) — FIRST 1–2 phrases only.
-• "body" = main content — the majority of phrases.
-• "cta"  = explicit action words only: กดติดตาม, กด like, กดแชร์, สมัครเลย, subscribe, follow.
+━━━ TAGGING ━━━
+• "hook" = first 1–2 phrases that grab attention
+• "body" = main content
+• "cta" = explicit call-to-action only (กดติดตาม, กดแชร์, subscribe, follow)
 
-━━━ OUTPUT FORMAT ━━━
-Return ONLY valid JSON — no markdown, no explanation:
-{"phrases":["phrase1","phrase2"],"tags":["hook","body","cta"]}
+━━━ OUTPUT — JSON only, no markdown ━━━
+{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}
 
 ━━━ EXAMPLES ━━━
 Script: "โลกที่คุณเห็น สงครามที่คุณได้ยิน วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ ผิดสัตว์ กดติดตามไว้เลย"
 Output: {"phrases":["โลกที่คุณเห็น สงครามที่คุณได้ยิน","วิกฤตเศรษฐกิจที่กำลังสูบเงินในกระเป๋าคุณ","คุณคิดว่ามันเป็นเรื่องบังเอิญงั้นหรอ","ผิดสัตว์","กดติดตามไว้เลย"],"tags":["hook","body","body","body","cta"]}
 
-Script: "คุณเคยสังเกตไหมว่าทำไมคนรวยนอนน้อย แต่ยังมีพลังงาน นั่นเป็นเพราะพวกเขาจัดการเวลาต่างออกไป ลองทำตามนี้ดู"
-Output: {"phrases":["คุณเคยสังเกตไหมว่าทำไมคนรวยนอนน้อย","แต่ยังมีพลังงาน","นั่นเป็นเพราะพวกเขาจัดการเวลาต่างออกไป","ลองทำตามนี้ดู"],"tags":["hook","hook","body","body"]}
+Script: "มึงเคยคิดปะว่าความรู้ทั้งหมดที่เรียนมาตั้งแต่เด็กอาจจะเป็นแค่เรื่องโกหก มีทีมนักฟิสิกส์จากมหาวิทยาลัยบราวน์เสือกไปเปิดประตูบานที่ไม่ควรเปิด"
+Output: {"phrases":["มึงเคยคิดปะว่าความรู้ทั้งหมดที่เรียนมาตั้งแต่เด็ก","อาจจะเป็นแค่เรื่องโกหก","มีทีมนักฟิสิกส์จากมหาวิทยาลัยบราวน์","เสือกไปเปิดประตูบานที่ไม่ควรเปิด"],"tags":["hook","hook","body","body"]}
 
 Script: "กรมการขนส่งทางราง เผยยอดใช้ระบบรางวันแรกกว่า 1.11 ล้านคน-เที่ยว สรุปยอดสะสม 7 วันเทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"
-Output: {"phrases":["กรมการขนส่งทางราง","เผยยอดใช้ระบบรางวันแรก","กว่า 1.11 ล้านคน-เที่ยว","สรุปยอดสะสม 7 วัน","เทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"],"tags":["hook","body","body","body","body"]}
+Output: {"phrases":["กรมการขนส่งทางราง เผยยอดใช้ระบบรางวันแรก","กว่า 1.11 ล้านคน-เที่ยว","สรุปยอดสะสม 7 วัน","เทศกาลสงกรานต์ทะลุ 8.22 ล้านคน-เที่ยว"],"tags":["hook","body","body","body"]}
 
-━━━ SCRIPT TO PROCESS ━━━
+━━━ SCRIPT ━━━
 ${script.trim()}`;
+
+  // ── OpenAI prompt: numbered rules, strict numeric constraints, json_object ──
+  const openaiPrompt = `You are a Thai subtitle splitter for TikTok/Reels short-form video.
+
+TASK: Split the script into subtitle phrases. Each phrase appears on screen while the speaker says those words, and is used to search for a matching B-roll video clip.
+
+RULES — follow every rule exactly:
+1. Copy every Thai word EXACTLY — do not paraphrase, reorder, or remove any words.
+2. Target ${targetRange} phrases for ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown duration"} of audio.
+3. Each phrase must be 15–40 Thai characters. Phrases under 15 chars MUST be merged with the adjacent phrase.
+4. Split ONLY at: sentence-end punctuation (. ? ! ฯ), conjunctions (แต่, และ, เพราะ, จึง), or clear pause points.
+5. Never split mid-sentence to hit a character limit — the meaning must be complete.
+6. Never split a date — keep Thai month name + year together as one phrase.
+7. Remove English parenthetical notes like (Anyons) — they are pronunciation guides, not subtitle text.
+8. Each phrase must describe something visually distinct so a matching stock video clip can be found.
+9. Short exclamations under 15 chars must be merged with the preceding phrase — never left alone.
+
+TAGGING:
+- "hook" = first 1–2 phrases only (opening attention-grab)
+- "body" = all main content
+- "cta" = explicit call-to-action only: กดติดตาม, กดแชร์, subscribe, follow
+
+OUTPUT: valid JSON only — no markdown, no explanation:
+{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}
+
+Script:
+${script.trim()}`;
+
+  const prompt = useGemini ? geminiPrompt : openaiPrompt;
 
   let text = "{}";
   if (useGemini) {
@@ -139,7 +168,7 @@ ${script.trim()}`;
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: openAiModel, messages: [{ role: "user", content: prompt }], max_tokens: 800, temperature: 0, response_format: { type: "json_object" } }),
+      body: JSON.stringify({ model: openAiModel, messages: [{ role: "user", content: prompt }], max_tokens: 4096, temperature: 0, response_format: { type: "json_object" } }),
     });
     if (!res.ok) {
       const err = await res.text().catch(() => "");

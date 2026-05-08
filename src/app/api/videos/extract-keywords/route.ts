@@ -28,6 +28,23 @@ function sanitizeSubtitleForKeyword(raw: string): string {
     .trim();
 }
 
+// Word-overlap similarity: returns ratio of shared significant words
+function keywordSimilarity(a: string, b: string): number {
+  const sig = (s: string) => new Set(s.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+  const wa = sig(a), wb = sig(b);
+  if (!wa.size || !wb.size) return 0;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.min(wa.size, wb.size);
+}
+
+function isTooSimilar(candidate: string, usedSet: Set<string>, threshold = 0.6): boolean {
+  for (const used of usedSet) {
+    if (keywordSimilarity(candidate, used) >= threshold) return true;
+  }
+  return false;
+}
+
 // Minimal validation: must be English, 2-8 words, not noise
 const NOISE_RE = /^(scene|scenes|keywords?|clip|clips?|shot|shots|video|videos)\s*[:\-]?\s*\d*$/i;
 
@@ -116,20 +133,21 @@ export async function POST(req: Request) {
     else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
   }
 
-  async function callLLM(prompt: string, maxTokens: number): Promise<string> {
+  async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
     if (useGemini) {
       return await geminiGenerateText(apiKey!, prompt, maxTokens);
     }
+    const body: Record<string, unknown> = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: maxTokens,
+      temperature: 0.4,
+    };
+    if (jsonMode) body.response_format = { type: "json_object" };
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: maxTokens,
-        temperature: 0.4,
-        response_format: { type: "json_object" },
-      }),
+      body: JSON.stringify(body),
     });
     if (r.ok) { const d = await r.json(); return d.choices?.[0]?.message?.content ?? "{}"; }
     throw new Error(`OpenAI ${r.status}`);
@@ -160,7 +178,7 @@ Examples:
 Script: ${fullScript.slice(0, 1500)}
 
 Output ONLY the one-sentence visual direction, nothing else.`;
-      visualDirection = (await callLLM(analysisPrompt, 80)).trim().replace(/^["']|["']$/g, "");
+      visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
       console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
     } catch (e) {
       console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
@@ -243,10 +261,10 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       for (let i = 0; i < batch.length; i++) {
         const alts = rawAlts[i] ?? [];
 
-        // Pick first non-duplicate valid keyword
+        // Pick first non-duplicate and non-similar valid keyword
         let picked = "";
         for (const alt of alts) {
-          if (alt && !usedKeywords.has(alt)) {
+          if (alt && !usedKeywords.has(alt) && !isTooSimilar(alt, usedKeywords)) {
             picked = alt;
             break;
           }
@@ -263,7 +281,18 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
             .split(/\s+/)
             .filter(w => w.length > 3 && /^[a-z]/.test(w))
             .slice(0, 3);
-          picked = words.length >= 2 ? words.join(" ") : "technology office";
+          // derive from visual direction if available, otherwise use first content words
+          if (words.length >= 2) {
+            picked = words.join(" ");
+          } else {
+            const dirWords = visualDirection
+              .toLowerCase()
+              .replace(/[^a-z\s]/g, " ")
+              .split(/\s+/)
+              .filter(w => w.length > 3)
+              .slice(0, 2);
+            picked = dirWords.length >= 2 ? dirWords.join(" ") : dirWords[0] || words[0] || "scene";
+          }
         }
 
         usedKeywords.add(picked);
@@ -307,7 +336,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 Focus on: mood/tone, setting/environment, color palette, energy level, target emotion.
 Script: ${cleanScript.slice(0, 1500)}
 Output ONLY the one-sentence visual direction, nothing else.`;
-    visualDirection = (await callLLM(analysisPrompt, 80)).trim().replace(/^["']|["']$/g, "");
+    visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
     console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
   } catch {}
 
@@ -341,7 +370,28 @@ Exactly ${numScenes} queries.`;
     const parsed = parseKeywordAlternatives(text);
     let queries = parsed.map(g => g[0]).filter(Boolean);
 
-    while (queries.length < numScenes) queries.push("technology office");
+    // Fill missing queries from the corresponding scene text or visual direction
+    while (queries.length < numScenes) {
+      const idx = queries.length;
+      const sceneText = sceneList[idx] ?? "";
+      const words = sceneText
+        .toLowerCase()
+        .replace(/[^a-z\s]/g, " ")
+        .split(/\s+/)
+        .filter(w => w.length > 3 && /^[a-z]/.test(w))
+        .slice(0, 3);
+      if (words.length >= 2) {
+        queries.push(words.join(" "));
+      } else {
+        const dirWords = visualDirection
+          .toLowerCase()
+          .replace(/[^a-z\s]/g, " ")
+          .split(/\s+/)
+          .filter(w => w.length > 3)
+          .slice(0, 2);
+        queries.push(dirWords.length >= 1 ? dirWords.join(" ") : "scene");
+      }
+    }
     queries = queries.slice(0, numScenes);
 
     const perScene = 1;
