@@ -56,15 +56,19 @@ const nextConfig: NextConfig = {
     "@esbuild/darwin-arm64",
   ],
   webpack: (config) => {
-    // .node native addons must never enter webpack's module graph.
-    // WasmHash crashes with "Cannot read properties of undefined (reading 'length')"
-    // when webpack tries to hash a native binary as if it were a JS module.
-    // Mark them as externals so webpack never reads or hashes the binary content.
     const prevExternals = config.externals ?? [];
     config.externals = [
       ...(Array.isArray(prevExternals) ? prevExternals : [prevExternals]),
       ({ request }: { request?: string }, callback: (err?: Error | null, result?: string) => void) => {
-        if (request && request.endsWith(".node")) {
+        if (!request) return callback();
+        // Never bundle native addons or heavy server-only packages
+        if (request.endsWith(".node")) return callback(null, `commonjs ${request}`);
+        if (
+          request === "fluent-ffmpeg" ||
+          request.startsWith("fluent-ffmpeg/") ||
+          request === "@ffmpeg-installer/ffmpeg" ||
+          request.startsWith("@ffmpeg-installer/")
+        ) {
           return callback(null, `commonjs ${request}`);
         }
         callback();
