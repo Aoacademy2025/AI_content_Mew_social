@@ -57,11 +57,15 @@ const nextConfig: NextConfig = {
     "@esbuild/darwin-arm64",
   ],
   webpack: (config) => {
-    // Replace WasmHash with xxhash-wasm-free md4 to avoid OOM on VPS.
-    // WasmHash requires a large contiguous WASM memory allocation that fails
-    // on low-RAM / restricted-VM VPS kernels even when physical RAM is available.
+    // Replace WasmHash with md4 to avoid OOM on VPS.
+    // WasmHash (xxhash via WASM) requires contiguous WASM memory that VPS kernels
+    // cannot allocate. md4 is CPU-only and always works.
+    // Always force md4 — it's safe on all platforms.
     config.output = config.output ?? {};
     config.output.hashFunction = "md4";
+    config.optimization = config.optimization ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (config.optimization as any).realContentHash = false;
 
     // .node native addons must never enter webpack's module graph.
     const prevExternals = config.externals ?? [];
