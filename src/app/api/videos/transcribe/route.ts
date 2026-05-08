@@ -328,84 +328,72 @@ function alignPhrasesToSegmentTimestamps(
   const bare = (s: string) =>
     s.replace(/\s+/g, "").replace(/[.,!?;:"""''()[\]{}<>«»\/\\–—]/g, "").toLowerCase();
 
-  // Build segment char lengths for proportion fallback
-  const segBareLens = segments.map(s => Math.max(1, bare(s.text).length));
-  const totalSegChars = segBareLens.reduce((a, b) => a + b, 0);
+  // Greedy text-match: walk segments left-to-right and greedily consume
+  // segments whose text appears in the phrase. This is accurate for Thai
+  // because Gemini segments and LLM phrases share the same source text.
+  const segTexts = segments.map(s => bare(s.text));
 
-  // Build cumulative segment char positions → maps global char pos to segment index
-  const segCumChars: number[] = [];
-  let cum = 0;
-  for (const l of segBareLens) { cum += l; segCumChars.push(cum); }
+  // For each phrase find the first segment index where its text starts,
+  // then extend to cover all segments that are fully contained in the phrase.
+  const phraseStartSeg: number[] = [];
+  const phraseEndSeg: number[] = [];
+  let segCursor = 0;
 
-  // For each phrase: find which segment it belongs to by char proportion
-  // (phrase's cumulative char midpoint → segment index)
-  const phraseBareLens = phrases.map(p => Math.max(1, bare(p).length));
-  const totalPhraseChars = phraseBareLens.reduce((a, b) => a + b, 0);
-
-  // Map phrase index → segment index using char midpoint proportion
-  const phraseToSeg = (phraseCharMid: number): number => {
-    const ratio = phraseCharMid / totalPhraseChars;
-    const targetChar = ratio * totalSegChars;
-    for (let si = 0; si < segCumChars.length; si++) {
-      if (targetChar <= segCumChars[si]) return si;
+  for (let pi = 0; pi < phrases.length; pi++) {
+    const pBare = bare(phrases[pi]);
+    // Find first segment whose text appears in this phrase, starting from segCursor
+    let firstSi = segCursor;
+    for (let si = segCursor; si < segments.length; si++) {
+      if (pBare.includes(segTexts[si]) || segTexts[si].includes(pBare.slice(0, 4))) {
+        firstSi = si;
+        break;
+      }
     }
-    return segments.length - 1;
-  };
-
-  // Assign each phrase a segment index
-  const assignments: number[] = [];
-  let cumPhraseChars = 0;
-  for (let i = 0; i < phrases.length; i++) {
-    const mid = cumPhraseChars + phraseBareLens[i] / 2;
-    assignments[i] = phraseToSeg(mid);
-    cumPhraseChars += phraseBareLens[i];
+    // Extend: find last segment still contained in this phrase
+    let lastSi = firstSi;
+    for (let si = firstSi + 1; si < segments.length; si++) {
+      if (pBare.includes(segTexts[si])) {
+        lastSi = si;
+      } else {
+        break;
+      }
+    }
+    phraseStartSeg.push(firstSi);
+    phraseEndSeg.push(lastSi);
+    segCursor = lastSi + 1;
   }
 
-  // For each segment, find which phrases map to it and interpolate within the segment
+  // Ensure monotonic: each phrase must start at or after previous phrase ended
+  for (let pi = 1; pi < phrases.length; pi++) {
+    if (phraseStartSeg[pi] <= phraseEndSeg[pi - 1]) {
+      phraseStartSeg[pi] = phraseEndSeg[pi - 1] + 1;
+    }
+    if (phraseEndSeg[pi] < phraseStartSeg[pi]) {
+      phraseEndSeg[pi] = phraseStartSeg[pi];
+    }
+    // Cap at last segment
+    phraseStartSeg[pi] = Math.min(phraseStartSeg[pi], segments.length - 1);
+    phraseEndSeg[pi] = Math.min(phraseEndSeg[pi], segments.length - 1);
+  }
+
   const out: { text: string; startMs: number; endMs: number }[] = [];
-
-  for (let i = 0; i < phrases.length; i++) {
-    const si = assignments[i];
-    const seg = segments[si];
-
-    // Count how many phrases share this segment
-    const firstInSeg = assignments.indexOf(si);
-    const lastInSeg = assignments.lastIndexOf(si);
-    const countInSeg = lastInSeg - firstInSeg + 1;
-    const posInSeg = i - firstInSeg; // 0-based position within the segment
-
-    const segDur = seg.end - seg.start;
-
-    // Interpolate start/end within the segment based on position
-    const sliceStart = seg.start + (posInSeg / countInSeg) * segDur;
-    const sliceEnd   = seg.start + ((posInSeg + 1) / countInSeg) * segDur;
-
+  for (let pi = 0; pi < phrases.length; pi++) {
+    const startSi = phraseStartSeg[pi];
+    const endSi   = phraseEndSeg[pi];
     out.push({
-      text: sanitizeTranscriptionText(phrases[i]),
-      startMs: Math.round(sliceStart * 1000),
-      endMs:   Math.round(Math.max(sliceStart + 0.3, sliceEnd) * 1000),
+      text: sanitizeTranscriptionText(phrases[pi]),
+      startMs: Math.round(segments[startSi].start * 1000),
+      endMs:   Math.round(segments[endSi].end * 1000),
     });
   }
 
-  // Extend each caption to cover all segments assigned to it (not to the next phrase's start,
-  // which may skip several segments and drift far from the actual speech timing).
-  for (let i = 0; i < out.length; i++) {
-    const si = assignments[i];
-    // Find the last segment assigned to this phrase
-    let lastSi = si;
-    if (i < out.length - 1) {
-      // Cover up to (but not including) the first segment of the next phrase
-      lastSi = Math.max(si, assignments[i + 1] - 1);
-    } else {
-      lastSi = segments.length - 1;
-    }
-    out[i].endMs = Math.round(segments[lastSi].end * 1000);
-  }
-
-  // Ensure no gap between consecutive captions
+  // Trim overlaps and fill small gaps between consecutive captions
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].endMs < out[i + 1].startMs) {
+    if (out[i].endMs > out[i + 1].startMs) {
       out[i].endMs = out[i + 1].startMs;
+    }
+    if (out[i].endMs < out[i + 1].startMs) {
+      out[i].endMs = out[i + 1].startMs; // bridge gap
     }
   }
 
