@@ -27,6 +27,11 @@ module.exports = {
       cron_restart: "0 3 * * *", // runs every day at 3:00 AM
       autorestart: false,
       watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
     },
   ],
 };
