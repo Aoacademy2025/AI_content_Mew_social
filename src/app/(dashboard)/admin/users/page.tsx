@@ -124,7 +124,7 @@ export default function AdminUsersPage() {
       toast.success(data.message);
       // Reload cache info
       const res2 = await fetch(`/api/admin/users/${userId}/cache`);
-      if (res2.ok) setCacheInfo(prev => ({ ...prev, [userId]: await res2.json() }));
+      if (res2.ok) { const d2 = await res2.json(); setCacheInfo(prev => ({ ...prev, [userId]: d2 })); }
     } catch {
       toast.error("เคลียร์แคชไม่สำเร็จ");
     } finally {
