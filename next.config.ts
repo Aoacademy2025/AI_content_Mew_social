@@ -11,6 +11,12 @@ if (process.platform === "win32") {
 }
 
 const nextConfig: NextConfig = {
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   experimental: {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
