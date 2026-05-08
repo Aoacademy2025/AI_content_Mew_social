@@ -1588,7 +1588,7 @@ export default function ShortVideoPage() {
         const sceneKwPool = (pipe.current.keywords ?? []);
 
         let perSubKws2: string[] = [];
-        setStep("fetchStock", "running", `mapping ${N2} ซับ → keyword...`);
+        setStep("keywords", "running", `mapping ${N2} ซับ → keyword...`);
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             const r = await fetch("/api/videos/extract-keywords", {
@@ -1602,6 +1602,7 @@ export default function ShortVideoPage() {
             if (got.length > perSubKws2.length) perSubKws2 = got;
           } catch { continue; }
         }
+        setStep("keywords", "done", `${perSubKws2.length} keywords (1/ซับ)`);
         if (perSubKws2.length < N2) {
           const padded = [...perSubKws2];
           const fallbackPool2 = padded.length > 0 ? padded : ["lifestyle scene"];
