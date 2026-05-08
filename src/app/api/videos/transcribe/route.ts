@@ -1139,6 +1139,7 @@ Return ONLY valid JSON, no markdown, no explanation:
       form.append("response_format", "verbose_json");
       // whisper-large-v3 supports segment-level only (word-level is whisper-1 only)
       form.append("timestamp_granularities[]", "segment");
+      form.append("language", "th");
       if (scriptPrompt?.trim()) form.append("prompt", scriptPrompt.trim().slice(0, 224));
 
       const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -1157,6 +1158,7 @@ Return ONLY valid JSON, no markdown, no explanation:
         form1.append("response_format", "verbose_json");
         form1.append("timestamp_granularities[]", "segment");
         form1.append("timestamp_granularities[]", "word");
+        form1.append("language", "th");
         if (scriptPrompt?.trim()) form1.append("prompt", scriptPrompt.trim().slice(0, 224));
         const whisperRes1 = await fetch("https://api.openai.com/v1/audio/transcriptions", {
           method: "POST",
@@ -1512,17 +1514,33 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy B: segment-anchored alignment (Gemini only — Whisper segment text is inaccurate for Thai)
-        // Skip for OpenAI Whisper — use word-level alignment (Strategy C) instead which is more precise.
-        const segmentDensityOk = useGeminiTranscribe && segments.length >= 2 && (phrases.length / segments.length) <= 4;
+        // Strategy B: segment-anchored alignment (Gemini + OpenAI)
+        // Uses segment start/end as timing anchors, char-proportion within each segment.
+        // Works for both providers — segment timing is reliable even when segment text is inaccurate.
+        const segmentDensityOk = segments.length >= 2 && (phrases.length / segments.length) <= 6;
         if (result.length === 0 && segmentDensityOk) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
             result = segAligned;
             console.log(`[transcribe] Strategy B segment-anchored alignment: ${result.length} phrases over ${segments.length} segs`);
           }
-        } else if (useGeminiTranscribe && segments.length >= 2) {
-          console.log(`[transcribe] Strategy B skipped — sparse segments (${segments.length} segs / ${phrases.length} phrases), using char-proportion`);
+        } else if (result.length === 0 && segments.length === 1) {
+          // Single segment — distribute phrases by char-proportion within that segment's time range
+          const seg = segments[0];
+          const segStart = seg.start;
+          const segEnd = Math.max(seg.end, segStart + audioDur * 0.9);
+          const charLengths = phrases.map(alignmentCharLen);
+          const totalChars = charLengths.reduce((a, b) => a + b, 0);
+          let cumChars = 0;
+          for (let i = 0; i < phrases.length; i++) {
+            const t0 = segStart + (cumChars / totalChars) * (segEnd - segStart);
+            cumChars += charLengths[i];
+            const t1 = segStart + (cumChars / totalChars) * (segEnd - segStart);
+            result.push({ text: sanitizePhraseText(phrases[i]), startMs: Math.round(t0 * 1000), endMs: Math.round(t1 * 1000) });
+          }
+          console.log(`[transcribe] Strategy B1 single-segment char-proportion: ${result.length} phrases, ${segStart.toFixed(1)}s–${segEnd.toFixed(1)}s`);
+        } else if (segments.length >= 2) {
+          console.log(`[transcribe] Strategy B skipped — sparse segments (${segments.length} segs / ${phrases.length} phrases)`);
         }
 
         // Strategy C: word-level alignment (Whisper word timestamps — primary path for OpenAI)
