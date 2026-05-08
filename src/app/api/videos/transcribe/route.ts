@@ -1020,9 +1020,8 @@ Return ONLY valid JSON, no markdown, no explanation:
               }],
               generationConfig: {
                 temperature: 0,
-                maxOutputTokens: 16384,
-                responseMimeType: "application/json",
-                thinkingConfig: { thinkingBudget: 1024 },
+                maxOutputTokens: 65536,
+                thinkingConfig: { thinkingBudget: 0 },
               },
             }),
           }
