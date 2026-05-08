@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
+import { getServerSession, Session } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
 export const runtime = "nodejs";
 
-function isAdmin(session: Awaited<ReturnType<typeof getServerSession>>) {
-  return session?.user && (session.user as { role?: string }).role === "ADMIN";
+function isAdmin(session: Session | null) {
+  return session?.user?.role === "ADMIN";
 }
 
 // GET — list all coupons
