@@ -439,27 +439,49 @@ function alignPhrasesCharProportion(
 ): { text: string; startMs: number; endMs: number }[] {
   if (!phrases.length) return [];
 
-  // Always start from 0 — first subtitle must appear with first word, not from first segment boundary
-  const timelineStart = 0;
-  const timelineEnd = segments.length > 0 ? Math.max(segments[segments.length - 1].end, audioDur) : audioDur;
-  const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.9, 1);
-
   const charLengths = phrases.map(alignmentCharLen);
   const totalChars = charLengths.reduce((a, b) => a + b, 0);
   if (totalChars === 0) return [];
 
+  // If no segments, fall back to full audioDur range
+  if (!segments.length) {
+    const timelineLen = Math.max(audioDur, 1);
+    let cumChars = 0;
+    return phrases.map((p, i) => {
+      const t0 = (cumChars / totalChars) * timelineLen;
+      cumChars += charLengths[i];
+      const t1 = (cumChars / totalChars) * timelineLen;
+      return { text: sanitizePhraseText(p), startMs: Math.round(t0 * 1000), endMs: Math.round(t1 * 1000) };
+    });
+  }
+
+  // Build timeline from segment boundaries — use segments as anchor points.
+  // Phrases are distributed proportionally by char count across the segment timeline.
+  // This keeps subtitles in sync with actual speech, not stretched to full audioDur.
+  // Segment[0].start may be > 0 (silence at start) — clamp to 0 so first subtitle shows immediately.
+  const segStart = 0; // always start at 0
+  const segEnd = segments[segments.length - 1].end;
+
+  // Assign each phrase a proportional position within [segStart, segEnd]
+  const timelineLen = Math.max(segEnd - segStart, 1);
   let cumChars = 0;
   const out: { text: string; startMs: number; endMs: number }[] = [];
   for (let i = 0; i < phrases.length; i++) {
-    const t0 = timelineStart + (cumChars / totalChars) * timelineLen;
+    const t0 = segStart + (cumChars / totalChars) * timelineLen;
     cumChars += charLengths[i];
-    const t1 = timelineStart + (cumChars / totalChars) * timelineLen;
+    const t1 = segStart + (cumChars / totalChars) * timelineLen;
     out.push({
       text: sanitizePhraseText(phrases[i]),
       startMs: Math.round(t0 * 1000),
       endMs: Math.round(t1 * 1000),
     });
   }
+
+  // Extend last caption to audioDur so screen doesn't go blank early
+  if (out.length > 0) {
+    out[out.length - 1].endMs = Math.round(audioDur * 1000);
+  }
+
   return out;
 }
 
@@ -1282,7 +1304,189 @@ Return ONLY valid JSON, no markdown, no explanation:
 
       captions = [];
 
-      // ── LLM always splits subtitles — Gemini segment timestamps used only for timing alignment ──
+      // ── Gemini: send segments to LLM to merge/split into proper subtitle cards ──
+      // Gemini transcribe gives us segments with accurate timestamps.
+      // LLM decides which segments to merge (orphans, tail words) or split (too long).
+      // LLM outputs captions with startMs/endMs taken from segment boundaries.
+      if (useGeminiTranscribe && segments.length >= 1 && apiKey) {
+        const totalAudioMs = Math.max(1, Math.round(audioDur * 1000));
+
+        // Format segments as numbered list for LLM
+        const segList = segments.map((s, i) =>
+          `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
+        ).join("\n");
+
+        const scriptForPrompt = sourceText.trim().slice(0, 3000);
+        const geminiMergePrompt = `You are a Thai subtitle editor for TikTok/Reels short-form video.
+
+Gemini transcribed the audio into segments below. Each segment has accurate timestamps. Your job: produce subtitle cards — one card per screen line.
+
+━━━ CHARACTER COUNTING ━━━
+• Count ONLY Thai letters (ก–ฮ, vowels, tone marks). English letters, numbers (2021, GPT, AI, Claude), spaces — do NOT count.
+• Example: "เขาออกมาตั้งบริษัทของตัวเองในปี 2021" = 22 Thai chars (2021 is free, keep it with the phrase).
+
+━━━ MERGING (most important) ━━━
+• Merge consecutive segments that form one natural thought unit, up to 25 Thai chars total.
+• ALWAYS merge short tail segments onto the previous segment — do NOT leave these alone: "ครับ", "นะ", "AI", "วงการ", "เดียว", "หลายตัว", "ตลอดกาล", "เดียวกัน", any segment with ≤ 4 Thai chars.
+• Keep numbers and English words (2021, GPT, Claude, Enterprise) attached to their Thai context — never split them off.
+• Merge across short gaps (< 0.5s) freely — breath pauses within the same phrase.
+• Stop merging at sentence-ending punctuation (. ? ! ฯ) or gaps ≥ 0.8s.
+
+━━━ SPLITTING (rarely needed) ━━━
+• Only split if a single segment has > 35 Thai chars. Split at a natural word/thought boundary. Divide timestamp proportionally.
+• Never split numbers or English brand names from their Thai context.
+
+━━━ COMPLETENESS CHECK (critical) ━━━
+• The SCRIPT below is the full text the speaker says. Every word in the script MUST appear in your output.
+• Before finalizing, verify: join all your caption texts and compare against the script — nothing should be missing or dropped.
+• If a word from the script is missing in the segments, add it to the nearest caption that has the right timestamp.
+
+━━━ TIMESTAMPS ━━━
+• startMs = startMs of the FIRST segment in the merged group (in milliseconds, not seconds).
+• endMs = endMs of the LAST segment in the merged group.
+• First card startMs = 0 always.
+• Convert seconds to milliseconds: multiply by 1000.
+
+━━━ TAGS ━━━
+• "hook" = first 1–2 cards only
+• "cta" = cards with กดติดตาม / คอมเมนต์ / like / share
+• "body" = everything else
+
+━━━ OUTPUT ━━━
+Return ONLY valid JSON — no markdown, no explanation:
+{"captions":[{"text":"...","startMs":0,"endMs":2950,"tag":"hook"},{"text":"...","startMs":2950,"endMs":4590,"tag":"body"},...]}
+
+━━━ FULL SCRIPT (reference for completeness check) ━━━
+${scriptForPrompt}
+
+━━━ SEGMENTS (seconds) ━━━
+${segList}
+
+Total audio: ${audioDur.toFixed(2)}s`;
+
+        let llmCaptions: { text: string; startMs: number; endMs: number }[] = [];
+        try {
+          const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
+          console.log(`[transcribe] Gemini merge raw (${raw.length} chars): ${raw.slice(0, 300)}`);
+          const stripped = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+
+          // Try full parse first
+          let parsed: { captions?: { text?: string; startMs?: number; endMs?: number; tag?: string }[] } | null = null;
+          const fullMatch = stripped.match(/\{[\s\S]*\}/);
+          if (fullMatch) {
+            try { parsed = JSON.parse(fullMatch[0]); } catch { /* fall through to repair */ }
+          }
+
+          // Repair: extract every complete caption object regardless of field order
+          if (!parsed || !Array.isArray(parsed.captions) || parsed.captions.length === 0) {
+            const items: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
+            // Match any JSON object with at least text+startMs+endMs fields (order-independent)
+            const objRegex = /\{[^{}]*"text"\s*:\s*"((?:[^"\\]|\\.)*)"[^{}]*"startMs"\s*:\s*(\d+)[^{}]*"endMs"\s*:\s*(\d+)[^{}]*\}/g;
+            const objRegex2 = /\{[^{}]*"startMs"\s*:\s*(\d+)[^{}]*"endMs"\s*:\s*(\d+)[^{}]*"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+            let m2: RegExpExecArray | null;
+            const seen = new Set<string>();
+            while ((m2 = objRegex.exec(stripped)) !== null) {
+              const key = `${m2[2]}-${m2[3]}`;
+              if (!seen.has(key)) { seen.add(key); items.push({ text: m2[1], startMs: Number(m2[2]), endMs: Number(m2[3]) }); }
+            }
+            while ((m2 = objRegex2.exec(stripped)) !== null) {
+              const key = `${m2[1]}-${m2[2]}`;
+              if (!seen.has(key)) { seen.add(key); items.push({ text: m2[3], startMs: Number(m2[1]), endMs: Number(m2[2]) }); }
+            }
+            items.sort((a, b) => a.startMs - b.startMs);
+            if (items.length > 0) { parsed = { captions: items }; console.log(`[transcribe] Gemini merge repaired: ${items.length} captions`); }
+          }
+
+          if (parsed && Array.isArray(parsed.captions)) {
+            llmCaptions = parsed.captions
+              .filter(c => typeof c.text === "string" && typeof c.startMs === "number" && typeof c.endMs === "number")
+              .map(c => ({ text: sanitizePhraseText(c.text!), startMs: c.startMs!, endMs: c.endMs!, tag: c.tag }))
+              .filter(c => c.text.length > 0) as { text: string; startMs: number; endMs: number; tag?: string }[];
+          }
+        } catch (e) {
+          console.warn("[transcribe] Gemini merge LLM failed:", e);
+        }
+
+        // Fallback: use segments directly if LLM failed
+        if (llmCaptions.length === 0) {
+          console.warn("[transcribe] Gemini merge fallback: using raw segments");
+          llmCaptions = segments
+            .map(s => ({ text: sanitizePhraseText(s.text), startMs: Math.round(s.start * 1000), endMs: Math.round(s.end * 1000) }))
+            .filter(c => c.text.length > 0);
+        }
+
+        // Hard-split any caption still > 25 Thai chars by char-proportion within its time window
+        // Hard-split only truly long captions (> 35 Thai chars) — safety net for LLM misses
+        const MAX_THAI_SPLIT = 35;
+        const splitCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
+        for (const cap of llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]) {
+          const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
+          if (thaiLen > MAX_THAI_SPLIT) {
+            const chunks = splitTextByTargetLen(cap.text, MAX_THAI_SPLIT, 10);
+            if (chunks.length > 1) {
+              const durMs = Math.max(1, cap.endMs - cap.startMs);
+              const charLens = chunks.map(c => Math.max(1, alignmentCharLen(c)));
+              const totalC = charLens.reduce((a, b) => a + b, 0);
+              let cum = 0;
+              for (let ci = 0; ci < chunks.length; ci++) {
+                const t0 = cap.startMs + Math.round((cum / totalC) * durMs);
+                cum += charLens[ci];
+                const t1 = cap.startMs + Math.round((cum / totalC) * durMs);
+                splitCaptions.push({ text: sanitizePhraseText(chunks[ci]), startMs: t0, endMs: t1, tag: cap.tag });
+              }
+              continue;
+            }
+          }
+          splitCaptions.push(cap);
+        }
+
+        // Merge orphan captions (≤ 4 Thai chars and ≤ 800ms) into previous — LLM sometimes misses these
+        const mergedCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
+        for (const cap of splitCaptions) {
+          const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
+          const durMs = cap.endMs - cap.startMs;
+          const isOrphan = thaiLen <= 4 && durMs <= 800;
+          if (isOrphan && mergedCaptions.length > 0) {
+            const prev = mergedCaptions[mergedCaptions.length - 1];
+            const combined = `${prev.text} ${cap.text}`.trim();
+            const combinedThai = (combined.match(/[฀-๿]/g) ?? []).length;
+            if (combinedThai <= 32) {
+              prev.text = combined;
+              prev.endMs = cap.endMs;
+              continue;
+            }
+          }
+          mergedCaptions.push({ ...cap });
+        }
+        llmCaptions = mergedCaptions;
+
+        // First caption starts at 0
+        if (llmCaptions.length > 0 && (llmCaptions[0] as { startMs: number }).startMs > 0) (llmCaptions[0] as { startMs: number }).startMs = 0;
+
+        // Bridge gaps and extend last to audio end
+        for (let i = 0; i < llmCaptions.length - 1; i++) {
+          const a = llmCaptions[i] as { endMs: number };
+          const b = llmCaptions[i + 1] as { startMs: number };
+          if (b.startMs > a.endMs) a.endMs = b.startMs;
+        }
+        if (llmCaptions.length > 0) (llmCaptions[llmCaptions.length - 1] as { endMs: number }).endMs = totalAudioMs;
+
+        const tagged = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
+          text: c.text,
+          startMs: c.startMs,
+          endMs: c.endMs,
+          timestampMs: c.startMs,
+          confidence: 1 as number,
+          tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i < 2 ? "hook" : "body") as "hook" | "body" | "cta",
+        }));
+        const sanitized = sanitizeCaptionsTimeline(tagged, totalAudioMs, 30, true);
+        if (sanitized.length > 0) {
+          captions = sanitized.map(c => ({ text: c.text, startMs: c.startMs, endMs: c.endMs, timestampMs: c.startMs, confidence: 1, tag: (c.tag ?? "body") as "hook" | "body" | "cta" }));
+          console.log(`[transcribe] Gemini LLM-merged segments → ${captions.length} captions`);
+          captions.forEach((c, i) => console.log(`  [${i}] ${(c.startMs/1000).toFixed(2)}s–${(c.endMs/1000).toFixed(2)}s "${c.text.slice(0,30)}"`));
+        }
+      }
+
       let phrases: string[] = [];
       let llmTags: ("hook" | "body" | "cta")[] = [];
       let minPhrases = 4;
@@ -1293,11 +1497,10 @@ Return ONLY valid JSON, no markdown, no explanation:
       const strictSentences = splitToPunctuationSentences(sourceText);
       const shouldSkipLLMSplit = strictSentences.length === 1 && !hasSentencePunctuation && sourceText.length <= 70;
 
-      // For long scripts (>120s) with Gemini segments: use segments directly as phrases.
-      // Both Gemini and OpenAI go through LLM split using real script text.
-      // Gemini segments → timestamps only (for alignment); script → subtitle text.
-      // OpenAI Whisper segments → timestamps only; script → subtitle text.
-      if (shouldSkipLLMSplit) {
+      // OpenAI: LLM splits script into phrases, then align to Whisper segment timestamps
+      if (captions.length > 0) {
+        // Gemini already done above — skip LLM split entirely
+      } else if (shouldSkipLLMSplit) {
         phrases = mergeTinyPhrases(mergeDateAndConnectorBreaks(scriptSentencesInitial));
         console.log(`[transcribe] skip LLM split for single-sentence input: ${phrases.length} phrase(s)`);
       } else if (apiKey) {
@@ -1341,9 +1544,9 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = one complete thought unit (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+• Each phrase = ONE LINE on screen. MAX 25 Thai characters per phrase (count Thai letters only, not spaces/punctuation). MUST split if over 25 Thai chars.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
-• NEVER split mid-sentence just to hit a char limit.
+• If phrase still exceeds 25 Thai chars, split further at a word/thought boundary.
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 • Max 6s per subtitle — long pauses → split into more phrases.
@@ -1378,10 +1581,10 @@ TASK: Split the SCRIPT into subtitle phrases. Each phrase = one subtitle card on
 RULES:
 1. COPY every word from the SCRIPT exactly — do NOT drop, reorder, or paraphrase anything.
 2. Output ${minPhrases}–${maxPhrases} phrases for ${durationSec.toFixed(1)}s of audio (same count as Gemini would produce).
-3. Each phrase = 1 complete thought (8–30 Thai chars ideal, hard max 40 chars). Split if over 40 chars.
+3. Each phrase = ONE LINE on screen. MAX 25 Thai characters per phrase (count Thai letters only). MUST split if over 25 Thai chars.
 4. NEVER split mid-word or mid-thought — Thai has no spaces, cut only at complete word/thought boundaries.
 5. Split at: sentence-end (. ? ! ฯ), major conjunctions (แต่, และ, เพราะ, จึง), or natural breath points.
-6. NEVER split mid-sentence just to hit a character limit.
+6. If a phrase still exceeds 25 Thai chars after splitting at conjunctions, split further at any word boundary.
 7. NEVER split a date expression — Thai month + year = one phrase.
 8. Remove English parenthetical pronunciation notes like (Anyons) — not subtitle text.
 9. Max 6s per subtitle — very long sections must split into more phrases.
@@ -1447,6 +1650,14 @@ ${sourceText.trim()}`;
                 // This prevents LLM from dropping words like "และ", "ของ", etc.
                 phrases = mergeTinyPhrases(snapPhrasesToScript(raw, sourceText));
                 phrases = deduplicatePhraseEdges(mergeDateAndConnectorBreaks(phrases));
+                // Hard-split any phrase the LLM returned over 25 Thai chars — single line guarantee
+                const MAX_THAI_CHARS_LLM = 25;
+                phrases = phrases.flatMap((p) => {
+                  const thaiLen = (p.match(/[฀-๿]/g) ?? []).length;
+                  if (thaiLen <= MAX_THAI_CHARS_LLM) return [p];
+                  const chunks = splitTextByTargetLen(p, MAX_THAI_CHARS_LLM, 8);
+                  return chunks.length > 1 ? chunks : [p];
+                });
                 console.log(`[transcribe] LLM split → ${phrases.length} phrases (ratio=${charRatio.toFixed(3)}) tags=${llmTags.length}`);
               } else {
                 console.warn(`[transcribe] LLM ratio mismatch orig=${origStripped.length} out=${outStripped.length} ratio=${charRatio.toFixed(3)}`);
@@ -1548,6 +1759,16 @@ ${sourceText.trim()}`;
         phrases = phrases
           .map((p) => normalizeCaptionText(p))
           .filter(Boolean);
+
+        // Hard-split any phrase still over 25 Thai chars — guarantees single line on screen.
+        const MAX_THAI_CHARS = 25;
+        phrases = phrases.flatMap((p) => {
+          const thaiLen = (p.match(/[฀-๿]/g) ?? []).length;
+          if (thaiLen <= MAX_THAI_CHARS) return [p];
+          const chunks = splitTextByTargetLen(p, MAX_THAI_CHARS, 8);
+          return chunks.length > 1 ? chunks : [p];
+        });
+
         console.log(`[transcribe] phrase postprocess → ${phrases.length} phrases`);
       }
 
@@ -1562,39 +1783,175 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy B: Gemini — char-proportion across segment timeline
-        // Use segment boundaries as time anchors but distribute phrases by char-proportion.
-        // Text-match abandoned: unreliable when segment count << phrase count (e.g. 6 segs / 40 phrases).
-        if (result.length === 0 && useGeminiTranscribe && segments.length >= 1) {
-          const aligned = alignPhrasesCharProportion(phrases, segments, audioDur);
-          if (aligned.length === phrases.length) {
-            result = aligned;
-            console.log(`[transcribe] Strategy B Gemini char-proportion: ${result.length} phrases over ${segments.length} segs, dur=${audioDur.toFixed(1)}s`);
+        // Strategy B: Gemini — use Gemini segments directly as subtitle timing.
+        // Gemini already split the audio at breath boundaries with accurate timestamps.
+        // We walk phrases and segments in parallel using greedy text matching:
+        //   - strip both to bare chars, check if phrase chars appear in accumulated segment chars
+        //   - when accumulated segments cover a phrase, lock that segment's timestamp to the phrase
+        // Multiple phrases per segment → subdivide that segment's time by char-proportion.
+        if (result.length === 0 && useGeminiTranscribe && segments.length >= 2) {
+          const bare = (s: string) => s.replace(/\s+/g, "").replace(/[.,!?;:"""''()[\]{}«»\/\\–—]/g, "").toLowerCase();
+
+          // Greedy walk: accumulate segment text until it covers the current phrase
+          const phraseToSeg: number[] = new Array(phrases.length).fill(-1);
+          let si = 0;
+          let accSegText = "";
+
+          for (let pi = 0; pi < phrases.length; pi++) {
+            const pBare = bare(phrases[pi]);
+            // Accumulate segments until the combined text covers this phrase
+            while (si < segments.length) {
+              accSegText += bare(segments[si].text);
+              // Check if accumulated text now contains or matches the phrase
+              if (accSegText.includes(pBare) || accSegText.length >= pBare.length) {
+                phraseToSeg[pi] = si;
+                // Only advance segment if it's fully consumed (next phrase starts fresh)
+                // Otherwise keep si pointing to current segment (multiple phrases per segment)
+                const remaining = accSegText.replace(pBare, "");
+                if (remaining.length < 3) {
+                  // Segment mostly consumed — move to next segment for next phrase
+                  accSegText = "";
+                  si = Math.min(si + 1, segments.length - 1);
+                } else {
+                  // Segment still has chars — next phrase may also belong to this segment
+                  accSegText = remaining;
+                }
+                break;
+              }
+              // Accumulated text not enough yet — consume next segment too
+              si = Math.min(si + 1, segments.length - 1);
+              if (si === segments.length - 1) {
+                accSegText += bare(segments[si].text);
+                phraseToSeg[pi] = si;
+                accSegText = "";
+                break;
+              }
+            }
+            if (phraseToSeg[pi] === -1) phraseToSeg[pi] = segments.length - 1;
+          }
+
+          // Enforce monotonic
+          for (let pi = 1; pi < phrases.length; pi++) {
+            if (phraseToSeg[pi] < phraseToSeg[pi - 1]) phraseToSeg[pi] = phraseToSeg[pi - 1];
+          }
+
+          // Group phrases by segment and subdivide each segment's time by char-proportion
+          const phraseCharsB = phrases.map(p => Math.max(1, alignmentCharLen(p)));
+          const segGroupsB: number[][] = Array.from({ length: segments.length }, () => []);
+          for (let pi = 0; pi < phrases.length; pi++) segGroupsB[phraseToSeg[pi]].push(pi);
+
+          const tempResult: { text: string; startMs: number; endMs: number }[] = new Array(phrases.length);
+          for (let si2 = 0; si2 < segments.length; si2++) {
+            const group = segGroupsB[si2];
+            if (group.length === 0) continue;
+            const segStartMs = Math.round(segments[si2].start * 1000);
+            const segEndMs   = Math.round(segments[si2].end * 1000);
+            const segDurMs   = Math.max(segEndMs - segStartMs, 1);
+            if (group.length === 1) {
+              tempResult[group[0]] = { text: sanitizePhraseText(phrases[group[0]]), startMs: segStartMs, endMs: segEndMs };
+            } else {
+              const groupChars = group.map(pi => phraseCharsB[pi]);
+              const groupTotal = groupChars.reduce((a, b) => a + b, 0) || 1;
+              let cumGC = 0;
+              for (let g = 0; g < group.length; g++) {
+                const t0 = segStartMs + Math.round((cumGC / groupTotal) * segDurMs);
+                cumGC += groupChars[g];
+                const t1 = segStartMs + Math.round((cumGC / groupTotal) * segDurMs);
+                tempResult[group[g]] = { text: sanitizePhraseText(phrases[group[g]]), startMs: t0, endMs: t1 };
+              }
+            }
+          }
+
+          if (tempResult.every(r => r != null)) {
+            tempResult[tempResult.length - 1].endMs = Math.round(audioDur * 1000);
+            result = tempResult;
+            console.log(`[transcribe] Strategy B Gemini text-match: ${result.length} phrases → ${segments.length} segs`);
           }
         }
 
-        // Strategy C: word-level alignment (Whisper word timestamps)
-        // Only for OpenAI non-Thai when word count is sufficient (≥ phrases × 2)
-        // Thai: Whisper word timestamps are unreliable (no spaces) → skip, use Strategy D
-        const enoughWords = words.length >= phrases.length * 2;
-        if (result.length === 0 && !useGeminiTranscribe && !isThai && enoughWords) {
+        // Strategy C: word-level alignment (Whisper-1 word timestamps)
+        // Use when word count is very high relative to phrases — Whisper-1 word timestamps are reliable.
+        // Thai: allowed when words ≥ phrases × 8 (word boundaries in Thai are syllable-level but timestamps are still accurate).
+        // Non-Thai: allowed when words ≥ phrases × 2.
+        const enoughWords = isThai ? words.length >= phrases.length * 8 : words.length >= phrases.length * 2;
+        if (result.length === 0 && !useGeminiTranscribe && enoughWords) {
           const alignedByWord = alignPhrasesToWordTimings(phrases, words);
           if (alignedByWord.length === phrases.length) {
             result = alignedByWord.map((r) => ({ ...r, text: sanitizeTranscriptionText(r.text) }));
-            console.log(`[transcribe] Strategy C word-timing: ${result.length} phrases from ${words.length} words`);
+            console.log(`[transcribe] Strategy C word-timing: ${result.length} phrases from ${words.length} words (Thai=${isThai})`);
           }
-        } else if (!enoughWords && words.length > 0) {
-          console.log(`[transcribe] Strategy C skipped — only ${words.length} words for ${phrases.length} phrases, using char-proportion`);
+        } else if (words.length > 0) {
+          console.log(`[transcribe] Strategy C skipped — ${words.length} words / ${phrases.length} phrases ratio too low, using segment-anchor`);
         }
 
-        // Strategy D: char-proportion across segment timeline (OpenAI primary, Gemini fallback)
-        // Does NOT text-match — distributes phrases by char length across audio duration.
-        // For OpenAI: segments may be few but timing is reliable → use as timeline anchors.
+        // Strategy D: segment-anchor for OpenAI (same logic as Strategy B for Gemini)
+        // Whisper segments have accurate timestamps — use them as anchors, distribute phrases within each segment.
+        if (result.length === 0 && !useGeminiTranscribe && segments.length >= 2) {
+          const segChars = segments.map(s => Math.max(1, alignmentCharLen(s.text)));
+          const totalSegChars = segChars.reduce((a, b) => a + b, 0);
+          const segCumChars: number[] = [];
+          let sc = 0;
+          for (const c of segChars) { sc += c; segCumChars.push(sc); }
+
+          const phraseChars = phrases.map(p => Math.max(1, alignmentCharLen(p)));
+          const totalPhraseChars = phraseChars.reduce((a, b) => a + b, 0);
+
+          const phraseToSeg: number[] = [];
+          let cumP = 0;
+          for (let pi = 0; pi < phrases.length; pi++) {
+            const midP = (cumP + phraseChars[pi] / 2) / totalPhraseChars;
+            cumP += phraseChars[pi];
+            let bestSeg = 0;
+            let bestDist = Infinity;
+            for (let si = 0; si < segments.length; si++) {
+              const segMid = (segCumChars[si] - segChars[si] / 2) / totalSegChars;
+              const dist = Math.abs(midP - segMid);
+              if (dist < bestDist) { bestDist = dist; bestSeg = si; }
+            }
+            phraseToSeg.push(bestSeg);
+          }
+          for (let pi = 1; pi < phrases.length; pi++) {
+            if (phraseToSeg[pi] < phraseToSeg[pi - 1]) phraseToSeg[pi] = phraseToSeg[pi - 1];
+          }
+
+          const segGroups: number[][] = Array.from({ length: segments.length }, () => []);
+          for (let pi = 0; pi < phrases.length; pi++) segGroups[phraseToSeg[pi]].push(pi);
+
+          const tempResult2: { text: string; startMs: number; endMs: number }[] = new Array(phrases.length);
+          for (let si = 0; si < segments.length; si++) {
+            const group = segGroups[si];
+            if (group.length === 0) continue;
+            const segStartMs = Math.round(segments[si].start * 1000);
+            const segEndMs   = Math.round(segments[si].end * 1000);
+            const segDurMs   = Math.max(segEndMs - segStartMs, 1);
+            if (group.length === 1) {
+              tempResult2[group[0]] = { text: sanitizePhraseText(phrases[group[0]]), startMs: segStartMs, endMs: segEndMs };
+            } else {
+              const groupChars = group.map(pi => phraseChars[pi]);
+              const groupTotal = groupChars.reduce((a, b) => a + b, 0) || 1;
+              let cumGC = 0;
+              for (let g = 0; g < group.length; g++) {
+                const t0 = segStartMs + Math.round((cumGC / groupTotal) * segDurMs);
+                cumGC += groupChars[g];
+                const t1 = segStartMs + Math.round((cumGC / groupTotal) * segDurMs);
+                tempResult2[group[g]] = { text: sanitizePhraseText(phrases[group[g]]), startMs: t0, endMs: t1 };
+              }
+            }
+          }
+
+          if (tempResult2.every(r => r != null)) {
+            tempResult2[tempResult2.length - 1].endMs = Math.round(audioDur * 1000);
+            result = tempResult2;
+            console.log(`[transcribe] Strategy D OpenAI segment-anchor: ${result.length} phrases → ${segments.length} segs`);
+          }
+        }
+
+        // Strategy E: pure char-proportion fallback (no segments or only 1 segment)
         if (result.length === 0) {
           const aligned = alignPhrasesCharProportion(phrases, segments, audioDur);
           if (aligned.length === phrases.length) {
             result = aligned;
-            console.log(`[transcribe] Strategy D char-proportion: ${result.length} phrases, ${segments.length} segs, dur=${audioDur.toFixed(1)}s`);
+            console.log(`[transcribe] Strategy E char-proportion fallback: ${result.length} phrases, dur=${audioDur.toFixed(1)}s`);
           }
         }
 
