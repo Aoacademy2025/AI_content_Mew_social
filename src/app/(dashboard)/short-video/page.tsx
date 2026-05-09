@@ -3375,7 +3375,7 @@ export default function ShortVideoPage() {
 
                 {testRemoveUrl && (
                   <div className="space-y-1.5">
-                      <video src={testRemoveUrl} controls autoPlay muted loop
+                      <video key={testRemoveUrl} src={testRemoveUrl} controls autoPlay muted loop
                       className="w-full rounded-lg" style={{ maxHeight: "min(240px, 45vh)", background: "#000" }} />
                     <a href={testRemoveUrl} download
                       className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[10px] font-semibold text-green-400"
