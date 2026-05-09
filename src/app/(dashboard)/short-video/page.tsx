@@ -1870,13 +1870,22 @@ export default function ShortVideoPage() {
             <button
               type="button"
               onClick={() => {
-                stopRenderPollRef.current?.();
-                setRenderProgress(null);
+                if (renderProgressError || preRenderUrl) {
+                  // error or video ready — just close modal
+                  stopRenderPollRef.current?.();
+                  setRenderProgress(null);
+                } else {
+                  // still rendering — abort and close
+                  abortRef.current = true;
+                  abortControllerRef.current?.abort();
+                  stopRenderPollRef.current?.();
+                  setRenderProgress(null);
+                }
               }}
               className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
               style={{ background: "hsl(220 30% 14%)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(220 30% 20%)" }}
             >
-              {renderProgressError ? "Close" : "Hide"}
+              {renderProgressError ? "Close" : preRenderUrl ? "Close" : "Cancel"}
             </button>
           </div>
         </div>
