@@ -1562,14 +1562,14 @@ ${sourceText.trim()}`;
       if (phrases.length > 0) {
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-        // Strategy B: Gemini only — text-match segment anchoring
-        // Gemini segment text closely matches script → text match works regardless of density.
-        // OpenAI Whisper text ≠ script text for Thai → skip, use char-proportion (Strategy D).
-        if (result.length === 0 && useGeminiTranscribe && segments.length >= 2) {
-          const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
-          if (segAligned.length === phrases.length) {
-            result = segAligned;
-            console.log(`[transcribe] Strategy B Gemini segment-anchored: ${result.length} phrases over ${segments.length} segs`);
+        // Strategy B: Gemini — char-proportion across segment timeline
+        // Use segment boundaries as time anchors but distribute phrases by char-proportion.
+        // Text-match abandoned: unreliable when segment count << phrase count (e.g. 6 segs / 40 phrases).
+        if (result.length === 0 && useGeminiTranscribe && segments.length >= 1) {
+          const aligned = alignPhrasesCharProportion(phrases, segments, audioDur);
+          if (aligned.length === phrases.length) {
+            result = aligned;
+            console.log(`[transcribe] Strategy B Gemini char-proportion: ${result.length} phrases over ${segments.length} segs, dur=${audioDur.toFixed(1)}s`);
           }
         }
 
