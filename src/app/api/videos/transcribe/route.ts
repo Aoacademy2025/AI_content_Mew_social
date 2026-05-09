@@ -376,40 +376,52 @@ function alignPhrasesToSegmentTimestamps(
     phraseEndSeg[pi] = Math.min(phraseEndSeg[pi], segments.length - 1);
   }
 
+  // For phrases sharing the same segment, subdivide that segment's time range by char-proportion
   const out: { text: string; startMs: number; endMs: number }[] = [];
-  for (let pi = 0; pi < phrases.length; pi++) {
-    const startSi = phraseStartSeg[pi];
-    const endSi   = phraseEndSeg[pi];
-    out.push({
-      text: sanitizeTranscriptionText(phrases[pi]),
-      startMs: Math.round(segments[startSi].start * 1000),
-      endMs:   Math.round(segments[endSi].end * 1000),
-    });
+
+  let pi = 0;
+  while (pi < phrases.length) {
+    const si = phraseStartSeg[pi];
+    // Collect all phrases mapped to this same segment
+    let pEnd = pi;
+    while (pEnd + 1 < phrases.length && phraseStartSeg[pEnd + 1] === si) pEnd++;
+
+    const segStartMs = Math.round(segments[si].start * 1000);
+    const segEndMs   = Math.round(segments[si].end * 1000);
+    const segDurMs   = Math.max(segEndMs - segStartMs, 1);
+
+    if (pEnd === pi) {
+      // Single phrase in this segment
+      out.push({ text: sanitizeTranscriptionText(phrases[pi]), startMs: segStartMs, endMs: segEndMs });
+    } else {
+      // Multiple phrases in same segment — subdivide by char-proportion
+      const group = phrases.slice(pi, pEnd + 1);
+      const charLens = group.map(alignmentCharLen);
+      const totalChars = charLens.reduce((a, b) => a + b, 0) || 1;
+      let cumChars = 0;
+      for (let g = 0; g < group.length; g++) {
+        const t0 = segStartMs + Math.round((cumChars / totalChars) * segDurMs);
+        cumChars += charLens[g];
+        const t1 = segStartMs + Math.round((cumChars / totalChars) * segDurMs);
+        out.push({ text: sanitizeTranscriptionText(group[g]), startMs: t0, endMs: t1 });
+      }
+    }
+    pi = pEnd + 1;
   }
 
-  // Trim overlaps and fill small gaps between consecutive captions
+  // Bridge gaps between consecutive captions
   for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].endMs > out[i + 1].startMs) {
-      out[i].endMs = out[i + 1].startMs;
-    }
-    if (out[i].endMs < out[i + 1].startMs) {
-      out[i].endMs = out[i + 1].startMs; // bridge gap
-    }
+    if (out[i].endMs < out[i + 1].startMs) out[i].endMs = out[i + 1].startMs;
+    if (out[i].endMs > out[i + 1].startMs) out[i].endMs = out[i + 1].startMs;
   }
 
   // Last phrase ends at audio end
-  if (out.length > 0) {
-    out[out.length - 1].endMs = Math.round(totalAudioSec * 1000);
-  }
+  if (out.length > 0) out[out.length - 1].endMs = Math.round(totalAudioSec * 1000);
 
   // Enforce strictly monotonic timestamps
   for (let i = 1; i < out.length; i++) {
-    if (out[i].startMs <= out[i - 1].startMs) {
-      out[i].startMs = out[i - 1].startMs + 100;
-    }
-    if (out[i].endMs <= out[i].startMs) {
-      out[i].endMs = out[i].startMs + 300;
-    }
+    if (out[i].startMs <= out[i - 1].startMs) out[i].startMs = out[i - 1].startMs + 50;
+    if (out[i].endMs <= out[i].startMs) out[i].endMs = out[i].startMs + 200;
   }
 
   return out;
@@ -1551,9 +1563,9 @@ ${sourceText.trim()}`;
         let result: { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" }[] = [];
 
         // Strategy B: Gemini only — text-match segment anchoring
-        // Gemini segment text closely matches script → text match works.
-        // OpenAI Whisper text ≠ script text for Thai → skip text-match, use char-proportion instead.
-        if (result.length === 0 && useGeminiTranscribe && segments.length >= 2 && (phrases.length / segments.length) <= 6) {
+        // Gemini segment text closely matches script → text match works regardless of density.
+        // OpenAI Whisper text ≠ script text for Thai → skip, use char-proportion (Strategy D).
+        if (result.length === 0 && useGeminiTranscribe && segments.length >= 2) {
           const segAligned = alignPhrasesToSegmentTimestamps(phrases, segments);
           if (segAligned.length === phrases.length) {
             result = segAligned;
