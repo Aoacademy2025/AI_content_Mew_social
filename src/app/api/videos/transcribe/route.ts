@@ -427,9 +427,10 @@ function alignPhrasesCharProportion(
 ): { text: string; startMs: number; endMs: number }[] {
   if (!phrases.length) return [];
 
-  const timelineStart = segments.length > 0 ? segments[0].start : 0;
-  const timelineEnd = segments.length > 0 ? segments[segments.length - 1].end : audioDur;
-  const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.8, 1);
+  // Always start from 0 — first subtitle must appear with first word, not from first segment boundary
+  const timelineStart = 0;
+  const timelineEnd = segments.length > 0 ? Math.max(segments[segments.length - 1].end, audioDur) : audioDur;
+  const timelineLen = Math.max(timelineEnd - timelineStart, audioDur * 0.9, 1);
 
   const charLengths = phrases.map(alignmentCharLen);
   const totalChars = charLengths.reduce((a, b) => a + b, 0);
