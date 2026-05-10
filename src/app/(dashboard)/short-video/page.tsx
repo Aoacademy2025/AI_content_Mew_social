@@ -2556,6 +2556,10 @@ export default function ShortVideoPage() {
                           }} />
                         <span className="text-[10px] text-white/35">อัปโหลดไฟล์วิดีโอ (mp4/mov)</span>
                       </label>
+                      <div className="flex items-center gap-1.5 px-1">
+                        <span className="w-3 h-3 rounded-sm shrink-0 border border-green-500/40" style={{ background: "#00FF00" }} />
+                        <span className="text-[9px] text-white/30">ใช้พื้นหลัง Green Screen สี <span className="font-mono text-green-400/70">#00FF00</span> เพื่อผลลัพธ์ที่ดีที่สุด</span>
+                      </div>
                     </div>
 
                     {/* Preview video */}
