@@ -179,8 +179,6 @@ export default function ShortVideoPage() {
   const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
   // Direct URL workflow states
   const [directCompositeUrl, setDirectCompositeUrl] = useState(""); // final composite
-  const [testRemoveUrl, setTestRemoveUrl] = useState("");
-  const [testRemoveLoading, setTestRemoveLoading] = useState(false);
   // Scene captions — shown after transcribe for user review/edit before render
   const [editedSceneCaptions, setEditedSceneCaptions] = useState<Caption[]>([]);
   // Stock clip count override (0 = auto based on script length)
@@ -219,7 +217,7 @@ export default function ShortVideoPage() {
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
   // LLM provider picker — shown before runAll to choose Gemini or OpenAI
-  const [showLLMPicker, setShowLLMPicker] = useState(false);
+
   // Which LLM the user chose — "gemini" | "openai" | null (auto = prefer Gemini)
   const [preferredLLM, setPreferredLLM] = useState<"gemini" | "openai" | null>(null);
   const preferredLLMRef = useRef<"gemini" | "openai" | null>(null);
@@ -1197,10 +1195,10 @@ export default function ShortVideoPage() {
     if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
-    // Step 1: Always show LLM provider picker first (unless already chosen this session)
+    // Step 1: Default to Gemini — no picker needed
     if (!preferredLLMRef.current) {
-      setShowLLMPicker(true);
-      return;
+      preferredLLMRef.current = "gemini";
+      setPreferredLLM("gemini");
     }
 
     // Step 2: Check keys for the chosen provider — show key modal if missing
@@ -1955,61 +1953,6 @@ export default function ShortVideoPage() {
         </div>
       )}
 
-      {showLLMPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
-          onClick={e => { if (e.target === e.currentTarget) setShowLLMPicker(false); }}>
-          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
-            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
-              <p className="text-sm font-bold text-white">เลือก AI Provider</p>
-              <p className="text-[11px] text-white/40 mt-0.5">เลือก LLM ที่ต้องการใช้สำหรับ pipeline นี้</p>
-            </div>
-            <div className="p-5 space-y-3">
-              <button
-                onClick={() => {
-                  preferredLLMRef.current = "gemini";
-                  setPreferredLLM("gemini");
-                  setShowLLMPicker(false);
-                  setTimeout(runAll, 50);
-                }}
-                className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
-                style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
-                  style={{ background: "hsl(190 100% 50% / 0.15)" }}>
-                  <span className="text-base">✦</span>
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-white">Gemini</p>
-                  <p className="text-[10px] text-white/40">Google AI · ฟรี · แนะนำ</p>
-                </div>
-              </button>
-              <button
-                onClick={() => {
-                  preferredLLMRef.current = "openai";
-                  setPreferredLLM("openai");
-                  setShowLLMPicker(false);
-                  setTimeout(runAll, 50);
-                }}
-                className="w-full flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all hover:opacity-90"
-                style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
-                  style={{ background: "hsl(140 60% 50% / 0.12)" }}>
-                  <span className="text-base">⊹</span>
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-white">OpenAI</p>
-                  <p className="text-[10px] text-white/40">GPT-4o-mini · ต้องชำระเงิน</p>
-                </div>
-              </button>
-              <button onClick={() => { setShowLLMPicker(false); preferredLLMRef.current = null; setPreferredLLM(null); }}
-                className="w-full rounded-xl py-2 text-sm text-white/30 hover:text-white/60 transition-colors">
-                ยกเลิก
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* eslint-disable-next-line @next/next/no-page-custom-font */}
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Bai+Jamjuree:wght@600;700&family=Krub:wght@600;700&family=Pridi:wght@600;700&family=Chonburi&family=Itim&display=swap" />
 
@@ -3332,62 +3275,6 @@ export default function ShortVideoPage() {
                   </div>
                 )}
 
-                {/* Test button */}
-                <div className="flex gap-2">
-                  <button
-                    disabled={testRemoveLoading || (!avatarDirectUrl.trim() && !avatarGreenUrl) || !preRenderUrl}
-                    onClick={async () => {
-                      const avatarSrc = avatarDirectUrl.trim() || avatarGreenUrl;
-                      if (!avatarSrc) { toast.error("ยังไม่มี Avatar — run Avatar ก่อน"); return; }
-                      if (!preRenderUrl) { toast.error("ยังไม่มี BG — Render Video ก่อน"); return; }
-                      setTestRemoveLoading(true);
-                      setTestRemoveUrl("");
-                      try {
-                        const res = await fetch("/api/heygen/composite", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            avatarVideoUrl: avatarSrc,
-                            bgVideoUrl: preRenderUrl,
-                            mode: compositeMode,
-                            chromaColor: chromaColor.replace("#", "0x"),
-                            chromaSimilarity,
-                            chromaBlend,
-                            rembgModel,
-                          }),
-                        });
-                        const data = await res.json();
-                        if (data.videoUrl) setTestRemoveUrl(data.videoUrl);
-                        else toast.error(data.error ?? "Test ไม่สำเร็จ");
-                      } catch { toast.error("Test ไม่สำเร็จ"); }
-                      finally { setTestRemoveLoading(false); }
-                    }}
-                    className="flex-1 flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-bold text-white transition-all hover:opacity-90 disabled:opacity-40"
-                    style={{ background: "hsl(120 60% 30% / 0.25)", border: "1px solid hsl(120 60% 40% / 0.35)" }}>
-                    {testRemoveLoading
-                      ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Testing...</>
-                      : <><Wand2 className="h-3.5 w-3.5 text-green-400" /> Test Remove BG</>}
-                  </button>
-                  {testRemoveUrl && (
-                    <button onClick={() => setTestRemoveUrl("")}
-                      className="rounded-lg px-3 text-[10px] text-white/40 hover:text-white/70 transition-colors"
-                      style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
-                      Clear
-                    </button>
-                  )}
-                </div>
-
-                {testRemoveUrl && (
-                  <div className="space-y-1.5">
-                      <video key={testRemoveUrl} src={testRemoveUrl} controls autoPlay muted loop
-                      className="w-full rounded-lg" style={{ maxHeight: "min(240px, 45vh)", background: "#000" }} />
-                    <a href={testRemoveUrl} download
-                      className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[10px] font-semibold text-green-400"
-                      style={{ background: "hsl(120 60% 20% / 0.2)", border: "1px solid hsl(120 60% 40% / 0.25)" }}>
-                      <Download className="h-3 w-3" /> Download Test
-                    </a>
-                  </div>
-                )}
                 </div>
               </div>
             )}
