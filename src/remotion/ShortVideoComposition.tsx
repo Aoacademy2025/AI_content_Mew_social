@@ -25,28 +25,30 @@ const KB_CONFIGS = [
   { startScale: 1.15, endScale: 1.0,  tx:  3,   ty:  0   },
 ];
 
-// ─── Crossfade ────────────────────────────────────────────────────────────────
+// ─── Transition types ─────────────────────────────────────────────────────────
+// Each transition affects how the INCOMING clip enters over the outgoing clip.
+// "crossfade"  — simple opacity dissolve (always used for fade-out of outgoing clip)
+// "zoom-burst" — incoming clip zooms in from 1.15x → 1.0x while fading in
+// "slide-left" — incoming clip slides in from right edge
+// "slide-up"   — incoming clip slides in from bottom edge
+// "flash"      — 2-frame white flash at cut point, then dissolve
+// "glitch"     — small random X-shake on incoming clip during fade-in
+const TRANSITION_TYPES = ["crossfade", "zoom-burst", "slide-left", "slide-up", "flash", "glitch"] as const;
+type TransitionType = typeof TRANSITION_TYPES[number];
+
+// Deterministic "random" per clip index — same render always produces same sequence
+function pickTransition(clipIndex: number): TransitionType {
+  const primes = [7, 13, 17, 23, 29, 31];
+  const idx = (clipIndex * primes[clipIndex % primes.length]) % TRANSITION_TYPES.length;
+  return TRANSITION_TYPES[idx];
+}
+
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
-//
-// Timeline diagram (F = CROSSFADE_FRAMES = 8):
-//
-//   clip A Sequence: [startA ──────────────────── endA+F]   ← extended by F
-//   clip B Sequence:              [endA ──────────────── endB+F]  ← starts at hard cut
-//                                  |←── F ──→|
-//                                  A fades out, B fades in — no gap
-//
-// Each clip's Sequence is extended by CROSSFADE_FRAMES beyond its nominal endFrame
-// so it stays visible while the NEXT clip fades in. The next clip starts exactly at
-// the hard cut point (v.startFrame) — never before, never after.
 const CROSSFADE_FRAMES = 8;
 
 const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
 
 // ─── VideoClip ────────────────────────────────────────────────────────────────
-// segDurFrames = nominal segment duration (hard-cut window)
-// tailFrames   = extra frames this clip must stay visible (= CROSSFADE_FRAMES,
-//                so next clip's fade-in has something to dissolve over)
-// headFrames   = frames at the start where THIS clip fades in over the previous
 function VideoClip({
   src,
   startFrom,
@@ -67,63 +69,85 @@ function VideoClip({
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
-  // Total frames this Sequence is active = segment + tail
   const totalFrames = segDurFrames + tailFrames;
-
-  // OffthreadVideo freezes on last frame when clip ends — no black flash.
-  // endAt covers full tail so next clip can dissolve over this one.
   const endAt = startFrom + totalFrames;
 
-  // Ken Burns — progress over the nominal segment only (not tail)
+  // Ken Burns over nominal segment only
   const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
   const kbProgress = segDurFrames > 1 ? Math.min(1, frame / (segDurFrames - 1)) : 0;
   const kbScale = interpolate(kbProgress, [0, 1], [kb.startScale, kb.endScale]);
-  const tx    = interpolate(kbProgress, [0, 1], [0, kb.tx]);
-  const ty    = interpolate(kbProgress, [0, 1], [0, kb.ty]);
+  const kbTx    = interpolate(kbProgress, [0, 1], [0, kb.tx]);
+  const kbTy    = interpolate(kbProgress, [0, 1], [0, kb.ty]);
 
-  // Zoom punch on entry — clip punches in at 1.05x then settles to KB start scale
-  // Only applies to non-first clips (i > 0) during the fade-in window
-  const punchFrames = headFrames > 0 ? headFrames : 0;
-  const punchScale = punchFrames > 0
-    ? interpolate(frame, [0, punchFrames], [1.05, 1.0], { extrapolateRight: "clamp", extrapolateLeft: "clamp" })
-    : 1.0;
-  const scale = kbScale * punchScale;
+  // ── Transition effect for THIS clip's entry ──────────────────────────────
+  const transition: TransitionType = clipIndex === 0 ? "crossfade" : pickTransition(clipIndex);
+  const t = headFrames > 0 ? Math.min(1, frame / headFrames) : 1; // 0→1 during fade-in
 
-  // Fade in over headFrames (this clip dissolving in over the previous)
-  const fadeIn = headFrames > 0
-    ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" })
-    : 1;
-
-  // Fade out over the tail (so next clip dissolves in over this one)
+  // Opacity: fade-in (entry) × fade-out (tail for next clip)
+  const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" }) : 1;
   const fadeOut = tailFrames > 0
-    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-      })
+    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
+  const baseOpacity = Math.min(fadeIn, fadeOut);
 
-  const opacity = Math.min(fadeIn, fadeOut);
+  // ── Per-transition transform / opacity override ──────────────────────────
+  let entryScale = 1.0;
+  let entryTx    = 0; // % units for translateX
+  let entryTy    = 0; // % units for translateY
+  let opacity    = baseOpacity;
+  let flashOpacity = 0;
+
+  if (transition === "zoom-burst" && headFrames > 0) {
+    // Incoming zooms from 1.18 → 1.0 during fade-in
+    entryScale = interpolate(t, [0, 1], [1.18, 1.0]);
+  } else if (transition === "slide-left" && headFrames > 0) {
+    // Slides in from right (100% → 0%)
+    entryTx = interpolate(t, [0, 1], [100, 0]);
+    opacity = 1; // no fade, pure slide
+  } else if (transition === "slide-up" && headFrames > 0) {
+    // Slides in from bottom (100% → 0%)
+    entryTy = interpolate(t, [0, 1], [100, 0]);
+    opacity = 1;
+  } else if (transition === "flash" && headFrames > 0) {
+    // White flash: full white for first 2 frames, then dissolve normally
+    flashOpacity = frame < 2 ? interpolate(frame, [0, 2], [1, 0]) : 0;
+  } else if (transition === "glitch" && headFrames > 0) {
+    // Small horizontal shake: alternates ±3% every 2 frames during entry
+    const shakeAmt = interpolate(t, [0, 0.6, 1], [3, 1.5, 0]);
+    entryTx = Math.sin(frame * 3.7) * shakeAmt;
+  }
+  // crossfade: no extra transform, just opacity (default)
+
+  const finalScale = kbScale * entryScale;
+  const finalTx    = kbTx + entryTx;
+  const finalTy    = kbTy + entryTy;
 
   return (
-    <AbsoluteFill style={{ opacity }}>
-      <OffthreadVideo
-        src={src}
-        startFrom={startFrom}
-        endAt={endAt}
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width,
-          height,
-          objectFit: "cover",
-          transform: `scale(${scale}) translate(${tx}%, ${ty}%)`,
-          transformOrigin: "center center",
-          filter: GRADE_FILTER,
-        }}
-        muted
-      />
-    </AbsoluteFill>
+    <>
+      <AbsoluteFill style={{ opacity }}>
+        <OffthreadVideo
+          src={src}
+          startFrom={startFrom}
+          endAt={endAt}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width,
+            height,
+            objectFit: "cover",
+            transform: `scale(${finalScale}) translate(${finalTx}%, ${finalTy}%)`,
+            transformOrigin: "center center",
+            filter: GRADE_FILTER,
+          }}
+          muted
+        />
+      </AbsoluteFill>
+      {/* Flash overlay — white burst on cut */}
+      {flashOpacity > 0 && (
+        <AbsoluteFill style={{ background: "#fff", opacity: flashOpacity, pointerEvents: "none" }} />
+      )}
+    </>
   );
 }
 
