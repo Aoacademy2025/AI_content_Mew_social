@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   Users, Crown, Ban, FileText, Video, Images, UserPlus, CalendarDays,
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
-  Trash2, HardDrive, ShieldCheck, AlertTriangle,
+  Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -49,6 +49,47 @@ export default function AdminDashboardPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [replying, setReplying] = useState<string | null>(null);
+
+  // Music library
+  interface MusicTrack { id: string; title: string; filename: string; duration: number | null; createdAt: string; }
+  const [tracks, setTracks] = useState<MusicTrack[]>([]);
+  const [musicLoading, setMusicLoading] = useState(false);
+  const [musicUploading, setMusicUploading] = useState(false);
+  const [newMusicTitle, setNewMusicTitle] = useState("");
+
+  async function loadTracks() {
+    setMusicLoading(true);
+    try {
+      const res = await fetch("/api/admin/music");
+      const data = await res.json();
+      if (data.tracks) setTracks(data.tracks);
+    } catch { toast.error("โหลดเพลงไม่สำเร็จ"); }
+    finally { setMusicLoading(false); }
+  }
+
+  async function uploadTrack(file: File) {
+    if (!newMusicTitle.trim()) { toast.error("กรอกชื่อเพลงก่อน"); return; }
+    setMusicUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("title", newMusicTitle.trim());
+      const res = await fetch("/api/admin/music", { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.track) { setTracks(prev => [data.track, ...prev]); setNewMusicTitle(""); toast.success("อัปโหลดเพลงสำเร็จ"); }
+      else toast.error(data.error ?? "อัปโหลดไม่สำเร็จ");
+    } catch { toast.error("อัปโหลดไม่สำเร็จ"); }
+    finally { setMusicUploading(false); }
+  }
+
+  async function deleteTrack(id: string) {
+    if (!confirm("ลบเพลงนี้?")) return;
+    try {
+      await fetch(`/api/admin/music/${id}`, { method: "DELETE" });
+      setTracks(prev => prev.filter(t => t.id !== id));
+      toast.success("ลบเพลงแล้ว");
+    } catch { toast.error("ลบไม่สำเร็จ"); }
+  }
 
   // Disk cleanup
   const [cleanupInfo, setCleanupInfo] = useState<CleanupInfo | null>(null);
@@ -94,6 +135,7 @@ export default function AdminDashboardPage() {
   useEffect(() => {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
     loadCleanupInfo();
+    loadTracks();
   }, []);
 
   useEffect(() => {
@@ -491,6 +533,57 @@ export default function AdminDashboardPage() {
             </Card>
           </div>
         </div>
+
+        {/* ── Music Library ─────────────────────────────────────────────── */}
+        <div className="rounded-xl border border-white/10 bg-white/5 p-5">
+          <div className="mb-4 flex items-center gap-2">
+            <Music className="h-4 w-4 text-purple-400" />
+            <h2 className="text-sm font-semibold text-white">Music Library</h2>
+            <span className="ml-auto text-xs text-zinc-500">{tracks.length} เพลง</span>
+          </div>
+
+          {/* Upload form */}
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              type="text"
+              placeholder="ชื่อเพลง"
+              value={newMusicTitle}
+              onChange={e => setNewMusicTitle(e.target.value)}
+              className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+            />
+            <label className={`flex cursor-pointer items-center gap-2 rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-300 transition hover:bg-purple-500/20 ${musicUploading ? "opacity-50 pointer-events-none" : ""}`}>
+              {musicUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {musicUploading ? "กำลังอัปโหลด..." : "อัปโหลดเพลง"}
+              <input type="file" accept="audio/*,.mp3,.wav,.ogg,.aac,.m4a" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) uploadTrack(f); e.target.value = ""; }} />
+            </label>
+          </div>
+
+          {/* Track list */}
+          {musicLoading ? (
+            <div className="flex items-center gap-2 text-sm text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" /> กำลังโหลด...</div>
+          ) : tracks.length === 0 ? (
+            <p className="text-sm text-zinc-500">ยังไม่มีเพลง — อัปโหลดเพลงแรก</p>
+          ) : (
+            <div className="space-y-2">
+              {tracks.map(t => (
+                <div key={t.id} className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/3 px-3 py-2">
+                  <Music className="h-3.5 w-3.5 shrink-0 text-purple-400/60" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-white">{t.title}</p>
+                    <p className="truncate text-[10px] text-zinc-500">{t.filename}</p>
+                  </div>
+                  <audio controls src={`/music/${t.filename}`} className="h-7 w-40 shrink-0 opacity-70" />
+                  <button onClick={() => deleteTrack(t.id)}
+                    className="ml-1 rounded p-1 text-zinc-500 transition hover:bg-red-500/15 hover:text-red-400">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
       </div>
     </DashboardLayout>
   );

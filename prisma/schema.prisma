@@ -184,6 +184,14 @@ model CouponRedemption {
   @@unique([couponId, userId])
 }
 
+model Music {
+  id          String   @id @default(cuid())
+  title       String
+  filename    String   // file stored in public/music/
+  duration    Float?   // seconds
+  createdAt   DateTime @default(now())
+}
+
 model GeneratedImage {
   id           String   @id @default(cuid())
   userId       String
