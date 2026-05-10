@@ -16,13 +16,13 @@ const FONTS_CSS =
 
 // ─── Ken Burns ────────────────────────────────────────────────────────────────
 const KB_CONFIGS = [
-  { startScale: 1.0,  endScale: 1.10, tx:  0,   ty:  0   },
-  { startScale: 1.10, endScale: 1.0,  tx: -2.5, ty: -1.5 },
-  { startScale: 1.0,  endScale: 1.10, tx:  2.5, ty:  1.5 },
-  { startScale: 1.08, endScale: 1.0,  tx: -2,   ty:  1   },
-  { startScale: 1.0,  endScale: 1.08, tx:  2,   ty: -1   },
-  { startScale: 1.05, endScale: 1.12, tx:  0,   ty: -2   },
-  { startScale: 1.12, endScale: 1.0,  tx:  2.5, ty:  0   },
+  { startScale: 1.0,  endScale: 1.15, tx:  0,   ty:  0   },
+  { startScale: 1.15, endScale: 1.0,  tx: -3,   ty: -2   },
+  { startScale: 1.0,  endScale: 1.15, tx:  3,   ty:  2   },
+  { startScale: 1.12, endScale: 1.0,  tx: -2.5, ty:  1.5 },
+  { startScale: 1.0,  endScale: 1.12, tx:  2.5, ty: -1.5 },
+  { startScale: 1.05, endScale: 1.15, tx:  0,   ty: -2.5 },
+  { startScale: 1.15, endScale: 1.0,  tx:  3,   ty:  0   },
 ];
 
 // ─── Crossfade ────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ const KB_CONFIGS = [
 // Each clip's Sequence is extended by CROSSFADE_FRAMES beyond its nominal endFrame
 // so it stays visible while the NEXT clip fades in. The next clip starts exactly at
 // the hard cut point (v.startFrame) — never before, never after.
-const CROSSFADE_FRAMES = 4;
+const CROSSFADE_FRAMES = 8;
 
 const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
 
@@ -77,9 +77,17 @@ function VideoClip({
   // Ken Burns — progress over the nominal segment only (not tail)
   const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
   const kbProgress = segDurFrames > 1 ? Math.min(1, frame / (segDurFrames - 1)) : 0;
-  const scale = interpolate(kbProgress, [0, 1], [kb.startScale, kb.endScale]);
+  const kbScale = interpolate(kbProgress, [0, 1], [kb.startScale, kb.endScale]);
   const tx    = interpolate(kbProgress, [0, 1], [0, kb.tx]);
   const ty    = interpolate(kbProgress, [0, 1], [0, kb.ty]);
+
+  // Zoom punch on entry — clip punches in at 1.05x then settles to KB start scale
+  // Only applies to non-first clips (i > 0) during the fade-in window
+  const punchFrames = headFrames > 0 ? headFrames : 0;
+  const punchScale = punchFrames > 0
+    ? interpolate(frame, [0, punchFrames], [1.05, 1.0], { extrapolateRight: "clamp", extrapolateLeft: "clamp" })
+    : 1.0;
+  const scale = kbScale * punchScale;
 
   // Fade in over headFrames (this clip dissolving in over the previous)
   const fadeIn = headFrames > 0
