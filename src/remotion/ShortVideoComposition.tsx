@@ -290,6 +290,20 @@ function AnimatedSubtitle({
   );
 }
 
+// ─── Fade to black at end ─────────────────────────────────────────────────────
+const FADE_OUT_FRAMES = 12; // 0.4s at 30fps
+
+function EndFade({ totalFrames }: { totalFrames: number }) {
+  const frame = useCurrentFrame();
+  const fadeStart = totalFrames - FADE_OUT_FRAMES;
+  const opacity = interpolate(frame, [fadeStart, totalFrames], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  if (opacity <= 0) return null;
+  return <AbsoluteFill style={{ background: "#000", opacity, pointerEvents: "none" }} />;
+}
+
 // ─── Main composition ─────────────────────────────────────────────────────────
 export function ShortVideoComposition({
   bgVideos,
@@ -301,7 +315,7 @@ export function ShortVideoComposition({
   fontFamily,
   subtitleStylePreset = "stroke",
 }: ShortVideoConfig) {
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames } = useVideoConfig();
 
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   const preset = subtitleStylePreset ?? "stroke";
@@ -387,6 +401,9 @@ export function ShortVideoComposition({
           </Sequence>
         );
       })}
+
+      {/* Fade to black at end */}
+      <EndFade totalFrames={durationInFrames} />
     </AbsoluteFill>
   );
 }
