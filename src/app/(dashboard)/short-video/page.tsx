@@ -201,11 +201,10 @@ export default function ShortVideoPage() {
   const [subStylePreset, setSubStylePreset] = useState<"stroke"|"box"|"box-rounded"|"glow"|"outline-only"|"plain"|"shadow"|"karaoke">("stroke");
   const [subFontWeight, setSubFontWeight] = useState(900);
   // Composite mode + chroma key tuning (per-avatar)
-  const [compositeMode, setCompositeMode] = useState<"chromakey" | "rembg">("chromakey");
+  const compositeMode = "chromakey";
   const [chromaColor] = useState("#00FF00");
   const [chromaSimilarity, setChromaSimilarity] = useState(0.28);
   const [chromaBlend, setChromaBlend] = useState(0.04);
-  const [rembgModel, setRembgModel] = useState<"u2net" | "isnet-general-use" | "silueta">("u2net");
   const [activeCaptionIdx, setActiveCaptionIdx] = useState(-1);
   const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
@@ -1069,7 +1068,7 @@ export default function ShortVideoPage() {
 
   async function runComposite(bgVideoUrl: string, avatarUrl: string): Promise<string> {
     const isDirect = avatarInputMode === "direct";
-    const modeLabel = isDirect ? "วางทับวิดีโอ (Direct URL)..." : compositeMode === "rembg" ? "AI rembg ลบ background..." : "Chromakey ลบ green screen + composite...";
+    const modeLabel = isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey ลบ green screen + composite...";
     setStep("composite", "running", modeLabel);
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST",
@@ -1097,7 +1096,6 @@ export default function ShortVideoPage() {
             chromaColor: chromaColor.replace("#", "0x"),
             chromaSimilarity,
             chromaBlend,
-            rembgModel,
           }),
     });
     const compData = await compRes.json();
@@ -3207,73 +3205,35 @@ export default function ShortVideoPage() {
                 </div>
                 <div className="p-4 space-y-3">
 
-                {/* Mode */}
-                <div className="flex gap-1.5">
-                  {(["chromakey", "rembg"] as const).map(m => (
-                    <button key={m} onClick={() => setCompositeMode(m)}
-                      className="flex-1 rounded-md px-2 py-1.5 text-[11px] font-semibold transition-all"
-                      style={compositeMode === m
-                        ? { background: "hsl(120 60% 35% / 0.25)", color: "#4ade80", border: "1px solid hsl(120 60% 40% / 0.4)" }
-                        : { background: "var(--sv-input)", color: "color-mix(in srgb, var(--sv-text) 50%, transparent)", border: "1px solid var(--sv-border2)" }}>
-                      {m === "chromakey" ? "Green Screen" : "AI rembg"}
-                    </button>
-                  ))}
+                {/* Green color — fixed to match HeyGen API output */}
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-white/35 w-20 shrink-0">Green Color</span>
+                  <div className="flex items-center gap-2 rounded px-2.5 py-1" style={{ background: "var(--sv-input)", border: "1px solid hsl(120 60% 40% / 0.3)" }}>
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: "#00FF00" }} />
+                    <span className="text-[10px] font-mono text-green-400">#00FF00</span>
+                    <span className="text-[9px] text-white/25">— HeyGen API</span>
+                  </div>
                 </div>
-
-                {compositeMode === "chromakey" && (
-                  <div className="space-y-3">
-                    {/* Green color — fixed to match HeyGen API output */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-white/35 w-20 shrink-0">Green Color</span>
-                      <div className="flex items-center gap-2 rounded px-2.5 py-1" style={{ background: "var(--sv-input)", border: "1px solid hsl(120 60% 40% / 0.3)" }}>
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: "#00FF00" }} />
-                        <span className="text-[10px] font-mono text-green-400">#00FF00</span>
-                        <span className="text-[9px] text-white/25">—  HeyGen API </span>
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-white/35 w-20 shrink-0">Similarity</span>
-                        <input type="range" min={0.10} max={0.55} step={0.01} value={chromaSimilarity}
-                          onChange={e => setChromaSimilarity(Number(e.target.value))}
-                          className="flex-1 accent-green-400 h-1" />
-                        <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaSimilarity.toFixed(2)}</span>
-                      </div>
-                      <p className="text-[9px] text-white/20 pl-[88px]">ยังเห็นสีเขียวเหลืออยู่ → เพิ่มขึ้น &nbsp;|&nbsp; ผิว/เสื้อโดนลบด้วย → ลดลง</p>
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-white/35 w-20 shrink-0">Blend</span>
-                        <input type="range" min={0.00} max={0.20} step={0.01} value={chromaBlend}
-                          onChange={e => setChromaBlend(Number(e.target.value))}
-                          className="flex-1 accent-green-400 h-1" />
-                        <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaBlend.toFixed(2)}</span>
-                      </div>
-                      <p className="text-[9px] text-white/20 pl-[88px]">ขอบหยัก/แข็ง → เพิ่มขึ้น &nbsp;|&nbsp; ขอบโปร่งใส/ฟุ้ง → ลดลง</p>
-                    </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-white/35 w-20 shrink-0">Similarity</span>
+                    <input type="range" min={0.10} max={0.55} step={0.01} value={chromaSimilarity}
+                      onChange={e => setChromaSimilarity(Number(e.target.value))}
+                      className="flex-1 accent-green-400 h-1" />
+                    <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaSimilarity.toFixed(2)}</span>
                   </div>
-                )}
-
-                {compositeMode === "rembg" && (
-                  <div className="space-y-2">
-                    <div className="flex gap-1.5 flex-wrap">
-                      {([
-                        { id: "u2net", label: "u2net", desc: "Best" },
-                        { id: "isnet-general-use", label: "isnet", desc: "HQ" },
-                        { id: "silueta", label: "silueta", desc: "Fast" },
-                      ] as const).map(m => (
-                        <button key={m.id} onClick={() => setRembgModel(m.id)}
-                          className="rounded px-2 py-1 text-[10px] font-semibold transition-all"
-                          style={rembgModel === m.id
-                            ? { background: "hsl(120 60% 35% / 0.3)", color: "#4ade80", border: "1px solid hsl(120 60% 40% / 0.5)" }
-                            : { background: "var(--sv-input)", color: "color-mix(in srgb, var(--sv-text) 50%, transparent)", border: "1px solid var(--sv-border2)" }}>
-                          {m.label} <span className="opacity-50">{m.desc}</span>
-                        </button>
-                      ))}
-                    </div>
-                    <p className="text-[10px] text-yellow-500/50">⚠ ช้ากว่า Green Screen ~3-5x</p>
+                  <p className="text-[9px] text-white/20 pl-[88px]">ยังเห็นสีเขียวเหลืออยู่ → เพิ่มขึ้น &nbsp;|&nbsp; ผิว/เสื้อโดนลบด้วย → ลดลง</p>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-white/35 w-20 shrink-0">Blend</span>
+                    <input type="range" min={0.00} max={0.20} step={0.01} value={chromaBlend}
+                      onChange={e => setChromaBlend(Number(e.target.value))}
+                      className="flex-1 accent-green-400 h-1" />
+                    <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaBlend.toFixed(2)}</span>
                   </div>
-                )}
+                  <p className="text-[9px] text-white/20 pl-[88px]">ขอบหยัก/แข็ง → เพิ่มขึ้น &nbsp;|&nbsp; ขอบโปร่งใส/ฟุ้ง → ลดลง</p>
+                </div>
 
                 </div>
               </div>
