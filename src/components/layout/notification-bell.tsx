@@ -75,6 +75,8 @@ export function NotificationBell() {
     try {
       const res = await fetch("/api/notifications");
       if (res.ok) setNotifications(await res.json());
+    } catch {
+      // network error or dev server not ready — fail silently
     } finally {
       setLoading(false);
     }
