@@ -149,7 +149,8 @@ export async function POST(req: Request) {
 
     const renderTmpDir = getRenderTmpDir();
     process.env.TMPDIR = renderTmpDir;
-    const progressFile = path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
+    const jobId = `${session.user.id}-${Date.now()}`;
+    const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -194,7 +195,10 @@ export async function POST(req: Request) {
     // Using https://localhost causes SSL handshake failures (EPROTO wrong version number).
     const reqUrl = new URL(req.url);
     const isLocalhost = reqUrl.hostname === "localhost" || reqUrl.hostname === "127.0.0.1";
-    const baseUrl = isLocalhost
+    // On VPS behind nginx, req.url is localhost:3000 — use NEXTAUTH_URL (public domain) instead
+    const baseUrl = (isLocalhost && process.env.NEXTAUTH_URL)
+      ? process.env.NEXTAUTH_URL.replace(/\/$/, "")
+      : isLocalhost
       ? `http://${reqUrl.host}`
       : `${reqUrl.protocol}//${reqUrl.host}`;
 
@@ -353,6 +357,8 @@ export async function POST(req: Request) {
     function toAbsolute(url: string | undefined | null): string {
       if (!url) return url ?? "";
       if (url.startsWith("http://") || url.startsWith("https://")) return url;
+      // Rewrite /music/ → /api/music/ so Next.js API route serves the file dynamically
+      if (url.startsWith("/music/")) return `${baseUrl}/api/music/${url.slice("/music/".length)}`;
       if (url.startsWith("/")) return `${baseUrl}${url}`;
       return url;
     }
@@ -482,7 +488,6 @@ export async function POST(req: Request) {
     // Clear stale progress file from previous render before starting new one
     try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
 
-    const jobId = `${session.user.id}-${Date.now()}`;
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
 
     // Fire-and-forget: run render in background so HTTP response returns immediately.

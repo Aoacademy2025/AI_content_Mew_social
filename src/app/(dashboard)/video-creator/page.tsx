@@ -817,11 +817,15 @@ export default function ShortVideoPage() {
     stopRenderPollRef.current = stopRenderPoll;
 
     let resolveRenderUrl: ((url: string) => void) | null = null;
+    let currentJobId: string | null = null;
 
     renderPollTimer = setInterval(async () => {
       if (pollStopped || renderFailedMessage) return;
       try {
-        const progressRes = await fetch("/api/videos/render-progress", {
+        const progressUrl = currentJobId
+          ? `/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`
+          : "/api/videos/render-progress";
+        const progressRes = await fetch(progressUrl, {
           cache: "no-store",
           signal: abortControllerRef.current?.signal,
         });
@@ -896,6 +900,7 @@ export default function ShortVideoPage() {
       }
 
       if (!jobId) throw new Error("Render server did not return jobId");
+      currentJobId = jobId;
 
       // Poll render-status until done or error
       // Progress poll also resolves via resolveRenderUrl if it sees videoUrl first

@@ -28,5 +28,5 @@ export async function POST(req: Request) {
   const bytes = await file.arrayBuffer();
   fs.writeFileSync(path.join(musicDir, filename), Buffer.from(bytes));
 
-  return NextResponse.json({ url: `/music/${filename}`, filename });
+  return NextResponse.json({ url: `/api/music/${filename}`, filename });
 }

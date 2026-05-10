@@ -7,14 +7,22 @@ import { authOptions } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { searchParams } = new URL(req.url);
+  const jobId = searchParams.get("jobId");
 
   const renderTmpDir = process.env.RENDER_TMP_ROOT
     ? path.resolve(process.env.RENDER_TMP_ROOT)
     : path.join(process.cwd(), ".tmp", "remotion");
-  const progressFile = path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
+
+  // If jobId provided, read job-specific progress file
+  const progressFile = jobId
+    ? path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`)
+    : path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
+
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");
     const parsed = JSON.parse(raw) as { progress?: number; videoUrl?: string; error?: string };

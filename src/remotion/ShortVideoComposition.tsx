@@ -5,7 +5,6 @@ import {
   OffthreadVideo,
   Sequence,
   interpolate,
-  spring,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -13,35 +12,6 @@ import type { ShortVideoConfig, SubtitleStylePreset } from "./types";
 
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
-
-// ─── Ken Burns ────────────────────────────────────────────────────────────────
-const KB_CONFIGS = [
-  { startScale: 1.0,  endScale: 1.15, tx:  0,   ty:  0   },
-  { startScale: 1.15, endScale: 1.0,  tx: -3,   ty: -2   },
-  { startScale: 1.0,  endScale: 1.15, tx:  3,   ty:  2   },
-  { startScale: 1.12, endScale: 1.0,  tx: -2.5, ty:  1.5 },
-  { startScale: 1.0,  endScale: 1.12, tx:  2.5, ty: -1.5 },
-  { startScale: 1.05, endScale: 1.15, tx:  0,   ty: -2.5 },
-  { startScale: 1.15, endScale: 1.0,  tx:  3,   ty:  0   },
-];
-
-// ─── Transition types ─────────────────────────────────────────────────────────
-// Each transition affects how the INCOMING clip enters over the outgoing clip.
-// "crossfade"  — simple opacity dissolve (always used for fade-out of outgoing clip)
-// "zoom-burst" — incoming clip zooms in from 1.15x → 1.0x while fading in
-// "slide-left" — incoming clip slides in from right edge
-// "slide-up"   — incoming clip slides in from bottom edge
-// "flash"      — 2-frame white flash at cut point, then dissolve
-// "glitch"     — small random X-shake on incoming clip during fade-in
-const TRANSITION_TYPES = ["crossfade", "zoom-burst", "slide-left", "slide-up", "flash", "glitch"] as const;
-type TransitionType = typeof TRANSITION_TYPES[number];
-
-// Deterministic "random" per clip index — same render always produces same sequence
-function pickTransition(clipIndex: number): TransitionType {
-  const primes = [7, 13, 17, 23, 29, 31];
-  const idx = (clipIndex * primes[clipIndex % primes.length]) % TRANSITION_TYPES.length;
-  return TRANSITION_TYPES[idx];
-}
 
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
 const CROSSFADE_FRAMES = 8;
@@ -72,82 +42,31 @@ function VideoClip({
   const totalFrames = segDurFrames + tailFrames;
   const endAt = startFrom + totalFrames;
 
-  // Ken Burns over nominal segment only
-  const kb = KB_CONFIGS[clipIndex % KB_CONFIGS.length];
-  const kbProgress = segDurFrames > 1 ? Math.min(1, frame / (segDurFrames - 1)) : 0;
-  const kbScale = interpolate(kbProgress, [0, 1], [kb.startScale, kb.endScale]);
-  const kbTx    = interpolate(kbProgress, [0, 1], [0, kb.tx]);
-  const kbTy    = interpolate(kbProgress, [0, 1], [0, kb.ty]);
-
-  // ── Transition effect for THIS clip's entry ──────────────────────────────
-  const transition: TransitionType = clipIndex === 0 ? "crossfade" : pickTransition(clipIndex);
-  const t = headFrames > 0 ? Math.min(1, frame / headFrames) : 1; // 0→1 during fade-in
-
   // Opacity: fade-in (entry) × fade-out (tail for next clip)
   const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" }) : 1;
   const fadeOut = tailFrames > 0
     ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
-  const baseOpacity = Math.min(fadeIn, fadeOut);
-
-  // ── Per-transition transform / opacity override ──────────────────────────
-  let entryScale = 1.0;
-  let entryTx    = 0; // % units for translateX
-  let entryTy    = 0; // % units for translateY
-  let opacity    = baseOpacity;
-  let flashOpacity = 0;
-
-  if (transition === "zoom-burst" && headFrames > 0) {
-    // Incoming zooms from 1.18 → 1.0 during fade-in
-    entryScale = interpolate(t, [0, 1], [1.18, 1.0]);
-  } else if (transition === "slide-left" && headFrames > 0) {
-    // Slides in from right (100% → 0%)
-    entryTx = interpolate(t, [0, 1], [100, 0]);
-    opacity = 1; // no fade, pure slide
-  } else if (transition === "slide-up" && headFrames > 0) {
-    // Slides in from bottom (100% → 0%)
-    entryTy = interpolate(t, [0, 1], [100, 0]);
-    opacity = 1;
-  } else if (transition === "flash" && headFrames > 0) {
-    // White flash: full white for first 2 frames, then dissolve normally
-    flashOpacity = frame < 2 ? interpolate(frame, [0, 2], [1, 0]) : 0;
-  } else if (transition === "glitch" && headFrames > 0) {
-    // Small horizontal shake: alternates ±3% every 2 frames during entry
-    const shakeAmt = interpolate(t, [0, 0.6, 1], [3, 1.5, 0]);
-    entryTx = Math.sin(frame * 3.7) * shakeAmt;
-  }
-  // crossfade: no extra transform, just opacity (default)
-
-  const finalScale = kbScale * entryScale;
-  const finalTx    = kbTx + entryTx;
-  const finalTy    = kbTy + entryTy;
+  const opacity = Math.min(fadeIn, fadeOut);
 
   return (
-    <>
-      <AbsoluteFill style={{ opacity }}>
-        <OffthreadVideo
-          src={src}
-          startFrom={startFrom}
-          endAt={endAt}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width,
-            height,
-            objectFit: "cover",
-            transform: `scale(${finalScale}) translate(${finalTx}%, ${finalTy}%)`,
-            transformOrigin: "center center",
-            filter: GRADE_FILTER,
-          }}
-          muted
-        />
-      </AbsoluteFill>
-      {/* Flash overlay — white burst on cut */}
-      {flashOpacity > 0 && (
-        <AbsoluteFill style={{ background: "#fff", opacity: flashOpacity, pointerEvents: "none" }} />
-      )}
-    </>
+    <AbsoluteFill style={{ opacity }}>
+      <OffthreadVideo
+        src={src}
+        startFrom={startFrom}
+        endAt={endAt}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width,
+          height,
+          objectFit: "cover",
+          filter: GRADE_FILTER,
+        }}
+        muted
+      />
+    </AbsoluteFill>
   );
 }
 

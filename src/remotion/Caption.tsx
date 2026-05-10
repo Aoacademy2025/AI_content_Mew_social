@@ -15,11 +15,6 @@ export function Caption({ text, totalFrames }: CaptionProps) {
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
 
-  const translateY = interpolate(frame, [0, 8], [12, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-
   return (
     <AbsoluteFill
       style={{
@@ -32,7 +27,6 @@ export function Caption({ text, totalFrames }: CaptionProps) {
       <div
         style={{
           opacity,
-          transform: `translateY(${translateY}px)`,
           maxWidth: "85%",
           textAlign: "center",
         }}
