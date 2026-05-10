@@ -15,8 +15,12 @@ async function requireAdmin() {
 // GET /api/admin/music — list all tracks
 export async function GET() {
   if (!await requireAdmin()) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  const tracks = await prisma.music.findMany({ orderBy: { createdAt: "desc" } });
-  return NextResponse.json({ tracks });
+  try {
+    const tracks = await prisma.music.findMany({ orderBy: { createdAt: "desc" } });
+    return NextResponse.json({ tracks });
+  } catch {
+    return NextResponse.json({ tracks: [] });
+  }
 }
 
 // POST /api/admin/music — upload new track

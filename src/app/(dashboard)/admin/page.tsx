@@ -63,7 +63,7 @@ export default function AdminDashboardPage() {
       const res = await fetch("/api/admin/music");
       const data = await res.json();
       if (data.tracks) setTracks(data.tracks);
-    } catch { toast.error("โหลดเพลงไม่สำเร็จ"); }
+    } catch { /* silent — Music table may not exist yet on this environment */ }
     finally { setMusicLoading(false); }
   }
 
