@@ -40,6 +40,19 @@ interface CacheInfo {
 
 type ActionLoading = string | null;
 
+function proExpiry(redemptions: AdminUser["couponRedemptions"]): Date | null {
+  if (!redemptions?.length) return null;
+  const r = redemptions[redemptions.length - 1];
+  if (!r.coupon.durationDays) return null;
+  const d = new Date(r.redeemedAt);
+  d.setDate(d.getDate() + r.coupon.durationDays);
+  return d;
+}
+
+function daysLeft(date: Date): number {
+  return Math.ceil((date.getTime() - Date.now()) / 86400000);
+}
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -216,6 +229,17 @@ export default function AdminUsersPage() {
                             {user.plan === "PRO" && <Crown className="h-3 w-3" />}
                             {user.plan}
                           </span>
+                          {/* Pro expiry countdown */}
+                          {user.plan === "PRO" && (() => {
+                            const exp = proExpiry(user.couponRedemptions);
+                            if (!exp) return null;
+                            const d = daysLeft(exp);
+                            return (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${d <= 3 ? "bg-red-500/15 text-red-400" : d <= 7 ? "bg-amber-500/15 text-amber-400" : "bg-white/5 text-white/40"}`}>
+                                {d > 0 ? `หมดใน ${d} วัน` : "หมดอายุแล้ว"}
+                              </span>
+                            );
+                          })()}
                           {/* Role badge */}
                           {user.role === "ADMIN" && (
                             <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">

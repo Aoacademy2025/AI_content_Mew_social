@@ -18,7 +18,14 @@ export async function GET() {
       await Promise.all([
         prisma.user.findUnique({
           where: { id: userId },
-          select: { plan: true },
+          select: {
+            plan: true,
+            couponRedemptions: {
+              orderBy: { redeemedAt: "desc" },
+              take: 1,
+              select: { redeemedAt: true, coupon: { select: { durationDays: true } } },
+            },
+          },
         }),
         prisma.style.count({ where: { userId } }),
         prisma.content.count({ where: { userId } }),
@@ -40,8 +47,19 @@ export async function GET() {
     const plan = user?.plan ?? "FREE";
     const isPaid = plan === "PRO";
 
+    let proExpiresAt: string | null = null;
+    if (isPaid && user?.couponRedemptions?.length) {
+      const r = user.couponRedemptions[0];
+      if (r.coupon.durationDays > 0) {
+        const exp = new Date(r.redeemedAt);
+        exp.setDate(exp.getDate() + r.coupon.durationDays);
+        proExpiresAt = exp.toISOString();
+      }
+    }
+
     return NextResponse.json({
       plan,
+      proExpiresAt,
       styleCount,
       contentCount,
       videoCount,

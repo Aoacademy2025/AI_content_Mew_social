@@ -7,7 +7,7 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { ProfileSettings } from "@/components/settings/profile-settings";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import {
-  User, Key, ExternalLink, Zap, TrendingUp, Cpu, Ticket, Crown, Loader2,
+  User, Key, ExternalLink, Zap, Ticket, Crown, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -152,26 +152,6 @@ function SettingsContent() {
 
         {/* Coupon */}
         <CouponBox />
-
-        {/* Stats row */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="rounded-xl p-5" style={CARD}>
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>API Calls</p>
-              <TrendingUp className="h-4 w-4 text-cyan-400/40" />
-            </div>
-            <p className="text-2xl font-bold" style={{ color: "var(--ui-text-primary)" }}>—</p>
-            <p className="mt-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>This month</p>
-          </div>
-          <div className="rounded-xl p-5" style={CARD}>
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>Active Tokens</p>
-              <Cpu className="h-4 w-4 text-cyan-400/40" />
-            </div>
-            <p className="text-2xl font-bold" style={{ color: "var(--ui-text-primary)" }}>—</p>
-            <p className="mt-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>All time usage</p>
-          </div>
-        </div>
 
         {/* Help banner */}
         <div className="flex items-center gap-4 rounded-xl p-4" style={CARD}>

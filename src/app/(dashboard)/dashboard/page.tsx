@@ -12,12 +12,17 @@ import { cn } from "@/lib/utils";
 
 interface Stats {
   plan: "FREE" | "PRO";
+  proExpiresAt: string | null;
   styleCount: number;
   contentCount: number;
   videoCount: number;
   limits: { styles: number | null; contents: number | null; images: null };
   recentContents: { id: string; headline: string | null; createdAt: string; language: string }[];
   recentVideos: { id: string; status: string; createdAt: string; avatarModel: string; content: { headline: string | null } | null }[];
+}
+
+function daysLeft(isoDate: string): number {
+  return Math.ceil((new Date(isoDate).getTime() - Date.now()) / 86400000);
 }
 
 const CARD: React.CSSProperties = {
@@ -96,14 +101,24 @@ export default function DashboardPage() {
           </div>
           {/* Plan badge */}
           {stats && (
-            <div className={`absolute top-6 right-6 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${isPro ? "text-amber-500" : ""}`}
-              style={{
-                background: isPro ? "hsl(38 92% 50% / 0.12)" : "var(--ui-btn-bg)",
-                border: `1px solid ${isPro ? "hsl(38 92% 50% / 0.3)" : "var(--ui-btn-border)"}`,
-                color: isPro ? "hsl(38 92% 45%)" : "var(--ui-text-muted)",
-              }}>
-              <Crown className="h-3.5 w-3.5" />
-              {isPro ? "Pro Plan" : "Free Plan"}
+            <div className="absolute top-6 right-6 flex flex-col items-end gap-1">
+              <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold"
+                style={{
+                  background: isPro ? "hsl(38 92% 50% / 0.12)" : "var(--ui-btn-bg)",
+                  border: `1px solid ${isPro ? "hsl(38 92% 50% / 0.3)" : "var(--ui-btn-border)"}`,
+                  color: isPro ? "hsl(38 92% 45%)" : "var(--ui-text-muted)",
+                }}>
+                <Crown className="h-3.5 w-3.5" />
+                {isPro ? "Pro Plan" : "Free Plan"}
+              </div>
+              {isPro && stats.proExpiresAt && (() => {
+                const d = daysLeft(stats.proExpiresAt!);
+                return (
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${d <= 3 ? "bg-red-500/15 text-red-400" : d <= 7 ? "bg-amber-500/15 text-amber-400" : "bg-white/5 text-white/35"}`}>
+                    {d > 0 ? `หมดใน ${d} วัน` : "หมดอายุแล้ว"}
+                  </span>
+                );
+              })()}
             </div>
           )}
         </div>

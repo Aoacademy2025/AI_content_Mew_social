@@ -68,12 +68,13 @@ export default function AdminDashboardPage() {
   }
 
   async function uploadTrack(file: File) {
-    if (!newMusicTitle.trim()) { toast.error("กรอกชื่อเพลงก่อน"); return; }
+    const fallbackTitle = file.name.replace(/\.[^.]+$/, "");
+    const title = newMusicTitle.trim() || fallbackTitle;
     setMusicUploading(true);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("title", newMusicTitle.trim());
+      fd.append("title", title);
       const res = await fetch("/api/admin/music", { method: "POST", body: fd });
       const data = await res.json();
       if (data.track) { setTracks(prev => [data.track, ...prev]); setNewMusicTitle(""); toast.success("อัปโหลดเพลงสำเร็จ"); }
@@ -567,17 +568,19 @@ export default function AdminDashboardPage() {
           ) : (
             <div className="space-y-2">
               {tracks.map(t => (
-                <div key={t.id} className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/3 px-3 py-2">
-                  <Music className="h-3.5 w-3.5 shrink-0 text-purple-400/60" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-white">{t.title}</p>
-                    <p className="truncate text-[10px] text-zinc-500">{t.filename}</p>
+                <div key={t.id} className="rounded-lg border border-white/8 bg-white/3 px-3 py-2 space-y-1.5">
+                  <div className="flex items-center gap-3">
+                    <Music className="h-3.5 w-3.5 shrink-0 text-purple-400/60" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-white">{t.title}</p>
+                      <p className="truncate text-[10px] text-zinc-500">{t.filename}</p>
+                    </div>
+                    <button onClick={() => deleteTrack(t.id)}
+                      className="rounded p-1 text-zinc-500 transition hover:bg-red-500/15 hover:text-red-400">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                  <audio controls src={`/music/${t.filename}`} className="h-7 w-40 shrink-0 opacity-70" />
-                  <button onClick={() => deleteTrack(t.id)}
-                    className="ml-1 rounded p-1 text-zinc-500 transition hover:bg-red-500/15 hover:text-red-400">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                  <audio controls src={`/music/${t.filename}`} className="h-8 w-full opacity-80" />
                 </div>
               ))}
             </div>
