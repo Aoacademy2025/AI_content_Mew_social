@@ -491,7 +491,7 @@ export default function ContentPage() {
                       Save Content
                     </button>
                     <Link
-                      href="/short-video"
+                      href="/video-creator"
                       className="ml-auto flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
                       style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}
                     >
@@ -580,7 +580,7 @@ export default function ContentPage() {
                         View
                       </button>
                       <Link
-                        href="/short-video"
+                        href="/video-creator"
                         className="flex items-center justify-center gap-1 rounded-lg px-3 py-1.5 text-xs text-cyan-400/80 hover:text-cyan-400 transition-colors"
                         style={{ background: "hsl(190 100% 50% / 0.07)", border: "1px solid hsl(190 100% 50% / 0.2)" }}
                       >

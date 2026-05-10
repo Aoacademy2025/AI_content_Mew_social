@@ -147,7 +147,7 @@ export default function VideosGalleryPage() {
             ))}
 
             {/* New Video card */}
-            <Link href="/short-video">
+            <Link href="/video-creator">
               <div
                 className="group flex aspect-3/4 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl transition-all hover:border-cyan-500/40 hover:bg-cyan-500/5"
                 style={{ border: "2px dashed var(--ui-card-border)" }}

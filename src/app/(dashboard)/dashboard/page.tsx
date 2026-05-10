@@ -88,7 +88,7 @@ export default function DashboardPage() {
                 style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
                 <Sparkles className="h-4 w-4" /> Generate Content
               </Link>
-              <Link href="/short-video" className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium transition-colors"
+              <Link href="/video-creator" className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-medium transition-colors"
                 style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)", color: "var(--ui-text-secondary)" }}>
                 <Film className="h-4 w-4" /> Avatar Cloning
               </Link>
@@ -160,7 +160,7 @@ export default function DashboardPage() {
             {[
               { title: "Create Style", desc: "Train AI with your writing voice", href: "/style", icon: Palette, disabled: atStyleLimit },
               { title: "Generate Content", desc: "AI social media content", href: "/content", icon: FileText, disabled: atContentLimit },
-              { title: "Avatar Cloning", desc: "Create avatar videos from scripts", href: "/short-video", icon: Film, disabled: !isPro },
+              { title: "Avatar Cloning", desc: "Create avatar videos from scripts", href: "/video-creator", icon: Film, disabled: !isPro },
             ].map(({ title, desc, href, icon: Icon, disabled }) => (
               <Link key={href} href={disabled ? "#" : href}>
                 <div className={cn("group rounded-xl p-4 transition-all", disabled ? "opacity-40 cursor-not-allowed" : "hover:shadow-md cursor-pointer")} style={CARD}>
@@ -173,7 +173,7 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>{title}</p>
                   <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
                   {disabled && (
-                    <p className="text-[10px] text-amber-500 mt-2">{href === "/short-video" ? "Pro only" : "Limit reached"}</p>
+                    <p className="text-[10px] text-amber-500 mt-2">{href === "/video-creator" ? "Pro only" : "Limit reached"}</p>
                   )}
                 </div>
               </Link>
