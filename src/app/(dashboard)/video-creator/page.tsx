@@ -15,6 +15,9 @@ import {
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
+import { MusicPanel } from "./_panels/MusicPanel";
+import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
 
 type StepStatus = "idle" | "running" | "done" | "error" | "skip";
 
@@ -2634,128 +2637,26 @@ export default function ShortVideoPage() {
 
               {/* Background Removal panel */}
               {useAvatar && (
-                <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid hsl(120 60% 40% / 0.2)" }}>
-                  <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid hsl(120 60% 40% / 0.12)" }}>
-                    <div className="flex items-center gap-2">
-                      <Wand2 className="h-3.5 w-3.5 text-green-400/70" />
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-green-400/60">Background Removal</p>
-                    </div>
-                    <span className="text-[9px] text-white/25">Adjust before Composite</span>
-                  </div>
-                  <div className="p-4 space-y-3">
-
-                  {/* Green color — fixed to match HeyGen API output */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-white/35 w-20 shrink-0">Green Color</span>
-                    <div className="flex items-center gap-2 rounded px-2.5 py-1" style={{ background: "var(--sv-input)", border: "1px solid hsl(120 60% 40% / 0.3)" }}>
-                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: "#00FF00" }} />
-                      <span className="text-[10px] font-mono text-green-400">#00FF00</span>
-                      <span className="text-[9px] text-white/25">— HeyGen API</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-white/35 w-20 shrink-0">Similarity</span>
-                      <input type="range" min={0.10} max={0.55} step={0.01} value={chromaSimilarity}
-                        onChange={e => setChromaSimilarity(Number(e.target.value))}
-                        className="flex-1 accent-green-400 h-1" />
-                      <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaSimilarity.toFixed(2)}</span>
-                    </div>
-                    <p className="text-[9px] text-white/20 pl-[88px]">Green still visible → increase &nbsp;|&nbsp; Skin/clothes removed → decrease</p>
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-white/35 w-20 shrink-0">Blend</span>
-                      <input type="range" min={0.00} max={0.20} step={0.01} value={chromaBlend}
-                        onChange={e => setChromaBlend(Number(e.target.value))}
-                        className="flex-1 accent-green-400 h-1" />
-                      <span className="text-[10px] font-mono text-green-400 w-8 text-right">{chromaBlend.toFixed(2)}</span>
-                    </div>
-                    <p className="text-[9px] text-white/20 pl-[88px]">Jagged/hard edge → increase &nbsp;|&nbsp; Transparent/soft edge → decrease</p>
-                  </div>
-
-                  </div>
-                </div>
+                <BackgroundRemovalPanel
+                  chromaSimilarity={chromaSimilarity}
+                  setChromaSimilarity={setChromaSimilarity}
+                  chromaBlend={chromaBlend}
+                  setChromaBlend={setChromaBlend}
+                />
               )}
 
               {/* Music panel */}
-              <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid hsl(270 60% 40% / 0.2)" }}>
-                <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid hsl(270 60% 40% / 0.12)" }}>
-                  <div className="flex items-center gap-2">
-                    <Music2 className="h-3.5 w-3.5 text-purple-400/70" />
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-purple-400/60">Background Music</p>
-                  </div>
-                  <button onClick={() => setBgmEnabled(v => !v)}
-                    className={`relative h-5 w-9 rounded-full transition-colors ${bgmEnabled ? "bg-purple-500" : "bg-white/15"}`}>
-                    <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${bgmEnabled ? "translate-x-4" : "translate-x-0"}`} />
-                  </button>
-                </div>
-                {bgmEnabled && (
-                  <div className="p-4 space-y-3">
-                    {/* Volume slider */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-white/35 w-16 shrink-0">Volume</span>
-                      <input type="range" min={0} max={1} step={0.01} value={bgmVolume}
-                        onChange={e => setBgmVolume(Number(e.target.value))}
-                        className="flex-1 accent-purple-400 h-1" />
-                      <span className="text-[10px] font-mono text-purple-400 w-8 text-right">{Math.round(bgmVolume * 100)}%</span>
-                    </div>
-
-                    {/* System tracks */}
-                    {systemTracks.length > 0 && (
-                      <div className="space-y-1.5">
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">System Tracks</p>
-                        <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
-                          {systemTracks.map(t => (
-                            <button key={t.id} onClick={() => setBgmFile(bgmFile === `/music/${t.filename}` ? "" : `/music/${t.filename}`)}
-                              className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-all"
-                              style={bgmFile === `/music/${t.filename}`
-                                ? { background: "hsl(270 60% 35% / 0.25)", border: "1px solid hsl(270 60% 40% / 0.4)", color: "#c084fc" }
-                                : { background: "var(--sv-input)", border: "1px solid var(--sv-border2)", color: "rgba(255,255,255,0.5)" }}>
-                              <Music2 className="h-3 w-3 shrink-0" />
-                              <span className="text-[11px] font-medium truncate">{t.title}</span>
-                              {bgmFile === `/music/${t.filename}` && <span className="ml-auto text-[9px] text-purple-400">✓</span>}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* User upload */}
-                    <div className="space-y-1.5">
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-white/25">Upload Your Track</p>
-                      <label className={`flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer transition-colors ${bgmUploading ? "opacity-50 pointer-events-none" : ""}`}
-                        style={{ background: "var(--sv-input)", border: "1px dashed hsl(270 60% 40% / 0.3)" }}>
-                        <input type="file" accept="audio/*,.mp3,.wav,.ogg,.aac,.m4a" className="hidden"
-                          onChange={async (e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            setBgmUploading(true);
-                            try {
-                              const fd = new FormData();
-                              fd.append("file", f);
-                              const res = await fetch("/api/music/upload", { method: "POST", body: fd });
-                              const data = await res.json();
-                              if (data.url) { setBgmFile(data.url); toast.success("Track uploaded"); }
-                              else toast.error(data.error ?? "Upload failed");
-                            } catch { toast.error("Upload failed"); }
-                            finally { setBgmUploading(false); e.target.value = ""; }
-                          }} />
-                        {bgmUploading
-                          ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-purple-400" /><span className="text-[10px] text-white/35">Uploading...</span></>
-                          : <><Upload className="h-3.5 w-3.5 text-purple-400/50" /><span className="text-[10px] text-white/35">Choose audio file (mp3 / wav / m4a)</span></>}
-                      </label>
-                      {bgmFile && !systemTracks.some(t => `/music/${t.filename}` === bgmFile) && (
-                        <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5" style={{ background: "hsl(270 60% 35% / 0.15)", border: "1px solid hsl(270 60% 40% / 0.25)" }}>
-                          <Music2 className="h-3 w-3 text-purple-400/60 shrink-0" />
-                          <span className="text-[10px] text-purple-300 truncate flex-1">{bgmFile.split("/").pop()}</span>
-                          <button onClick={() => setBgmFile("")} className="text-white/30 hover:text-white/60"><X className="h-3 w-3" /></button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <MusicPanel
+                bgmEnabled={bgmEnabled}
+                setBgmEnabled={setBgmEnabled}
+                bgmVolume={bgmVolume}
+                setBgmVolume={setBgmVolume}
+                bgmFile={bgmFile}
+                setBgmFile={setBgmFile}
+                bgmUploading={bgmUploading}
+                setBgmUploading={setBgmUploading}
+                systemTracks={systemTracks}
+              />
 
             </div>{/* end RIGHT column */}
           </div>{/* end 2-col grid */}
@@ -3208,136 +3109,16 @@ export default function ShortVideoPage() {
               </div>
             </div>
 
-            {/* Col 2 — Subtitle Review + BG Removal stacked */}
+            {/* Col 2 — Subtitle Review */}
             <div className="md:col-span-1 lg:col-span-4 flex flex-col gap-4">
 
             {/* Subtitle Review — edit before generate */}
-            <div className="rounded-2xl overflow-hidden flex flex-col" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
-              <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: "1px solid var(--sv-border)" }}>
-                <div className="flex items-center gap-2">
-                  <Captions className="h-3.5 w-3.5 text-cyan-400" />
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Subtitle Review</p>
-                  {editedSceneCaptions.length > 0 && (
-                    <span className="text-[9px] font-bold text-cyan-400/60">{editedSceneCaptions.length} ฉาก</span>
-                  )}
-                </div>
-                {editedSceneCaptions.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    {/* Export SRT */}
-                    <button
-                      onClick={() => {
-                        const fmt = (ms: number) => {
-                          const h = Math.floor(ms / 3600000);
-                          const m = Math.floor((ms % 3600000) / 60000);
-                          const s = Math.floor((ms % 60000) / 1000);
-                          const ms2 = ms % 1000;
-                          return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms2).padStart(3,"0")}`;
-                        };
-                        const srt = editedSceneCaptions.map((c, i) =>
-                          `${i + 1}\n${fmt(c.startMs)} --> ${fmt(c.endMs)}\n${c.text}`
-                        ).join("\n\n");
-                        const blob = new Blob([srt], { type: "text/plain" });
-                        const a = document.createElement("a");
-                        a.href = URL.createObjectURL(blob);
-                        a.download = "subtitles.srt";
-                        a.click();
-                      }}
-                      className="text-[9px] font-bold text-white/30 hover:text-cyan-400 transition-colors px-1.5 py-0.5 rounded"
-                      style={{ background: "var(--sv-input)" }}>
-                      Export SRT
-                    </button>
-                    <button
-                      onClick={() => setEditedSceneCaptions(pipe.current.sceneCaptions ?? [])}
-                      className="text-[9px] text-white/25 hover:text-white/50 transition-colors">
-                      reset
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {editedSceneCaptions.length === 0 ? (
-                <div className="flex flex-col items-center justify-center flex-1 py-10">
-                  <Captions className="h-8 w-8 text-white/8 mb-2" />
-                  <p className="text-xs text-white/18">Run pipeline first</p>
-                  <p className="text-[9px] text-white/10 mt-1">Subtitles appear here after Transcribe</p>
-                </div>
-              ) : (
-                <>
-                  <div className="flex-1 overflow-hidden">
-                    <div className="overflow-y-auto" style={{ maxHeight: "min(340px, 45vh)" }}>
-                      {editedSceneCaptions.map((cap, i) => {
-                        const fmt = (ms: number) => {
-                          const s = Math.floor(ms / 1000);
-                          return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-                        };
-                        const isActive = i === activeCaptionIdx;
-                        const tag = cap.tag ?? "body";
-                        const tagCfg = {
-                          hook: { label: "HOOK", bg: "hsl(38 100% 50% / 0.18)", color: "hsl(38 100% 65%)", border: "hsl(38 100% 50% / 0.4)", leftBorder: "hsl(38 100% 55%)" },
-                          cta:  { label: "CTA",  bg: "hsl(142 72% 30% / 0.18)", color: "hsl(142 72% 60%)", border: "hsl(142 72% 40% / 0.4)", leftBorder: "hsl(142 72% 50%)" },
-                          body: { label: "",     bg: "", color: "", border: "", leftBorder: "" },
-                        }[tag];
-                        return (
-                          <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 transition-colors"
-                            style={{
-                              background: isActive
-                                ? "hsl(190 100% 50% / 0.1)"
-                                : tag === "hook" ? "hsl(38 100% 50% / 0.06)"
-                                : tag === "cta"  ? "hsl(142 72% 30% / 0.06)"
-                                : i % 2 === 0 ? "var(--sv-card)" : "var(--sv-bg)",
-                              borderLeft: `2px solid ${isActive ? "hsl(190 100% 50% / 0.6)" : tag !== "body" ? tagCfg.leftBorder : "transparent"}`,
-                            }}>
-                            <span className={`text-[9px] font-bold shrink-0 w-4 ${isActive ? "text-cyan-400" : "text-cyan-500/50"}`}>{i + 1}</span>
-                            <span className="text-[9px] font-mono shrink-0 w-9 text-white/25">{fmt(cap.startMs)}</span>
-                            {/* Tag badge — click to cycle hook→body→cta */}
-                            {tag !== "body" ? (
-                              <button
-                                onClick={() => setEditedSceneCaptions(prev => prev.map((c, j) => j === i ? { ...c, tag: tag === "hook" ? "body" : tag === "cta" ? "body" : "body" } : c))}
-                                className="shrink-0 rounded px-1 py-0 text-[8px] font-black uppercase tracking-widest transition-all hover:text-white/30"
-                                style={{ background: tagCfg.bg, color: tagCfg.color, border: `1px solid ${tagCfg.border}` }}
-                                title="คลิกเพื่อเปลี่ยนเป็น body">
-                                {tagCfg.label}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => setEditedSceneCaptions(prev => prev.map((c, j) => j === i ? { ...c, tag: i === 0 ? "hook" : "cta" } : c))}
-                                className="shrink-0 w-8 rounded px-1 py-0 text-[8px] text-white/15 hover:text-white/40 transition-colors"
-                                title="คลิกเพื่อ tag เป็น hook หรือ cta">
-                                ···
-                              </button>
-                            )}
-                            <input
-                              value={cap.text}
-                              onChange={e => setEditedSceneCaptions(prev =>
-                                prev.map((c, j) => j === i ? { ...c, text: e.target.value } : c)
-                              )}
-                              className="flex-1 text-[11px] font-semibold bg-transparent outline-none min-w-0"
-                              style={{ caretColor: "hsl(190 100% 60%)", color: isActive ? "hsl(190 100% 75%)" : tag === "hook" ? "hsl(38 100% 80%)" : tag === "cta" ? "hsl(142 72% 75%)" : "rgba(255,255,255,0.8)" }}
-                            />
-                            <span className="text-[9px] font-mono shrink-0 w-9 text-right text-white/20">{fmt(cap.endMs)}</span>
-                            <button
-                              onClick={() => setEditedSceneCaptions(prev => prev.filter((_, j) => j !== i))}
-                              className="shrink-0 text-white/15 hover:text-red-400 transition-colors text-[11px] leading-none">✕</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {/* Add row */}
-                    <button
-                      onClick={() => {
-                        const last = editedSceneCaptions[editedSceneCaptions.length - 1];
-                        const startMs = last ? last.endMs + 100 : 0;
-                        setEditedSceneCaptions(prev => [...prev, { text: "", startMs, endMs: startMs + 2000 }]);
-                      }}
-                      className="w-full py-1.5 text-[9px] font-bold text-white/20 hover:text-cyan-400 transition-colors border-t"
-                      style={{ borderColor: "var(--sv-border)", background: "var(--sv-card)" }}>
-                      + เพิ่มซับ
-                    </button>
-                  </div>
-
-                </>
-              )}
-            </div>
+            <SubtitleReviewPanel
+              editedSceneCaptions={editedSceneCaptions}
+              setEditedSceneCaptions={setEditedSceneCaptions}
+              activeCaptionIdx={activeCaptionIdx}
+              onReset={() => setEditedSceneCaptions(pipe.current.sceneCaptions ?? [])}
+            />
 
             </div>{/* end col-2 */}
 
