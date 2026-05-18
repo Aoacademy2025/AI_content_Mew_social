@@ -45,7 +45,7 @@ function friendlyMessage(error: unknown): string {
   if (/render|remotion/i.test(msg)) return "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่";
   if (/heygen/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบ Avatar กรุณาลองใหม่";
   if (/elevenlabs/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบเสียง กรุณาลองใหม่";
-  if (/openai|gemini/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบ AI กรุณาลองใหม่";
+  if (/gemini/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบ AI กรุณาลองใหม่";
   if (/prisma|database|sqlite/i.test(msg)) return "เกิดข้อผิดพลาดในฐานข้อมูล กรุณาลองใหม่";
 
   return "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง";

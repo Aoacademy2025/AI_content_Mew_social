@@ -146,25 +146,6 @@ ${STYLE_GUIDE}
 ${JSON_SCHEMA}`;
 }
 
-function buildOpenAIPrompt(script: string, captions: string[]): string {
-  const topic = script.slice(0, 600) || captions.slice(0, 5).join(" ");
-  return `You are a viral thumbnail copywriter for TikTok/YouTube Shorts. NEVER copy sentences directly from the script.
-
-VIDEO TOPIC: "${topic}"
-
-Create NEW thumbnail text that makes viewers instantly click. Rules:
-- Invent a fresh hook — do NOT paste script lines verbatim
-- Use: SHOCK / CURIOSITY GAP / NUMBER / CHALLENGE / CONTROVERSY
-- Match script language (Thai script → Thai text, English mixing OK for impact)
-- line: main hook, 3-5 words, punchy
-- line2: supporting 2-4 words, or "" if not needed
-- Pick style + colors that POP on dark backgrounds
-
-${STYLE_GUIDE}
-
-${JSON_SCHEMA}`;
-}
-
 function parseJsonResult(text: string, fallback: string): SuggestResult {
   try {
     const match = text.match(/\{[\s\S]*\}/);
@@ -178,24 +159,6 @@ async function suggestWithGemini(script: string, captions: string[], geminiKey: 
   const { geminiGenerateText } = await import("@/lib/gemini");
   const prompt = buildGeminiPrompt(script, captions);
   const text = await geminiGenerateText(geminiKey, prompt, 512, 1.0);
-  return parseJsonResult(text, "");
-}
-
-async function suggestWithOpenAI(script: string, captions: string[], openaiKey: string): Promise<SuggestResult> {
-  const prompt = buildOpenAIPrompt(script, captions);
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 300,
-      temperature: 0.9,
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI failed: ${res.status}`);
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content ?? "";
   return parseJsonResult(text, "");
 }
 
@@ -256,13 +219,12 @@ export async function POST(req: Request) {
     if (mode === "suggest") {
       const user = await prisma.user.findUnique({
         where: { id: session.user.id },
-        select: { geminiKey: true, openaiKey: true },
+        select: { geminiKey: true },
       });
       const geminiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
-      const openaiKey = user?.openaiKey ? decrypt(user.openaiKey) : (process.env.SERVER_OPENAI_API_KEY || null);
 
-      if (!geminiKey && !openaiKey) {
-        return NextResponse.json({ error: "Gemini หรือ OpenAI key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "gemini" }, { status: 400 });
+      if (!geminiKey) {
+        return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
       }
 
       // Extract captions from renderConfig
@@ -280,15 +242,10 @@ export async function POST(req: Request) {
       const fallback = captions[0] ?? script.split(/[.\n]+/).find(s => s.trim().length > 3) ?? "";
 
       let result: SuggestResult;
-      if (geminiKey) {
-        try {
-          result = await suggestWithGemini(script, captions, geminiKey);
-        } catch {
-          if (openaiKey) result = await suggestWithOpenAI(script, captions, openaiKey);
-          else result = { line: fallback };
-        }
-      } else {
-        result = await suggestWithOpenAI(script, captions, openaiKey!);
+      try {
+        result = await suggestWithGemini(script, captions, geminiKey);
+      } catch {
+        result = { line: fallback };
       }
 
       if (!result.line) result.line = fallback;

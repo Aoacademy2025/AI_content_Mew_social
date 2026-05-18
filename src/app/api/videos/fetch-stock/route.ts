@@ -119,7 +119,7 @@ async function downloadAndCrop(url: string, outPath: string): Promise<void> {
 }
 
 // Search Pixabay for portrait videos
-async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<{ id: number; duration: number; videoUrl: string }[]> {
+async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<{ id: number; duration: number; videoUrl: string; tags: string }[]> {
   const params = new URLSearchParams({
     key: pixabayKey,
     q: query,
@@ -131,25 +131,26 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
   const res = await fetch(`https://pixabay.com/api/videos/?${params}`);
   if (!res.ok) throw new Error(`Pixabay search failed: ${res.status}`);
   const data = await res.json();
-  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string }; large?: { url: string } } }) => ({
+  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string }; large?: { url: string } }; tags?: string }) => ({
     id: h.id,
     duration: h.duration,
     videoUrl: h.videos?.large?.url ?? h.videos?.medium?.url ?? "",
+    tags: (h.tags ?? "").slice(0, 60),
   })).filter((v: { videoUrl: string }) => v.videoUrl);
 }
 
 // LLM rank: given subtitle texts and candidate titles per keyword,
 // return the best-matching candidate index for each keyword.
-// Single batched call — returns number[] same length as keywords.
-async function llmRankCandidates(
+// Batched in chunks of RANK_BATCH_SIZE to handle long scripts reliably.
+const RANK_BATCH_SIZE = 30;
+
+async function llmRankBatch(
   keywords: string[],
   subtitleTexts: string[],
-  candidateTitles: string[][], // [kwIdx][candidateIdx] = title
+  candidateTitles: string[][],
   llmKey: string,
-  useGemini: boolean,
   visualDirection?: string,
 ): Promise<number[]> {
-  // Build compact prompt — one line per keyword
   const lines = keywords.map((kw, ki) => {
     const sub = subtitleTexts[ki] ?? kw;
     const titles = candidateTitles[ki].map((t, i) => `${i}:${t || "untitled"}`).join("|");
@@ -173,51 +174,65 @@ ${lines.join("\n")}
 
 OUTPUT (JSON array of ${keywords.length} integers):`;
 
-  try {
-    let text = "[]";
-    if (useGemini) {
-      text = await geminiGenerateText(llmKey, prompt, 512, 0);
-    } else {
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${llmKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: prompt }],
-          max_tokens: 512,
-          temperature: 0,
-        }),
-      });
-      if (r.ok) { const d = await r.json(); text = d.choices?.[0]?.message?.content ?? "[]"; }
-    }
+  // max_tokens: each integer + comma is ~3 tokens; 10 tokens overhead
+  const maxTokens = Math.max(128, keywords.length * 4 + 20);
+  const text = await geminiGenerateText(llmKey, prompt, maxTokens, 0);
 
-    // Try bare array first, then extract from object like {"indices":[...]} or {"result":[...]}
-    let parsed: unknown[] = [];
-    const arrMatch = text.match(/\[[\d,\s]+\]/);
-    if (arrMatch) {
-      parsed = JSON.parse(arrMatch[0]);
-    } else {
-      const objMatch = text.match(/\{[\s\S]*\}/);
-      if (objMatch) {
-        const obj = JSON.parse(objMatch[0]);
-        const arr = Array.isArray(obj) ? obj : Object.values(obj).find(v => Array.isArray(v));
-        if (Array.isArray(arr)) parsed = arr;
-      }
+  let parsed: unknown[] = [];
+  const arrMatch = text.match(/\[[\d,\s]+\]/);
+  if (arrMatch) {
+    parsed = JSON.parse(arrMatch[0]);
+  } else {
+    const objMatch = text.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      const obj = JSON.parse(objMatch[0]);
+      const arr = Array.isArray(obj) ? obj : Object.values(obj).find(v => Array.isArray(v));
+      if (Array.isArray(arr)) parsed = arr;
     }
+  }
 
-    if (parsed.length !== keywords.length) {
-      console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using longest-duration fallback`);
-      return keywords.map(() => 0);
-    }
-
-    return parsed.map((v, i) => {
-      const n = typeof v === "number" ? v : parseInt(String(v), 10);
-      const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
-      return isNaN(n) ? 0 : Math.max(0, Math.min(n, maxIdx));
-    });
-  } catch {
+  if (parsed.length !== keywords.length) {
+    console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using longest-duration fallback`);
     return keywords.map(() => 0);
   }
+
+  return parsed.map((v, i) => {
+    const n = typeof v === "number" ? v : parseInt(String(v), 10);
+    const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
+    return isNaN(n) ? 0 : Math.max(0, Math.min(n, maxIdx));
+  });
+}
+
+async function llmRankCandidates(
+  keywords: string[],
+  subtitleTexts: string[],
+  candidateTitles: string[][],
+  llmKey: string,
+  visualDirection?: string,
+): Promise<number[]> {
+  if (keywords.length <= RANK_BATCH_SIZE) {
+    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection);
+  }
+
+  // Split into chunks and call sequentially to avoid LLM output-length limits
+  const results: number[] = new Array(keywords.length).fill(0);
+  for (let start = 0; start < keywords.length; start += RANK_BATCH_SIZE) {
+    const end = Math.min(start + RANK_BATCH_SIZE, keywords.length);
+    const chunkKws = keywords.slice(start, end);
+    const chunkSubs = subtitleTexts.slice(start, end);
+    const chunkTitles = candidateTitles.slice(start, end);
+    console.log(`[fetch-stock] LLM ranking chunk ${start}-${end - 1} of ${keywords.length}`);
+    try {
+      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection);
+      for (let i = 0; i < chunkResult.length; i++) {
+        results[start + i] = chunkResult[i];
+      }
+    } catch (e) {
+      console.warn(`[fetch-stock] LLM chunk ${start}-${end - 1} failed:`, e);
+      // Keep default 0 for this chunk
+    }
+  }
+  return results;
 }
 
 // POST /api/videos/fetch-stock
@@ -235,7 +250,6 @@ export async function POST(req: Request) {
     stockSource = "both",
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
-    preferredLLM,
     fullScript,
     visualDirection,
   }: {
@@ -247,7 +261,6 @@ export async function POST(req: Request) {
     stockSource?: string;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
-    preferredLLM?: string;
     fullScript?: string;
     visualDirection?: string;
   } = body ?? {};
@@ -259,7 +272,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { pixabayKey: true, pexelsKey: true, geminiKey: true, openaiKey: true, ttsProvider: true },
+    select: { pixabayKey: true, pexelsKey: true, geminiKey: true, ttsProvider: true },
   });
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
@@ -287,15 +300,7 @@ export async function POST(req: Request) {
     console.log("[fetch-stock] Pixabay requested but key missing; continuing with Pexels only");
   }
 
-  // Resolve LLM key for ranking — respects preferredLLM from client
-  let llmKey: string | null = null;
-  let useGemini = false;
-  const wantGemini = preferredLLM === "gemini";
-  const wantOpenAI = preferredLLM === "openai";
-  if (wantGemini && user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-  else if (wantOpenAI && user?.openaiKey) { llmKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
-  else if (user?.geminiKey) { llmKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-  else if (user?.openaiKey) { llmKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
+  const llmKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
 
   function avgCutSec(dur: number): number {
     if (dur <= 10) return 5;
@@ -397,8 +402,10 @@ export async function POST(req: Request) {
             const title = slugToTitle(v.url ?? "");
             candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title });
           }
-          for (const pv of pixabayVideos) {
-            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: query });
+          for (const pv of pixabayVideos as { id: number; duration: number; videoUrl: string; tags?: string }[]) {
+            // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
+            const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 4).map((t: string) => t.trim()).join(" ") : query;
+            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle });
           }
 
           if (candidates.length > 0) {
@@ -441,7 +448,7 @@ export async function POST(req: Request) {
     if (hasAnyCandidates) {
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, useGemini, visualDirection);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
       } catch (e) {
         console.error(`[fetch-stock] LLM ranking failed, falling back to best-duration pick:`, e);

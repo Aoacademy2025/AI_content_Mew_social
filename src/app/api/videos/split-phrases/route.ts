@@ -66,20 +66,10 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { geminiKey: true, openaiKey: true, ttsProvider: true },
+    select: { geminiKey: true },
   });
-  const openAiModel = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini";
-  let apiKey = process.env.SERVER_OPENAI_API_KEY ?? null;
-  let useGemini = false;
-  if (!apiKey) {
-    const preferGemini = user?.ttsProvider === "gemini";
-    const preferOpenAI = user?.ttsProvider === "elevenlabs" || user?.ttsProvider === "openai";
-    if (preferGemini && user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-    else if (preferOpenAI && user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
-    else if (user?.geminiKey) { apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8"); useGemini = true; }
-    else if (user?.openaiKey) { apiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8"); }
-    else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
-  }
+  const apiKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
+  if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
 
   // ── Gemini prompt: dramatic pacing, NEVER rules, examples ──────────────────
   const geminiPrompt = `You are a Thai subtitle splitter for TikTok/Reels short-form video.
@@ -123,61 +113,20 @@ Output: {"phrases":["กรมการขนส่งทางราง เผ�
 ━━━ SCRIPT ━━━
 ${script.trim()}`;
 
-  // ── OpenAI prompt: numbered rules, strict numeric constraints, json_object ──
-  const openaiPrompt = `You are a Thai subtitle splitter for TikTok/Reels short-form video.
-
-TASK: Split the script into subtitle phrases. Each phrase appears on screen while the speaker says those words, and is used to search for a matching B-roll video clip.
-
-RULES — follow every rule exactly:
-1. Copy every Thai word EXACTLY — do not paraphrase, reorder, or remove any words.
-2. Target ${targetRange} phrases for ${durationSec ? `${durationSec.toFixed(1)}s` : "unknown duration"} of audio.
-3. Each phrase must be 15–40 Thai characters. Phrases under 15 chars MUST be merged with the adjacent phrase.
-4. Split ONLY at: sentence-end punctuation (. ? ! ฯ), conjunctions (แต่, และ, เพราะ, จึง), or clear pause points.
-5. Never split mid-sentence to hit a character limit — the meaning must be complete.
-6. Never split a date — keep Thai month name + year together as one phrase.
-7. Remove English parenthetical notes like (Anyons) — they are pronunciation guides, not subtitle text.
-8. Each phrase must describe something visually distinct so a matching stock video clip can be found.
-9. Short exclamations under 15 chars must be merged with the preceding phrase — never left alone.
-
-TAGGING:
-- "hook" = first 1–2 phrases only (opening attention-grab)
-- "body" = all main content
-- "cta" = explicit call-to-action only: กดติดตาม, กดแชร์, subscribe, follow
-
-OUTPUT: valid JSON only — no markdown, no explanation:
-{"phrases":["phrase1","phrase2",...],"tags":["hook","body",...]}
-
-Script:
-${script.trim()}`;
-
-  const prompt = useGemini ? geminiPrompt : openaiPrompt;
+  const prompt = geminiPrompt;
 
   let text = "{}";
-  if (useGemini) {
-    try {
-      const raw = await geminiGenerateText(apiKey, prompt, 4096);
-      console.log(`[split-phrases] Gemini raw:`, raw);
-      const stripped = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
-      text = jsonMatch ? jsonMatch[0] : stripped;
-    } catch (e) {
-      console.error("[split-phrases] Gemini error:", e);
-      return NextResponse.json({ error: `Gemini failed: ${e instanceof Error ? e.message : e}` }, { status: 500 });
-    }
-  } else {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: openAiModel, messages: [{ role: "user", content: prompt }], max_tokens: 4096, temperature: 0, response_format: { type: "json_object" } }),
-    });
-    if (!res.ok) {
-      const err = await res.text().catch(() => "");
-      return NextResponse.json({ error: `OpenAI failed: ${err.slice(0, 200)}` }, { status: 500 });
-    }
-    const data = await res.json();
-    text = data.choices?.[0]?.message?.content ?? "{}";
+  try {
+    const raw = await geminiGenerateText(apiKey, prompt, 4096);
+    console.log(`[split-phrases] Gemini raw:`, raw);
+    const stripped = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+    const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+    text = jsonMatch ? jsonMatch[0] : stripped;
+  } catch (e) {
+    console.error("[split-phrases] Gemini error:", e);
+    return NextResponse.json({ error: `Gemini failed: ${e instanceof Error ? e.message : e}` }, { status: 500 });
   }
-  console.log(`[split-phrases] GPT raw:`, text.slice(0, 400));
+  console.log(`[split-phrases] LLM raw:`, text.slice(0, 400));
 
   // CTA keyword detector — only tag as cta if explicit action words present
   const CTA_RE = /กดติดตาม|กด\s*like|กด\s*แชร์|ลิงก์ในไบโอ|สมัครเลย|subscribe|follow now/i;

@@ -6,26 +6,24 @@ import { toast } from "sonner";
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink } from "lucide-react";
 
 interface ApiKeys {
-  openaiKey?: string;
   geminiKey?: string;
   heygenKey?: string;
   elevenlabsKey?: string;
   pexelsKey?: string;
   pixabayKey?: string;
 }
-type KeyType = "openai" | "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 type TestResult = { ok: boolean; message: string } | null;
 
 const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
-  { id: "openaiKey",     keyType: "openai",     label: "OpenAI API Key",     placeholder: "sk-proj-...",               description: "Content, subtitles & style generation",     link: "https://platform.openai.com/api-keys" },
-  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza...",                   description: "Google Gemini — สามารถใช้แทน OpenAI ได้ในทุกฟังก์ชัน",   link: "https://aistudio.google.com/app/apikey" },
+  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza...",                   description: "Google Gemini — ใช้สำหรับ AI ทุกฟังก์ชัน",   link: "https://aistudio.google.com/app/apikey" },
   { id: "heygenKey",     keyType: "heygen",     label: "HeyGen API Key",     placeholder: "Enter your HeyGen key",    description: "Avatar video creation",                      link: "https://app.heygen.com/settings?nav=API" },
   { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
   { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },
   { id: "pixabayKey",    keyType: "pixabay",    label: "Pixabay API Key",    placeholder: "12345678-abcdef...",        description: "Stock video fallback (Pixabay)",             link: "https://pixabay.com/api/docs/" },
 ];
 
-const EMPTY_RESULTS: Record<KeyType, TestResult> = { openai: null, gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null };
+const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);

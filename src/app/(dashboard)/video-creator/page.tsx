@@ -29,6 +29,7 @@ interface StepState {
   config: StepStatus;
   render: StepStatus;
   avatar: StepStatus;
+  avatarTail: StepStatus;
   composite: StepStatus;
 }
 
@@ -39,7 +40,7 @@ interface StockVideo { keyword: string; localUrl?: string; videoUrl: string; dur
 
 const DEFAULT_STEPS: StepState = {
   keywords: "idle", fetchStock: "idle", tts: "idle",
-  transcribe: "idle", config: "idle", render: "idle", avatar: "idle", composite: "idle",
+  transcribe: "idle", config: "idle", render: "idle", avatar: "idle", avatarTail: "idle", composite: "idle",
 };
 
 // Intermediate data stored between steps
@@ -62,7 +63,11 @@ interface PipelineData {
   compositeUrl: string;
 }
 
-type SubPreset = "stroke" | "box" | "box-rounded" | "glow" | "outline-only" | "plain" | "shadow" | "karaoke";
+type SubPreset = "stroke" | "box" | "box-rounded" | "glow" | "outline-only" | "plain" | "shadow" | "karaoke" | "typewriter"
+  | "neon-green" | "neon-red" | "neon-blue" | "bold-shadow" | "karaoke-box" | "pop-outline"
+  | "pastel" | "classic-yellow" | "hormozi" | "beast" | "box-white" | "box-yellow"
+  | "retro" | "sharp-outline" | "news";
+type SubTextEffect = "pop" | "bounce" | "fade" | "quick" | "glow-pulse" | "slide" | "flip" | "highlight" | "karaoke" | "typewriter";
 
 /** Shared subtitle renderer — used by mini preview, CSS overlay, and modal */
 function renderSubEl(
@@ -111,13 +116,184 @@ function renderSubEl(
     return <span style={{ ...base, color: "#fff", WebkitTextStroke: `${sw * 1.5}px ${c}` } as React.CSSProperties}>{text}</span>;
   }
   if (preset === "karaoke") {
-    // Bottom-bar style: text on semi-transparent bottom strip
-    const py = Math.round(4 * scale), px = Math.round(12 * scale);
-    return <div style={{ background: "rgba(0,0,0,0.75)", padding: `${py}px ${px}px`, display: "inline-block", borderTop: `${Math.max(1, Math.round(2*scale))}px solid ${c}` }}><span style={base}>{text}</span></div>;
+    // Preview: show first word highlighted, rest dimmed
+    const words = text.split(" ");
+    const py = Math.round(8 * scale), px = Math.round(20 * scale), br = Math.round(12 * scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.72)", padding: `${py}px ${px}px`, display: "inline-block", borderRadius: br }}>
+        <span style={{ ...base, display: "inline", color: "rgba(255,255,255,0.35)" }}>
+          {words.map((w, i) => (
+            <React.Fragment key={i}>
+              <span style={{ color: i === 0 ? c : "rgba(255,255,255,0.35)", fontWeight: i === 0 ? fw : Math.min(fw, 500) }}>{w}</span>
+              {i < words.length - 1 ? " " : null}
+            </React.Fragment>
+          ))}
+        </span>
+      </div>
+    );
+  }
+  if (preset === "typewriter") {
+    // Preview: show first half of chars in color, rest transparent
+    const half = Math.ceil(text.length / 2);
+    const py = Math.round(6 * scale), px = Math.round(20 * scale), br = Math.round(8 * scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.65)", padding: `${py}px ${px}px`, display: "inline-block", borderRadius: br }}>
+        <span style={{ ...base, display: "inline" }}>
+          <span style={{ color: c }}>{text.slice(0, half)}</span>
+          <span style={{ color: "rgba(255,255,255,0.25)" }}>{text.slice(half)}</span>
+        </span>
+      </div>
+    );
+  }
+  if (preset === "neon-green")
+    return <span style={{ ...base, color: "#00ff88", textShadow: `0 0 ${Math.round(8*scale)}px #00ff88, 0 0 ${Math.round(20*scale)}px #00ff88, 0 0 ${Math.round(40*scale)}px #00cc66` }}>{text}</span>;
+  if (preset === "neon-red")
+    return <span style={{ ...base, color: "#ff3344", textShadow: `0 0 ${Math.round(8*scale)}px #ff3344, 0 0 ${Math.round(20*scale)}px #ff1133, 0 0 ${Math.round(40*scale)}px #cc0022` }}>{text}</span>;
+  if (preset === "neon-blue")
+    return <span style={{ ...base, color: "#00cfff", textShadow: `0 0 ${Math.round(8*scale)}px #00cfff, 0 0 ${Math.round(20*scale)}px #0099ff, 0 0 ${Math.round(40*scale)}px #0055cc` }}>{text}</span>;
+  if (preset === "bold-shadow") {
+    const d = Math.round(6*scale), bl = Math.round(20*scale);
+    return <span style={{ ...base, fontWeight: 900, textShadow: `0 ${d}px 0 rgba(0,0,0,0.9), 0 ${d+4}px ${bl}px rgba(0,0,0,0.8)` }}>{text}</span>;
+  }
+  if (preset === "karaoke-box") {
+    const py2 = Math.round(8*scale), px2 = Math.round(22*scale), br2 = Math.round(12*scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.75)", padding: `${py2}px ${px2}px`, display: "inline-block", borderRadius: br2 }}>
+        <span style={{ ...base, color }}>{text}</span>
+      </div>
+    );
+  }
+  if (preset === "pop-outline") {
+    const cInv = c === "#ffffff" || c === "#fff" ? "#000000" : "#ffffff";
+    return <span style={{ ...base, WebkitTextStroke: `${Math.max(1, Math.round(2*scale))}px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "pastel")
+    return <span style={{ ...base, color: "#ffb3d9", textShadow: `0 ${Math.round(2*scale)}px ${Math.round(8*scale)}px rgba(255,100,180,0.5)` }}>{text}</span>;
+  if (preset === "classic-yellow") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#FFE500", WebkitTextStroke: `${sw2}px #000`, paintOrder: "stroke fill", textShadow: `-1px -1px 0 #000,1px 1px 0 #000` } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "hormozi") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#ff2244", fontStyle: "italic", fontWeight: 900, WebkitTextStroke: `${sw2}px #fff`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "beast") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#ffffff", WebkitTextStroke: `${sw2}px #ff8800`, paintOrder: "stroke fill", textShadow: `0 0 ${Math.round(10*scale)}px rgba(255,140,0,0.4)` } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "box-white") {
+    const py2 = Math.round(6*scale), px2 = Math.round(20*scale), pb2 = Math.round(8*scale);
+    return <div style={{ background: "#ffffff", padding: `${py2}px ${px2}px ${pb2}px`, display: "inline-block", borderRadius: Math.round(4*scale) }}><span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span></div>;
+  }
+  if (preset === "box-yellow") {
+    const py2 = Math.round(6*scale), px2 = Math.round(20*scale), pb2 = Math.round(8*scale);
+    return <div style={{ background: "#FFE500", padding: `${py2}px ${px2}px ${pb2}px`, display: "inline-block", borderRadius: Math.round(6*scale) }}><span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span></div>;
+  }
+  if (preset === "retro")
+    return <span style={{ ...base, color: "#ff6600", textShadow: `${Math.round(2*scale)}px ${Math.round(2*scale)}px 0 #cc3300, ${Math.round(4*scale)}px ${Math.round(4*scale)}px 0 rgba(150,0,0,0.4)` }}>{text}</span>;
+  if (preset === "sharp-outline") {
+    const sw3 = Math.max(2, Math.round(3*scale));
+    return <span style={{ ...base, color: "#ffffff", WebkitTextStroke: `${sw3}px ${c}`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "news") {
+    const py2 = Math.round(5*scale), px2 = Math.round(18*scale);
+    return <div style={{ background: "rgba(0,0,0,0.88)", padding: `${py2}px ${px2}px`, display: "inline-block" }}><span style={{ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" }}>{text}</span></div>;
   }
   // stroke (default)
   const s1=Math.round(3*scale), s2=Math.round(20*scale), s3=Math.round(32*scale);
   return <span style={{ ...base, textShadow: `0 ${s1}px 0 #000, 0 -1px 0 #000, 1px 0 0 #000, -1px 0 0 #000, 0 4px ${s2}px rgba(0,0,0,0.95), 0 8px ${s3}px rgba(0,0,0,0.8)`, WebkitTextStroke: `${sw}px #000` } as React.CSSProperties}>{text}</span>;
+}
+
+// ─── Animated effect preview card ─────────────────────────────────────────────
+const EFFECT_KEYFRAMES = `
+@keyframes ef-pop    { 0%,100%{transform:scale(1) translateY(0)} 30%{transform:scale(1.25) translateY(-4px)} 60%{transform:scale(0.95) translateY(1px)} }
+@keyframes ef-bounce { 0%,100%{transform:scale(1) translateY(0)} 25%{transform:scale(0.8) translateY(8px)} 55%{transform:scale(1.3) translateY(-8px)} 80%{transform:scale(0.95) translateY(2px)} }
+@keyframes ef-fade   { 0%,100%{opacity:0} 20%,80%{opacity:1} }
+@keyframes ef-quick  { 0%{transform:scale(0.4) translateY(6px);opacity:0} 18%{transform:scale(1.08) translateY(-2px);opacity:1} 30%,100%{transform:scale(1) translateY(0);opacity:1} }
+@keyframes ef-slide  { 0%{transform:translateY(16px);opacity:0} 35%,80%{transform:translateY(0);opacity:1} 100%{transform:translateY(-8px);opacity:0} }
+@keyframes ef-flip   { 0%{transform:perspective(200px) rotateX(90deg);opacity:0} 40%,75%{transform:perspective(200px) rotateX(0deg);opacity:1} 100%{transform:perspective(200px) rotateX(-30deg);opacity:0} }
+@keyframes ef-hl-bar { 0%{width:0%} 55%,100%{width:100%} }
+@keyframes ef-kar    { 0%,12%{color:inherit} 13%,24%{color:rgba(255,255,255,0.3)} 25%,36%{color:inherit} 37%,48%{color:rgba(255,255,255,0.3)} 49%,60%{color:inherit} 61%,72%{color:rgba(255,255,255,0.3)} 73%,84%{color:inherit} 85%,100%{color:rgba(255,255,255,0.3)} }
+@keyframes ef-type   { 0%{clip-path:inset(0 100% 0 0)} 60%,100%{clip-path:inset(0 0% 0 0)} }
+`;
+
+function EffectPreviewCard({
+  effect, label, desc, color, accentColor, fontFamily, selected, onClick,
+}: {
+  effect: SubTextEffect; label: string; desc: string;
+  color: string; accentColor: string; fontFamily: string;
+  selected: boolean; onClick: () => void;
+}) {
+  const base: React.CSSProperties = {
+    fontFamily, fontSize: 13, fontWeight: 700, color,
+    textShadow: "-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000",
+    display: "inline-block", whiteSpace: "nowrap",
+  };
+  const dur = "1.8s";
+  const ease = "cubic-bezier(.4,0,.2,1)";
+  const inf = "infinite";
+
+  let inner: React.ReactNode;
+
+  if (effect === "pop") {
+    inner = <span style={{ ...base, animation: `ef-pop ${dur} ${ease} ${inf}` }}>ป๊อป</span>;
+  } else if (effect === "bounce") {
+    inner = <span style={{ ...base, animation: `ef-bounce 2s ${ease} ${inf}` }}>เด้ง</span>;
+  } else if (effect === "fade") {
+    inner = <span style={{ ...base, animation: `ef-fade 2s ease ${inf}` }}>เฟด</span>;
+  } else if (effect === "quick") {
+    inner = <span style={{ ...base, animation: `ef-quick 1.4s ${ease} ${inf}` }}>สั้น</span>;
+  } else if (effect === "glow-pulse") {
+    const r=parseInt(color.slice(1,3)||"ff",16),g=parseInt(color.slice(3,5)||"ff",16),b=parseInt(color.slice(5,7)||"ff",16);
+    const glowKf = `@keyframes ef-glow-${r}-${g}-${b} { 0%,100%{text-shadow:0 0 4px rgba(${r},${g},${b},0.6),0 0 8px rgba(${r},${g},${b},0.4)} 50%{text-shadow:0 0 16px rgba(${r},${g},${b},1),0 0 32px rgba(${r},${g},${b},0.8),0 0 48px rgba(${r},${g},${b},0.5)} }`;
+    inner = (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: glowKf }} />
+        <span style={{ ...base, textShadow: `0 0 8px rgba(${r},${g},${b},0.9)`, animation: `ef-glow-${r}-${g}-${b} 1.6s ease ${inf}` }}>แสง</span>
+      </>
+    );
+  } else if (effect === "slide") {
+    inner = <span style={{ ...base, animation: `ef-slide 2s ${ease} ${inf}` }}>เลื่อน</span>;
+  } else if (effect === "flip") {
+    inner = <span style={{ ...base, animation: `ef-flip 2s ${ease} ${inf}` }}>พลิก</span>;
+  } else if (effect === "highlight") {
+    inner = (
+      <span style={{ position: "relative", display: "inline-block" }}>
+        <span style={{ position: "absolute", inset: "5% 0", background: accentColor, opacity: 0.4, borderRadius: 3, animation: `ef-hl-bar 2s ease ${inf}` }} />
+        <span style={{ ...base, position: "relative" }}>ไฮไลท์</span>
+      </span>
+    );
+  } else if (effect === "karaoke") {
+    inner = (
+      <span style={{ fontFamily, fontSize: 12, fontWeight: 700, display: "inline-block" }}>
+        {["คา","รา","โอ","เกะ"].map((s,i) => (
+          <span key={i} style={{ color, animation: `ef-kar 2.4s ${i*0.3}s ease ${inf}` }}>{s}</span>
+        ))}
+      </span>
+    );
+  } else { // typewriter
+    inner = (
+      <span style={{ fontFamily, fontSize: 12, fontWeight: 700, color, display: "inline-block", overflow: "hidden", animation: `ef-type 2s ease ${inf}` }}>
+        พิมพ์ดีด
+      </span>
+    );
+  }
+
+  return (
+    <button onClick={onClick}
+      className="flex flex-col items-center gap-0.5 rounded-xl py-2 px-2 transition-all"
+      style={selected
+        ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)", color: "hsl(190 100% 65%)" }
+        : { background: "var(--sv-card2)", border: "1px solid var(--sv-border)", color: "color-mix(in srgb, var(--sv-text) 60%, transparent)" }
+      }>
+      <div className="h-8 flex items-center justify-center"
+        style={{ background: "rgba(0,0,0,0.4)", borderRadius: 6, width: "100%", overflow: "hidden", position: "relative" }}>
+        {inner}
+      </div>
+      <span className="text-[10px] font-bold mt-0.5">{label}</span>
+      <span className="text-[8px] opacity-50">{desc}</span>
+    </button>
+  );
 }
 
 export default function ShortVideoPage() {
@@ -163,6 +339,7 @@ export default function ShortVideoPage() {
   const [preRenderUrl, setPreRenderUrl] = useState("");
   const [compositePreviewUrl, setCompositePreviewUrl] = useState("");
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
+  const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState(""); // bookend-both: tail avatar URL
   const [showGreenRef, setShowGreenRef] = useState(false);
   const [keywords, setKeywords] = useState<string[]>([]);
   const [, setScenes] = useState<string[]>([]);
@@ -181,8 +358,9 @@ export default function ShortVideoPage() {
   const [avatarName, setAvatarName] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const posCanvasRef = useRef<HTMLDivElement>(null);
-  const [avatarTiming, setAvatarTiming] = useState<"full" | "bookend">("full");
+  const [avatarTiming, setAvatarTiming] = useState<"full" | "bookend" | "bookend-both">("full");
   const [avatarBookendSecs, setAvatarBookendSecs] = useState(5);
+  const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarInputMode, setAvatarInputMode] = useState<"generate" | "direct">("generate");
   const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
   // Direct URL workflow states
@@ -205,8 +383,9 @@ export default function ShortVideoPage() {
   const [subFontSize, setSubFontSize] = useState(80);
   const [subPosition, setSubPosition] = useState(68);
   const [subColor, setSubColor] = useState("#FFFFFF");
-  const [subAccentColor, setSubAccentColor] = useState("#FFE500");
-  const [subStylePreset, setSubStylePreset] = useState<"stroke"|"box"|"box-rounded"|"glow"|"outline-only"|"plain"|"shadow"|"karaoke">("stroke");
+  const [subKaraokeColor, setSubKaraokeColor] = useState("#FFE500");
+  const [subStylePreset, setSubStylePreset] = useState<SubPreset>("stroke");
+  const [subTextEffect, setSubTextEffect] = useState<SubTextEffect>("pop");
   const [subFontWeight, setSubFontWeight] = useState(900);
   // Composite mode + chroma key tuning (per-avatar)
   const compositeMode = "chromakey";
@@ -226,17 +405,23 @@ export default function ShortVideoPage() {
   const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
 
-  // Render progress popup (0–100, null = not rendering)
-  const [renderProgress, setRenderProgress] = useState<number | null>(null);
+  // Render progress popup
+  const [renderPopupOpen, setRenderPopupOpen] = useState(false);
+  const [renderPopupKey, setRenderPopupKey] = useState(0);
+  const renderProgressRef = useRef<number>(0);
+  const [renderProgressTick, setRenderProgressTick] = useState(0);
+  const renderProgress = renderProgressRef.current;
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+
+  function setRenderProgress(v: number) {
+    renderProgressRef.current = v;
+    setRenderProgressTick(t => t + 1);
+  }
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
-  // LLM provider picker — shown before runAll to choose Gemini or OpenAI
-
-  // Which LLM the user chose — "gemini" | "openai" | null (auto = prefer Gemini)
-  const [preferredLLM, setPreferredLLM] = useState<"gemini" | "openai" | null>(null);
-  const preferredLLMRef = useRef<"gemini" | "openai" | null>(null);
+  const [preferredLLM, setPreferredLLM] = useState<"gemini" | null>(null);
+  const preferredLLMRef = useRef<"gemini" | null>(null);
   const [showClearCacheDialog, setShowClearCacheDialog] = useState(false);
 
   // Stored pipeline data for partial re-runs
@@ -245,6 +430,8 @@ export default function ShortVideoPage() {
   // Keep a stable ref to rerunFrom so the debounce closure always calls the latest version
   const rerunFromRef = useRef<(step: keyof StepState) => Promise<void>>(async () => {});
   const runningRef = useRef(false);
+  // Track the currently active render jobId — results from any other jobId are discarded
+  const activeJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Load stock cache info
@@ -336,6 +523,15 @@ export default function ShortVideoPage() {
   }, [avatarId]);
 
   // Track current subtitle for caption list highlight
+  // Mark render as stale when subtitle style changes so user knows to re-render
+  useEffect(() => {
+    if (stepsRef.current.render === "done") {
+      setSteps(s => ({ ...s, render: "idle" }));
+      stepsRef.current = { ...stepsRef.current, render: "idle" };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subColor, subKaraokeColor, subStylePreset, subTextEffect, subFontSize, subPosition, subFontWeight, subFontFamily]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -762,8 +958,9 @@ export default function ShortVideoPage() {
         subtitlePosition: subPosition,
         subtitleSize: subFontSize,
         subtitleColor: subColor,
-        subtitleAccentColor: subAccentColor,
+        subtitleAccentColor: subKaraokeColor,
         subtitleStylePreset: subStylePreset,
+        subtitleTextEffect: subTextEffect,
         subtitleFontWeight: subFontWeight,
         scenes: pipe.current.scenes ?? [],
         keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
@@ -788,8 +985,15 @@ export default function ShortVideoPage() {
 
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
-    setRenderProgress(0);
     setRenderProgressError(null);
+    setPreRenderUrl("");
+    // Reset ref immediately (synchronous) so popup always opens at 0%
+    renderProgressRef.current = 0;
+    setRenderPopupOpen(false);
+    await new Promise(r => setTimeout(r, 16)); // one frame for unmount
+    setRenderPopupKey(k => k + 1);
+    setRenderPopupOpen(true);
+    console.log("[runRender] started");
 
     let renderPollTimer: ReturnType<typeof setInterval> | null = null;
     let renderTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -821,10 +1025,10 @@ export default function ShortVideoPage() {
 
     renderPollTimer = setInterval(async () => {
       if (pollStopped || renderFailedMessage) return;
+      // Don't poll without a jobId — avoids reading stale progress file from a previous render
+      if (!currentJobId) return;
       try {
-        const progressUrl = currentJobId
-          ? `/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`
-          : "/api/videos/render-progress";
+        const progressUrl = `/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`;
         const progressRes = await fetch(progressUrl, {
           cache: "no-store",
           signal: abortControllerRef.current?.signal,
@@ -839,8 +1043,8 @@ export default function ShortVideoPage() {
         }
         const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
         if (pollStopped) return; // stopped while parsing
-        // If server already finished and wrote videoUrl to progress file, resolve immediately
-        if (progressData?.videoUrl && resolveRenderUrl) {
+        // Only resolve from progress file if we have a confirmed jobId — prevents resolving with stale videoUrl from a previous render
+        if (progressData?.videoUrl && resolveRenderUrl && currentJobId) {
           resolveRenderUrl(progressData.videoUrl);
           resolveRenderUrl = null;
           return;
@@ -863,7 +1067,7 @@ export default function ShortVideoPage() {
           markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
         }
       }
-    }, 2000);
+    }, 600);
 
     renderTimeoutTimer = setTimeout(() => {
       if (!renderFailedMessage) {
@@ -874,10 +1078,28 @@ export default function ShortVideoPage() {
     try {
       // Fire-and-forget: POST returns {jobId} immediately, then poll for result.
       // This avoids Nginx 504 Gateway Timeout on long renders (default 60s proxy timeout).
+      // Patch latest style settings into config so color/font/effect changes don't require re-running Config step
+      const patchedConfig = config && typeof config === "object" ? {
+        ...(config as Record<string, unknown>),
+        subtitleStylePreset: subStylePreset,
+        subtitleTextEffect: subTextEffect,
+        fontFamily: subFontFamily,
+        keywordPopups: Array.isArray((config as Record<string, unknown>).keywordPopups)
+          ? ((config as Record<string, unknown>).keywordPopups as Record<string, unknown>[]).map(p => ({
+              ...p,
+              color: subStylePreset === "karaoke-box" ? subColor : (p.tag === "hook" || (!p.tag && p.isHighlight)) ? subKaraokeColor : subColor,
+              accentColor: subKaraokeColor,
+              fontWeight: subFontWeight,
+              topPercent: subPosition,
+              size: subFontSize,
+              stylePreset: subStylePreset,
+            }))
+          : [],
+      } : config;
       const renderRes = await fetch("/api/videos/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: config }),
+        body: JSON.stringify({ shortVideoConfig: patchedConfig }),
         signal: abortControllerRef.current?.signal,
       });
       if (renderFailedMessage) throw new Error(renderFailedMessage);
@@ -889,25 +1111,25 @@ export default function ShortVideoPage() {
       const immediateUrl = renderData.videoUrl as string | undefined;
 
       if (immediateUrl) {
-        // Legacy path (local dev without Nginx, render finished fast)
         pipe.current.renderedVideoUrl = immediateUrl;
         setPreRenderUrl(immediateUrl);
         if (!useAvatar) setVideoUrl(immediateUrl);
         setStep("render", "done", immediateUrl);
         setRenderProgressError(null);
-        setRenderProgress(null);
+        setRenderProgress(100);
         return immediateUrl;
       }
 
       if (!jobId) throw new Error("Render server did not return jobId");
       currentJobId = jobId;
+      activeJobIdRef.current = jobId; // mark this as the active job
 
-      // Poll render-status until done or error
-      // Progress poll also resolves via resolveRenderUrl if it sees videoUrl first
       let statusNotFoundCount = 0;
       const url = await new Promise<string>((resolve, reject) => {
         resolveRenderUrl = resolve;
         const statusInterval = setInterval(async () => {
+          // If a newer job has taken over, silently abandon this one
+          if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
           if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
           try {
             const statusRes = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, {
@@ -915,6 +1137,7 @@ export default function ShortVideoPage() {
               signal: abortControllerRef.current?.signal,
             });
             const statusData = await statusRes.json();
+            if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
             if (statusData.status === "done" && statusData.videoUrl) {
               clearInterval(statusInterval);
               resolveRenderUrl = null;
@@ -925,7 +1148,7 @@ export default function ShortVideoPage() {
               reject(new Error(statusData.error ?? "Render failed"));
             } else if (statusData.status === "not_found" || statusRes.status === 404) {
               statusNotFoundCount += 1;
-              if (statusNotFoundCount >= 3) {
+              if (statusNotFoundCount >= 1200) {
                 clearInterval(statusInterval);
                 resolveRenderUrl = null;
                 reject(new Error("Render job lost — server may have restarted. Please try again."));
@@ -937,19 +1160,24 @@ export default function ShortVideoPage() {
               resolveRenderUrl = null;
               reject(e);
             }
-            // network blip — keep polling
           }
         }, 3000);
       });
+
+      // Final check: only use result if this job is still active
+      if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
 
       pipe.current.renderedVideoUrl = url;
       setPreRenderUrl(url);
       if (!useAvatar) setVideoUrl(url);
       setStep("render", "done", url);
       setRenderProgressError(null);
-      setRenderProgress(null);
+      setRenderProgress(100);
       return url;
     } catch (err) {
+      // Silently discard results from superseded jobs — a newer render has taken over
+      if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
+      console.log("[runRender] catch:", err instanceof Error ? err.message : String(err));
       if (!renderFailedMessage && err instanceof Error && err.name === "AbortError") {
         throw err;
       }
@@ -961,8 +1189,9 @@ export default function ShortVideoPage() {
     } finally {
       stopRenderPoll();
       stopRenderPollRef.current = null;
-      if (!renderFailedMessage || abortRef.current) {
-        setRenderProgress(null);
+      if (renderFailedMessage || abortRef.current) {
+        setRenderProgress(0);
+        setRenderPopupOpen(false);
         if (!renderFailedMessage) setRenderProgressError(null);
       }
     }
@@ -1010,7 +1239,7 @@ export default function ShortVideoPage() {
     setStep("avatar", "running", "HeyGen generating (remove_background)...");
     setAvatarGreenUrl("");
 
-    // If intro-only mode: trim audio to first N seconds before sending to HeyGen
+    // Trim audio for bookend modes before sending to HeyGen
     let avatarAudioUrl = audioUrl;
     if (avatarTiming === "bookend" && avatarBookendSecs > 0) {
       setStep("avatar", "running", `Trimming audio to ${avatarBookendSecs}s...`);
@@ -1023,6 +1252,18 @@ export default function ShortVideoPage() {
       assertOk("Trim audio", trimRes, trimData);
       avatarAudioUrl = trimData.audioUrl;
       setStep("avatar", "running", `HeyGen generating ${avatarBookendSecs}s avatar...`);
+    } else if (avatarTiming === "bookend-both" && avatarBookendSecs > 0) {
+      // bookend-both split: intro avatar gets only first N secs of audio
+      setStep("avatar", "running", `Trimming intro audio to ${avatarBookendSecs}s...`);
+      const trimRes = await fetch("/api/videos/trim-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl, durationSecs: avatarBookendSecs }),
+      });
+      const trimData = await trimRes.json();
+      assertOk("Trim intro audio", trimRes, trimData);
+      avatarAudioUrl = trimData.audioUrl;
+      setStep("avatar", "running", `HeyGen generating ${avatarBookendSecs}s intro avatar...`);
     }
 
     const genRes = await fetch("/api/heygen/generate-with-bg", {
@@ -1093,9 +1334,77 @@ export default function ShortVideoPage() {
     return avatarVideoUrl;
   }
 
+  // ── bookend-both: Gen tail avatar separately ──
+  // Core: gen tail avatar, returns url (throws on error) — called by pipeline or standalone
+  async function runAvatarTailCore(voice: string): Promise<string> {
+    setStep("avatarTail", "running", `Trimming tail audio ${avatarTailSecs}s...`);
+    const trimRes = await fetch("/api/videos/trim-audio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audioUrl: voice, durationSecs: 0, tailSecs: avatarTailSecs }),
+    });
+    const trimData = await trimRes.json();
+    assertOk("Trim tail audio", trimRes, trimData);
+    const tailAudioUrl = trimData.audioUrl as string;
+
+    setStep("avatarTail", "running", `HeyGen generating tail avatar ${avatarTailSecs}s...`);
+    const genRes = await fetch("/api/heygen/generate-with-bg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
+      body: JSON.stringify({ audioUrl: tailAudioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+    });
+    const genData = await genRes.json();
+    assertOk("Avatar tail gen", genRes, genData);
+    const heygenVideoId = genData.videoId as string;
+
+    let tailVideoUrl = "";
+    for (let i = 0; i < 360; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      if (abortRef.current) throw new Error("__ABORTED__");
+      const pollRes = await fetch("/api/videos/poll-avatar", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: heygenVideoId }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const pollData = await pollRes.json();
+      if (pollData.status === "completed" && pollData.videoUrl) { tailVideoUrl = pollData.videoUrl; break; }
+      if (pollData.status === "failed") throw new Error(`Tail avatar failed: ${pollData.errorMsg}`);
+      setStep("avatarTail", "running", `HeyGen tail: ${pollData.status}... (${i + 1})`);
+    }
+    if (!tailVideoUrl) throw new Error("Tail avatar: timeout");
+
+    setAvatarTailGreenUrl(tailVideoUrl);
+    setStep("avatarTail", "done", "Tail avatar พร้อม");
+    return tailVideoUrl;
+  }
+
+  // Standalone: gen tail avatar from chip click (manages running state itself)
+  async function runAvatarTailGen() {
+    const voice = pipe.current.voiceUrl;
+    if (!voice) { toast.error("ยังไม่มีไฟล์เสียง — กด Run All ก่อน"); return; }
+    if (!avatarId.trim()) { toast.error("กรอก HeyGen Avatar ID ก่อน"); return; }
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    try {
+      await runAvatarTailCore(voice);
+      toast.success("Gen ท้ายคลิปเสร็จแล้ว — กด Composite ได้เลย");
+    } catch (err) {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว"); markError("ยกเลิก");
+      } else if (!handleMissingKey(err, "runAvatarPipeline")) {
+        const msg = friendlyError(err); toast.error(msg); markError(msg);
+      }
+    } finally {
+      abortRef.current = false; abortControllerRef.current = null; setRunning(false);
+    }
+  }
+
   // ── Step 8: Composite — AI remove bg + overlay onto Remotion video ──
 
-  async function runComposite(bgVideoUrl: string, avatarUrl: string): Promise<string> {
+  async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
     const isDirect = avatarInputMode === "direct";
     const modeLabel = isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey ลบ green screen + composite...";
     setStep("composite", "running", modeLabel);
@@ -1115,10 +1424,13 @@ export default function ShortVideoPage() {
           })
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
+            // bookend-both split: pass tail avatar separately so route can composite each independently
+            ...(avatarTiming === "bookend-both" && tailAvatarUrl ? { tailAvatarVideoUrl: tailAvatarUrl } : {}),
             bgVideoUrl,
             mode: compositeMode,
             avatarTiming,
             avatarBookendSecs,
+            avatarTailSecs,
             avatarScale,
             avatarOffsetX,
             avatarOffsetY,
@@ -1233,10 +1545,9 @@ export default function ShortVideoPage() {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
-        const needGemini = preferredLLMRef.current === "gemini";
-        const hasLLMKey = needGemini ? !!keys.geminiKey : !!keys.openaiKey;
+        const hasLLMKey = !!keys.geminiKey;
         if (!hasLLMKey) {
-          setMissingKey({ type: needGemini ? "gemini" : "openai" as RequiredKeyType, retryStep: "runAll" });
+          setMissingKey({ type: "gemini", retryStep: "runAll" });
           return;
         }
         // Stock key check
@@ -1261,6 +1572,7 @@ export default function ShortVideoPage() {
     setPreRenderUrl("");
     setCompositePreviewUrl("");
     setAvatarGreenUrl("");
+    setAvatarTailGreenUrl("");
     setTtsUrl("");
     setPipeStockVideos([]);
     pipe.current = {};
@@ -1541,6 +1853,7 @@ export default function ShortVideoPage() {
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     setVideoUrl("");
+    setPreRenderUrl("");
     try {
       const config = await runConfig(stocks, voice, durMs, editedSceneCaptions, false);
       if (abortRef.current) throw new Error("__ABORTED__");
@@ -1550,6 +1863,7 @@ export default function ShortVideoPage() {
         toast.success("Render เสร็จ! บันทึกใน Gallery แล้ว");
       }
     } catch (err) {
+      if (err instanceof Error && err.message === "__SUPERSEDED__") return;
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
@@ -1576,9 +1890,20 @@ export default function ShortVideoPage() {
     abortControllerRef.current = new AbortController();
     setVideoUrl("");
     try {
-      const avUrl = await runAvatar(voice);
+      let avUrl: string;
+      let tailUrl: string | undefined;
+      if (avatarTiming === "bookend-both" && avatarInputMode === "generate") {
+        // Gen intro avatar (skip if already done)
+        avUrl = avatarGreenUrl || await runAvatar(voice);
+        if (abortRef.current) throw new Error("__ABORTED__");
+        // Gen tail avatar (skip if already done) — use return value, not state
+        tailUrl = avatarTailGreenUrl || await runAvatarTailCore(voice);
+        if (abortRef.current) throw new Error("__ABORTED__");
+      } else {
+        avUrl = await runAvatar(voice);
+      }
       if (abortRef.current) throw new Error("__ABORTED__");
-      const composited = await runComposite(rendered, avUrl);
+      const composited = await runComposite(rendered, avUrl, tailUrl);
       setVideoUrl(composited);
       toast.success("เสร็จแล้ว!");
     } catch (err) {
@@ -1600,7 +1925,26 @@ export default function ShortVideoPage() {
   // ── Partial re-run from a specific step ──────────────────────────
 
   async function rerunFrom(step: keyof StepState) {
-    if (running) return;
+    if (running) {
+      // Abort current run immediately, then start fresh
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      setRenderPopupOpen(false);
+      setRenderProgress(0);
+      setRenderProgressError(null);
+      setRunning(false);
+      setPreRenderUrl("");
+      setVideoUrl("");
+      // Small delay to let state settle before restarting
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    // Always reset render progress and stale video URLs before starting a new run
+    setRenderProgress(0);
+    setRenderProgressError(null);
+    setPreRenderUrl("");
+    setVideoUrl("");
 
     // Pre-check stock keys if step involves stock fetch
     if (step === "fetchStock" || step === "keywords" || step === "transcribe") {
@@ -1805,6 +2149,7 @@ export default function ShortVideoPage() {
         if (!useAvatar) { await saveToGallery(url2); toast.success("เสร็จแล้ว!"); }
         else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
       } else if (step === "render") {
+        cfg = await runConfig(stocks, voice, durMs, scCaps, false);
         const url3 = await runRender(cfg);
         if (!useAvatar) { await saveToGallery(url3); toast.success("เสร็จแล้ว!"); }
         else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
@@ -1820,6 +2165,7 @@ export default function ShortVideoPage() {
           toast.success("เสร็จแล้ว!");
       }
     } catch (err) {
+      if (err instanceof Error && err.message === "__SUPERSEDED__") return; // newer job took over, ignore silently
       if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
         toast("หยุดการทำงานแล้ว");
         markError("ยกเลิกโดยผู้ใช้");
@@ -1841,10 +2187,11 @@ export default function ShortVideoPage() {
 
   const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
   const isVideoOnly = !useAvatar;
-  const STEP_ORDER: (keyof StepState)[] = ["tts","transcribe","keywords","fetchStock","config","render","avatar","composite"]
+  const STEP_ORDER: (keyof StepState)[] = ["tts","transcribe","keywords","fetchStock","config","render","avatar","avatarTail","composite"]
     .filter(k => {
-      if (isVideoOnly && (k === "avatar" || k === "composite")) return false;
-      if (!isVideoOnly && isDirectMode && k === "avatar") return false;
+      if (isVideoOnly && (k === "avatar" || k === "avatarTail" || k === "composite")) return false;
+      if (!isVideoOnly && isDirectMode && (k === "avatar" || k === "avatarTail")) return false;
+      if (k === "avatarTail" && avatarTiming !== "bookend-both") return false;
       return true;
     }) as (keyof StepState)[];
   const STEP_DISPLAY: Record<keyof StepState, string> = {
@@ -1855,6 +2202,7 @@ export default function ShortVideoPage() {
     config: "Render Config",
     render: "Remotion Render",
     avatar: "Avatar Generate (HeyGen)",
+    avatarTail: "Avatar Tail Generate (HeyGen)",
     composite: "Video Composite (FFmpeg)",
   };
 
@@ -1862,14 +2210,14 @@ export default function ShortVideoPage() {
 
   return (
     <DashboardLayout noPadding>
-      {renderProgress !== null && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      {renderPopupOpen && (
+        <div key={renderPopupKey} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"
             style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
             <div className="flex flex-col items-center gap-1">
               <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
-              <span className="text-sm" style={{ color: renderProgressError ? "hsl(0 80% 65%)" : renderProgress >= 100 ? "hsl(190 100% 60%)" : "rgba(255,255,255,0.45)" }}>
-                {renderProgressError ? "Render error" : renderProgress >= 100 ? "Finalizing file..." : "Rendering..."}
+              <span className="text-sm" style={{ color: renderProgressError ? "hsl(0 80% 65%)" : renderProgress >= 100 ? "hsl(142 72% 55%)" : "rgba(255,255,255,0.45)" }}>
+                {renderProgressError ? "Render error" : renderProgress >= 100 ? "เสร็จแล้ว! ✓" : "Rendering..."}
               </span>
             </div>
             <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "hsl(220 30% 14%)" }}>
@@ -1888,29 +2236,26 @@ export default function ShortVideoPage() {
             {renderProgressError ? (
               <p className="text-xs text-red-400 text-center">{renderProgressError}</p>
             ) : renderProgress >= 100 ? (
-              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.35)" }}>กำลัง export ไฟล์วิดีโอ — รอสักครู่...</p>
+              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.35)" }}>วิดีโอพร้อมแล้ว — กด Close เพื่อดูผลลัพธ์</p>
             ) : (
               <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.3)" }}>กรุณารอจนเสร็จ อย่าปิดหน้านี้</p>
             )}
             <button
               type="button"
               onClick={() => {
-                if (renderProgressError || preRenderUrl) {
-                  // error or video ready — just close modal
-                  stopRenderPollRef.current?.();
-                  setRenderProgress(null);
+                if (renderProgress >= 100 || renderProgressError) {
+                  setRenderPopupOpen(false);
                 } else {
-                  // still rendering — abort and close
                   abortRef.current = true;
                   abortControllerRef.current?.abort();
                   stopRenderPollRef.current?.();
-                  setRenderProgress(null);
+                  setRenderPopupOpen(false);
                 }
               }}
               className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
               style={{ background: "hsl(220 30% 14%)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(220 30% 20%)" }}
             >
-              {renderProgressError ? "Close" : preRenderUrl ? "Close" : "Cancel"}
+              {renderProgressError || renderProgress >= 100 ? "Close" : "Cancel"}
             </button>
           </div>
         </div>
@@ -2217,30 +2562,84 @@ export default function ShortVideoPage() {
 
                     {/* Style Preset */}
                     <div className="space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">สไตล์</p>
+                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Caption Style</p>
                       <div className="grid grid-cols-4 gap-1.5">
                         {([
-                          { value: "stroke",       label: "Stroke",   desc: "ขอบดำ" },
-                          { value: "plain",        label: "Plain",    desc: "ไม่มีขอบ" },
-                          { value: "shadow",       label: "Shadow",   desc: "เงา" },
-                          { value: "box",          label: "Box",      desc: "กล่องดำ" },
-                          { value: "box-rounded",  label: "Pill",     desc: "กล่องมน" },
-                          { value: "glow",         label: "Glow",     desc: "เรืองแสง" },
-                          { value: "outline-only", label: "Outline",  desc: "เส้นขอบ" },
-                          { value: "karaoke",      label: "Karaoke",  desc: "บรรทัดล่าง" },
+                          { value: "stroke",        label: "มาตรฐาน" },
+                          { value: "plain",         label: "มินิมอล" },
+                          { value: "bold-shadow",   label: "ตัวหนาเด่น" },
+                          { value: "neon-green",    label: "น็ออนเขียว" },
+                          { value: "karaoke-box",   label: "คาราโอเกะ" },
+                          { value: "pop-outline",   label: "ป็อปไลน์" },
+                          { value: "pastel",        label: "พาสเทล" },
+                          { value: "classic-yellow",label: "คลาสสิก" },
+                          { value: "hormozi",       label: "Hormozi" },
+                          { value: "beast",         label: "Beast" },
+                          { value: "box-white",     label: "กล่องขาว" },
+                          { value: "box-yellow",    label: "กล่องเหลือง" },
+                          { value: "retro",         label: "เรโทร" },
+                          { value: "sharp-outline", label: "เส้นขอบชัด" },
+                          { value: "news",          label: "ข่าว" },
+                          { value: "neon-red",      label: "ไฟแดง" },
+                          { value: "neon-blue",     label: "ไฟฟ้า" },
                         ] as const).map(s => (
-                          <button key={s.value} onClick={() => setSubStylePreset(s.value)}
-                            className="flex flex-col items-center gap-1 rounded-xl py-2.5 px-1 transition-all"
+                          <button key={s.value} onClick={() => setSubStylePreset(s.value as SubPreset)}
+                            className="flex flex-col items-center gap-1 rounded-xl py-2 px-1 transition-all"
                             style={subStylePreset === s.value
-                              ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)", color: "hsl(190 100% 65%)" }
-                              : { background: "var(--sv-card2)", border: "1px solid var(--sv-border)", color: "color-mix(in srgb, var(--sv-text) 60%, transparent)" }
+                              ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)" }
+                              : { background: "var(--sv-card2)", border: "1px solid var(--sv-border)" }
                             }>
-                            <span className="text-[11px] font-bold">{s.label}</span>
-                            <span className="text-[9px] opacity-50">{s.desc}</span>
+                            <div className="w-full h-9 flex items-center justify-center rounded-lg overflow-hidden"
+                              style={{ background: "rgba(0,0,0,0.45)" }}>
+                              {renderSubEl("ตัวอย่าง", subColor, subKaraokeColor, false, s.value as SubPreset, subFontFamily, Math.round(subFontSize * 0.38), subFontWeight, 1)}
+                            </div>
+                            <span className="text-[9px] font-medium leading-tight text-center"
+                              style={{ color: subStylePreset === s.value ? "hsl(190 100% 65%)" : "color-mix(in srgb, var(--sv-text) 55%, transparent)" }}>
+                              {s.label}
+                            </span>
                           </button>
                         ))}
                       </div>
                     </div>
+
+                    {/* Text Effect */}
+                    <div className="space-y-2">
+                      <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
+                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Text Effect</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(() => {
+                          // Effects that override text rendering — don't work with locked presets
+                          const LOCKED_PRESETS = ["classic-yellow","hormozi","beast","neon-green","neon-red","neon-blue","pastel","retro","box-white","box-yellow","news"];
+                          const isLocked = LOCKED_PRESETS.includes(subStylePreset);
+                          const INLINE_EFFECTS = ["glow-pulse","highlight","karaoke","typewriter"] as const;
+                          return ([
+                          { value: "pop",        label: "ป๊อป",      desc: "กระโดดเข้า" },
+                          { value: "bounce",     label: "เด้ง",      desc: "สปริงกระดอน" },
+                          { value: "fade",       label: "เฟด",       desc: "ค่อยๆ ปรากฏ" },
+                          { value: "quick",      label: "สั้น",      desc: "กระชับรวดเร็ว" },
+                          { value: "glow-pulse", label: "เรืองแสง",  desc: "กะพริบเรืองแสง" },
+                          { value: "slide",      label: "สไตล์",     desc: "เลื่อนขึ้นจากล่าง" },
+                          { value: "flip",       label: "หมุนชุม",   desc: "พลิกมุมมอง" },
+                          { value: "highlight",  label: "ไฮไลท์",    desc: "แถบไฮไลท์" },
+                          { value: "karaoke",    label: "คาราโอเกะ", desc: "ทีละคำ" },
+                          { value: "typewriter", label: "พิมพ์ดีด",  desc: "ทีละตัว" },
+                          ] as const).filter(ef => !isLocked || !INLINE_EFFECTS.includes(ef.value as typeof INLINE_EFFECTS[number]));
+                        })().map(ef => (
+                          <EffectPreviewCard
+                            key={ef.value}
+                            effect={ef.value}
+                            label={ef.label}
+                            desc={ef.desc}
+                            color={subColor}
+                            accentColor={subKaraokeColor}
+                            fontFamily={subFontFamily}
+                            selected={subTextEffect === ef.value}
+                            onClick={() => setSubTextEffect(ef.value)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
 
                     {/* Font + Weight — same row */}
                     <div className="space-y-2">
@@ -2268,13 +2667,13 @@ export default function ShortVideoPage() {
                     {/* Font Weight */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-xs font-semibold uppercase tracking-widest text-white/40">น้ำหนัก</p>
+                        <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Weight</p>
                         <span className="text-xs font-mono text-cyan-400">{subFontWeight}</span>
                       </div>
-                      <div className="flex gap-1">
+                      <div className="grid grid-cols-7 gap-1">
                         {([300,400,500,600,700,800,900] as const).map(w => (
                           <button key={w} onClick={() => setSubFontWeight(w)}
-                            className="flex-1 rounded-lg py-1.5 text-[11px] font-bold transition-all"
+                            className="rounded-lg py-1.5 text-[11px] font-bold transition-all text-center"
                             style={subFontWeight === w
                               ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 65%)", border: "1px solid hsl(190 100% 50% / 0.45)" }
                               : { background: "var(--sv-card2)", color: "color-mix(in srgb, var(--sv-text) 55%, transparent)", border: "1px solid var(--sv-border)" }
@@ -2284,21 +2683,39 @@ export default function ShortVideoPage() {
                     </div>
 
                     {/* Colors */}
-                    {([
-                      { label: "สีตัวอักษร", val: subColor, set: setSubColor },
-                      { label: "สีไฮไลท์", val: subAccentColor, set: setSubAccentColor },
-                    ] as const).map(({ label, val, set }) => (
+                    {(() => {
+                      // Presets that hard-code their own color — Text Color has no effect
+                      const LOCKED_COLOR_PRESETS = ["classic-yellow","hormozi","beast","neon-green","neon-red","neon-blue","pastel","retro","box-white","box-yellow","news"];
+                      // Presets where Hook/CTA accent color has no effect (color is locked)
+                      // Presets that fully own their color — accent color has no visible effect
+                      const LOCKED_ACCENT_PRESETS = ["neon-green","neon-red","neon-blue","pastel","classic-yellow","hormozi","beast","box-white","box-yellow","retro","news","karaoke-box"];
+                      const isAccentLocked = LOCKED_ACCENT_PRESETS.includes(subStylePreset);
+                      const effectUsesAccent = !isAccentLocked && (subTextEffect === "highlight" || subTextEffect === "karaoke");
+                      const hookUsesAccent   = !isAccentLocked;
+                      const showAccent = effectUsesAccent || hookUsesAccent;
+
+                      const accentLabel = subTextEffect === "highlight" ? "Accent Color (Highlight) · Hook & CTA"
+                        : subTextEffect === "karaoke"   ? "Accent Color (Karaoke) · Hook & CTA"
+                        : "Accent Color · Hook & CTA";
+
+                      return ([
+                        ...(LOCKED_COLOR_PRESETS.includes(subStylePreset)
+                          ? [] : [{ label: "Text Color", val: subColor, set: setSubColor }]),
+                        ...(showAccent
+                          ? [{ label: accentLabel, val: subKaraokeColor, set: setSubKaraokeColor }] : []),
+                      ] as { label: string; val: string; set: (v: string) => void }[]);
+                    })().map(({ label, val, set }) => (
                       <div key={label} className="space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">{label}</p>
-                          <span className="text-xs font-mono font-bold" style={{ color: val }}>{val}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40 shrink-0">{label}</p>
+                          <span className="text-xs font-mono font-bold truncate" style={{ color: val }}>{val}</span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           {["#FFFFFF","#FFE500","#FF4444","#00CFFF","#FF9500","#00FF87","#FF00FF","#000000"].map(c => (
                             <button key={c} onClick={() => set(c)}
                               className="rounded-lg transition-all shrink-0"
                               style={{
-                                width: 26, height: 26,
+                                width: 28, height: 28,
                                 background: c,
                                 border: val === c ? "2px solid hsl(190 100% 60%)" : "2px solid transparent",
                                 boxShadow: val === c ? "0 0 0 1px hsl(190 100% 60% / 0.5)" : "inset 0 0 0 1px rgba(255,255,255,0.1)",
@@ -2309,7 +2726,7 @@ export default function ShortVideoPage() {
                             <input type="color" value={val} onChange={e => set(e.target.value)}
                               className="absolute opacity-0 w-0 h-0" />
                             <span className="flex items-center justify-center rounded-lg text-xs font-bold text-white/50"
-                              style={{ width: 26, height: 26, background: "var(--sv-input)", border: "1.5px dashed rgba(255,255,255,0.2)" }}>
+                              style={{ width: 28, height: 28, background: "var(--sv-input)", border: "1.5px dashed rgba(255,255,255,0.2)" }}>
                               +
                             </span>
                           </label>
@@ -2321,14 +2738,14 @@ export default function ShortVideoPage() {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">ขนาด</p>
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Size</p>
                           <span className="text-xs font-mono text-cyan-400">{subFontSize}px</span>
                         </div>
                         <Slider value={[subFontSize]} onValueChange={([v]) => setSubFontSize(v)} min={40} max={120} step={2} />
                       </div>
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">ตำแหน่ง</p>
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Position</p>
                           <span className="text-xs font-mono text-cyan-400">{subPosition}%</span>
                         </div>
                         <Slider value={[subPosition]} onValueChange={([v]) => setSubPosition(v)} min={10} max={92} step={1} />
@@ -2337,71 +2754,68 @@ export default function ShortVideoPage() {
 
                   </div>
 
-                  {/* 9:16 preview panel — wider for legible subtitle */}
-                  <div className="shrink-0 flex flex-col items-center justify-start gap-3 border-t border-l-0 lg:border-t-0 lg:border-l p-4"
-                    style={{ borderColor: "var(--sv-border)", width: "100%", maxWidth: 180 }}>
+                  {/* Subtitle preview panel */}
+                  <div className="shrink-0 flex flex-col items-center justify-start gap-3 border-t lg:border-t-0 lg:border-l p-4 lg:w-72"
+                    style={{ borderColor: "var(--sv-border)" }}>
                     <p className="text-xs font-semibold uppercase tracking-widest text-white/30 self-start">Preview</p>
 
                     {/* Mock phone frame */}
-                    <div className="relative rounded-2xl overflow-hidden cursor-pointer group/prev w-full max-w-[152px]"
-                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(220 30% 20%)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
-                    >
-                      {(preRenderUrl) ? (
-                        <video src={preRenderUrl} className="absolute inset-0 w-full h-full object-cover" muted playsInline />
-                      ) : (
-                        <>
-                          <div className="absolute inset-0" style={{ background: "linear-gradient(160deg, #0a1628 0%, #060d1a 40%, #020408 100%)" }} />
-                          {/* Fake content blocks */}
-                          <div className="absolute top-[15%] left-3 right-3 h-1.5 rounded-full opacity-10" style={{ background: "white" }} />
-                          <div className="absolute top-[20%] left-5 right-8 h-1.5 rounded-full opacity-7" style={{ background: "white" }} />
-                          <div className="absolute inset-x-0 bottom-0 h-1/3" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.5), transparent)" }} />
-                        </>
-                      )}
-                      {/* Subtitle preview — hook / body / cta at exact position */}
+                    <div className="relative rounded-2xl overflow-hidden w-full max-w-[200px] lg:max-w-[260px] mx-auto"
+                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(220 30% 22%)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)" }}>
+                      {/* Background */}
+                      <div className="absolute inset-0" style={{ background: "linear-gradient(160deg, #0d1f3c 0%, #070e1c 50%, #020408 100%)" }} />
+                      {/* Fake scene lines */}
+                      <div className="absolute top-[12%] left-4 right-4 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.07)" }} />
+                      <div className="absolute top-[17%] left-6 right-10 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.04)" }} />
+                      <div className="absolute top-[22%] left-4 right-6 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }} />
+                      <div className="absolute inset-x-0 bottom-0 h-2/5" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.6), transparent)" }} />
+
+                      {/* Subtitle preview — body + hook */}
                       {(() => {
-                        const previewW = 152;
+                        const previewW = 260;
                         const previewH = previewW * 16 / 9;
                         const scale = previewW / 1080;
-                        const lineH = Math.round(subFontSize * scale * 1.4);
-                        // Show 3 lines stacked at subPosition: hook, body, cta
-                        const labels: { text: string; isAccent: boolean; tag: string }[] = [
-                          { text: "Mew Social",       isAccent: false, tag: "hook" },
-                          { text: "สร้างคอนเทนต์ง่ายๆ", isAccent: false, tag: "body" },
-                          { text: "กดติดตาม",           isAccent: true,  tag: "cta"  },
-                        ];
-                        const totalH = lineH * labels.length;
-                        const topPx = (subPosition / 100) * previewH - totalH / 2;
-                        return labels.map((l, i) => (
-                          <div key={l.tag} className="absolute left-0 right-0 flex justify-center px-1.5 pointer-events-none"
-                            style={{ top: topPx + i * lineH, height: lineH, alignItems: "center", display: "flex" }}>
-                            {renderSubEl(l.text, subColor, subAccentColor, l.isAccent, subStylePreset, subFontFamily, subFontSize, subFontWeight, scale)}
-                          </div>
-                        ));
+                        const lineH = Math.round(subFontSize * scale * 1.6);
+                        const topPx = (subPosition / 100) * previewH - lineH;
+                        const isSingleColor = subStylePreset === "karaoke-box";
+                        // highlight uses accentColor as background bar, not text color — don't show Hook line
+                        const showHookLine = !isSingleColor && subTextEffect !== "highlight";
+                        const hookTop = showHookLine ? topPx - lineH * 0.1 : topPx + lineH * 0.45;
+                        return (
+                          <>
+                            {showHookLine && (
+                              <div className="absolute left-0 right-0 flex justify-center pointer-events-none"
+                                style={{ top: topPx - lineH * 0.1, height: lineH, alignItems: "center", display: "flex", paddingLeft: "5%", paddingRight: "5%" }}>
+                                {renderSubEl("Hook & CTA", subKaraokeColor, subKaraokeColor, true, subStylePreset, subFontFamily, subFontSize, subFontWeight, scale)}
+                              </div>
+                            )}
+                            {/* Body line */}
+                            <div className="absolute left-0 right-0 flex justify-center pointer-events-none"
+                              style={{ top: showHookLine ? topPx + lineH * 1.0 : hookTop, height: lineH, alignItems: "center", display: "flex", paddingLeft: "5%", paddingRight: "5%" }}>
+                              {renderSubEl("Body text", subColor, subKaraokeColor, false, subStylePreset, subFontFamily, subFontSize, subFontWeight, scale)}
+                            </div>
+                          </>
+                        );
                       })()}
+
                       {/* Position guide line */}
-                      <div className="absolute left-2 right-2 pointer-events-none"
-                        style={{ top: `${subPosition}%`, height: 1, background: "rgba(99,179,237,0.3)", borderRadius: 1 }} />
-                      {/* Play overlay on hover */}
-                      {(preRenderUrl) && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover/prev:opacity-100 transition-opacity">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full"
-                            style={{ background: "hsl(190 100% 50% / 0.25)", border: "1.5px solid hsl(190 100% 50% / 0.6)" }}>
-                            <Play className="h-4 w-4 fill-white ml-0.5" />
-                          </div>
-                        </div>
-                      )}
-                    </div>                  
-                    {/* Color dots legend */}
-                    <div className="flex gap-3 items-center">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subColor }} />
-                        <span className="text-[10px] text-white/35">หลัก</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subAccentColor }} />
-                        <span className="text-[10px] text-white/35">ไฮไลท์</span>
-                      </div>
+                      <div className="absolute left-3 right-3 pointer-events-none"
+                        style={{ top: `${subPosition}%`, height: 1, background: "rgba(99,179,237,0.25)", borderRadius: 1 }} />
                     </div>
+
+                    {/* Legend */}
+                    {subTextEffect !== "karaoke" && subTextEffect !== "highlight" && !["karaoke-box"].includes(subStylePreset) && (
+                      <div className="flex gap-3 items-center">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subColor }} />
+                          <span className="text-[10px] text-white/35">หลัก</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subKaraokeColor }} />
+                          <span className="text-[10px] text-white/35">ไฮไลท์</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                 </div>
@@ -2556,7 +2970,7 @@ export default function ShortVideoPage() {
                 {avatarInputMode === "generate" && <div className="space-y-2">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Timing</p>
                   <div className="flex gap-2">
-                    {(["full", "bookend"] as const).map(mode => (
+                    {(["full", "bookend", "bookend-both"] as const).map(mode => (
                       <button key={mode} onClick={() => setAvatarTiming(mode)}
                         className={cn("flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all border-0 outline-none",
                           avatarTiming === mode ? "text-white" : "text-white/35 hover:text-white/60"
@@ -2565,21 +2979,31 @@ export default function ShortVideoPage() {
                           ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.3)" }
                           : { background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }
                         }>
-                        {mode === "full" ? "ตลอดคลิป" : "ต้นคลิปเท่านั้น"}
+                        {mode === "full" ? "ตลอดคลิป" : mode === "bookend" ? "ต้นคลิปเท่านั้น" : "ต้นและท้ายคลิป"}
                       </button>
                     ))}
                   </div>
-                  {avatarTiming === "bookend" && (
-                    <div className="flex items-center gap-3 rounded-lg px-3 py-2.5"
+                  {(avatarTiming === "bookend" || avatarTiming === "bookend-both") && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-3 py-2.5"
                       style={{ background: "hsl(190 100% 50% / 0.05)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
-                      <span className="text-xs text-white/40 shrink-0">แสดง Avatar</span>
+                      <span className="text-xs text-white/40 shrink-0">ต้นคลิป</span>
                       <input
                         type="number" min={1} max={30} value={avatarBookendSecs}
                         onChange={e => setAvatarBookendSecs(Math.max(1, Math.min(30, Number(e.target.value))))}
                         className="w-14 rounded-md px-2 py-1 text-sm font-mono text-center text-cyan-400 border-0 outline-none focus:ring-1 focus:ring-cyan-500/40"
                         style={{ background: "var(--sv-card2)" }}
                       />
-                      <span className="text-xs text-white/40">วินาทีแรก</span>
+                      <span className="text-xs text-white/40">วินาที</span>
+                      {avatarTiming === "bookend-both" && (<>
+                        <span className="text-xs text-white/40 shrink-0">ท้ายคลิป</span>
+                        <input
+                          type="number" min={1} max={30} value={avatarTailSecs}
+                          onChange={e => setAvatarTailSecs(Math.max(1, Math.min(30, Number(e.target.value))))}
+                          className="w-14 rounded-md px-2 py-1 text-sm font-mono text-center text-cyan-400 border-0 outline-none focus:ring-1 focus:ring-cyan-500/40"
+                          style={{ background: "var(--sv-card2)" }}
+                        />
+                        <span className="text-xs text-white/40">วินาที</span>
+                      </>)}
                     </div>
                   )}
                 </div>}
@@ -2597,7 +3021,7 @@ export default function ShortVideoPage() {
                   >
                     {/* Generate mode: grid + labels + avatar preview */}
                     <>
-                      {preRenderUrl && <video src={preRenderUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" muted loop autoPlay playsInline />}
+                      {preRenderUrl && <video src={preRenderUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" muted loop autoPlay playsInline onError={() => setPreRenderUrl("")} />}
                       {[25,50,75].map(p => <div key={`gv${p}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${p}%`, width: 1, background: p===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
                       {[25,50,75].map(p => <div key={`gh${p}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: `${p}%`, height: 1, background: p===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
                       <div className="absolute top-1.5 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
@@ -2762,18 +3186,48 @@ export default function ShortVideoPage() {
                   phaseNum={3}
                   label="Avatar"
                   color="purple"
-                  steps={[
-                    { key: "avatar",    label: "Avatar",     icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
-                    { key: "composite", label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
-                  ]}
+                  steps={
+                    avatarTiming === "bookend-both" && avatarInputMode === "generate"
+                      ? [
+                          { key: "avatar",     label: `Avatar ต้น (${avatarBookendSecs}s)`, icon: User,   canRun: !!pipe.current.voiceUrl },
+                          { key: "avatarTail", label: `Avatar ท้าย (${avatarTailSecs}s)`,  icon: User,   canRun: !!pipe.current.voiceUrl },
+                          { key: "composite",  label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl && !!avatarTailGreenUrl },
+                        ]
+                      : [
+                          { key: "avatar",    label: "Avatar",    icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
+                          { key: "composite", label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
+                        ]
+                  }
                   stepStates={steps}
                   running={running}
-                  onRerun={rerunFrom}
+                  onRerun={(key) => {
+                    if (key === "avatarTail") {
+                      runAvatarTailGen();
+                    } else if (key === "avatar" && avatarTiming === "bookend-both" && avatarInputMode === "generate") {
+                      setRunning(true);
+                      abortRef.current = false;
+                      abortControllerRef.current = new AbortController();
+                      runAvatar(pipe.current.voiceUrl ?? "").catch(e => {
+                        if (!handleMissingKey(e, "runAvatarPipeline")) { const m = friendlyError(e); toast.error(m); markError(m); }
+                      }).finally(() => { abortRef.current = false; abortControllerRef.current = null; setRunning(false); });
+                    } else {
+                      rerunFrom(key);
+                    }
+                  }}
                   action={
-                    <button onClick={runAvatarPipeline} disabled={running || !preRenderUrl}
+                    <button
+                      onClick={runAvatarPipeline}
+                      disabled={running}
+                      title={
+                        avatarTiming === "bookend-both" && avatarInputMode === "generate" && (!avatarGreenUrl || !avatarTailGreenUrl)
+                          ? "Gen Avatar ต้นและท้ายให้ครบก่อน (หรือกดชิปซ้ายก่อน)"
+                          : ""
+                      }
                       className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
                       style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 38%))" }}>
-                      {running && (steps.avatar === "running" || steps.composite === "running") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                      {running && (steps.avatar === "running" || steps.avatarTail === "running" || steps.composite === "running")
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <Play className="h-3 w-3" />}
                       Run
                     </button>
                   }
@@ -3080,10 +3534,11 @@ export default function ShortVideoPage() {
                           )}
 
                           {/* render → mini video + thumbnail generator */}
-                          {key === "render" && preRenderUrl && (
+                          {key === "render" && preRenderUrl && steps.render === "done" && (
                             <div className="space-y-2">
                               <video src={preRenderUrl} controls className="w-full rounded-lg"
-                                style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
+                                style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }}
+                                onError={() => setPreRenderUrl("")} />
                               <div className="flex items-center gap-2">
                               </div>
                             </div>
@@ -3092,6 +3547,12 @@ export default function ShortVideoPage() {
                           {/* avatar → mini video */}
                           {key === "avatar" && avatarGreenUrl && (
                             <video src={avatarGreenUrl} controls className="w-full rounded-lg"
+                              style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
+                          )}
+
+                          {/* avatarTail → mini video */}
+                          {key === "avatarTail" && avatarTailGreenUrl && (
+                            <video src={avatarTailGreenUrl} controls className="w-full rounded-lg"
                               style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
                           )}
 
@@ -3187,7 +3648,7 @@ export default function ShortVideoPage() {
 
 
 /* ── PhaseRow component ── */
-type StepKey = "keywords" | "fetchStock" | "tts" | "transcribe" | "config" | "render" | "avatar" | "composite";
+type StepKey = "keywords" | "fetchStock" | "tts" | "transcribe" | "config" | "render" | "avatar" | "avatarTail" | "composite";
 
 function PhaseRow({
   phaseNum, label, color, steps, stepStates, running, onRerun, action, beforeStock,

@@ -232,9 +232,182 @@ async function applyBookend(ffmpegPath: string, compositePath: string, bgPath: s
   ]);
 }
 
+async function applyBookendBoth(
+  ffmpegPath: string,
+  compositePath: string,
+  bgPath: string,
+  outPath: string,
+  introSecs: number,
+  tailSecs: number,
+): Promise<void> {
+  const totalDur = await probeDuration(ffmpegPath, bgPath);
+  const N = Math.min(introSecs, totalDur);
+  const T = Math.min(tailSecs, Math.max(0, totalDur - N));
+  const midStart = N;
+  const midEnd = Math.max(midStart, totalDur - T);
+
+  if (midEnd <= midStart) {
+    // No middle segment — just use full composite
+    fs.copyFileSync(compositePath, outPath);
+    return;
+  }
+
+  // composite video has been rendered from trimmed audio = intro[0..N] + tail[T secs]
+  // so composite total duration = N + T
+  // We need: composite[0..N] + bg[midStart..midEnd] + composite[N..N+T]
+  // Must split [0:v] before trimming (can't reuse filter input label)
+  console.log(`[bookend-both] total=${totalDur.toFixed(2)}s intro=0-${N}s mid=${midStart}-${midEnd}s tail=${N}-${N+T}s (from composite)`);
+
+  const filter = [
+    `[0:v]split=2[cA][cB]`,
+    `[cA]trim=start=0:duration=${N},setpts=PTS-STARTPTS[vIntro]`,
+    `[1:v]trim=start=${midStart}:end=${midEnd},setpts=PTS-STARTPTS[vMid]`,
+    `[cB]trim=start=${N}:end=${N + T},setpts=PTS-STARTPTS[vTail]`,
+    `[vIntro][vMid][vTail]concat=n=3:v=1[outv]`,
+  ].join(";");
+
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-i", compositePath, "-i", bgPath,
+    "-filter_complex", filter,
+    "-map", "[outv]", "-map", "1:a?",
+    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    outPath,
+  ]);
+}
+
+// ─────────────────────────────────────────────
+// bookend-both SPLIT: intro avatar + tail avatar generated separately
+// Correct flow:
+//   1. Slice bg into 3 segments: bg[0..N], bg[N..bgDur-T], bg[bgDur-T..bgDur]
+//   2. Composite intro avatar onto bg[0..N]
+//   3. Composite tail avatar onto bg[bgDur-T..bgDur]
+//   4. Stitch: introComp + bgMid + tailComp, audio from full bg
+// ─────────────────────────────────────────────
+async function applyBookendBothSplit(
+  ffmpegPath: string,
+  introAvatarPath: string,  // raw green-screen intro avatar
+  tailAvatarPath: string,   // raw green-screen tail avatar
+  bgPath: string,           // full bg video (has TTS audio)
+  outPath: string,
+  introSecs: number,        // exact N from user setting
+  tailSecs: number,         // exact T from user setting
+  similarity: number,
+  blend: number,
+  chromaColor: string,
+  mode: string,
+): Promise<void> {
+  const rendersDir = path.dirname(outPath);
+  const ts = Date.now();
+
+  const bgDur = await probeDuration(ffmpegPath, bgPath);
+
+  // Use user-specified N and T, clamped to bg duration
+  const N = Math.min(introSecs, bgDur);
+  const T = Math.min(tailSecs, Math.max(0, bgDur - N));
+  const midStart = N;
+  const midEnd = Math.max(midStart, bgDur - T);
+
+  console.log(`[bookend-both-split] bg=${bgDur.toFixed(2)}s N=${N}s T=${T}s`);
+  console.log(`[bookend-both-split] segments: intro=0-${N}s mid=${midStart}-${midEnd}s tail=${bgDur-T}-${bgDur}s`);
+
+  // Step 1: Slice bg into intro segment and tail segment
+  const bgIntroPath = path.join(rendersDir, `bgseg-intro-${ts}.mp4`);
+  const bgTailPath  = path.join(rendersDir, `bgseg-tail-${ts}.mp4`);
+
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-i", bgPath, "-ss", "0", "-t", String(N),
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+    "-pix_fmt", "yuv420p", bgIntroPath,
+  ]);
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-i", bgPath, "-ss", String(bgDur - T), "-t", String(T),
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+    "-pix_fmt", "yuv420p", bgTailPath,
+  ]);
+
+  // Step 2: Composite intro/tail avatars onto their bg segments, clamped to exact duration
+  const introCompPath = path.join(rendersDir, `comp-intro-${ts}.mp4`);
+  const tailCompPath  = path.join(rendersDir, `comp-tail-${ts}.mp4`);
+
+  const chromaFilter = [
+    `chromakey=color=${chromaColor}:similarity=${similarity}:blend=${blend}`,
+    `despill=type=green:mix=0.5:expand=0`,
+  ].join(",");
+
+  // Composite with -shortest so output = min(bg segment, avatar) = exactly N or T secs
+  for (const [bgSeg, avSeg, outSeg, dur] of [
+    [bgIntroPath, introAvatarPath, introCompPath, N],
+    [bgTailPath,  tailAvatarPath,  tailCompPath,  T],
+  ] as [string, string, string, number][]) {
+    if (mode === "direct") {
+      await runFfmpeg(ffmpegPath, [
+        "-y", "-i", bgSeg, "-i", avSeg,
+        "-filter_complex", `[1:v][0:v]scale2ref=iw:ih[fg_s][bg];[fg_s]format=yuva444p[fg];[bg][fg]overlay=0.5*W-w/2:0.5*H-h/2:format=auto[out]`,
+        "-map", "[out]", "-t", String(dur),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an",
+        "-pix_fmt", "yuv420p", outSeg,
+      ]);
+    } else {
+      await runFfmpeg(ffmpegPath, [
+        "-y", "-i", bgSeg, "-i", avSeg,
+        "-filter_complex", [
+          `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+          `[1:v]${chromaFilter}[fg_key]`,
+          `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
+          `[bg2][fg]overlay=0:0:format=auto[out]`,
+        ].join(";"),
+        "-map", "[out]", "-t", String(dur),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-threads", "0", "-an", "-pix_fmt", "yuv420p", outSeg,
+      ]);
+    }
+  }
+
+  // Step 3: Slice bg middle segment (video only, no re-encode)
+  const bgMidPath = path.join(rendersDir, `bgseg-mid-${ts}.mp4`);
+  if (midEnd > midStart) {
+    await runFfmpeg(ffmpegPath, [
+      "-y", "-i", bgPath, "-ss", String(midStart), "-t", String(midEnd - midStart),
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+      "-pix_fmt", "yuv420p", bgMidPath,
+    ]);
+  }
+
+  // Step 4: Stitch intro + mid + tail, audio from full bg
+  const listPath = path.join(rendersDir, `concat-${ts}.txt`);
+  let concatContent = `file '${introCompPath.replace(/\\/g, "/")}'\n`;
+  if (midEnd > midStart) concatContent += `file '${bgMidPath.replace(/\\/g, "/")}'\n`;
+  concatContent += `file '${tailCompPath.replace(/\\/g, "/")}'`;
+  fs.writeFileSync(listPath, concatContent);
+
+  // Concat video-only first, then mux audio from full bg
+  const videoOnlyPath = path.join(rendersDir, `concat-video-${ts}.mp4`);
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-f", "concat", "-safe", "0", "-i", listPath,
+    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+    "-pix_fmt", "yuv420p", "-an", videoOnlyPath,
+  ]);
+
+  // Mux audio from full bg
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-i", videoOnlyPath, "-i", bgPath,
+    "-map", "0:v", "-map", "1:a?",
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+    "-shortest", "-movflags", "+faststart",
+    outPath,
+  ]);
+
+  // Cleanup temp files
+  for (const f of [bgIntroPath, bgTailPath, introCompPath, tailCompPath, bgMidPath, listPath, videoOnlyPath]) {
+    try { fs.unlinkSync(f); } catch {}
+  }
+}
+
 // ─────────────────────────────────────────────
 // POST /api/heygen/composite
-// Body: { avatarVideoUrl, bgVideoUrl, mode: "direct"|"chromakey", avatarTiming?, avatarBookendSecs? }
+// Body: { avatarVideoUrl, tailAvatarVideoUrl?, bgVideoUrl, mode, avatarTiming?, avatarBookendSecs?, avatarTailSecs? }
+// When tailAvatarVideoUrl is provided + avatarTiming=bookend-both → use split mode
 // ─────────────────────────────────────────────
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -242,10 +415,11 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => null);
   const {
-    avatarVideoUrl, bgVideoUrl,
+    avatarVideoUrl, tailAvatarVideoUrl, bgVideoUrl,
     mode = "chromakey",
     avatarTiming = "full",
     avatarBookendSecs = 5,
+    avatarTailSecs = 5,
     chromaSimilarity = 0.28,
     chromaBlend = 0.04,
     chromaColor = "0x12FF05",
@@ -263,24 +437,45 @@ export async function POST(req: Request) {
 
   const ts = Date.now();
   const avatarExt = avatarVideoUrl.includes(".webm") ? ".webm" : ".mp4";
-  const avatarTmp = path.join(rendersDir, `avatar-tmp-${ts}${avatarExt}`);
-  const bgTmp = path.join(rendersDir, `bg-tmp-${ts}.mp4`);
-  const outFile = `composite-${ts}.mp4`;
-  const outPath = path.join(rendersDir, outFile);
+  const avatarTmp  = path.join(rendersDir, `avatar-tmp-${ts}${avatarExt}`);
+  const tailTmp    = tailAvatarVideoUrl ? path.join(rendersDir, `avatar-tail-tmp-${ts}.mp4`) : null;
+  const bgTmp      = path.join(rendersDir, `bg-tmp-${ts}.mp4`);
+  const outFile    = `composite-${ts}.mp4`;
+  const outPath    = path.join(rendersDir, outFile);
 
   try {
-    console.log(`[composite] mode=${mode}`);
+    console.log(`[composite] mode=${mode} timing=${avatarTiming} splitTail=${!!tailAvatarVideoUrl}`);
 
     await downloadFile(avatarVideoUrl, avatarTmp, heygenKey);
-    const avatarSize = fs.statSync(avatarTmp).size;
-    console.log("[composite] avatar:", avatarSize, "bytes");
-    if (avatarSize < 1000) throw new Error(`Avatar too small: ${avatarSize} bytes`);
+    if (fs.statSync(avatarTmp).size < 1000) throw new Error("Avatar too small");
 
     await downloadFile(bgVideoUrl, bgTmp, heygenKey);
-    const bgSize = fs.statSync(bgTmp).size;
-    console.log("[composite] bg:", bgSize, "bytes");
-    if (bgSize < 1000) throw new Error(`BG too small: ${bgSize} bytes`);
+    if (fs.statSync(bgTmp).size < 1000) throw new Error("BG too small");
 
+    if (tailTmp && tailAvatarVideoUrl) {
+      await downloadFile(tailAvatarVideoUrl, tailTmp, heygenKey);
+      if (fs.statSync(tailTmp).size < 1000) throw new Error("Tail avatar too small");
+    }
+
+    const ffmpeg = getFfmpegPath();
+
+    // bookend-both split: composite intro and tail separately onto bg segments, then stitch
+    if (avatarTiming === "bookend-both" && tailTmp) {
+      const finalFile = `composite-${ts}-bookend-both.mp4`;
+      const finalPath = path.join(rendersDir, finalFile);
+
+      await applyBookendBothSplit(
+        ffmpeg,
+        avatarTmp, tailTmp, bgTmp, finalPath,
+        avatarBookendSecs, avatarTailSecs,
+        chromaSimilarity, chromaBlend, chromaColor, mode,
+      );
+
+      console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
+      return NextResponse.json({ videoUrl: `/api/renders/${finalFile}`, usedMode: mode });
+    }
+
+    // Standard composite (full / bookend / bookend-both legacy)
     if (mode === "direct") {
       await directComposite(bgTmp, avatarTmp, outPath);
     } else if (mode === "rembg") {
@@ -289,16 +484,21 @@ export async function POST(req: Request) {
       await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor);
     }
 
-    const outSize = fs.existsSync(outPath) ? fs.statSync(outPath).size : 0;
-    if (outSize < 1000) throw new Error(`Output too small: ${outSize} bytes`);
+    if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");
 
     let finalFile = outFile;
     let finalPath = outPath;
     if (avatarTiming === "bookend" && avatarBookendSecs > 0) {
-      const ffmpeg = getFfmpegPath();
       const bookendFile = `composite-${ts}-bookend.mp4`;
       const bookendPath = path.join(rendersDir, bookendFile);
       await applyBookend(ffmpeg, outPath, bgTmp, bookendPath, avatarBookendSecs);
+      try { fs.unlinkSync(outPath); } catch {}
+      finalFile = bookendFile;
+      finalPath = bookendPath;
+    } else if (avatarTiming === "bookend-both") {
+      const bookendFile = `composite-${ts}-bookend-both.mp4`;
+      const bookendPath = path.join(rendersDir, bookendFile);
+      await applyBookendBoth(ffmpeg, outPath, bgTmp, bookendPath, avatarBookendSecs, avatarTailSecs);
       try { fs.unlinkSync(outPath); } catch {}
       finalFile = bookendFile;
       finalPath = bookendPath;
@@ -311,6 +511,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Composite failed" }, { status: 500 });
   } finally {
     try { if (fs.existsSync(avatarTmp)) fs.unlinkSync(avatarTmp); } catch {}
+    try { if (tailTmp && fs.existsSync(tailTmp)) fs.unlinkSync(tailTmp); } catch {}
     try { if (fs.existsSync(bgTmp)) fs.unlinkSync(bgTmp); } catch {}
   }
 }

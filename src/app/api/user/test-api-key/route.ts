@@ -24,9 +24,6 @@ export async function POST(req: Request) {
 
     // Test API keys based on provider
     switch (provider) {
-      case "openai":
-        valid = await testOpenAI(apiKey);
-        break;
       case "heygen":
         valid = await testHeyGen(apiKey);
         break;
@@ -43,19 +40,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ valid });
   } catch (error) {
     return apiError({ route: "user/test-api-key", error });
-  }
-}
-
-async function testOpenAI(apiKey: string): Promise<boolean> {
-  try {
-    const response = await fetch("https://api.openai.com/v1/models", {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-    });
-    return response.ok;
-  } catch {
-    return false;
   }
 }
 

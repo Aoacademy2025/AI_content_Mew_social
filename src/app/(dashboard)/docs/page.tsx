@@ -188,16 +188,9 @@ function ApiSetupDoc() {
           <ApiRow
             name="Gemini API Key"
             required
-            desc="ใช้สำหรับ LLM subtitle split, keyword extraction, และ TTS เสียง Gemini ได้เลยถ้าไม่มี OpenAI"
+            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — subtitle split, keyword extraction, style analysis, content generation"
             link="https://aistudio.google.com/app/apikey"
             linkLabel="Google AI Studio → Get API Key"
-          />
-          <ApiRow
-            name="OpenAI API Key"
-            required={false}
-            desc="ออปชัน — ถ้ามีทั้ง Gemini และ OpenAI ระบบจะถามทุกครั้งก่อน Run All ว่าอยากใช้ model ไหน OpenAI ใช้สำหรับ Whisper transcribe และ GPT subtitle split"
-            link="https://platform.openai.com/api-keys"
-            linkLabel="OpenAI Platform → API Keys"
           />
 
           <p className="text-[12px] text-white/40 uppercase tracking-widest font-bold pt-2">Stock Video — B-roll</p>

@@ -14,12 +14,11 @@ export async function GET() {
 
     const user = await prisma.user.findUnique({
       where: { id: (session.user as { id: string }).id },
-      select: { openaiKey: true, geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
+      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     return NextResponse.json({
-      openaiKey:     user.openaiKey     ? decrypt(user.openaiKey)     : "",
       geminiKey:     user.geminiKey     ? decrypt(user.geminiKey)     : "",
       heygenKey:     user.heygenKey     ? decrypt(user.heygenKey)     : "",
       elevenlabsKey: user.elevenlabsKey ? decrypt(user.elevenlabsKey) : "",
@@ -36,10 +35,9 @@ export async function PUT(req: Request) {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { openaiKey, geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey } = await req.json();
+    const { geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey } = await req.json();
 
     const updateData: Record<string, string | null> = {};
-    if (openaiKey     !== undefined) updateData.openaiKey     = openaiKey     ? encrypt(openaiKey)     : null;
     if (geminiKey     !== undefined) updateData.geminiKey     = geminiKey     ? encrypt(geminiKey)     : null;
     if (heygenKey     !== undefined) updateData.heygenKey     = heygenKey     ? encrypt(heygenKey)     : null;
     if (elevenlabsKey !== undefined) updateData.elevenlabsKey = elevenlabsKey ? encrypt(elevenlabsKey) : null;

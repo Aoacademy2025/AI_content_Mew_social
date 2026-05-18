@@ -41,17 +41,49 @@ export interface BrollVideo {
 }
 
 export type SubtitleStylePreset =
-  | "stroke"       // classic thick black stroke (default)
-  | "box"          // semi-transparent dark box behind text
-  | "box-rounded"  // rounded pill box
-  | "glow"         // color glow, no stroke
-  | "outline-only" // thin clean outline, no fill shadow;
+  | "stroke"        // classic thick black stroke (default)
+  | "plain"         // no stroke, no shadow
+  | "shadow"        // drop shadow only
+  | "box"           // semi-transparent dark box behind text
+  | "box-rounded"   // rounded pill box
+  | "glow"          // color glow, no stroke
+  | "outline-only"  // thin clean outline, no fill shadow
+  | "neon-green"    // neon green glow
+  | "neon-red"      // neon red glow
+  | "neon-blue"     // neon electric blue glow
+  | "bold-shadow"   // ultra bold + heavy drop shadow
+  | "karaoke-box"   // word highlight in dark pill
+  | "pop-outline"   // fill color + contrasting outline
+  | "pastel"        // soft pastel pink
+  | "classic-yellow"// yellow text + black stroke (Hormozi-style)
+  | "hormozi"       // red italic + white stroke
+  | "beast"         // white + orange stroke
+  | "box-white"     // white box bg
+  | "box-yellow"    // yellow box bg
+  | "retro"         // retro orange/red gradient text
+  | "sharp-outline" // clean white + thick colored outline
+  | "news"          // white on dark banner
+  | "karaoke"       // word-by-word highlight (legacy — use SubtitleTextEffect)
+  | "typewriter";   // character-by-character reveal (legacy — use SubtitleTextEffect)
+
+export type SubtitleTextEffect =
+  | "pop"        // scale bounce (default)
+  | "bounce"     // overshoot spring bounce
+  | "fade"       // fade in/out only, no scale
+  | "quick"      // ultra-fast snap in
+  | "glow-pulse" // animated glow pulse
+  | "slide"      // slide up from below
+  | "flip"       // perspective Y-axis flip in
+  | "highlight"  // highlight bar sweeps behind text
+  | "karaoke"    // word-by-word highlight
+  | "typewriter"; // character-by-character reveal
 
 export interface KeywordPopupItem {
   text: string;
   start: number;       // frame number
   end: number;         // frame number
   color: string;       // #FFFFFF | #FFD700 | #FF4444
+  accentColor?: string; // highlight color for karaoke effect
   size: number;        // 85 | 95 | 110
   isHighlight: boolean;
   topPercent?: number; // default 38
@@ -78,6 +110,8 @@ export interface ShortVideoConfig {
   durationInFrames: number;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;
+  subtitleTextEffect?: SubtitleTextEffect;
+  subtitleAccentColor?: string;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */

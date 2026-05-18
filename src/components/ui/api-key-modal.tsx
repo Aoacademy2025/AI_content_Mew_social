@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Loader2, Key, ExternalLink, Eye, EyeOff, CheckCircle2, X } from "lucide-react";
 import { toast } from "sonner";
 
-export type RequiredKeyType = "openai" | "gemini" | "elevenlabs" | "heygen" | "pexels" | "pixabay";
+export type RequiredKeyType = "gemini" | "elevenlabs" | "heygen" | "pexels" | "pixabay";
 
 const KEY_META: Record<RequiredKeyType, {
   label: string;
@@ -13,8 +13,7 @@ const KEY_META: Record<RequiredKeyType, {
   link: string;
   hint: string;
 }> = {
-  openai:     { label: "OpenAI API Key",     field: "openaiKey",     placeholder: "sk-proj-...",                link: "https://platform.openai.com/api-keys",            hint: "ใช้สำหรับ Keywords, Split-phrases, Transcribe" },
-  gemini:     { label: "Gemini API Key",     field: "geminiKey",     placeholder: "AIza...",                    link: "https://aistudio.google.com/app/apikey",          hint: "ใช้สำหรับ Keywords, Split-phrases, Transcribe (แนะนำ — ใช้แทน OpenAI ได้)" },
+  gemini:     { label: "Gemini API Key",     field: "geminiKey",     placeholder: "AIza...",                    link: "https://aistudio.google.com/app/apikey",          hint: "ใช้สำหรับ AI ทุกฟังก์ชัน — Keywords, Transcribe, Style analysis" },
   elevenlabs: { label: "ElevenLabs API Key", field: "elevenlabsKey", placeholder: "Enter your ElevenLabs key", link: "https://elevenlabs.io/app/settings/api-keys",     hint: "ใช้สำหรับ TTS Voice synthesis" },
   heygen:     { label: "HeyGen API Key",     field: "heygenKey",     placeholder: "Enter your HeyGen key",     link: "https://app.heygen.com/settings?nav=API",         hint: "ใช้สำหรับสร้าง Avatar video" },
   pexels:     { label: "Pexels API Key",     field: "pexelsKey",     placeholder: "Enter your Pexels key",     link: "https://www.pexels.com/api/",                     hint: "ใช้สำหรับดาวน์โหลด Stock video" },
@@ -125,7 +124,7 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
   );
 }
 
-const VALID_KEYS = new Set<RequiredKeyType>(["openai","gemini","elevenlabs","heygen","pexels","pixabay"]);
+const VALID_KEYS = new Set<RequiredKeyType>(["gemini","elevenlabs","heygen","pexels","pixabay"]);
 
 /**
  * ตรวจสอบ API response data หรือ error message แล้ว return keyType ที่ต้องการ
@@ -148,7 +147,6 @@ export function detectMissingKeyType(
 }
 
 function detectFromString(msg: string): RequiredKeyType | null {
-  if (msg.includes("openai"))     return "openai";
   if (msg.includes("gemini"))     return "gemini";
   if (msg.includes("elevenlabs")) return "elevenlabs";
   if (msg.includes("heygen"))     return "heygen";

@@ -1,7 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset } from "@/remotion/types";
+import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -171,6 +171,7 @@ export async function POST(req: Request) {
     subtitleColor,
     subtitleAccentColor,
     subtitleStylePreset,
+    subtitleTextEffect,
     subtitleFontWeight = 900,
     scenes = [],
     keywordsPerScene = 5,
@@ -188,6 +189,7 @@ export async function POST(req: Request) {
     subtitleColor?: string;
     subtitleAccentColor?: string;
     subtitleStylePreset?: SubtitleStylePreset;
+    subtitleTextEffect?: SubtitleTextEffect;
     subtitleFontWeight?: number;
     scenes?: string[];
     keywordsPerScene?: number;
@@ -229,14 +231,16 @@ export async function POST(req: Request) {
   const keywordPopups: KeywordPopupItem[] = gapFilled
     .map((c) => {
       const text = c.text.trim();
-      const { color, size, isHighlight } = detectStyle(text, subtitleSize, primaryColor);
+      const { color, size } = detectStyle(text, subtitleSize, primaryColor);
+      const isHighlight = c.tag === "hook";
+      const singleColor = subtitleStylePreset === "karaoke-box";
       const startFrame = Math.floor((c.startMs / 1000) * fps);
       const endFrame = Math.max(startFrame + 1, Math.ceil((c.endMs / 1000) * fps));
       return {
         text,
         start: startFrame,
         end: endFrame,
-        color,
+        color: singleColor ? color : isHighlight ? accentColor : color,
         size,
         isHighlight,
         topPercent: subtitlePosition,
@@ -288,14 +292,68 @@ export async function POST(req: Request) {
     const useEvenSplit = !isPerSubtitleTop && clipCountHint <= numScenes * 4; // few clips â†’ guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Per-subtitle mode: 1 unique clip per subtitle, no repeats.
-      // If clips < subtitles, cycle through pool — but log a warning.
-      // MAX_UNIQUE_VIDEOS removed: we trust fetch-stock dedup to return enough unique clips.
+      // Per-subtitle mode: merge short subtitles into whichever neighbour shares the most keyword overlap.
+      // Short = duration < SHORT_THRESHOLD_SEC. Subtitles are never split — only clip assignment changes.
       const pool = validStocks.slice(0, n);
-      console.log(`[config] per-subtitle-top mode: ${pool.length} unique clips for ${gapFilled.length} captions`);
+      const SHORT_THRESHOLD_SEC = 1.5;
 
-      // Build a lookup: subtitle index → its own clip (1:1, no cycling within pool size)
-      // Only cycle if we truly have fewer clips than subtitles (last resort).
+      // Build keyword list parallel to gapFilled (pool[i].keyword matches gapFilled[i])
+      const kwFor = (ci: number): string => (pool[ci]?.keyword ?? "").toLowerCase();
+
+      // Word-overlap score between two keyword strings
+      function kwOverlap(a: string, b: string): number {
+        const wa = new Set(a.split(/\s+/).filter(w => w.length > 2));
+        const wb = b.split(/\s+/).filter(w => w.length > 2);
+        return wb.filter(w => wa.has(w)).length;
+      }
+
+      // Pre-pass: decide which pool index each subtitle uses.
+      // mergeInto[ci] = index of subtitle whose clip ci should share (-1 = own clip)
+      const mergeInto: number[] = gapFilled.map(() => -1);
+
+      for (let ci = 0; ci < gapFilled.length; ci++) {
+        const cap = gapFilled[ci];
+        const dur = (cap.endMs - cap.startMs) / 1000;
+        if (dur >= SHORT_THRESHOLD_SEC) continue; // long enough — own clip
+
+        // Already assigned to merge into something else
+        if (mergeInto[ci] !== -1) continue;
+
+        // Compare keyword overlap with prev and next (that are not already short-merging)
+        const prevCi = ci - 1 >= 0 ? ci - 1 : -1;
+        const nextCi = ci + 1 < gapFilled.length ? ci + 1 : -1;
+
+        const prevScore = prevCi >= 0 ? kwOverlap(kwFor(ci), kwFor(prevCi)) : -1;
+        const nextScore = nextCi >= 0 ? kwOverlap(kwFor(ci), kwFor(nextCi)) : -1;
+
+        // Merge into the neighbour with higher overlap (prefer prev on tie)
+        const target = prevScore >= nextScore && prevCi >= 0 ? prevCi : nextCi >= 0 ? nextCi : -1;
+        if (target >= 0) mergeInto[ci] = target;
+      }
+
+      // Build clip assignments: subtitle ci uses pool[assignedPool[ci]]
+      const assignedPool: number[] = [];
+      let nextPoolIdx = 0;
+      // First pass: assign pool indices skipping merged subtitles
+      const ownPoolIdx: number[] = gapFilled.map(() => -1);
+      for (let ci = 0; ci < gapFilled.length; ci++) {
+        if (mergeInto[ci] === -1) {
+          ownPoolIdx[ci] = nextPoolIdx < pool.length ? nextPoolIdx++ : pool.length - 1;
+        }
+      }
+      // Second pass: merged subtitles inherit their target's pool index
+      for (let ci = 0; ci < gapFilled.length; ci++) {
+        if (mergeInto[ci] !== -1) {
+          const target = mergeInto[ci];
+          // target might also be merged — resolve chain (max 2 levels)
+          assignedPool[ci] = ownPoolIdx[target] >= 0 ? ownPoolIdx[target] : ownPoolIdx[mergeInto[target] ?? target] ?? 0;
+        } else {
+          assignedPool[ci] = ownPoolIdx[ci];
+        }
+      }
+
+      console.log(`[config] per-subtitle-top: ${pool.length} clips, ${gapFilled.length} captions, ${gapFilled.filter((_,i)=>mergeInto[i]>=0).length} merged (short)`);
+
       const clipOffsetMap = new Map<string, number>();
       for (let ci = 0; ci < gapFilled.length; ci++) {
         const cap = gapFilled[ci];
@@ -304,24 +362,24 @@ export async function POST(req: Request) {
         const dur = capEndSec - capStartSec;
         if (dur < 0.1) continue;
 
-        // Strict 1:1 mapping — no cycling, no repeats
-        if (ci >= pool.length) {
-          console.warn(`[config] subtitle ${ci}: no unique clip available (pool=${pool.length}), skipping`);
-          continue;
-        }
-        const sv = pool[ci];
+        const poolIdx = Math.max(0, Math.min(assignedPool[ci] ?? 0, pool.length - 1));
+        const sv = pool[poolIdx];
         const src = sv.localUrl ?? sv.videoUrl;
         const clipDuration = sv.duration > 0 ? sv.duration : 10;
+
+        // If the previous bgVideo uses the same clip src, just extend it
         const last = bgVideos[bgVideos.length - 1];
         if (last && last.src === src) {
           last.end = capEndSec;
-        } else {
-          const offset = clipOffsetMap.get(src) ?? 0;
-          const safeOffset = clipDuration > 0 ? offset % clipDuration : 0;
-          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
-          clipOffsetMap.set(src, safeOffset + dur);
+          continue;
         }
+
+        const offset = clipOffsetMap.get(src) ?? 0;
+        const safeOffset = clipDuration > 0 ? offset % clipDuration : 0;
+        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+        clipOffsetMap.set(src, safeOffset + dur);
       }
+      console.log(`[config] per-subtitle-top: ${bgVideos.length} clips for ${gapFilled.length} captions (ratio=${(bgVideos.length/Math.max(1,gapFilled.length)*100).toFixed(0)}%)`);
     } else if (useEvenSplit) {
       const splitCount = Math.max(1, Math.min(n, clipCountHint));
       const sliceSec = audioDurationSec / splitCount;
@@ -604,6 +662,8 @@ export async function POST(req: Request) {
     durationInFrames,
     fontFamily,
     subtitleStylePreset,
+    subtitleTextEffect,
+    subtitleAccentColor,
   };
 
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);

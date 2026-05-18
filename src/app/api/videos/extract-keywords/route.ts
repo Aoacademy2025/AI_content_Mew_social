@@ -114,43 +114,18 @@ export async function POST(req: Request) {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false, preferredLLM } = body ?? {};
+  const { script, scenes, perSubtitle = false } = body ?? {};
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { geminiKey: true, openaiKey: true },
+    select: { geminiKey: true },
   });
 
-  let apiKey = process.env.SERVER_OPENAI_API_KEY || null;
-  let useGemini = false;
-  if (!apiKey) {
-    const wantGemini = preferredLLM === "gemini";
-    const wantOpenAI = preferredLLM === "openai";
-    if (wantGemini && user?.geminiKey)      { apiKey = decrypt(user.geminiKey); useGemini = true; }
-    else if (wantOpenAI && user?.openaiKey) { apiKey = decrypt(user.openaiKey); }
-    else if (user?.geminiKey)               { apiKey = decrypt(user.geminiKey); useGemini = true; }
-    else if (user?.openaiKey)               { apiKey = decrypt(user.openaiKey); }
-    else return NextResponse.json({ error: "Gemini or OpenAI key not set", missingKey: "gemini" }, { status: 400 });
-  }
+  const apiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
+  if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
 
   async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
-    if (useGemini) {
-      return await geminiGenerateText(apiKey!, prompt, maxTokens);
-    }
-    const body: Record<string, unknown> = {
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: maxTokens,
-      temperature: 0.4,
-    };
-    if (jsonMode) body.response_format = { type: "json_object" };
-    const r = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (r.ok) { const d = await r.json(); return d.choices?.[0]?.message?.content ?? "{}"; }
-    throw new Error(`OpenAI ${r.status}`);
+    return await geminiGenerateText(apiKey, prompt, maxTokens);
   }
 
   // ── perSubtitle mode ──────────────────────────────────────────────────────────
@@ -190,7 +165,7 @@ Output ONLY the one-sentence visual direction, nothing else.`;
       batches.push(subtitleList.slice(i, i + BATCH_SIZE));
     }
 
-    console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches (${useGemini ? "Gemini" : "OpenAI"})`);
+    console.log(`[extract-keywords] perSubtitle: ${subtitleList.length} subtitles → ${batches.length} batches (Gemini)`);
 
     const allKeywords: string[] = [];
     const allAlternatives: string[][] = [];
@@ -219,7 +194,7 @@ Query 3 — Generic scene fallback (1-2 words max, e.g. "technology", "city nigh
 
 CRITICAL RULES:
 ▸ NO real person names (Dario Amodei, Elon Musk, Sam Altman…) — Pexels has none
-▸ NO brand/company names (OpenAI, Anthropic, Google…) — no useful results
+▸ NO brand/company names (Anthropic, Google…) — no useful results
 ▸ Translate people/brands into what they LOOK LIKE visually:
    CEO presenting → "executive keynote stage spotlight"
    AI startup → "developer dark office multiple screens"
@@ -261,16 +236,17 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       for (let i = 0; i < batch.length; i++) {
         const alts = rawAlts[i] ?? [];
 
-        // Pick first non-duplicate and non-similar valid keyword
+        // Pick first valid keyword — in perSubtitle mode allow similar keywords
+        // because adjacent subtitles can legitimately share visual themes
         let picked = "";
         for (const alt of alts) {
-          if (alt && !usedKeywords.has(alt) && !isTooSimilar(alt, usedKeywords)) {
+          if (alt && !usedKeywords.has(alt)) {
             picked = alt;
             break;
           }
         }
 
-        // If all alternatives already used or missing, use any valid one
+        // If all alternatives already used, use any valid one (don't fall back to unrelated)
         if (!picked && alts[0]) picked = alts[0];
 
         // Last resort: ask LLM gave nothing useful, use subtitle text words

@@ -40,7 +40,6 @@ import {
   Globe,
   Copy,
   CheckCircle2,
-  Key,
   Loader2,
   Film,
   ChevronRight,
@@ -98,9 +97,6 @@ export default function ContentPage() {
   });
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [showOpenAIDialog, setShowOpenAIDialog] = useState(false);
-  const [openAIKeyInput, setOpenAIKeyInput] = useState("");
-  const [savingOpenAIKey, setSavingOpenAIKey] = useState(false);
   const [generatedContent, setGeneratedContent] = useState<Content | null>(null);
   const [editableContent, setEditableContent] = useState({
     headline: "",
@@ -155,32 +151,10 @@ export default function ContentPage() {
         toast.success("Content generated!");
       } else {
         const data = await res.json();
-        if (data.error?.toLowerCase().includes("openai api key")) {
-          setShowOpenAIDialog(true);
-        } else {
-          toast.error(data.error || "Failed to generate content");
-        }
+        toast.error(data.error || "Failed to generate content");
       }
     } catch { toast.error("Failed to generate content"); }
     finally { setGenerating(false); }
-  }
-
-  async function handleSaveOpenAIKey() {
-    if (!openAIKeyInput.trim()) return;
-    setSavingOpenAIKey(true);
-    try {
-      const res = await fetch("/api/user/api-keys", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ openaiKey: openAIKeyInput.trim() }),
-      });
-      if (!res.ok) throw new Error();
-      setShowOpenAIDialog(false);
-      setOpenAIKeyInput("");
-      toast.success("Saved OpenAI key — generating...");
-      await runGenerate();
-    } catch { toast.error("Failed to save key"); }
-    finally { setSavingOpenAIKey(false); }
   }
 
   async function handleSave() {
@@ -663,49 +637,6 @@ export default function ContentPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── OpenAI Key Dialog ── */}
-      <Dialog open={showOpenAIDialog} onOpenChange={setShowOpenAIDialog}>
-        <DialogContent className="sm:max-w-md border" style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}>
-          <DialogHeader>
-            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: "hsl(38 92% 50% / 0.12)" }}>
-              <Key className="h-5 w-5 text-amber-400" />
-            </div>
-            <DialogTitle className="text-center" style={{ color: "var(--ui-text-primary)" }}>OpenAI API Key Required</DialogTitle>
-            <DialogDescription className="text-center" style={{ color: "var(--ui-text-muted)" }}>
-              Add your OpenAI key to generate content
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 pt-2">
-            <Input
-              type="password"
-              placeholder="sk-..."
-              value={openAIKeyInput}
-              onChange={(e) => setOpenAIKeyInput(e.target.value)}
-              className="border-0 focus-visible:ring-cyan-500/50"
-              style={{ background: "var(--ui-input-bg)", color: "var(--ui-text-secondary)" }}
-              onKeyDown={(e) => e.key === "Enter" && handleSaveOpenAIKey()}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleSaveOpenAIKey}
-                disabled={!openAIKeyInput.trim() || savingOpenAIKey}
-                className="flex-1 flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-                style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}
-              >
-                {savingOpenAIKey && <Loader2 className="h-4 w-4 animate-spin" />}
-                Save & Generate
-              </button>
-              <button
-                onClick={() => { setShowOpenAIDialog(false); window.location.href = "/settings?tab=api-keys"; }}
-                className="rounded-lg px-3 py-2.5 text-sm hover:opacity-80 transition-colors border"
-                style={{ borderColor: "var(--ui-btn-border)", background: "transparent", color: "var(--ui-text-muted)" }}
-              >
-                Settings
-              </button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </DashboardLayout>
   );
 }

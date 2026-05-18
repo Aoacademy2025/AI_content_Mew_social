@@ -16,7 +16,7 @@ export async function POST() {
     // Get current user
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { plan: true, openaiKey: true },
+      select: { plan: true },
     });
 
     if (!user) {
@@ -28,14 +28,6 @@ export async function POST() {
       return NextResponse.json(
         { message: "Already on Pro plan" },
         { status: 200 }
-      );
-    }
-
-    // Verify user has saved OpenAI API key
-    if (!user.openaiKey) {
-      return NextResponse.json(
-        { error: "Please save your OpenAI API key first" },
-        { status: 400 }
       );
     }
 

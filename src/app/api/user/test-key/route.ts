@@ -8,17 +8,7 @@ function decrypt(encrypted: string): string {
   return Buffer.from(encrypted, "base64").toString("utf-8");
 }
 
-type KeyType = "openai" | "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
-
-async function testOpenAI(key: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const res = await fetch("https://api.openai.com/v1/models", { headers: { Authorization: `Bearer ${key}` } });
-    if (res.ok) return { ok: true, message: "OpenAI key ใช้งานได้" };
-    if (res.status === 401) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ" };
-    if (res.status === 429) return { ok: true, message: "Key ถูกต้อง (rate limit)" };
-    return { ok: false, message: `Error ${res.status}` };
-  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ OpenAI ได้" }; }
-}
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 
 async function testGemini(key: string): Promise<{ ok: boolean; message: string }> {
   try {
@@ -77,12 +67,11 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: (session.user as { id: string }).id },
-      select: { openaiKey: true, geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
+      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     const encryptedMap: Record<KeyType, string | null | undefined> = {
-      openai:     user.openaiKey,
       gemini:     user.geminiKey,
       heygen:     user.heygenKey,
       elevenlabs: user.elevenlabsKey,
@@ -97,7 +86,6 @@ export async function POST(req: Request) {
 
     let result: { ok: boolean; message: string };
     switch (keyType) {
-      case "openai":     result = await testOpenAI(key);     break;
       case "gemini":     result = await testGemini(key);     break;
       case "heygen":     result = await testHeyGen(key);     break;
       case "elevenlabs": result = await testElevenLabs(key); break;

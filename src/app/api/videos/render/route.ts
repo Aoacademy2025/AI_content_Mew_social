@@ -61,6 +61,7 @@ type RenderJob = {
   videoUrl?: string;
   error?: string;
   startedAt: number;
+  progress?: number; // 0–100
 };
 
 function jobsDir(): string {
@@ -87,6 +88,9 @@ function readPersistedJob(jobId: string): RenderJob | undefined {
 // In-memory cache so same process doesn't re-read file on every poll
 const renderJobs = new Map<string, RenderJob>();
 
+// Track the latest jobId per user — older jobs are superseded and must not write results
+const latestJobPerUser = new Map<string, string>();
+
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
   persistJob(jobId, job);
@@ -107,7 +111,7 @@ export function getRenderJob(jobId: string): RenderJob | undefined {
 // Bundle path + mtime saved to the render tmp dir so pm2 restarts
 // don't re-bundle from scratch (bundling takes 2-5 min on low-CPU VPS).
 let cachedBundleLocation: string | null = null;
-let cachedBundleMtime: number = 0;
+let cachedBundleMtime: string = "";
 
 function loadBundleCache() {
   const tmpDir = getRenderTmpDir();
@@ -149,7 +153,10 @@ export async function POST(req: Request) {
 
     const renderTmpDir = getRenderTmpDir();
     process.env.TMPDIR = renderTmpDir;
-    const jobId = `${session.user.id}-${Date.now()}`;
+    const userId = session.user.id;
+    const jobId = `${userId}-${Date.now()}`;
+    // Register this as the latest job for this user — any older job will be superseded
+    latestJobPerUser.set(userId, jobId);
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
     // Support both old `captionSegments` and new `captions` field names
@@ -204,23 +211,6 @@ export async function POST(req: Request) {
 
 
     const entryPoint = path.resolve(process.cwd(), "src/remotion/index.tsx");
-
-    // Reuse cached bundle if it still exists on disk (saves ~7GB per render)
-    const entryMtime = fs.statSync(entryPoint).mtimeMs;
-    if (
-      cachedBundleLocation &&
-      entryMtime === cachedBundleMtime &&
-      fs.existsSync(path.join(cachedBundleLocation, "index.html"))
-    ) {
-      console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
-    } else {
-      console.log("[Render] building new webpack bundle...");
-      cachedBundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
-      cachedBundleMtime = entryMtime;
-      saveBundleCache();
-      console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
-    }
-    const bundleLocation = cachedBundleLocation;
 
     // Pre-download external image URLs so Remotion doesn't fetch them during render
     // (external URLs may expire or be rate-limited → causes white frames)
@@ -406,96 +396,95 @@ export async function POST(req: Request) {
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(resolvedSubtitleConfig.videoUrl, "subtitle video");
     }
 
-    const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
-    const inputProps = isSubtitleOverlay
-      ? resolvedSubtitleConfig
-      : isShortVideo
-      ? resolvedShortConfig
-      : isAvatarMode
-      ? { avatarVideoUrl, captions: captionsData, captionStyleId: captionStyleId ?? "tiktok", customCaptionStyle: customCaptionStyle ?? null, positionY: positionY ?? 85, fontSizeOverride: fontSizeOverride ?? 0, fontWeightOverride: fontWeightOverride ?? 0 }
-      : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
-
-    const composition = await selectComposition({
-      serveUrl: bundleLocation,
-      id: compositionId,
-      inputProps,
-      timeoutInMilliseconds: 60000,
-    });
-
-    // For non-avatar mode: override duration (and optionally dimensions) from client-supplied values.
-    // For avatar mode: calculateMetadata already set the correct duration from the video.
-    if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
-      composition.durationInFrames = resolvedSubtitleConfig.durationInFrames;
-    } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
-      composition.durationInFrames = resolvedShortConfig.durationInFrames;
-    } else if (!isAvatarMode && !isSubtitleOverlay) {
-      composition.durationInFrames = durationInFrames;
-      if (customWidth) composition.width = customWidth;
-      if (customHeight) composition.height = customHeight;
-    }
-
-    const filename = `render-${Date.now()}.mp4`;
-    const outputLocation = path.join(rendersDir, filename);
-
-    const cpuCount = os.cpus().length;
-    const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-    const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 1.5;
-
-    // --single-process + --no-zygote causes "Target closed" crashes on Linux VPS because
-    // any one frame's crash kills all Chromium tabs. Use multi-process mode instead:
-    // keep --no-zygote only, drop --single-process, and limit concurrency so we don't
-    // exceed the number of stable Chromium instances the host can sustain.
-    const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-    const safeConcurrency = isLowResourceHost ? 1 : Math.min(2, Math.max(1, cpuCount - 1));
-    const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-      ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-      : safeConcurrency;
-
-    const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-    // OffthreadVideo cache: large enough to hold decoded frames across clips,
-    // small enough to avoid OOM on VPS. Tune via RENDER_OFFTHREAD_CACHE_MB env.
-    const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
-      ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-      : isLowResourceHost ? 64 * 1024 * 1024 : 128 * 1024 * 1024;
-
-    const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isLowResourceHost ? 60 : 70);
-
-    const isWindows = process.platform === "win32";
-    const chromiumArgs = [
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      // --no-zygote without --single-process: each tab is its own process (stable),
-      // but we avoid the zygote fork overhead that fails on many VPS kernels.
-      "--no-zygote",
-      // --no-sandbox required on Linux VPS (no user namespace support).
-      // On Windows it's unnecessary but harmless.
-      "--no-sandbox",
-      // Reduce per-tab memory footprint
-      "--js-flags=--max-old-space-size=512",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-default-apps",
-      // Prevent GPU process from being spawned (already disabled via --disable-gpu,
-      // but this ensures the GPU host doesn't linger and consume file descriptors)
-      "--gpu-process-limit=0",
-      ...(isWindows ? [] : [
-        // Linux: give each renderer its own shared memory namespace to avoid crashes
-        "--disable-features=OutOfBlinkCors",
-      ]),
-    ];
-    console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
-
-    // Clear stale progress file from previous render before starting new one
+    // Clear stale progress file and register job immediately — before bundle build
     try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
-
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
 
-    // Fire-and-forget: run render in background so HTTP response returns immediately.
-    // Nginx default proxy_read_timeout is 60s — keeping the connection open for 2h causes 504.
+    // Fire-and-forget: bundle + render in background so HTTP response returns immediately.
     // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
     (async () => {
       let lastProgress = -1;
       try {
+        // Bundle (may be cached) — runs in background after jobId is returned
+        // Use mtime+size fingerprint of all remotion source files to detect changes
+        const remotionSrcDir = path.resolve(process.cwd(), "src/remotion");
+        const remotionFingerprint = fs.readdirSync(remotionSrcDir)
+          .filter(f => f.endsWith(".tsx") || f.endsWith(".ts"))
+          .sort()
+          .map(f => { const s = fs.statSync(path.join(remotionSrcDir, f)); return `${f}:${s.mtimeMs}:${s.size}`; })
+          .join("|");
+        if (
+          cachedBundleLocation &&
+          remotionFingerprint === cachedBundleMtime &&
+          fs.existsSync(path.join(cachedBundleLocation, "index.html"))
+        ) {
+          console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
+        } else {
+          console.log("[Render] building new webpack bundle...");
+          cachedBundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
+          cachedBundleMtime = remotionFingerprint;
+          saveBundleCache();
+          console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
+        }
+        const bundleLocation = cachedBundleLocation!;
+
+        const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
+        const inputProps = isSubtitleOverlay
+          ? resolvedSubtitleConfig
+          : isShortVideo
+          ? resolvedShortConfig
+          : isAvatarMode
+          ? { avatarVideoUrl, captions: captionsData, captionStyleId: captionStyleId ?? "tiktok", customCaptionStyle: customCaptionStyle ?? null, positionY: positionY ?? 85, fontSizeOverride: fontSizeOverride ?? 0, fontWeightOverride: fontWeightOverride ?? 0 }
+          : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
+
+        const composition = await selectComposition({
+          serveUrl: bundleLocation,
+          id: compositionId,
+          inputProps,
+          timeoutInMilliseconds: 60000,
+        });
+
+        if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
+          composition.durationInFrames = resolvedSubtitleConfig.durationInFrames;
+        } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
+          composition.durationInFrames = resolvedShortConfig.durationInFrames;
+        } else if (!isAvatarMode && !isSubtitleOverlay) {
+          composition.durationInFrames = durationInFrames;
+          if (customWidth) composition.width = customWidth;
+          if (customHeight) composition.height = customHeight;
+        }
+
+        const filename = `render-${Date.now()}.mp4`;
+        const outputLocation = path.join(rendersDir, filename);
+
+        const cpuCount = os.cpus().length;
+        const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
+        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 1.5;
+        const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
+        const safeConcurrency = isLowResourceHost ? 1 : Math.min(2, Math.max(1, cpuCount - 1));
+        const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+          ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
+          : safeConcurrency;
+        const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
+        const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
+          ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
+          : isLowResourceHost ? 64 * 1024 * 1024 : 128 * 1024 * 1024;
+        const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isLowResourceHost ? 80 : 95);
+        const isWindows = process.platform === "win32";
+        const chromiumArgs = [
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+          "--no-zygote",
+          "--no-sandbox",
+          "--js-flags=--max-old-space-size=512",
+          "--disable-extensions",
+          "--disable-background-networking",
+          "--disable-default-apps",
+          "--gpu-process-limit=0",
+          ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
+        ];
+        console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
+
         await renderMedia({
           composition,
           serveUrl: bundleLocation,
@@ -504,7 +493,7 @@ export async function POST(req: Request) {
           inputProps,
           timeoutInMilliseconds: 7200000,
           concurrency: renderConcurrency,
-          x264Preset: "ultrafast",
+          x264Preset: isLowResourceHost ? "faster" : "medium",
           jpegQuality,
           offthreadVideoCacheSizeInBytes,
           chromiumOptions: {
@@ -527,6 +516,12 @@ export async function POST(req: Request) {
           },
         });
 
+        // If a newer job was started for this user, discard this result silently
+        if (latestJobPerUser.get(userId) !== jobId) {
+          console.log(`[Render] job=${jobId} superseded by newer job — discarding result`);
+          return;
+        }
+
         const videoUrl = `/api/renders/${filename}`;
         setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
@@ -541,6 +536,7 @@ export async function POST(req: Request) {
           }).catch(() => {});
         }
       } catch (error) {
+        if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
         console.error("Render error:", error);
         const detail = error instanceof Error ? error.message : String(error);
         setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });

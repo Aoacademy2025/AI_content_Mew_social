@@ -157,64 +157,33 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: session.user.id },
-      select: { plan: true, openaiKey: true },
+      select: { geminiKey: true },
     });
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    let openaiApiKey: string | null = null;
-
-    if (user.plan === "FREE") {
-      openaiApiKey = process.env.SERVER_OPENAI_API_KEY || null;
-      if (!openaiApiKey) {
-        return NextResponse.json({ error: "Server API key not configured" }, { status: 500 });
-      }
-    } else {
-      if (!user.openaiKey) {
-        return NextResponse.json({ error: "Please add your OpenAI API key in Settings", missingKey: "openai" }, { status: 400 });
-      }
-      openaiApiKey = Buffer.from(user.openaiKey, "base64").toString("utf-8");
+    if (!user.geminiKey) {
+      return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
     }
+
+    const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+    const { geminiGenerateText } = await import("@/lib/gemini");
 
     // Send the full script as a single line to AI
     const singleLineScript = script.trim().replace(/\n+/g, ' ');
     const userMessage = buildUserMessage(singleLineScript, numberOfImages, videoDuration);
+    const fullPrompt = SYSTEM_PROMPT + "\n\n" + userMessage;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userMessage },
-        ],
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      return NextResponse.json(
-        { error: error.error?.message || "AI generation failed" },
-        { status: 500 }
-      );
-    }
-
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content;
+    const content = await geminiGenerateText(apiKey, fullPrompt, 2000, 0.3);
 
     if (!content) {
       return NextResponse.json({ error: "No response from AI" }, { status: 500 });
     }
 
-    const result = JSON.parse(content);
+    const cleanContent = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const result = JSON.parse(cleanContent);
 
     // Ensure numberOfScenes is always present for frontend compatibility
     result.numberOfScenes = Array.isArray(result.videoScript) ? result.videoScript.length : numberOfImages;

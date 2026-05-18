@@ -140,10 +140,10 @@ function SettingsContent() {
                 </div>
                 <h2 className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>API Credentials</h2>
               </div>
-              <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer"
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
                 className="flex items-center gap-1 rounded-full px-3 py-1 text-xs hover:opacity-80 transition-opacity"
                 style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)", color: "var(--ui-text-muted)" }}>
-                Documentation <ExternalLink className="h-3 w-3" />
+                Get Gemini Key <ExternalLink className="h-3 w-3" />
               </a>
             </div>
             <ApiKeySettings />
