@@ -125,7 +125,7 @@ export async function POST(req: Request) {
   if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
 
   async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
-    return await geminiGenerateText(apiKey, prompt, maxTokens);
+    return await geminiGenerateText(apiKey!, prompt, maxTokens);
   }
 
   // ── perSubtitle mode ──────────────────────────────────────────────────────────

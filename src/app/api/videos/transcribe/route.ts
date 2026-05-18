@@ -1279,7 +1279,7 @@ ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
 
-        let llmCaptions: { text: string; startMs: number; endMs: number }[] = [];
+        let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
           console.log(`[transcribe] Gemini merge raw (${raw.length} chars): ${raw.slice(0, 300)}`);
@@ -1315,7 +1315,7 @@ Total audio: ${audioDur.toFixed(2)}s`;
           if (parsed && Array.isArray(parsed.captions)) {
             llmCaptions = parsed.captions
               .filter(c => typeof c.text === "string" && typeof c.startMs === "number" && typeof c.endMs === "number")
-              .map(c => ({ text: sanitizePhraseText(c.text!), startMs: c.startMs!, endMs: c.endMs!, tag: c.tag }))
+              .map(c => ({ text: sanitizePhraseText(c.text!), startMs: c.startMs!, endMs: c.endMs!, tag: (c.tag as string | undefined) }))
               .filter(c => c.text.length > 0) as { text: string; startMs: number; endMs: number; tag?: string }[];
 
             // Hard clamp: hook = first 1 only, cta = last 2 only
