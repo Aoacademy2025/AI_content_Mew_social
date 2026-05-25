@@ -1,22 +1,24 @@
-// ─── Pipeline types (shared with video-creator) ────────────────────────────
+// ─── Pipeline types ────────────────────────────────────────────────────────
 
 export type StepStatus = "idle" | "running" | "done" | "error" | "skip";
 
 export interface StepState {
-  keywords:    StepStatus;
-  fetchStock:  StepStatus;
-  tts:         StepStatus;
-  transcribe:  StepStatus;
-  config:      StepStatus;
-  render:      StepStatus;
-  avatar:      StepStatus;
-  avatarTail:  StepStatus;
-  composite:   StepStatus;
+  keywords:       StepStatus;
+  fetchStock:     StepStatus;
+  tts:            StepStatus;
+  transcribe:     StepStatus;
+  config:         StepStatus;
+  render:         StepStatus;
+  burnSubtitles:  StepStatus;
+  avatar:         StepStatus;
+  avatarTail:     StepStatus;
+  composite:      StepStatus;
 }
 
 export const DEFAULT_STEPS: StepState = {
   keywords: "idle", fetchStock: "idle", tts: "idle",
   transcribe: "idle", config: "idle", render: "idle",
+  burnSubtitles: "idle",
   avatar: "idle", avatarTail: "idle", composite: "idle",
 };
 
@@ -36,22 +38,25 @@ export interface StockVideo {
 }
 
 export interface PipelineData {
-  scenes:              string[];
-  keywords:            string[];
-  keywordAlternatives: string[][];
-  keywordsPerScene:    number;
-  sceneClipCounts:     number[];
-  sceneDurations:      number[];
-  visualDirection:     string;
-  stockVideos:         StockVideo[];
-  voiceUrl:            string;
-  captions:            Caption[];
-  sceneCaptions:       Caption[];
-  words:               { word: string; startMs: number; endMs: number }[];
-  audioDurationMs:     number;
-  config:              unknown;
-  renderedVideoUrl:    string;
-  compositeUrl:        string;
+  scenes:                 string[];
+  keywords:               string[];
+  keywordAlternatives:    string[][];
+  keywordsPerScene:       number;
+  sceneClipCounts:        number[];
+  sceneDurations:         number[];
+  visualDirection:        string;
+  stockVideos:            StockVideo[];
+  voiceUrl:               string;
+  captions:               Caption[];
+  sceneCaptions:          Caption[];
+  words:                  { word: string; startMs: number; endMs: number }[];
+  audioDurationMs:        number;
+  config:                 unknown;
+  renderedVideoUrl:       string;        // วิดีโอ render ล่าสุด (no-sub หรือ with-sub)
+  renderedVideoNoSubUrl:  string;        // input ของ Burn Subtitles
+  burnedVideoUrl:         string;        // output ของ Burn Subtitles
+  galleryVideoId:         string;        // id ของ Video record ใน Gallery
+  compositeUrl:           string;
 }
 
 // ─── Subtitle style ────────────────────────────────────────────────────────
@@ -67,67 +72,66 @@ export type SubTextEffect =
   | "pop" | "bounce" | "fade" | "quick" | "glow-pulse"
   | "slide" | "flip" | "highlight" | "karaoke" | "typewriter";
 
-export interface SubtitleStyle {
-  fontFamily:  string;
-  fontSize:    number;
-  fontWeight:  number;
-  color:       string;
-  accentColor: string;
-  preset:      SubPreset;
-  effect:      SubTextEffect;
-  position:    number; // 0–100, vertical %
-  shadow:      boolean;
-  outline:     boolean;
-}
-
-export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
-  fontFamily:  "'Kanit', sans-serif",
-  fontSize:    80,
-  fontWeight:  900,
-  color:       "#FFFFFF",
-  accentColor: "#FFE500",
-  preset:      "stroke",
-  effect:      "pop",
-  position:    68,
-  shadow:      true,
-  outline:     false,
-};
-
-// ─── Timeline clip ─────────────────────────────────────────────────────────
-
-export type TrackType = "subtitle" | "broll" | "voice" | "music";
-
-export interface TimelineClip {
-  id:        string;
-  track:     TrackType;
-  startMs:   number;
-  endMs:     number;
-  label:     string;
-  captionIdx?: number; // for subtitle clips
-  tag?:      "hook" | "body" | "cta";
-  src?:      string;
-}
-
 // ─── Draft (saved to localStorage) ────────────────────────────────────────
 
 export interface EditorDraft {
-  id:        string;
-  name:      string;
+  id: string;
+  name: string;
   updatedAt: number;
-  script:    string;
-  stepsDone: (keyof StepState)[];
-  pipeline:  Partial<PipelineData>;
-  style:     SubtitleStyle;
-  clips:     TimelineClip[];
-  // voice settings
-  ttsProvider:     "elevenlabs" | "gemini";
-  voiceId:         string;
-  geminiVoiceName: string;
-  // avatar
-  useAvatar:  boolean;
-  avatarId:   string;
-  // render output
+  script: string;
+  scriptOverride?: string;
+  style: {
+    fontFamily: string; fontSize: number; fontWeight: number;
+    color: string; accentColor: string; preset: SubPreset; effect: SubTextEffect; position: number;
+    shadow?: boolean; outline?: boolean; outlineSize?: number;
+  };
   renderedUrl: string;
-}
+  renderedVideoNoSubUrl?: string;
+  burnedVideoUrl?: string;
+  galleryVideoId?: string;
+  compositeUrl?: string;
 
-export const DRAFT_STORAGE_KEY = "ve_drafts_v1";
+  ttsProvider: "elevenlabs" | "gemini";
+  voiceId: string;
+  geminiVoiceName: string;
+  captions?: Caption[];
+  voiceUrl?: string;
+  audioDurationMs?: number;
+
+  // Pipeline data — resume without rerunning
+  keywords?: string[];
+  keywordAlternatives?: string[][];
+  keywordsPerScene?: number;
+  sceneClipCounts?: number[];
+  sceneDurations?: number[];
+  scenes?: string[];
+  visualDirection?: string;
+  stockVideos?: StockVideo[];
+  config?: unknown;
+
+  // Stock source
+  stockSource?: "pexels" | "pixabay" | "both";
+
+  // BGM
+  bgmEnabled?: boolean;
+  bgmFile?: string;
+  bgmVolume?: number;
+
+  // Avatar
+  useAvatar?: boolean;
+  avatarId?: string;
+  avatarName?: string;
+  avatarPreviewUrl?: string;
+  avatarTiming?: "full" | "bookend" | "bookend-both";
+  avatarBookendSecs?: number;
+  avatarTailSecs?: number;
+  avatarScale?: number;
+  avatarOffsetX?: number;
+  avatarOffsetY?: number;
+  avatarInputMode?: "generate" | "direct";
+  avatarDirectUrl?: string;
+  chromaSimilarity?: number;
+  chromaBlend?: number;
+  avatarGreenUrl?: string;
+  avatarTailGreenUrl?: string;
+}
