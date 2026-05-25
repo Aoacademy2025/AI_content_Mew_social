@@ -14,7 +14,7 @@ import {
   Download, Scissors, Trash2,
   ChevronDown, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
   Maximize2, Minimize2, Plus, Search, Loader2,
-  ZoomIn, User, X, Save,
+  ZoomIn, User, X, Save, Pencil,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
@@ -429,6 +429,87 @@ export default function VideoEditorPage() {
       v.removeEventListener("seeked",      onTime);
     };
   }, [captions, videoUrl, preRenderUrl]);  // re-run when video src changes so listeners attach to new element
+
+  // ── Reset to a fresh project (mirrors all fields that loadDraftInto restores) ──
+  function resetEditorState() {
+    setDraftId(newDraftId());
+    setProjectName("New Project");
+    setScript("");
+    setScriptOverride("");
+    setShowScriptOverride(false);
+
+    // Style — restore defaults
+    setSubFontFamily("'Mitr', sans-serif");
+    setSubFontSize(80);
+    setSubFontWeight(900);
+    setSubColor("#ffffff");
+    setSubAccentColor("#FFE500");
+    setSubPreset("stroke");
+    setSubEffect("pop");
+    setSubPosition(82);
+    setSubShadow(true);
+    setSubOutline(false);
+    setSubOutlineSize(2);
+
+    // TTS
+    setTtsProvider("gemini");
+    setVoiceId("");
+    setGeminiVoiceName("Aoede");
+
+    // Video + captions
+    setVideoUrl("");
+    setPreRenderUrl("");
+    setTtsUrl("");
+    setCaptionsRaw([]); captionsRef.current = [];
+    setActiveCaptionIdx(-1);
+    setEditingCapIdx(null);
+    setActiveSegIdx(0);
+
+    // Playback
+    setPlaying(false);
+    setCurrentMs(0);
+    setDurationMs(0);
+
+    // Stock
+    setStockSource("both");
+    setStockVideos([]);
+
+    // BGM
+    setBgmEnabled(false);
+    setBgmFile("");
+    setBgmVolume(0.12);
+
+    // Avatar
+    setUseAvatar(false);
+    setAvatarId("");
+    setAvatarName("");
+    setAvatarPreviewUrl("");
+    setAvatarTiming("full");
+    setAvatarBookendSecs(5);
+    setAvatarTailSecs(5);
+    setAvatarScale(2.02);
+    setAvatarOffsetX(0.0);
+    setAvatarOffsetY(0.13);
+    setAvatarInputMode("generate");
+    setAvatarDirectUrl("");
+    setChromaSimilarity(0.28);
+    setChromaBlend(0.04);
+    setAvatarGreenUrl("");
+    setAvatarTailGreenUrl("");
+
+    // Pipeline steps + logs
+    setSteps({ ...DEFAULT_STEPS });
+    stepsRef.current = { ...DEFAULT_STEPS };
+    setLogs({});
+    setRenderProgress(0);
+    setRenderProgressError(null);
+
+    // Wipe pipeline cache so old data doesn't leak into the new project
+    pipe.current = {};
+
+    setLastSaved(null);
+    setShowDraftList(false);
+  }
 
   // ── Draft save (manual only) ───────────────────────────────────────────
   function loadDraftInto(d: EditorDraft) {
@@ -2127,19 +2208,7 @@ export default function VideoEditorPage() {
             <div className="flex items-center justify-between px-2 py-1.5 mb-1">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Drafts</span>
               <button onClick={() => {
-                  setDraftId(newDraftId());
-                  setProjectName("New Project");
-                  setScript("");
-                  setScriptOverride("");
-                  setVideoUrl(""); setPreRenderUrl("");
-                  setCaptionsRaw([]); captionsRef.current = [];
-                  setSteps({ ...DEFAULT_STEPS }); stepsRef.current = { ...DEFAULT_STEPS };
-                  setLogs({});
-                  setRenderProgress(0);
-                  setLastSaved(null);
-                  // Wipe pipeline cache so old data doesn't leak into the new project
-                  pipe.current = {};
-                  setShowDraftList(false);
+                  resetEditorState();
                   toast.success("เริ่ม project ใหม่แล้ว");
                 }}
                 className="flex items-center gap-1 text-[10px] text-violet-400 hover:text-violet-300 transition-colors">
@@ -2240,11 +2309,14 @@ export default function VideoEditorPage() {
                     }}
                     className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-[#1a1a22] transition-colors"
                   >
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex-1">✏️ TTS Script</span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex-1 flex items-center gap-1.5">
+                      <Pencil className="w-3 h-3" />
+                      TTS Script
+                    </span>
                     {scriptOverride.trim() && (
                       <span className="text-[9px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded px-1.5 py-0.5 font-bold">แก้แล้ว</span>
                     )}
-                    <span className={cn("text-slate-600 text-[10px] transition-transform", showScriptOverride ? "rotate-180" : "")}>▼</span>
+                    <ChevronDown className={cn("w-3 h-3 text-slate-600 transition-transform", showScriptOverride ? "rotate-180" : "")} />
                   </button>
                   {showScriptOverride && (
                     <div className="px-3 pb-3 space-y-2 border-t border-[#2a2a36]">
@@ -2444,7 +2516,8 @@ export default function VideoEditorPage() {
           <div className="border-t border-[#1e1e28] p-3 overflow-y-auto flex-shrink-0 max-h-[55%]">
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Process</div>
             <div className="flex flex-col gap-0.5">
-              {([ ["keywords","Keywords"], ["fetchStock","B-roll"], ["tts","TTS Voice"], ["transcribe","Transcribe"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
+              {/* Order matches runAll: TTS → Transcribe → Keywords → B-roll → Config → Render → (Avatar/Composite) → Burn */}
+              {([ ["tts","TTS Voice"], ["transcribe","Transcribe"], ["keywords","Keywords"], ["fetchStock","B-roll"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
                 if (!useAvatar && (k === "avatar" || k === "avatarTail" || k === "composite")) return false;
                 if (k === "avatarTail" && avatarTiming !== "bookend-both") return false;
                 if (k === "burnSubtitles" && steps.burnSubtitles === "idle" && steps.render === "idle") return false;
