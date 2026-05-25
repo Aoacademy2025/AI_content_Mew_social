@@ -2077,7 +2077,7 @@ export default function VideoEditorPage() {
   return (
     <div className={cn(
       "ve-no-padding flex flex-col bg-[#0c0c0f] text-slate-100 overflow-hidden text-[13px]",
-      isEditorExpanded ? "fixed inset-0 z-[200]" : "h-full"
+      isEditorExpanded ? "fixed inset-0 z-[200]" : "flex-1 min-h-0"
     )}>
 
       {/* ── TOPBAR ── */}

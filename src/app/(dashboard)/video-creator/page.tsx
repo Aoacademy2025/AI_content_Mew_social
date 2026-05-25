@@ -2208,7 +2208,7 @@ export default function ShortVideoPage() {
   if (plan !== "PRO" && plan !== "BUSINESS") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
 
   return (
-    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden h-full">
+    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden min-h-0">
       {renderPopupOpen && (
         <div key={renderPopupKey} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"

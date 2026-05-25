@@ -269,11 +269,11 @@ export function OrderPanel(p: OrderPanelProps) {
                         >
                           {[25,50,75].map(v => <div key={`gv${v}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left:`${v}%`, width:1, background:v===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
                           {[25,50,75].map(v => <div key={`gh${v}`} className="absolute left-0 right-0 pointer-events-none" style={{ top:`${v}%`, height:1, background:v===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
-                          <div className="absolute top-1.5 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
+                          <div className="absolute top-1.3 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
                             X: {p.avatarOffsetX.toFixed(2)}<br />Y: {p.avatarOffsetY.toFixed(2)}<br />SCALE: {p.avatarScale.toFixed(2)}
                           </div>
                           {p.avatarPreviewUrl && (
-                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*62}%`, aspectRatio:"15/16", left:`${50+p.avatarOffsetX*50}%`, bottom:`${(0.09-p.avatarOffsetY)*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
+                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*64}%`, aspectRatio:"15/16", left:`${51.5+p.avatarOffsetX*50}%`, bottom:`${(0.09-p.avatarOffsetY)*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
                               <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center 130%" }} />
                             </div>
                           )}

@@ -231,7 +231,7 @@ export default function ContentPage() {
   }
 
   return (
-    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden h-full">
+    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden min-h-0">
       <div className="flex flex-1 flex-col overflow-hidden">
 
         {/* ── Page Header ── */}

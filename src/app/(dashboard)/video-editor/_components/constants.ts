@@ -1,14 +1,13 @@
 import type { SubPreset, SubTextEffect } from "./types";
 
+// Order kept in sync with /video-creator's Caption Style grid (page.tsx)
 export const PRESETS_DATA: { value: SubPreset; label: string }[] = [
   { value: "stroke",        label: "มาตรฐาน" },
   { value: "plain",         label: "มินิมอล" },
-  { value: "bold-shadow",   label: "ตัวหนา" },
+  { value: "bold-shadow",   label: "ตัวหนาเด่น" },
   { value: "neon-green",    label: "น็ออนเขียว" },
-  { value: "neon-red",      label: "ไฟแดง" },
-  { value: "neon-blue",     label: "ไฟฟ้า" },
   { value: "karaoke-box",   label: "คาราโอเกะ" },
-  { value: "pop-outline",   label: "ป๊อปไลน์" },
+  { value: "pop-outline",   label: "ป็อปไลน์" },
   { value: "pastel",        label: "พาสเทล" },
   { value: "classic-yellow",label: "คลาสสิก" },
   { value: "hormozi",       label: "Hormozi" },
@@ -18,6 +17,8 @@ export const PRESETS_DATA: { value: SubPreset; label: string }[] = [
   { value: "retro",         label: "เรโทร" },
   { value: "sharp-outline", label: "เส้นขอบชัด" },
   { value: "news",          label: "ข่าว" },
+  { value: "neon-red",      label: "ไฟแดง" },
+  { value: "neon-blue",     label: "ไฟฟ้า" },
 ];
 
 export const EFFECTS_DATA: { value: SubTextEffect; label: string; desc: string }[] = [
@@ -33,26 +34,20 @@ export const EFFECTS_DATA: { value: SubTextEffect; label: string; desc: string }
   { value: "typewriter", label: "พิมพ์ดีด",   desc: "ทีละตัว" },
 ];
 
+// Order/labels kept in sync with /video-creator's Font select (page.tsx)
 export const FONTS_LIST: { label: string; value: string; preview: string }[] = [
-  { label: "Mitr",              value: "'Mitr', sans-serif",                preview: "สวัสดี Abc" },
-  { label: "Kanit",             value: "'Kanit', sans-serif",               preview: "สวัสดี Abc" },
-  { label: "Sarabun",           value: "'Sarabun', sans-serif",             preview: "สวัสดี Abc" },
-  { label: "Prompt",            value: "'Prompt', sans-serif",              preview: "สวัสดี Abc" },
-  { label: "Noto Sans Thai",    value: "'Noto Sans Thai', sans-serif",      preview: "สวัสดี Abc" },
-  { label: "IBM Plex Thai",     value: "'IBM Plex Sans Thai', sans-serif",  preview: "สวัสดี Abc" },
-  { label: "Chakra Petch",      value: "'Chakra Petch', sans-serif",        preview: "สวัสดี Abc" },
-  { label: "Chonburi",          value: "'Chonburi', serif",                 preview: "สวัสดี Abc" },
-  { label: "Fahkwang",          value: "'Fahkwang', sans-serif",            preview: "สวัสดี Abc" },
-  { label: "Itim",              value: "'Itim', cursive",                   preview: "สวัสดี Abc" },
-  { label: "Sriracha",          value: "'Sriracha', cursive",               preview: "สวัสดี Abc" },
-  { label: "Bangers",           value: "'Bangers', cursive",                preview: "Abc 123" },
-  { label: "Bebas Neue",        value: "'Bebas Neue', cursive",             preview: "ABC 123" },
-  { label: "Oswald",            value: "'Oswald', sans-serif",              preview: "Abc 123" },
-  { label: "Anton",             value: "'Anton', sans-serif",               preview: "ABC 123" },
-  { label: "Righteous",         value: "'Righteous', cursive",              preview: "Abc 123" },
-  { label: "Playfair Display",  value: "'Playfair Display', serif",         preview: "Abc 123" },
-  { label: "Pacifico",          value: "'Pacifico', cursive",               preview: "Abc 123" },
-  { label: "Lobster",           value: "'Lobster', cursive",                preview: "Abc 123" },
+  { label: "Kanit — หนา ชัด",           value: "'Kanit', sans-serif",               preview: "สวัสดี Abc" },
+  { label: "Sarabun — อ่านง่าย",        value: "'Sarabun', sans-serif",             preview: "สวัสดี Abc" },
+  { label: "Prompt — โมเดิร์น",         value: "'Prompt', sans-serif",              preview: "สวัสดี Abc" },
+  { label: "Mitr — TikTok",              value: "'Mitr', sans-serif",                preview: "สวัสดี Abc" },
+  { label: "Noto Sans Thai",             value: "'Noto Sans Thai', sans-serif",      preview: "สวัสดี Abc" },
+  { label: "K2D — กลม น่ารัก",          value: "'K2D', sans-serif",                 preview: "สวัสดี Abc" },
+  { label: "Bai Jamjuree — คมชัด",      value: "'Bai Jamjuree', sans-serif",        preview: "สวัสดี Abc" },
+  { label: "Krub — เรียบร้อย",           value: "'Krub', sans-serif",                preview: "สวัสดี Abc" },
+  { label: "Pridi — สง่างาม",            value: "'Pridi', serif",                    preview: "สวัสดี Abc" },
+  { label: "Chonburi — ตัวหนา display",  value: "'Chonburi', sans-serif",            preview: "สวัสดี Abc" },
+  { label: "Itim — น่ารัก ลายมือ",       value: "'Itim', cursive",                   preview: "สวัสดี Abc" },
+  { label: "IBM Plex Sans Thai",         value: "'IBM Plex Sans Thai', sans-serif",  preview: "สวัสดี Abc" },
 ];
 
 export const ACCENT_COLORS_LIST = ["#FFE500","#FF3B30","#34C759","#007AFF","#AF52DE","#FF9500","#ffffff","#000000"];

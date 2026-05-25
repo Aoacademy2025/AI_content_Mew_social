@@ -156,7 +156,14 @@ export function RightSettingsPanel(p: RightPanelProps) {
               <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Text Animation</div>
               <div className={cn("grid gap-1.5", cols4 ? "grid-cols-4" : "grid-cols-2")}>
-                {EFFECTS_DATA.map(ef => (
+                {(() => {
+                  // Same rule as video-creator: inline-text effects don't work with presets
+                  // that hard-code their own color/shadow
+                  const LOCKED_PRESETS: SubPreset[] = ["classic-yellow","hormozi","beast","neon-green","neon-red","neon-blue","pastel","retro","box-white","box-yellow","news"];
+                  const INLINE_EFFECTS: SubTextEffect[] = ["glow-pulse","highlight","karaoke","typewriter"];
+                  const isLocked = LOCKED_PRESETS.includes(p.subPreset);
+                  return EFFECTS_DATA.filter(ef => !isLocked || !INLINE_EFFECTS.includes(ef.value));
+                })().map(ef => (
                   <EffectPreviewCard
                     key={ef.value}
                     effect={ef.value}
