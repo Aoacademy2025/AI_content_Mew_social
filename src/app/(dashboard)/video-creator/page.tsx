@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
@@ -298,14 +297,14 @@ function EffectPreviewCard({
 
 export default function ShortVideoPage() {
   const router = useRouter();
-  const [plan, setPlan] = useState<"LOADING" | "PRO" | "FREE">("LOADING");
+  const [plan, setPlan] = useState<"LOADING" | "PRO" | "BUSINESS" | "FREE">("LOADING");
 
   useEffect(() => {
     fetch("/api/user/stats").then(r => r.json()).then(d => {
-      const p = d.plan === "PRO" ? "PRO" : "FREE";
+      const p: "PRO" | "BUSINESS" | "FREE" = d.plan === "BUSINESS" ? "BUSINESS" : d.plan === "PRO" ? "PRO" : "FREE";
       setPlan(p);
-      if (p !== "PRO") {
-        toast.error("Avatar Cloning สำหรับผู้ใช้งานระดับ Pro เท่านั้น");
+      if (p === "FREE") {
+        toast.error("Avatar Cloning สำหรับผู้ใช้งานระดับ Pro ขึ้นไปเท่านั้น");
         router.replace("/dashboard");
       }
     }).catch(() => { router.replace("/dashboard"); });
@@ -2206,10 +2205,10 @@ export default function ShortVideoPage() {
     composite: "Video Composite (FFmpeg)",
   };
 
-  if (plan !== "PRO") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
+  if (plan !== "PRO" && plan !== "BUSINESS") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
 
   return (
-    <DashboardLayout noPadding>
+    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden h-full">
       {renderPopupOpen && (
         <div key={renderPopupKey} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"
@@ -3642,7 +3641,7 @@ export default function ShortVideoPage() {
         </div>
       </div>
 
-    </DashboardLayout>
+    </div>
   );
 }
 

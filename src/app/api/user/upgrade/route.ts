@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 
 // POST /api/user/upgrade - Upgrade user from FREE to PRO plan
 export async function POST() {
@@ -31,14 +32,15 @@ export async function POST() {
       );
     }
 
-    // Update user plan to PRO
+    // Update user plan to PRO + extend retention of existing videos
     await prisma.user.update({
       where: { id: session.user.id },
       data: { plan: "PRO" },
     });
+    const extended = await extendVideoExpiryForPlan(session.user.id, "PRO");
 
     return NextResponse.json(
-      { message: "Successfully upgraded to Pro plan" },
+      { message: "Successfully upgraded to Pro plan", videosExtended: extended },
       { status: 200 }
     );
   } catch (error) {

@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
+import { sendSupportReplyEmail } from "@/lib/send-email";
 
 // GET /api/admin/support — list all tickets (admin only)
 export async function GET(req: Request) {
@@ -47,10 +48,10 @@ export async function PATCH(req: Request) {
         repliedAt: reply ? new Date() : undefined,
         status: status ?? undefined,
       },
-      include: { user: { select: { id: true, name: true } } },
+      include: { user: { select: { id: true, name: true, email: true } } },
     });
 
-    // Notify user if reply was given
+    // Notify user in-app + send email reply
     if (reply) {
       await createNotification({
         userId: ticket.userId,
@@ -58,6 +59,15 @@ export async function PATCH(req: Request) {
         title: "ทีมงานตอบกลับคำร้องของคุณ",
         body: reply,
       });
+      if (ticket.user.email) {
+        await sendSupportReplyEmail({
+          userEmail: ticket.user.email,
+          userName: ticket.user.name ?? "User",
+          ticketId: ticket.id,
+          adminReply: reply,
+          originalMessage: ticket.message,
+        });
+      }
     }
 
     return NextResponse.json({ ok: true, ticket });

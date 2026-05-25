@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import axios from "axios";
 import { apiError } from "@/lib/api-error";
+import { videoExpiryFor } from "@/lib/plan-limits";
 
 // POST /api/videos/generate - Generate avatar video via n8n webhook
 export async function POST(req: Request) {
@@ -89,7 +90,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Create video record with PENDING status
+    // Create video record with PENDING status (expiresAt set by user's plan)
     const video = await prisma.video.create({
       data: {
         contentId: contentId || null,
@@ -99,6 +100,7 @@ export async function POST(req: Request) {
         script,
         status: "PENDING",
         userId: session.user.id,
+        expiresAt: videoExpiryFor(user.plan),
       },
       include: {
         content: {

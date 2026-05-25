@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
+import { sendSupportTicketEmail } from "@/lib/send-email";
 
 export const maxDuration = 30;
 
@@ -24,10 +25,14 @@ export async function POST(req: Request) {
     // Read image as base64 if provided
     let imageBase64: string | null = null;
     let imageName: string | null = null;
+    let imageBuffer: Buffer | null = null;
+    let imageContentType: string | null = null;
     if (imageFile && imageFile.size > 0) {
       const buf = await imageFile.arrayBuffer();
-      imageBase64 = Buffer.from(buf).toString("base64");
+      imageBuffer = Buffer.from(buf);
+      imageBase64 = imageBuffer.toString("base64");
       imageName = imageFile.name;
+      imageContentType = imageFile.type || "application/octet-stream";
     }
 
     // Save ticket to database
@@ -45,7 +50,7 @@ export async function POST(req: Request) {
       select: { name: true, email: true, plan: true },
     });
 
-    // Notify all admins
+    // Notify all admins (in-app)
     await notifyAdmins({
       type: "ERROR_SYSTEM",
       title: `🎫 Support #${ticket.id.slice(-6)}: ${user?.name ?? "User"}`,
@@ -57,6 +62,23 @@ export async function POST(req: Request) {
         imageName ? `📎 ${imageName}` : "",
       ].filter(Boolean).join("\n"),
     });
+
+    // Send email to all support inboxes (comma-separated in env/DB)
+    const supportEmail = process.env.SUPPORT_EMAIL;
+    const adminEmails = supportEmail ? supportEmail.split(",").map(e => e.trim()).filter(Boolean) : [];
+    if (adminEmails.length > 0) {
+      await sendSupportTicketEmail({
+        adminEmail: adminEmails,
+        ticketId: ticket.id,
+        userName: user?.name ?? "User",
+        userEmail: user?.email ?? "",
+        userPlan: user?.plan ?? "FREE",
+        message: message.trim(),
+        imageName,
+        imageBuffer,
+        imageContentType,
+      });
+    }
 
     // Confirm to user
     await createNotification({

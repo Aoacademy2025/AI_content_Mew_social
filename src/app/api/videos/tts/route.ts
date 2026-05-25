@@ -21,8 +21,9 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { elevenlabsKey: true },
+    select: { elevenlabsKey: true, plan: true },
   });
+  if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
   if (!user?.elevenlabsKey) return NextResponse.json({ error: "ElevenLabs API key not set", missingKey: "elevenlabs" }, { status: 400 });
   const apiKey = Buffer.from(user.elevenlabsKey, "base64").toString("utf-8");
 

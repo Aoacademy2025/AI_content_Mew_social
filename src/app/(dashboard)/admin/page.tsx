@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Users, Crown, Ban, FileText, Video, Images, UserPlus, CalendarDays,
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
   Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
+  CreditCard, Key, Eye, EyeOff, Tag, Plus, GripVertical, Zap, Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -40,6 +40,145 @@ interface SupportTicket {
   user: { name: string; email: string; plan: string };
 }
 
+// ── PlanEditor: visual feature list editor ────────────────────────────────
+function PlanEditor({
+  label, accent, icon, price, onPriceChange, features, onFeaturesChange,
+}: {
+  label: string;
+  accent: "cyan" | "violet" | "zinc";
+  icon: React.ReactNode;
+  price: string;
+  onPriceChange: (v: string) => void;
+  features: string;
+  onFeaturesChange: (v: string) => void;
+}) {
+  const items = features.split("|").map(f => f.trim()).filter(Boolean);
+  const [newFeature, setNewFeature] = useState("");
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [editVal, setEditVal] = useState("");
+
+  const palette = {
+    cyan:   { border: "border-cyan-500/25",   bg: "bg-cyan-500/5",   focus: "focus:border-cyan-500/60",   text: "text-cyan-400",   check: "#22d3ee", iconBg: "bg-cyan-500/15",   addBg: "hsl(190 100% 50% / 0.12)", addBorder: "hsl(190 100% 50% / 0.3)" },
+    violet: { border: "border-violet-500/25", bg: "bg-violet-500/5", focus: "focus:border-violet-500/60", text: "text-violet-400", check: "#a78bfa", iconBg: "bg-violet-500/15", addBg: "hsl(252 83% 57% / 0.12)",  addBorder: "hsl(252 83% 57% / 0.3)" },
+    zinc:   { border: "border-zinc-500/20",   bg: "bg-zinc-500/5",   focus: "focus:border-zinc-400/60",   text: "text-zinc-300",   check: "#a1a1aa", iconBg: "bg-zinc-500/15",   addBg: "hsl(0 0% 60% / 0.10)",     addBorder: "hsl(0 0% 60% / 0.25)" },
+  }[accent];
+
+  const borderColor = palette.border;
+  const bgColor = palette.bg;
+  const focusBorder = palette.focus;
+  const accentText = palette.text;
+  const checkColor = palette.check;
+  const addBg = palette.addBg;
+  const addBorder = palette.addBorder;
+  const iconBg = palette.iconBg;
+
+  function setItems(next: string[]) {
+    onFeaturesChange(next.join("|"));
+  }
+
+  function removeItem(i: number) {
+    setItems(items.filter((_, idx) => idx !== i));
+  }
+
+  function addItem() {
+    const v = newFeature.trim();
+    if (!v) return;
+    setItems([...items, v]);
+    setNewFeature("");
+  }
+
+  function startEdit(i: number) {
+    setEditIdx(i);
+    setEditVal(items[i]);
+  }
+
+  function commitEdit() {
+    if (editIdx === null) return;
+    const next = [...items];
+    next[editIdx] = editVal.trim();
+    setItems(next.filter(Boolean));
+    setEditIdx(null);
+  }
+
+  return (
+    <div className={`rounded-xl border ${borderColor} ${bgColor} p-4 space-y-4`}>
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <div className={`flex h-7 w-7 items-center justify-center rounded-lg ${iconBg}`}>
+          {icon}
+        </div>
+        <span className={`text-sm font-semibold ${accentText}`}>{label} Plan</span>
+        {accent === "cyan" && <span className="ml-auto text-xs text-zinc-500">แนะนำ</span>}
+        {accent === "zinc" && <span className="ml-auto text-xs text-zinc-500">เริ่มต้น</span>}
+      </div>
+
+      {/* Price */}
+      <div className="flex items-center gap-2">
+        <span className="text-2xl font-bold text-white">฿</span>
+        <input
+          type="number"
+          value={price}
+          onChange={e => onPriceChange(e.target.value)}
+          className={`w-28 rounded-lg border border-zinc-700 bg-zinc-800/80 px-3 py-1.5 text-xl font-bold text-white outline-none ${focusBorder}`}
+        />
+        <span className="text-sm text-zinc-500">/เดือน</span>
+      </div>
+
+      {/* Feature list */}
+      <div className="space-y-1.5">
+        {items.map((f, i) => (
+          <div key={i} className="group flex items-center gap-2">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" style={{ color: checkColor }} />
+            {editIdx === i ? (
+              <input
+                autoFocus
+                value={editVal}
+                onChange={e => setEditVal(e.target.value)}
+                onBlur={commitEdit}
+                onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditIdx(null); }}
+                className={`flex-1 rounded border border-zinc-600 bg-zinc-800 px-2 py-0.5 text-xs text-white outline-none ${focusBorder}`}
+              />
+            ) : (
+              <span
+                onClick={() => startEdit(i)}
+                className="flex-1 cursor-text text-sm text-zinc-200 hover:text-white transition-colors"
+              >
+                {f}
+              </span>
+            )}
+            <button
+              onClick={() => removeItem(i)}
+              className="opacity-0 group-hover:opacity-100 transition-opacity rounded p-0.5 hover:bg-red-500/20 text-zinc-500 hover:text-red-400"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Add feature */}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={newFeature}
+          onChange={e => setNewFeature(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && addItem()}
+          placeholder="เพิ่ม feature..."
+          className={`flex-1 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-white placeholder-zinc-600 outline-none ${focusBorder}`}
+        />
+        <button
+          onClick={addItem}
+          disabled={!newFeature.trim()}
+          className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-opacity hover:opacity-80 disabled:opacity-30"
+          style={{ background: addBg, border: `1px solid ${addBorder}`, color: checkColor }}
+        >
+          <Plus className="h-3.5 w-3.5" /> เพิ่ม
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminDashboardPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,6 +188,104 @@ export default function AdminDashboardPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [replying, setReplying] = useState<string | null>(null);
+
+  // Settings state
+  const [supportEmail, setSupportEmail] = useState("");
+  const [supportEmailInput, setSupportEmailInput] = useState("");
+  const [savingEmail, setSavingEmail] = useState(false);
+
+  // Stripe settings
+  const [stripePublishableKey, setStripePublishableKey] = useState("");
+  const [stripeSecretKey, setStripeSecretKey] = useState("");
+  const [stripeWebhookSecret, setStripeWebhookSecret] = useState("");
+  const [stripePricePro, setStripePricePro] = useState("");
+  const [stripePriceBusiness, setStripePriceBusiness] = useState("");
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [savingStripe, setSavingStripe] = useState(false);
+
+  // Plan config
+  const [planFreePrice, setPlanFreePrice] = useState("0");
+  const [planFreeFeatures, setPlanFreeFeatures] = useState("2 คลิป/เดือน|ความยาววิดีโอสูงสุด 2 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 3 วัน|สร้างคอนเทนต์ด้วย AI (จำกัด 5 ชิ้น)|ใช้ Gemini API key ของตัวเอง|Font พื้นฐานเท่านั้น");
+  const [planProPrice, setPlanProPrice] = useState("599");
+  const [planProFeatures, setPlanProFeatures] = useState("100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน|ความยาววิดีโอสูงสุด 6 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 7 วัน|รองรับ Avatar ทุกรูปแบบ รวมถึง HeyGen|Text-to-Speech ครบทุกผู้ให้บริการ (ElevenLabs, Gemini, HeyGen)|เลือกใช้ Font ได้ครบทุก Style|ลบพื้นหลังอัตโนมัติด้วย AI (Background Removal)|เพิ่มเพลงประกอบวิดีโอ|ปรับแต่ง Subtitle Style ได้ทุกรูปแบบ|Video Editor ขั้นสูงครบฟีเจอร์|สร้างคอนเทนต์ด้วย AI ไม่จำกัดจำนวน|Support ทาง Email — ทีมงานตอบสนองภายใน 48 ชั่วโมง");
+  const [planBusinessPrice, setPlanBusinessPrice] = useState("990");
+  const [planBusinessFeatures, setPlanBusinessFeatures] = useState("300 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน|ความยาววิดีโอสูงสุด 10 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 14 วัน|รองรับ Avatar ทุกรูปแบบ รวมถึง HeyGen|Text-to-Speech ครบทุกผู้ให้บริการ (ElevenLabs, Gemini, HeyGen)|เลือกใช้ Font ได้ครบทุก Style|ลบพื้นหลังอัตโนมัติด้วย AI (Background Removal)|เพิ่มเพลงประกอบวิดีโอ|ปรับแต่ง Subtitle Style ได้ทุกรูปแบบ|Video Editor ขั้นสูงครบฟีเจอร์|สร้างคอนเทนต์ด้วย AI ไม่จำกัดจำนวน|Priority Support — ทีมงานตอบสนองภายใน 24 ชั่วโมง|เหมาะสำหรับทีมงานและองค์กรธุรกิจ");
+  const [savingPlans, setSavingPlans] = useState(false);
+
+  async function loadSettings() {
+    try {
+      const res = await fetch("/api/admin/settings");
+      const d = await res.json();
+      if (d.support_email) { setSupportEmail(d.support_email); setSupportEmailInput(d.support_email); }
+      if (d.stripe_publishable_key) setStripePublishableKey(d.stripe_publishable_key);
+      if (d.stripe_secret_key) setStripeSecretKey(d.stripe_secret_key);
+      if (d.stripe_webhook_secret) setStripeWebhookSecret(d.stripe_webhook_secret);
+      if (d.stripe_price_pro) setStripePricePro(d.stripe_price_pro);
+      if (d.stripe_price_business) setStripePriceBusiness(d.stripe_price_business);
+      if (d.plan_free_price) setPlanFreePrice(d.plan_free_price);
+      if (d.plan_free_features) setPlanFreeFeatures(d.plan_free_features);
+      if (d.plan_pro_price) setPlanProPrice(d.plan_pro_price);
+      if (d.plan_pro_features) setPlanProFeatures(d.plan_pro_features);
+      if (d.plan_business_price) setPlanBusinessPrice(d.plan_business_price);
+      if (d.plan_business_features) setPlanBusinessFeatures(d.plan_business_features);
+    } catch {}
+  }
+
+  async function saveSupportEmail() {
+    if (!supportEmailInput.trim()) return;
+    setSavingEmail(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ support_email: supportEmailInput.trim() }),
+      });
+      if (res.ok) { setSupportEmail(supportEmailInput.trim()); toast.success("บันทึก Support Email แล้ว"); }
+      else toast.error("บันทึกไม่สำเร็จ");
+    } catch { toast.error("เกิดข้อผิดพลาด"); }
+    finally { setSavingEmail(false); }
+  }
+
+  async function saveStripeSettings() {
+    setSavingStripe(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stripe_publishable_key: stripePublishableKey.trim(),
+          stripe_secret_key: stripeSecretKey.trim(),
+          stripe_webhook_secret: stripeWebhookSecret.trim(),
+          stripe_price_pro: stripePricePro.trim(),
+          stripe_price_business: stripePriceBusiness.trim(),
+        }),
+      });
+      if (res.ok) toast.success("บันทึก Stripe Settings แล้ว");
+      else toast.error("บันทึกไม่สำเร็จ");
+    } catch { toast.error("เกิดข้อผิดพลาด"); }
+    finally { setSavingStripe(false); }
+  }
+
+  async function savePlanSettings() {
+    setSavingPlans(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_free_price: planFreePrice,
+          plan_free_features: planFreeFeatures,
+          plan_pro_price: planProPrice,
+          plan_pro_features: planProFeatures,
+          plan_business_price: planBusinessPrice,
+          plan_business_features: planBusinessFeatures,
+        }),
+      });
+      if (res.ok) toast.success("บันทึก Plan Settings แล้ว");
+      else toast.error("บันทึกไม่สำเร็จ");
+    } catch { toast.error("เกิดข้อผิดพลาด"); }
+    finally { setSavingPlans(false); }
+  }
 
   // Music library
   interface MusicTrack { id: string; title: string; filename: string; duration: number | null; createdAt: string; }
@@ -137,6 +374,7 @@ export default function AdminDashboardPage() {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
     loadCleanupInfo();
     loadTracks();
+    loadSettings();
   }, []);
 
   useEffect(() => {
@@ -191,7 +429,7 @@ export default function AdminDashboardPage() {
   };
 
   return (
-    <DashboardLayout>
+    <>
       <div className="space-y-8">
         {/* Header */}
         <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-linear-to-br from-red-900/40 via-orange-900/20 to-yellow-900/30 p-8 backdrop-blur-xl">
@@ -587,7 +825,158 @@ export default function AdminDashboardPage() {
           )}
         </div>
 
+        {/* ── Stripe Payment Settings ─────────────────────────────────── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-violet-400" />
+              <h2 className="text-sm font-semibold text-white">Stripe Payment</h2>
+            </div>
+            <button onClick={() => setShowSecrets(s => !s)}
+              className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+              {showSecrets ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              {showSecrets ? "ซ่อน" : "แสดง"} keys
+            </button>
+          </div>
+
+          <div className="grid gap-3">
+            {/* Publishable Key */}
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Publishable Key <span className="text-zinc-600">(pk_live_... / pk_test_...)</span></label>
+              <input type={showSecrets ? "text" : "password"} value={stripePublishableKey}
+                onChange={e => setStripePublishableKey(e.target.value)}
+                placeholder="pk_live_xxxx"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+            </div>
+            {/* Secret Key */}
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Secret Key <span className="text-zinc-600">(sk_live_... / sk_test_...)</span></label>
+              <input type={showSecrets ? "text" : "password"} value={stripeSecretKey}
+                onChange={e => setStripeSecretKey(e.target.value)}
+                placeholder="sk_live_xxxx"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+            </div>
+            {/* Webhook Secret */}
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Webhook Secret <span className="text-zinc-600">(whsec_...)</span></label>
+              <input type={showSecrets ? "text" : "password"} value={stripeWebhookSecret}
+                onChange={e => setStripeWebhookSecret(e.target.value)}
+                placeholder="whsec_xxxx"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+            </div>
+            {/* Price IDs */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-zinc-400 mb-1 block">Price ID — Pro</label>
+                <input type="text" value={stripePricePro}
+                  onChange={e => setStripePricePro(e.target.value)}
+                  placeholder="price_xxxx"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400 mb-1 block">Price ID — Business</label>
+                <input type="text" value={stripePriceBusiness}
+                  onChange={e => setStripePriceBusiness(e.target.value)}
+                  placeholder="price_xxxx"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button onClick={saveStripeSettings} disabled={savingStripe}
+              className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+              style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 50%))" }}>
+              {savingStripe ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+              บันทึก Stripe
+            </button>
+          </div>
+        </div>
+
+        {/* ── Plan Config ──────────────────────────────────────────────── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Tag className="h-4 w-4 text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">Plan Configuration</h2>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3 sm:grid-cols-2">
+            {/* ── Free Plan Card ── */}
+            <PlanEditor
+              label="Free"
+              accent="zinc"
+              icon={<Zap className="h-4 w-4 text-zinc-400" />}
+              price={planFreePrice}
+              onPriceChange={setPlanFreePrice}
+              features={planFreeFeatures}
+              onFeaturesChange={setPlanFreeFeatures}
+            />
+            {/* ── Pro Plan Card ── */}
+            <PlanEditor
+              label="Pro"
+              accent="cyan"
+              icon={<Crown className="h-4 w-4 text-cyan-400" />}
+              price={planProPrice}
+              onPriceChange={setPlanProPrice}
+              features={planProFeatures}
+              onFeaturesChange={setPlanProFeatures}
+            />
+            {/* ── Business Plan Card ── */}
+            <PlanEditor
+              label="Business"
+              accent="violet"
+              icon={<Building2 className="h-4 w-4 text-violet-400" />}
+              price={planBusinessPrice}
+              onPriceChange={setPlanBusinessPrice}
+              features={planBusinessFeatures}
+              onFeaturesChange={setPlanBusinessFeatures}
+            />
+          </div>
+
+          <div className="flex justify-end">
+            <button onClick={savePlanSettings} disabled={savingPlans}
+              className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+              style={{ background: "linear-gradient(135deg, hsl(190 100% 40%), hsl(220 100% 50%))" }}>
+              {savingPlans ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+              บันทึก Plans
+            </button>
+          </div>
+        </div>
+
+        {/* ── Support Email Settings ───────────────────────────────────── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <Send className="h-4 w-4 text-cyan-400" />
+            <h2 className="text-sm font-semibold text-white">Support Email</h2>
+          </div>
+          <p className="text-xs text-zinc-500">
+            อีเมลที่รับแจ้ง support ticket ใหม่ — ใส่หลายอีเมลได้ คั่นด้วย comma เช่น <span className="font-mono text-zinc-400">a@mail.com, b@mail.com</span>
+          </p>
+          <div className="flex flex-col gap-2">
+            <textarea
+              rows={3}
+              value={supportEmailInput}
+              onChange={e => setSupportEmailInput(e.target.value)}
+              placeholder={"admin@example.com, support@example.com"}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-500 outline-none focus:border-cyan-500/50 resize-none font-mono"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-zinc-600">
+                {supportEmailInput.split(",").map(e => e.trim()).filter(Boolean).length} อีเมล
+              </span>
+              <button
+                onClick={saveSupportEmail}
+                disabled={savingEmail || !supportEmailInput.trim() || supportEmailInput.trim() === supportEmail}
+                className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, hsl(190 100% 40%), hsl(220 100% 50%))" }}>
+                {savingEmail ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                บันทึก
+              </button>
+            </div>
+          </div>
+        </div>
+
       </div>
-    </DashboardLayout>
+    </>
   );
 }

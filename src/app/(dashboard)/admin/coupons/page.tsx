@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Button } from "@/components/ui/button";
-import { Ticket, Plus, Trash2, Loader2, RefreshCw, Crown, Copy } from "lucide-react";
+import { Ticket, Plus, Trash2, Loader2, RefreshCw, Crown, Copy, Building2, Gift } from "lucide-react";
 import { toast } from "sonner";
 
 interface Coupon {
   id: string;
   code: string;
-  plan: "FREE" | "PRO";
+  plan: "FREE" | "PRO" | "BUSINESS";
   durationDays: number;
   maxUses: number;
   usedCount: number;
@@ -82,7 +81,7 @@ export default function AdminCouponsPage() {
   }
 
   return (
-    <DashboardLayout>
+    <>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -124,6 +123,7 @@ export default function AdminCouponsPage() {
               <select value={form.plan} onChange={e => setForm(f => ({ ...f, plan: e.target.value }))}
                 className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-sm text-white outline-none">
                 <option value="PRO">PRO</option>
+                <option value="BUSINESS">BUSINESS</option>
                 <option value="FREE">FREE</option>
               </select>
             </div>
@@ -184,9 +184,19 @@ export default function AdminCouponsPage() {
                   </div>
 
                   {/* Plan */}
-                  <span className="flex items-center gap-1 rounded-full bg-yellow-500/15 px-2 py-0.5 text-xs font-medium text-yellow-400">
-                    <Crown className="h-3 w-3" />{c.plan}
-                  </span>
+                  {(() => {
+                    const ps = c.plan === "BUSINESS"
+                      ? { bg: "bg-violet-500/15", text: "text-violet-300", Icon: Building2 }
+                      : c.plan === "PRO"
+                      ? { bg: "bg-yellow-500/15", text: "text-yellow-400", Icon: Crown }
+                      : { bg: "bg-zinc-500/15", text: "text-zinc-400", Icon: Gift };
+                    const { Icon } = ps;
+                    return (
+                      <span className={`flex items-center gap-1 rounded-full ${ps.bg} px-2 py-0.5 text-xs font-medium ${ps.text}`}>
+                        <Icon className="h-3 w-3" />{c.plan}
+                      </span>
+                    );
+                  })()}
 
                   {/* Duration */}
                   <span className="text-xs text-zinc-400">
@@ -223,6 +233,6 @@ export default function AdminCouponsPage() {
           </div>
         )}
       </div>
-    </DashboardLayout>
+    </>
   );
 }

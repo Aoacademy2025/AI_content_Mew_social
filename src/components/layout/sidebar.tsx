@@ -1,19 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
+import { FadeSwap } from "@/components/ui/fade-swap";
 
 interface SidebarProps {
   role?: "ADMIN" | "USER";
   collapsed?: boolean;
   onToggle?: () => void;
+  initialPlan?: string;
+  initialName?: string;
+  sessionLoaded?: boolean;
 }
 
 const adminNavItems = [
@@ -27,27 +31,35 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
   { title: "Video Creator", href: "/video-creator", icon: Film,   locked: true },
+  { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard, locked: true },
   { title: "Gallery",       href: "/videos",      icon: Video },
+  { title: "Pricing",       href: "/pricing",     icon: CreditCard },
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];
 
-export function Sidebar({ role = "USER", collapsed = false, onToggle }: SidebarProps) {
+export function Sidebar({ role = "USER", collapsed = false, onToggle, initialPlan = "FREE", initialName = "", sessionLoaded = true }: SidebarProps) {
   const pathname = usePathname();
-  const [plan, setPlan] = useState<string | null>(null);
-  const [userName, setUserName] = useState<string>("");
+  const router = useRouter();
+  const prefetchedRef = useRef<Set<string>>(new Set());
+
+  function prefetchOnce(href: string) {
+    if (prefetchedRef.current.has(href)) return;
+    prefetchedRef.current.add(href);
+    router.prefetch(href);
+  }
+  const [plan, setPlan] = useState<string>(initialPlan);
+  const [userName, setUserName] = useState<string>(initialName);
   const [supportOpen, setSupportOpen] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/user/stats").then(r => r.json()).then(d => {
-      if (d.plan) setPlan(d.plan);
-    }).catch(() => { setPlan("FREE"); });
-    fetch("/api/user/me").then(r => r.json()).then(d => {
-      if (d.name) setUserName(d.name);
-    }).catch(() => {});
-  }, []);
+  // Sync if props update after session loads
+  useEffect(() => { if (initialPlan) setPlan(initialPlan); }, [initialPlan]);
+  useEffect(() => { if (initialName) setUserName(initialName); }, [initialName]);
 
+  const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
-  const planLoaded = plan !== null;
+  const isPaid = isPro || isBusiness;
+  const planLabel = isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
+  const planColor = isBusiness ? "hsl(252 83% 65%)" : isPro ? "hsl(190 100% 50%)" : "var(--ui-text-muted)";
 
   const visibleUserItems = role === "ADMIN"
     ? userNavItems
@@ -83,24 +95,39 @@ export function Sidebar({ role = "USER", collapsed = false, onToggle }: SidebarP
         className={cn("flex items-center gap-3 border-b", collapsed ? "px-2.5 py-4 justify-center" : "px-4 py-4")}
         style={{ borderColor: "var(--ui-divider)" }}
       >
-        <div
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-          style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))" }}
+        <FadeSwap
+          ready={sessionLoaded}
+          className="h-9 w-9 shrink-0"
+          skeleton={<div className="h-9 w-9 rounded-full skeleton-wave" />}
         >
-          {initials}
-        </div>
-        {!collapsed && (
-          <div className="min-w-0">
-            <p className="text-sm font-semibold truncate leading-tight" style={{ color: "var(--ui-text-primary)" }}>
-              {userName || "User"}
-            </p>
-            {planLoaded && (
-              <span className="text-[10px] font-semibold"
-                style={{ color: isPro ? "hsl(190 100% 50%)" : "var(--ui-text-muted)" }}>
-                {isPro ? "Pro Plan" : "Free Plan"}
-              </span>
-            )}
+          <div
+            className="flex h-9 w-9 items-center justify-center rounded-full text-xs font-bold text-white"
+            style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))" }}
+          >
+            {initials}
           </div>
+        </FadeSwap>
+        {!collapsed && (
+          <FadeSwap
+            ready={sessionLoaded}
+            className="min-w-0 flex-1"
+            skeleton={
+              <div className="space-y-1.5">
+                <div className="h-3.5 w-20 rounded skeleton-wave" />
+                <div className="h-2.5 w-12 rounded skeleton-wave" />
+              </div>
+            }
+          >
+            <div>
+              <p className="text-sm font-semibold truncate leading-tight" style={{ color: "var(--ui-text-primary)" }}>
+                {userName || "User"}
+              </p>
+              <span className="text-[10px] font-semibold"
+                style={{ color: planColor }}>
+                {planLabel}
+              </span>
+            </div>
+          </FadeSwap>
         )}
       </div>
 
@@ -108,7 +135,8 @@ export function Sidebar({ role = "USER", collapsed = false, onToggle }: SidebarP
       <nav className={cn("flex-1 overflow-y-auto py-3 space-y-0.5", collapsed ? "px-1.5" : "px-2")}>
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isLocked = planLoaded && !isPro && (item as { locked?: boolean }).locked;
+          // While session loads, don't show lock icon — assume unlocked to avoid flash
+          const isLocked = sessionLoaded && !isPaid && (item as { locked?: boolean }).locked;
           const isActive = !isLocked && (pathname === item.href || pathname.startsWith(item.href + "/"));
 
           if (isLocked) {
@@ -133,8 +161,10 @@ export function Sidebar({ role = "USER", collapsed = false, onToggle }: SidebarP
 
           return (
             <Link key={item.href} href={item.href} title={collapsed ? item.title : undefined}
+              prefetch={true}
+              onMouseEnter={() => prefetchOnce(item.href)}
               className={cn(
-                "relative flex items-center rounded-lg transition-all border-0 outline-none",
+                "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
                 collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
                 isActive ? "font-medium" : "hover:bg-black/5 dark:hover:bg-white/5"
               )}
@@ -160,13 +190,24 @@ export function Sidebar({ role = "USER", collapsed = false, onToggle }: SidebarP
       {/* Bottom */}
       {!collapsed && (
         <div className="p-3 space-y-2 border-t" style={{ borderColor: "var(--ui-divider)" }}>
-          {planLoaded && !isPro && (
-            <Link href="/settings?tab=billing"
-              className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
-              Upgrade to Pro
-            </Link>
-          )}
+          <FadeSwap
+            ready={sessionLoaded}
+            skeleton={<div className="h-8 w-full rounded-xl skeleton-wave" />}
+          >
+            {!isPaid ? (
+              <Link href="/settings?tab=billing"
+                className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
+                style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
+                Upgrade to Pro
+              </Link>
+            ) : isPro ? (
+              <Link href="/settings?tab=billing"
+                className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
+                style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 55%))" }}>
+                Upgrade to Business
+              </Link>
+            ) : <div />}
+          </FadeSwap>
           <button
             onClick={() => setSupportOpen(true)}
             className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-black/5 dark:hover:bg-white/5"

@@ -3,10 +3,13 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
+import { FREE_LIMITS, isFree } from "@/lib/plan-limits";
+import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import os from "os";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 
 function getRenderTmpDir(): string {
   const base =
@@ -96,7 +99,7 @@ function setRenderJob(jobId: string, job: RenderJob) {
   persistJob(jobId, job);
 }
 
-export function getRenderJob(jobId: string): RenderJob | undefined {
+function getRenderJob(jobId: string): RenderJob | undefined {
   if (renderJobs.has(jobId)) return renderJobs.get(jobId);
   // Fallback: read from disk (hot-reload created a new module instance)
   const persisted = readPersistedJob(jobId);
@@ -152,13 +155,47 @@ export async function POST(req: Request) {
     }
 
     const renderTmpDir = getRenderTmpDir();
+    // Windows uses TEMP / TMP — TMPDIR is a Unix-only convention and is ignored on Windows.
+    // Set all three so Remotion picks up the correct temp dir on every platform.
     process.env.TMPDIR = renderTmpDir;
+    process.env.TEMP  = renderTmpDir;
+    process.env.TMP   = renderTmpDir;
+
+    // Ensure renderTmpDir itself exists so Remotion's mkdirSync(newDir) (non-recursive) succeeds
+    // when it creates its per-job subfolder inside our custom temp dir.
+    try { fs.mkdirSync(renderTmpDir, { recursive: true }); } catch {}
+
     const userId = session.user.id;
+
+    // Plan + usage check
+    const dbUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, usageCount: true, usageLimit: true },
+    });
+    if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    if (isFree(dbUser.plan)) {
+      if (dbUser.usageCount >= dbUser.usageLimit) {
+        return NextResponse.json(
+          { error: `Free plan จำกัด ${dbUser.usageLimit} คลิป/เดือน กรุณาอัปเกรดเป็น Pro` },
+          { status: 403 }
+        );
+      }
+    }
+
     const jobId = `${userId}-${Date.now()}`;
     // Register this as the latest job for this user — any older job will be superseded
     latestJobPerUser.set(userId, jobId);
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
+
+    // Duration check for FREE plan
+    if (isFree(dbUser.plan) && videoDuration && videoDuration > FREE_LIMITS.durationSec) {
+      return NextResponse.json(
+        { error: `Free plan จำกัดวิดีโอสูงสุด ${FREE_LIMITS.durationSec / 60} นาที/คลิป` },
+        { status: 403 }
+      );
+    }
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
 
@@ -353,14 +390,54 @@ export async function POST(req: Request) {
       return url;
     }
 
+    // Probe actual video duration with ffmpeg — avoids "No frame found" errors
+    // when config asks for a frame beyond the actual stock file length.
+    // ffmpeg writes duration to stderr in format: "Duration: 00:00:51.30, ..."
+    async function probeVideoDurationSec(localPath: string): Promise<number | null> {
+      const ffmpeg = getFfmpegPath();
+      return new Promise((resolve) => {
+        const proc = spawn(ffmpeg, ["-i", localPath], { stdio: ["ignore", "ignore", "pipe"] });
+        let stderr = "";
+        const timer = setTimeout(() => { try { proc.kill(); } catch {} resolve(null); }, 5000);
+        proc.stderr.on("data", (d) => { stderr += d.toString(); });
+        proc.on("close", () => {
+          clearTimeout(timer);
+          const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
+          if (!m) { resolve(null); return; }
+          const h = parseInt(m[1], 10), mn = parseInt(m[2], 10), s = parseFloat(m[3]);
+          const total = h * 3600 + mn * 60 + s;
+          resolve(Number.isFinite(total) && total > 0 ? total : null);
+        });
+        proc.on("error", () => { clearTimeout(timer); resolve(null); });
+      });
+    }
+
     let resolvedShortConfig = shortVideoConfig;
     if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
+      // Also probe duration and clamp clipDuration/end-start to avoid out-of-range frames
       const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
       for (const v of shortVideoConfig.bgVideos ?? []) {
         try {
           const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
-          resolvedBgVideos.push({ ...v, src: resolvedSrc });
+          // Probe local file for actual duration
+          const localPath = toLocalFilePathIfInternal(resolvedSrc);
+          let actualDur: number | null = null;
+          if (localPath) actualDur = await probeVideoDurationSec(localPath);
+
+          let safeClipDuration = v.clipDuration;
+          let safeEnd = v.end;
+          if (actualDur != null) {
+            // Subtract 0.1s safety margin from end of file
+            const safeMax = Math.max(0.5, actualDur - 0.1);
+            if (!safeClipDuration || safeClipDuration > safeMax) safeClipDuration = safeMax;
+            const segLen = v.end - v.start;
+            if (segLen > safeMax) {
+              safeEnd = v.start + safeMax;
+              console.warn(`[render] clamped bgVideo segment ${(v.end - v.start).toFixed(2)}s → ${(safeEnd - v.start).toFixed(2)}s (file is ${actualDur.toFixed(2)}s)`);
+            }
+          }
+          resolvedBgVideos.push({ ...v, src: resolvedSrc, end: safeEnd, clipDuration: safeClipDuration });
         } catch (e) {
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }
@@ -525,6 +602,14 @@ export async function POST(req: Request) {
         const videoUrl = `/api/renders/${filename}`;
         setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
+
+        // Increment usageCount for FREE users
+        try {
+          const u = await prisma.user.findUnique({ where: { id: userId }, select: { plan: true } });
+          if (u && isFree(u.plan)) {
+            await prisma.user.update({ where: { id: userId }, data: { usageCount: { increment: 1 } } });
+          }
+        } catch {}
 
         const session2 = await getServerSession(authOptions);
         if (session2?.user?.id) {

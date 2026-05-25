@@ -38,13 +38,13 @@ function slugToTitle(url: string): string {
   }
 }
 
-// Search Pexels for portrait videos ≥ minDuration seconds
+// Search Pexels for portrait videos ≥ minDuration seconds (max perPage = 80)
 async function searchPexels(query: string, apiKey: string, minDuration = 3, perPage = 15, page = 1): Promise<PexelsVideo[]> {
   const params = new URLSearchParams({
     query,
     orientation: "portrait",
     size: "medium",
-    per_page: String(perPage),
+    per_page: String(Math.min(80, perPage)),
     min_duration: String(minDuration),
     page: String(page),
   });
@@ -84,13 +84,19 @@ function isValidMp4Path(filePath: string): boolean {
 }
 
 async function downloadAndCrop(url: string, outPath: string): Promise<void> {
-  const MAX_ATTEMPTS = 3;
-  const attemptDelayMs = 1200;
+  const MAX_ATTEMPTS = 4;
+  const TIMEOUT_MS = 90_000; // 90s — Pixabay CDN บางไฟล์ใหญ่ช้ามาก
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const tmp = `${outPath}.part`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        headers: {
+          // บาง CDN บล็อก bot — ใส่ User-Agent เหมือน browser
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+        },
+      });
       if (!res.ok) throw new Error(`Download failed: ${res.status}`);
 
       const data = Buffer.from(await res.arrayBuffer());
@@ -110,8 +116,9 @@ async function downloadAndCrop(url: string, outPath: string): Promise<void> {
       safeUnlink(tmp);
       safeUnlink(outPath);
       if (attempt >= MAX_ATTEMPTS) throw err;
-      await new Promise((r) => setTimeout(r, attemptDelayMs * attempt));
-      console.warn(`[fetch-stock] download retry ${attempt + 1}/${MAX_ATTEMPTS}: ${url}`);
+      const delay = attempt === 1 ? 2000 : attempt === 2 ? 5000 : 10000;
+      console.warn(`[fetch-stock] download retry ${attempt + 1}/${MAX_ATTEMPTS} (wait ${delay / 1000}s): ${url}`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 
@@ -310,14 +317,15 @@ export async function POST(req: Request) {
   }
   void avgCutSec; // used for future adaptive logic
 
-  const BUFFER = 1.4;
+  const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
+  // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
   const autoClipsNeeded = totalDurationSec > 0
-    ? Math.max(2, Math.ceil((totalDurationSec / 2.0) * BUFFER))
+    ? Math.max(keywords.length, Math.ceil((totalDurationSec / 3.5) * BUFFER))
     : keywords.length;
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
   const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 500 : 400);
   const clipsPerKeyword = keywords.length > 0
-    ? Math.min(10, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
+    ? Math.min(15, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
     : 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
@@ -365,7 +373,8 @@ export async function POST(req: Request) {
 
   // perSubtitleMode: explicit flag (survives retry with subset) OR clip count exactly matches keyword count
   const isPerSubtitleMode = perSubtitleFlag || (overrideClipCount > 0 && overrideClipCount === keywords.length);
-  const basePerPage = isPerSubtitleMode ? 25 : Math.min(30, clipsPerKeyword * 3);
+  // Pexels supports up to 80 per page — use that headroom for long videos
+  const basePerPage = isPerSubtitleMode ? 25 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
 
   // ── Search phase — try keyword alternatives in order until candidates found ──
   const candidatesByKeyword: CandidateVideo[][] = await Promise.all(
@@ -557,7 +566,7 @@ export async function POST(req: Request) {
   if (!found.length) return NextResponse.json({ results: [] });
 
   // ── Download phase ──
-  await withConcurrency(found, 5, async ({ keyword, id, duration, link }) => {
+  await withConcurrency(found, 3, async ({ keyword, id, duration, link }) => {
     if (download) {
       const outFile = `${userPrefix}${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);

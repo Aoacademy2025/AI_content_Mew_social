@@ -3,6 +3,10 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
+
+const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
+const VALID_ROLES = new Set(["ADMIN", "USER"]);
 
 export async function PATCH(
   req: Request,
@@ -17,6 +21,13 @@ export async function PATCH(
     const { plan, role, suspended } = await req.json();
     const { id } = await params;
 
+    if (plan !== undefined && !VALID_PLANS.has(plan)) {
+      return NextResponse.json({ error: `Invalid plan: ${plan}` }, { status: 400 });
+    }
+    if (role !== undefined && !VALID_ROLES.has(role)) {
+      return NextResponse.json({ error: `Invalid role: ${role}` }, { status: 400 });
+    }
+
     const data: Record<string, unknown> = {};
     if (plan !== undefined) data.plan = plan;
     if (role !== undefined) data.role = role;
@@ -29,8 +40,15 @@ export async function PATCH(
     const user = await prisma.user.update({
       where: { id },
       data,
-      select: { id: true, name: true, email: true, role: true, plan: true, suspended: true },
+      select: { id: true, name: true, email: true, role: true, plan: true, planExpiresAt: true, suspended: true },
     });
+
+    // If plan changed, extend retention of existing videos to match new plan
+    if (plan !== undefined) {
+      await extendVideoExpiryForPlan(id, plan).catch(err => {
+        console.error("[admin/users/PATCH] extendVideoExpiryForPlan failed:", err);
+      });
+    }
 
     return NextResponse.json(user);
   } catch (error) {

@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Crown,
+  Building2,
   Ban,
   ShieldCheck,
   Trash2,
@@ -17,20 +17,32 @@ import {
   HardDrive,
   MessageSquareWarning,
   Ticket,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+
+type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
 interface AdminUser {
   id: string;
   name: string;
   email: string;
   role: "ADMIN" | "USER";
-  plan: "FREE" | "PRO";
+  plan: PlanKey;
+  planExpiresAt?: string | null;
   suspended: boolean;
   createdAt: string;
   _count: { styles: number; contents: number; videos: number; images: number; supportTickets: number };
-  couponRedemptions: { coupon: { code: string; durationDays: number }; redeemedAt: string }[];
+  couponRedemptions: { coupon: { code: string; durationDays: number; plan: PlanKey }; redeemedAt: string }[];
 }
+
+const PLAN_STYLES: Record<PlanKey, { bg: string; text: string; icon: React.ElementType | null; label: string }> = {
+  FREE:     { bg: "bg-zinc-500/15",   text: "text-zinc-400",   icon: null,       label: "FREE" },
+  PRO:      { bg: "bg-yellow-500/15", text: "text-yellow-400", icon: Crown,      label: "PRO" },
+  BUSINESS: { bg: "bg-violet-500/15", text: "text-violet-300", icon: Building2,  label: "BUSINESS" },
+};
 
 interface CacheInfo {
   stocks: { count: number; sizeMb: number };
@@ -40,7 +52,11 @@ interface CacheInfo {
 
 type ActionLoading = string | null;
 
-function proExpiry(redemptions: AdminUser["couponRedemptions"]): Date | null {
+function planExpiryFrom(user: AdminUser): Date | null {
+  // Prefer authoritative planExpiresAt from user record (set by Stripe payment)
+  if (user.planExpiresAt) return new Date(user.planExpiresAt);
+  // Fallback to last coupon redemption
+  const redemptions = user.couponRedemptions;
   if (!redemptions?.length) return null;
   const r = redemptions[redemptions.length - 1];
   if (!r.coupon.durationDays) return null;
@@ -75,7 +91,7 @@ export default function AdminUsersPage() {
     fetchUsers();
   }, [fetchUsers]);
 
-  async function patchUser(id: string, data: Partial<Pick<AdminUser, "plan" | "role" | "suspended">>) {
+  async function patchUser(id: string, data: { plan?: PlanKey; role?: "ADMIN" | "USER"; suspended?: boolean }) {
     setActionLoading(id);
     try {
       const res = await fetch(`/api/admin/users/${id}`, {
@@ -155,7 +171,7 @@ export default function AdminUsersPage() {
   );
 
   return (
-    <DashboardLayout>
+    <>
       <div className="space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -221,17 +237,19 @@ export default function AdminUsersPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <CardTitle className="text-sm text-white">{user.name}</CardTitle>
                           {/* Plan badge */}
-                          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
-                            user.plan === "PRO"
-                              ? "bg-yellow-500/15 text-yellow-400"
-                              : "bg-zinc-500/15 text-zinc-400"
-                          }`}>
-                            {user.plan === "PRO" && <Crown className="h-3 w-3" />}
-                            {user.plan}
-                          </span>
-                          {/* Pro expiry countdown */}
-                          {user.plan === "PRO" && (() => {
-                            const exp = proExpiry(user.couponRedemptions);
+                          {(() => {
+                            const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
+                            const Icon = ps.icon;
+                            return (
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${ps.bg} ${ps.text}`}>
+                                {Icon && <Icon className="h-3 w-3" />}
+                                {ps.label}
+                              </span>
+                            );
+                          })()}
+                          {/* Plan expiry countdown (PRO/BUSINESS) */}
+                          {user.plan !== "FREE" && (() => {
+                            const exp = planExpiryFrom(user);
                             if (!exp) return null;
                             const d = daysLeft(exp);
                             return (
@@ -309,20 +327,47 @@ export default function AdminUsersPage() {
                           <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
                         ) : (
                           <>
-                            {/* Toggle Plan */}
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => patchUser(user.id, { plan: user.plan === "PRO" ? "FREE" : "PRO" })}
-                              className={`h-7 gap-1 text-xs ${
-                                user.plan === "PRO"
-                                  ? "text-yellow-400 hover:text-yellow-300"
-                                  : "text-zinc-400 hover:text-yellow-400"
-                              }`}
-                            >
-                              <Crown className="h-3 w-3" />
-                              {user.plan === "PRO" ? "→ Free" : "→ Pro"}
-                            </Button>
+                            {/* Plan selector */}
+                            {(() => {
+                              const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
+                              const Icon = ps.icon;
+                              return (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <button
+                                      className={`h-7 inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-medium outline-none focus:border-purple-500/50 hover:bg-white/10 transition-colors cursor-pointer ${ps.text}`}
+                                      title="เปลี่ยนแพ็กเกจ"
+                                    >
+                                      {Icon && <Icon className="h-3 w-3" />}
+                                      {ps.label}
+                                      <ChevronDown className="h-3 w-3 opacity-60" />
+                                    </button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent
+                                    align="end"
+                                    className="min-w-35 border"
+                                    style={{ background: "rgba(20, 20, 28, 0.98)", borderColor: "rgba(255,255,255,0.1)", backdropFilter: "blur(8px)" }}
+                                  >
+                                    {(["FREE", "PRO", "BUSINESS"] as PlanKey[]).map(opt => {
+                                      const ops = PLAN_STYLES[opt];
+                                      const Icon = ops.icon;
+                                      const isSelected = opt === user.plan;
+                                      return (
+                                        <DropdownMenuItem
+                                          key={opt}
+                                          onClick={() => { if (!isSelected) patchUser(user.id, { plan: opt }); }}
+                                          className={`gap-2 text-xs cursor-pointer ${ops.text} ${isSelected ? "bg-white/5" : ""} focus:bg-white/10`}
+                                        >
+                                          {Icon ? <Icon className="h-3 w-3" /> : <span className="h-3 w-3" />}
+                                          <span className="flex-1">{ops.label}</span>
+                                          {isSelected && <Check className="h-3 w-3 text-emerald-400" />}
+                                        </DropdownMenuItem>
+                                      );
+                                    })}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              );
+                            })()}
 
                             {/* Toggle Admin */}
                             <Button
@@ -427,6 +472,6 @@ export default function AdminUsersPage() {
           </div>
         )}
       </div>
-    </DashboardLayout>
+    </>
   );
 }

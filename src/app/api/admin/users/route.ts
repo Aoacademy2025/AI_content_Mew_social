@@ -19,13 +19,14 @@ export async function GET() {
         email: true,
         role: true,
         plan: true,
+        planExpiresAt: true,
         suspended: true,
         createdAt: true,
         _count: {
           select: { styles: true, contents: true, videos: true, images: true, supportTickets: true },
         },
         couponRedemptions: {
-          select: { coupon: { select: { code: true, durationDays: true } }, redeemedAt: true },
+          select: { coupon: { select: { code: true, durationDays: true, plan: true } }, redeemedAt: true },
           orderBy: { redeemedAt: "desc" },
           take: 3,
         },

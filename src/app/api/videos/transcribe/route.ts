@@ -1033,10 +1033,10 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
-        const timestampPrompt = `You are a professional Thai subtitle editor for TikTok/Reels short videos. Transcribe this audio and split into subtitle segments with PRECISE timestamps.
+        const timestampPrompt = `You are a professional Thai subtitle editor for TikTok/Reels short videos. Transcribe this audio and split into subtitle segments with PRECISE timestamps AND word-level timestamps.
 
 Return ONLY valid JSON, no markdown, no explanation:
-{"segments":[{"text":"...","start":0.0,"end":2.5},...],"fullText":"..."}
+{"segments":[{"text":"...","start":0.0,"end":2.5,"words":[{"word":"คำ","start":0.0,"end":0.5},...]},...], "fullText":"..."}
 
 ━━━ TIMESTAMP RULES (critical) ━━━
 1. start = exact second speaker starts the FIRST word of this segment (listen carefully to the audio)
@@ -1045,16 +1045,23 @@ Return ONLY valid JSON, no markdown, no explanation:
 4. next segment start = at or slightly after previous end (no overlap allowed)
 5. Use 0.05s precision. When unsure, round end UP (subtitle staying 0.1s too long is better than disappearing early)
 
+━━━ WORD-LEVEL TIMESTAMPS (critical for word-by-word subtitles) ━━━
+6. Each segment MUST include "words" array with timestamp for every Thai word in the segment
+7. Thai words = meaningful units: คำ, กำลัง, เปลี่ยน, มือ, เงียบๆ (NOT individual syllables, NOT whole phrases)
+8. word.start = exact second this word begins, word.end = exact second this word ends
+9. words must be non-overlapping and cover the full segment duration
+10. English brand names count as one word: "GPT-4" → one entry
+
 ━━━ SPLITTING STYLE — TikTok/Reels dramatic pacing ━━━
-6. Split at EVERY natural pause or breath in the audio, even very short ones
-7. Short punchy phrases get their OWN segment — especially sentence-ending words that the speaker pauses after
-   EXAMPLE: "บริษัทนี้อาจไม่ใช่เบอร์ 1 ของโลก..." → split → "...อีกต่อไป" (separate segment for dramatic effect)
-8. Each segment = one breath unit as spoken — not a fixed character count
-9. If the speaker pauses mid-sentence for effect, SPLIT there (dramatic pause = segment break)
-10. NEVER cut mid-word. Thai has no spaces — identify complete words before splitting
-11. NEVER split in the middle of a phrase that flows without pause — wait for actual breath/pause
-12. Keep English brand names intact: Anthropic, GPT, Claude, Enterprise, etc.
-13. fullText = all segment texts joined in order${script ? `\n14. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
+11. Split at EVERY natural pause or breath in the audio, even very short ones
+12. Short punchy phrases get their OWN segment — especially sentence-ending words that the speaker pauses after
+    EXAMPLE: "บริษัทนี้อาจไม่ใช่เบอร์ 1 ของโลก..." → split → "...อีกต่อไป" (separate segment for dramatic effect)
+13. Each segment = one breath unit as spoken — not a fixed character count
+14. If the speaker pauses mid-sentence for effect, SPLIT there (dramatic pause = segment break)
+15. NEVER cut mid-word. Thai has no spaces — identify complete words before splitting
+16. NEVER split in the middle of a phrase that flows without pause — wait for actual breath/pause
+17. Keep English brand names intact: Anthropic, GPT, Claude, Enterprise, etc.
+18. fullText = all segment texts joined in order${script ? `\n19. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
@@ -1137,7 +1144,10 @@ Return ONLY valid JSON, no markdown, no explanation:
                   ? (parsed.segments as { text?: string }[]).map(s => s.text ?? "").join(" ").trim()
                   : rawGeminiText);
               if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
-                segments = (parsed.segments as { text?: string; start?: number; end?: number }[])
+                type GeminiWord = { word?: string; start?: number; end?: number };
+                type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
+                const rawSegs = parsed.segments as GeminiSeg[];
+                segments = rawSegs
                   .filter((s) =>
                     typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"
                   )
@@ -1146,7 +1156,22 @@ Return ONLY valid JSON, no markdown, no explanation:
                     start: s.start as number,
                     end: s.end as number,
                   }));
-                console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments with timestamps`);
+                // Extract word-level timestamps from Gemini if provided
+                const geminiWords: typeof words = [];
+                for (const s of rawSegs) {
+                  if (!Array.isArray(s.words)) continue;
+                  for (const w of s.words) {
+                    if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number") {
+                      geminiWords.push({ word: w.word, start: w.start, end: w.end });
+                    }
+                  }
+                }
+                if (geminiWords.length > 0) {
+                  words = geminiWords;
+                  console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments, ${words.length} words`);
+                } else {
+                  console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments (no word timestamps)`);
+                }
               } else {
                 console.warn("[transcribe] Gemini returned no segments, falling back to text-only");
                 fullText = parsed.fullText?.trim() || stripped;
@@ -1236,42 +1261,44 @@ Return ONLY valid JSON, no markdown, no explanation:
 
 Gemini transcribed the audio into segments below. Each segment has accurate timestamps. Your job: produce subtitle cards — one card per screen line.
 
-━━━ CHARACTER COUNTING ━━━
-• Count ONLY Thai letters (ก–ฮ, vowels, tone marks). English letters, numbers (2021, GPT, AI, Claude), spaces — do NOT count.
-• Example: "เขาออกมาตั้งบริษัทของตัวเองในปี 2021" = 22 Thai chars (2021 is free, keep it with the phrase).
+━━━ CHARACTER LIMIT (most important rule) ━━━
+• Count ONLY Thai letters (ก–ฮ, vowels ะาิีึืุูเแโใไ, tone marks). English letters, numbers, spaces — do NOT count.
+• HARD LIMIT: every caption must have ≤ 20 Thai chars. NO EXCEPTIONS.
+• Examples of 20-char captions:
+  ✅ "พวกเขากำลังเปลี่ยนโลก" = 20 Thai chars → OK
+  ✅ "บริษัท AI ชื่อ Anthropic" = 15 Thai chars → OK
+  ❌ "พวกแม่งกำลังโละทิ้งเจตนั้นตัวอยู่" = 33 Thai chars → TOO LONG, must split
 
-━━━ MERGING (most important) ━━━
-• Merge consecutive segments that form one natural thought unit, up to 25 Thai chars total.
-• ALWAYS merge short tail segments onto the previous segment — do NOT leave these alone: "ครับ", "นะ", "AI", "วงการ", "เดียว", "หลายตัว", "ตลอดกาล", "เดียวกัน", any segment with ≤ 4 Thai chars.
-• Keep numbers and English words (2021, GPT, Claude, Enterprise) attached to their Thai context — never split them off.
-• Merge across short gaps (< 0.5s) freely — breath pauses within the same phrase.
-• Stop merging at sentence-ending punctuation (. ? ! ฯ) or gaps ≥ 0.8s.
+━━━ MERGING ━━━
+• Merge consecutive segments that form one natural thought, but ONLY if merged result ≤ 20 Thai chars.
+• ALWAYS merge tiny tail words onto previous: "ครับ", "นะ", "AI", "วงการ", "เดียว" (≤ 4 Thai chars).
+• Keep English words/numbers attached to Thai context: 2021, GPT, Claude, AI → never split off alone.
+• Merge across gaps < 0.4s freely. Stop at sentence-ending (. ? ! ฯ) or gaps ≥ 0.7s.
 
-━━━ SPLITTING (rarely needed) ━━━
-• Only split if a single segment has > 35 Thai chars. Split at a natural word/thought boundary. Divide timestamp proportionally.
-• Never split numbers or English brand names from their Thai context.
+━━━ SPLITTING ━━━
+• Any segment with > 20 Thai chars MUST be split. Split at a natural word/thought boundary.
+• Divide the timestamp proportionally (by Thai char count) between the sub-cards.
+• Do NOT split: brand names, numbers, "Claude", "GPT", "AI" from their Thai context.
 
-━━━ COMPLETENESS CHECK (critical) ━━━
-• The SCRIPT below is the full text the speaker says. Every word in the script MUST appear in your output.
-• Before finalizing, verify: join all your caption texts and compare against the script — nothing should be missing or dropped.
-• If a word from the script is missing in the segments, add it to the nearest caption that has the right timestamp.
+━━━ COMPLETENESS CHECK ━━━
+• Every word in the SCRIPT below MUST appear in output — nothing dropped.
+• If a script word is missing from segments, add it to the nearest caption.
 
 ━━━ TIMESTAMPS ━━━
-• startMs = startMs of the FIRST segment in the merged group (in milliseconds, not seconds).
-• endMs = endMs of the LAST segment in the merged group.
-• First card startMs = 0 always.
-• Convert seconds to milliseconds: multiply by 1000.
+• startMs = startMs of FIRST segment in merged group × 1000 (convert seconds → ms).
+• endMs = endMs of LAST segment in merged group × 1000.
+• First card startMs = 0.
 
 ━━━ TAGS ━━━
-• "hook" = EXACTLY the first 1 card only (never more than 1)
-• "cta" = ONLY cards containing กดติดตาม / คอมเมนต์ / like / share / subscribe
-• "body" = everything else (most cards will be body)
+• "hook" = first card only (exactly 1)
+• "cta" = cards with กดติดตาม / like / share / subscribe
+• "body" = everything else
 
 ━━━ OUTPUT ━━━
-Return ONLY valid JSON — no markdown, no explanation:
+Return ONLY valid JSON:
 {"captions":[{"text":"...","startMs":0,"endMs":2950,"tag":"hook"},{"text":"...","startMs":2950,"endMs":4590,"tag":"body"},...]}
 
-━━━ FULL SCRIPT (reference for completeness check) ━━━
+━━━ FULL SCRIPT (reference) ━━━
 ${scriptForPrompt}
 
 ━━━ SEGMENTS (seconds) ━━━
@@ -1344,9 +1371,8 @@ Total audio: ${audioDur.toFixed(2)}s`;
             .filter(c => c.text.length > 0);
         }
 
-        // Hard-split any caption still > 25 Thai chars by char-proportion within its time window
-        // Hard-split only truly long captions (> 35 Thai chars) — safety net for LLM misses
-        const MAX_THAI_SPLIT = 35;
+        // Hard-split any caption still > 20 Thai chars — safety net when LLM misses the limit
+        const MAX_THAI_SPLIT = 20;
         const splitCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
         for (const cap of llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]) {
           const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
@@ -1379,7 +1405,7 @@ Total audio: ${audioDur.toFixed(2)}s`;
             const prev = mergedCaptions[mergedCaptions.length - 1];
             const combined = `${prev.text} ${cap.text}`.trim();
             const combinedThai = (combined.match(/[฀-๿]/g) ?? []).length;
-            if (combinedThai <= 32) {
+            if (combinedThai <= 22) {
               prev.text = combined;
               prev.endMs = cap.endMs;
               continue;
@@ -1471,9 +1497,9 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = ONE LINE on screen. MAX 25 Thai characters per phrase (count Thai letters only, not spaces/punctuation). MUST split if over 25 Thai chars.
+• Each phrase = ONE LINE on screen. HARD MAX 20 Thai characters per phrase (count Thai letters only, not spaces/numbers/English). MUST split if over 20 Thai chars.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
-• If phrase still exceeds 25 Thai chars, split further at a word/thought boundary.
+• If phrase still exceeds 20 Thai chars, split further at a word/thought boundary.
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 • Max 6s per subtitle — long pauses → split into more phrases.
@@ -1973,11 +1999,63 @@ ${sourceText.trim()}`;
     }));
 
     // Raw word timestamps for forced alignment on client
-    const wordTimestamps = words.map((w) => ({
-      word: w.word,
-      startMs: Math.round(w.start * 1000),
-      endMs: Math.round(w.end * 1000),
-    }));
+    // If Whisper gave us word-level timing, use it directly.
+    // If not (e.g. Gemini transcribe), interpolate from segment-level timing.
+    let wordTimestamps: { word: string; startMs: number; endMs: number }[];
+    if (words.length > 0) {
+      wordTimestamps = words
+        .map((w) => ({
+          word: w.word.trim(),
+          startMs: Math.round(w.start * 1000),
+          endMs: Math.round(w.end * 1000),
+        }))
+        .filter((w) => w.word.length > 0);
+    } else {
+      // Interpolate word timing from segments — much more accurate than interpolating from captions
+      // For Thai (no spaces) use Intl.Segmenter to split into actual words.
+      wordTimestamps = [];
+      const thaiSegmenter = typeof Intl !== "undefined" && (Intl as any).Segmenter
+        ? new (Intl as any).Segmenter("th", { granularity: "word" }) as { segment: (s: string) => Iterable<{ segment: string; isWordLike?: boolean }> }
+        : null;
+
+      for (const seg of segments) {
+        const segText = seg.text.trim();
+        if (!segText) continue;
+
+        let segWords: string[];
+        // If text has spaces (English-ish), use whitespace split
+        if (/\s/.test(segText) && !/[฀-๿]/.test(segText)) {
+          segWords = segText.split(/\s+/).filter(Boolean);
+        } else if (thaiSegmenter) {
+          // Thai or mixed — use Intl.Segmenter to split into word-like tokens
+          segWords = Array.from(thaiSegmenter.segment(segText))
+            .filter(s => s.isWordLike !== false && s.segment.trim().length > 0)
+            .map(s => s.segment);
+        } else {
+          // Fallback: whitespace
+          segWords = segText.split(/\s+/).filter(Boolean);
+        }
+        if (segWords.length === 0) continue;
+
+        const segStartMs = Math.round(seg.start * 1000);
+        const segEndMs = Math.round(seg.end * 1000);
+        // Weight duration by character length (Thai chars take roughly equal time)
+        const totalChars = segWords.reduce((sum, w) => sum + Math.max(1, w.length), 0);
+        let cumChars = 0;
+        for (let i = 0; i < segWords.length; i++) {
+          const wLen = Math.max(1, segWords[i].length);
+          const t0 = segStartMs + Math.round((cumChars / totalChars) * (segEndMs - segStartMs));
+          cumChars += wLen;
+          const t1 = segStartMs + Math.round((cumChars / totalChars) * (segEndMs - segStartMs));
+          wordTimestamps.push({
+            word: segWords[i],
+            startMs: t0,
+            endMs: t1,
+          });
+        }
+      }
+      console.log(`[transcribe] interpolated ${wordTimestamps.length} word timestamps from ${segments.length} segments (Thai-aware)`);
+    }
 
     const safeFullText = sanitizeTranscriptionText(fullText);
     const resolvedDurationMs = Math.max(

@@ -114,7 +114,7 @@ export async function POST(req: Request) {
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false } = body ?? {};
+  const { script, scenes, perSubtitle = false, audioDurationSec = 0 } = body ?? {};
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
@@ -305,6 +305,21 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
     ? scenes : cleanScript.split(/\n+/).filter(Boolean);
   const numScenes = Math.max(1, sceneList.length);
 
+  // คำนวณว่าต้องการกี่ keywords จาก duration
+  // สูตร: duration / 3.5s ต่อ clip × buffer 1.6 → จำนวน clip ที่ต้องการ
+  // keywords = max(numScenes, ceil(clipsNeeded / 6)) — แต่ละ keyword ดึงได้ ~6 clips
+  const durSec = Number(audioDurationSec) > 0 ? Number(audioDurationSec) : 0;
+  const CLIP_AVG_SEC = 3.5;
+  const BUFFER = 1.6;
+  const CLIPS_PER_KW = 6; // conservative estimate — fetch-stock will pull more
+  const clipsNeeded = durSec > 0 ? Math.ceil((durSec / CLIP_AVG_SEC) * BUFFER) : numScenes;
+  const keywordsNeeded = Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
+  // แต่ละ scene สร้างกี่ keyword (ปัดขึ้น)
+  const kwPerScene = Math.max(1, Math.ceil(keywordsNeeded / numScenes));
+  const totalKw = numScenes * kwPerScene;
+
+  console.log(`[extract-keywords] dur=${durSec}s clips_needed=${clipsNeeded} keywords_needed=${keywordsNeeded} kw/scene=${kwPerScene} total=${totalKw}`);
+
   // Analyze script visual direction first
   let visualDirection = "";
   try {
@@ -318,66 +333,148 @@ Output ONLY the one-sentence visual direction, nothing else.`;
 
   const directionBlock = visualDirection ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n═══ END DIRECTION ═══\n` : "";
 
-  const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
+  // ถ้าต้องการมากกว่า 1 keyword/scene → ส่ง prompt แบบ multi-kw/scene
+  const multiKwMode = kwPerScene > 1;
+
+  const prompt = multiKwMode
+    ? `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
+
+═══ FULL SCRIPT ═══
+${cleanScript}
+═══ END SCRIPT ═══
+${directionBlock}
+This video is ${durSec.toFixed(0)}s long. We need ${totalKw} distinct B-roll search queries total — ${kwPerScene} per scene — to fill the entire video with varied footage.
+
+For each scene below, write EXACTLY ${kwPerScene} different Pexels search queries that cover different visual moments or angles within that scene.
+Each query set should progress through the scene: wide shot → detail shot → action shot (vary the style).
+
+RULES:
+  • NEVER use real person names or brand names
+    - CEO/founder → "executive keynote stage spotlight"
+    - AI company → "server room glowing screens"
+  • English only, 2–6 words per query
+  • Make queries VISUALLY DISTINCT from each other — no two similar shots
+  • Ground abstract concepts in concrete filmable objects
+
+OUTPUT (JSON only, no explanation):
+{"keywords":[["q1a","q1b",...],["q2a","q2b",...],...]}
+Exactly ${numScenes} arrays, each with exactly ${kwPerScene} queries, in scene order.
+
+SCENES:
+${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`
+    : `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
 ═══ FULL SCRIPT ═══
 ${cleanScript}
 ═══ END SCRIPT ═══
 ${directionBlock}
 STEP 1 — Understand the script's core message, tone, and main visual theme.
-STEP 2 — For each scene below, write ONE Pexels stock video search query that:
-  • Matches the scene's specific moment AND the VISUAL DIRECTION above
-  • Translates abstract ideas into concrete, filmable objects/actions
-  • NEVER uses real person names or brand names (Pexels has none)
+STEP 2 — For each scene below, write exactly 3 Pexels stock video search queries:
+  Query 1 — Most specific to the scene's exact visual moment (match visual direction tone)
+  Query 2 — Broader visual that fits the script theme
+  Query 3 — Generic 1-2 word fallback (e.g. "technology", "city night", "business meeting")
+
+RULES:
+  • NEVER use real person names or brand names (Pexels has none)
     - CEO/founder → "executive keynote stage spotlight"
     - AI company → "server room glowing screens"
     - Robot/AI → "humanoid robot arm factory"
-  • Is English only, 2–5 words, unique across all queries
-  • Varies shot style: aerial, close-up, wide, slow-motion, time-lapse
+  • English only, 2–6 words per query
+  • Vary shot styles: aerial, close-up, wide, slow-motion, time-lapse
+  • Ground abstract concepts in concrete filmable objects
 
 OUTPUT (JSON only, no explanation):
-{"queries":["query1","query2",...]}
-Exactly ${numScenes} queries.`;
+{"keywords":[["q1","q2","q3"],["q1","q2","q3"],...]}
+Exactly ${numScenes} arrays in order.
+
+SCENES:
+${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
 
   try {
-    const text = await callLLM(prompt, 2048);
-    console.log(`[extract-keywords] normal mode:`, text.slice(0, 200));
+    const maxTokens = Math.min(8192, totalKw * 80 + 400);
+    const text = await callLLM(prompt, maxTokens);
+    console.log(`[extract-keywords] normal mode (kwPerScene=${kwPerScene}):`, text.slice(0, 200));
 
     const parsed = parseKeywordAlternatives(text);
-    let queries = parsed.map(g => g[0]).filter(Boolean);
 
-    // Fill missing queries from the corresponding scene text or visual direction
-    while (queries.length < numScenes) {
-      const idx = queries.length;
-      const sceneText = sceneList[idx] ?? "";
-      const words = sceneText
-        .toLowerCase()
-        .replace(/[^a-z\s]/g, " ")
-        .split(/\s+/)
-        .filter(w => w.length > 3 && /^[a-z]/.test(w))
-        .slice(0, 3);
-      if (words.length >= 2) {
-        queries.push(words.join(" "));
-      } else {
-        const dirWords = visualDirection
-          .toLowerCase()
-          .replace(/[^a-z\s]/g, " ")
-          .split(/\s+/)
-          .filter(w => w.length > 3)
-          .slice(0, 2);
-        queries.push(dirWords.length >= 1 ? dirWords.join(" ") : "scene");
+    // Build per-scene alternatives
+    // multiKwMode: parsed[i] = [kwA, kwB, kwC, ...] — all are primaries for that scene
+    // normal mode: parsed[i] = [q1, q2, q3] — q1 is primary, q2/q3 are alternatives
+    const allAlternatives: string[][] = [];
+    const allKeywords: string[] = [];
+    const usedKeywords = new Set<string>();
+
+    if (multiKwMode) {
+      // แต่ละ scene → kwPerScene keywords แยกกัน
+      for (let i = 0; i < numScenes; i++) {
+        const sceneAlts = (parsed[i] ?? []).filter(Boolean);
+        // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
+        while (sceneAlts.length < kwPerScene) {
+          const fallback = sceneAlts[0] || sceneList[i].toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(w => w.length > 3).slice(0, 2).join(" ") || "background scene";
+          sceneAlts.push(fallback);
+        }
+        // สร้าง keyword แยกสำหรับแต่ละ slot ใน scene
+        for (let j = 0; j < kwPerScene; j++) {
+          let picked = sceneAlts[j] || sceneAlts[0];
+          // ถ้าซ้ำมากเกินไป ใช้ตัวถัดไปจาก list ทั้งหมด
+          if (isTooSimilar(picked, usedKeywords, 0.8) && sceneAlts.length > j + 1) {
+            picked = sceneAlts[j + 1] || picked;
+          }
+          usedKeywords.add(picked);
+          allKeywords.push(picked);
+          // alternatives = ทุก query ของ scene นี้ (สลับลำดับให้ primary อยู่หน้า)
+          const altsForSlot = [picked, ...sceneAlts.filter(a => a !== picked)].slice(0, 3);
+          allAlternatives.push(altsForSlot);
+        }
+      }
+    } else {
+      for (let i = 0; i < numScenes; i++) {
+        const alts = (parsed[i] ?? []).filter(Boolean);
+
+        let picked = "";
+        for (const alt of alts) {
+          if (alt && !isTooSimilar(alt, usedKeywords)) { picked = alt; break; }
+        }
+        if (!picked && alts[0]) picked = alts[0];
+
+        if (!picked) {
+          const sceneText = sceneList[i] ?? "";
+          const words = sceneText.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/)
+            .filter(w => w.length > 3 && /^[a-z]/.test(w)).slice(0, 3);
+          if (words.length >= 2) {
+            picked = words.join(" ");
+          } else {
+            const dirWords = visualDirection.toLowerCase().replace(/[^a-z\s]/g, " ")
+              .split(/\s+/).filter(w => w.length > 3).slice(0, 2);
+            picked = dirWords.join(" ") || words[0] || "scene";
+          }
+        }
+
+        usedKeywords.add(picked);
+        allKeywords.push(picked);
+        const cleanAlts = alts.filter(Boolean);
+        if (cleanAlts[0] !== picked) cleanAlts.unshift(picked);
+        allAlternatives.push(cleanAlts.slice(0, 3));
       }
     }
-    queries = queries.slice(0, numScenes);
 
-    const perScene = 1;
-    const sceneClipCounts = sceneList.map(() => 1);
+    const sceneClipCounts = multiKwMode
+      ? sceneList.map(() => kwPerScene)  // แต่ละ scene ได้ kwPerScene clips
+      : sceneList.map(() => 1);
     const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
 
-    console.log(`[extract-keywords] ${queries.length} queries for ${numScenes} scenes`);
-    return NextResponse.json({ keywords: queries, scenes: sceneList, keywordsPerScene: perScene, sceneClipCounts, sceneDurations, visualDirection });
+    console.log(`[extract-keywords] ${allKeywords.length} keywords for ${numScenes} scenes (${kwPerScene}/scene, need ${keywordsNeeded})`);
+    return NextResponse.json({
+      keywords: allKeywords,
+      keywordAlternatives: allAlternatives,
+      scenes: sceneList,
+      keywordsPerScene: kwPerScene,
+      sceneClipCounts,
+      sceneDurations,
+      visualDirection,
+    });
   } catch (e) {
     console.error("[extract-keywords] error:", e);
-    return NextResponse.json({ keywords: [], scenes: [], keywordsPerScene: 1, sceneClipCounts: [], sceneDurations: [] });
+    return NextResponse.json({ keywords: [], keywordAlternatives: [], scenes: [], keywordsPerScene: 1, sceneClipCounts: [], sceneDurations: [] });
   }
 }

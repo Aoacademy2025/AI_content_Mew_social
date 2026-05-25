@@ -97,6 +97,9 @@ export interface SubtitleOverlayConfig {
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
   fontFamily?: string;
+  subtitleStylePreset?: SubtitleStylePreset;
+  subtitleTextEffect?: SubtitleTextEffect;
+  subtitleAccentColor?: string;
 }
 
 export interface ShortVideoConfig {

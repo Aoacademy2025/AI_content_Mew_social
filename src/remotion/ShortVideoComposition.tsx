@@ -41,7 +41,10 @@ function VideoClip({
   const { width, height } = useVideoConfig();
 
   const totalFrames = segDurFrames + tailFrames;
-  const endAt = startFrom + totalFrames;
+  // Clamp endAt so we never ask for frames past the actual clip duration —
+  // prevents Remotion "No frame found at position X" compositor errors.
+  const rawEndAt = startFrom + totalFrames;
+  const endAt = clipDurFrames ? Math.min(rawEndAt, clipDurFrames - 1) : rawEndAt;
 
   // Opacity: fade-in (entry) × fade-out (tail for next clip)
   const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" }) : 1;
@@ -92,7 +95,7 @@ function CinematicOverlay() {
 }
 
 // ─── Subtitle rendering ───────────────────────────────────────────────────────
-function renderSubtitle(
+export function renderSubtitle(
   text: string,
   color: string,
   size: number,
@@ -105,17 +108,23 @@ function renderSubtitle(
   textEffect: SubtitleTextEffect = "pop",
   accentColor = "#FFE500",
 ) {
+  const charCount = text.length;
+  const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
+  const scaledSize = Math.round(size * lengthScale);
+
   const base: React.CSSProperties = {
     fontFamily,
-    fontSize: `${size}px`,
+    fontSize: `${scaledSize}px`,
     fontWeight,
-    lineHeight: 1.3,
+    lineHeight: 1.25,
     display: "block",
+    textAlign: "center",
+    width: "100%",
     letterSpacing: "0.01em",
-    wordBreak: "break-word",
-    overflowWrap: "break-word",
+    whiteSpace: "normal",
+    wordBreak: "break-all",
+    overflowWrap: "anywhere",
     color,
-    maxWidth: "100%",
   };
 
   // ── Caption Styles that fully own their own rendering (ignore Text Effect) ────
@@ -353,7 +362,7 @@ function renderSubtitle(
 }
 
 // ─── Animated subtitle ────────────────────────────────────────────────────────
-function AnimatedSubtitle({
+export function AnimatedSubtitle({
   popup,
   preset,
   resolvedFont,
@@ -451,7 +460,7 @@ function AnimatedSubtitle({
         alignItems: "center",
         ...extra,
       }}>
-        <div style={{ maxWidth: "88%", width: "100%", textAlign: "center", paddingLeft: "6%", paddingRight: "6%" }}>
+        <div style={{ maxWidth: "92%", textAlign: "center", paddingLeft: "4%", paddingRight: "4%", display: "flex", justifyContent: "center", alignItems: "center", overflow: "hidden" }}>
           {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900, frame, captionDurFrames, textEffect, popup.accentColor ?? accentColor)}
         </div>
       </div>

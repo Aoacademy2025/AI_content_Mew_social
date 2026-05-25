@@ -34,6 +34,9 @@ export async function POST(req: Request) {
 
     const { code, plan = "PRO", durationDays = 30, maxUses = 1, expiresAt } = await req.json();
     if (!code?.trim()) return NextResponse.json({ error: "กรุณากรอกรหัสคูปอง" }, { status: 400 });
+    if (!["FREE", "PRO", "BUSINESS"].includes(plan)) {
+      return NextResponse.json({ error: `Invalid plan: ${plan}` }, { status: 400 });
+    }
 
     const coupon = await prisma.coupon.create({
       data: {

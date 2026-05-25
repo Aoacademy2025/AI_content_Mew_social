@@ -1,10 +1,15 @@
 import { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
 export const authOptions: NextAuthOptions = {
   providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    }),
     CredentialsProvider({
       name: "credentials",
       credentials: {
@@ -22,6 +27,10 @@ export const authOptions: NextAuthOptions = {
 
         if (!user) {
           throw new Error("ไม่พบบัญชีผู้ใช้นี้");
+        }
+
+        if (!user.password) {
+          throw new Error("บัญชีนี้ใช้ Google Sign-In กรุณาเข้าสู่ระบบด้วย Google");
         }
 
         const isValid = await bcrypt.compare(
@@ -48,6 +57,34 @@ export const authOptions: NextAuthOptions = {
     }),
   ],
   callbacks: {
+    async signIn({ user, account }) {
+      if (account?.provider === "google") {
+        const email = user.email!;
+        let dbUser = await prisma.user.findUnique({ where: { email } });
+        if (!dbUser) {
+          dbUser = await prisma.user.create({
+            data: {
+              email,
+              name: user.name ?? email.split("@")[0],
+              googleId: account.providerAccountId,
+              image: user.image ?? null,
+              password: null,
+            },
+          });
+        } else if (!dbUser.googleId) {
+          await prisma.user.update({
+            where: { email },
+            data: { googleId: account.providerAccountId, image: user.image ?? undefined },
+          });
+        }
+        if (dbUser.suspended) return false;
+        // patch user id so jwt callback gets it
+        user.id = dbUser.id;
+        (user as any).role = dbUser.role;
+        (user as any).plan = dbUser.plan;
+      }
+      return true;
+    },
     async jwt({ token, user }) {
       if (user) {
         // Initial login — set from auth result

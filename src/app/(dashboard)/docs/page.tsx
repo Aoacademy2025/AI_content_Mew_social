@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { BookOpen, Film, Wand2, Captions, Settings2, Play, Layers, User, Key, AlertTriangle, Info, CheckCircle2, RefreshCw } from "lucide-react";
 
 const CARD: React.CSSProperties = {
@@ -124,7 +123,7 @@ export default function DocsPage() {
   ];
 
   return (
-    <DashboardLayout>
+    <>
       <div className="mx-auto max-w-4xl space-y-5 p-4 md:p-6">
 
         {/* Header */}
@@ -160,7 +159,7 @@ export default function DocsPage() {
         {tab === "video" && <VideoOnlyDoc />}
         {tab === "avatar" && <AvatarDoc />}
       </div>
-    </DashboardLayout>
+    </>
   );
 }
 

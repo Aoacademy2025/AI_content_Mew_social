@@ -8,11 +8,13 @@ import { TopNav } from "./top-nav";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
+  /** @deprecated padding is now controlled per-page via the .ve-no-padding marker — left for back-compat */
   noPadding?: boolean;
 }
 
 export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   const { data: session, status } = useSession();
+  const sessionLoaded = status !== "loading";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -31,6 +33,8 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
 
   const user = session?.user;
   const role = (user as any)?.role as "ADMIN" | "USER" | undefined;
+  const plan = (user as any)?.plan as string | undefined;
+  const userName = user?.name ?? "";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -40,7 +44,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
       <div className="flex flex-1 overflow-hidden">
         {/* Desktop Sidebar — collapsible */}
         <aside className="hidden md:block shrink-0">
-          <Sidebar role={role} collapsed={collapsed} onToggle={toggleCollapsed} />
+          <Sidebar role={role} collapsed={collapsed} onToggle={toggleCollapsed} initialPlan={plan} initialName={userName} sessionLoaded={sessionLoaded} />
         </aside>
 
         {/* Mobile Sidebar — sheet overlay */}
@@ -50,14 +54,14 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
           role={role}
         />
 
-        {/* Main Content */}
+        {/* Main Content — pages with .ve-no-padding child get zero padding via :has() */}
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
-          <main className={noPadding ? "flex-1 overflow-hidden flex flex-col" : "flex-1 overflow-y-auto p-4 md:p-6"}>
-            {status === "loading" ? (
-              <div className="flex h-full items-center justify-center">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
-              </div>
-            ) : children}
+          <main className={
+            noPadding
+              ? "flex-1 overflow-hidden flex flex-col"
+              : "flex-1 overflow-y-auto p-4 md:p-6 has-[.ve-no-padding]:p-0 has-[.ve-no-padding]:overflow-hidden has-[.ve-no-padding]:flex has-[.ve-no-padding]:flex-col"
+          }>
+            {children}
           </main>
         </div>
       </div>

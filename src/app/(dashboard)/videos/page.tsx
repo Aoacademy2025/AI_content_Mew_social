@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
@@ -79,7 +78,7 @@ export default function VideosGalleryPage() {
   };
 
   return (
-    <DashboardLayout>
+    <>
       <div className="space-y-6">
 
         {/* ── Page header ── */}
@@ -224,7 +223,7 @@ export default function VideosGalleryPage() {
       )}
 
 
-    </DashboardLayout>
+    </>
   );
 }
 

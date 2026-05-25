@@ -1,9 +1,30 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getRenderJob } from "../render/route";
+import path from "path";
+import fs from "fs";
 
 export const runtime = "nodejs";
+
+type RenderJob = {
+  status: "running" | "done" | "error";
+  videoUrl?: string;
+  error?: string;
+  startedAt: number;
+  progress?: number;
+};
+
+function jobFilePath(jobId: string): string {
+  const d = path.join(process.cwd(), ".tmp", "render-jobs");
+  return path.join(d, `${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+
+function readJob(jobId: string): RenderJob | undefined {
+  try {
+    const raw = fs.readFileSync(jobFilePath(jobId), "utf-8");
+    return JSON.parse(raw) as RenderJob;
+  } catch { return undefined; }
+}
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
@@ -17,15 +38,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "jobId required" }, { status: 400 });
   }
 
-  const job = getRenderJob(jobId);
+  const job = readJob(jobId);
   if (!job) {
     return NextResponse.json({ status: "not_found" }, { status: 404 });
   }
 
-  // Stale job detection: if still "running" after 30min, the server process likely restarted mid-render
-  const staleMs = 30 * 60 * 1000;
+  // ให้ render นานได้ถึง 3 ชั่วโมง รองรับคลิปยาว 10 นาที
+  const staleMs = 3 * 60 * 60 * 1000;
   if (job.status === "running" && job.startedAt && Date.now() - job.startedAt > staleMs) {
-    return NextResponse.json({ status: "error", error: "Render timed out — server may have restarted. Please try again." });
+    return NextResponse.json({ status: "error", error: "Render ใช้เวลานานเกิน 3 ชั่วโมง — กรุณาลองใหม่" });
   }
 
   return NextResponse.json({

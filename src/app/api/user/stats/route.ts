@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { FREE_LIMITS } from "@/lib/plan-limits";
+import { FREE_LIMITS, isPaid as isPaidPlan } from "@/lib/plan-limits";
 import { apiError } from "@/lib/api-error";
 
 export async function GET() {
@@ -20,6 +20,7 @@ export async function GET() {
           where: { id: userId },
           select: {
             plan: true,
+            planExpiresAt: true,
             couponRedemptions: {
               orderBy: { redeemedAt: "desc" },
               take: 1,
@@ -45,15 +46,20 @@ export async function GET() {
       ]);
 
     const plan = user?.plan ?? "FREE";
-    const isPaid = plan === "PRO";
+    const isPaid = isPaidPlan(plan);
 
     let proExpiresAt: string | null = null;
-    if (isPaid && user?.couponRedemptions?.length) {
-      const r = user.couponRedemptions[0];
-      if (r.coupon.durationDays > 0) {
-        const exp = new Date(r.redeemedAt);
-        exp.setDate(exp.getDate() + r.coupon.durationDays);
-        proExpiresAt = exp.toISOString();
+    if (isPaid) {
+      // Prefer authoritative planExpiresAt (set by Stripe webhook or admin)
+      if (user?.planExpiresAt) {
+        proExpiresAt = user.planExpiresAt.toISOString();
+      } else if (user?.couponRedemptions?.length) {
+        const r = user.couponRedemptions[0];
+        if (r.coupon.durationDays > 0) {
+          const exp = new Date(r.redeemedAt);
+          exp.setDate(exp.getDate() + r.coupon.durationDays);
+          proExpiresAt = exp.toISOString();
+        }
       }
     }
 

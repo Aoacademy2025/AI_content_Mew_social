@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -232,7 +231,7 @@ export default function ContentPage() {
   }
 
   return (
-    <DashboardLayout noPadding>
+    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden h-full">
       <div className="flex flex-1 flex-col overflow-hidden">
 
         {/* ── Page Header ── */}
@@ -637,6 +636,6 @@ export default function ContentPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-    </DashboardLayout>
+    </div>
   );
 }

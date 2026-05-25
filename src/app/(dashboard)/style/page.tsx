@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -131,7 +130,7 @@ export default function StylePage() {
   const filtered = styles.filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <DashboardLayout>
+    <>
       <div className="space-y-5">
 
         {/* Page header */}
@@ -361,6 +360,6 @@ export default function StylePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </DashboardLayout>
+    </>
   );
 }

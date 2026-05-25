@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 
 export const runtime = "nodejs";
 
@@ -49,11 +50,14 @@ export async function POST(req: Request) {
       }),
     ]);
 
+    // Extend retention of existing (non-expired) videos to match new plan
+    const extended = await extendVideoExpiryForPlan(session.user.id, coupon.plan);
+
     const msg = coupon.durationDays > 0
       ? `อัปเกรดเป็น ${coupon.plan} สำเร็จ! (${coupon.durationDays} วัน)`
       : `อัปเกรดเป็น ${coupon.plan} สำเร็จ! (ถาวร)`;
 
-    return NextResponse.json({ ok: true, plan: coupon.plan, message: msg });
+    return NextResponse.json({ ok: true, plan: coupon.plan, message: msg, videosExtended: extended });
   } catch (error) {
     return apiError({ route: "POST /api/coupons/redeem", error });
   }

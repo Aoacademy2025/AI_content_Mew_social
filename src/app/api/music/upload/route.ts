@@ -11,6 +11,9 @@ export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const dbUser = await prisma.user.findUnique({ where: { id: session.user.id }, select: { plan: true } });
+  if (dbUser?.plan === "FREE") return NextResponse.json({ error: "Music upload ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
+
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   if (!file) return NextResponse.json({ error: "file required" }, { status: 400 });
