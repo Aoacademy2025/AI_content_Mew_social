@@ -56,3 +56,44 @@ next-env.d.ts
 /prisma/*.db-wal
 /prisma/*.db-shm
 *.jpg
+
+# ── Dev-only files that should NOT be deployed to VPS ──────────────
+# Node CPU profiles (created when running with --prof)
+*.cpuprofile
+*.heapsnapshot
+*.heapprofile
+
+# Test / scratch files
+test-*.mjs
+test-*.js
+test-*.txt
+test-*.ts
+scratch-*
+tmp-*
+*.local
+
+# Analysis / planning docs (use git for source, not bundled artifacts)
+pricing-analysis.*
+*-analysis.html
+*-analysis.jpg
+
+# Local install helpers — VPS uses its own setup (Linux pm2)
+install-mac.sh
+install-windows.bat
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Skills / agent state (local-only)
+skills-lock.json
+.claude/
+.cursor/
+
+# IDE TS build cache (rebuilds on VPS anyway)
+tsconfig.tsbuildinfo
