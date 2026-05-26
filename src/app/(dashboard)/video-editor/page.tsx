@@ -1646,9 +1646,11 @@ export default function VideoEditorPage() {
     }
   }
 
-  // Burn subtitles onto an already-rendered (no-sub) video using SubtitleOverlayComposition
+  // Burn subtitles onto an already-rendered video using SubtitleOverlayComposition.
+  // Priority: compositeUrl (render + avatar) > renderedVideoNoSubUrl (render only).
+  // Using compositeUrl ensures the avatar is preserved in the final burned video.
   async function runBurnSubtitles() {
-    const baseVideo = pipe.current.renderedVideoNoSubUrl;
+    const baseVideo = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
     if (!baseVideo) { toast.error("ต้อง Render วิดีโอก่อน แล้วค่อย Burn Subtitles"); return; }
     if (!captions.length) { toast.error("ไม่มีซับให้ Burn — กรุณา Transcribe ก่อน"); return; }
     if (runningRef.current) return;
@@ -2159,7 +2161,9 @@ export default function VideoEditorPage() {
                     const a = document.createElement("a");
                     a.href = dlUrl; a.download = ""; a.click();
                   } else {
-                    if (!pipe.current.renderedVideoNoSubUrl) { toast.error("ต้อง Render วิดีโอก่อน"); return; }
+                    // Need either composite (render+avatar) or plain render before we can burn
+                    const baseAvailable = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
+                    if (!baseAvailable) { toast.error("ต้อง Render วิดีโอก่อน"); return; }
                     toast("กำลัง Burn Subtitles...", { duration: 3000 });
                     await runBurnSubtitles();
                     const burned = pipe.current.burnedVideoUrl;
@@ -2542,8 +2546,10 @@ export default function VideoEditorPage() {
                 })() : null;
 
                 // "▶ Run" shown always when idle (and runnable), "↺" shown on hover when done/error
+                // Burn needs either composite (avatar) or no-sub render as base
+                const burnHasBase = !!(pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl);
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
-                  k !== "burnSubtitles" || (!!pipe.current.renderedVideoNoSubUrl && captions.length > 0 && !running)
+                  k !== "burnSubtitles" || (burnHasBase && captions.length > 0 && !running)
                 ) && (
                   k !== "avatar" && k !== "avatarTail" && k !== "composite" || useAvatar
                 );
