@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import axios from "axios";
 import { apiError } from "@/lib/api-error";
@@ -8,15 +7,15 @@ import { apiError } from "@/lib/api-error";
 // GET /api/heygen/avatars - Fetch available avatar models from HeyGen
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Get user's HeyGen API key
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true, heygenKey: true },
     });
 

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -10,17 +9,17 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const video = await prisma.video.findFirst({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
       include: {
         content: true,
@@ -43,9 +42,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
     const data: Record<string, unknown> = {};
@@ -71,7 +70,7 @@ export async function PATCH(
     }
 
     const updated = await prisma.video.updateMany({
-      where: { id, userId: session.user.id },
+      where: { id, userId: authUser.id },
       data,
     });
     if (updated.count === 0) return NextResponse.json({ error: "Video not found" }, { status: 404 });
@@ -89,10 +88,10 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -102,7 +101,7 @@ export async function PUT(
     const updated = await prisma.video.updateMany({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
       data: {
         status,
@@ -133,17 +132,17 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const deleted = await prisma.video.deleteMany({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
     });
 

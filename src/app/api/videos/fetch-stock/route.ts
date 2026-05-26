@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import path from "path";
@@ -244,8 +243,8 @@ async function llmRankCandidates(
 
 // POST /api/videos/fetch-stock
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const {
@@ -278,7 +277,7 @@ export async function POST(req: Request) {
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: authUser.id },
     select: { pixabayKey: true, pexelsKey: true, geminiKey: true, ttsProvider: true },
   });
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
@@ -333,7 +332,7 @@ export async function POST(req: Request) {
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = authUser.id;
   const userPrefix = `stock-${userId}-`;
 
   const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

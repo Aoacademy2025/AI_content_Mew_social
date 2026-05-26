@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -172,8 +171,8 @@ async function suggestWithGemini(script: string, captions: string[], geminiKey: 
  */
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id)
+    const authUser = await getCurrentUser();
+    if (!authUser)
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
@@ -218,7 +217,7 @@ export async function POST(req: Request) {
     // ── MODE: suggest ──
     if (mode === "suggest") {
       const user = await prisma.user.findUnique({
-        where: { id: session.user.id },
+        where: { id: authUser.id },
         select: { geminiKey: true },
       });
       const geminiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;

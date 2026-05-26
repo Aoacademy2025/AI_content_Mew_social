@@ -1,7 +1,7 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { ProfileSettings } from "@/components/settings/profile-settings";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { SupportModal } from "@/components/ui/support-modal";
@@ -14,7 +14,6 @@ import { cn } from "@/lib/utils";
 
 // ── Coupon Box ───────────────────────────────────────────────────────────
 function CouponBox() {
-  const { update } = useSession();
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -31,7 +30,7 @@ function CouponBox() {
       if (!res.ok) { toast.error(data.error ?? "เกิดข้อผิดพลาด"); return; }
       toast.success(data.message);
       setCode("");
-      await update();
+      window.location.reload();
     } finally {
       setLoading(false);
     }
@@ -287,12 +286,24 @@ function BillingTab() {
 
 // ── Main page ────────────────────────────────────────────────────────────
 function SettingsContent() {
-  const { data: session } = useSession();
+  const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string } | null>(null);
   const [tab, setTab] = useState("profile");
+  const [paymentPopup, setPaymentPopup] = useState<"success" | "cancelled" | null>(null);
+
+  useEffect(() => {
+    fetch("/api/user/me").then(r => r.json()).then(setMeUser).catch(() => {});
+  }, []);
   const [supportOpen, setSupportOpen] = useState(false);
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("tab");
+    const p = params.get("payment");
     if (t === "api-keys" || t === "billing") setTab(t);
+    if (p === "success" || p === "cancelled") {
+      setPaymentPopup(p as "success" | "cancelled");
+      window.history.replaceState({}, "", window.location.pathname + (t ? `?tab=${t}` : ""));
+      document.body.style.overflow = "hidden";
+    }
   }, []);
 
   const tabs = [
@@ -303,6 +314,114 @@ function SettingsContent() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">
+
+      {/* ── Payment Result Popup ──────────────────────────────────────── */}
+      {paymentPopup && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed inset-0 z-9999 flex items-center justify-center px-4"
+          style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}
+          onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+        >
+          <div
+            className="relative w-full max-w-sm overflow-hidden rounded-3xl text-center"
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: paymentPopup === "success"
+                ? "linear-gradient(160deg, #0a1a12 0%, #060d09 100%)"
+                : "linear-gradient(160deg, #1a0a0a 0%, #0d0606 100%)",
+              border: paymentPopup === "success"
+                ? "1px solid hsl(142 60% 35% / 0.5)"
+                : "1px solid hsl(0 70% 35% / 0.5)",
+              boxShadow: paymentPopup === "success"
+                ? "0 32px 80px hsl(142 60% 20% / 0.5), 0 0 0 1px hsl(142 60% 50% / 0.08) inset"
+                : "0 32px 80px hsl(0 70% 20% / 0.5), 0 0 0 1px hsl(0 70% 50% / 0.08) inset",
+            }}
+          >
+            {/* Ambient glow top */}
+            <div className="absolute -top-16 left-1/2 -translate-x-1/2 h-40 w-40 rounded-full blur-3xl pointer-events-none"
+              style={{ background: paymentPopup === "success" ? "hsl(142 70% 45% / 0.25)" : "hsl(0 70% 45% / 0.2)" }} />
+
+            <div className="relative px-8 pb-7 pt-9">
+              {paymentPopup === "success" ? (
+                <>
+                  {/* Success icon with rings */}
+                  <div className="mx-auto mb-6 relative w-24 h-24">
+                    <div className="absolute inset-0 rounded-full animate-ping opacity-20"
+                      style={{ background: "hsl(142 60% 50% / 0.3)" }} />
+                    <div className="absolute inset-2 rounded-full"
+                      style={{ background: "hsl(142 60% 50% / 0.08)", border: "1px solid hsl(142 60% 50% / 0.2)" }} />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="flex h-16 w-16 items-center justify-center rounded-full"
+                        style={{ background: "linear-gradient(135deg, hsl(142 60% 35%), hsl(160 70% 30%))", boxShadow: "0 8px 24px hsl(142 60% 40% / 0.4)" }}>
+                        <Check className="h-8 w-8 text-white" strokeWidth={3} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Badge — shows actual plan */}
+                  {(() => {
+                    const plan = meUser?.plan ?? "PRO";
+                    const isBiz = plan === "BUSINESS";
+                    return (
+                      <div className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 mb-4"
+                        style={{
+                          background: isBiz ? "hsl(252 70% 60% / 0.12)" : "hsl(142 60% 50% / 0.12)",
+                          border: isBiz ? "1px solid hsl(252 70% 60% / 0.3)" : "1px solid hsl(142 60% 50% / 0.25)",
+                        }}>
+                        <Crown className="h-3 w-3" style={{ color: isBiz ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }} />
+                        <span className="text-xs font-semibold tracking-wide" style={{ color: isBiz ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }}>
+                          {isBiz ? "BUSINESS MEMBER" : "PRO MEMBER"}
+                        </span>
+                      </div>
+                    );
+                  })()}
+
+                  <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">ชำระเงินสำเร็จ!</h2>
+                  <p className="text-sm text-emerald-300/70 leading-relaxed mb-1">
+                    ยินดีด้วย! แพ็กเกจของคุณได้รับการอัปเกรดแล้ว
+                  </p>
+                  <p className="text-xs text-zinc-600 mb-6">สิทธิ์ทั้งหมดพร้อมใช้งานทันที</p>
+
+                  <button
+                    onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+                    className="w-full rounded-2xl py-3 text-sm font-bold text-white tracking-wide transition-all hover:brightness-110 hover:-translate-y-0.5 active:translate-y-0"
+                    style={{
+                      background: meUser?.plan === "BUSINESS"
+                        ? "linear-gradient(135deg, hsl(252 70% 50%), hsl(280 70% 45%))"
+                        : "linear-gradient(135deg, hsl(142 60% 38%), hsl(160 65% 32%))",
+                      boxShadow: meUser?.plan === "BUSINESS"
+                        ? "0 8px 24px hsl(252 70% 40% / 0.4), inset 0 1px 0 rgba(255,255,255,0.15)"
+                        : "0 8px 24px hsl(142 60% 35% / 0.4), inset 0 1px 0 rgba(255,255,255,0.15)",
+                    }}>
+                    เริ่มใช้งานเลย →
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Cancel icon */}
+                  <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full"
+                    style={{ background: "hsl(0 70% 50% / 0.1)", border: "1px solid hsl(0 70% 50% / 0.25)", boxShadow: "0 8px 24px hsl(0 70% 40% / 0.2)" }}>
+                    <XCircle className="h-10 w-10 text-red-400" strokeWidth={1.5} />
+                  </div>
+
+                  <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">ยกเลิกการชำระเงิน</h2>
+                  <p className="text-sm text-red-300/70 leading-relaxed mb-1">ไม่มีการตัดเงินจากบัตรของคุณ</p>
+                  <p className="text-xs text-zinc-600 mb-6">คุณสามารถลองชำระเงินใหม่ได้เมื่อพร้อม</p>
+
+                  <button
+                    onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+                    className="w-full rounded-2xl py-3 text-sm font-semibold text-white/70 transition-all hover:text-white hover:bg-white/10"
+                    style={{ border: "1px solid rgba(255,255,255,0.1)" }}>
+                    ปิด
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Page header */}
       <div className="space-y-2">
         <p className="eyebrow" style={{ color: "hsl(var(--accent-primary))" }}>Account</p>
@@ -369,7 +488,7 @@ function SettingsContent() {
                 </p>
               </div>
             </div>
-            <ProfileSettings user={session?.user} />
+            <ProfileSettings user={meUser ?? undefined} />
           </div>
         )}
 

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 
@@ -27,8 +26,8 @@ function readJob(jobId: string): RenderJob | undefined {
 }
 
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const authUser = await getCurrentUser();
+  if (!authUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

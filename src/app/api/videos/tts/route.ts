@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -12,15 +11,15 @@ export const runtime = "nodejs";
 // Body: { text, voiceId? }
 // Returns: { voiceUrl, filename }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const { text, voiceId = "9lvVsLbaxGND6aZnt1W1", languageCode = "th" } = body ?? {};
   if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: authUser.id },
     select: { elevenlabsKey: true, plan: true },
   });
   if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });

@@ -1,15 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
-
-import { authOptions } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const jobId = searchParams.get("jobId");
@@ -21,7 +19,7 @@ export async function GET(req: Request) {
   // If jobId provided, read job-specific progress file
   const progressFile = jobId
     ? path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`)
-    : path.join(renderTmpDir, `render-progress-${session.user.id}.json`);
+    : path.join(renderTmpDir, `render-progress-${authUser.id}.json`);
 
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");

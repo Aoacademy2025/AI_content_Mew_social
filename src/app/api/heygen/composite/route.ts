@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -410,10 +409,10 @@ async function applyBookendBothSplit(
 // When tailAvatarVideoUrl is provided + avatarTiming=bookend-both → use split mode
 // ─────────────────────────────────────────────
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const dbUser = await prisma.user.findUnique({ where: { id: session.user.id }, select: { plan: true } });
+  const dbUser = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
   if (dbUser?.plan === "FREE") return NextResponse.json({ error: "Avatar composite ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
 
   const body = await req.json().catch(() => null);
@@ -432,7 +431,7 @@ export async function POST(req: Request) {
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { heygenKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
 
   const rendersDir = path.join(process.cwd(), "public", "renders");

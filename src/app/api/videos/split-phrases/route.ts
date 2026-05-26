@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 
@@ -38,8 +37,8 @@ function stripSrtArtifacts(input: string): string {
  * It is allowed to shorten/rephrase slightly, but meaning should stay intact.
  */
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const { script: rawScript, audioDurationMs } = body ?? {};
@@ -65,7 +64,7 @@ export async function POST(req: Request) {
   const targetRange = `${minPhrases}-${maxPhrases}`;
 
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: authUser.id },
     select: { geminiKey: true },
   });
   const apiKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;

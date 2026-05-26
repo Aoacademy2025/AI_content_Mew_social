@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -9,8 +8,8 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -20,7 +19,7 @@ export async function DELETE(
       where: { id },
     });
 
-    if (!image || image.userId !== session.user.id) {
+    if (!image || image.userId !== authUser.id) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 

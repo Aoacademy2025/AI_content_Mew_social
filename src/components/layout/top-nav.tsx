@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useSession, signOut } from "next-auth/react";
+import { useUser, useClerk } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import { LogOut, Menu, Sun, Moon, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,23 +24,21 @@ const navLinks = [
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
-  const { data: session, status } = useSession();
-  const sessionLoaded = status !== "loading";
+  const { user, isLoaded } = useUser();
+  const { signOut } = useClerk();
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-  const [initials, setInitials] = useState("U");
-  const [displayName, setDisplayName] = useState("");
-  const [displayEmail, setDisplayEmail] = useState("");
 
   useEffect(() => { setMounted(true); }, []);
 
-  useEffect(() => {
-    if (session?.user?.name) {
-      setInitials(session.user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2));
-      setDisplayName(session.user.name);
-    }
-    if (session?.user?.email) setDisplayEmail(session.user.email);
-  }, [session?.user?.name, session?.user?.email]);
+  const displayName = user?.fullName ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "";
+  const displayEmail = user?.primaryEmailAddress?.emailAddress ?? "";
+  const initials = displayName
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2) || "U";
 
   return (
     <div
@@ -66,7 +64,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           className="group flex items-center gap-2.5 mr-6 transition-opacity hover:opacity-90"
           aria-label="Hero AI Creator Studio"
         >
-          {/* Logo mark — sparkle icon in gradient tile */}
           <span
             className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden"
             style={{
@@ -75,14 +72,12 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
             }}
           >
             <Sparkles className="h-4 w-4 text-white" strokeWidth={2.5} />
-            {/* Subtle inner glow on hover */}
             <span
               aria-hidden
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
               style={{ background: "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 60%)" }}
             />
           </span>
-          {/* Wordmark — solid white */}
           <span className="text-[15px] font-bold tracking-tight text-white leading-none">
             Hero AI Creator Studio
           </span>
@@ -110,7 +105,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
 
       {/* Right — actions */}
       <div className="flex items-center gap-2">
-        {/* Theme toggle */}
         <button
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
           className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
@@ -123,12 +117,10 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           {mounted && resolvedTheme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
         </button>
 
-        {/* Bell */}
         <NotificationBell />
 
-        {/* User avatar with dropdown */}
         <FadeSwap
-          ready={sessionLoaded}
+          ready={isLoaded}
           className="h-8 w-8 shrink-0"
           skeleton={<div className="h-8 w-8 rounded-full skeleton-wave" />}
         >
@@ -161,7 +153,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
               <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
               <DropdownMenuItem
                 className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
-                onClick={() => signOut({ callbackUrl: "/login" })}
+                onClick={() => signOut({ redirectUrl: "/login" })}
               >
                 <LogOut className="mr-2 h-4 w-4" />
                 Logout

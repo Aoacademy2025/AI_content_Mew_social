@@ -1,24 +1,20 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react";
 import { Sidebar } from "./sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { TopNav } from "./top-nav";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
-  /** @deprecated padding is now controlled per-page via the .ve-no-padding marker — left for back-compat */
+  /** @deprecated padding is now controlled per-page via the .ve-no-padding marker */
   noPadding?: boolean;
 }
 
 export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
-  const { data: session, status } = useSession();
-  const sessionLoaded = status !== "loading";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
-  // Persist collapsed state
   useEffect(() => {
     const saved = localStorage.getItem("sidebar-collapsed");
     if (saved === "true") setCollapsed(true);
@@ -31,30 +27,20 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
     });
   }
 
-  const user = session?.user;
-  const role = (user as any)?.role as "ADMIN" | "USER" | undefined;
-  const plan = (user as any)?.plan as string | undefined;
-  const userName = user?.name ?? "";
-
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* Top Nav */}
       <TopNav onMenuClick={() => setMobileMenuOpen(true)} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Desktop Sidebar — collapsible */}
         <aside className="hidden md:block shrink-0">
-          <Sidebar role={role} collapsed={collapsed} onToggle={toggleCollapsed} initialPlan={plan} initialName={userName} sessionLoaded={sessionLoaded} />
+          <Sidebar collapsed={collapsed} onToggle={toggleCollapsed} />
         </aside>
 
-        {/* Mobile Sidebar — sheet overlay */}
         <MobileSidebar
           open={mobileMenuOpen}
           onOpenChange={setMobileMenuOpen}
-          role={role}
         />
 
-        {/* Main Content — pages with .ve-no-padding child get zero padding via :has() */}
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
           <main className={
             noPadding

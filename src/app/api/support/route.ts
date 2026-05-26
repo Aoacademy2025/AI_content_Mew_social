@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
@@ -11,8 +10,8 @@ export const maxDuration = 30;
 // POST /api/support — submit support ticket
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.formData();
     const message = body.get("message") as string | null;
@@ -38,7 +37,7 @@ export async function POST(req: Request) {
     // Save ticket to database
     const ticket = await prisma.supportTicket.create({
       data: {
-        userId: session.user.id,
+        userId: authUser.id,
         message: message.trim(),
         imageBase64,
         imageName,
@@ -46,7 +45,7 @@ export async function POST(req: Request) {
     });
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { name: true, email: true, plan: true },
     });
 
@@ -56,7 +55,7 @@ export async function POST(req: Request) {
       title: `🎫 Support #${ticket.id.slice(-6)}: ${user?.name ?? "User"}`,
       body: [
         `👤 ${user?.name ?? "?"} (${user?.email ?? "?"}) · ${user?.plan ?? "?"}`,
-        `🆔 ${session.user.id}`,
+        `🆔 ${authUser.id}`,
         ``,
         message.trim(),
         imageName ? `📎 ${imageName}` : "",
@@ -82,7 +81,7 @@ export async function POST(req: Request) {
 
     // Confirm to user
     await createNotification({
-      userId: session.user.id,
+      userId: authUser.id,
       type: "VIDEO_COMPLETED",
       title: "ส่งคำร้องสำเร็จ",
       body: "ทีมงานได้รับแจ้งปัญหาของคุณแล้ว จะติดต่อกลับทาง Email โดยเร็ว",

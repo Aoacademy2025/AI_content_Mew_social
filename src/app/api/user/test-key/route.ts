@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -60,13 +59,13 @@ async function testPixabay(key: string): Promise<{ ok: boolean; message: string 
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { keyType } = (await req.json()) as { keyType: KeyType };
 
     const user = await prisma.user.findUnique({
-      where: { id: (session.user as { id: string }).id },
+      where: { id: authUser.id },
       select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });

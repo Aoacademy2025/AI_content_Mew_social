@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { spawn } from "child_process";
@@ -20,8 +19,8 @@ export const maxDuration = 30;
  */
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { videoUrl, seekTime = 1.0 } = await req.json();
     if (!videoUrl) return NextResponse.json({ error: "videoUrl required" }, { status: 400 });

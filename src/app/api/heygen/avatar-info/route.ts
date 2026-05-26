@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
@@ -9,14 +8,14 @@ export const runtime = "nodejs";
 // GET /api/heygen/avatar-info?avatarId=xxx
 // Returns: { previewImageUrl, previewVideoUrl, name }
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const avatarId = searchParams.get("avatarId");
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { heygenKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 

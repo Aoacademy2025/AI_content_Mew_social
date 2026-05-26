@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 
@@ -31,10 +30,10 @@ function cleanOldUserStocks(userId: string) {
 
 /** GET /api/stocks — returns size and count of THIS user's stock cache only */
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = authUser.id;
 
   if (!fs.existsSync(STOCKS_DIR)) return NextResponse.json({ count: 0, sizeMb: 0 });
 
@@ -50,10 +49,10 @@ export async function GET() {
 
 /** DELETE /api/stocks — delete only THIS user's stock cache files */
 export async function DELETE() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const userId = (session.user as { id: string }).id;
+  const userId = authUser.id;
 
   if (!fs.existsSync(STOCKS_DIR)) return NextResponse.json({ deleted: 0, sizeMb: 0 });
 

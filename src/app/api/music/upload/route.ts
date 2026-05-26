@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -8,10 +7,10 @@ import fs from "fs";
 // POST /api/music/upload — user uploads their own music file (stored temporarily for one render)
 // Returns a URL that can be used as bgmFile in render
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const dbUser = await prisma.user.findUnique({ where: { id: session.user.id }, select: { plan: true } });
+  const dbUser = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
   if (dbUser?.plan === "FREE") return NextResponse.json({ error: "Music upload ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
 
   const formData = await req.formData();
@@ -24,7 +23,7 @@ export async function POST(req: Request) {
   }
 
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp3";
-  const filename = `user-${session.user.id}-${Date.now()}.${ext}`;
+  const filename = `user-${authUser.id}-${Date.now()}.${ext}`;
   const musicDir = path.join(process.cwd(), "public", "music");
   fs.mkdirSync(musicDir, { recursive: true });
 

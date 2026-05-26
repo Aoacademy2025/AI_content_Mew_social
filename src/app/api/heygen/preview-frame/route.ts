@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -32,14 +31,14 @@ async function downloadFile(url: string, dest: string, heygenKey?: string) {
 // Body: same as /api/heygen/composite
 // Returns: { imageUrl } — single JPEG frame of the composite (fast, for position verification)
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const { avatarVideoUrl, bgVideoUrl, overlayX = 0, overlayY = 0, overlayW, avatarCrop } = body ?? {};
   if (!avatarVideoUrl || !bgVideoUrl) return NextResponse.json({ error: "avatarVideoUrl and bgVideoUrl required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { heygenKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
 
   const rendersDir = path.join(process.cwd(), "public", "renders");

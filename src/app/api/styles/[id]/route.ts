@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -10,17 +9,17 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const style = await prisma.style.findFirst({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
     });
 
@@ -40,10 +39,10 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -59,7 +58,7 @@ export async function PUT(
     const style = await prisma.style.updateMany({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
       data: {
         name,
@@ -89,17 +88,17 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
     const { id } = await params;
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const deleted = await prisma.style.deleteMany({
       where: {
         id,
-        userId: session.user.id,
+        userId: authUser.id,
       },
     });
 

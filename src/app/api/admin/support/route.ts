@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
@@ -9,9 +8,9 @@ import { sendSupportReplyEmail } from "@/lib/send-email";
 // GET /api/admin/support — list all tickets (admin only)
 export async function GET(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const me = await prisma.user.findUnique({ where: { id: session.user.id }, select: { role: true } });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const { searchParams } = new URL(req.url);
@@ -33,9 +32,9 @@ export async function GET(req: Request) {
 // PATCH /api/admin/support — reply & close ticket
 export async function PATCH(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const me = await prisma.user.findUnique({ where: { id: session.user.id }, select: { role: true } });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const { ticketId, reply, status } = await req.json();

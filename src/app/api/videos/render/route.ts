@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
 import { FREE_LIMITS, isFree } from "@/lib/plan-limits";
@@ -149,8 +148,8 @@ function saveBundleCache() {
 export async function POST(req: Request) {
   loadBundleCache();
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -165,7 +164,7 @@ export async function POST(req: Request) {
     // when it creates its per-job subfolder inside our custom temp dir.
     try { fs.mkdirSync(renderTmpDir, { recursive: true }); } catch {}
 
-    const userId = session.user.id;
+    const userId = authUser.id;
 
     // Plan + usage check
     const dbUser = await prisma.user.findUnique({
@@ -611,15 +610,12 @@ export async function POST(req: Request) {
           }
         } catch {}
 
-        const session2 = await getServerSession(authOptions);
-        if (session2?.user?.id) {
-          createNotification({
-            userId: session2.user.id,
+        createNotification({
+            userId,
             type: "VIDEO_COMPLETED",
             title: "วิดีโอสร้างเสร็จแล้ว",
             body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
           }).catch(() => {});
-        }
       } catch (error) {
         if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
         console.error("Render error:", error);
@@ -627,15 +623,12 @@ export async function POST(req: Request) {
         setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
 
-        const session2 = await getServerSession(authOptions);
-        if (session2?.user?.id) {
-          createNotification({
-            userId: session2.user.id,
+        createNotification({
+            userId,
             type: "VIDEO_FAILED",
             title: "วิดีโอสร้างไม่สำเร็จ",
             body: "เกิดข้อผิดพลาดระหว่างสร้างวิดีโอ กรุณาลองใหม่อีกครั้ง",
           }).catch(() => {});
-        }
       }
     })();
 

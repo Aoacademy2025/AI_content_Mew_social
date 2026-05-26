@@ -1,6 +1,5 @@
 ﻿import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
@@ -155,8 +154,8 @@ function detectStyle(
 
 // POST /api/videos/generate-config
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const {

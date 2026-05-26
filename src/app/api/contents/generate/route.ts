@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { buildContentGenerationPrompt } from "@/lib/prompts/content-generator";
 import { apiError } from "@/lib/api-error";
@@ -9,8 +8,8 @@ import axios from "axios";
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { sourceText, sourceUrl, styleId, language, imageModel, videoDuration } = await req.json();
 
@@ -19,7 +18,7 @@ export async function POST(req: Request) {
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { geminiKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -28,7 +27,7 @@ export async function POST(req: Request) {
 
     let style = null;
     if (styleId) {
-      style = await prisma.style.findFirst({ where: { id: styleId, userId: session.user.id } });
+      style = await prisma.style.findFirst({ where: { id: styleId, userId: authUser.id } });
     }
 
     let textContent = sourceText;

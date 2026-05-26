@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
@@ -10,14 +9,14 @@ import { apiError } from "@/lib/api-error";
  */
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { paymentId } = await req.json();
     if (!paymentId) return NextResponse.json({ error: "paymentId required" }, { status: 400 });
 
     const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
-    if (!payment || payment.userId !== session.user.id) {
+    if (!payment || payment.userId !== authUser.id) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     if (payment.status !== "PENDING") {

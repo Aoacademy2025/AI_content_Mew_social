@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 30;
@@ -15,8 +14,8 @@ function decrypt(encrypted: string): string {
 // Returns: { status: string, videoUrl: string | null, errorMsg: string | null }
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -25,7 +24,7 @@ export async function POST(req: Request) {
     if (!videoId) return NextResponse.json({ error: "videoId required" }, { status: 400 });
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { heygenKey: true },
     });
 

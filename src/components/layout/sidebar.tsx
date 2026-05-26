@@ -37,7 +37,7 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];
 
-export function Sidebar({ role = "USER", collapsed = false, onToggle, initialPlan = "FREE", initialName = "", sessionLoaded = true }: SidebarProps) {
+export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const prefetchedRef = useRef<Set<string>>(new Set());
@@ -47,13 +47,24 @@ export function Sidebar({ role = "USER", collapsed = false, onToggle, initialPla
     prefetchedRef.current.add(href);
     router.prefetch(href);
   }
-  const [plan, setPlan] = useState<string>(initialPlan);
-  const [userName, setUserName] = useState<string>(initialName);
+
+  const [plan, setPlan] = useState<string>("FREE");
+  const [userName, setUserName] = useState<string>("");
+  const [role, setRole] = useState<"ADMIN" | "USER">(roleProp);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
 
-  // Sync if props update after session loads
-  useEffect(() => { if (initialPlan) setPlan(initialPlan); }, [initialPlan]);
-  useEffect(() => { if (initialName) setUserName(initialName); }, [initialName]);
+  useEffect(() => {
+    fetch("/api/user/me")
+      .then(r => r.json())
+      .then(data => {
+        if (data.plan) setPlan(data.plan);
+        if (data.name) setUserName(data.name);
+        if (data.role) setRole(data.role);
+        setSessionLoaded(true);
+      })
+      .catch(() => setSessionLoaded(true));
+  }, []);
 
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";

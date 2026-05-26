@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -52,8 +51,8 @@ function getDurationMs(filePath: string): Promise<number> {
 // Body: { audioUrl: "/renders/tts-xxx.mp3" }
 // Returns: { durationMs: number }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const audioUrl: string = body?.audioUrl ?? "";

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 
@@ -110,14 +109,14 @@ function parseKeywordAlternatives(raw: string): string[][] {
 }
 
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const { script, scenes, perSubtitle = false, audioDurationSec = 0 } = body ?? {};
 
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: authUser.id },
     select: { geminiKey: true },
   });
 

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import * as cheerio from "cheerio";
 import axios from "axios";
@@ -9,8 +8,8 @@ import { geminiGenerateText } from "@/lib/gemini";
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     let { sourceText, sourceUrl } = await req.json();
 
@@ -30,7 +29,7 @@ export async function POST(req: Request) {
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { geminiKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });

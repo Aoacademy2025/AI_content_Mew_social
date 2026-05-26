@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import axios from "axios";
 import { apiError } from "@/lib/api-error";
@@ -9,15 +8,15 @@ import { videoExpiryFor } from "@/lib/plan-limits";
 // POST /api/videos/generate - Generate avatar video via n8n webhook
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Check user plan
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true, heygenKey: true, elevenlabsKey: true },
     });
 
@@ -64,7 +63,7 @@ export async function POST(req: Request) {
       content = await prisma.content.findFirst({
         where: {
           id: contentId,
-          userId: session.user.id,
+          userId: authUser.id,
         },
       });
 
@@ -99,7 +98,7 @@ export async function POST(req: Request) {
         sceneCount,
         script,
         status: "PENDING",
-        userId: session.user.id,
+        userId: authUser.id,
         expiresAt: videoExpiryFor(user.plan),
       },
       include: {
@@ -122,7 +121,7 @@ export async function POST(req: Request) {
           {
             chatInput: script,
             videoId: video.id,
-            userId: session.user.id,
+            userId: authUser.id,
             avatarModel,
             voiceModel,
             sceneCount,

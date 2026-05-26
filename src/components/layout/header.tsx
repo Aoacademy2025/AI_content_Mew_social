@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signOut } from "next-auth/react";
+import { useClerk } from "@clerk/nextjs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -26,6 +26,7 @@ interface HeaderProps {
 }
 
 export function Header({ user, onMenuClick }: HeaderProps) {
+  const { signOut } = useClerk();
   const initials = user?.name
     ? user.name
         .split(" ")
@@ -94,7 +95,7 @@ export function Header({ user, onMenuClick }: HeaderProps) {
             <DropdownMenuSeparator style={{ background: "hsl(220 30% 16%)" }} />
             <DropdownMenuItem
               className="cursor-pointer text-red-400 focus:text-red-400 focus:bg-red-500/10"
-              onClick={() => signOut({ callbackUrl: "/login" })}
+              onClick={() => signOut({ redirectUrl: "/login" })}
             >
               <LogOut className="mr-2 h-4 w-4" />
               Logout

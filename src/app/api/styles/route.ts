@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { FREE_LIMITS } from "@/lib/plan-limits";
 import { createNotification } from "@/lib/notifications";
@@ -9,15 +8,15 @@ import { apiError } from "@/lib/api-error";
 // GET /api/styles - Get all styles for current user
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const styles = await prisma.style.findMany({
       where: {
-        userId: session.user.id,
+        userId: authUser.id,
       },
       orderBy: {
         createdAt: "desc",
@@ -33,9 +32,9 @@ export async function GET() {
 // POST /api/styles - Create new style
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -50,11 +49,11 @@ export async function POST(req: Request) {
 
     // Check FREE plan limit
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true },
     });
     if (user?.plan === "FREE") {
-      const count = await prisma.style.count({ where: { userId: session.user.id } });
+      const count = await prisma.style.count({ where: { userId: authUser.id } });
       if (count >= FREE_LIMITS.styles) {
         return NextResponse.json(
           { error: `Free plan จำกัด ${FREE_LIMITS.styles} สไตล์ กรุณา Upgrade เป็น Pro`, limitReached: true },
@@ -69,23 +68,23 @@ export async function POST(req: Request) {
         sampleText,
         sampleUrl,
         instructionPrompt,
-        userId: session.user.id,
+        userId: authUser.id,
       },
     });
 
     // Notify if approaching or at limit (FREE plan)
     if (user?.plan === "FREE") {
-      const newCount = await prisma.style.count({ where: { userId: session.user.id } });
+      const newCount = await prisma.style.count({ where: { userId: authUser.id } });
       if (newCount >= FREE_LIMITS.styles) {
         createNotification({
-          userId: session.user.id,
+          userId: authUser.id,
           type: "LIMIT_REACHED",
           title: "ถึงขีดจำกัด Style แล้ว",
           body: `คุณใช้ Style ครบ ${FREE_LIMITS.styles}/${FREE_LIMITS.styles} แล้ว อัปเกรดเป็น Pro เพื่อสร้างได้ไม่จำกัด`,
         }).catch(() => {});
       } else if (newCount >= FREE_LIMITS.styles - 1) {
         createNotification({
-          userId: session.user.id,
+          userId: authUser.id,
           type: "LIMIT_WARNING",
           title: "ใกล้ถึงขีดจำกัด Style",
           body: `คุณใช้ Style ไปแล้ว ${newCount}/${FREE_LIMITS.styles} อีก 1 ครั้งจะเต็ม`,

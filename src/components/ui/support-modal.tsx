@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSession } from "next-auth/react";
 import { X, HelpCircle, Loader2, ImagePlus, CheckCircle2, Trash2, Sparkles, Crown, Building2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
@@ -14,16 +13,20 @@ interface SupportModalProps {
 const MAX_LEN = 1000;
 
 export function SupportModal({ open, onClose }: SupportModalProps) {
-  const { data: session } = useSession();
   const [message, setMessage] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [plan, setPlan] = useState("FREE");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const user = session?.user as { name?: string; email?: string; id?: string; plan?: string } | undefined;
-  const plan = user?.plan ?? "FREE";
+  useEffect(() => {
+    if (open) {
+      fetch("/api/user/me").then(r => r.json()).then(d => { if (d.plan) setPlan(d.plan); }).catch(() => {});
+    }
+  }, [open]);
+
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
   const isPaid = isPro || isBusiness;
@@ -152,11 +155,11 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
               className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
               style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))" }}
             >
-              {user?.name?.slice(0, 2).toUpperCase() ?? "U"}
+              U
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold truncate text-white">{user?.name ?? "User"}</p>
-              <p className="text-[10px] truncate text-zinc-500">{user?.email ?? ""}</p>
+              <p className="text-xs font-semibold truncate text-white">ผู้ใช้งาน</p>
+              <p className="text-[10px] truncate text-zinc-500">{planLabel}</p>
             </div>
             <span
               className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border bg-linear-to-r ${planColor}`}

@@ -1,16 +1,15 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/notifications — list for current user (excludes ERROR_SYSTEM — those go to admin dashboard only)
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json([], { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json([], { status: 401 });
 
   const notifications = await prisma.notification.findMany({
     where: {
-      userId: session.user.id,
+      userId: authUser.id,
       NOT: { type: "ERROR_SYSTEM" },
     },
     orderBy: { createdAt: "desc" },
@@ -22,11 +21,11 @@ export async function GET() {
 
 // PATCH /api/notifications — mark all as read
 export async function PATCH() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({}, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({}, { status: 401 });
 
   await prisma.notification.updateMany({
-    where: { userId: session.user.id, read: false },
+    where: { userId: authUser.id, read: false },
     data: { read: true },
   });
 
@@ -35,11 +34,11 @@ export async function PATCH() {
 
 // DELETE /api/notifications — clear all
 export async function DELETE() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({}, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({}, { status: 401 });
 
   await prisma.notification.deleteMany({
-    where: { userId: session.user.id },
+    where: { userId: authUser.id },
   });
 
   return NextResponse.json({ ok: true });

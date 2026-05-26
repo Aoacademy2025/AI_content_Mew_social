@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -70,10 +69,10 @@ async function uploadAsset(localUrl: string, heygenKey: string, contentType?: st
 // Mode B (green screen): { text|audioUrl, avatarId, greenScreen: true, scale?, offsetX?, offsetY? }
 // Returns: { videoId }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const dbUser = await prisma.user.findUnique({ where: { id: session.user.id }, select: { plan: true } });
+  const dbUser = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
   if (dbUser?.plan === "FREE") return NextResponse.json({ error: "HeyGen Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
 
   const body = await req.json().catch(() => null);
@@ -95,7 +94,7 @@ export async function POST(req: Request) {
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
   if (!greenScreen && !removeBg && !bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl, greenScreen, or removeBg required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { heygenKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decrypt(user.heygenKey);
 

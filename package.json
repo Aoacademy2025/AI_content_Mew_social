@@ -15,6 +15,7 @@
     "seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.4.1",
     "@eslint/eslintrc": "^3.3.3",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@google/genai": "^1.50.1",
@@ -70,6 +71,7 @@
     "sharp": "^0.34.5",
     "sonner": "^2.0.7",
     "stripe": "^22.1.1",
+    "svix": "^1.94.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",

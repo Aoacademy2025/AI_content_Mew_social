@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
-import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import {
   Check, Zap, Crown, Building2, Loader2, AlertCircle, Sparkles,
@@ -32,20 +31,20 @@ const PLAN_DEFS: PlanDef[] = [
   {
     key: "PRO", name: "Pro",
     tagline: "สำหรับ Creator ที่ต้องการเครื่องมือเต็มรูปแบบ",
-    icon: Crown, color: "hsl(220 90% 65%)",
+    icon: Crown, color: "hsl(38 92% 55%)",
     highlight: true, badge: "ยอดนิยม",
   },
   {
     key: "BUSINESS", name: "Business",
     tagline: "สำหรับทีมงานและองค์กรธุรกิจ — Priority Support",
-    icon: Building2, color: "hsl(252 70% 65%)",
+    icon: Building2, color: "hsl(280 80% 65%)",
   },
 ];
 
 function PricingContent() {
-  const { data: session } = useSession();
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState<string | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<string>("FREE");
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
     pro: { price: number; features: string[] };
@@ -55,9 +54,8 @@ function PricingContent() {
 
   useEffect(() => {
     fetch("/api/plans").then(r => r.json()).then(setPlanConfig).catch(() => {});
+    fetch("/api/user/me").then(r => r.json()).then(d => { if (d.plan) setCurrentPlan(d.plan); }).catch(() => {});
   }, []);
-
-  const currentPlan = (session?.user as any)?.plan ?? "FREE";
 
   function getPlanData(def: PlanDef) {
     if (def.key === "FREE") return { price: planConfig?.free?.price ?? 0, features: planConfig?.free?.features ?? [] };
@@ -282,10 +280,10 @@ function PricingContent() {
                     )}
                     style={{
                       background: isCurrent
-                        ? `${def.color}15`
-                        : `linear-gradient(135deg, ${def.color}, hsl(var(--accent-secondary)))`,
-                      border: `1px solid ${isCurrent ? `${def.color}40` : def.color}`,
-                      color: isCurrent ? def.color : "#fff",
+                        ? "rgba(255,255,255,0.05)"
+                        : `linear-gradient(135deg, ${def.color}, ${def.color}aa)`,
+                      border: `1px solid ${isCurrent ? "rgba(255,255,255,0.12)" : def.color}`,
+                      color: isCurrent ? "rgba(255,255,255,0.5)" : "#fff",
                       boxShadow: isCurrent
                         ? "none"
                         : `0 10px 28px ${def.color}55, inset 0 1px 0 rgba(255,255,255,0.15)`,

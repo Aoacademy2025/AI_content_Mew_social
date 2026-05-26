@@ -1,18 +1,17 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { FREE_LIMITS, isPaid as isPaidPlan } from "@/lib/plan-limits";
 import { apiError } from "@/lib/api-error";
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const userId = session.user.id;
+    const userId = authUser.id;
 
     const [user, styleCount, contentCount, videoCount, recentContents, recentVideos] =
       await Promise.all([

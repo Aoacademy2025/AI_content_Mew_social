@@ -1,6 +1,5 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
 import {
   Palette, FileText, Video, Sparkles, Crown, Building2, ArrowRight,
@@ -56,12 +55,13 @@ function statusStyle(s: string) {
 }
 
 export default function DashboardPage() {
-  const { data: session } = useSession();
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState("");
 
   useEffect(() => {
     fetch("/api/user/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
+    fetch("/api/user/me").then(r => r.json()).then(d => { if (d.name) setUserName(d.name); }).catch(() => {});
   }, []);
 
   const isBusiness = stats?.plan === "BUSINESS";
@@ -94,7 +94,7 @@ export default function DashboardPage() {
               <span className="eyebrow" style={{ color: "hsl(var(--accent-primary))" }}>Welcome Back</span>
             </div>
             <h1 className="section-heading mb-2">
-              สวัสดีคุณ <span className="gradient-text">{session?.user?.name || "ผู้ใช้งาน"}</span>
+              สวัสดีคุณ <span className="gradient-text">{userName || "ผู้ใช้งาน"}</span>
             </h1>
             <p className="text-base" style={{ color: "var(--ui-text-secondary)" }}>เริ่มสร้างเนื้อหาของคุณวันนี้</p>
             <div className="flex flex-wrap gap-3 mt-7">

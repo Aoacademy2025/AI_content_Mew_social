@@ -1,6 +1,7 @@
 ﻿import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import { RouteProgress } from "@/components/layout/route-progress";
@@ -22,6 +23,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    <ClerkProvider>
     <html lang="th" suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -61,5 +63,6 @@ export default function RootLayout({
         </Providers>
       </body>
     </html>
+    </ClerkProvider>
   );
 }

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { stripe, PLANS, PlanKey } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
@@ -10,8 +9,8 @@ const PENDING_REUSE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { plan } = await req.json() as { plan: PlanKey };
     const planConfig = PLANS[plan];
@@ -19,12 +18,12 @@ export async function POST(req: Request) {
     if (!planConfig.priceId) return NextResponse.json({ error: "Stripe price not configured" }, { status: 500 });
 
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { email: true, name: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const userId = session.user.id;
+    const userId = authUser.id;
     const now = new Date();
     const reuseAfter = new Date(now.getTime() - PENDING_REUSE_WINDOW_MS);
 

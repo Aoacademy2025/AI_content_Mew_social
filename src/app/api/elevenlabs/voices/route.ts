@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import axios from "axios";
@@ -8,15 +7,15 @@ import axios from "axios";
 // GET /api/elevenlabs/voices - Fetch available voice models from ElevenLabs
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Get user's ElevenLabs API key
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true, elevenlabsKey: true },
     });
 

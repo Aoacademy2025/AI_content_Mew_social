@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import fs from "fs";
@@ -43,8 +42,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || (session.user as { role?: string }).role !== "ADMIN")
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!authUser || authUser.role !== "ADMIN")
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const { id: userId } = await params;
@@ -103,8 +103,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user || (session.user as { role?: string }).role !== "ADMIN")
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!authUser || authUser.role !== "ADMIN")
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const { id: userId } = await params;

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -8,8 +7,8 @@ const EXPIRY_DAYS = 7;
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -18,11 +17,11 @@ export async function GET() {
 
     // Auto-delete expired images
     await prisma.generatedImage.deleteMany({
-      where: { userId: session.user.id, createdAt: { lt: expiryDate } },
+      where: { userId: authUser.id, createdAt: { lt: expiryDate } },
     });
 
     const images = await prisma.generatedImage.findMany({
-      where: { userId: session.user.id },
+      where: { userId: authUser.id },
       orderBy: { createdAt: "desc" },
     });
 
@@ -34,8 +33,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -47,7 +46,7 @@ export async function POST(req: Request) {
 
     const created = await prisma.generatedImage.createMany({
       data: images.map((img: { prompt: string; url: string; imageModel: string; sceneTitle?: string; contentTitle?: string }) => ({
-        userId: session.user.id,
+        userId: authUser.id,
         prompt: img.prompt,
         url: img.url,
         imageModel: img.imageModel,

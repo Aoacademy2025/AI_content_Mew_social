@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -9,11 +8,11 @@ function decrypt(encrypted: string): string { return Buffer.from(encrypted, "bas
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const user = await prisma.user.findUnique({
-      where: { id: (session.user as { id: string }).id },
+      where: { id: authUser.id },
       select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -32,8 +31,8 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey } = await req.json();
 
@@ -44,7 +43,7 @@ export async function PUT(req: Request) {
     if (pexelsKey     !== undefined) updateData.pexelsKey     = pexelsKey     ? encrypt(pexelsKey)     : null;
     if (pixabayKey    !== undefined) updateData.pixabayKey    = pixabayKey    ? encrypt(pixabayKey)    : null;
 
-    await prisma.user.update({ where: { id: (session.user as { id: string }).id }, data: updateData });
+    await prisma.user.update({ where: { id: authUser.id }, data: updateData });
     return NextResponse.json({ message: "API keys updated successfully" });
   } catch (error) {
     return apiError({ route: "user/api-keys", error });

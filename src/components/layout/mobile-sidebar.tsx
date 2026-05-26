@@ -6,10 +6,9 @@ import { Sidebar } from "./sidebar";
 interface MobileSidebarProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  role?: "ADMIN" | "USER";
 }
 
-export function MobileSidebar({ open, onOpenChange, role }: MobileSidebarProps) {
+export function MobileSidebar({ open, onOpenChange }: MobileSidebarProps) {
   if (!open) return null;
   return (
     <>
@@ -31,7 +30,7 @@ export function MobileSidebar({ open, onOpenChange, role }: MobileSidebarProps) 
         >
           <X className="h-3.5 w-3.5" />
         </button>
-        <Sidebar role={role} />
+        <Sidebar />
       </div>
     </>
   );

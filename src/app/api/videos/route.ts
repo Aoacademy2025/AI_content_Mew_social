@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
@@ -10,15 +9,15 @@ import path from "path";
 // GET /api/videos - Get all videos for current user
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const now = new Date();
     const videos = await prisma.video.findMany({
-      where: { userId: session.user.id },
+      where: { userId: authUser.id },
       include: { content: { select: { headline: true } } },
       orderBy: { createdAt: "desc" },
     });
@@ -83,9 +82,9 @@ export async function GET() {
 // POST /api/videos - Create new video
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -106,7 +105,7 @@ export async function POST(req: Request) {
 
     // Compute expiresAt based on user's current plan (FREE: 3d, PRO: 30d, BUSINESS: 90d)
     const dbUser = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true },
     });
     const userPlan = dbUser?.plan ?? "FREE";
@@ -125,7 +124,7 @@ export async function POST(req: Request) {
         avatarVideoUrl: avatarVideoUrl ?? null,
         renderConfig: renderConfig ? (typeof renderConfig === "string" ? renderConfig : JSON.stringify(renderConfig)) : null,
         status: status ?? "COMPLETED",
-        userId: session.user.id,
+        userId: authUser.id,
         expiresAt: videoExpiryFor(userPlan),
       },
     });

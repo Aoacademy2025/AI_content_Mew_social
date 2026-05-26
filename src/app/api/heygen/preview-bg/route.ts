@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -26,8 +25,8 @@ function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
 // Body: { avatarVideoUrl: string }
 // Returns: { previewUrl: string } — a transparent webm video served via /api/stocks/
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { avatarVideoUrl } = await req.json().catch(() => ({}));
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });

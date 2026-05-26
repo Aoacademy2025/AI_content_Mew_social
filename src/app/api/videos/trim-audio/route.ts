@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -42,8 +41,8 @@ function probeDuration(ffmpeg: string, filePath: string): Promise<number> {
 // - durationSecs + tailSecs: concat first N seconds + last T seconds (bookend-both)
 // Returns: { audioUrl }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const { audioUrl, durationSecs, tailSecs } = body ?? {};

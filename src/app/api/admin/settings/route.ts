@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
@@ -57,9 +56,9 @@ async function setConfig(key: SettingKey, value: string) {
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const me = await prisma.user.findUnique({ where: { id: session.user.id }, select: { role: true } });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const results = await Promise.all(KEYS.map(async k => [k, await getConfig(k)]));
@@ -73,9 +72,9 @@ export async function GET() {
 
 export async function PATCH(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const me = await prisma.user.findUnique({ where: { id: session.user.id }, select: { role: true } });
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const body = await req.json();

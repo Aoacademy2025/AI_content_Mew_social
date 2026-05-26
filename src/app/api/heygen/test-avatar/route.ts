@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
@@ -30,8 +29,8 @@ async function uploadAsset(buffer: Buffer, contentType: string, heygenKey: strin
 // bgVideoUrl: local /renders/xxx.mp4 — ถ้าไม่มีให้ใช้ solid black bg
 // HeyGen จัดการ matting + composite ทั้งหมด ไม่ใช้ ffmpeg
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await getCurrentUser();
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const {
@@ -42,7 +41,7 @@ export async function POST(req: Request) {
   if (!text) return NextResponse.json({ error: "text required" }, { status: 400 });
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id }, select: { heygenKey: true } });
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decrypt(user.heygenKey);
 

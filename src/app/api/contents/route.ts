@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { FREE_LIMITS } from "@/lib/plan-limits";
 import { createNotification } from "@/lib/notifications";
@@ -9,15 +8,15 @@ import { apiError } from "@/lib/api-error";
 // GET /api/contents - Get all contents for current user
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const contents = await prisma.content.findMany({
       where: {
-        userId: session.user.id,
+        userId: authUser.id,
       },
       orderBy: {
         createdAt: "desc",
@@ -33,9 +32,9 @@ export async function GET() {
 // POST /api/contents - Create new content
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
+    const authUser = await getCurrentUser();
 
-    if (!session?.user?.id) {
+    if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -63,11 +62,11 @@ export async function POST(req: Request) {
 
     // Check FREE plan limit
     const user = await prisma.user.findUnique({
-      where: { id: session.user.id },
+      where: { id: authUser.id },
       select: { plan: true },
     });
     if (user?.plan === "FREE") {
-      const count = await prisma.content.count({ where: { userId: session.user.id } });
+      const count = await prisma.content.count({ where: { userId: authUser.id } });
       if (count >= FREE_LIMITS.contents) {
         return NextResponse.json(
           { error: `Free plan จำกัด ${FREE_LIMITS.contents} คอนเทนต์ กรุณา Upgrade เป็น Pro`, limitReached: true },
@@ -90,23 +89,23 @@ export async function POST(req: Request) {
         hashtags,
         imagePrompt,
         visualNotes,
-        userId: session.user.id,
+        userId: authUser.id,
       },
     });
 
     // Notify if approaching or at limit (FREE plan)
     if (user?.plan === "FREE") {
-      const newCount = await prisma.content.count({ where: { userId: session.user.id } });
+      const newCount = await prisma.content.count({ where: { userId: authUser.id } });
       if (newCount >= FREE_LIMITS.contents) {
         createNotification({
-          userId: session.user.id,
+          userId: authUser.id,
           type: "LIMIT_REACHED",
           title: "ถึงขีดจำกัด Content แล้ว",
           body: `คุณใช้ Content ครบ ${FREE_LIMITS.contents}/${FREE_LIMITS.contents} แล้ว อัปเกรดเป็น Pro เพื่อสร้างได้ไม่จำกัด`,
         }).catch(() => {});
       } else if (newCount >= FREE_LIMITS.contents - 1) {
         createNotification({
-          userId: session.user.id,
+          userId: authUser.id,
           type: "LIMIT_WARNING",
           title: "ใกล้ถึงขีดจำกัด Content",
           body: `คุณใช้ Content ไปแล้ว ${newCount}/${FREE_LIMITS.contents} อีก 1 ครั้งจะเต็ม`,
