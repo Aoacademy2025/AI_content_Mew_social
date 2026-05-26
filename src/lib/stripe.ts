@@ -6,15 +6,24 @@ import { storageDaysForPlan } from "@/lib/plan-limits";
 // Real Stripe is constructed on first use inside route handlers (runtime),
 // where the env var is guaranteed to be loaded.
 let _stripe: Stripe | null = null;
+let _stripeKey: string | null = null;
+
+export function resetStripeClient() {
+  _stripe = null;
+  _stripeKey = null;
+}
+
 function getStripe(): Stripe {
-  if (_stripe) return _stripe;
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) {
     throw new Error(
       "STRIPE_SECRET_KEY is not set. Configure it in .env (or VPS env) before calling Stripe.",
     );
   }
+  // Rebuild client if key changed (e.g. Admin UI updated it at runtime)
+  if (_stripe && _stripeKey === key) return _stripe;
   _stripe = new Stripe(key, { apiVersion: "2026-04-22.dahlia" });
+  _stripeKey = key;
   return _stripe;
 }
 
@@ -35,7 +44,7 @@ export const PLANS = {
     name: "Pro",
     thb: 599,
     periodDays: 30,
-    priceId: process.env.STRIPE_PRICE_PRO_MONTHLY ?? "",
+    get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY ?? ""; },
     clips: 100,
     maxMin: 6,
     retention: storageDaysForPlan("PRO"),
@@ -44,7 +53,7 @@ export const PLANS = {
     name: "Business",
     thb: 990,
     periodDays: 30,
-    priceId: process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? "",
+    get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? ""; },
     clips: 300,
     maxMin: 10,
     retention: storageDaysForPlan("BUSINESS"),

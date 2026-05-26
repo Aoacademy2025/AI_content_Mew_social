@@ -4,11 +4,13 @@ import { prisma } from "@/lib/prisma";
 import { PLANS, PlanKey } from "@/lib/stripe";
 import { createNotification } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
+import { ensureStripeConfig } from "@/lib/load-stripe-config";
 
 export const config = { api: { bodyParser: false } };
 
 // Stripe requires raw body for signature verification
 export async function POST(req: Request) {
+  await ensureStripeConfig();
   const body = await req.text();
   const sig = req.headers.get("stripe-signature") ?? "";
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? "";

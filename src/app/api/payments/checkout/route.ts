@@ -3,12 +3,14 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { stripe, PLANS, PlanKey } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { ensureStripeConfig } from "@/lib/load-stripe-config";
 
 // Reuse a pending session if created within this window (Stripe sessions expire after 24h)
 const PENDING_REUSE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 export async function POST(req: Request) {
   try {
+    await ensureStripeConfig();
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

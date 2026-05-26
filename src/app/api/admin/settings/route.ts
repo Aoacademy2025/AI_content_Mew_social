@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { resetStripeClient } from "@/lib/stripe";
 
 const KEYS = [
   "support_email",
@@ -83,6 +84,11 @@ export async function PATCH(req: Request) {
       if (key in body && body[key] !== undefined) {
         await setConfig(key, String(body[key]));
       }
+    }
+
+    // If Stripe keys were updated, reset the cached client so next call uses new key
+    if ("stripe_secret_key" in body || "stripe_price_pro" in body || "stripe_price_business" in body) {
+      resetStripeClient();
     }
 
     return NextResponse.json({ ok: true });
