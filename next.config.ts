@@ -21,6 +21,7 @@ const nextConfig: NextConfig = {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
     cpus: 1,
+    instrumentationHook: true,
   },
   async rewrites() {
     return [
