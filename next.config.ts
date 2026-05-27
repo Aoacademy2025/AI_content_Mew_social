@@ -64,16 +64,19 @@ const nextConfig: NextConfig = {
   webpack: (config, { dev }) => {
     // Prevent HMR from triggering on runtime-written files (.tmp, stocks, renders).
     // Without this, every render progress update causes a full page refresh in dev.
-    if (dev && config.watchOptions) {
+    if (dev) {
+      config.watchOptions = config.watchOptions ?? {};
       const existing = config.watchOptions.ignored ?? [];
       const toIgnore = [
-        "**/\\.tmp/**",
+        "**/.tmp/**",
         "**/stocks/**",
         "**/public/renders/**",
       ];
       config.watchOptions.ignored = Array.isArray(existing)
         ? [...existing, ...toIgnore]
-        : [existing, ...toIgnore].filter(Boolean);
+        : existing
+        ? [existing, ...toIgnore]
+        : toIgnore;
     }
 
     const prevExternals = config.externals ?? [];

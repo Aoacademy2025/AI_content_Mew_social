@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
+import os from "os";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,7 @@ type RenderJob = {
 };
 
 function jobFilePath(jobId: string): string {
-  const d = path.join(process.cwd(), ".tmp", "render-jobs");
+  const d = path.join(os.tmpdir(), "ai-content-render", "render-jobs");
   return path.join(d, `${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
 }
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import path from "path";
 import fs from "fs";
+import os from "os";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,7 @@ export async function GET(req: Request) {
 
   const renderTmpDir = process.env.RENDER_TMP_ROOT
     ? path.resolve(process.env.RENDER_TMP_ROOT)
-    : path.join(process.cwd(), ".tmp", "remotion");
+    : path.join(os.tmpdir(), "ai-content-render");
 
   // If jobId provided, read job-specific progress file
   const progressFile = jobId
