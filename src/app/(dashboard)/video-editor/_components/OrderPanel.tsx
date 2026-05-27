@@ -75,8 +75,8 @@ export function OrderPanel(p: OrderPanelProps) {
             </div>
           </div>
 
-          {/* TTS — ซ่อนเมื่อ Avatar เปิดอยู่และเป็น Direct URL mode */}
-          {!(p.useAvatar && p.avatarInputMode === "direct") ? (
+          {/* TTS — ซ่อนเมื่อ Direct URL */}
+          {p.avatarInputMode !== "direct" ? (
           <div>
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Voice</div>
             <div className="flex gap-1.5">

@@ -303,8 +303,66 @@ export default function VideoEditorPage() {
     }).catch(() => {});
     fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
 
-    // Clear any stale sessionStorage from old sessions
-    try { sessionStorage.removeItem("ve_pending_render_jobId"); sessionStorage.removeItem("ve_pending_render_ts"); } catch {}
+    // Resume render polling if page was refreshed mid-render (jobId in URL)
+    const urlJobId = new URL(window.location.href).searchParams.get("jobId");
+    if (urlJobId) {
+      activeJobIdRef.current = urlJobId;
+      setStep("render", "running", "Rendering...");
+      setRenderProgressError(null);
+
+      let pollStopped = false;
+      let renderPollTimer: ReturnType<typeof setInterval> | null = null;
+      const stopPoll = () => {
+        pollStopped = true;
+        if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
+        try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
+      };
+      stopRenderPollRef.current = stopPoll;
+
+      // Poll progress (fast)
+      renderPollTimer = setInterval(async () => {
+        if (pollStopped) return;
+        try {
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
+          if (!r.ok) return;
+          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+          if (d.videoUrl) {
+            stopPoll();
+            pipe.current.renderedVideoUrl = d.videoUrl;
+            pipe.current.renderedVideoNoSubUrl = d.videoUrl;
+            setPreRenderUrl(d.videoUrl); setVideoUrl(d.videoUrl);
+            setStep("render", "done", d.videoUrl); setRenderProgress(100);
+            return;
+          }
+          if (d.error) { stopPoll(); setRenderProgressError(d.error); setStep("render", "error", d.error); return; }
+          const p = Number(d.progress);
+          if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
+        } catch {}
+      }, 600);
+
+      // Poll status (slow — authoritative)
+      const si = setInterval(async () => {
+        if (pollStopped) { clearInterval(si); return; }
+        try {
+          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
+          const sd = await sr.json();
+          if (sd.status === "done" && sd.videoUrl) {
+            clearInterval(si); stopPoll();
+            pipe.current.renderedVideoUrl = sd.videoUrl;
+            pipe.current.renderedVideoNoSubUrl = sd.videoUrl;
+            setPreRenderUrl(sd.videoUrl); setVideoUrl(sd.videoUrl);
+            setStep("render", "done", sd.videoUrl); setRenderProgress(100);
+          } else if (sd.status === "error") {
+            clearInterval(si); stopPoll();
+            setRenderProgressError(sd.error ?? "Render failed"); setStep("render", "error", sd.error ?? "Render failed");
+          }
+        } catch {}
+      }, 3000);
+
+      // ล้าง status poller เมื่อ component unmount
+      const origStop = stopRenderPollRef.current;
+      stopRenderPollRef.current = () => { origStop(); clearInterval(si); };
+    }
 
     // Stop all polling and abort when tab closes/refreshes
     const onUnload = () => { abortControllerRef.current?.abort(); stopRenderPollRef.current?.(); };
@@ -1123,9 +1181,11 @@ export default function VideoEditorPage() {
       }
       if (!jobId) throw new Error("Render server did not return jobId");
       currentJobId = jobId; activeJobIdRef.current = jobId;
+      // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
+      try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 5 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 15 * 60 * 1000;
+      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 120 นาที → ถือว่า hang → error
+      const STALE_TIMEOUT_MS = 120 * 60 * 1000;
       let lastProgressValue = -1;
       let lastProgressChangedAt = Date.now();
 
@@ -1142,7 +1202,7 @@ export default function VideoEditorPage() {
           if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
           else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
             clearInterval(si); resolveRenderUrl = null;
-            reject(new Error("Render หยุดค้างนานเกิน 5 นาที — กรุณาลองใหม่"));
+            reject(new Error("Render หยุดค้างนานเกิน 120 นาที — กรุณาลองใหม่"));
             return;
           }
 
@@ -1164,6 +1224,8 @@ export default function VideoEditorPage() {
       });
 
       if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
+      // เคลียร์ jobId ออกจาก URL หลัง render เสร็จ
+      try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
       // Render always produces a no-sub video — Burn Subtitles adds them separately
       pipe.current.renderedVideoUrl = url;
       pipe.current.renderedVideoNoSubUrl = url;
@@ -1181,7 +1243,7 @@ export default function VideoEditorPage() {
       setStep("render", "done", url); setRenderProgress(100); return url;
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
-      try { sessionStorage.removeItem("ve_pending_render_jobId"); sessionStorage.removeItem("ve_pending_render_ts"); } catch {}
+      try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
       if (!renderFailedMessage && !(err instanceof Error && err.name === "AbortError")) {
         const msg = friendlyError(err);
         setRenderProgressError(msg); setStep("render", "error", msg);

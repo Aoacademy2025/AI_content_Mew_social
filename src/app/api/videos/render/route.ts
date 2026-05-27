@@ -14,7 +14,7 @@ function getRenderTmpDir(): string {
   const base =
     process.env.RENDER_TMP_ROOT
       ? path.resolve(process.env.RENDER_TMP_ROOT)
-      : path.join(os.tmpdir(), "ai-content-render");
+      : path.join(process.cwd(), ".tmp", "remotion");
   try {
     fs.mkdirSync(base, { recursive: true });
   } catch {}
@@ -67,7 +67,7 @@ type RenderJob = {
 };
 
 function jobsDir(): string {
-  const d = path.join(os.tmpdir(), "ai-content-render", "render-jobs");
+  const d = path.join(process.cwd(), ".tmp", "render-jobs");
   try { fs.mkdirSync(d, { recursive: true }); } catch {}
   return d;
 }
