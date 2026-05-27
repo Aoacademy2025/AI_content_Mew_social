@@ -1284,9 +1284,9 @@ Gemini transcribed the audio into segments below. Each segment has accurate time
 • If a script word is missing from segments, add it to the nearest caption.
 
 ━━━ TIMESTAMPS ━━━
-• startMs = startMs of FIRST segment in merged group × 1000 (convert seconds → ms).
-• endMs = endMs of LAST segment in merged group × 1000.
-• First card startMs = 0.
+• startMs = start of FIRST segment in merged group × 1000 (seconds → ms). Use exact value from segments list.
+• endMs = end of LAST segment in merged group × 1000. Use exact value from segments list.
+• Do NOT adjust timestamps — copy them verbatim from the segments. Accuracy is critical for lip-sync.
 
 ━━━ TAGS ━━━
 • "hook" = first card only (exactly 1)
@@ -1413,9 +1413,6 @@ Total audio: ${audioDur.toFixed(2)}s`;
           mergedCaptions.push({ ...cap });
         }
         llmCaptions = mergedCaptions;
-
-        // First caption starts at 0
-        if (llmCaptions.length > 0 && (llmCaptions[0] as { startMs: number }).startMs > 0) (llmCaptions[0] as { startMs: number }).startMs = 0;
 
         // Bridge gaps and extend last to audio end
         for (let i = 0; i < llmCaptions.length - 1; i++) {
