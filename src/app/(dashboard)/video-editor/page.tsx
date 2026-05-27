@@ -303,13 +303,69 @@ export default function VideoEditorPage() {
     }).catch(() => {});
     fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
 
-    // When user closes/refreshes the tab, abort any active render and reset state
-    const onUnload = () => {
-      abortControllerRef.current?.abort();
-      stopRenderPollRef.current?.();
-    };
-    window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
+    // ── Resume render polling ถ้ามี pending jobId จาก session ก่อน hot-reload/refresh ──
+    const savedJobId = sessionStorage.getItem("ve_pending_render_jobId");
+    const savedJobTs = Number(sessionStorage.getItem("ve_pending_render_ts") ?? "0");
+    const AGE_LIMIT_MS = 3 * 60 * 60 * 1000; // 3 ชั่วโมง
+    if (savedJobId && Date.now() - savedJobTs < AGE_LIMIT_MS) {
+      console.log(`[render] resuming poll for job=${savedJobId}`);
+      setStep("render", "running", "Rendering (resumed)...");
+      setRunning(true); runningRef.current = true;
+      activeJobIdRef.current = savedJobId;
+
+      // Poll progress file (fast) — resolves UI ทันทีถ้า render เสร็จแล้ว
+      const progressPoll = setInterval(async () => {
+        try {
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(savedJobId)}`, { cache: "no-store" });
+          if (!r.ok) return;
+          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+          if (d.videoUrl) {
+            clearInterval(progressPoll);
+            sessionStorage.removeItem("ve_pending_render_jobId");
+            sessionStorage.removeItem("ve_pending_render_ts");
+            setPreRenderUrl(d.videoUrl); setVideoUrl(d.videoUrl);
+            pipe.current.renderedVideoUrl = d.videoUrl;
+            setStep("render", "done", d.videoUrl); setRenderProgress(100);
+            setRunning(false); runningRef.current = false;
+            toast.success("เรนเดอร์เสร็จแล้ว!");
+            return;
+          }
+          if (d.error) {
+            clearInterval(progressPoll);
+            sessionStorage.removeItem("ve_pending_render_jobId");
+            sessionStorage.removeItem("ve_pending_render_ts");
+            setStep("render", "error", d.error); setRunning(false); runningRef.current = false;
+            return;
+          }
+          const p = Number(d.progress);
+          if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
+        } catch {}
+      }, 1500);
+
+      // Poll render-status (slow) — fallback ถ้า progress file ไม่อัพเดต
+      const statusPoll = setInterval(async () => {
+        try {
+          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(savedJobId)}`, { cache: "no-store" });
+          const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+          if (sd.status === "done" && sd.videoUrl) {
+            clearInterval(progressPoll); clearInterval(statusPoll);
+            sessionStorage.removeItem("ve_pending_render_jobId");
+            sessionStorage.removeItem("ve_pending_render_ts");
+            setPreRenderUrl(sd.videoUrl); setVideoUrl(sd.videoUrl);
+            pipe.current.renderedVideoUrl = sd.videoUrl;
+            setStep("render", "done", sd.videoUrl); setRenderProgress(100);
+            setRunning(false); runningRef.current = false;
+            toast.success("เรนเดอร์เสร็จแล้ว!");
+          } else if (sd.status === "error") {
+            clearInterval(progressPoll); clearInterval(statusPoll);
+            sessionStorage.removeItem("ve_pending_render_jobId");
+            sessionStorage.removeItem("ve_pending_render_ts");
+            setStep("render", "error", sd.error ?? "Render failed");
+            setRunning(false); runningRef.current = false;
+          }
+        } catch {}
+      }, 5000);
+    }
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch avatar preview image when avatarId changes (debounced)
@@ -1124,14 +1180,28 @@ export default function VideoEditorPage() {
       if (!jobId) throw new Error("Render server did not return jobId");
       currentJobId = jobId; activeJobIdRef.current = jobId;
 
+      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 5 นาที → ถือว่า hang → error
+      const STALE_TIMEOUT_MS = 5 * 60 * 1000;
+      let lastProgressValue = -1;
+      let lastProgressChangedAt = Date.now();
+
       let statusNotFoundCount = 0;
       const url = await new Promise<string>((resolve, reject) => {
         resolveRenderUrl = resolve;
         const si = setInterval(async () => {
           if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
           if (renderFailedMessage) { clearInterval(si); reject(new Error(renderFailedMessage)); return; }
-          // ถ้า progress poll resolve แล้ว resolveRenderUrl จะเป็น null → หยุด si ด้วย
           if (!resolveRenderUrl) { clearInterval(si); return; }
+
+          // Stale check: progress ไม่เปลี่ยนนานเกิน 5 นาที → hang
+          const curProgress = renderProgressRef.current;
+          if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
+          else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
+            clearInterval(si); resolveRenderUrl = null;
+            reject(new Error("Render หยุดค้างนานเกิน 5 นาที — กรุณาลองใหม่"));
+            return;
+          }
+
           try {
             const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
             const sd = await sr.json();
@@ -1140,12 +1210,8 @@ export default function VideoEditorPage() {
             else if (sd.status === "error") { clearInterval(si); resolveRenderUrl = null; reject(new Error(sd.error ?? "Render failed")); }
             else if (sd.status === "not_found" || sr.status === 404) {
               statusNotFoundCount++;
-              // hot-reload ทำให้ in-memory jobs หายไป — อ่าน progress file โดยตรงแทน
-              // ถ้า not_found >=3 ครั้ง ให้ fallback ไปรอ progress poll เพียงอย่างเดียว (จะ resolve ผ่าน renderPollTimer)
               if (statusNotFoundCount >= 3) {
                 clearInterval(si);
-                // ไม่ reject — ปล่อยให้ renderPollTimer (600ms) ทำงานต่อ
-                // มันจะ resolve เมื่อ progress file มี videoUrl
                 console.warn(`[render] render-status not_found ×${statusNotFoundCount} — falling back to progress-file polling`);
               }
             }
@@ -1171,6 +1237,7 @@ export default function VideoEditorPage() {
       setStep("render", "done", url); setRenderProgress(100); return url;
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
+      try { sessionStorage.removeItem("ve_pending_render_jobId"); sessionStorage.removeItem("ve_pending_render_ts"); } catch {}
       if (!renderFailedMessage && !(err instanceof Error && err.name === "AbortError")) {
         const msg = friendlyError(err);
         setRenderProgressError(msg); setStep("render", "error", msg);
