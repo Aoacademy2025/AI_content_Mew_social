@@ -730,8 +730,21 @@ export default function VideoEditorPage() {
 
   function preprocessScript(raw: string) {
     return raw
-      .replace(/\r?\n/g, "")   // ลบ newline ทั้งหมด ไม่เว้นวรรค
-      .replace(/\s{2,}/g, " ") // ลด multiple spaces เหลือ 1
+      // ตัดวงเล็บและเนื้อหาข้างใน — ไม่ควรอ่านออกเสียง เช่น (Artificial Intelligence), (อ่านว่า xxx)
+      .replace(/\([^)]{1,80}\)/g, "")
+      // ตัดวงเล็บเหลี่ยมและเนื้อหาข้างใน เช่น [หมายเหตุ], [ดนตรี]
+      .replace(/\[[^\]]{1,80}\]/g, "")
+      // ตัด hashtag เช่น #AI #tech
+      .replace(/#\S+/g, "")
+      // ตัด URL
+      .replace(/https?:\/\/\S+/g, "")
+      // ตัด emoji
+      .replace(/[\u{1F300}-\u{1FFFF}]/gu, "")
+      // ตัด stage direction เช่น *หยุดพัก*, _เน้น_
+      .replace(/\*[^*]{1,50}\*/g, "")
+      .replace(/_[^_]{1,50}_/g, "")
+      .replace(/\r?\n/g, " ")
+      .replace(/\s{2,}/g, " ")
       .trim();
   }
 

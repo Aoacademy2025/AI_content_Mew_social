@@ -1256,51 +1256,54 @@ Return ONLY valid JSON, no markdown, no explanation:
         ).join("\n");
 
         const scriptForPrompt = sourceText.trim().slice(0, 3000);
-        const geminiMergePrompt = `You are a Thai subtitle editor for TikTok/Reels short-form video.
+        const geminiMergePrompt = `You are a professional Thai subtitle editor for TikTok/Reels short-form video. Your goal: subtitles that look great on screen, sync perfectly with speech, and are easy to read in 1–2 seconds.
 
-Gemini transcribed the audio into segments below. Each segment has accurate timestamps. Your job: produce subtitle cards — one card per screen line.
+━━━ ONE LINE PER CARD (most important) ━━━
+• Each caption = exactly ONE screen line. Viewer must read it before it disappears.
+• Target: 10–18 Thai chars per card. Never exceed 20 Thai chars.
+• Count ONLY Thai letters (ก–ฮ + vowels + tone marks). English/numbers/spaces = 0.
+• ✅ "พวกเขากำลังเปลี่ยนโลก" = 16 Thai → OK
+• ✅ "ด้วย AI และ Machine Learning" = 8 Thai → OK
+• ❌ "ปัญญาประดิษฐ์ไม่ได้เป็นเพียงเรื่องราวในหนัง" = 38 Thai → WAY TOO LONG
 
-━━━ CHARACTER LIMIT (most important rule) ━━━
-• Count ONLY Thai letters (ก–ฮ, vowels ะาิีึืุูเแโใไ, tone marks). English letters, numbers, spaces — do NOT count.
-• HARD LIMIT: every caption must have ≤ 20 Thai chars. NO EXCEPTIONS.
-• Examples of 20-char captions:
-  ✅ "พวกเขากำลังเปลี่ยนโลก" = 20 Thai chars → OK
-  ✅ "บริษัท AI ชื่อ Anthropic" = 15 Thai chars → OK
-  ❌ "พวกแม่งกำลังโละทิ้งเจตนั้นตัวอยู่" = 33 Thai chars → TOO LONG, must split
+━━━ HOW TO SPLIT BEAUTIFULLY ━━━
+• Split at natural breath/pause points the speaker takes
+• Split after conjunctions: แต่, และ, หรือ, จึง, ดังนั้น, เพราะ
+• Split after sentence-ending particles: ครับ, ค่ะ, นะ, นะครับ
+• Split between subject and predicate when too long
+• NEVER split mid-phrase that flows without pause
+• NEVER leave orphan words (≤ 3 Thai chars) alone — merge onto adjacent card
+• Keep brand names/English intact: AI, GPT, ChatGPT, Claude, TikTok — never split
 
 ━━━ MERGING ━━━
-• Merge consecutive segments that form one natural thought, but ONLY if merged result ≤ 20 Thai chars.
-• ALWAYS merge tiny tail words onto previous: "ครับ", "นะ", "AI", "วงการ", "เดียว" (≤ 4 Thai chars).
-• Keep English words/numbers attached to Thai context: 2021, GPT, Claude, AI → never split off alone.
-• Merge across gaps < 0.4s freely. Stop at sentence-ending (. ? ! ฯ) or gaps ≥ 0.7s.
+• Merge segments forming one breath unit if total ≤ 18 Thai chars
+• Merge tiny tail words (≤ 4 Thai chars: นะ, ครับ, ค่ะ, AI, นั้น) onto previous card
+• Merge across gaps < 0.3s. Stop at gaps ≥ 0.6s or sentence-ending punctuation (. ? ! ฯ)
 
-━━━ SPLITTING ━━━
-• Any segment with > 20 Thai chars MUST be split. Split at a natural word/thought boundary.
-• Divide the timestamp proportionally (by Thai char count) between the sub-cards.
-• Do NOT split: brand names, numbers, "Claude", "GPT", "AI" from their Thai context.
-
-━━━ COMPLETENESS CHECK ━━━
-• Every word in the SCRIPT below MUST appear in output — nothing dropped.
-• If a script word is missing from segments, add it to the nearest caption.
+━━━ SCRIPT COMPLETENESS ━━━
+• Every word from SCRIPT must appear in output — nothing dropped, nothing added
+• Text must match script exactly (verbatim) — do NOT paraphrase or summarize
+• Parenthetical text like (Artificial Intelligence) in script is NOT spoken — omit from captions
 
 ━━━ TIMESTAMPS ━━━
-• startMs = start of FIRST segment in merged group × 1000 (seconds → ms). Use exact value from segments list.
-• endMs = end of LAST segment in merged group × 1000. Use exact value from segments list.
-• Do NOT adjust timestamps — copy them verbatim from the segments. Accuracy is critical for lip-sync.
+• startMs = segment start × 1000 (copy exact value, do NOT round differently)
+• endMs = segment end × 1000 (copy exact value)
+• When splitting one segment into multiple cards: divide timestamp by Thai char proportion
+• Accuracy is critical — wrong timestamps = subtitles out of sync with voice
 
 ━━━ TAGS ━━━
-• "hook" = ONLY the very first card (index 0). No other card can be "hook".
-• "cta" = cards with กดติดตาม / like / share / subscribe (max 2)
-• "body" = everything else
+• "hook" = ONLY card index 0 (the very first one). Never assign hook to any other card.
+• "cta" = cards containing: กดติดตาม, like, share, subscribe, กดระฆัง (max 2 cards)
+• "body" = all other cards
 
 ━━━ OUTPUT ━━━
-Return ONLY valid JSON:
-{"captions":[{"text":"...","startMs":0,"endMs":2950,"tag":"hook"},{"text":"...","startMs":2950,"endMs":4590,"tag":"body"},...]}
+Return ONLY valid JSON, no markdown, no explanation:
+{"captions":[{"text":"...","startMs":0,"endMs":1200,"tag":"hook"},{"text":"...","startMs":1200,"endMs":2800,"tag":"body"},...]}
 
-━━━ FULL SCRIPT (reference) ━━━
+━━━ SCRIPT (reference — use verbatim) ━━━
 ${scriptForPrompt}
 
-━━━ SEGMENTS (seconds) ━━━
+━━━ SEGMENTS (seconds → convert to ms) ━━━
 ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
