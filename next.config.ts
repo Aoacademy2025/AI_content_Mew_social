@@ -61,7 +61,21 @@ const nextConfig: NextConfig = {
     "@esbuild/darwin-x64",
     "@esbuild/darwin-arm64",
   ],
-  webpack: (config) => {
+  webpack: (config, { dev }) => {
+    // Prevent HMR from triggering on runtime-written files (.tmp, stocks, renders).
+    // Without this, every render progress update causes a full page refresh in dev.
+    if (dev && config.watchOptions) {
+      const existing = config.watchOptions.ignored ?? [];
+      const toIgnore = [
+        "**/\\.tmp/**",
+        "**/stocks/**",
+        "**/public/renders/**",
+      ];
+      config.watchOptions.ignored = Array.isArray(existing)
+        ? [...existing, ...toIgnore]
+        : [existing, ...toIgnore].filter(Boolean);
+    }
+
     const prevExternals = config.externals ?? [];
     config.externals = [
       ...(Array.isArray(prevExternals) ? prevExternals : [prevExternals]),
