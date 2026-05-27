@@ -1576,10 +1576,17 @@ export default function VideoEditorPage() {
     abortControllerRef.current = new AbortController();
     try {
       // ── Always ensure we have voice + caps first (so keywords gets accurate duration) ──
+      const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
       let vUrl = pipe.current.voiceUrl ?? "";
       if (!vUrl || startStep === "tts") {
-        vUrl = await runTts();
-        if (abortRef.current) return;
+        if (isDirectMode) {
+          setStep("tts", "skip", "ข้าม — ใช้เสียงจาก Direct URL");
+          vUrl = avatarDirectUrl.trim();
+          pipe.current.voiceUrl = vUrl;
+        } else {
+          vUrl = await runTts();
+          if (abortRef.current) return;
+        }
       }
 
       let caps = pipe.current.captions ?? [];
