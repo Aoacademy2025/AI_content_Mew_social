@@ -580,52 +580,42 @@ function splitTextByTargetLen(input: string, targetLen: number, minChunk: number
   const text = sanitizeTranscriptionText(input);
   if (!text) return [];
 
-  const tokens = text.split(/\s+/).filter(Boolean);
-  const out: string[] = [];
   const maxLen = Math.max(minChunk, Math.floor(targetLen));
+  const isThai = /[฀-๿]/.test(text);
 
-  if (tokens.length <= 1) {
-    let chunk = "";
-    for (const ch of [...text]) {
-      chunk += ch;
-      if (chunk.replace(/\s+/g, "").length >= maxLen && /\s/.test(ch)) {
-        out.push(chunk.trim());
-        chunk = "";
+  // For Thai: use Intl.Segmenter to get proper word tokens (never cuts mid-word)
+  if (isThai) {
+    let words: string[] = [];
+    try {
+      const seg = new Intl.Segmenter("th", { granularity: "word" });
+      words = [...seg.segment(text)].filter(s => s.isWordLike).map(s => s.segment);
+    } catch {
+      words = text.split(/\s+/).filter(Boolean);
+    }
+    if (words.length === 0) return [text];
+
+    const out: string[] = [];
+    let buf: string[] = [];
+    let bufLen = 0;
+    for (const w of words) {
+      const thaiMatches = w.match(/[฀-๿]/g);
+      const wLen = thaiMatches ? thaiMatches.length : w.replace(/\s/g, "").length;
+      if (buf.length > 0 && bufLen + wLen > maxLen) {
+        out.push(buf.join(""));
+        buf = [w];
+        bufLen = wLen;
+      } else {
+        buf.push(w);
+        bufLen += wLen;
       }
     }
-    if (chunk.trim()) out.push(chunk.trim());
-    if (out.length <= 1 && text.length > maxLen * 1.4) {
-      // Split at Thai syllable boundaries (vowel clusters) rather than raw char offset
-      // to avoid cutting mid-word. Fall back to space-based split if possible.
-      const chars = [...text];
-      const fixed: string[] = [];
-      let chunk = "";
-      for (let i = 0; i < chars.length; i++) {
-        chunk += chars[i];
-        if (chunk.replace(/\s+/g, "").length >= maxLen) {
-          // Try to find a safe break point: look ahead up to 4 chars for a space or Thai vowel boundary
-          let broke = false;
-          for (let j = i + 1; j < Math.min(i + 5, chars.length); j++) {
-            if (/\s/.test(chars[j]) || /[เ-ไ]/.test(chars[j])) {
-              chunk += chars.slice(i + 1, j).join("");
-              i = j - 1;
-              broke = true;
-              break;
-            }
-          }
-          if (!broke && /\s/.test(chars[i])) broke = true;
-          if (broke || chunk.replace(/\s+/g, "").length >= maxLen * 1.3) {
-            fixed.push(chunk.trim());
-            chunk = "";
-          }
-        }
-      }
-      if (chunk.trim()) fixed.push(chunk.trim());
-      return fixed.filter(Boolean);
-    }
-    return out;
+    if (buf.length > 0) out.push(buf.join(""));
+    return out.filter(Boolean);
   }
 
+  // Non-Thai: split on whitespace tokens
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
   let line = "";
   for (const tok of tokens) {
     const next = line ? `${line} ${tok}` : tok;
@@ -1250,8 +1240,51 @@ Return ONLY valid JSON, no markdown, no explanation:
       if (useGeminiTranscribe && segments.length >= 1 && apiKey) {
         const totalAudioMs = Math.max(1, Math.round(audioDur * 1000));
 
+        // Pre-merge segments whose text starts with an orphan Thai syllable fragment.
+        // Gemini transcribe sometimes cuts mid-word (e.g. "แม่" / "งอาจจะ...") at breath
+        // boundaries. Detect: segment starts with a Thai consonant immediately followed by
+        // another consonant with no leading vowel (เ-ไ ‌ แ โ) — that means it's a syllable
+        // fragment that should have been attached to the previous segment.
+        // Also merge segments that are very short (≤ 3 Thai chars) into the previous.
+        const THAI_LEADING_VOWELS = /^[เ-ไแโใไ]/; // เ แ โ ใ ไ
+        const THAI_CONSONANT = /^[ก-ฮะ-ฺ]/;
+        const isOrphanFragment = (text: string): boolean => {
+          const t = text.trim();
+          if (!t) return false;
+          const thaiLen = (t.match(/[฀-๿]/g) ?? []).length;
+          // Very short Thai-only segment (≤ 3 Thai chars, no punctuation) = likely fragment
+          if (thaiLen > 0 && thaiLen <= 3 && !/[.!?ฯ]/.test(t)) return true;
+          // Starts with Thai consonant but NOT a leading vowel → could be mid-word continuation
+          // Heuristic: if previous segment ends with a consonant (no trailing vowel/space) it's a split
+          return false;
+        };
+        const premergedSegments: typeof segments = [];
+        for (const seg of segments) {
+          const text = seg.text.trim();
+          if (premergedSegments.length > 0 && isOrphanFragment(text)) {
+            const prev = premergedSegments[premergedSegments.length - 1];
+            // Check if previous segment ends mid-word: last Thai char is a consonant with no closing vowel
+            const prevText = prev.text.trimEnd();
+            const lastChar = prevText[prevText.length - 1];
+            const lastIsThai = lastChar && /[฀-๿]/.test(lastChar);
+            // Leading vowels in Thai come BEFORE the consonant in visual order but AFTER in Unicode
+            // A segment ending in เ/แ/โ/ใ/ไ means it's definitely mid-word
+            const endsWithLeadingVowel = lastChar && THAI_LEADING_VOWELS.test(lastChar);
+            // Segment starting with ง/น/ม/ว/ย that could be a consonant cluster or suffix
+            const startsLikeFragment = THAI_CONSONANT.test(text) && !THAI_LEADING_VOWELS.test(text);
+            if (lastIsThai && (endsWithLeadingVowel || (isOrphanFragment(text) && startsLikeFragment))) {
+              prev.text = prevText + text;
+              prev.end = seg.end;
+              continue;
+            }
+          }
+          premergedSegments.push({ ...seg });
+        }
+        const mergedSegments = premergedSegments;
+        console.log(`[transcribe] pre-merge: ${segments.length} → ${mergedSegments.length} segments`);
+
         // Format segments as numbered list for LLM
-        const segList = segments.map((s, i) =>
+        const segList = mergedSegments.map((s, i) =>
           `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
         ).join("\n");
 
@@ -1260,23 +1293,24 @@ Return ONLY valid JSON, no markdown, no explanation:
 
 ━━━ ONE LINE PER CARD (most important) ━━━
 • Each caption = exactly ONE screen line. Viewer must read it before it disappears.
-• Target: 10–18 Thai chars per card. Never exceed 20 Thai chars.
+• Target: 12–24 Thai chars per card. Never exceed 26 Thai chars.
 • Count ONLY Thai letters (ก–ฮ + vowels + tone marks). English/numbers/spaces = 0.
 • ✅ "พวกเขากำลังเปลี่ยนโลก" = 16 Thai → OK
 • ✅ "ด้วย AI และ Machine Learning" = 8 Thai → OK
-• ❌ "ปัญญาประดิษฐ์ไม่ได้เป็นเพียงเรื่องราวในหนัง" = 38 Thai → WAY TOO LONG
+• ✅ "ปัญญาประดิษฐ์กำลังเปลี่ยนแปลงโลก" = 24 Thai → OK
+• ❌ "ปัญญาประดิษฐ์ไม่ได้เป็นเพียงเรื่องราวในหนังอีกต่อไป" = 40 Thai → TOO LONG
 
 ━━━ HOW TO SPLIT BEAUTIFULLY ━━━
 • Split at natural breath/pause points the speaker takes
 • Split after conjunctions: แต่, และ, หรือ, จึง, ดังนั้น, เพราะ
 • Split after sentence-ending particles: ครับ, ค่ะ, นะ, นะครับ
 • Split between subject and predicate when too long
-• NEVER split mid-phrase that flows without pause
+• NEVER split mid-word — Thai has no spaces, use breath/pause boundaries only
 • NEVER leave orphan words (≤ 3 Thai chars) alone — merge onto adjacent card
 • Keep brand names/English intact: AI, GPT, ChatGPT, Claude, TikTok — never split
 
 ━━━ MERGING ━━━
-• Merge segments forming one breath unit if total ≤ 18 Thai chars
+• Merge segments forming one breath unit if total ≤ 24 Thai chars
 • Merge tiny tail words (≤ 4 Thai chars: นะ, ครับ, ค่ะ, AI, นั้น) onto previous card
 • Merge across gaps < 0.3s. Stop at gaps ≥ 0.6s or sentence-ending punctuation (. ? ! ฯ)
 
@@ -1365,16 +1399,16 @@ Total audio: ${audioDur.toFixed(2)}s`;
           console.warn("[transcribe] Gemini merge LLM failed:", e);
         }
 
-        // Fallback: use segments directly if LLM failed
+        // Fallback: use pre-merged segments directly if LLM failed
         if (llmCaptions.length === 0) {
           console.warn("[transcribe] Gemini merge fallback: using raw segments");
-          llmCaptions = segments
+          llmCaptions = mergedSegments
             .map(s => ({ text: sanitizePhraseText(s.text), startMs: Math.round(s.start * 1000), endMs: Math.round(s.end * 1000) }))
             .filter(c => c.text.length > 0);
         }
 
-        // Hard-split any caption still > 20 Thai chars — safety net when LLM misses the limit
-        const MAX_THAI_SPLIT = 20;
+        // Hard-split any caption still > 25 Thai chars — safety net when LLM misses the limit
+        const MAX_THAI_SPLIT = 25;
         const splitCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
         for (const cap of llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]) {
           const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
@@ -1397,17 +1431,17 @@ Total audio: ${audioDur.toFixed(2)}s`;
           splitCaptions.push(cap);
         }
 
-        // Merge orphan captions (≤ 4 Thai chars and ≤ 800ms) into previous — LLM sometimes misses these
+        // Merge orphan captions (≤ 5 Thai chars and ≤ 800ms) into previous — LLM sometimes misses these
         const mergedCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
         for (const cap of splitCaptions) {
           const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
           const durMs = cap.endMs - cap.startMs;
-          const isOrphan = thaiLen <= 4 && durMs <= 800;
+          const isOrphan = thaiLen <= 5 && durMs <= 800;
           if (isOrphan && mergedCaptions.length > 0) {
             const prev = mergedCaptions[mergedCaptions.length - 1];
             const combined = `${prev.text} ${cap.text}`.trim();
             const combinedThai = (combined.match(/[฀-๿]/g) ?? []).length;
-            if (combinedThai <= 22) {
+            if (combinedThai <= 27) {
               prev.text = combined;
               prev.endMs = cap.endMs;
               continue;
@@ -1496,9 +1530,10 @@ TASK: Split this Thai script into subtitle phrases — COPY words EXACTLY, do NO
 
 ━━━ SPLITTING RULES ━━━
 • Audio duration: ${durationSec.toFixed(1)}s → target ${minPhrases}–${maxPhrases} phrases total
-• Each phrase = ONE LINE on screen. HARD MAX 20 Thai characters per phrase (count Thai letters only, not spaces/numbers/English). MUST split if over 20 Thai chars.
+• Each phrase = ONE LINE on screen. HARD MAX 26 Thai characters per phrase (count Thai letters only, not spaces/numbers/English). MUST split if over 26 Thai chars.
 • Split at sentence-ending punctuation (. ? ! ฯ) or major conjunctions (แต่, และ, เพราะ, จึง) or natural breath points.
-• If phrase still exceeds 20 Thai chars, split further at a word/thought boundary.
+• NEVER split mid-Thai-word. Only split at complete word boundaries.
+• If phrase still exceeds 26 Thai chars, split at a natural phrase/thought boundary.
 • Short punchy lines → keep as ONE phrase.
 • NEVER split a date expression (Thai month name + date + year = ONE phrase).
 • Max 6s per subtitle — long pauses → split into more phrases.

@@ -305,12 +305,17 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   const numScenes = Math.max(1, sceneList.length);
 
   // คำนวณว่าต้องการกี่ keywords จาก duration
-  // สูตร: duration / 3.5s ต่อ clip × buffer 1.6 → จำนวน clip ที่ต้องการ
-  // keywords = max(numScenes, ceil(clipsNeeded / 6)) — แต่ละ keyword ดึงได้ ~6 clips
+  // สูตรต้องสอดคล้องกับ fetch-stock: avg=3.5s/clip, buffer=1.6, cap=15 clips/kw
+  // ใช้ realistic clips/kw = 4 (ไม่ใช่ 15 ซึ่งเป็น cap) เพื่อให้ keyword หลากหลาย
+  // และซ้ำน้อย — 1 keyword ที่ใช้สำหรับ 4 ฉาก/clips ต่างกันยังพอเข้าใจได้
+  // ตัวอย่าง 5 นาที (300s):
+  //   clips_needed = ceil(300/3.5 × 1.6) = 138 clips
+  //   keywords_needed = max(numScenes, ceil(138/4)) = max(numScenes, 35)
+  //   → ถ้า 26 scenes จะได้ kwPerScene = 2 (52 keywords รวม)
   const durSec = Number(audioDurationSec) > 0 ? Number(audioDurationSec) : 0;
   const CLIP_AVG_SEC = 3.5;
-  const BUFFER = 1.2;
-  const CLIPS_PER_KW = 15; // fetch-stock pulls up to 15 clips per keyword
+  const BUFFER = 1.6;
+  const CLIPS_PER_KW = 4; // realistic — fetch-stock caps at 15 but typical pick is ~4–6
   const clipsNeeded = durSec > 0 ? Math.ceil((durSec / CLIP_AVG_SEC) * BUFFER) : numScenes;
   const keywordsNeeded = Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
   // แต่ละ scene สร้างกี่ keyword (ปัดขึ้น)

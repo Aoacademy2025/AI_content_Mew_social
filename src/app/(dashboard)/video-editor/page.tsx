@@ -884,9 +884,9 @@ export default function VideoEditorPage() {
       : rawCaptions.length ? Math.max(...rawCaptions.map(c => c.endMs))
       : 60000;
 
-    // คำนวณ MAX_CHARS จาก font size จริง: วิดีโอ 1080px กว้าง, ตัวอักษรไทยเฉลี่ย ~0.6 × fontSize px
+    // คำนวณ MAX_CHARS จาก font size จริง: วิดีโอ 1080px กว้าง, ตัวอักษรไทยเฉลี่ย ~0.47 × fontSize px
     // padding ซ้าย-ขวา ~80px ต่อด้าน → พื้นที่ใช้ได้ = 1080 - 160 = 920px
-    const AVG_CHAR_WIDTH_RATIO = 0.62; // ตัวอักษรไทย/ภาษาผสมเฉลี่ย
+    const AVG_CHAR_WIDTH_RATIO = 0.47; // Thai chars are narrower than Latin (~0.47× not 0.62×)
     const VIDEO_WIDTH = 1080;
     const SUBTITLE_PADDING = 160;
     const MAX_CHARS = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
@@ -963,26 +963,42 @@ export default function VideoEditorPage() {
         return [...acc, { ...c, startMs: safeStart, endMs: safeEnd }];
       }, []);
 
-    // ── Post-process: merge segments ที่สั้นเกินไป (< 800ms) หรือคำขาดกลางประโยค ──
+    // ── Post-process: merge captions ที่เป็นเศษคำ หรือสั้นเกิน (< 800ms) ──
     const MIN_DUR_MS = 800;
-    const MAX_MERGE_CHARS = MAX_CHARS; // ใช้ค่าเดียวกับ split threshold
+    const MAX_MERGE_CHARS = MAX_CHARS;
+    // Thai leading vowels (เ แ โ ใ ไ) appear BEFORE the consonant in Unicode but render before it
+    // A caption starting with these means the previous caption ended mid-word
+    const thaiLeadingVowelRe = /^[เแโใไ]/;
+    // A caption of ≤3 Thai chars with no punctuation = almost certainly a syllable fragment
+    const isThaiFragment = (t: string) => {
+      const thaiLen = (t.match(/[฀-๿]/g) ?? []).length;
+      return thaiLen > 0 && thaiLen <= 3 && !/[.!?ฯ]/.test(t);
+    };
     if (sceneCaptions.length > 1) {
       const merged: Caption[] = [];
       let i = 0;
       while (i < sceneCaptions.length) {
         const cur = sceneCaptions[i];
-        const dur = cur.endMs - cur.startMs;
         const next = sceneCaptions[i + 1];
+        const curText = cur.text.trim();
+        const nextText = next?.text.trim() ?? "";
+        const dur = cur.endMs - cur.startMs;
 
-        // Merge เมื่อ: สั้นเกิน หรือ ข้อความดูเหมือนขาดกลางคำ (ไม่ลงท้ายด้วย punctuation/สระ/สระไทย)
-        const looksIncomplete = !/[.!?ๆะ-ู็-๎เ-ไ]$/.test(cur.text.trim());
-        const shouldMerge = next && (dur < MIN_DUR_MS || looksIncomplete) &&
-          (cur.text.length + next.text.length + 1) <= MAX_MERGE_CHARS;
+        // Merge if: next starts with a Thai leading vowel (prev ended mid-word),
+        // or next is a tiny fragment, or cur is very short duration
+        const nextStartsMidWord = nextText && thaiLeadingVowelRe.test(nextText);
+        const nextIsFragment = nextText && isThaiFragment(nextText);
+        const curIsFragment = isThaiFragment(curText);
+        const tooShort = dur < MIN_DUR_MS;
+        const combinedLen = curText.length + nextText.length;
+
+        const shouldMerge = next &&
+          (nextStartsMidWord || nextIsFragment || curIsFragment || tooShort) &&
+          combinedLen <= MAX_MERGE_CHARS;
 
         if (shouldMerge) {
-          // รวม cur + next แล้วข้ามไป i+2
           merged.push({
-            text: cur.text + next.text,
+            text: curText + nextText,
             startMs: cur.startMs,
             endMs: next.endMs,
             tag: cur.tag,
