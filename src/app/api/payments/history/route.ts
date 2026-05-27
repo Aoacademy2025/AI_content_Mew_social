@@ -8,8 +8,17 @@ export async function GET() {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const payments = await prisma.payment.findMany({
-      where: { userId: authUser.id },
+      where: {
+        userId: authUser.id,
+        amount: { gt: 0 }, // ไม่แสดง admin-set plan หรือ coupon 100%
+        // ซ่อน PENDING เก่าเกิน 24 ชั่วโมง (session หมดอายุ ไม่สามารถชำระได้แล้ว)
+        OR: [
+          { status: { not: "PENDING" } },
+          { createdAt: { gte: oneDayAgo } },
+        ],
+      },
       orderBy: { createdAt: "desc" },
       take: 20,
       select: {
