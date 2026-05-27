@@ -1125,7 +1125,7 @@ export default function VideoEditorPage() {
       currentJobId = jobId; activeJobIdRef.current = jobId;
 
       // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 5 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 5 * 60 * 1000;
+      const STALE_TIMEOUT_MS = 15 * 60 * 1000;
       let lastProgressValue = -1;
       let lastProgressChangedAt = Date.now();
 
