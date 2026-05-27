@@ -2542,6 +2542,7 @@ export default function VideoEditorPage() {
                   if (k === "burnSubtitles") return () => runBurnSubtitles();
                   if (k === "avatar" || k === "avatarTail" || k === "composite") return useAvatar ? () => runAvatarPipeline() : null;
                   if (k === "render") return pipe.current.config ? () => runRenderOnly() : () => runFrom("render");
+                  if (k === "tts" && avatarInputMode === "direct" && avatarDirectUrl.trim()) return null;
                   return () => runFrom(k as keyof StepState);
                 })() : null;
 
