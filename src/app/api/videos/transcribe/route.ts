@@ -1289,8 +1289,8 @@ Gemini transcribed the audio into segments below. Each segment has accurate time
 • Do NOT adjust timestamps — copy them verbatim from the segments. Accuracy is critical for lip-sync.
 
 ━━━ TAGS ━━━
-• "hook" = first card only (exactly 1)
-• "cta" = cards with กดติดตาม / like / share / subscribe
+• "hook" = ONLY the very first card (index 0). No other card can be "hook".
+• "cta" = cards with กดติดตาม / like / share / subscribe (max 2)
 • "body" = everything else
 
 ━━━ OUTPUT ━━━
@@ -1428,7 +1428,7 @@ Total audio: ${audioDur.toFixed(2)}s`;
           endMs: c.endMs,
           timestampMs: c.startMs,
           confidence: 1 as number,
-          tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i < 2 ? "hook" : "body") as "hook" | "body" | "cta",
+          tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
         }));
         const sanitized = sanitizeCaptionsTimeline(tagged, totalAudioMs, 30, true);
         if (sanitized.length > 0) {
