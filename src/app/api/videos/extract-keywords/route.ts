@@ -309,8 +309,8 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   // keywords = max(numScenes, ceil(clipsNeeded / 6)) — แต่ละ keyword ดึงได้ ~6 clips
   const durSec = Number(audioDurationSec) > 0 ? Number(audioDurationSec) : 0;
   const CLIP_AVG_SEC = 3.5;
-  const BUFFER = 1.6;
-  const CLIPS_PER_KW = 6; // conservative estimate — fetch-stock will pull more
+  const BUFFER = 1.2;
+  const CLIPS_PER_KW = 15; // fetch-stock pulls up to 15 clips per keyword
   const clipsNeeded = durSec > 0 ? Math.ceil((durSec / CLIP_AVG_SEC) * BUFFER) : numScenes;
   const keywordsNeeded = Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
   // แต่ละ scene สร้างกี่ keyword (ปัดขึ้น)
