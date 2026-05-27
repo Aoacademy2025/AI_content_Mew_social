@@ -461,16 +461,17 @@ export async function POST(req: Request) {
       );
     }
 
-    // For SubtitleOverlay: resolve videoUrl → local file path (avoids HTTP round-trip timeout)
+    // For SubtitleOverlay: resolve videoUrl → absolute URL
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
-      const localPath = videoUrl ? toLocalFilePath(videoUrl) : null;
-      const resolvedUrl = localPath
-        ? `file:///${localPath.replace(/\\/g, "/")}`
-        : videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
+      const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
       resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl };
-      if (localPath) assertExistingAsset(videoUrl!, "subtitle video");
+      if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
+      // Warmup /api/stocks route so Remotion doesn't timeout on first compile
+      if (resolvedUrl?.includes("/api/stocks/")) {
+        try { await fetch(resolvedUrl, { method: "HEAD" }); } catch {}
+      }
     }
 
     // Clear stale progress file and register job immediately — before bundle build
