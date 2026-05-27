@@ -461,15 +461,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // For SubtitleOverlay: resolve videoUrl → absolute URL
+    // For SubtitleOverlay: resolve videoUrl → local file path (avoids HTTP round-trip timeout)
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
-      resolvedSubtitleConfig = {
-        ...subtitleOverlayConfig,
-        videoUrl: videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl,
-      };
-      if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(resolvedSubtitleConfig.videoUrl, "subtitle video");
+      const localPath = videoUrl ? toLocalFilePath(videoUrl) : null;
+      const resolvedUrl = localPath
+        ? `file:///${localPath.replace(/\\/g, "/")}`
+        : videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
+      resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl };
+      if (localPath) assertExistingAsset(videoUrl!, "subtitle video");
     }
 
     // Clear stale progress file and register job immediately — before bundle build
@@ -517,7 +518,7 @@ export async function POST(req: Request) {
           serveUrl: bundleLocation,
           id: compositionId,
           inputProps,
-          timeoutInMilliseconds: 60000,
+          timeoutInMilliseconds: 120000,
         });
 
         if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
