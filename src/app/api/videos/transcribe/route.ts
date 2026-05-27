@@ -1459,6 +1459,52 @@ Total audio: ${audioDur.toFixed(2)}s`;
         }
         if (llmCaptions.length > 0) (llmCaptions[llmCaptions.length - 1] as { endMs: number }).endMs = totalAudioMs;
 
+        // Snap caption text back to real script using char-proportion of timestamps.
+        // LLM merge text may contain mid-word cuts from Gemini transcribe segments.
+        // Strategy: distribute script chars proportionally across caption time spans.
+        if (sourceText.trim().length > 0 && llmCaptions.length > 0) {
+          const scriptChars = [...sanitizeTranscriptionText(sourceText)];
+          const totalMs = Math.max(1, totalAudioMs);
+          // Use each caption's time span proportion to slice the script
+          const snappedTexts: string[] = [];
+          let scriptPos = 0;
+          const scriptNoSpace = scriptChars.filter(c => c.trim()).length;
+          let consumedNS = 0;
+          for (let ci = 0; ci < llmCaptions.length; ci++) {
+            const cap = llmCaptions[ci] as { startMs: number; endMs: number };
+            const endProp = Math.min(1, cap.endMs / totalMs);
+            const targetNS = Math.round(endProp * scriptNoSpace);
+            const startPos = scriptPos;
+            while (scriptPos < scriptChars.length && consumedNS < targetNS) {
+              if (scriptChars[scriptPos].trim()) consumedNS++;
+              scriptPos++;
+            }
+            // Snap to word boundary: look ahead up to 8 chars for a natural break
+            // Thai: no spaces, so snap to Intl.Segmenter word boundary
+            if (scriptPos < scriptChars.length) {
+              let ahead = scriptPos;
+              // find next space or punctuation within 8 chars as a snap point
+              for (let j = scriptPos; j < Math.min(scriptPos + 8, scriptChars.length); j++) {
+                if (/[\s.!?ๆ,]/.test(scriptChars[j])) { ahead = j + 1; break; }
+              }
+              if (ahead > scriptPos && ahead - scriptPos <= 8) scriptPos = ahead;
+            }
+            const slice = sanitizePhraseText(scriptChars.slice(startPos, scriptPos).join(""));
+            snappedTexts.push(slice || (llmCaptions[ci] as { text: string }).text);
+          }
+          // Ensure last caption covers rest of script
+          if (snappedTexts.length > 0 && scriptPos < scriptChars.length) {
+            snappedTexts[snappedTexts.length - 1] = sanitizePhraseText(
+              snappedTexts[snappedTexts.length - 1] + scriptChars.slice(scriptPos).join("")
+            );
+          }
+          llmCaptions = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
+            ...c,
+            text: snappedTexts[i] || c.text,
+          }));
+          console.log(`[transcribe] snapped captions text to real script`);
+        }
+
         const tagged = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
           text: c.text,
           startMs: c.startMs,
