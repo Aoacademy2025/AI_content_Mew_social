@@ -460,7 +460,7 @@ export function AnimatedSubtitle({
         alignItems: "center",
         ...extra,
       }}>
-        <div style={{ maxWidth: "92%", textAlign: "center", paddingLeft: "4%", paddingRight: "4%", display: "flex", justifyContent: "center", alignItems: "center", overflow: "hidden" }}>
+        <div style={{ maxWidth: "80%", textAlign: "center", paddingLeft: "10%", paddingRight: "10%", display: "flex", justifyContent: "center", alignItems: "center" }}>
           {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900, frame, captionDurFrames, textEffect, popup.accentColor ?? accentColor)}
         </div>
       </div>

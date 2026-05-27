@@ -92,7 +92,7 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
       {content}
     </div>
   ) : (
-    <div style={{ maxWidth: "88%", paddingLeft: "6%", paddingRight: "6%" }}>{content}</div>
+    <div style={{ maxWidth: "80%", paddingLeft: "10%", paddingRight: "10%" }}>{content}</div>
   );
 
   return (
