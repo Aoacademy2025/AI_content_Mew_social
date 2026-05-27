@@ -42,7 +42,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
 
   return (
     <div
-      className="flex h-16 w-full shrink-0 items-center justify-between px-8"
+      className="flex h-16 w-full shrink-0 items-center justify-between px-4 sm:px-8"
       style={{
         background: "var(--ui-nav-bg)",
         borderBottom: "1px solid var(--ui-nav-border)",
@@ -78,8 +78,11 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
               style={{ background: "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 60%)" }}
             />
           </span>
-          <span className="text-[15px] font-bold tracking-tight text-white leading-none">
+          <span className="hidden sm:inline text-[15px] font-bold tracking-tight text-white leading-none">
             Hero AI Creator Studio
+          </span>
+          <span className="sm:hidden text-[13px] font-bold tracking-tight text-white leading-none">
+            Hero AI
           </span>
         </Link>
 

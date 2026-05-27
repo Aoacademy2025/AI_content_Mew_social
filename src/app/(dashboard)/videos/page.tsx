@@ -82,7 +82,7 @@ export default function VideosGalleryPage() {
       <div className="space-y-6">
 
         {/* ── Page header ── */}
-        <div className="flex items-start justify-between">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold" style={{ color: "var(--ui-text-primary)" }}>Recent Generations</h1>
             <p className="mt-1 text-sm" style={{ color: "var(--ui-text-muted)" }}>Manage and download your AI-crafted cinematic shorts.</p>

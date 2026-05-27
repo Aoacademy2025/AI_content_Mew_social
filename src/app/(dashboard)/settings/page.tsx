@@ -313,7 +313,7 @@ function SettingsContent() {
   ];
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8">
+    <div className="max-w-5xl mx-auto space-y-6 px-0">
 
       {/* ── Payment Result Popup ──────────────────────────────────────── */}
       {paymentPopup && typeof document !== "undefined" && createPortal(
@@ -432,7 +432,7 @@ function SettingsContent() {
       </div>
 
       {/* Tabs — premium pill style */}
-      <div className="inline-flex items-center gap-1 p-1 rounded-xl"
+      <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl w-full sm:w-auto sm:inline-flex"
         style={{
           background: "hsl(0 0% 100% / 0.03)",
           border: "1px solid hsl(0 0% 100% / 0.06)",

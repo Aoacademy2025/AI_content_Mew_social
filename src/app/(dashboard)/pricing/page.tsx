@@ -82,7 +82,7 @@ function PricingContent() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-10 py-2">
+    <div className="max-w-7xl mx-auto space-y-8 py-2 px-0">
 
       {/* ── Hero header ──────────────────────────────────────────────── */}
       <header className="text-center space-y-4 max-w-3xl mx-auto pt-4">
@@ -96,7 +96,7 @@ function PricingContent() {
             เลือกแพ็กเกจที่เหมาะกับคุณ
           </span>
         </div>
-        <h1 className="text-4xl md:text-5xl font-bold tracking-tight leading-tight" style={{ color: "var(--ui-text-primary)" }}>
+        <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold tracking-tight leading-tight" style={{ color: "var(--ui-text-primary)" }}>
           สร้างคอนเทนต์อย่าง <span className="gradient-text">มืออาชีพ</span><br className="md:hidden" /> ด้วย AI
         </h1>
         <p className="text-base md:text-lg max-w-xl mx-auto" style={{ color: "var(--ui-text-secondary)" }}>
@@ -130,7 +130,7 @@ function PricingContent() {
       )}
 
       {/* ── Plan cards ──────────────────────────────────────────────── */}
-      <div className="grid gap-6 md:grid-cols-3 max-w-6xl mx-auto">
+      <div className="grid gap-5 grid-cols-1 md:grid-cols-3 max-w-6xl mx-auto">
         {PLAN_DEFS.map((def) => {
           const Icon = def.icon;
           const { price, features } = getPlanData(def);

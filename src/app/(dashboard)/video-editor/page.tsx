@@ -38,6 +38,15 @@ import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 
 export default function VideoEditorPage() {
 
+  // ── Mobile guard ───────────────────────────────────────────────────────
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 1024);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
   const [projectName, setProjectName] = useState("New Project");
@@ -875,18 +884,21 @@ export default function VideoEditorPage() {
       : rawCaptions.length ? Math.max(...rawCaptions.map(c => c.endMs))
       : 60000;
 
-    const MAX_CHARS = 52;
-    const MIN_CHARS = 12;
+    // คำนวณ MAX_CHARS จาก font size จริง: วิดีโอ 1080px กว้าง, ตัวอักษรไทยเฉลี่ย ~0.6 × fontSize px
+    // padding ซ้าย-ขวา ~80px ต่อด้าน → พื้นที่ใช้ได้ = 1080 - 160 = 920px
+    const AVG_CHAR_WIDTH_RATIO = 0.62; // ตัวอักษรไทย/ภาษาผสมเฉลี่ย
+    const VIDEO_WIDTH = 1080;
+    const SUBTITLE_PADDING = 160;
+    const MAX_CHARS = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
+    const MIN_CHARS = Math.max(4, Math.floor(MAX_CHARS * 0.25));
 
     const forceSplitByLength = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
       const src = (cap.text ?? "").trim();
       const capTag = tag ?? (cap.tag as "hook" | "body" | "cta" | undefined);
       if (!src) return [{ ...cap, text: src, tag: capTag }];
       if (src.length <= MAX_CHARS) return [{ ...cap, text: src, tag: capTag }];
-      // ใช้ Intl.Segmenter แบ่งคำภาษาไทยได้ถูกต้อง
       const words = segmentWords(src);
       if (words.length <= 1) return [{ ...cap, text: src, tag: capTag }];
-      // สร้าง chunk เป็น token arrays แล้วค่อย join ด้วย joinWords (รองรับไทย)
       const tokenChunks: string[][] = [];
       let buf: string[] = [];
       for (const tok of words) {
@@ -908,7 +920,7 @@ export default function VideoEditorPage() {
         const chunkStr = joinWords(chunk);
         if (chunkStr.length < MIN_CHARS && rebalanced.length > 0) {
           const prevMerged = [...rebalanced[rebalanced.length - 1], ...chunk];
-          if (joinWords(prevMerged).length <= MAX_CHARS * 2) {
+          if (joinWords(prevMerged).length <= MAX_CHARS) {
             rebalanced[rebalanced.length - 1] = prevMerged;
             continue;
           }
@@ -953,7 +965,7 @@ export default function VideoEditorPage() {
 
     // ── Post-process: merge segments ที่สั้นเกินไป (< 800ms) หรือคำขาดกลางประโยค ──
     const MIN_DUR_MS = 800;
-    const MAX_MERGE_CHARS = 60; // ไม่ merge ถ้าผลลัพธ์ยาวเกินนี้
+    const MAX_MERGE_CHARS = MAX_CHARS; // ใช้ค่าเดียวกับ split threshold
     if (sceneCaptions.length > 1) {
       const merged: Caption[] = [];
       let i = 0;
@@ -996,7 +1008,7 @@ export default function VideoEditorPage() {
       for (const w of whisperWords) {
         const wc = w.word.replace(/\s/g, "").length;
         const gap = bucket.length > 0 ? w.startMs - bucket[bucket.length - 1].endMs : 0;
-        if (bucket.length > 0 && (gap >= 500 || chars + wc > 20)) flush();
+        if (bucket.length > 0 && (gap >= 500 || chars + wc > MAX_CHARS)) flush();
         bucket.push(w); chars += wc;
       }
       flush();
@@ -2110,6 +2122,24 @@ export default function VideoEditorPage() {
   const previewScale = 260 / 1080;
 
   // ── RENDER ────────────────────────────────────────────────────────────
+  if (isMobile) return (
+    <div className="ve-no-padding flex-1 flex flex-col items-center justify-center bg-[#0c0c0f] text-slate-100 px-6 text-center gap-6">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-16 h-16 rounded-2xl bg-[#1a1a22] border border-[#2a2a36] flex items-center justify-center">
+          <Maximize2 className="w-7 h-7 text-violet-400" />
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-white mb-2">ต้องใช้หน้าจอ Desktop</h2>
+          <p className="text-sm text-slate-400 leading-relaxed">Video Editor ต้องการพื้นที่หน้าจอขนาดใหญ่<br />กรุณาเปิดบน Desktop หรือ Laptop</p>
+        </div>
+        <a href="/dashboard" className="mt-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
+          style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(190 100% 40%))" }}>
+          กลับ Dashboard
+        </a>
+      </div>
+    </div>
+  );
+
   return (
     <div className={cn(
       "ve-no-padding flex flex-col bg-[#0c0c0f] text-slate-100 overflow-hidden text-[13px]",
@@ -2897,93 +2927,95 @@ export default function VideoEditorPage() {
 
         {/* ── RIGHT: SUBTITLE SETTINGS ── */}
         {!rightPanelOpen && !panelDetached && (
-          <button onClick={() => setRightPanelOpen(true)}
-            className="flex-shrink-0 w-8 bg-[#111115] border-l border-[#1e1e28] flex items-center justify-center text-slate-600 hover:text-slate-300 hover:bg-[#1a1a22] transition-colors"
-            title="Open settings panel">
-            <span className="text-[11px] rotate-90 whitespace-nowrap font-bold tracking-wider">Settings ▶</span>
-          </button>
+          <div className="flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full bg-[#111115]" style={{ width: 32 }}>
+            <div className="h-11 flex items-center justify-center border-b border-[#1e1e28] flex-shrink-0">
+              <button onClick={() => setRightPanelOpen(true)}
+                className="w-6 h-6 flex items-center justify-center text-slate-600 hover:text-slate-300 transition-colors rounded"
+                title="Open settings panel">
+                <span className="text-[11px]">◀</span>
+              </button>
+            </div>
+          </div>
         )}
 
-        {/* Order panel — ลำดับการทำงาน (ซ้ายของตั้งค่า) */}
+        {/* Order panel + Settings — wrapped together with single resize handle on left edge */}
         {rightPanelOpen && !panelDetached && (
-          <OrderPanel
-            open={orderPanelOpen} onToggle={() => setOrderPanelOpen(v => !v)}
-            ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
-            setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
-            bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
-            setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
-            bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
-            useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
-            avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
-            avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
-            avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
-            avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
-            setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
-            chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
-            chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
-            setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
-            setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-            setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
-            runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
-            onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
-            stockSource={stockSource} setStockSource={setStockSource}
-          />
-        )}
-
-        {/* Inline docked panel — ตั้งค่าซับ */}
-        {rightPanelOpen && !panelDetached && (
-          <div className="relative flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full" style={{ width: rightPanelWidth }}>
-            {/* Right resize handle */}
+          <div className="flex-shrink-0 flex flex-row h-full overflow-hidden">
+            {/* Resize handle — ลากเพื่อขยาย/ย่อ Settings panel */}
             <div
-              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize z-10 group"
+              className="relative w-1 flex-shrink-0 cursor-col-resize z-10 group border-l border-[#1e1e28]"
               onPointerDown={e => { e.preventDefault(); rightResizeRef.current = { startX: e.clientX, startW: rightPanelWidth }; }}
             >
-              <div className="absolute left-0 top-0 bottom-0 w-px bg-[#1e1e28] group-hover:bg-violet-500/60 group-active:bg-violet-500 transition-colors" />
+              <div className="absolute inset-0 group-hover:bg-violet-500/30 group-active:bg-violet-500/60 transition-colors" />
             </div>
-          <RightSettingsPanel
-            wide={rightPanelWide} detached={false} dragging={false}
-            panelPos={panelPos} panelWidth={rightPanelWidth}
-            onDetach={() => { const pw = rightPanelWide ? 520 : 268; setPanelPos({ x: Math.max(40, window.innerWidth - pw - 60), y: 60 }); setPanelDetached(true); }}
-            onDock={() => { setPanelDetached(false); setRightPanelOpen(true); }}
-            onToggleWide={() => { setRightPanelWide(v => { const next = !v; setRightPanelWidth(next ? 520 : 268); return next; }); }}
-            onClose={() => { setRightPanelOpen(false); setRightPanelWide(false); setRightPanelWidth(268); }}
-            onDragStart={() => {}} onDragMove={() => {}} onDragEnd={() => {}}
-            activeTab={activeRightTab} onTab={setActiveRightTab}
-            subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
-            subFontFamily={subFontFamily} subFontSize={subFontSize} subFontWeight={subFontWeight}
-            subEffect={subEffect} subPosition={subPosition} subShadow={subShadow}
-            subOutline={subOutline} subOutlineSize={subOutlineSize}
-            setSubPreset={setSubPreset} setSubEffect={setSubEffect} setSubFontFamily={setSubFontFamily}
-            setSubFontSize={setSubFontSize} setSubFontWeight={setSubFontWeight} setSubColor={setSubColor}
-            setSubAccentColor={setSubAccentColor} setSubPosition={setSubPosition}
-            setSubShadow={setSubShadow} setSubOutline={setSubOutline} setSubOutlineSize={setSubOutlineSize}
-            displayCaptions={displayCaptions} activeSegIdx={activeSegIdx}
-            ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
-            setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
-            bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
-            setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
-            bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
-            useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
-            avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
-            avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
-            avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
-            avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
-            setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
-            chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
-            chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
-            setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
-            setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-            setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
-            runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
-            projectName={projectName} onSaveTemplate={() => {
-              const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
-              toast.success("Template saved");
-            }}
-            onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
-          />
+            <OrderPanel
+              open={orderPanelOpen} onToggle={() => setOrderPanelOpen(v => !v)}
+              ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
+              setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
+              bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
+              setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
+              bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
+              useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
+              avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
+              avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
+              avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
+              avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
+              avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
+              setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
+              chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
+              chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
+              setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
+              setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
+              setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+              runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+              onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
+              stockSource={stockSource} setStockSource={setStockSource}
+            />
+            <div className="flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full" style={{ width: rightPanelWidth }}>
+              <RightSettingsPanel
+                wide={rightPanelWide} detached={false} dragging={false}
+                panelPos={panelPos} panelWidth={rightPanelWidth}
+                onDetach={() => { const pw = 360; setPanelPos({ x: Math.max(40, window.innerWidth - pw - 60), y: 60 }); setPanelDetached(true); }}
+                onDock={() => { setPanelDetached(false); setRightPanelOpen(true); }}
+                onToggleWide={() => {}}
+                onClose={() => { setRightPanelOpen(false); setRightPanelWidth(268); }}
+                onDragStart={() => {}} onDragMove={() => {}} onDragEnd={() => {}}
+                activeTab={activeRightTab} onTab={setActiveRightTab}
+                subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
+                subFontFamily={subFontFamily} subFontSize={subFontSize} subFontWeight={subFontWeight}
+                subEffect={subEffect} subPosition={subPosition} subShadow={subShadow}
+                subOutline={subOutline} subOutlineSize={subOutlineSize}
+                setSubPreset={setSubPreset} setSubEffect={setSubEffect} setSubFontFamily={setSubFontFamily}
+                setSubFontSize={setSubFontSize} setSubFontWeight={setSubFontWeight} setSubColor={setSubColor}
+                setSubAccentColor={setSubAccentColor} setSubPosition={setSubPosition}
+                setSubShadow={setSubShadow} setSubOutline={setSubOutline} setSubOutlineSize={setSubOutlineSize}
+                displayCaptions={displayCaptions} activeSegIdx={activeSegIdx}
+                ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
+                setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
+                bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
+                setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
+                bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
+                useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
+                avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
+                avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
+                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
+                avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
+                avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
+                setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
+                chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
+                chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
+                setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
+                setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
+                setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+                runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+                projectName={projectName} onSaveTemplate={() => {
+                  const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
+                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
+                  toast.success("Template saved");
+                }}
+                onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
+              />
+            </div>
           </div>
         )}
       </div>

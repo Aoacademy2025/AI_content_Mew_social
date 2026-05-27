@@ -78,14 +78,9 @@ export function RightSettingsPanel(p: RightPanelProps) {
           Settings {p.detached && <span className="text-[9px] text-slate-600 font-normal ml-1">⠿ ลากได้</span>}
         </span>
         <div className="flex items-center gap-0.5 ml-auto">
-          <button onClick={p.onToggleWide}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300 transition-colors"
-            title={p.wide ? "ย่อ panel" : "ขยาย panel"}>
-            <span className="text-[13px] leading-none">{p.wide ? "▶" : "◀"}</span>
-          </button>
           <button onClick={p.onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300 transition-colors" title="ซ่อน panel">
-            <span className="text-[14px] leading-none">✕</span>
+            className="w-6 h-6 flex items-center justify-center text-slate-600 hover:text-slate-300 transition-colors rounded" title="ซ่อน panel">
+            <span className="text-[11px]">▶</span>
           </button>
         </div>
       </div>

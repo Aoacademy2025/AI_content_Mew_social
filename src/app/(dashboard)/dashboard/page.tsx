@@ -78,10 +78,10 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="space-y-8 max-w-7xl mx-auto">
+      <div className="space-y-6 max-w-7xl mx-auto px-0">
 
         {/* Welcome hero — premium gradient + ambient glow */}
-        <div className="premium-card-featured relative overflow-hidden p-8 md:p-10">
+        <div className="premium-card-featured relative overflow-hidden p-5 sm:p-8 md:p-10">
           {/* Ambient glow */}
           <div className="absolute -right-10 -top-10 h-72 w-72 rounded-full blur-3xl pointer-events-none"
             style={{ background: "radial-gradient(circle, hsl(var(--accent-secondary) / 0.18), transparent 70%)" }} />
@@ -147,7 +147,7 @@ export default function DashboardPage() {
         )}
 
         {/* Stats grid */}
-        <div className="grid gap-5 sm:grid-cols-3">
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
           {[
             { label: "Styles", count: stats?.styleCount ?? 0, limit: stats?.limits?.styles ?? null, icon: Palette, href: "/style", color: "hsl(220 90% 65%)" },
             { label: "Content", count: stats?.contentCount ?? 0, limit: stats?.limits?.contents ?? null, icon: FileText, href: "/content", color: "hsl(252 70% 65%)" },
