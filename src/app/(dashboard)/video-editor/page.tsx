@@ -1488,8 +1488,9 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "gemini", retryStep: "runAll" });
           return;
         }
-        // ElevenLabs TTS ต้องการ key
-        if (ttsProvider === "elevenlabs" && !keysData.elevenlabsKey) {
+        // ElevenLabs TTS ต้องการ key (ข้ามถ้าใช้ Direct URL mode)
+        const needsTts = !(avatarInputMode === "direct" && !!avatarDirectUrl.trim());
+        if (needsTts && ttsProvider === "elevenlabs" && !keysData.elevenlabsKey) {
           setMissingKey({ type: "elevenlabs", retryStep: "runAll" });
           return;
         }
