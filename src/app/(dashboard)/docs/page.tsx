@@ -179,7 +179,7 @@ export default function DocsPage() {
   const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
 
   return (
-    <>
+    <div className="ve-no-padding flex-1 overflow-y-auto">
       {/* ── Premium animations & decorations ──────────────────────────── */}
       <style jsx global>{`
         @keyframes doc-orb-1 {
@@ -421,7 +421,7 @@ export default function DocsPage() {
           <span className="h-px w-12 bg-linear-to-l from-transparent to-white/15" />
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
