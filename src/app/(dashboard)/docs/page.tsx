@@ -341,9 +341,9 @@ export default function DocsPage() {
             style={{ background: "radial-gradient(closest-side, hsl(285 70% 60%), transparent)" }} />
         </div>
 
-        <div className="relative mx-auto max-w-4xl px-4 pt-8 pb-6 md:px-6 md:pt-12">
+        <div className="relative mx-auto max-w-4xl px-4 pt-3 pb-5 md:px-6 md:pt-4">
           {/* Eyebrow */}
-          <div className="doc-fade-up flex items-center gap-2 mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
+          <div className="doc-fade-up flex items-center gap-2 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
             style={{ animationDelay: "0ms" }}>
             <span className="h-px w-6 bg-linear-to-r from-transparent to-cyan-400/50" />
             Documentation
@@ -360,13 +360,13 @@ export default function DocsPage() {
               <span aria-hidden className="doc-shimmer absolute inset-0 pointer-events-none" />
             </span>
           </h1>
-          <p className="doc-fade-up mt-3 text-base text-white/55 max-w-2xl leading-relaxed"
+          <p className="doc-fade-up mt-2 text-base text-white/55 max-w-2xl leading-relaxed"
             style={{ animationDelay: "140ms" }}>
             สร้างวิดีโอ TikTok/Reels แนวตั้งจาก script เดียว — AI generate voice, ตัดซับ, หา B-roll, render เป็น MP4 ให้อัตโนมัติ
           </p>
 
           {/* Tab nav with glow pulse on active */}
-          <div className="doc-fade-up mt-7 inline-flex items-stretch gap-1 rounded-2xl p-1.5 backdrop-blur-xl"
+          <div className="doc-fade-up mt-5 inline-flex items-stretch gap-1 rounded-2xl p-1.5 backdrop-blur-xl"
             style={{
               animationDelay: "220ms",
               background: "linear-gradient(135deg, hsl(0 0% 100% / 0.04), hsl(0 0% 100% / 0.02))",
