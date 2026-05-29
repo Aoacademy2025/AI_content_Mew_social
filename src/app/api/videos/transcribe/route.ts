@@ -1053,30 +1053,48 @@ Return ONLY valid JSON, no markdown, no explanation:
 17. Keep English brand names intact: Anthropic, GPT, Claude, Enterprise, etc.
 18. fullText = all segment texts joined in order${script ? `\n19. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-goog-api-key": geminiKey,
-            },
-            signal: AbortSignal.timeout(600_000),
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: timestampPrompt },
-                  { fileData: { mimeType: "audio/mp3", fileUri } },
-                ],
-              }],
-              generationConfig: {
-                temperature: 0,
-                maxOutputTokens: 65536,
-                thinkingConfig: { thinkingBudget: 0 },
+        // Retry transient errors (Google's 503 "high demand" / 500 / 429 are common on this model)
+        const transcribeBody = JSON.stringify({
+          contents: [{
+            parts: [
+              { text: timestampPrompt },
+              { fileData: { mimeType: "audio/mp3", fileUri } },
+            ],
+          }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 65536,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        });
+
+        let geminiRes: Response | null = null;
+        let lastTranscribeErr = "";
+        const MAX_TRANSCRIBE_ATTEMPTS = 4;
+        for (let attempt = 1; attempt <= MAX_TRANSCRIBE_ATTEMPTS; attempt++) {
+          geminiRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-goog-api-key": geminiKey,
               },
-            }),
+              signal: AbortSignal.timeout(600_000),
+              body: transcribeBody,
+            }
+          );
+          if (geminiRes.ok) break;
+          lastTranscribeErr = await geminiRes.text().catch(() => "");
+          // Auth / quota errors — don't retry
+          if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 400) break;
+          // Retryable (429/500/502/503/504) — exponential backoff
+          if (attempt < MAX_TRANSCRIBE_ATTEMPTS) {
+            const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s, 8s
+            console.warn(`[transcribe] Gemini ${geminiRes.status} on attempt ${attempt}/${MAX_TRANSCRIBE_ATTEMPTS}, retrying in ${delayMs}ms`);
+            await new Promise(r => setTimeout(r, delayMs));
           }
-        );
+        }
 
         // Clean up uploaded file from Gemini (best-effort)
         if (fileName) {
@@ -1086,13 +1104,13 @@ Return ONLY valid JSON, no markdown, no explanation:
           }).catch(() => {});
         }
 
-        if (!geminiRes.ok) {
-          const errBody = await geminiRes.text().catch(() => "");
-          console.error("[transcribe] Gemini error body:", errBody.slice(0, 500));
-          if (geminiRes.status === 401 || geminiRes.status === 403) {
-            throw { status: geminiRes.status, body: errBody };
+        if (!geminiRes || !geminiRes.ok) {
+          const status = geminiRes?.status ?? 503;
+          console.error("[transcribe] Gemini error body:", lastTranscribeErr.slice(0, 500));
+          if (status === 401 || status === 403) {
+            throw { status, body: lastTranscribeErr };
           }
-          throw new Error(`Gemini transcribe failed: ${geminiRes.status} — ${errBody.slice(0, 200)}`);
+          throw new Error(`Gemini transcribe failed after ${MAX_TRANSCRIBE_ATTEMPTS} attempts: ${status} — ${lastTranscribeErr.slice(0, 200)}`);
         }
         const geminiData = await geminiRes.json() as Record<string, unknown>;
         const candidates = geminiData?.candidates as Array<{content:{parts:Array<{text:string}>}}> | undefined;
