@@ -179,7 +179,22 @@ export default function DocsPage() {
   const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
 
   return (
-    <div className="ve-no-padding flex-1 overflow-y-auto">
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      {/* ── Full-page sci-fi backdrop — sticks to viewport while user scrolls ── */}
+      <div aria-hidden className="doc-grid-bg pointer-events-none fixed inset-0 z-0" />
+      <div aria-hidden className="pointer-events-none fixed inset-0 z-0">
+        <div className="doc-orb-1 absolute -top-32 left-[15%] h-96 w-96 rounded-full blur-3xl"
+          style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)" }} />
+        <div className="doc-orb-2 absolute -top-20 right-[15%] h-80 w-80 rounded-full blur-3xl"
+          style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)" }} />
+        <div className="doc-orb-3 absolute top-[35%] left-1/2 -translate-x-1/2 h-72 w-72 rounded-full blur-3xl"
+          style={{ background: "radial-gradient(closest-side, hsl(285 70% 60%), transparent)" }} />
+        <div className="doc-orb-1 absolute bottom-[20%] right-[10%] h-80 w-80 rounded-full blur-3xl"
+          style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)", animationDelay: "-7s" }} />
+        <div className="doc-orb-2 absolute bottom-[5%] left-[10%] h-72 w-72 rounded-full blur-3xl"
+          style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)", animationDelay: "-12s" }} />
+      </div>
+
       {/* ── Premium animations & decorations ──────────────────────────── */}
       <style jsx global>{`
         @keyframes doc-orb-1 {
@@ -236,7 +251,7 @@ export default function DocsPage() {
             linear-gradient(90deg, hsl(0 0% 100% / 0.025) 1px, transparent 1px);
           background-size: 40px 40px;
           animation: doc-grid-drift 30s linear infinite;
-          mask-image: radial-gradient(ellipse at top, black 30%, transparent 75%);
+          mask-image: linear-gradient(to bottom, black 0%, black 60%, hsl(0 0% 0% / 0.7) 100%);
         }
         .doc-chip-dot { animation: doc-chip-pulse 2s ease-in-out infinite; }
 
@@ -326,21 +341,8 @@ export default function DocsPage() {
         }
       `}</style>
 
-      {/* ── Premium hero — animated grid + floating orbs ──────────────── */}
-      <div className="relative overflow-hidden">
-        {/* Animated grid backdrop */}
-        <div aria-hidden className="doc-grid-bg pointer-events-none absolute inset-0" />
-
-        {/* Floating gradient orbs */}
-        <div aria-hidden className="pointer-events-none absolute inset-0">
-          <div className="doc-orb-1 absolute -top-32 left-1/4 h-96 w-96 rounded-full blur-3xl"
-            style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)" }} />
-          <div className="doc-orb-2 absolute -top-20 right-1/4 h-80 w-80 rounded-full blur-3xl"
-            style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)" }} />
-          <div className="doc-orb-3 absolute top-40 left-1/2 -translate-x-1/2 h-72 w-72 rounded-full blur-3xl"
-            style={{ background: "radial-gradient(closest-side, hsl(285 70% 60%), transparent)" }} />
-        </div>
-
+      {/* ── Premium hero — content sits on top of the fixed backdrop above ── */}
+      <div className="relative z-10">
         <div className="relative mx-auto max-w-4xl px-4 pt-3 pb-5 md:px-6 md:pt-4">
           {/* Eyebrow */}
           <div className="doc-fade-up flex items-center gap-2 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
@@ -394,8 +396,8 @@ export default function DocsPage() {
         </div>
       </div>
 
-      {/* ── Content area ──────────────────────────────────────────────── */}
-      <div className="relative mx-auto max-w-4xl px-4 pb-12 md:px-6">
+      {/* ── Content area — z-10 so it sits above the fixed backdrop ───── */}
+      <div className="relative z-10 mx-auto max-w-4xl px-4 pb-12 md:px-6">
         {/* Active tab indicator chip */}
         <div className="doc-fade-in mb-5 flex items-center gap-2 text-[11px] font-semibold text-white/40"
           style={{ animationDelay: "320ms" }}>
