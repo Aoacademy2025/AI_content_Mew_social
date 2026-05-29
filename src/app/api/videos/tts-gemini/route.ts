@@ -37,41 +37,70 @@ export async function POST(req: Request) {
 
     // Gemini TTS API (multimodal live / speech synthesis)
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: text.trim() }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
+    const requestBody = JSON.stringify({
+      contents: [{ parts: [{ text: text.trim() }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName },
           },
         },
-      }),
+      },
     });
 
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("[tts-gemini] error:", res.status, err);
-      if (res.status === 401) {
-        // API key invalid — prompt user to re-enter
-        return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
+    // Retry transient errors (Google's "Internal error encountered" 500/503 are flaky)
+    let res: Response;
+    let lastErrBody = "";
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
+      });
+
+      if (res.ok) break;
+
+      lastErrBody = await res.text();
+
+      // Don't retry user-fixable errors
+      if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) {
+        console.error("[tts-gemini] non-retryable error:", res.status, lastErrBody.slice(0, 200));
+        break;
       }
-      if (res.status === 403) {
-        // Key valid but model not enabled for this account — don't prompt for key again
-        return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้ TTS — กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio ก่อน", retryable: false }, { status: 403 });
+
+      // Retryable: 429, 500, 502, 503, 504
+      if (attempt < MAX_ATTEMPTS) {
+        const delayMs = 1500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 500); // 1.5s, 3s, 6s
+        console.warn(`[tts-gemini] transient ${res.status} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in ${delayMs}ms`);
+        await new Promise(r => setTimeout(r, delayMs));
+      } else {
+        console.error("[tts-gemini] exhausted retries:", res.status, lastErrBody.slice(0, 200));
       }
-      if (res.status === 404) {
-        return NextResponse.json({ error: "ไม่พบ Gemini TTS model — กรุณาตรวจสอบว่า account รองรับ gemini-3.1-flash-tts-preview", retryable: false }, { status: 404 });
-      }
-      return NextResponse.json({ error: `Gemini TTS ไม่สำเร็จ (${res.status}): ${err.slice(0, 200)}` }, { status: 500 });
     }
 
-    const data = await res.json();
+    if (!res!.ok) {
+      if (res!.status === 401) {
+        return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
+      }
+      if (res!.status === 403) {
+        return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้ TTS — กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio ก่อน", retryable: false }, { status: 403 });
+      }
+      if (res!.status === 404) {
+        return NextResponse.json({ error: "ไม่พบ Gemini TTS model — กรุณาตรวจสอบว่า account รองรับ gemini-3.1-flash-tts-preview", retryable: false }, { status: 404 });
+      }
+      if (res!.status === 429) {
+        return NextResponse.json({ error: "Gemini TTS rate-limit เต็ม กรุณาลองใหม่อีก 1-2 นาที", retryable: true }, { status: 429 });
+      }
+      // 500/503 after retries — most likely Google-side transient outage
+      return NextResponse.json({
+        error: `Gemini TTS ฝั่ง Google ขัดข้องชั่วคราว (${res!.status}) — ลองอีก 1-2 นาที ถ้ายังไม่หายให้ลองสลับเป็น ElevenLabs ก่อน`,
+        retryable: true,
+      }, { status: 503 });
+    }
+
+    const data = await res!.json();
 
     // Extract base64 audio from response
     const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;

@@ -14,6 +14,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/stocks(.*)",
   "/api/renders(.*)",
   "/api/music(.*)",
+  "/api/cron(.*)",  // protected by CRON_SECRET inside each route
 ]);
 
 const isAdminRoute = createRouteMatcher([
