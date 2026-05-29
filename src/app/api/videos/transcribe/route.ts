@@ -1294,11 +1294,15 @@ Return ONLY valid JSON, no markdown, no explanation:
 ━━━ ONE LINE PER CARD (most important) ━━━
 • Each caption = exactly ONE screen line. Viewer must read it before it disappears.
 • Target: 12–24 Thai chars per card. Never exceed 26 Thai chars.
+• MINIMUM: 8 Thai chars per card — anything shorter must merge with adjacent card
 • Count ONLY Thai letters (ก–ฮ + vowels + tone marks). English/numbers/spaces = 0.
 • ✅ "พวกเขากำลังเปลี่ยนโลก" = 16 Thai → OK
 • ✅ "ด้วย AI และ Machine Learning" = 8 Thai → OK
 • ✅ "ปัญญาประดิษฐ์กำลังเปลี่ยนแปลงโลก" = 24 Thai → OK
 • ❌ "ปัญญาประดิษฐ์ไม่ได้เป็นเพียงเรื่องราวในหนังอีกต่อไป" = 40 Thai → TOO LONG
+• ❌ "วุ่นวาย" = 3 Thai → TOO SHORT, merge with surrounding card
+• ❌ "รางวัล" = 4 Thai → TOO SHORT, merge with surrounding card
+• ❌ "ในเมืองหลวง" = 7 Thai → TOO SHORT, merge with surrounding card
 
 ━━━ HOW TO SPLIT BEAUTIFULLY ━━━
 • Split at natural breath/pause points the speaker takes
@@ -1306,12 +1310,14 @@ Return ONLY valid JSON, no markdown, no explanation:
 • Split after sentence-ending particles: ครับ, ค่ะ, นะ, นะครับ
 • Split between subject and predicate when too long
 • NEVER split mid-word — Thai has no spaces, use breath/pause boundaries only
-• NEVER leave orphan words (≤ 3 Thai chars) alone — merge onto adjacent card
+• NEVER leave fragments below MINIMUM (8 Thai chars) — always merge them onto adjacent card
 • Keep brand names/English intact: AI, GPT, ChatGPT, Claude, TikTok — never split
 
 ━━━ MERGING ━━━
+• A card with < 8 Thai chars MUST be merged — prefer merge with previous, else next
 • Merge segments forming one breath unit if total ≤ 24 Thai chars
 • Merge tiny tail words (≤ 4 Thai chars: นะ, ครับ, ค่ะ, AI, นั้น) onto previous card
+• Merge phrases that complete a noun/verb phrase (e.g. preposition + object: "ใน...", "กับ...") onto whichever side keeps meaning
 • Merge across gaps < 0.3s. Stop at gaps ≥ 0.6s or sentence-ending punctuation (. ? ! ฯ)
 
 ━━━ SCRIPT COMPLETENESS ━━━

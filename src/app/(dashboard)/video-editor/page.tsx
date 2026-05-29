@@ -763,7 +763,13 @@ export default function VideoEditorPage() {
 
   async function runKeywords(): Promise<string[]> {
     setStep("keywords", "running");
-    const sc = splitScenes(script);
+    // If captions are already generated (post-transcribe), use them as "scenes" so each
+    // caption gets its own visual moment — otherwise the LLM-split script ignores audio pacing.
+    // Falls back to line-split for first run before transcribe.
+    const existingCaps = captionsRef.current ?? [];
+    const sc = existingCaps.length > 0
+      ? existingCaps.map(c => c.text)
+      : splitScenes(script);
     pipe.current.scenes = sc;
     // ส่ง audioDurationSec เพื่อให้ extract-keywords คำนวณจำนวน keywords ที่เหมาะสม
     // Priority order: actual TTS duration > script-based estimate
