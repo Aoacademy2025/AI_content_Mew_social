@@ -2917,15 +2917,32 @@ export default function VideoEditorPage() {
               )}
             </div>
 
-            {/* Fullscreen — toggles panel fullscreen (not native video) */}
-            <button onClick={() => {
-                if (!document.fullscreenElement) {
-                  centerPanelRef.current?.requestFullscreen?.();
-                } else {
-                  document.exitFullscreen?.();
+            {/* Fullscreen — fullscreen the video itself (most reliable across browsers).
+                Falls back to the CENTER panel if the video element isn't ready, then to
+                the document body. Surfaces errors via toast so the user knows why nothing happened. */}
+            <button onClick={async () => {
+                try {
+                  if (document.fullscreenElement) {
+                    await document.exitFullscreen();
+                    return;
+                  }
+                  // Prefer the video element (Chrome/Safari/Firefox all support video fullscreen reliably).
+                  const target =
+                    (videoRef.current as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> } | null)
+                    ?? (centerPanelRef.current as HTMLElement | null)
+                    ?? document.documentElement;
+                  // Webkit (Safari) uses webkitRequestFullscreen
+                  const req = (target as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen
+                    ?? target.requestFullscreen;
+                  if (req) await req.call(target);
+                  else toast.error("เบราว์เซอร์นี้ไม่รองรับ fullscreen");
+                } catch (err) {
+                  console.error("[fullscreen] failed:", err);
+                  toast.error("เปิด fullscreen ไม่ได้ — ลองคลิกบนหน้าจอก่อน แล้วลองใหม่");
                 }
               }}
-              className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:text-slate-200 transition-colors flex-shrink-0">
+              className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:text-slate-200 transition-colors flex-shrink-0"
+              title={isFullscreen ? "ออกจาก fullscreen" : "ดู fullscreen"}>
               {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
             </button>
           </div>
