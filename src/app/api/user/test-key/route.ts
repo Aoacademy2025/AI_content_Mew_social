@@ -11,7 +11,9 @@ type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 
 async function testGemini(key: string): Promise<{ ok: boolean; message: string }> {
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, {
+      headers: { "x-goog-api-key": key },
+    });
     if (res.ok) return { ok: true, message: "Gemini key ใช้งานได้" };
     if (res.status === 400 || res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ" };
     return { ok: false, message: `Error ${res.status}` };

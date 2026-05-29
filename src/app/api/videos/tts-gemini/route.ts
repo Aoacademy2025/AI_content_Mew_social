@@ -36,7 +36,11 @@ export async function POST(req: Request) {
     const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
 
     // Gemini TTS API (multimodal live / speech synthesis)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+    // Send key as both ?key= query param AND x-goog-api-key header:
+    //   - ?key= works with classic AIza... keys (preview endpoints sometimes require it)
+    //   - x-goog-api-key works with newer AQ.* keys (avoids URL-encoding edge cases for "." chars)
+    // Google accepts both being present — picks whichever is valid first.
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${encodeURIComponent(apiKey)}`;
     const requestBody = JSON.stringify({
       contents: [{ parts: [{ text: text.trim() }] }],
       generationConfig: {
@@ -56,7 +60,10 @@ export async function POST(req: Request) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
         body: requestBody,
       });
 

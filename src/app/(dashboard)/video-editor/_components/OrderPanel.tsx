@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, Music, Upload, X, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -56,7 +56,7 @@ export function OrderPanel(p: OrderPanelProps) {
       <div className="h-11 flex items-center justify-between px-3 border-b border-[#1e1e28] flex-shrink-0">
         {p.open && <span className="text-[12px] font-bold text-slate-300">Pipeline</span>}
         <button onClick={p.onToggle} className="ml-auto w-6 h-6 flex items-center justify-center text-slate-600 hover:text-slate-300 transition-colors rounded">
-          <span className="text-[11px]">{p.open ? "◀" : "▶"}</span>
+          {p.open ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
       </div>
       {p.open && (

@@ -30,7 +30,7 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Dashboard",     href: "/dashboard",  icon: LayoutDashboard },
   { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
-  { title: "Video Creator", href: "/video-creator", icon: Film,   locked: true },
+  { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
   { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard, locked: true },
   { title: "Gallery",       href: "/videos",      icon: Video },
   { title: "Pricing",       href: "/pricing",     icon: CreditCard },

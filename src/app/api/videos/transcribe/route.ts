@@ -998,11 +998,12 @@ export async function POST(req: Request) {
         // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
         console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
         const uploadRes = await fetch(
-          `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(geminiKey)}`,
           {
             method: "POST",
             headers: {
               "Content-Type": "audio/mp3",
+              "x-goog-api-key": geminiKey,
               "X-Goog-Upload-Protocol": "raw",
               "X-Goog-Upload-Command": "upload, finalize",
               "X-Goog-Upload-Header-Content-Length": String(audioBytes),
@@ -1053,10 +1054,13 @@ Return ONLY valid JSON, no markdown, no explanation:
 18. fullText = all segment texts joined in order${script ? `\n19. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
 
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": geminiKey,
+            },
             signal: AbortSignal.timeout(600_000),
             body: JSON.stringify({
               contents: [{
@@ -1076,7 +1080,10 @@ Return ONLY valid JSON, no markdown, no explanation:
 
         // Clean up uploaded file from Gemini (best-effort)
         if (fileName) {
-          fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${geminiKey}`, { method: "DELETE" }).catch(() => {});
+          fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${encodeURIComponent(geminiKey)}`, {
+            method: "DELETE",
+            headers: { "x-goog-api-key": geminiKey },
+          }).catch(() => {});
         }
 
         if (!geminiRes.ok) {
@@ -1288,62 +1295,161 @@ Return ONLY valid JSON, no markdown, no explanation:
           `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
         ).join("\n");
 
+        // Word-level timestamps — these are the ATOMIC UNITS the LLM must group.
+        // LLM picks contiguous spans; never splits inside a word. Eliminates mid-word cuts.
+        const wordList = words.length > 0
+          ? words.map((w, i) => `W${i + 1} [${w.start.toFixed(2)}s] "${w.word}"`).join(" ")
+          : "(no word-level timestamps available — group SEGMENTS instead)";
+
         const scriptForPrompt = sourceText.trim().slice(0, 3000);
-        const geminiMergePrompt = `You are a professional Thai subtitle editor for TikTok/Reels short-form video. Your goal: subtitles that look great on screen, sync perfectly with speech, and are easy to read in 1–2 seconds.
+        const geminiMergePrompt = `You are a Thai subtitle GROUPER for TikTok / Reels / Shorts.
 
-━━━ ONE LINE PER CARD (most important) ━━━
-• Each caption = exactly ONE screen line. Viewer must read it before it disappears.
-• Target: 12–24 Thai chars per card. Never exceed 26 Thai chars.
-• MINIMUM: 8 Thai chars per card — anything shorter must merge with adjacent card
-• Count ONLY Thai letters (ก–ฮ + vowels + tone marks). English/numbers/spaces = 0.
-• ✅ "พวกเขากำลังเปลี่ยนโลก" = 16 Thai → OK
-• ✅ "ด้วย AI และ Machine Learning" = 8 Thai → OK
-• ✅ "ปัญญาประดิษฐ์กำลังเปลี่ยนแปลงโลก" = 24 Thai → OK
-• ❌ "ปัญญาประดิษฐ์ไม่ได้เป็นเพียงเรื่องราวในหนังอีกต่อไป" = 40 Thai → TOO LONG
-• ❌ "วุ่นวาย" = 3 Thai → TOO SHORT, merge with surrounding card
-• ❌ "รางวัล" = 4 Thai → TOO SHORT, merge with surrounding card
-• ❌ "ในเมืองหลวง" = 7 Thai → TOO SHORT, merge with surrounding card
+YOUR ROLE: You are NOT a text splitter. You are a CONCATENATOR.
+You receive pre-tokenized WORDS (atomic units from STT) and you GROUP consecutive
+words into subtitle CARDS that read as natural Thai sentences or phrases.
 
-━━━ HOW TO SPLIT BEAUTIFULLY ━━━
-• Split at natural breath/pause points the speaker takes
-• Split after conjunctions: แต่, และ, หรือ, จึง, ดังนั้น, เพราะ
-• Split after sentence-ending particles: ครับ, ค่ะ, นะ, นะครับ
-• Split between subject and predicate when too long
-• NEVER split mid-word — Thai has no spaces, use breath/pause boundaries only
-• NEVER leave fragments below MINIMUM (8 Thai chars) — always merge them onto adjacent card
-• Keep brand names/English intact: AI, GPT, ChatGPT, Claude, TikTok — never split
+═══════════════════════════════════════════════════════════
+CORE RULE — INDIVISIBLE WORD BLOCKS
+═══════════════════════════════════════════════════════════
+Each WORD in the WORDS list below is ATOMIC. You MUST:
+  ✓ Pick contiguous spans of words (W3..W7, then W8..W12, etc.)
+  ✓ Concatenate their text verbatim (no edits, no reorder)
+  ✓ Use the FIRST word's start time as startMs, the LAST word's end time as endMs
+  ✗ NEVER take a slice INSIDE a word (no "ไม" from "ไม่ทัน")
+  ✗ NEVER skip a word, NEVER duplicate, NEVER reorder
+  ✗ NEVER edit any word's text
 
-━━━ MERGING ━━━
-• A card with < 8 Thai chars MUST be merged — prefer merge with previous, else next
-• Merge segments forming one breath unit if total ≤ 24 Thai chars
-• Merge tiny tail words (≤ 4 Thai chars: นะ, ครับ, ค่ะ, AI, นั้น) onto previous card
-• Merge phrases that complete a noun/verb phrase (e.g. preposition + object: "ใน...", "กับ...") onto whichever side keeps meaning
-• Merge across gaps < 0.3s. Stop at gaps ≥ 0.6s or sentence-ending punctuation (. ? ! ฯ)
+If you follow this one rule, you can never produce mid-word cuts.
 
-━━━ SCRIPT COMPLETENESS ━━━
-• Every word from SCRIPT must appear in output — nothing dropped, nothing added
-• Text must match script exactly (verbatim) — do NOT paraphrase or summarize
-• Parenthetical text like (Artificial Intelligence) in script is NOT spoken — omit from captions
+═══════════════════════════════════════════════════════════
+HOW TO CHOOSE GROUP BOUNDARIES (the real skill)
+═══════════════════════════════════════════════════════════
+Walk the WORDS list left-to-right. End the current group AT word W[i] when:
 
-━━━ TIMESTAMPS ━━━
-• startMs = segment start × 1000 (copy exact value, do NOT round differently)
-• endMs = segment end × 1000 (copy exact value)
-• When splitting one segment into multiple cards: divide timestamp by Thai char proportion
-• Accuracy is critical — wrong timestamps = subtitles out of sync with voice
+  PRIORITY 1 — Natural sentence end after W[i]:
+    • Last word is a sentence-ender: ครับ, ค่ะ, นะคะ, แล้ว, เลย, จริงๆ
+    • Next word starts a new sentence: คือ, แล้ว, แต่, ดังนั้น, ส่วน, อย่างไรก็ตาม
+    • Sentence-ending punctuation in the script (. ? ! ฯ) appears between W[i] and W[i+1]
 
-━━━ TAGS ━━━
-• "hook" = ONLY card index 0 (the very first one). Never assign hook to any other card.
-• "cta" = cards containing: กดติดตาม, like, share, subscribe, กดระฆัง (max 2 cards)
-• "body" = all other cards
+  PRIORITY 2 — Clear conjunction break BEFORE next word:
+    • Next word is: และ, หรือ, แต่, จึง, เพราะ, ถ้า, เพื่อ, ส่วน
+    • End BEFORE the conjunction so it leads the next card
 
-━━━ OUTPUT ━━━
-Return ONLY valid JSON, no markdown, no explanation:
-{"captions":[{"text":"...","startMs":0,"endMs":1200,"tag":"hook"},{"text":"...","startMs":1200,"endMs":2800,"tag":"body"},...]}
+  PRIORITY 3 — Long silence between W[i] and W[i+1]:
+    • Time gap ≥ 0.35s = natural breath, safe to split there
 
-━━━ SCRIPT (reference — use verbatim) ━━━
+  PRIORITY 4 — Group has grown big enough:
+    • Group reads as a complete clause AND would exceed ~50 Thai chars if extended
+
+NEVER end a group when:
+  ✗ Next word is a final-particle of current phrase (นะ, ค่ะ, ครับ, เลย, แล้ว)
+  ✗ Next word is a noun completing a preposition (current word is ใน, บน, กับ, ของ, ที่)
+  ✗ Next word is a classifier (current word is a noun + number)
+  ✗ Current word ends with a connector (เพราะ, ดังนั้น, แล้ว...ก็)
+
+═══════════════════════════════════════════════════════════
+LENGTH GUIDANCE (soft — never break the CORE RULE for length)
+═══════════════════════════════════════════════════════════
+• Sweet spot per card: 2–6 word blocks (≈ 1 spoken phrase)
+• OK to go up to 8 blocks if the phrase needs it to feel complete
+• OK to be just 1 block if it's a strong standalone (ครับ! / แต่... / OpenAI)
+• Don't count characters. Count phrases.
+
+═══════════════════════════════════════════════════════════
+WORKED EXAMPLES (study these carefully)
+═══════════════════════════════════════════════════════════
+
+EXAMPLE 1 — Good sentence grouping
+  WORDS: W1[0.0]"วงการ" W2[0.4]"AI" W3[0.7]"กำลัง" W4[1.0]"เปลี่ยน" W5[1.4]"มือ"
+         W6[1.9]"เงียบๆ" W7[2.4]"ครับ" W8[3.0]"และ" W9[3.3]"OpenAI" W10[3.9]"อาจ"
+         W11[4.2]"ไม่ใช่" W12[4.6]"เบอร์1" W13[5.0]"ของโลก" W14[5.4]"อีกต่อไป"
+
+  GOOD output:
+    Card 1 (W1–W7): "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ"
+      → ends at ครับ (sentence-ender), W8 "และ" starts new sentence
+    Card 2 (W8–W14): "และ OpenAI อาจไม่ใช่เบอร์1 ของโลกอีกต่อไป"
+      → conjunction "และ" leads; ends at อีกต่อไป (natural close)
+
+  BAD output (don't do this):
+    "วงการ AI กำลัง" + "เปลี่ยนมือเงียบๆ" + "ครับและ OpenAI"
+      → splits inside a sentence; "ครับ" stranded with "และ" (different sentences)
+
+EXAMPLE 2 — Conjunction leads new card
+  WORDS: W1"เพราะว่า" W2"เรา" W3"ตั้งใจ" W4"ทำ" W5"โปรเจกต์นี้" W6"มากๆ"
+         W7"ดังนั้น" W8"ผลลัพธ์" W9"เลย" W10"ออกมา" W11"ดี"
+
+  GOOD: "เพราะว่าเราตั้งใจทำโปรเจกต์นี้มากๆ" (W1–W6) + "ดังนั้นผลลัพธ์เลยออกมาดี" (W7–W11)
+  BAD : "เพราะว่าเราตั้งใจทำโปรเจกต์นี้" + "มากๆ ดังนั้นผลลัพธ์เลยออกมาดี"
+        (cuts off มากๆ from its verb, and dangles into next sentence)
+
+EXAMPLE 3 — Don't strand particles or prepositional objects
+  WORDS: W1"ให้" W2"รางวัล" W3"กับ" W4"ตัวเอง"
+  GOOD: "ให้รางวัลกับตัวเอง" (W1–W4, one phrase)
+  BAD : "ให้รางวัล" + "กับตัวเอง" (กับ requires its object to be in the same card)
+
+EXAMPLE 4 — Full paragraph showing how cards stack naturally (this is the gold standard)
+
+  SCRIPT: "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ และ OpenAI อาจไม่ใช่เบอร์ 1
+           ของโลกอีกต่อไป หลายคนอาจไม่ทันสังเกต แต่ในวงการนักพัฒนา enterprise
+           ระดับโลก กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
+
+  GOOD output (5 cards):
+    Card 1: "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ"
+            ↳ ends at ครับ (sentence-ender). Next word "และ" starts new sentence.
+    Card 2: "และ OpenAI อาจไม่ใช่เบอร์ 1 ของโลกอีกต่อไป"
+            ↳ conjunction และ leads. Ends at "อีกต่อไป" (sentence closer).
+    Card 3: "หลายคนอาจไม่ทันสังเกต"
+            ↳ complete thought (subject+verb+object). Next word "แต่" starts contrast.
+    Card 4: "แต่ในวงการนักพัฒนา enterprise ระดับโลก"
+            ↳ conjunction แต่ leads. Ends at "ระดับโลก" — the subject is set up,
+              verb comes in next card to keep length readable.
+    Card 5: "กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
+            ↳ verb phrase that completes Card 4's subject. Ends the paragraph.
+
+  BAD outputs to avoid:
+    ✗ "วงการ AI กำลัง" + "เปลี่ยนมือเงียบๆ ครับและ OpenAI"
+      (mid-sentence cut; ครับ+และ glued across sentences)
+    ✗ "อาจไม่ใช่เบอร์ 1 ของ" + "โลกอีกต่อไป"
+      (cuts off prepositional object "โลก" from "ของ")
+    ✗ "หลายคนอาจไม" + "่ทันสังเกต"
+      (mid-syllable cut — tone mark ่ stranded; word is "ไม่ทัน")
+    ✗ "แต่ในวงการนักพัฒนา enterprise ระดับโลก กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
+      (one mega-card; viewer can't read this in one breath — split at the verb)
+
+═══════════════════════════════════════════════════════════
+TIMESTAMPS — copy from WORDS, no math
+═══════════════════════════════════════════════════════════
+For card grouping W_a..W_b:
+  • startMs = W_a.start × 1000
+  • endMs   = W_b.end   × 1000  (use SEGMENT end if word.end unavailable)
+  • No rounding tricks, no overlap, monotonic increasing
+
+═══════════════════════════════════════════════════════════
+SCRIPT FIDELITY (script is source of truth)
+═══════════════════════════════════════════════════════════
+• Output text MUST equal the concatenated WORDS verbatim
+• If WORDS differ from SCRIPT (STT mishear), trust SCRIPT spelling but keep WORD timing
+• Parenthetical hints like "(อ่านว่า ...)" in SCRIPT are NOT spoken — skip them
+
+═══════════════════════════════════════════════════════════
+TAGS
+═══════════════════════════════════════════════════════════
+• "hook" = ONLY card index 0
+• "cta"  = cards containing: กดติดตาม, ไลค์, แชร์, subscribe, กดระฆัง (max 2)
+• "body" = everything else
+
+═══════════════════════════════════════════════════════════
+OUTPUT (JSON only — no markdown, no explanation)
+═══════════════════════════════════════════════════════════
+{"captions":[{"text":"...","startMs":0,"endMs":1200,"tag":"hook"},...]}
+
+━━━ SCRIPT (verbatim source of truth) ━━━
 ${scriptForPrompt}
 
-━━━ SEGMENTS (seconds → convert to ms) ━━━
+━━━ WORDS (atomic units — concatenate, never split inside) ━━━
+${wordList}
+
+━━━ SEGMENTS (reference for sentence boundaries — gaps and breath cues) ━━━
 ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
@@ -1413,103 +1519,16 @@ Total audio: ${audioDur.toFixed(2)}s`;
             .filter(c => c.text.length > 0);
         }
 
-        // Hard-split any caption still > 25 Thai chars — safety net when LLM misses the limit
-        const MAX_THAI_SPLIT = 25;
-        const splitCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
-        for (const cap of llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]) {
-          const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
-          if (thaiLen > MAX_THAI_SPLIT) {
-            const chunks = splitTextByTargetLen(cap.text, MAX_THAI_SPLIT, 10);
-            if (chunks.length > 1) {
-              const durMs = Math.max(1, cap.endMs - cap.startMs);
-              const charLens = chunks.map(c => Math.max(1, alignmentCharLen(c)));
-              const totalC = charLens.reduce((a, b) => a + b, 0);
-              let cum = 0;
-              for (let ci = 0; ci < chunks.length; ci++) {
-                const t0 = cap.startMs + Math.round((cum / totalC) * durMs);
-                cum += charLens[ci];
-                const t1 = cap.startMs + Math.round((cum / totalC) * durMs);
-                splitCaptions.push({ text: sanitizePhraseText(chunks[ci]), startMs: t0, endMs: t1, tag: cap.tag });
-              }
-              continue;
-            }
-          }
-          splitCaptions.push(cap);
-        }
-
-        // Merge orphan captions (≤ 5 Thai chars and ≤ 800ms) into previous — LLM sometimes misses these
-        const mergedCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
-        for (const cap of splitCaptions) {
-          const thaiLen = (cap.text.match(/[฀-๿]/g) ?? []).length;
-          const durMs = cap.endMs - cap.startMs;
-          const isOrphan = thaiLen <= 5 && durMs <= 800;
-          if (isOrphan && mergedCaptions.length > 0) {
-            const prev = mergedCaptions[mergedCaptions.length - 1];
-            const combined = `${prev.text} ${cap.text}`.trim();
-            const combinedThai = (combined.match(/[฀-๿]/g) ?? []).length;
-            if (combinedThai <= 27) {
-              prev.text = combined;
-              prev.endMs = cap.endMs;
-              continue;
-            }
-          }
-          mergedCaptions.push({ ...cap });
-        }
-        llmCaptions = mergedCaptions;
-
-        // Bridge gaps and extend last to audio end
+        // Bridge gaps and extend last caption to audio end — pure timeline math, no text edits.
+        // We TRUST the LLM's text grouping (it had word-level timestamps + script as source of truth).
+        // No char-count hard-split, no orphan-merge, no script-snap — those were hardcoded hacks
+        // that LLM's word-concatenator output makes unnecessary.
         for (let i = 0; i < llmCaptions.length - 1; i++) {
           const a = llmCaptions[i] as { endMs: number };
           const b = llmCaptions[i + 1] as { startMs: number };
           if (b.startMs > a.endMs) a.endMs = b.startMs;
         }
         if (llmCaptions.length > 0) (llmCaptions[llmCaptions.length - 1] as { endMs: number }).endMs = totalAudioMs;
-
-        // Snap caption text back to real script using char-proportion of timestamps.
-        // LLM merge text may contain mid-word cuts from Gemini transcribe segments.
-        // Strategy: distribute script chars proportionally across caption time spans.
-        if (sourceText.trim().length > 0 && llmCaptions.length > 0) {
-          const scriptChars = [...sanitizeTranscriptionText(sourceText)];
-          const totalMs = Math.max(1, totalAudioMs);
-          // Use each caption's time span proportion to slice the script
-          const snappedTexts: string[] = [];
-          let scriptPos = 0;
-          const scriptNoSpace = scriptChars.filter(c => c.trim()).length;
-          let consumedNS = 0;
-          for (let ci = 0; ci < llmCaptions.length; ci++) {
-            const cap = llmCaptions[ci] as { startMs: number; endMs: number };
-            const endProp = Math.min(1, cap.endMs / totalMs);
-            const targetNS = Math.round(endProp * scriptNoSpace);
-            const startPos = scriptPos;
-            while (scriptPos < scriptChars.length && consumedNS < targetNS) {
-              if (scriptChars[scriptPos].trim()) consumedNS++;
-              scriptPos++;
-            }
-            // Snap to word boundary: look ahead up to 8 chars for a natural break
-            // Thai: no spaces, so snap to Intl.Segmenter word boundary
-            if (scriptPos < scriptChars.length) {
-              let ahead = scriptPos;
-              // find next space or punctuation within 8 chars as a snap point
-              for (let j = scriptPos; j < Math.min(scriptPos + 8, scriptChars.length); j++) {
-                if (/[\s.!?ๆ,]/.test(scriptChars[j])) { ahead = j + 1; break; }
-              }
-              if (ahead > scriptPos && ahead - scriptPos <= 8) scriptPos = ahead;
-            }
-            const slice = sanitizePhraseText(scriptChars.slice(startPos, scriptPos).join(""));
-            snappedTexts.push(slice || (llmCaptions[ci] as { text: string }).text);
-          }
-          // Ensure last caption covers rest of script
-          if (snappedTexts.length > 0 && scriptPos < scriptChars.length) {
-            snappedTexts[snappedTexts.length - 1] = sanitizePhraseText(
-              snappedTexts[snappedTexts.length - 1] + scriptChars.slice(scriptPos).join("")
-            );
-          }
-          llmCaptions = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
-            ...c,
-            text: snappedTexts[i] || c.text,
-          }));
-          console.log(`[transcribe] snapped captions text to real script`);
-        }
 
         const tagged = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
           text: c.text,

@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   Download, Scissors, Trash2,
-  ChevronDown, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
+  ChevronDown, ChevronLeft, ChevronRight, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
   Maximize2, Minimize2, Plus, Search, Loader2,
   ZoomIn, User, X, Save, Pencil,
 } from "lucide-react";
@@ -31,21 +31,13 @@ import { renderSubEl } from "./_components/subtitle-renderer";
 import { ApiCallError } from "./_components/ApiCallError";
 import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
+import { ScrubberBar } from "./_components/ScrubberBar";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function VideoEditorPage() {
-
-  // ── Mobile guard ───────────────────────────────────────────────────────
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 1024);
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
-  }, []);
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
@@ -226,7 +218,7 @@ export default function VideoEditorPage() {
   const [searchOpen, setSearchOpen] = useState(false);
 
   // ── Timeline clip resize drag ──────────────────────────────────────────
-  const clipResizeRef = useRef<{ capIdx: number; edge: "left" | "right"; startX: number; startMs: number } | null>(null);
+  const clipResizeRef = useRef<{ capIdx: number; edge: "left" | "right" | "move"; startX: number; startMs: number; durMs?: number; moved?: boolean } | null>(null);
 
   // ── Subtitle drag on phone frame ──────────────────────────────────────
   const phoneFrameRef = useRef<HTMLDivElement>(null);
@@ -2144,23 +2136,6 @@ export default function VideoEditorPage() {
   const previewScale = 260 / 1080;
 
   // ── RENDER ────────────────────────────────────────────────────────────
-  if (isMobile) return (
-    <div className="ve-no-padding flex-1 flex flex-col items-center justify-center bg-[#0c0c0f] text-slate-100 px-6 text-center gap-6">
-      <div className="flex flex-col items-center gap-4">
-        <div className="w-16 h-16 rounded-2xl bg-[#1a1a22] border border-[#2a2a36] flex items-center justify-center">
-          <Maximize2 className="w-7 h-7 text-violet-400" />
-        </div>
-        <div>
-          <h2 className="text-lg font-bold text-white mb-2">ต้องใช้หน้าจอ Desktop</h2>
-          <p className="text-sm text-slate-400 leading-relaxed">Video Editor ต้องการพื้นที่หน้าจอขนาดใหญ่<br />กรุณาเปิดบน Desktop หรือ Laptop</p>
-        </div>
-        <a href="/dashboard" className="mt-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
-          style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(190 100% 40%))" }}>
-          กลับ Dashboard
-        </a>
-      </div>
-    </div>
-  );
 
   return (
     <div className={cn(
@@ -2368,7 +2343,7 @@ export default function VideoEditorPage() {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1 scrollbar-thin scrollbar-thumb-[#2a2a36]">
+          <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1">
 
             {/* ── SCRIPT + PRE-LLM SETTINGS ── */}
             <div className="px-2 mb-1 space-y-2">
@@ -2821,19 +2796,14 @@ export default function VideoEditorPage() {
               <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.07)" }} />
             </div>
 
-            {/* TTS audio preview (bottom-left, small) */}
-            {ttsUrl && (
-              <div className="absolute bottom-3 left-3 right-3">
-                <audio src={ttsUrl} controls muted={avatarInputMode === "direct"} className="w-full h-7 opacity-60 hover:opacity-100 transition-opacity" />
-                {avatarInputMode === "direct" && (
-                  <div className="text-center text-[9px] text-slate-600 mt-0.5">🔇 Direct URL — เสียงอยู่ในวิดีโอ</div>
-                )}
-              </div>
+            {/* Avatar direct-URL note — only shown when relevant (audio controls live in playback bar below) */}
+            {ttsUrl && avatarInputMode === "direct" && (
+              <div className="absolute bottom-3 left-3 right-3 text-center text-[9px] text-slate-600">🔇 Direct URL — เสียงอยู่ในวิดีโอ</div>
             )}
           </div>
 
           {/* ── Playback controls ── */}
-          <div className="h-12 bg-[#111115] border-t border-[#1e1e28] flex items-center gap-2 px-4 flex-shrink-0">
+          <div className="h-12 bg-[#111115] border-t border-[#1e1e28] flex flex-nowrap items-center gap-2 px-4 flex-shrink-0 overflow-hidden min-w-0">
             {/* Skip back */}
             <button onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }}
               className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:bg-[#1e1e28] hover:text-slate-200 transition-colors flex-shrink-0">
@@ -2857,63 +2827,44 @@ export default function VideoEditorPage() {
             {/* Time */}
             <span className="text-[11px] text-slate-500 tabular-nums flex-shrink-0">{fmtMs(currentMs)}</span>
 
-            {/* Scrubber — always show thumb, bigger during scrub */}
-            <div className="flex-1 relative py-3 cursor-pointer group"
-              onPointerDown={e => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                setIsScrubbing(true);
-                if (!videoRef.current) return;
-                const r = e.currentTarget.getBoundingClientRect();
-                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                const dur = videoRef.current.duration || (durationMs / 1000);
-                videoRef.current.currentTime = pct * dur;
-                setCurrentMs(pct * dur * 1000);
-              }}
-              onPointerMove={e => {
-                if (e.buttons !== 1 || !videoRef.current) return;
-                const r = e.currentTarget.getBoundingClientRect();
-                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                const dur = videoRef.current.duration || (durationMs / 1000);
-                videoRef.current.currentTime = pct * dur;
-                setCurrentMs(pct * dur * 1000);
-              }}
-              onPointerUp={() => setIsScrubbing(false)}
-              onPointerCancel={() => setIsScrubbing(false)}
-            >
-              <div className={cn("absolute top-1/2 left-0 right-0 -translate-y-1/2 rounded overflow-hidden transition-all", isScrubbing ? "h-2" : "h-1 group-hover:h-1.5")} style={{ background: "#2a2a36" }}>
-                <div className="h-full bg-violet-500 rounded" style={{ width: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }} />
-              </div>
-              {/* Thumb — always visible when scrubbing, hover otherwise */}
-              <div className={cn("absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.6)] transition-all",
-                isScrubbing ? "w-4 h-4 opacity-100" : "w-3 h-3 opacity-0 group-hover:opacity-100")}
-                style={{ left: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }} />
-            </div>
+            {/* Scrubber — hover shows time preview, drag to seek */}
+            <ScrubberBar
+              currentMs={currentMs}
+              totalMs={totalMs}
+              durationMs={durationMs}
+              isScrubbing={isScrubbing}
+              setIsScrubbing={setIsScrubbing}
+              videoRef={videoRef}
+              setCurrentMs={setCurrentMs}
+              fmtMs={fmtMs}
+            />
 
             <span className="text-[11px] text-slate-600 tabular-nums flex-shrink-0">/ {fmtMs(totalMs)}</span>
 
             <div className="w-px h-4 bg-[#2a2a36] mx-1 flex-shrink-0" />
 
-            {/* Volume — click icon to mute, hover to show slider */}
-            <div className="relative flex items-center flex-shrink-0" onMouseEnter={() => setShowVolumeSlider(true)} onMouseLeave={() => setShowVolumeSlider(false)}>
+            {/* Volume — hover icon to show slider; click icon to toggle mute */}
+            <div className="relative flex items-center flex-shrink-0"
+              onMouseEnter={() => setShowVolumeSlider(true)}
+              onMouseLeave={() => setShowVolumeSlider(false)}>
               <button onClick={() => setMuted(m => !m)}
                 className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:text-slate-200 transition-colors">
                 {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : volume < 0.5 ? <Volume1 className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
               </button>
-              {/* Volume slider popup */}
+              {/* Volume slider popup — invisible bridge prevents hover-gap losing focus */}
               {showVolumeSlider && (
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-[#1a1a22] border border-[#2a2a36] rounded-xl p-3 shadow-2xl flex flex-col items-center gap-2 z-50" style={{ width: 36 }}>
-                  {/* Vertical slider */}
-                  <div className="relative h-20 w-1.5 bg-[#2a2a36] rounded cursor-pointer flex-shrink-0"
-                    onClick={e => {
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 pb-2 z-50">
+                  <div className="bg-[#1a1a22] border border-[#2a2a36] rounded-xl p-3 shadow-2xl flex flex-col items-center gap-2" style={{ width: 36 }}>
+                  {/* Vertical slider — wider hit area for easier click/drag */}
+                  <div className="relative h-20 w-6 cursor-pointer flex-shrink-0 flex items-center justify-center touch-none select-none outline-none focus:outline-none" tabIndex={-1}
+                    onPointerDown={e => {
+                      e.currentTarget.setPointerCapture(e.pointerId);
                       const r = e.currentTarget.getBoundingClientRect();
                       const pct = 1 - Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
                       const v = Math.round(pct * 100) / 100;
                       setVolume(v);
                       if (videoRef.current) videoRef.current.volume = v;
                       setMuted(v === 0);
-                    }}
-                    onPointerDown={e => {
-                      e.currentTarget.setPointerCapture(e.pointerId);
                     }}
                     onPointerMove={e => {
                       if (e.buttons !== 1) return;
@@ -2925,10 +2876,13 @@ export default function VideoEditorPage() {
                       setMuted(v === 0);
                     }}
                   >
-                    <div className="absolute bottom-0 left-0 right-0 bg-violet-500 rounded" style={{ height: `${(muted ? 0 : volume) * 100}%` }} />
-                    <div className="absolute left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow" style={{ bottom: `calc(${(muted ? 0 : volume) * 100}% - 6px)` }} />
+                    <div className="relative h-full w-1.5 rounded-full bg-[#2a2a36] pointer-events-none">
+                      <div className="absolute bottom-0 left-0 right-0 bg-violet-500 rounded-full" style={{ height: `${(muted ? 0 : volume) * 100}%` }} />
+                      <div className="absolute left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_8px_rgba(124,58,237,0.6)]" style={{ bottom: `calc(${(muted ? 0 : volume) * 100}% - 6px)` }} />
+                    </div>
                   </div>
-                  <span className="text-[9px] text-slate-500 tabular-nums">{muted ? 0 : Math.round(volume * 100)}</span>
+                    <span className="text-[9px] text-slate-500 tabular-nums">{muted ? 0 : Math.round(volume * 100)}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -2954,7 +2908,7 @@ export default function VideoEditorPage() {
               <button onClick={() => setRightPanelOpen(true)}
                 className="w-6 h-6 flex items-center justify-center text-slate-600 hover:text-slate-300 transition-colors rounded"
                 title="Open settings panel">
-                <span className="text-[11px]">◀</span>
+                <ChevronLeft className="w-3 h-3" />
               </button>
             </div>
           </div>
@@ -3159,19 +3113,40 @@ export default function VideoEditorPage() {
 
           <div className="ml-auto flex items-center gap-2">
             <ZoomIn className="w-3 h-3 text-slate-600" />
-            <div className="relative w-14 h-1 bg-[#2a2a36] rounded cursor-pointer"
-              onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setTlZoom(Math.round(50 + ((e.clientX - r.left) / r.width) * 150)); }}>
-              <div className="absolute left-0 top-0 h-full bg-slate-600 rounded" style={{ width: `${((tlZoom - 50) / 150) * 100}%` }} />
+            {/* Zoom slider — wider hit area, drag-to-zoom */}
+            <div
+              className="relative w-20 h-5 cursor-pointer flex items-center touch-none select-none outline-none"
+              tabIndex={-1}
+              onPointerDown={e => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                const r = e.currentTarget.getBoundingClientRect();
+                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                setTlZoom(Math.round(50 + pct * 150));
+              }}
+              onPointerMove={e => {
+                if (e.buttons !== 1) return;
+                const r = e.currentTarget.getBoundingClientRect();
+                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                setTlZoom(Math.round(50 + pct * 150));
+              }}
+            >
+              <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
+                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 150) * 100}%` }} />
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
+                  style={{ left: `${((tlZoom - 50) / 150) * 100}%` }}
+                />
+              </div>
             </div>
-            <span className="text-[11px] text-slate-600 tabular-nums">{tlZoom}%</span>
+            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">{tlZoom}%</span>
           </div>
         </div>
 
-        {/* Timeline tracks */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Track labels */}
-          <div className="w-[110px] flex-shrink-0 border-r border-[#1e1e28]">
-            <div className="h-[18px] border-b border-[#1e1e28]" />
+        {/* Timeline tracks — wrapper allows vertical scroll when tracks exceed panel height */}
+        <div className="flex flex-1 overflow-y-auto overflow-x-hidden">
+          {/* Track labels — sticky so labels stay visible during horizontal scroll of track content */}
+          <div className="w-[110px] flex-shrink-0 border-r border-[#1e1e28] sticky left-0 z-10 bg-[#0e0e13]">
+            <div className="h-[22px] border-b border-[#1e1e28]" />
             {[["💬","Subtitles"],["🎬","B-roll"],["🎤","Voice"],["🎵","Music"]].map(([icon, label]) => (
               <div key={label} className="h-[38px] flex items-center gap-2 px-3 border-b border-[#1a1a20] last:border-b-0">
                 <span className="text-[11px] opacity-60">{icon}</span>
@@ -3181,7 +3156,7 @@ export default function VideoEditorPage() {
           </div>
 
           {/* Track content */}
-          <div className="flex-1 overflow-x-auto overflow-y-hidden relative scrollbar-thin scrollbar-thumb-[#2a2a36]"
+          <div className="tl-track-content flex-1 overflow-x-auto overflow-y-hidden relative"
             onPointerMove={e => {
               const r = clipResizeRef.current;
               if (!r || e.buttons !== 1) return;
@@ -3189,6 +3164,8 @@ export default function VideoEditorPage() {
               if (!trackEl) return;
               const trackW = trackEl.getBoundingClientRect().width;
               const dxPx = e.clientX - r.startX;
+              // Track drag distance — used to distinguish click vs drag on release
+              if (Math.abs(dxPx) > 3) r.moved = true;
               const dxMs = (dxPx / trackW) * totalMs;
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
@@ -3196,9 +3173,15 @@ export default function VideoEditorPage() {
                   if (r.edge === "left") {
                     const newStart = Math.max(0, Math.min(c.endMs - 200, r.startMs + dxMs));
                     return { ...c, startMs: Math.round(newStart) };
-                  } else {
+                  } else if (r.edge === "right") {
                     const newEnd = Math.max(c.startMs + 200, Math.min(totalMs || 999999, r.startMs + dxMs));
                     return { ...c, endMs: Math.round(newEnd) };
+                  } else {
+                    // "move" — slide whole clip, preserving duration
+                    const dur = r.durMs ?? (c.endMs - c.startMs);
+                    const maxStart = Math.max(0, (totalMs || 999999) - dur);
+                    const newStart = Math.max(0, Math.min(maxStart, r.startMs + dxMs));
+                    return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
                 captionsRef.current = next;
@@ -3207,15 +3190,17 @@ export default function VideoEditorPage() {
             }}
             onPointerUp={() => {
               if (clipResizeRef.current) {
-                setCaptions(captions); // push to history on release
+                if (clipResizeRef.current.moved) {
+                  setCaptions(captions); // push to history on release (only if actually dragged)
+                }
                 clipResizeRef.current = null;
               }
             }}
           >
-            <div className="relative" style={{ minWidth: `${Math.max(600, displayCaptions.length * 120 * (tlZoom / 100))}px` }}>
+            <div className="relative" style={{ width: `${tlZoom}%`, minWidth: "100%" }}>
 
               {/* Ruler — click/drag to seek */}
-              <div className="h-[18px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
+              <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
                 onPointerDown={e => {
                   e.currentTarget.setPointerCapture(e.pointerId);
                   if (!videoRef.current || !totalMs) return;
@@ -3245,16 +3230,37 @@ export default function VideoEditorPage() {
                 {displayCaptions.map((cap, i) => {
                   const left = totalMs > 0 ? (cap.startMs / totalMs) * 100 : i * (100 / displayCaptions.length);
                   const width = totalMs > 0 ? ((cap.endMs - cap.startMs) / totalMs) * 100 : (100 / displayCaptions.length) - 0.5;
+                  // Find the track container ancestor (the element that holds the onPointerMove handler) for pointer capture
+                  const startResize = (e: React.PointerEvent, edge: "left" | "right" | "move") => {
+                    e.stopPropagation();
+                    const trackContent = e.currentTarget.closest(".tl-track-content") as HTMLElement | null;
+                    if (trackContent) trackContent.setPointerCapture(e.pointerId);
+                    clipResizeRef.current = {
+                      capIdx: i,
+                      edge,
+                      startX: e.clientX,
+                      startMs: edge === "right" ? cap.endMs : cap.startMs,
+                      durMs: cap.endMs - cap.startMs,
+                      moved: false,
+                    };
+                  };
                   return (
-                    <div key={i} onClick={() => { setActiveSegIdx(i); if (videoRef.current) videoRef.current.currentTime = cap.startMs / 1000; }}
-                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold overflow-hidden whitespace-nowrap cursor-pointer border transition-all hover:brightness-125",
+                    <div key={i}
+                      onPointerDown={e => startResize(e, "move")}
+                      onClick={() => {
+                        // Treat as click only if no drag happened — handled in onPointerUp; this still fires for taps
+                        if (clipResizeRef.current?.moved) return;
+                        setActiveSegIdx(i);
+                        if (videoRef.current) videoRef.current.currentTime = cap.startMs / 1000;
+                      }}
+                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
                         i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
                       style={{ left: `${left}%`, width: `${Math.max(3, width)}%` }}>
-                      <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10 flex items-center justify-center"
-                        onPointerDown={e => { e.stopPropagation(); e.currentTarget.parentElement!.parentElement!.parentElement!.setPointerCapture(e.pointerId); clipResizeRef.current = { capIdx: i, edge: "left", startX: e.clientX, startMs: cap.startMs }; }} />
-                      <span className="truncate px-2">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "..." : ""}</span>
-                      <div className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-r-md z-10 flex items-center justify-center"
-                        onPointerDown={e => { e.stopPropagation(); e.currentTarget.parentElement!.parentElement!.parentElement!.setPointerCapture(e.pointerId); clipResizeRef.current = { capIdx: i, edge: "right", startX: e.clientX, startMs: cap.endMs }; }} />
+                      <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10"
+                        onPointerDown={e => startResize(e, "left")} />
+                      <span className="truncate px-2 pointer-events-none">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "..." : ""}</span>
+                      <div className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-r-md z-10"
+                        onPointerDown={e => startResize(e, "right")} />
                     </div>
                   );
                 })}
