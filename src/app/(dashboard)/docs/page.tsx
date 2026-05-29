@@ -3,67 +3,98 @@
 import { useState } from "react";
 import { BookOpen, Film, Wand2, Captions, Settings2, Play, Layers, User, Key, AlertTriangle, Info, CheckCircle2, RefreshCw } from "lucide-react";
 
-const CARD: React.CSSProperties = {
-  background: "var(--ui-card-bg)",
-  border: "1px solid var(--ui-card-border)",
-};
+/* ═══════════════════════════════════════════════════
+   SCI-FI / NEON COMPONENTS
+═══════════════════════════════════════════════════ */
 
+// Card with animated neon border + corner brackets + holographic header strip
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl p-6" style={CARD}>
-      <div className="flex items-center gap-2.5 mb-4 pb-3 border-b" style={{ borderColor: "var(--ui-card-border)" }}>
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg"
-          style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.22)" }}>
-          <Icon className="h-4 w-4 text-cyan-400" />
+    <section className="doc-card group relative overflow-hidden rounded-2xl">
+      {/* Animated neon border */}
+      <div aria-hidden className="doc-card-border absolute inset-0 rounded-2xl pointer-events-none" />
+
+      {/* Corner brackets — cyberpunk feel */}
+      <CornerBrackets />
+
+      {/* Header strip with scan line */}
+      <div className="relative px-6 pt-5 pb-4">
+        <div className="absolute top-0 left-0 right-0 h-px doc-scanline" aria-hidden />
+        <div className="flex items-center gap-3">
+          <div className="doc-icon-frame relative flex h-10 w-10 items-center justify-center rounded-xl shrink-0">
+            <Icon className="h-4.5 w-4.5 text-cyan-300 relative z-10" strokeWidth={2.25} />
+          </div>
+          <h2 className="text-[17px] font-bold tracking-tight text-white">{title}</h2>
         </div>
-        <h2 className="text-lg font-bold text-white">{title}</h2>
       </div>
-      <div className="space-y-3 text-sm text-white/70 leading-relaxed">{children}</div>
+
+      {/* Divider with gradient fade */}
+      <div className="h-px mx-6 bg-linear-to-r from-transparent via-cyan-500/25 to-transparent" />
+
+      <div className="relative px-6 py-5 space-y-3 text-sm text-white/70 leading-relaxed">{children}</div>
     </section>
   );
 }
 
+// Hexagon-ish badge for steps — outlined with glow
 function Step({ num, title, children }: { num: string | number; title: string; children: React.ReactNode }) {
   return (
-    <div className="flex gap-3">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-        style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
-        {num}
+    <div className="flex gap-4">
+      <div className="doc-step-badge relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[13px] font-black text-cyan-200">
+        <span className="relative z-10">{num}</span>
       </div>
-      <div className="flex-1 pt-0.5">
-        <h3 className="text-sm font-bold text-white mb-1.5">{title}</h3>
-        <div className="text-[13px] text-white/60 space-y-1.5">{children}</div>
+      <div className="flex-1 pt-1">
+        <h3 className="text-[14px] font-bold text-white mb-1.5 tracking-tight">{title}</h3>
+        <div className="text-[13px] text-white/65 space-y-1.5 leading-relaxed">{children}</div>
       </div>
     </div>
   );
 }
 
+// Pipeline step with neon connector
 function PipelineRow({ num, name, desc }: { num: number; name: string; desc: string }) {
   return (
-    <div className="flex gap-3 items-start py-2.5 border-b last:border-b-0" style={{ borderColor: "var(--ui-card-border)" }}>
-      <span className="font-mono text-[11px] font-bold text-cyan-400/70 mt-0.5 shrink-0">#{num}</span>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-bold text-white">{name}</p>
-        <p className="text-[12px] text-white/50 mt-0.5">{desc}</p>
+    <div className="relative flex gap-3 items-start py-3 group">
+      {/* Vertical connector */}
+      <div aria-hidden className="absolute left-[15px] top-9 bottom-0 w-px bg-linear-to-b from-cyan-500/40 via-cyan-500/15 to-transparent last:hidden" />
+      <div className="relative flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg font-mono text-[10px] font-black text-cyan-300"
+        style={{
+          background: "linear-gradient(135deg, hsl(190 100% 50% / 0.18), hsl(230 100% 55% / 0.10))",
+          border: "1px solid hsl(190 100% 50% / 0.45)",
+          boxShadow: "0 0 12px hsl(190 100% 50% / 0.25), inset 0 0 8px hsl(190 100% 50% / 0.15)",
+        }}>
+        {String(num).padStart(2, "0")}
+      </div>
+      <div className="flex-1 min-w-0 pt-0.5">
+        <p className="text-[13.5px] font-bold text-white tracking-tight">{name}</p>
+        <p className="text-[12px] text-white/50 mt-0.5 leading-relaxed">{desc}</p>
       </div>
     </div>
   );
 }
 
+// API key row — neon panel with status badge
 function ApiRow({ name, required, desc, link, linkLabel }: { name: string; required: boolean; desc: string; link?: string; linkLabel?: string }) {
   return (
-    <div className="rounded-xl p-4" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-      <div className="flex items-start justify-between gap-3 mb-1">
-        <p className="text-sm font-bold text-white">{name}</p>
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${required ? "text-red-300 bg-red-500/10 border border-red-500/20" : "text-white/40 bg-white/5 border border-white/10"}`}>
-          {required ? "จำเป็น" : "ออปชัน"}
+    <div className="doc-panel relative overflow-hidden rounded-xl px-4 py-3.5 transition-all hover:bg-white/[0.03]">
+      <div className="flex items-start justify-between gap-3 mb-1.5">
+        <p className="text-[13.5px] font-bold text-white tracking-tight">{name}</p>
+        <span
+          className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md shrink-0 ${
+            required
+              ? "text-red-300 bg-red-500/10 border border-red-500/30 shadow-[0_0_8px_hsl(0_70%_50%/0.2)]"
+              : "text-white/50 bg-white/5 border border-white/15"
+          }`}
+        >
+          {required ? "Required" : "Optional"}
         </span>
       </div>
-      <p className="text-[12px] text-white/50 leading-relaxed">{desc}</p>
+      <p className="text-[12px] text-white/55 leading-relaxed">{desc}</p>
       {link && (
         <a href={link} target="_blank" rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 mt-2 text-[11px] text-cyan-400 hover:text-cyan-300 transition-colors">
-          → {linkLabel ?? link}
+          className="group/link inline-flex items-center gap-1 mt-2.5 text-[11px] font-semibold text-cyan-300 hover:text-cyan-200 transition-colors">
+          <span className="transition-transform group-hover/link:translate-x-0.5">→</span>
+          <span className="underline-offset-2 group-hover/link:underline">{linkLabel ?? link}</span>
         </a>
       )}
     </div>
@@ -72,42 +103,65 @@ function ApiRow({ name, required, desc, link, linkLabel }: { name: string; requi
 
 function Warn({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex gap-2 rounded-lg p-3 text-[13px]"
-      style={{ background: "hsl(35 100% 50% / 0.08)", border: "1px solid hsl(35 100% 50% / 0.25)" }}>
-      <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
-      <span className="text-amber-200/80">{children}</span>
+    <div className="relative flex gap-2.5 rounded-xl px-3.5 py-2.5 text-[13px] overflow-hidden"
+      style={{
+        background: "linear-gradient(135deg, hsl(35 100% 50% / 0.10), hsl(15 100% 50% / 0.05))",
+        border: "1px solid hsl(35 100% 50% / 0.35)",
+        boxShadow: "0 0 16px hsl(35 100% 50% / 0.10), inset 0 1px 0 hsl(35 100% 70% / 0.08)",
+      }}>
+      <AlertTriangle className="h-4 w-4 text-amber-300 shrink-0 mt-px drop-shadow-[0_0_4px_hsl(35_100%_50%/0.5)]" />
+      <span className="text-amber-100/85 leading-relaxed">{children}</span>
     </div>
   );
 }
 
 function InfoBox({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex gap-2 rounded-lg p-3 text-[13px]"
-      style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
-      <Info className="h-3.5 w-3.5 text-cyan-400 shrink-0 mt-0.5" />
-      <span className="text-cyan-200/80">{children}</span>
+    <div className="relative flex gap-2.5 rounded-xl px-3.5 py-2.5 text-[13px] overflow-hidden"
+      style={{
+        background: "linear-gradient(135deg, hsl(190 100% 50% / 0.10), hsl(220 100% 55% / 0.05))",
+        border: "1px solid hsl(190 100% 50% / 0.30)",
+        boxShadow: "0 0 16px hsl(190 100% 50% / 0.12), inset 0 1px 0 hsl(190 100% 70% / 0.08)",
+      }}>
+      <Info className="h-4 w-4 text-cyan-300 shrink-0 mt-px drop-shadow-[0_0_4px_hsl(190_100%_50%/0.6)]" />
+      <span className="text-cyan-100/85 leading-relaxed">{children}</span>
     </div>
   );
 }
 
 function ErrBox({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl p-4" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
+    <div className="doc-panel relative overflow-hidden rounded-xl px-4 py-3 group hover:bg-white/[0.03] transition-all">
       <div className="flex items-center gap-2 mb-1.5">
-        <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-        <p className="text-white font-bold text-[13px]">{title}</p>
+        <AlertTriangle className="h-3.5 w-3.5 text-amber-300 shrink-0 drop-shadow-[0_0_3px_hsl(35_100%_50%/0.4)]" />
+        <p className="text-white font-bold text-[13px] tracking-tight">{title}</p>
       </div>
-      <div className="text-[12px] text-white/50 leading-relaxed">{children}</div>
+      <div className="text-[12px] text-white/55 leading-relaxed pl-5">{children}</div>
     </div>
   );
 }
 
 function Tip({ children }: { children: React.ReactNode }) {
   return (
-    <li className="flex gap-2">
-      <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400 shrink-0 mt-0.5" />
-      <span>{children}</span>
+    <li className="flex gap-2.5 items-start">
+      <span className="relative mt-0.5 shrink-0">
+        <CheckCircle2 className="h-4 w-4 text-cyan-300 drop-shadow-[0_0_3px_hsl(190_100%_50%/0.5)]" strokeWidth={2.5} />
+      </span>
+      <span className="leading-relaxed">{children}</span>
     </li>
+  );
+}
+
+// Cyberpunk corner brackets for cards
+function CornerBrackets() {
+  const C = "absolute h-3 w-3 border-cyan-400/40 pointer-events-none";
+  return (
+    <>
+      <span aria-hidden className={`${C} top-2 left-2 border-t border-l rounded-tl-sm`} />
+      <span aria-hidden className={`${C} top-2 right-2 border-t border-r rounded-tr-sm`} />
+      <span aria-hidden className={`${C} bottom-2 left-2 border-b border-l rounded-bl-sm`} />
+      <span aria-hidden className={`${C} bottom-2 right-2 border-b border-r rounded-br-sm`} />
+    </>
   );
 }
 
@@ -185,9 +239,88 @@ export default function DocsPage() {
           mask-image: radial-gradient(ellipse at top, black 30%, transparent 75%);
         }
         .doc-chip-dot { animation: doc-chip-pulse 2s ease-in-out infinite; }
+
+        /* ── Sci-fi card with animated neon border ─────────────────── */
+        @keyframes doc-border-spin {
+          0%   { background-position: 0% 50%; }
+          100% { background-position: 200% 50%; }
+        }
+        @keyframes doc-scanline-sweep {
+          0%   { transform: translateX(-100%); opacity: 0; }
+          50%  { opacity: 1; }
+          100% { transform: translateX(100%); opacity: 0; }
+        }
+        @keyframes doc-icon-pulse {
+          0%,100% { box-shadow: 0 0 0 1px hsl(190 100% 50% / 0.35) inset, 0 0 12px hsl(190 100% 50% / 0.20); }
+          50%     { box-shadow: 0 0 0 1px hsl(190 100% 60% / 0.55) inset, 0 0 22px hsl(190 100% 50% / 0.40); }
+        }
+        @keyframes doc-step-glow {
+          0%,100% { box-shadow: 0 0 8px hsl(190 100% 50% / 0.25), inset 0 0 0 1px hsl(190 100% 50% / 0.40); }
+          50%     { box-shadow: 0 0 16px hsl(190 100% 50% / 0.45), inset 0 0 0 1px hsl(190 100% 60% / 0.60); }
+        }
+
+        /* Section card */
+        .doc-card {
+          background:
+            radial-gradient(120% 80% at 0% 0%, hsl(190 100% 50% / 0.04), transparent 50%),
+            radial-gradient(120% 80% at 100% 100%, hsl(252 80% 60% / 0.04), transparent 50%),
+            hsl(220 30% 6% / 0.85);
+          backdrop-filter: blur(12px);
+          box-shadow:
+            0 1px 0 hsl(0 0% 100% / 0.04) inset,
+            0 24px 48px hsl(0 0% 0% / 0.35);
+        }
+        .doc-card-border {
+          padding: 1px;
+          background: linear-gradient(110deg,
+            hsl(0 0% 100% / 0.04) 0%,
+            hsl(190 100% 50% / 0.45) 20%,
+            hsl(252 80% 60% / 0.35) 40%,
+            hsl(0 0% 100% / 0.04) 60%,
+            hsl(190 100% 50% / 0.35) 80%,
+            hsl(0 0% 100% / 0.04) 100%
+          );
+          background-size: 200% 100%;
+          animation: doc-border-spin 8s linear infinite;
+          -webkit-mask:
+            linear-gradient(#000 0 0) content-box,
+            linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+                  mask-composite: exclude;
+        }
+        .doc-card:hover .doc-card-border { animation-duration: 4s; }
+
+        /* Section header scanline */
+        .doc-scanline {
+          background: linear-gradient(90deg, transparent, hsl(190 100% 60% / 0.85), transparent);
+          animation: doc-scanline-sweep 5s ease-in-out infinite;
+        }
+
+        /* Icon frame inside card header */
+        .doc-icon-frame {
+          background: linear-gradient(135deg, hsl(190 100% 45% / 0.18), hsl(230 100% 55% / 0.10));
+          border: 1px solid hsl(190 100% 50% / 0.40);
+          animation: doc-icon-pulse 3.6s ease-in-out infinite;
+        }
+
+        /* Step badge */
+        .doc-step-badge {
+          background: linear-gradient(135deg, hsl(190 100% 45% / 0.15), hsl(252 80% 60% / 0.10));
+          border: 1px solid hsl(190 100% 50% / 0.40);
+          animation: doc-step-glow 3s ease-in-out infinite;
+        }
+
+        /* Panel — used by ApiRow / ErrBox */
+        .doc-panel {
+          background: hsl(220 30% 8% / 0.55);
+          border: 1px solid hsl(0 0% 100% / 0.06);
+          box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.03);
+        }
+
         @media (prefers-reduced-motion: reduce) {
           .doc-orb-1, .doc-orb-2, .doc-orb-3, .doc-shimmer, .doc-tab-active,
-          .doc-fade-up, .doc-fade-in, .doc-grid-bg, .doc-chip-dot {
+          .doc-fade-up, .doc-fade-in, .doc-grid-bg, .doc-chip-dot,
+          .doc-card-border, .doc-scanline, .doc-icon-frame, .doc-step-badge {
             animation: none !important;
           }
         }
