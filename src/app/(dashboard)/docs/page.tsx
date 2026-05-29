@@ -118,7 +118,7 @@ export default function DocsPage() {
 
   const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
     { id: "api", label: "ตั้งค่า API", icon: Key },
-    { id: "video", label: "วิดีโออย่างเดียว", icon: Film },
+    { id: "video", label: "Video Editor", icon: Film },
     { id: "avatar", label: "+ Avatar", icon: User },
   ];
 
@@ -242,135 +242,147 @@ function ApiSetupDoc() {
 }
 
 /* ═══════════════════════════════════════════════════
-   TAB 2 — วิดีโออย่างเดียว
+   TAB 2 — Video Editor
 ═══════════════════════════════════════════════════ */
 function VideoOnlyDoc() {
   return (
     <>
-      <Section title="โหมดวิดีโออย่างเดียว (Video Only)" icon={Film}>
+      <Section title="ทำความรู้จัก Video Editor" icon={Film}>
         <p>
-          สร้างวิดีโอแนวตั้ง <b className="text-white">9:16 (1080×1920)</b> จาก script ที่พิมพ์เข้าไป
-          ระบบจะแปลงเป็นเสียง AI, ดึงคลิป B-roll มาเรียงตรงจังหวะเสียง, ใส่ subtitle และ render เป็น MP4
+          หน้า <b className="text-white">/video-editor</b> เป็นเครื่องมือสร้างวิดีโอ
+          <b className="text-white"> TikTok/Reels 9:16 (1080×1920)</b> จาก script ภาษาไทย
+          โดยระบบจะ generate voice → ตัดซับ → หา B-roll → render เป็น MP4 ให้อัตโนมัติ
+          พร้อม <b className="text-white">timeline editor</b> ให้แก้ละเอียดทุก clip ทุก subtitle
         </p>
-        <InfoBox>ไม่มี avatar — เหมาะกับ content ที่ใช้ B-roll เป็นภาพหลัก</InfoBox>
+        <InfoBox>โครงสร้างหน้า: ซ้าย = Transcript / กลาง = Preview / ขวา = Pipeline + Settings / ล่าง = Timeline</InfoBox>
       </Section>
 
-      <Section title="ขั้นตอนก่อนกด Run All" icon={Wand2}>
-        <Step num={1} title="กดปุ่ม Cache ก่อนเสมอ">
-          <p>กดปุ่ม <b className="text-white">Cache</b> ข้างปุ่ม Run All เพื่อเคลียร์ไฟล์ stock เก่าออก</p>
-          <Warn>ควรกดทุกครั้งก่อนรันใหม่ เพื่อไม่ให้คลิปเก่าค้างในระบบ</Warn>
-        </Step>
-
-        <Step num={2} title="วาง Script (บทพูด)">
-          <p>พิมพ์หรือวางบทพูดในช่อง Script ภาษาไทย / อังกฤษ / ผสมกันได้</p>
-          <p>เขียนเหมือนเล่าเรื่อง ระบบจะตัดเป็น subtitle แต่ละประโยคให้เองผ่าน LLM</p>
-          <Warn>อย่าใส่ stage direction เช่น (หยุด) หรือ [เสียงดนตรี] เพราะจะปนออกมาในซับ</Warn>
-        </Step>
-
-        <Step num={3} title="เลือก Stock Source (แหล่งคลิป B-roll)">
-          <p>เลือกแหล่งดึงคลิป — สามารถเลือกทั้งคู่ได้เลย:</p>
+      <Section title="ขั้นตอนการสร้างวิดีโอ" icon={Wand2}>
+        <Step num={1} title="กรอก Script (panel ซ้ายสุด)">
+          <p>พิมพ์ script ในกล่อง <b className="text-white">Transcript</b> ทางซ้ายสุดของหน้า</p>
           <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li><b className="text-white">Pexels</b> — คลิปคุณภาพดี หมวดหมู่ครบ</li>
-            <li><b className="text-white">Pixabay</b> — คลิปฟรีอีกแหล่ง</li>
-            <li><b className="text-white">Both</b> — ดึงจากทั้งสองแหล่ง (แนะนำ)</li>
+            <li><b className="text-white">บรรทัดเปล่าคั่น</b> = แบ่ง scene ระบบจะใช้เป็น natural break</li>
+            <li><b className="text-white">บรรทัดแรก</b> = hook ดึงดูดคนใน 3 วินาทีแรก</li>
+            <li><b className="text-white">บรรทัดสุดท้าย</b> = CTA เช่น "กดติดตาม", "ไลค์/แชร์"</li>
+          </ul>
+          <Warn>อย่าใส่ stage direction เช่น (หยุดพัก) หรือ [เสียงดนตรี] — จะปนเข้าซับ</Warn>
+        </Step>
+
+        <Step num={2} title="ตั้งค่า Pipeline (panel ขวา — แถบ Pipeline)">
+          <p>เลือกค่าก่อนรัน:</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li><b className="text-white">Stock Source</b> — Pexels / Pixabay / Both (แนะนำ Both)</li>
+            <li><b className="text-white">Voice</b> — Gemini (default, ฟรี) หรือ ElevenLabs (เสียงดีกว่า)</li>
+            <li><b className="text-white">Background Music</b> — toggle on → เลือกเพลง system หรือ upload mp3</li>
+            <li><b className="text-white">Avatar (HeyGen)</b> — toggle on ถ้าอยากให้ avatar พูด (ดู tab + Avatar)</li>
           </ul>
         </Step>
 
-        <Step num={4} title="เลือก Voice Model (เสียงพูด)">
-          <p>เลือก provider และ voice ที่ต้องการ:</p>
+        <Step num={3} title="ตั้ง Subtitle Style (panel ขวาสุด — Settings)">
+          <p>มี 2 แท็บ:</p>
           <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li><b className="text-white">ElevenLabs</b> — เสียงธรรมชาติคุณภาพสูง (ต้องใส่ Voice ID)</li>
-            <li><b className="text-white">Google Gemini</b> — เสียงจาก Google เลือก voice จาก dropdown</li>
+            <li><b className="text-white">สไตล์</b> — เลือก Caption Style (17 presets: มาตรฐาน, Hormozi, Beast, Karaoke, Neon ...) และ Text Animation (pop, bounce, fade, glow, highlight ...)</li>
+            <li><b className="text-white">Font</b> — เลือก font (12 ตัว: Kanit, Mitr, K2D, Chonburi ...), Size 30-160px, B/Shadow/Outline, สี Text + Accent, Vertical Position 10-95%</li>
           </ul>
-          <p>กดปุ่ม <b className="text-white">Preview</b> ฟังเสียงตัวอย่างก่อนใช้จริง — ประหยัดเวลาถ้าไม่ชอบเสียงนั้น</p>
+          <InfoBox>preset บางตัว (Hormozi, Beast, Neon, Pastel) ล็อกสีเพราะออกแบบมาแล้ว — เลือกสีไม่ได้</InfoBox>
         </Step>
 
-        <Step num={5} title="เลือก Subtitle Style">
-          <p>กดเลือก preset subtitle style ที่ต้องการ (stroke / box / glow / outline ฯลฯ)</p>
-          <p>ตั้งค่าก่อน render หรือปรับทีหลังแล้ว Re-run Phase 2 ได้ — ไม่เสียโควต้า TTS/Stock</p>
-        </Step>
-
-        <Step num={6} title="กด Run All">
-          <p>ตรวจสอบทุกอย่างให้เรียบร้อยแล้วกด <b className="text-white">Run All</b></p>
-          <Warn>ห้ามกดเปลี่ยนหน้าระหว่างที่ระบบรัน Phase 1 — จะทำให้ pipeline หยุดกลางทาง</Warn>
-          <p>ระบบรัน Phase 1 อัตโนมัติตามลำดับ → จบที่ Render แล้วบันทึกลง <b className="text-white">Gallery</b></p>
+        <Step num={4} title="กดปุ่ม Render (ขวาบน)">
+          <p>เมื่อตั้งทุกอย่างแล้ว กด <b className="text-white">▶ Render</b> ที่ topbar — ระบบจะรัน pipeline 6 steps อัตโนมัติ</p>
+          <Warn>อย่าปิด tab หรือเปลี่ยนหน้าระหว่างรัน — pipeline จะหยุดกลางทาง</Warn>
+          <p>ดู progress แต่ละ step ได้ที่ <b className="text-white">Process</b> panel (ใต้ Transcript)</p>
         </Step>
       </Section>
 
-      <Section title="ขั้นตอน Pipeline ภายใน" icon={Layers}>
-        <p className="text-[12px] text-white/40">เมื่อกด Run All ระบบรันลำดับนี้อัตโนมัติ:</p>
+      <Section title="Pipeline 6 ขั้น (รันอัตโนมัติเมื่อกด Render)" icon={Layers}>
         <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สังเคราะห์เสียงพูด → ได้ไฟล์ audio MP3" />
-          <PipelineRow num={2} name="Whisper Transcribe" desc="ส่ง audio ให้ Whisper/Gemini ถอดเสียง → LLM แบ่ง script เป็นซับพร้อม timestamp ตรงกับเสียง" />
-          <PipelineRow num={3} name="Extract Keywords" desc="LLM อ่านซับแต่ละประโยค → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 ซับ = 1 keyword)" />
-          <PipelineRow num={4} name="Stock Fetch" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลด MP4 ลงเซิร์ฟเวอร์" />
-          <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับแต่ละประโยค → สร้าง timeline ให้ Remotion" />
-          <PipelineRow num={6} name="Render" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → MP4 สุดท้าย" />
+          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ Gemini หรือ ElevenLabs สังเคราะห์เสียง → ไฟล์ WAV (เก็บที่ /public/renders/tts-xxx.wav)" />
+          <PipelineRow num={2} name="Transcribe" desc="ส่ง audio + script ให้ Gemini แล้ว LLM ตัดเป็นซับพร้อม timestamp (มี model fallback chain 3.5 → 2.5 → 1.5 กัน Google ฝั่ง overload)" />
+          <PipelineRow num={3} name="Keywords" desc="LLM อ่าน caption แต่ละช่วง → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 caption = 1 keyword)" />
+          <PipelineRow num={4} name="B-roll" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรง → ดาวน์โหลด MP4 cache ที่ /stocks/" />
+          <PipelineRow num={5} name="Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับ → สร้าง timeline JSON ให้ Remotion" />
+          <PipelineRow num={6} name="Render" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะ → MP4 9:16 สุดท้าย (เก็บที่ /public/renders/render-xxx.mp4)" />
         </div>
-        <InfoBox>คลิป B-roll และซับ sync กันเสมอ — ซับที่ 1 ได้ keyword จากประโยคที่ 1 → คลิปที่ 1 ตรงกับซับที่ 1</InfoBox>
+        <InfoBox>ถ้า step ไหน fail สามารถกดปุ่ม <b className="text-white">▶ Run</b> ข้างชื่อ step นั้น เพื่อ re-run อันเดียว ไม่ต้องเริ่มใหม่หมด</InfoBox>
       </Section>
 
-      <Section title="หลัง Run เสร็จ — สิ่งที่ทำได้" icon={Captions}>
-        <Step num="A" title="ดู Subtitle Review">
-          <p>เลื่อนลงมาดูส่วน <b className="text-white">Subtitle Review</b> — เห็นซับทุกฉากพร้อม timestamp</p>
-          <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li>แก้ข้อความซับได้โดยตรง</li>
-            <li>ปรับ start/end time ของแต่ละฉาก</li>
-            <li>กด <b className="text-white">✕</b> เพื่อลบฉากที่ไม่ต้องการ</li>
-            <li>กด <b className="text-white">+ เพิ่มฉาก</b> เพื่อเพิ่มซับใหม่</li>
-          </ul>
-          <p>กด <b className="text-white">Re-run Phase 2</b> เพื่อ render ใหม่ตามซับที่แก้</p>
-        </Step>
+      <Section title="Timeline (panel ล่างสุด)" icon={Captions}>
+        <p>หลัง render เสร็จ Timeline จะแสดง 4 tracks:</p>
+        <ul className="list-disc list-inside space-y-1 ml-1">
+          <li>💬 <b className="text-white">Subtitles</b> — clip สีส้ม (body) / เหลือง (hook) / แดง (cta)</li>
+          <li>🎬 <b className="text-white">B-roll</b> — clip สีฟ้า รายการ stock videos</li>
+          <li>🎤 <b className="text-white">Voice</b> — track เขียว แสดง TTS audio</li>
+          <li>🎵 <b className="text-white">Music</b> — track ม่วง ถ้าเปิด BGM</li>
+        </ul>
 
-        <Step num="B" title="เลือก / ตัดคลิป Stock">
-          <p>ดู thumbnail คลิปทั้งหมดใน Live Status ของขั้น Stock</p>
-          <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li>กดคลิปเพื่อตัดออกจากวิดีโอ</li>
-            <li>ระบบจะ fallback ไปคลิปใกล้เคียงอัตโนมัติ</li>
-          </ul>
-          <p>กด <b className="text-white">Re-run Phase 2</b> เพื่อ render ด้วยคลิปชุดใหม่</p>
-          <InfoBox>ไม่เสียโควต้า Stock API ใหม่ — ใช้คลิปที่ดาวน์โหลดไว้แล้ว</InfoBox>
-        </Step>
+        <p className="pt-2 font-bold text-white">การแก้ Subtitle ใน Timeline:</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-1">
+          <li><b className="text-white">คลิก clip</b> → select + seek ไปจุดเริ่ม</li>
+          <li><b className="text-white">ลากกลาง clip</b> → ย้ายตำแหน่ง (ความยาวคงเดิม)</li>
+          <li><b className="text-white">ลากขอบซ้าย/ขวา</b> → resize start/end</li>
+          <li><b className="text-white">ดับเบิ้ลคลิก</b> → แก้ข้อความ</li>
+          <li><b className="text-white">✂️ Split</b> (toolbar) → ตัด clip ที่ตำแหน่ง playhead</li>
+          <li><b className="text-white">🗑️ Delete</b> (toolbar) → ลบ clip ที่ select</li>
+          <li><b className="text-white">🔍 Zoom slider</b> → ย่อ/ขยาย timeline 50-200% (200% = ละเอียดสุด)</li>
+        </ul>
 
-        <Step num="C" title="ปรับ Subtitle Style แล้ว Re-render">
-          <p>เปลี่ยน font, สี, ขนาด, ตำแหน่งซับ → กด <b className="text-white">Re-run Phase 2</b></p>
-          <p>ไม่ต้อง re-run Phase 1 เลย — ประหยัดโควต้า TTS และ Stock ทั้งหมด</p>
-        </Step>
+        <InfoBox>เมื่อแก้ซับ → กด <b className="text-white">▶ Render</b> ใหม่ → ระบบจะ re-render เฉพาะ step Render (ประหยัด TTS/B-roll ที่ทำไว้แล้ว)</InfoBox>
+      </Section>
 
-        <Step num="D" title="ดาวน์โหลด">
-          <p>กดปุ่มดาวน์โหลดในหน้า preview เพื่อบันทึก MP4 ลงเครื่อง</p>
-          <p>วิดีโอยังอยู่ใน <b className="text-white">Gallery</b> ด้วย</p>
-        </Step>
+      <Section title="Drafts (บันทึกงาน)" icon={RefreshCw}>
+        <p>ระบบ auto-save งานเป็น <b className="text-white">draft</b> ใน browser ของคุณตลอดเวลา</p>
+        <ul className="list-disc list-inside space-y-0.5 ml-1">
+          <li>กดปุ่ม <b className="text-white">Draft (N)</b> บน topbar → เห็นรายการ project ทั้งหมด</li>
+          <li>กด <b className="text-white">+ New</b> → เริ่ม project ใหม่ (reset ทุก setting รวม script, style, captions, BGM, avatar)</li>
+          <li>คลิกชื่อ draft → load งานเก่ามาแก้ต่อ</li>
+          <li>ปุ่ม <b className="text-white">🗑️</b> ข้างชื่อ draft → ลบ draft นั้น</li>
+        </ul>
+        <Warn>Draft เก็บใน localStorage ของ browser นี้เท่านั้น — ใช้ browser อื่นจะมองไม่เห็น</Warn>
+      </Section>
+
+      <Section title="Playback Controls (Preview กลาง)" icon={Play}>
+        <ul className="list-disc list-inside space-y-1 ml-1">
+          <li><b className="text-white">▶ Play / ⏸ Pause</b> — เล่น/หยุด preview</li>
+          <li><b className="text-white">⏮ ⏭ Skip</b> — ย้อน/เดินหน้า 5 วินาที</li>
+          <li><b className="text-white">Scrubber bar</b> — hover เห็นเวลา (preview tooltip), คลิก = seek, ลาก = drag</li>
+          <li><b className="text-white">🔊 Volume</b> — hover ที่ icon ลำโพง → vertical slider โผล่ขึ้น ลากปรับเสียง preview</li>
+          <li><b className="text-white">⛶ Fullscreen</b> — ขยาย editor เต็มจอ</li>
+        </ul>
       </Section>
 
       <Section title="แก้ปัญหาที่พบบ่อย" icon={RefreshCw}>
         <div className="space-y-3">
-          <ErrBox title="ขึ้น Unexpected token หรือ error แปลกๆ">
-            <p>กดรัน Phase ที่ error ใหม่อีกครั้ง</p>
-            <p>ถ้ายังขึ้นอีก 2–3 ครั้ง → กดรีเฟรชหน้าต่าง แล้วเริ่มทำใหม่ตั้งแต่ขั้นตอนแรก</p>
+          <ErrBox title="TTS / Transcribe fail ขึ้น 503 high demand">
+            <p>Google Gemini ฝั่ง server overload ชั่วคราว — ระบบ retry อัตโนมัติ 3 ครั้ง × 3 models</p>
+            <p>ถ้ายัง fail หมด → รอ 5-10 นาที หรือสลับ Voice → ElevenLabs</p>
           </ErrBox>
-          <ErrBox title="ขั้นตอนใดขั้นตอนหนึ่ง error">
-            <p>กดปุ่ม <b className="text-white">RETRY</b> หรือ <b className="text-white">RERUN</b> ที่ขั้นตอนนั้นโดยตรง — ไม่ต้องรัน Run All ใหม่ทั้งหมด</p>
+          <ErrBox title="Toast บอก Generative Language API ยังไม่ได้เปิด">
+            <p>กด <b className="text-white">action button</b> ใน toast → เปิด Google Cloud Console</p>
+            <p>กด <b className="text-white">ENABLE</b> → รอ 1-2 นาที → Test ใน Settings ใหม่</p>
           </ErrBox>
-          <ErrBox title="Stock: keywords required / ไม่พบ stock">
-            <p>ตรวจสอบว่าใส่ Pexels หรือ Pixabay API key ใน Settings แล้ว → กด RETRY ที่ขั้น Stock</p>
+          <ErrBox title="Toast บอก Gemini key ไม่ถูกต้อง / 401">
+            <p>Key ถูก Google revoke (มักจาก paste ใน chat/public)</p>
+            <p>กด action button → ไป aistudio → สร้าง key ใหม่ → <b className="text-white">ห้าม share ที่ไหนอีก</b></p>
           </ErrBox>
-          <ErrBox title="Transcribe: Failed to fetch audio (404)">
-            <p>ไฟล์เสียงถูกลบออกจาก cache แล้ว → กด Cache เคลียร์ แล้วรัน Phase 1 ใหม่ตั้งแต่ TTS</p>
+          <ErrBox title="ปุ่ม Render กดไม่ติด / หน้าค้าง">
+            <p>เช็คว่า script ไม่ว่าง (อย่างน้อย 1 บรรทัด)</p>
+            <p>เช็คว่าตั้ง Gemini key แล้วใน Settings → API Keys</p>
+            <p>กด F12 เปิด DevTools → ดู Console error</p>
           </ErrBox>
-          <ErrBox title="ซับผิด / แบ่งประโยคไม่ตรง">
-            <p>แก้ได้ตรงใน Subtitle Review แล้วกด Re-run Phase 2 — ไม่ต้องรัน Phase 1 ใหม่</p>
+          <ErrBox title="ซับแบ่งไม่สวย / ตัดกลางคำ">
+            <p>กดปุ่ม <b className="text-white">▶ Run</b> ข้าง Transcribe เพื่อให้ LLM แบ่งใหม่ (มี randomness ในแต่ละครั้ง)</p>
+            <p>หรือแก้ตรงใน Timeline ด้วย Split / Delete / Drag</p>
           </ErrBox>
         </div>
       </Section>
 
       <Section title="เคล็ดลับ" icon={Play}>
         <ul className="space-y-2">
-          <Tip>กดปุ่ม <b className="text-white">Cache</b> ก่อน Run All ทุกครั้ง เพื่อเคลียร์ stock เก่า</Tip>
-          <Tip>ฟัง <b className="text-white">Preview Voice</b> ก่อนกด Run All — ไม่ต้องเสีย TTS โควต้าซ้ำ</Tip>
-          <Tip>เปลี่ยนแค่ subtitle style หรือคลิป → Re-run Phase 2 พอ ไม่เสียโควต้า API</Tip>
-          <Tip>เปลี่ยน script หรือเสียง → ต้อง Re-run Phase 1 ทั้งหมด</Tip>
-          <Tip>สคริปยาว 5–10 นาทีรองรับได้ — ขั้น Stock จะใช้เวลานานขึ้นตามจำนวนคลิปที่ดึง</Tip>
+          <Tip>ใช้ <b className="text-white">+ New</b> เริ่ม project ใหม่ทุกครั้ง — กัน state ของ project เก่าหลุดมา</Tip>
+          <Tip>เปลี่ยน font/สี/style → ไม่ต้อง re-render — preview สดทันที (Render เมื่อจะ export MP4)</Tip>
+          <Tip>ลาก clip ใน timeline ได้สะดวก — ลากกลาง = ย้าย, ลากขอบ = resize</Tip>
+          <Tip>Script 1-3 นาทีรองรับได้ดี — เกิน 5 นาที pipeline จะช้าขึ้นที่ขั้น B-roll</Tip>
+          <Tip>ถ้า Gemini TTS รวน → สลับเป็น ElevenLabs ใน Pipeline panel (ต้องใส่ ElevenLabs key + Voice ID)</Tip>
         </ul>
       </Section>
     </>
