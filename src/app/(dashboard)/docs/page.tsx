@@ -122,42 +122,171 @@ export default function DocsPage() {
     { id: "avatar", label: "+ Avatar", icon: User },
   ];
 
+  const activeTab = tabs.find(t => t.id === tab) ?? tabs[0];
+
   return (
     <>
-      <div className="mx-auto max-w-4xl space-y-5 p-4 md:p-6">
+      {/* ── Premium animations & decorations ──────────────────────────── */}
+      <style jsx global>{`
+        @keyframes doc-orb-1 {
+          0%,100% { transform: translate(0,0) scale(1); opacity: 0.30; }
+          33%     { transform: translate(40px,30px) scale(1.15); opacity: 0.42; }
+          66%     { transform: translate(-30px,50px) scale(0.92); opacity: 0.25; }
+        }
+        @keyframes doc-orb-2 {
+          0%,100% { transform: translate(0,0) scale(1); opacity: 0.22; }
+          50%     { transform: translate(-50px,40px) scale(1.2); opacity: 0.38; }
+        }
+        @keyframes doc-orb-3 {
+          0%,100% { transform: translate(0,0) scale(1); opacity: 0.18; }
+          50%     { transform: translate(30px,-40px) scale(1.1); opacity: 0.32; }
+        }
+        @keyframes doc-shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+        @keyframes doc-glow-pulse {
+          0%,100% { box-shadow: 0 0 0 1px hsl(190 100% 50% / 0.15) inset, 0 4px 18px hsl(190 100% 40% / 0.18); }
+          50%     { box-shadow: 0 0 0 1px hsl(190 100% 60% / 0.35) inset, 0 6px 28px hsl(190 100% 50% / 0.32); }
+        }
+        @keyframes doc-fade-up {
+          0%   { opacity: 0; transform: translateY(14px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes doc-fade-in {
+          0%   { opacity: 0; }
+          100% { opacity: 1; }
+        }
+        @keyframes doc-grid-drift {
+          0%   { background-position: 0 0; }
+          100% { background-position: 40px 40px; }
+        }
+        @keyframes doc-chip-pulse {
+          0%,100% { opacity: 1; }
+          50%     { opacity: 0.55; }
+        }
+        .doc-orb-1 { animation: doc-orb-1 22s cubic-bezier(.45,.05,.55,.95) infinite; }
+        .doc-orb-2 { animation: doc-orb-2 28s cubic-bezier(.45,.05,.55,.95) infinite; }
+        .doc-orb-3 { animation: doc-orb-3 19s cubic-bezier(.45,.05,.55,.95) infinite; }
+        .doc-shimmer {
+          background-image: linear-gradient(110deg, transparent 35%, hsl(0 0% 100% / 0.08) 50%, transparent 65%);
+          background-size: 200% 100%;
+          animation: doc-shimmer 6s ease-in-out infinite;
+        }
+        .doc-tab-active { animation: doc-glow-pulse 3.2s ease-in-out infinite; }
+        .doc-fade-up { animation: doc-fade-up 0.6s cubic-bezier(.2,.65,.3,1) both; }
+        .doc-fade-in { animation: doc-fade-in 0.5s ease-out both; }
+        .doc-grid-bg {
+          background-image:
+            linear-gradient(hsl(0 0% 100% / 0.025) 1px, transparent 1px),
+            linear-gradient(90deg, hsl(0 0% 100% / 0.025) 1px, transparent 1px);
+          background-size: 40px 40px;
+          animation: doc-grid-drift 30s linear infinite;
+          mask-image: radial-gradient(ellipse at top, black 30%, transparent 75%);
+        }
+        .doc-chip-dot { animation: doc-chip-pulse 2s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .doc-orb-1, .doc-orb-2, .doc-orb-3, .doc-shimmer, .doc-tab-active,
+          .doc-fade-up, .doc-fade-in, .doc-grid-bg, .doc-chip-dot {
+            animation: none !important;
+          }
+        }
+      `}</style>
 
-        {/* Header */}
-        <div className="rounded-2xl p-6" style={CARD}>
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl"
-                style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
-                <BookOpen className="h-6 w-6 text-white" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-white">คู่มือการใช้งาน</h1>
-                <p className="text-sm text-white/50 mt-0.5">Video Creator Pipeline — ai.mewsocial.com</p>
-              </div>
-            </div>
+      {/* ── Premium hero — animated grid + floating orbs ──────────────── */}
+      <div className="relative overflow-hidden">
+        {/* Animated grid backdrop */}
+        <div aria-hidden className="doc-grid-bg pointer-events-none absolute inset-0" />
 
-            {/* Tab switcher */}
-            <div className="flex gap-1 rounded-xl p-1 flex-wrap" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-              {tabs.map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-bold transition-all"
-                  style={tab === t.id
-                    ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
-                    : { color: "rgba(255,255,255,0.4)", border: "1px solid transparent" }}>
-                  <t.icon className="h-3.5 w-3.5" /> {t.label}
-                </button>
-              ))}
-            </div>
-          </div>
+        {/* Floating gradient orbs */}
+        <div aria-hidden className="pointer-events-none absolute inset-0">
+          <div className="doc-orb-1 absolute -top-32 left-1/4 h-96 w-96 rounded-full blur-3xl"
+            style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)" }} />
+          <div className="doc-orb-2 absolute -top-20 right-1/4 h-80 w-80 rounded-full blur-3xl"
+            style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)" }} />
+          <div className="doc-orb-3 absolute top-40 left-1/2 -translate-x-1/2 h-72 w-72 rounded-full blur-3xl"
+            style={{ background: "radial-gradient(closest-side, hsl(285 70% 60%), transparent)" }} />
         </div>
 
-        {tab === "api" && <ApiSetupDoc />}
-        {tab === "video" && <VideoOnlyDoc />}
-        {tab === "avatar" && <AvatarDoc />}
+        <div className="relative mx-auto max-w-4xl px-4 pt-8 pb-6 md:px-6 md:pt-12">
+          {/* Eyebrow */}
+          <div className="doc-fade-up flex items-center gap-2 mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
+            style={{ animationDelay: "0ms" }}>
+            <span className="h-px w-6 bg-linear-to-r from-transparent to-cyan-400/50" />
+            Documentation
+            <span className="doc-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+            studio.heroaiengine.com
+          </div>
+
+          {/* Title with shimmer on gradient text */}
+          <h1 className="doc-fade-up text-4xl md:text-5xl font-black tracking-tight text-white leading-tight"
+            style={{ animationDelay: "60ms" }}>
+            คู่มือการใช้งาน
+            <span className="relative ml-3 inline-block bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">
+              Hero AI Studio
+              <span aria-hidden className="doc-shimmer absolute inset-0 pointer-events-none" />
+            </span>
+          </h1>
+          <p className="doc-fade-up mt-3 text-base text-white/55 max-w-2xl leading-relaxed"
+            style={{ animationDelay: "140ms" }}>
+            สร้างวิดีโอ TikTok/Reels แนวตั้งจาก script เดียว — AI generate voice, ตัดซับ, หา B-roll, render เป็น MP4 ให้อัตโนมัติ
+          </p>
+
+          {/* Tab nav with glow pulse on active */}
+          <div className="doc-fade-up mt-7 inline-flex items-stretch gap-1 rounded-2xl p-1.5 backdrop-blur-xl"
+            style={{
+              animationDelay: "220ms",
+              background: "linear-gradient(135deg, hsl(0 0% 100% / 0.04), hsl(0 0% 100% / 0.02))",
+              border: "1px solid hsl(0 0% 100% / 0.08)",
+              boxShadow: "inset 0 1px 0 hsl(0 0% 100% / 0.05), 0 8px 32px hsl(0 0% 0% / 0.35)",
+            }}>
+            {tabs.map(t => {
+              const active = tab === t.id;
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  className={`group flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition-all duration-300 ${active ? "doc-tab-active" : ""}`}
+                  style={active
+                    ? {
+                        background: "linear-gradient(135deg, hsl(190 100% 45% / 0.18), hsl(230 100% 55% / 0.15))",
+                        color: "hsl(190 100% 78%)",
+                        border: "1px solid hsl(190 100% 50% / 0.4)",
+                      }
+                    : { color: "rgba(255,255,255,0.45)", border: "1px solid transparent" }}>
+                  <t.icon className={`h-3.5 w-3.5 transition-transform duration-300 ${active ? "" : "group-hover:scale-110 group-hover:rotate-3"}`} />
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Content area ──────────────────────────────────────────────── */}
+      <div className="relative mx-auto max-w-4xl px-4 pb-12 md:px-6">
+        {/* Active tab indicator chip */}
+        <div className="doc-fade-in mb-5 flex items-center gap-2 text-[11px] font-semibold text-white/40"
+          style={{ animationDelay: "320ms" }}>
+          <activeTab.icon className="h-3.5 w-3.5 text-cyan-400/70" />
+          <span>กำลังอ่าน:</span>
+          <span className="text-white/70">{activeTab.label}</span>
+          <span className="doc-chip-dot ml-1 h-1.5 w-1.5 rounded-full bg-cyan-400" />
+        </div>
+
+        {/* Key on `tab` so content re-mounts and re-animates on tab change */}
+        <div key={tab} className="doc-fade-up space-y-5" style={{ animationDelay: "380ms" }}>
+          {tab === "api" && <ApiSetupDoc />}
+          {tab === "video" && <VideoOnlyDoc />}
+          {tab === "avatar" && <AvatarDoc />}
+        </div>
+
+        {/* Footer signature */}
+        <div className="doc-fade-in mt-12 flex items-center justify-center gap-2 text-[10px] text-white/25 font-mono"
+          style={{ animationDelay: "600ms" }}>
+          <span className="h-px w-12 bg-linear-to-r from-transparent to-white/15" />
+          <BookOpen className="h-3 w-3" />
+          <span>Hero AI Studio Docs · studio.heroaiengine.com</span>
+          <span className="h-px w-12 bg-linear-to-l from-transparent to-white/15" />
+        </div>
       </div>
     </>
   );
@@ -172,9 +301,8 @@ function ApiSetupDoc() {
       <Section title="ขั้นตอนแรก — ใส่ API Keys" icon={Key}>
         <p>
           ก่อนใช้งานต้องใส่ API Key ก่อนที่{" "}
-          <a href="https://ai.mewsocial.com/settings" target="_blank" rel="noopener noreferrer"
-            className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2">
-            ai.mewsocial.com/settings
+          <a href="/settings" className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2">
+            studio.heroaiengine.com/settings
           </a>
         </p>
         <InfoBox>เข้าหน้า Settings → วาง key แต่ละอันในช่องที่กำหนด → กด Save</InfoBox>
