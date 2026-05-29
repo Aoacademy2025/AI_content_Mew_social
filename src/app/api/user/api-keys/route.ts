@@ -3,8 +3,10 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
-function encrypt(text: string): string { return Buffer.from(text).toString("base64"); }
-function decrypt(encrypted: string): string { return Buffer.from(encrypted, "base64").toString("utf-8"); }
+// Trim leading/trailing whitespace + newlines BEFORE encoding — paste-from-clipboard
+// commonly includes a trailing \n or surrounding spaces which break Google auth (401).
+function encrypt(text: string): string { return Buffer.from(text.trim()).toString("base64"); }
+function decrypt(encrypted: string): string { return Buffer.from(encrypted, "base64").toString("utf-8").trim(); }
 
 export async function GET() {
   try {
