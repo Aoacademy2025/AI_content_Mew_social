@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
 
 interface ApiKeys {
   geminiKey?: string;
@@ -32,6 +32,7 @@ export function ApiKeySettings() {
   const [testingKey, setTestingKey] = useState<KeyType | null>(null);
   const [testResults, setTestResults] = useState<Record<KeyType, TestResult>>({ ...EMPTY_RESULTS });
   const [dirty, setDirty] = useState(false);
+  const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
 
   useEffect(() => { fetchApiKeys(); }, []);
 
@@ -95,13 +96,63 @@ export function ApiKeySettings() {
 
   return (
     <div className="space-y-5">
+      {/* Gemini onboarding guide — collapsible, shown above the Gemini key row */}
+      <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden">
+        <button type="button" onClick={() => setGeminiGuideOpen(v => !v)}
+          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-violet-500/10 transition-colors text-left">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/20 border border-violet-500/30 shrink-0">
+            <Sparkles className="h-3.5 w-3.5 text-violet-300" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-violet-200">วิธีสร้าง Gemini API Key (3 ขั้นตอน)</div>
+            <div className="text-[11px] text-violet-300/60 mt-0.5">Gemini ใช้สำหรับ TTS, transcribe, keyword extraction และอีกหลายฟีเจอร์</div>
+          </div>
+          {geminiGuideOpen ? <ChevronUp className="h-4 w-4 text-violet-300/70 shrink-0" /> : <ChevronDown className="h-4 w-4 text-violet-300/70 shrink-0" />}
+        </button>
+        {geminiGuideOpen && (
+          <div className="px-4 pb-4 pt-1 space-y-3 text-[12px] text-slate-300 leading-relaxed">
+            <ol className="space-y-2 list-decimal list-inside marker:text-violet-400 marker:font-bold">
+              <li>
+                เข้า{" "}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
+                  className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                  aistudio.google.com/apikey <ExternalLink className="h-3 w-3" />
+                </a>{" "}
+                แล้วล็อกอินด้วย Google account
+              </li>
+              <li>
+                กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">+ Create API key</span>
+                {" "}— เลือก project ที่มีอยู่ หรือสร้างใหม่ (default project ก็ได้)
+              </li>
+              <li>
+                Copy key (ขึ้นต้น <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AIza...</code> หรือ <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AQ....</code>)
+                มาวางในช่อง Gemini API Key ข้างล่าง → กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">Test</span> เพื่อยืนยัน
+              </li>
+            </ol>
+            <div className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
+              <span className="font-semibold">ถ้า Test ขึ้น "Generative Language API ยังไม่ได้เปิด":</span>{" "}
+              เข้า{" "}
+              <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                Google Cloud Console <ExternalLink className="h-3 w-3" />
+              </a>{" "}
+              → กดปุ่ม <span className="font-mono text-amber-100">Enable</span> → รอ 1-2 นาที แล้วลอง Test ใหม่
+            </div>
+            <div className="rounded-lg bg-slate-500/10 border border-slate-500/20 px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
+              <span className="font-semibold text-slate-300">หมายเหตุ:</span> Gemini TTS เป็น preview model ที่ Google ฝั่ง server ยังไม่ stable —
+              ถ้า Test ผ่าน text แต่ TTS fail ทุก model ให้สลับใช้ ElevenLabs สำหรับ voice generation ไปก่อน
+            </div>
+          </div>
+        )}
+      </div>
+
       {KEY_CONFIG.map((cfg) => {
         const result = testResults[cfg.keyType];
         const isTesting = testingKey === cfg.keyType;
         const set = isSet(cfg.id);
         return (
           <div key={cfg.id} className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-1.5">
                 <label className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{cfg.label}</label>
                 {cfg.link && (
@@ -117,9 +168,15 @@ export function ApiKeySettings() {
                   Active
                 </span>
               )}
-              {result?.ok && <span className="flex items-center gap-1 text-xs text-green-400"><CheckCircle2 className="h-3.5 w-3.5" /> Verified</span>}
-              {result && !result.ok && <span className="flex items-center gap-1 text-xs text-red-400"><XCircle className="h-3.5 w-3.5" /> {result.message}</span>}
+              {result?.ok && <span className="flex items-start gap-1 text-xs text-green-400"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" /> <span className="leading-snug">{result.message}</span></span>}
             </div>
+            {/* Error result — given its own row so longer messages wrap readably */}
+            {result && !result.ok && (
+              <div className="flex items-start gap-1.5 text-xs text-red-400 px-2 py-1.5 rounded-lg bg-red-500/5 border border-red-500/20">
+                <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span className="leading-snug">{result.message}</span>
+              </div>
+            )}
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Input
