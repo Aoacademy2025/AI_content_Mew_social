@@ -1053,7 +1053,10 @@ Return ONLY valid JSON, no markdown, no explanation:
 17. Keep English brand names intact: Anthropic, GPT, Claude, Enterprise, etc.
 18. fullText = all segment texts joined in order${script ? `\n19. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
 
-        // Retry transient errors (Google's 503 "high demand" / 500 / 429 are common on this model)
+        // Transcribe with model fallback chain. Google's gemini-2.5-flash frequently returns
+        // 503 "high demand" — fall through to older but stabler models instead of failing the
+        // whole pipeline. Each model retries transient 5xx/429 internally with backoff before
+        // moving to the next.
         const transcribeBody = JSON.stringify({
           contents: [{
             parts: [
@@ -1068,31 +1071,53 @@ Return ONLY valid JSON, no markdown, no explanation:
           },
         });
 
+        const TRANSCRIBE_MODELS = [
+          "gemini-3.5-flash",   // production native-audio model (most stable per Google docs)
+          "gemini-2.5-flash",   // fallback when 3.5 not available for the user's key/region
+          "gemini-1.5-pro",     // classic, almost always available
+        ];
+
         let geminiRes: Response | null = null;
         let lastTranscribeErr = "";
-        const MAX_TRANSCRIBE_ATTEMPTS = 4;
-        for (let attempt = 1; attempt <= MAX_TRANSCRIBE_ATTEMPTS; attempt++) {
-          geminiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-goog-api-key": geminiKey,
-              },
-              signal: AbortSignal.timeout(600_000),
-              body: transcribeBody,
+        let usedTranscribeModel = "";
+        const MAX_PER_MODEL = 3;  // 3 retries per model × 3 models = 9 total attempts
+
+        outerTranscribe:
+        for (const model of TRANSCRIBE_MODELS) {
+          for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
+            geminiRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-goog-api-key": geminiKey,
+                },
+                signal: AbortSignal.timeout(600_000),
+                body: transcribeBody,
+              }
+            );
+            if (geminiRes.ok) {
+              usedTranscribeModel = model;
+              console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
+              break outerTranscribe;
             }
-          );
-          if (geminiRes.ok) break;
-          lastTranscribeErr = await geminiRes.text().catch(() => "");
-          // Auth / quota errors — don't retry
-          if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 400) break;
-          // Retryable (429/500/502/503/504) — exponential backoff
-          if (attempt < MAX_TRANSCRIBE_ATTEMPTS) {
-            const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s, 8s
-            console.warn(`[transcribe] Gemini ${geminiRes.status} on attempt ${attempt}/${MAX_TRANSCRIBE_ATTEMPTS}, retrying in ${delayMs}ms`);
-            await new Promise(r => setTimeout(r, delayMs));
+            lastTranscribeErr = await geminiRes.text().catch(() => "");
+
+            // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
+            if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
+              console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
+              break;
+            }
+
+            // Retryable transient — exponential backoff within same model
+            if (attempt < MAX_PER_MODEL) {
+              const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
+              console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
+              await new Promise(r => setTimeout(r, delayMs));
+            } else {
+              console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+            }
           }
         }
 
@@ -1106,12 +1131,13 @@ Return ONLY valid JSON, no markdown, no explanation:
 
         if (!geminiRes || !geminiRes.ok) {
           const status = geminiRes?.status ?? 503;
-          console.error("[transcribe] Gemini error body:", lastTranscribeErr.slice(0, 500));
+          console.error("[transcribe] all models failed; last error body:", lastTranscribeErr.slice(0, 500));
           if (status === 401 || status === 403) {
             throw { status, body: lastTranscribeErr };
           }
-          throw new Error(`Gemini transcribe failed after ${MAX_TRANSCRIBE_ATTEMPTS} attempts: ${status} — ${lastTranscribeErr.slice(0, 200)}`);
+          throw new Error(`Gemini transcribe failed across all ${TRANSCRIBE_MODELS.length} models: ${status} — ${lastTranscribeErr.slice(0, 200)}`);
         }
+        void usedTranscribeModel; // for future telemetry
         const geminiData = await geminiRes.json() as Record<string, unknown>;
         const candidates = geminiData?.candidates as Array<{content:{parts:Array<{text:string}>}}> | undefined;
         const rawGeminiText = candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
