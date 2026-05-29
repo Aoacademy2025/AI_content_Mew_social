@@ -2832,8 +2832,10 @@ export default function VideoEditorPage() {
             )}
           </div>
 
-          {/* ── Playback controls ── */}
-          <div className="h-12 bg-[#111115] border-t border-[#1e1e28] flex flex-nowrap items-center gap-2 px-4 flex-shrink-0 overflow-hidden min-w-0">
+          {/* ── Playback controls ──
+              No overflow-hidden: would clip the volume popup that lives above the bar.
+              isolate keeps the popup's z-50 scoped to this toolbar. */}
+          <div className="relative isolate h-12 bg-[#111115] border-t border-[#1e1e28] flex flex-nowrap items-center gap-2 px-4 flex-shrink-0 min-w-0">
             {/* Skip back */}
             <button onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }}
               className="w-7 h-7 rounded flex items-center justify-center text-slate-500 hover:bg-[#1e1e28] hover:text-slate-200 transition-colors flex-shrink-0">
