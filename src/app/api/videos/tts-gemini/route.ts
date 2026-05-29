@@ -35,12 +35,10 @@ export async function POST(req: Request) {
     }
     const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
 
-    // Gemini TTS API (multimodal live / speech synthesis)
-    // Send key as both ?key= query param AND x-goog-api-key header:
-    //   - ?key= works with classic AIza... keys (preview endpoints sometimes require it)
-    //   - x-goog-api-key works with newer AQ.* keys (avoids URL-encoding edge cases for "." chars)
-    // Google accepts both being present — picks whichever is valid first.
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${encodeURIComponent(apiKey)}`;
+    // Gemini TTS — all current TTS models are preview. Some user keys don't have access
+    // to the newest preview (gemini-3.1-flash-tts-preview), so we try a fallback chain.
+    // Send key as both ?key= query param AND x-goog-api-key header to support both
+    // classic AIza* keys and newer AQ.* keys.
     const requestBody = JSON.stringify({
       contents: [{ parts: [{ text: text.trim() }] }],
       generationConfig: {
@@ -53,61 +51,105 @@ export async function POST(req: Request) {
       },
     });
 
-    // Retry transient errors (Google's "Internal error encountered" 500/503 are flaky)
-    let res: Response;
+    const MODEL_CHAIN = [
+      "gemini-3.1-flash-tts-preview",   // newest, best quality, may be restricted
+      "gemini-2.5-flash-preview-tts",   // widely available preview
+      "gemini-2.5-pro-preview-tts",     // last resort
+    ];
+
+    // For each model: retry transient errors with exponential backoff.
+    // For auth/access errors (401/403/404): try next model in the chain.
+    let res: Response | null = null;
     let lastErrBody = "";
-    const MAX_ATTEMPTS = 4;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: requestBody,
-      });
+    let usedModel = "";
+    const MAX_ATTEMPTS = 3;
 
-      if (res.ok) break;
+    outer:
+    for (const model of MODEL_CHAIN) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
+          body: requestBody,
+        });
 
-      lastErrBody = await res.text();
+        if (res.ok) {
+          usedModel = model;
+          console.log(`[tts-gemini] ok with ${model} (attempt ${attempt})`);
+          break outer;
+        }
 
-      // Don't retry user-fixable errors
-      if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 404) {
-        console.error("[tts-gemini] non-retryable error:", res.status, lastErrBody.slice(0, 200));
-        break;
-      }
+        lastErrBody = await res.text();
 
-      // Retryable: 429, 500, 502, 503, 504
-      if (attempt < MAX_ATTEMPTS) {
-        const delayMs = 1500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 500); // 1.5s, 3s, 6s
-        console.warn(`[tts-gemini] transient ${res.status} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in ${delayMs}ms`);
-        await new Promise(r => setTimeout(r, delayMs));
-      } else {
-        console.error("[tts-gemini] exhausted retries:", res.status, lastErrBody.slice(0, 200));
+        // Auth / model-access errors → try next model (don't retry same one)
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          console.warn(`[tts-gemini] ${model} returned ${res.status} — trying next model`);
+          break;  // exit inner retry loop, move to next model
+        }
+
+        // 400 = bad request, won't get better by retrying or switching model
+        if (res.status === 400) {
+          console.error(`[tts-gemini] bad request (400) for ${model}:`, lastErrBody.slice(0, 200));
+          break outer;
+        }
+
+        // Retryable transient (429, 500, 502, 503, 504) — backoff and retry SAME model
+        if (attempt < MAX_ATTEMPTS) {
+          const delayMs = 1500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 500);
+          console.warn(`[tts-gemini] ${model} transient ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}), retry in ${delayMs}ms`);
+          await new Promise(r => setTimeout(r, delayMs));
+        } else {
+          console.warn(`[tts-gemini] ${model} exhausted retries — trying next model`);
+        }
       }
     }
 
-    if (!res!.ok) {
-      if (res!.status === 401) {
-        return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
+    if (!res || !res.ok) {
+      const status = res?.status ?? 500;
+      if (status === 401) {
+        return NextResponse.json({
+          error: "Gemini API Key ไม่ถูกต้อง — Key นี้ไม่มีสิทธิ์ใช้ TTS preview models (ลองทั้ง 3 models แล้ว). กรุณาสร้าง key ใหม่จาก aistudio.google.com แล้วใส่ใน Settings",
+          missingKey: "gemini",
+        }, { status: 401 });
       }
-      if (res!.status === 403) {
-        return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้ TTS — กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio ก่อน", retryable: false }, { status: 403 });
+      if (status === 403) {
+        // Distinguish "API not enabled" from "key valid but lacks TTS access"
+        const isApiDisabled = lastErrBody.includes("SERVICE_DISABLED") || lastErrBody.includes("has not been used") || lastErrBody.includes("PERMISSION_DENIED");
+        if (isApiDisabled) {
+          return NextResponse.json({
+            error: "Generative Language API ยังไม่ได้เปิดในโปรเจกต์ Google Cloud ของคุณ → เข้า console.cloud.google.com → APIs & Services → Library → ค้น 'Generative Language API' → Enable",
+            retryable: false,
+          }, { status: 403 });
+        }
+        return NextResponse.json({
+          error: "Gemini key นี้ไม่มีสิทธิ์ใช้ TTS preview models — ลองสร้าง key ใหม่ที่ aistudio.google.com/apikey หรือสลับเป็น ElevenLabs",
+          retryable: false,
+        }, { status: 403 });
       }
-      if (res!.status === 404) {
-        return NextResponse.json({ error: "ไม่พบ Gemini TTS model — กรุณาตรวจสอบว่า account รองรับ gemini-3.1-flash-tts-preview", retryable: false }, { status: 404 });
+      if (status === 404) {
+        return NextResponse.json({
+          error: "ไม่พบ Gemini TTS model ที่ใช้งานได้ในบัญชีของคุณ — ลองสลับเป็น ElevenLabs ก่อน",
+          retryable: false,
+        }, { status: 404 });
       }
-      if (res!.status === 429) {
-        return NextResponse.json({ error: "Gemini TTS rate-limit เต็ม กรุณาลองใหม่อีก 1-2 นาที", retryable: true }, { status: 429 });
+      if (status === 429) {
+        return NextResponse.json({
+          error: "Gemini TTS rate-limit เต็มทุก model กรุณาลองใหม่อีก 1-2 นาที",
+          retryable: true,
+        }, { status: 429 });
       }
-      // 500/503 after retries — most likely Google-side transient outage
       return NextResponse.json({
-        error: `Gemini TTS ฝั่ง Google ขัดข้องชั่วคราว (${res!.status}) — ลองอีก 1-2 นาที ถ้ายังไม่หายให้ลองสลับเป็น ElevenLabs ก่อน`,
+        error: `Gemini TTS ฝั่ง Google ขัดข้องชั่วคราว (${status}) — ลองอีก 1-2 นาที หรือสลับเป็น ElevenLabs`,
         retryable: true,
       }, { status: 503 });
     }
+    void usedModel; // for future telemetry
 
-    const data = await res!.json();
+    const data = await res.json();
 
     // Extract base64 audio from response
     const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
