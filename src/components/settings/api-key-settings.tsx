@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles, AlertCircle } from "lucide-react";
 
 interface ApiKeys {
   geminiKey?: string;
@@ -33,6 +33,7 @@ export function ApiKeySettings() {
   const [testResults, setTestResults] = useState<Record<KeyType, TestResult>>({ ...EMPTY_RESULTS });
   const [dirty, setDirty] = useState(false);
   const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
+  const [troubleshootOpen, setTroubleshootOpen] = useState(false);
 
   useEffect(() => { fetchApiKeys(); }, []);
 
@@ -142,6 +143,84 @@ export function ApiKeySettings() {
               <span className="font-semibold text-slate-300">หมายเหตุ:</span> Gemini TTS เป็น preview model ที่ Google ฝั่ง server ยังไม่ stable —
               ถ้า Test ผ่าน text แต่ TTS fail ทุก model ให้สลับใช้ ElevenLabs สำหรับ voice generation ไปก่อน
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* Troubleshooting — collapsible. Shown to user when Gemini features fail in video-editor */}
+      <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 overflow-hidden">
+        <button type="button" onClick={() => setTroubleshootOpen(v => !v)}
+          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-amber-500/10 transition-colors text-left">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/20 border border-amber-500/30 shrink-0">
+            <AlertCircle className="h-3.5 w-3.5 text-amber-300" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-amber-200">เจอ Error ตอนใช้งาน? — วิธีแก้ที่พบบ่อย</div>
+            <div className="text-[11px] text-amber-300/60 mt-0.5">401 / 403 / 503 / "high demand" — แต่ละ error แก้ยังไง</div>
+          </div>
+          {troubleshootOpen ? <ChevronUp className="h-4 w-4 text-amber-300/70 shrink-0" /> : <ChevronDown className="h-4 w-4 text-amber-300/70 shrink-0" />}
+        </button>
+        {troubleshootOpen && (
+          <div className="px-4 pb-4 pt-1 space-y-3 text-[12px] text-slate-300 leading-relaxed">
+
+            {/* 503 high demand */}
+            <div className="rounded-lg bg-black/20 border border-white/5 px-3 py-2.5 space-y-1.5">
+              <div className="font-bold text-cyan-300">📊 Error 503 "high demand" / "experiencing high demand"</div>
+              <p className="text-slate-400">Google ฝั่ง server overload ชั่วคราว <span className="text-slate-300">— ไม่ใช่ปัญหา key ของคุณ</span></p>
+              <ul className="list-disc list-inside text-slate-400 space-y-0.5 marker:text-cyan-500">
+                <li>ระบบ retry ให้อัตโนมัติ 3 ครั้ง × 3 models (gemini-3.5-flash → 2.5-flash → 1.5-pro)</li>
+                <li>ถ้ายัง fail ทั้งหมด → รอ 5-10 นาทีลองใหม่</li>
+                <li>หรือสลับ TTS ไปใช้ ElevenLabs ชั่วคราว</li>
+              </ul>
+            </div>
+
+            {/* 401 invalid credentials */}
+            <div className="rounded-lg bg-black/20 border border-white/5 px-3 py-2.5 space-y-1.5">
+              <div className="font-bold text-red-300">🔒 Error 401 "invalid authentication credentials"</div>
+              <p className="text-slate-400">Key ของคุณถูก Google revoke แล้ว (มักเกิดเพราะ paste key ใน chat / GitHub / public)</p>
+              <ol className="list-decimal list-inside text-slate-400 space-y-0.5 marker:text-red-400">
+                <li>ลบ key เก่าออก (ปุ่ม 🗑 ข้างช่อง input)</li>
+                <li>เข้า{" "}
+                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
+                    className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                    aistudio.google.com/apikey <ExternalLink className="h-3 w-3" />
+                  </a>{" "}
+                  → ลบ key เก่า → กด Create API key ใหม่
+                </li>
+                <li className="text-amber-300/90"><strong>อย่า paste key ใน chat / Discord / screenshot อีก</strong> — Google scanner จะ revoke ใน &lt;5 นาที</li>
+                <li>paste key ใหม่ → Save → Test</li>
+              </ol>
+            </div>
+
+            {/* 403 PERMISSION_DENIED / SERVICE_DISABLED */}
+            <div className="rounded-lg bg-black/20 border border-white/5 px-3 py-2.5 space-y-1.5">
+              <div className="font-bold text-orange-300">🚫 Error 403 "PERMISSION_DENIED" / "SERVICE_DISABLED"</div>
+              <p className="text-slate-400">Project ของคุณยังไม่ enable Generative Language API</p>
+              <ol className="list-decimal list-inside text-slate-400 space-y-0.5 marker:text-orange-400">
+                <li>เข้า{" "}
+                  <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                    className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                    Google Cloud Console <ExternalLink className="h-3 w-3" />
+                  </a>
+                </li>
+                <li>เลือก project ของคุณที่บาร์ด้านบน</li>
+                <li>กดปุ่ม <span className="px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-200 font-mono text-[11px]">ENABLE</span> สีฟ้า</li>
+                <li>รอ 1-2 นาที → กลับมา Test ใหม่</li>
+              </ol>
+            </div>
+
+            {/* Video editor stuck */}
+            <div className="rounded-lg bg-black/20 border border-white/5 px-3 py-2.5 space-y-1.5">
+              <div className="font-bold text-violet-300">🔁 Video Editor ขึ้น error ซ้ำ ๆ ที่ TTS / Transcribe / Keywords</div>
+              <p className="text-slate-400">ส่วนใหญ่เกิดจาก 1 ใน 3 สาเหตุข้างบน — ตรวจตามลำดับ:</p>
+              <ol className="list-decimal list-inside text-slate-400 space-y-0.5 marker:text-violet-400">
+                <li>กลับมาที่ Settings → กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">Test</span> ที่ Gemini key</li>
+                <li>ถ้าเห็น "Generative Language API ยังไม่ได้เปิด" → ทำตามข้อ 403 ด้านบน</li>
+                <li>ถ้าเห็น "Key ไม่ถูกต้อง" → ทำตามข้อ 401 ด้านบน</li>
+                <li>ถ้าเห็น "✓ ใช้งานได้ครบ" แต่ video-editor ยัง fail → Google ฝั่ง 503 ชั่วคราว รอ 5-10 นาที</li>
+              </ol>
+            </div>
+
           </div>
         )}
       </div>

@@ -717,6 +717,36 @@ export default function VideoEditorPage() {
     return raw.split("\n")[0].slice(0, 200) || "เกิดข้อผิดพลาด";
   }
 
+  // Show error as toast with action button + helpful link based on error type
+  function showErrorToast(err: unknown) {
+    const message = friendlyError(err);
+    const lower = message.toLowerCase();
+
+    // Detect type to pick the right action
+    let action: { label: string; url: string } | null = null;
+    if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
+      action = { label: "เปิด API ที่ Cloud Console", url: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" };
+    } else if (lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
+      action = { label: "สร้าง Key ใหม่", url: "https://aistudio.google.com/apikey" };
+    } else if (lower.includes("high demand") || lower.includes("503") || lower.includes("ขัดข้อง")) {
+      action = { label: "ดูวิธีแก้", url: "/settings?tab=api-keys" };
+    } else if (lower.includes("key") && (lower.includes("settings") || lower.includes("ไม่ถูกต้อง"))) {
+      action = { label: "ไปที่ Settings", url: "/settings?tab=api-keys" };
+    }
+
+    if (action) {
+      toast.error(message, {
+        duration: 10000,
+        action: {
+          label: action.label,
+          onClick: () => window.open(action!.url, action!.url.startsWith("http") ? "_blank" : "_self"),
+        },
+      });
+    } else {
+      toast.error(message);
+    }
+  }
+
   function handleMissingKey(err: unknown, fallback: keyof StepState | "runAll" | "runAvatarPipeline"): boolean {
     if (err instanceof ApiCallError && err.data.retryable === false) return false;
     let keyType = null;
@@ -1461,7 +1491,7 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAvatarPipeline")) toast.error(friendlyError(err));
+      if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err);
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -1613,7 +1643,7 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) toast.error(friendlyError(err));
+      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -1680,7 +1710,7 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) toast.error(friendlyError(err));
+      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -1700,7 +1730,7 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Render + Burn Subtitles เสร็จแล้ว!");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (!handlePlanError(err)) toast.error(friendlyError(err));
+      if (!handlePlanError(err)) showErrorToast(err);
     } finally {
       runningRef.current = false; setRunning(false);
     }
