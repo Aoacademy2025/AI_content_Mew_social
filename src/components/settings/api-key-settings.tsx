@@ -104,7 +104,7 @@ export function ApiKeySettings() {
             <Sparkles className="h-3.5 w-3.5 text-violet-300" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-violet-200">วิธีสร้าง Gemini API Key (3 ขั้นตอน)</div>
+            <div className="text-sm font-semibold text-violet-200">วิธีสร้าง Gemini API Key (4 ขั้นตอน)</div>
             <div className="text-[11px] text-violet-300/60 mt-0.5">Gemini ใช้สำหรับ TTS, transcribe, keyword extraction และอีกหลายฟีเจอร์</div>
           </div>
           {geminiGuideOpen ? <ChevronUp className="h-4 w-4 text-violet-300/70 shrink-0" /> : <ChevronDown className="h-4 w-4 text-violet-300/70 shrink-0" />}
@@ -123,6 +123,17 @@ export function ApiKeySettings() {
               <li>
                 กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">+ Create API key</span>
                 {" "}— เลือก project ที่มีอยู่ หรือสร้างใหม่ (default project ก็ได้)
+              </li>
+              <li>
+                <span className="font-semibold text-violet-200">Enable Generative Language API</span> สำหรับ project นั้น:
+                <div className="ml-5 mt-1 text-slate-400">
+                  เข้า{" "}
+                  <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                    className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                    Cloud Console <ExternalLink className="h-3 w-3" />
+                  </a>{" "}
+                  → เลือก project เดียวกับที่สร้าง key → กดปุ่ม <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 font-mono text-[11px]">ENABLE</span> → รอ 1-2 นาที
+                </div>
               </li>
               <li>
                 Copy key (ขึ้นต้น <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AIza...</code> หรือ <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AQ....</code>)
