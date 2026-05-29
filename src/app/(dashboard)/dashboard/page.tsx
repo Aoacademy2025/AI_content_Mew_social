@@ -213,9 +213,25 @@ export default function DashboardPage() {
           animation: dash-icon-pulse 3.6s ease-in-out infinite;
         }
 
+        /* Skeleton — shimmer placeholder that matches card aesthetic, no spinner */
+        @keyframes dash-skeleton-shimmer {
+          0%   { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+        .dash-skeleton {
+          background:
+            linear-gradient(90deg,
+              hsl(0 0% 100% / 0.04) 0%,
+              hsl(190 100% 50% / 0.08) 40%,
+              hsl(252 80% 60% / 0.06) 60%,
+              hsl(0 0% 100% / 0.04) 100%);
+          background-size: 200% 100%;
+          animation: dash-skeleton-shimmer 1.6s ease-in-out infinite;
+        }
+
         @media (prefers-reduced-motion: reduce) {
           .dash-orb-1, .dash-orb-2, .dash-orb-3, .dash-grid-bg, .dash-fade-up, .dash-fade-in,
-          .dash-chip-dot, .dash-card-border, .dash-icon-frame {
+          .dash-chip-dot, .dash-card-border, .dash-icon-frame, .dash-skeleton {
             animation: none !important;
           }
         }
@@ -351,7 +367,8 @@ export default function DashboardPage() {
                   </div>
                 </div>
                 {loading ? (
-                  <Loader2 className="h-7 w-7 animate-spin text-white/30" />
+                  // Skeleton — same height as the count line so layout doesn't shift on data arrival
+                  <div className="dash-skeleton h-12 w-20 rounded-lg" />
                 ) : (
                   <div className="flex items-baseline gap-2">
                     <p className="text-5xl font-black tracking-tight text-white tabular-nums">{count}</p>
