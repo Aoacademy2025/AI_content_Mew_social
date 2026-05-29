@@ -77,6 +77,11 @@ pricing-analysis.*
 *-analysis.html
 *-analysis.jpg
 
+# Local UI design mockups (preview only — do NOT bundle into production)
+public/dashboard-designs.html
+public/*-designs.html
+public/*-mockup.html
+
 # Local install helpers — VPS uses its own setup (Linux pm2)
 install-mac.sh
 install-windows.bat
