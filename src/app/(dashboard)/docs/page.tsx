@@ -473,9 +473,9 @@ function ApiSetupDoc() {
 
           <p className="text-[12px] text-white/40 uppercase tracking-widest font-bold pt-2">TTS เสียง</p>
           <ApiRow
-            name="ElevenLabs API Key + Voice ID"
+            name="ElevenLabs API Key"
             required={false}
-            desc="ออปชัน — เสียงคุณภาพสูงมาก ใส่ API Key + Voice ID ของเสียงที่ต้องการ ถ้าไม่มีให้ใช้ Gemini TTS แทนได้"
+            desc="ออปชัน — เสียงคุณภาพสูงมาก ใส่ API Key ที่นี่ ส่วน Voice ID กรอกใน Pipeline panel ตอนเลือก Voice = ElevenLabs ถ้าไม่มีให้ใช้ Gemini TTS แทนได้"
             link="https://elevenlabs.io/app/settings/api-keys"
             linkLabel="ElevenLabs → Profile → API Key"
           />
@@ -494,8 +494,8 @@ function ApiSetupDoc() {
       <Section title="เช็ค key ว่าทำงานได้มั้ย" icon={CheckCircle2}>
         <p>หลังบันทึก key แล้ว ให้ทดสอบโดย:</p>
         <ul className="space-y-1.5 list-disc list-inside ml-1">
-          <li>ไปที่หน้า <b className="text-white">Video Creator</b></li>
-          <li>วาง script สั้นๆ แล้วกด <b className="text-white">Run All</b></li>
+          <li>ไปที่หน้า <b className="text-white">Video Editor</b></li>
+          <li>วาง script สั้นๆ แล้วกด <b className="text-white">▶ Render</b></li>
           <li>ถ้า key ถูกต้อง pipeline จะรันผ่าน — ถ้า key ผิดจะขึ้น popup ให้กรอก key ใหม่ทันที</li>
         </ul>
         <InfoBox>ถ้าขึ้น popup ให้ใส่ key ให้กรอกตรงนั้นได้เลย หรือไปแก้ที่ Settings แล้วรันใหม่</InfoBox>
@@ -666,91 +666,102 @@ function AvatarDoc() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 mt-2">
           <div className="rounded-xl p-4" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
             <p className="text-white font-bold text-[13px] mb-1">Generate (HeyGen API)</p>
-            <p className="text-[12px] text-white/50">ระบบสร้าง avatar พูดให้ผ่าน HeyGen ต้องใส่ HeyGen API Key + Avatar ID</p>
+            <p className="text-[12px] text-white/50">ระบบสร้าง avatar พูดให้ผ่าน HeyGen ต้องใส่ HeyGen API Key + Avatar ID — <span className="text-amber-300/80">กิน HeyGen โควต้าทุกครั้งที่ generate</span></p>
           </div>
           <div className="rounded-xl p-4" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
             <p className="text-white font-bold text-[13px] mb-1">Direct URL / ไฟล์</p>
-            <p className="text-[12px] text-white/50">ใช้วิดีโอ avatar ที่มีอยู่แล้ว (พื้นเขียว) วาง URL หรืออัปโหลดไฟล์ MP4/MOV/WebM ได้เลย ไม่เสีย HeyGen โควต้า</p>
+            <p className="text-[12px] text-white/50">ใช้วิดีโอ avatar ที่มีอยู่แล้ว (พื้นเขียว) วาง URL หรืออัปโหลดไฟล์ MP4/MOV/WebM ได้เลย — <span className="text-emerald-300/80">ไม่เสีย HeyGen โควต้า</span></p>
           </div>
         </div>
       </Section>
 
-      <Section title="ขั้นตอนก่อนกด Run All" icon={Wand2}>
+      <Section title="ขั้นตอนก่อนกด Render" icon={Wand2}>
         <Step num={1} title="ตั้งค่าพื้นฐาน (เหมือนโหมดวิดีโออย่างเดียว)">
-          <p>กด Cache → วาง Script → เลือก Stock Source → เลือก Voice → เลือก Subtitle Style</p>
-          <p>(ดูรายละเอียดใน tab <b className="text-white">วิดีโออย่างเดียว</b>)</p>
+          <p>วาง Script (panel ซ้าย) → เลือก Stock Source → เลือก Voice → ตั้ง Subtitle Style</p>
+          <p>(ดูรายละเอียดใน tab <b className="text-white">Video Editor</b>)</p>
         </Step>
 
-        <Step num={2} title="เปิดโหมด Avatar">
-          <p>สลับจาก <b className="text-white">Video Only</b> → <b className="text-white">+ Avatar</b> ในการ์ด Avatar ทางขวา</p>
+        <Step num={2} title="เปิดโหมด Avatar (panel Pipeline ขวา)">
+          <p>เปิด toggle <b className="text-white">Avatar (HeyGen)</b> → เลือกโหมด <b className="text-white">Generate</b> หรือ <b className="text-white">Direct URL</b></p>
+          <InfoBox>โหมด <b className="text-white">Direct URL</b> ไม่กิน HeyGen โควต้า — ถ้ามีวิดีโอ avatar พื้นเขียวอยู่แล้วแนะนำใช้อันนี้</InfoBox>
         </Step>
 
-        <Step num={3} title="(โหมด Generate) เลือก Avatar และตั้งค่า">
+        <Step num={3} title="(โหมด Generate) ใส่ Avatar ID + เลือก Timing">
           <p>ใส่ <b className="text-white">HeyGen Avatar ID</b> — หา ID ได้จาก HeyGen dashboard ที่ตัว avatar ที่ต้องการ</p>
-          <p>เลือก Voice ใน HeyGen (แยกจาก TTS voice ของระบบ)</p>
+          <p className="pt-1">เลือก <b className="text-white">Avatar Timing</b> (ช่วงเวลาที่ avatar ปรากฏ):</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li><b className="text-white">Full</b> — avatar แสดงตลอดคลิป</li>
+            <li><b className="text-white">Intro</b> — แสดงเฉพาะ N วินาทีแรก (กำหนดวินาทีได้) หลังจากนั้นเหลือแต่ B-roll</li>
+            <li><b className="text-white">Intro+Outro</b> — แสดงช่วงต้นคลิป N วินาที + ช่วงท้ายคลิป N วินาที</li>
+          </ul>
           <Warn>
-            การกำหนดตำแหน่ง avatar ผ่าน API อาจคลาดเคลื่อนได้ — ค่า default ตั้งไว้ให้เห็น upper body
-            ปรับ Offset X/Y และ Scale ได้หลัง render Phase 2
+            HeyGen คิดเงินตามโควต้าทุกครั้งที่ generate avatar ใหม่ — ตั้ง Avatar ID + Timing ให้เรียบร้อยก่อนกด Render
           </Warn>
         </Step>
 
-        <Step num={4} title="(โหมด Generate) เลือก Avatar Timing">
-          <p>กำหนดช่วงเวลาที่ avatar จะปรากฏ:</p>
-          <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li><b className="text-white">ตลอดคลิป</b> — avatar แสดงตั้งแต่ต้นจนจบ</li>
-            <li><b className="text-white">ต้นคลิปเท่านั้น</b> — avatar แสดงเฉพาะ N วินาทีแรกที่กำหนด หลังจากนั้นแสดงเฉพาะ B-roll</li>
-          </ul>
+        <Step num={4} title="(โหมด Generate) วางตำแหน่ง avatar — Avatar Position">
+          <p>ลากจุดบน canvas หรือปรับ slider <b className="text-white">Offset X / Offset Y / Scale</b> เพื่อจัดตำแหน่ง avatar บน B-roll</p>
+          <p>กด <b className="text-white">↺ Reset</b> เพื่อกลับค่า default (เห็น upper body)</p>
+          <InfoBox>ตำแหน่งนี้ปรับใหม่ทีหลังได้โดย <b className="text-white">ไม่ต้อง generate avatar ใหม่</b> — ประหยัด HeyGen โควต้า (ดูหัวข้อถัดไป)</InfoBox>
         </Step>
 
-        <Step num={5} title="กด Run All">
-          <p>ระบบจะรัน Phase 1 (Video pipeline) → Phase 2 (Render BG) → Phase 3 (Avatar + Composite) ต่อเนื่อง</p>
-          <Warn>ห้ามกดเปลี่ยนหน้าระหว่าง pipeline รัน</Warn>
+        <Step num={5} title="(โหมด Direct URL) วาง URL หรืออัปโหลดไฟล์">
+          <p>วาง URL วิดีโอ avatar พื้นเขียว หรืออัปโหลดไฟล์ MP4/MOV/WebM — เสียงจะใช้จากวิดีโอนั้นเลย (ข้าม TTS)</p>
+        </Step>
+
+        <Step num={6} title="กด ▶ Render (topbar ขวาบน)">
+          <p>ปุ่มเดียวกับโหมดวิดีโอ — ระบบรัน pipeline ทั้งหมดต่อเนื่อง แล้ว <b className="text-white">composite avatar ให้อัตโนมัติ</b> ตอนท้าย</p>
+          <Warn>ห้ามปิด tab หรือเปลี่ยนหน้าระหว่าง pipeline รัน</Warn>
         </Step>
       </Section>
 
-      <Section title="ขั้นตอน Pipeline — 8 ขั้น" icon={Layers}>
-        <p className="text-[12px] text-white/40">เมื่อกด Run All ระบบรันลำดับนี้อัตโนมัติ:</p>
+      <Section title="ขั้นตอน Pipeline (รันอัตโนมัติเมื่อกด Render)" icon={Layers}>
+        <p className="text-[12px] text-white/40">โหมด Avatar รันเหมือนโหมดวิดีโอ แล้วต่อด้วยขั้น Avatar + Composite ตอนท้าย:</p>
         <div className="rounded-xl p-4 mt-2" style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-card-border)" }}>
-          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ ElevenLabs หรือ Gemini สังเคราะห์เสียงพูด → ได้ไฟล์ audio MP3" />
-          <PipelineRow num={2} name="Whisper Transcribe" desc="ส่ง audio ให้ Whisper/Gemini ถอดเสียง → LLM แบ่ง script เป็นซับพร้อม timestamp ตรงกับเสียง" />
-          <PipelineRow num={3} name="Extract Keywords" desc="LLM อ่านซับแต่ละประโยค → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 ซับ = 1 keyword)" />
-          <PipelineRow num={4} name="Stock Fetch" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลด MP4 ลงเซิร์ฟเวอร์" />
-          <PipelineRow num={5} name="Generate Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับแต่ละประโยค → สร้าง timeline ให้ Remotion" />
-          <PipelineRow num={6} name="Render (BG)" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → วิดีโอ background" />
-          <PipelineRow num={7} name="Avatar (HeyGen)" desc="HeyGen สร้างวิดีโอ avatar พูดบนพื้นหลังสีเขียว (ใช้เฉพาะโหมด Generate)" />
-          <PipelineRow num={8} name="Composite (FFmpeg)" desc="ลบพื้นเขียว (chromakey) → overlay avatar บน background → MP4 สุดท้าย" />
+          <PipelineRow num={1} name="TTS Voice" desc="ส่ง script ให้ Gemini หรือ ElevenLabs สังเคราะห์เสียงพูด (โหมด Direct URL ข้ามขั้นนี้ — ใช้เสียงจากวิดีโอ avatar)" />
+          <PipelineRow num={2} name="Transcribe" desc="ส่ง audio + script ให้ Gemini → LLM แบ่งเป็นซับพร้อม timestamp ตรงกับเสียง" />
+          <PipelineRow num={3} name="Keywords" desc="LLM อ่านซับแต่ละประโยค → แปลงเป็น keyword ภาษาอังกฤษสำหรับค้น B-roll (1 ซับ = 1 keyword)" />
+          <PipelineRow num={4} name="B-roll" desc="ค้น Pexels/Pixabay ด้วย keyword → LLM rank คลิปที่ตรงที่สุด → ดาวน์โหลด MP4 cache ที่ /stocks/" />
+          <PipelineRow num={5} name="Config" desc="จับคู่คลิป B-roll กับ timestamp ของซับแต่ละประโยค → สร้าง timeline ให้ Remotion" />
+          <PipelineRow num={6} name="Render" desc="Remotion render: คลิปเล่นตรงช่วงเวลาของซับ + ซับ popup ตรงจังหวะเสียง → วิดีโอ background" />
+          <PipelineRow num={7} name="Avatar (HeyGen)" desc="HeyGen สร้างวิดีโอ avatar พูดบนพื้นหลังสีเขียว (เฉพาะโหมด Generate — กิน HeyGen โควต้า)" />
+          <PipelineRow num={8} name="Composite (FFmpeg)" desc="ลบพื้นเขียว (chromakey) → overlay avatar บน background ตามตำแหน่งที่ตั้ง → MP4 สุดท้าย" />
         </div>
         <InfoBox>คลิป B-roll และซับ sync กันเสมอ — ซับที่ 1 ได้ keyword จากประโยคที่ 1 → คลิปที่ 1 ตรงกับซับที่ 1</InfoBox>
       </Section>
 
-      <Section title="หลัง Run Phase 2 — ปรับ Background Removal" icon={Captions}>
-        <Step num="A" title="เช็ค Background Removal หลัง Phase 2 เสร็จ">
-          <p>หลัง render Phase 2 เสร็จ ระบบจะแนะนำค่า chromakey parameter ให้</p>
-          <p>ปรับค่า <b className="text-white">Background Removal</b> ตามคำแนะนำของระบบก่อนกดรัน Phase 3</p>
-          <InfoBox>ถ้าผลลัพธ์ยังไม่ดีพอ ปรับค่า parameter ต่อแล้วกดรัน <b className="text-white">Phase 3 เท่านั้น</b> — ไม่ต้อง re-run Phase 1–2</InfoBox>
-        </Step>
+      <Section title="ปรับ Background Removal (Chromakey)" icon={Captions}>
+        <p>
+          ในการ์ด Avatar จะมีกล่อง <b className="text-white">Background Removal</b> สำหรับปรับการลบพื้นเขียว
+          ตั้งค่าได้ก่อนกด Render และปรับซ้ำได้ตลอด มี 2 ค่า:
+        </p>
+        <ul className="list-disc list-inside space-y-0.5 ml-1">
+          <li><b className="text-white">Similarity</b> (0.10–0.55) — เขียวยังเหลือ → เพิ่มค่า / ผิวหรือเสื้อหาย → ลดค่า</li>
+          <li><b className="text-white">Blend</b> (0.00–0.20) — ขอบหยัก → เพิ่มค่า / ต้องการขอบนิ่มน้อยลง → ลดค่า</li>
+        </ul>
+        <InfoBox>สีพื้นที่ลบคือเขียว <b className="text-white">#00FF00</b> — วิดีโอ avatar ควรเป็นพื้นเขียวสะอาด ไม่มีเงาบนหน้า เพื่อให้ chromakey ลบได้คม</InfoBox>
+      </Section>
 
-        <Step num="B" title="ปรับตำแหน่ง Avatar ใหม่">
-          <p>ปรับ Offset X/Y และ Scale ใน canvas แล้วกด <b className="text-white">Re-run Phase 3</b></p>
-          <p>ประหยัดโควต้า HeyGen — ไม่ต้อง generate avatar ใหม่</p>
-        </Step>
-
-        <Step num="C" title="Re-run Phase 3 เมื่อพอใจกับ parameter">
-          <p>กด <b className="text-white">Re-run Phase 3</b> เพื่อ composite ใหม่ตาม chromakey + ตำแหน่งที่ปรับ</p>
-        </Step>
-
-        <Step num="D" title="ดาวน์โหลดวิดีโอสุดท้าย">
-          <p>วิดีโอ composite สุดท้ายบันทึกลง Gallery อัตโนมัติ</p>
-        </Step>
+      <Section title="แก้ avatar โดยไม่เสีย HeyGen โควต้า" icon={RefreshCw}>
+        <p>หลัง Render เสร็จ ถ้า avatar ตำแหน่งไม่ลงตัวหรือยังมีขอบเขียว ปรับแล้ว Render ใหม่ได้:</p>
+        <ul className="list-disc list-inside space-y-1 ml-1">
+          <li>ปรับ <b className="text-white">Offset X/Y / Scale</b> (Avatar Position) หรือค่า <b className="text-white">Background Removal</b></li>
+          <li>กด <b className="text-white">▶ Render</b> ใหม่ — ระบบ composite ใหม่จากวิดีโอ avatar เดิม</li>
+        </ul>
+        <Warn>
+          ตราบใดที่ <b className="text-white">Avatar ID ยังเป็นตัวเดิม</b> ระบบจะใช้วิดีโอ avatar ที่ generate ไว้แล้ว
+          ไม่ generate ใหม่ จึงไม่เสีย HeyGen โควต้าเพิ่ม — เปลี่ยน Avatar ID เมื่อใดจึงจะ generate (และเสียโควต้า) ใหม่
+        </Warn>
+        <p className="pt-1">วิดีโอสุดท้ายบันทึกลง Gallery อัตโนมัติ</p>
       </Section>
 
       <Section title="เคล็ดลับ" icon={Play}>
         <ul className="space-y-2">
-          <Tip>ถ้ามี avatar video พื้นเขียวอยู่แล้ว → ใช้ <b className="text-white">Direct URL</b> เร็วกว่า ไม่เสีย HeyGen โควต้า</Tip>
-          <Tip>ตั้ง Avatar Timing = <b className="text-white">ต้นคลิป 5–10 วินาที</b> จะดูธรรมชาติกว่า avatar พูดตลอดคลิป</Tip>
-          <Tip>ถ้า avatar ตำแหน่งไม่ลงตัว → ปรับ slider แล้ว Re-run Phase 3 พอ</Tip>
+          <Tip>ถ้ามี avatar video พื้นเขียวอยู่แล้ว → ใช้ <b className="text-white">Direct URL</b> เร็วกว่า และ <b className="text-white">ไม่เสีย HeyGen โควต้า</b></Tip>
+          <Tip>ตั้ง Avatar Timing = <b className="text-white">Intro 5–10 วินาที</b> มักดูธรรมชาติกว่า avatar พูดตลอดคลิป</Tip>
+          <Tip>ถ้า avatar ตำแหน่งไม่ลงตัว → ปรับ slider แล้วกด <b className="text-white">▶ Render</b> ใหม่ (Avatar ID เดิม = ไม่เสียโควต้า)</Tip>
           <Tip>วิดีโอ avatar ต้องมีพื้นหลังสีเขียวสะอาด ไม่มีเงาบนใบหน้า เพื่อให้ chromakey ลบได้คม</Tip>
-          <Tip>ปรับ chromakey จน avatar ขอบสะอาดแล้ว save ค่าไว้ใช้ครั้งต่อไป</Tip>
+          <Tip>ปรับ Similarity/Blend จน avatar ขอบสะอาดแล้วค่อย Render เป็นไฟล์สุดท้าย</Tip>
         </ul>
       </Section>
     </>

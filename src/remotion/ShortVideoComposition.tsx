@@ -10,6 +10,10 @@ import {
   useVideoConfig,
 } from "remotion";
 import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
+import { renderSubtitle } from "./renderSubtitle";
+
+// Re-export for backwards compatibility with any other importers
+export { renderSubtitle };
 
 const FONTS_CSS =
   "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
@@ -95,7 +99,11 @@ function CinematicOverlay() {
 }
 
 // ─── Subtitle rendering ───────────────────────────────────────────────────────
-export function renderSubtitle(
+// Moved to ./renderSubtitle.tsx so the editor preview imports the SAME function.
+// Re-exported at the top of this file for callers that already imported it from here.
+// ─────────────────────────────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- duplicate impl removed (see ./renderSubtitle.tsx)
+function __removed_legacy_renderSubtitle(
   text: string,
   color: string,
   size: number,
