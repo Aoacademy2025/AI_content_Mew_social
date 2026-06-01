@@ -495,8 +495,11 @@ export default function ContentPage() {
             </div>
 
             {loading ? (
-              <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-cyan-400/50" />
+              // Shimmer skeleton rows that mimic content list
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="dash-skeleton h-14 rounded-xl" />
+                ))}
               </div>
             ) : contents.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">

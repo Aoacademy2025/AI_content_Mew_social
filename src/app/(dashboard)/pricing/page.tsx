@@ -241,9 +241,11 @@ function PricingContent() {
                 {/* Features */}
                 <ul className="space-y-3 flex-1 mb-7 min-h-50">
                   {features.length === 0 ? (
-                    <li className="flex items-center justify-center py-12">
-                      <Loader2 className="h-5 w-5 animate-spin" style={{ color: "var(--ui-text-muted)" }} />
-                    </li>
+                    <>
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <li key={i} className="dash-skeleton h-5 rounded" />
+                      ))}
+                    </>
                   ) : (
                     features.map((feat) => {
                       const text = typeof feat === "object" ? (feat as any).text : feat;

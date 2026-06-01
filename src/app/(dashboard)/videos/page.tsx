@@ -124,8 +124,13 @@ export default function VideosGalleryPage() {
 
         {/* ── Grid ── */}
         {loading ? (
-          <div className="flex items-center justify-center py-32">
-            <Loader2 className="h-7 w-7 animate-spin text-cyan-500/30" />
+          // Shimmer skeleton grid that mimics the real layout
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <div key={i} className="rounded-xl overflow-hidden" style={{ aspectRatio: "9/16" }}>
+                <div className="dash-skeleton h-full w-full" />
+              </div>
+            ))}
           </div>
         ) : (
           <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -377,13 +377,36 @@ export default function AdminDashboardPage() {
     loadSettings();
   }, []);
 
-  useEffect(() => {
-    setTicketsLoading(true);
-    fetch(`/api/admin/support?status=${ticketFilter}`)
-      .then(r => r.json())
-      .then(d => setTickets(Array.isArray(d) ? d : []))
-      .finally(() => setTicketsLoading(false));
+  // Fetch tickets — `silent` skips the loading spinner so background polling
+  // doesn't make the list flicker. Latest data always wins (DB is the source
+  // of truth), so tickets created via the web/n8n flow appear automatically.
+  const fetchTickets = useCallback(async (silent = false) => {
+    if (!silent) setTicketsLoading(true);
+    try {
+      const r = await fetch(`/api/admin/support?status=${ticketFilter}`, { cache: "no-store" });
+      const d = await r.json();
+      if (Array.isArray(d)) setTickets(d);
+    } catch { /* keep current list on transient errors */ }
+    finally { if (!silent) setTicketsLoading(false); }
   }, [ticketFilter]);
+
+  // Initial load + re-load when the filter changes
+  useEffect(() => { fetchTickets(); }, [fetchTickets]);
+
+  // Real-time-ish: poll every 15s while the tab is visible (pauses in background)
+  useEffect(() => {
+    const POLL_MS = 15_000;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => { if (!timer) timer = setInterval(() => fetchTickets(true), POLL_MS); };
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") { fetchTickets(true); start(); }
+      else stop();
+    };
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [fetchTickets]);
 
   async function handleReply(ticketId: string, close: boolean) {
     const reply = replyText[ticketId]?.trim();
@@ -465,7 +488,7 @@ export default function AdminDashboardPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {loading ? <Loader2 className="h-7 w-7 animate-spin text-zinc-600" /> : (
+                  {loading ? <div className="dash-skeleton h-9 w-24 rounded-lg" /> : (
                     <div className="text-3xl font-bold text-white">{card.value}</div>
                   )}
                   <p className="mt-1 text-xs text-zinc-500">{card.sub}</p>
@@ -497,8 +520,10 @@ export default function AdminDashboardPage() {
           </div>
 
           {ticketsLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-zinc-500" />
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="dash-skeleton h-16 rounded-xl" />
+              ))}
             </div>
           ) : tickets.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-white/5 flex flex-col items-center justify-center py-12 gap-2">
@@ -633,7 +658,7 @@ export default function AdminDashboardPage() {
                   <div key={label} className="rounded-xl bg-white/5 border border-white/10 p-3 text-center">
                     <p className="text-xs text-zinc-500 mb-1">{label}</p>
                     {cleanupLoading ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-zinc-600 mx-auto" />
+                      <div className="dash-skeleton h-5 w-12 rounded mx-auto" />
                     ) : (
                       <>
                         <p className={`text-xl font-bold ${color === "red" ? "text-red-400" : color === "orange" ? "text-orange-400" : color === "yellow" ? "text-yellow-400" : "text-zinc-300"}`}>
@@ -652,7 +677,7 @@ export default function AdminDashboardPage() {
               <p className="text-xs text-zinc-500 mb-2 font-semibold uppercase tracking-wider">/tmp (Remotion temp files)</p>
               <div className="rounded-xl bg-white/5 border border-white/10 p-3 flex items-center gap-4">
                 {cleanupLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-zinc-600" />
+                  <div className="dash-skeleton h-6 w-full rounded" />
                 ) : (
                   <>
                     <div>
@@ -800,7 +825,11 @@ export default function AdminDashboardPage() {
 
           {/* Track list */}
           {musicLoading ? (
-            <div className="flex items-center gap-2 text-sm text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" /> กำลังโหลด...</div>
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="dash-skeleton h-12 rounded-lg" />
+              ))}
+            </div>
           ) : tracks.length === 0 ? (
             <p className="text-sm text-zinc-500">ยังไม่มีเพลง — อัปโหลดเพลงแรก</p>
           ) : (

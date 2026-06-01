@@ -200,8 +200,10 @@ function BillingTab() {
         <p className="eyebrow">ประวัติการชำระเงิน</p>
 
         {loading ? (
-          <div className="flex justify-center py-12">
-            <Loader2 className="h-5 w-5 animate-spin" style={{ color: "var(--ui-text-muted)" }} />
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="dash-skeleton h-14 rounded-xl" />
+            ))}
           </div>
         ) : payments.length === 0 ? (
           <div className="premium-card p-12 text-center">

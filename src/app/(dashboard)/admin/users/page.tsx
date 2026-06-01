@@ -205,8 +205,10 @@ export default function AdminUsersPage() {
 
         {/* User Cards */}
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-8 w-8 animate-spin text-zinc-600" />
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="dash-skeleton h-16 rounded-xl" />
+            ))}
           </div>
         ) : filtered.length === 0 ? (
           <Card className="border-white/10 bg-white/5">

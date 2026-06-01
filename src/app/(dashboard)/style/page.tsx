@@ -263,8 +263,10 @@ export default function StylePage() {
             </div>
 
             {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-5 w-5 animate-spin text-cyan-400/30" />
+              <div className="space-y-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="dash-skeleton h-14 rounded-xl" />
+                ))}
               </div>
             ) : filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
