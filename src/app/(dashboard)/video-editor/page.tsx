@@ -2249,8 +2249,17 @@ export default function VideoEditorPage() {
               <button
                 onClick={async () => {
                   if (dlUrl) {
+                    // Already-burned path — make sure Gallery has the latest version
+                    // (covers the case where the user loaded a draft whose galleryVideoId
+                    // was never persisted, so the burn pass never linked it.)
+                    await saveToGallery({
+                      videoUrl: dlUrl,
+                      videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+                      status: "COMPLETED",
+                    });
                     const a = document.createElement("a");
                     a.href = dlUrl; a.download = ""; a.click();
+                    toast.success("ดาวน์โหลดและบันทึกลง Gallery แล้ว");
                   } else {
                     // Need either composite (render+avatar) or plain render before we can burn
                     const baseAvailable = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
@@ -2259,7 +2268,10 @@ export default function VideoEditorPage() {
                     await runBurnSubtitles();
                     const burned = pipe.current.burnedVideoUrl;
                     if (burned) {
+                      // runBurnSubtitles → finalizeBurn → saveToGallery is already called
+                      // inside, so we don't double-save here. Just download.
                       const a = document.createElement("a"); a.href = burned; a.download = ""; a.click();
+                      toast.success("Burn + Download + บันทึกลง Gallery แล้ว");
                     }
                   }
                 }}

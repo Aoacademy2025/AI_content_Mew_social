@@ -440,7 +440,18 @@ function ApiSetupDoc() {
             studio.heroaiengine.com/settings
           </a>
         </p>
-        <InfoBox>เข้าหน้า Settings → วาง key แต่ละอันในช่องที่กำหนด → กด Save</InfoBox>
+        <div className="space-y-2.5 pt-1">
+          <Step num={1} title="วาง key ในช่องที่กำหนด">
+            <p>เข้าหน้า <b className="text-white">Settings</b> → วาง key แต่ละอันในช่องของมัน (กดไอคอน 👁 เพื่อดูค่าที่วาง)</p>
+          </Step>
+          <Step num={2} title="กด Test เพื่อยืนยัน">
+            <p>กดปุ่ม <b className="text-white">Test</b> ข้างช่อง — ถ้าผ่านจะขึ้น <b className="text-green-400">✓ เครื่องหมายถูกสีเขียว</b>, ถ้าไม่ผ่านจะขึ้นข้อความ error สีแดงบอกสาเหตุ</p>
+          </Step>
+          <Step num={3} title="กด Save Settings">
+            <p>กด <b className="text-white">Save Settings</b> มุมขวาล่าง — key ที่บันทึกแล้วจะมี badge <b className="text-green-400">Active</b> กำกับ</p>
+          </Step>
+        </div>
+        <InfoBox>Gemini key สร้างใน Google AI Studio แล้ว <b className="text-white">ใช้ได้เลย</b> ส่วนใหญ่ไม่ต้องไปเปิด API ใน Cloud Console เอง — ถ้าเจอปัญหาดูหัวข้อ "เจอปัญหา? วิธีแก้" ด้านล่าง</InfoBox>
       </Section>
 
       <Section title="API Keys ที่ต้องใส่" icon={Settings2}>
@@ -450,9 +461,9 @@ function ApiSetupDoc() {
           <ApiRow
             name="Gemini API Key"
             required
-            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — subtitle split, keyword extraction, style analysis, content generation"
+            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — TTS, subtitle split, keyword extraction, style analysis, content generation สร้างใน Google AI Studio แล้ววางได้เลย"
             link="https://aistudio.google.com/app/apikey"
-            linkLabel="Google AI Studio → Get API Key"
+            linkLabel="Google AI Studio → Create API Key"
           />
 
           <p className="text-[12px] text-white/40 uppercase tracking-widest font-bold pt-2">Stock Video — B-roll</p>
@@ -492,13 +503,45 @@ function ApiSetupDoc() {
       </Section>
 
       <Section title="เช็ค key ว่าทำงานได้มั้ย" icon={CheckCircle2}>
-        <p>หลังบันทึก key แล้ว ให้ทดสอบโดย:</p>
+        <p>มี 2 วิธี:</p>
         <ul className="space-y-1.5 list-disc list-inside ml-1">
-          <li>ไปที่หน้า <b className="text-white">Video Editor</b></li>
-          <li>วาง script สั้นๆ แล้วกด <b className="text-white">▶ Render</b></li>
-          <li>ถ้า key ถูกต้อง pipeline จะรันผ่าน — ถ้า key ผิดจะขึ้น popup ให้กรอก key ใหม่ทันที</li>
+          <li><b className="text-white">ที่หน้า Settings</b> — กดปุ่ม <b className="text-white">Test</b> ข้างแต่ละ key ดูว่าขึ้น ✓ เขียวมั้ย</li>
+          <li><b className="text-white">ใช้งานจริง</b> — เข้า <b className="text-white">Video Editor</b> → วาง script สั้นๆ → กด <b className="text-white">▶ Render</b> ถ้า key ผิดจะขึ้น popup ให้กรอก key ใหม่ทันที</li>
         </ul>
-        <InfoBox>ถ้าขึ้น popup ให้ใส่ key ให้กรอกตรงนั้นได้เลย หรือไปแก้ที่ Settings แล้วรันใหม่</InfoBox>
+        <InfoBox>ถ้าขึ้น popup ให้ใส่ key ระหว่างใช้งาน กรอกตรงนั้นได้เลย หรือไปแก้ที่ Settings แล้วรันใหม่</InfoBox>
+      </Section>
+
+      <Section title="เจอปัญหา? วิธีแก้" icon={AlertTriangle}>
+        <div className="space-y-3">
+          <ErrBox title="Gemini key ใช้ไม่ได้ / Test ขึ้นแดง / ขึ้น 401 invalid">
+            <p>มักเกิดจาก copy key มาไม่ครบ หรือ key ถูก Google revoke (เช่นเผลอ paste ในแชต/ที่สาธารณะ)</p>
+            <p>→ เข้า <b className="text-white">Google AI Studio</b> สร้าง key ใหม่ (กด <b className="text-white">+ Create API key</b>) → วางใหม่ → กด Test → <b className="text-white">ห้าม share key ที่ไหนอีก</b></p>
+          </ErrBox>
+          <ErrBox title='Test ขึ้น "Generative Language API ยังไม่ได้เปิด"'>
+            <p>key ส่วนใหญ่ใช้ได้เลย แต่บาง project เก่าต้องเปิด API เอง</p>
+            <p>→ เข้า{" "}
+              <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noopener noreferrer"
+                className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2">Google Cloud Console</a>{" "}
+              → เลือก project เดียวกับที่สร้าง key → กด <b className="text-white">ENABLE</b> → รอ 1-2 นาที → Test ใหม่</p>
+          </ErrBox>
+          <ErrBox title="Test ผ่าน แต่ TTS / Render fail ขึ้น 503 high demand">
+            <p>Google Gemini ฝั่ง server overload ชั่วคราว ไม่ใช่ที่ key — ระบบ retry อัตโนมัติให้แล้ว</p>
+            <p>→ รอ 5-10 นาทีแล้วลองใหม่ หรือสลับ Voice เป็น <b className="text-white">ElevenLabs</b> ใน Pipeline panel</p>
+          </ErrBox>
+          <ErrBox title="B-roll หาคลิปไม่เจอ / ขึ้น error ที่ขั้น B-roll">
+            <p>เช็คว่าใส่ <b className="text-white">Pexels</b> หรือ <b className="text-white">Pixabay</b> key อย่างน้อย 1 ตัว และกด Test ผ่าน</p>
+            <p>→ แนะนำใส่ทั้งคู่ แล้วเลือก Stock Source = <b className="text-white">Both</b> เพื่อให้มีคลิปให้เลือกมากขึ้น</p>
+          </ErrBox>
+          <ErrBox title="โหมด Avatar (Generate) สร้าง avatar ไม่ได้">
+            <p>ต้องใส่ <b className="text-white">HeyGen API Key</b> และ Test ผ่านก่อน (เฉพาะโหมด Generate)</p>
+            <p>→ ถ้าไม่อยากใช้ HeyGen โควต้า ใช้โหมด <b className="text-white">Direct URL</b> แทน ไม่ต้องใส่ HeyGen key</p>
+          </ErrBox>
+          <ErrBox title="ใส่ key แล้วแต่ระบบยังบอกว่าไม่มี key">
+            <p>ลืมกด <b className="text-white">Save Settings</b> — เช็คว่า key มี badge <b className="text-green-400">Active</b> แล้ว</p>
+            <p>→ ถ้ายังไม่มี ให้กด Save อีกครั้ง แล้ว refresh หน้า</p>
+          </ErrBox>
+        </div>
+        <InfoBox>Gemini TTS เป็น preview model — ถ้า Test ข้อความผ่านแต่เสียง fail ทุก model ให้ใช้ ElevenLabs สำหรับ voice ไปก่อน</InfoBox>
       </Section>
     </>
   );

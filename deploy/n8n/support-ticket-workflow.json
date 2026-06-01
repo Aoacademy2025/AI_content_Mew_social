@@ -1,0 +1,151 @@
+{
+  "name": "Hero AI — Support Ticket",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "Contactus",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-220, 0],
+      "id": "82c7d7c3-eaf1-4670-8aa5-bbc05ce78a23",
+      "name": "Webhook",
+      "webhookId": "c2cb7976-a9b0-4a61-a98e-6f745b3099ff"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [40, 0],
+      "id": "respond-ok",
+      "name": "Respond 200"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.user.isPaid }}",
+                    "rightValue": true,
+                    "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+                  }
+                ]
+              },
+              "renderingMode": "rule",
+              "outputKey": "Priority"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra", "renderFallbackOutput": "Normal" }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [40, 220],
+      "id": "route-priority",
+      "name": "Priority?"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ ($json.body.supportEmails || []).join(',') }}",
+        "subject": "=[{{$json.body.user.plan}}] 🎫 #{{$json.body.ticketShort}} · {{$json.body.user.name}}",
+        "emailType": "html",
+        "message": "=<div style=\"font-family:Segoe UI,Arial,sans-serif;color:#111\">\n  <h2 style=\"margin:0 0 4px\">🎫 Support Ticket #{{$json.body.ticketShort}}</h2>\n  <p style=\"margin:0 0 12px;color:#666\">{{$json.body.createdAt}}</p>\n  <table style=\"border-collapse:collapse;margin-bottom:12px\">\n    <tr><td style=\"padding:2px 8px;color:#888\">User</td><td style=\"padding:2px 8px\"><b>{{$json.body.user.name}}</b> &lt;{{$json.body.user.email}}&gt;</td></tr>\n    <tr><td style=\"padding:2px 8px;color:#888\">Plan</td><td style=\"padding:2px 8px\">{{$json.body.user.plan}}</td></tr>\n    <tr><td style=\"padding:2px 8px;color:#888\">User ID</td><td style=\"padding:2px 8px\">{{$json.body.user.id}}</td></tr>\n  </table>\n  <div style=\"padding:14px;background:#f4f4f7;border-left:3px solid #7c3aed;white-space:pre-wrap\">{{$json.body.message}}</div>\n  <p style=\"margin-top:14px;color:#888;font-size:12px\">↩ Reply ตรงนี้เพื่อตอบ user ได้เลย (Reply-To = user email)</p>\n</div>",
+        "options": {
+          "replyTo": "={{ $json.body.user.email }}",
+          "attachmentsUi": {
+            "attachmentsBinary": [ { "property": "attachment" } ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [320, 120],
+      "id": "mail-team-priority",
+      "name": "Email Team (Priority)",
+      "webhookId": "",
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ ($json.body.supportEmails || []).join(',') }}",
+        "subject": "=🎫 #{{$json.body.ticketShort}} · {{$json.body.user.name}}",
+        "emailType": "html",
+        "message": "=<div style=\"font-family:Segoe UI,Arial,sans-serif;color:#111\">\n  <h2 style=\"margin:0 0 4px\">🎫 Support Ticket #{{$json.body.ticketShort}}</h2>\n  <p style=\"margin:0 0 12px;color:#666\">{{$json.body.createdAt}}</p>\n  <table style=\"border-collapse:collapse;margin-bottom:12px\">\n    <tr><td style=\"padding:2px 8px;color:#888\">User</td><td style=\"padding:2px 8px\"><b>{{$json.body.user.name}}</b> &lt;{{$json.body.user.email}}&gt;</td></tr>\n    <tr><td style=\"padding:2px 8px;color:#888\">Plan</td><td style=\"padding:2px 8px\">{{$json.body.user.plan}}</td></tr>\n    <tr><td style=\"padding:2px 8px;color:#888\">User ID</td><td style=\"padding:2px 8px\">{{$json.body.user.id}}</td></tr>\n  </table>\n  <div style=\"padding:14px;background:#f4f4f7;border-left:3px solid #22d3ee;white-space:pre-wrap\">{{$json.body.message}}</div>\n  <p style=\"margin-top:14px;color:#888;font-size:12px\">↩ Reply ตรงนี้เพื่อตอบ user ได้เลย (Reply-To = user email)</p>\n</div>",
+        "options": {
+          "replyTo": "={{ $json.body.user.email }}",
+          "attachmentsUi": {
+            "attachmentsBinary": [ { "property": "attachment" } ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [320, 320],
+      "id": "mail-team-normal",
+      "name": "Email Team (Normal)",
+      "webhookId": "",
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.body.user.email }}",
+        "subject": "=✅ เราได้รับคำร้องของคุณแล้ว — Ticket #{{$json.body.ticketShort}}",
+        "emailType": "html",
+        "message": "=<div style=\"font-family:Segoe UI,Arial,sans-serif;color:#111\">\n  <h2>สวัสดีคุณ {{$json.body.user.name}} 👋</h2>\n  <p>เราได้รับคำร้อง <b>#{{$json.body.ticketShort}}</b> ของคุณแล้ว ทีมงานจะติดต่อกลับภายใน <b>24 ชั่วโมง</b></p>\n  <div style=\"padding:14px;background:#f4f4f7;border-left:3px solid #7c3aed;white-space:pre-wrap;margin:12px 0\">{{$json.body.message}}</div>\n  <p style=\"color:#888;font-size:12px\">ขอบคุณที่ใช้บริการ — Hero AI Creator Studio</p>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [600, 220],
+      "id": "mail-user-ack",
+      "name": "Email User (Acknowledge)",
+      "webhookId": "",
+      "credentials": {
+        "gmailOAuth2": { "id": "REPLACE_WITH_GMAIL_CRED_ID", "name": "Gmail account" }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Respond 200", "type": "main", "index": 0 },
+          { "node": "Priority?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Priority?": {
+      "main": [
+        [ { "node": "Email Team (Priority)", "type": "main", "index": 0 } ],
+        [ { "node": "Email Team (Normal)", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Email Team (Priority)": {
+      "main": [ [ { "node": "Email User (Acknowledge)", "type": "main", "index": 0 } ] ]
+    },
+    "Email Team (Normal)": {
+      "main": [ [ { "node": "Email User (Acknowledge)", "type": "main", "index": 0 } ] ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "meta": {
+    "instanceId": "239648ef1d5249c393e5f5b4f053e6417d4301b6211bf13b0821870ea7961422"
+  }
+}

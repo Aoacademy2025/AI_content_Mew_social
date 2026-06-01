@@ -79,6 +79,39 @@ export async function POST(req: Request) {
       });
     }
 
+    // Forward to n8n webhook (fire-and-forget — never block the user response)
+    const n8nUrl = process.env.N8N_SUPPORT_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
+    if (n8nUrl) {
+      void fetch(n8nUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: "support_ticket_created",
+          ticketId: ticket.id,
+          ticketShort: ticket.id.slice(-6),
+          createdAt: ticket.createdAt.toISOString(),
+          user: {
+            id: authUser.id,
+            name: user?.name ?? "User",
+            email: user?.email ?? "",
+            plan: user?.plan ?? "FREE",
+            isPaid: user?.plan === "PRO" || user?.plan === "BUSINESS",
+          },
+          message: message.trim(),
+          // Support inboxes the platform notifies — n8n can CC/route to these
+          supportEmails: adminEmails,
+          attachment: imageName
+            ? {
+                name: imageName,
+                contentType: imageContentType,
+                // data URL so n8n can decode/attach without another request
+                dataUrl: imageBase64 ? `data:${imageContentType};base64,${imageBase64}` : null,
+              }
+            : null,
+        }),
+      }).catch((e) => console.error("[support] n8n webhook failed:", e));
+    }
+
     // Confirm to user
     await createNotification({
       userId: authUser.id,
