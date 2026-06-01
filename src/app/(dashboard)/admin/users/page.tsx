@@ -204,13 +204,7 @@ export default function AdminUsersPage() {
         </div>
 
         {/* User Cards */}
-        {loading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="dash-skeleton h-16 rounded-xl" />
-            ))}
-          </div>
-        ) : filtered.length === 0 ? (
+        {loading ? null : filtered.length === 0 ? (
           <Card className="border-white/10 bg-white/5">
             <CardContent className="flex items-center justify-center py-12 text-zinc-500">
               ไม่พบผู้ใช้

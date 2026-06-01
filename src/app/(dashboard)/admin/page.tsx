@@ -488,7 +488,7 @@ export default function AdminDashboardPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {loading ? <div className="dash-skeleton h-9 w-24 rounded-lg" /> : (
+                  {loading ? null : (
                     <div className="text-3xl font-bold text-white">{card.value}</div>
                   )}
                   <p className="mt-1 text-xs text-zinc-500">{card.sub}</p>
@@ -519,13 +519,7 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
-          {ticketsLoading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="dash-skeleton h-16 rounded-xl" />
-              ))}
-            </div>
-          ) : tickets.length === 0 ? (
+          {ticketsLoading ? null : tickets.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-white/5 flex flex-col items-center justify-center py-12 gap-2">
               <CheckCircle2 className="h-8 w-8 text-green-400/40" />
               <p className="text-sm text-zinc-500">ไม่มี ticket ที่{ticketFilter === "OPEN" ? "รอดำเนินการ" : "ปิดแล้ว"}</p>
@@ -657,9 +651,7 @@ export default function AdminDashboardPage() {
                 ].map(({ label, val, color }) => (
                   <div key={label} className="rounded-xl bg-white/5 border border-white/10 p-3 text-center">
                     <p className="text-xs text-zinc-500 mb-1">{label}</p>
-                    {cleanupLoading ? (
-                      <div className="dash-skeleton h-5 w-12 rounded mx-auto" />
-                    ) : (
+                    {cleanupLoading ? null : (
                       <>
                         <p className={`text-xl font-bold ${color === "red" ? "text-red-400" : color === "orange" ? "text-orange-400" : color === "yellow" ? "text-yellow-400" : "text-zinc-300"}`}>
                           {val?.sizeMb ?? 0} MB
@@ -676,9 +668,7 @@ export default function AdminDashboardPage() {
             <div>
               <p className="text-xs text-zinc-500 mb-2 font-semibold uppercase tracking-wider">/tmp (Remotion temp files)</p>
               <div className="rounded-xl bg-white/5 border border-white/10 p-3 flex items-center gap-4">
-                {cleanupLoading ? (
-                  <div className="dash-skeleton h-6 w-full rounded" />
-                ) : (
+                {cleanupLoading ? null : (
                   <>
                     <div>
                       <p className={`text-2xl font-bold ${(cleanupInfo?.tmp.sizeMb ?? 0) > 1000 ? "text-red-400" : (cleanupInfo?.tmp.sizeMb ?? 0) > 500 ? "text-orange-400" : "text-zinc-300"}`}>
@@ -824,13 +814,7 @@ export default function AdminDashboardPage() {
           </div>
 
           {/* Track list */}
-          {musicLoading ? (
-            <div className="space-y-2">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="dash-skeleton h-12 rounded-lg" />
-              ))}
-            </div>
-          ) : tracks.length === 0 ? (
+          {musicLoading ? null : tracks.length === 0 ? (
             <p className="text-sm text-zinc-500">ยังไม่มีเพลง — อัปโหลดเพลงแรก</p>
           ) : (
             <div className="space-y-2">

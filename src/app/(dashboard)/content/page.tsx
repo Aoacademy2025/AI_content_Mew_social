@@ -494,14 +494,7 @@ export default function ContentPage() {
               </button>
             </div>
 
-            {loading ? (
-              // Shimmer skeleton rows that mimic content list
-              <div className="space-y-2">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="dash-skeleton h-14 rounded-xl" />
-                ))}
-              </div>
-            ) : contents.length === 0 ? (
+            {loading ? null : contents.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
                   <FileText className="h-6 w-6" style={{ color: "var(--ui-text-muted)" }} />

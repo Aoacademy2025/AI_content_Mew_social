@@ -199,13 +199,7 @@ function BillingTab() {
       <div className="space-y-3">
         <p className="eyebrow">ประวัติการชำระเงิน</p>
 
-        {loading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="dash-skeleton h-14 rounded-xl" />
-            ))}
-          </div>
-        ) : payments.length === 0 ? (
+        {loading ? null : payments.length === 0 ? (
           <div className="premium-card p-12 text-center">
             <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl mb-3"
               style={{ background: "hsl(0 0% 100% / 0.04)", border: "1px solid hsl(0 0% 100% / 0.06)" }}>

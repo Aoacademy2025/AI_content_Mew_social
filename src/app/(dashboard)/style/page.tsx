@@ -262,13 +262,7 @@ export default function StylePage() {
               </div>
             </div>
 
-            {loading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <div key={i} className="dash-skeleton h-14 rounded-xl" />
-                ))}
-              </div>
-            ) : filtered.length === 0 ? (
+            {loading ? null : filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
                 <LayoutGrid className="h-8 w-8" style={{ color: "var(--ui-text-muted)" }} />
                 <p className="text-sm" style={{ color: "var(--ui-text-muted)" }}>No styles yet</p>

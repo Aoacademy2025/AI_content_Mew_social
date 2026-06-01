@@ -163,13 +163,7 @@ export default function AdminCouponsPage() {
         </div>
 
         {/* List */}
-        {loading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="dash-skeleton h-14 rounded-xl" />
-            ))}
-          </div>
-        ) : coupons.length === 0 ? (
+        {loading ? null : coupons.length === 0 ? (
           <div className="rounded-xl border border-white/10 bg-white/5 py-12 text-center text-sm text-zinc-500">ยังไม่มีคูปอง</div>
         ) : (
           <div className="space-y-2">

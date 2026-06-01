@@ -240,13 +240,7 @@ function PricingContent() {
 
                 {/* Features */}
                 <ul className="space-y-3 flex-1 mb-7 min-h-50">
-                  {features.length === 0 ? (
-                    <>
-                      {Array.from({ length: 5 }).map((_, i) => (
-                        <li key={i} className="dash-skeleton h-5 rounded" />
-                      ))}
-                    </>
-                  ) : (
+                  {features.length === 0 ? null : (
                     features.map((feat) => {
                       const text = typeof feat === "object" ? (feat as any).text : feat;
                       return (

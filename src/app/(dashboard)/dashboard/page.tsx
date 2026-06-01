@@ -366,10 +366,7 @@ export default function DashboardPage() {
                     <Icon className="h-4.5 w-4.5" style={{ color: `hsl(${color})` }} strokeWidth={2.25} />
                   </div>
                 </div>
-                {loading ? (
-                  // Skeleton — same height as the count line so layout doesn't shift on data arrival
-                  <div className="dash-skeleton h-12 w-20 rounded-lg" />
-                ) : (
+                {loading ? null : (
                   <div className="flex items-baseline gap-2">
                     <p className="text-5xl font-black tracking-tight text-white tabular-nums">{count}</p>
                     <TrendingUp className="h-4 w-4 text-cyan-400/40 mb-1" />
