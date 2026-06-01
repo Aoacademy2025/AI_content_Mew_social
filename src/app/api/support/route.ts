@@ -3,7 +3,6 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
-import { sendSupportTicketEmail } from "@/lib/send-email";
 
 export const maxDuration = 30;
 
@@ -62,24 +61,16 @@ export async function POST(req: Request) {
       ].filter(Boolean).join("\n"),
     });
 
-    // Send email to all support inboxes (comma-separated in env/DB)
-    const supportEmail = process.env.SUPPORT_EMAIL;
+    // Resolve support inboxes (comma-separated). Prefer the value set in
+    // Admin → Settings (DB), fall back to env. n8n owns all ticket emails
+    // (team notification + user acknowledgement) — see deploy/n8n/README.md.
+    const supportConfig = await prisma.siteConfig.findUnique({ where: { key: "support_email" } });
+    const supportEmail = supportConfig?.value || process.env.SUPPORT_EMAIL;
     const adminEmails = supportEmail ? supportEmail.split(",").map(e => e.trim()).filter(Boolean) : [];
-    if (adminEmails.length > 0) {
-      await sendSupportTicketEmail({
-        adminEmail: adminEmails,
-        ticketId: ticket.id,
-        userName: user?.name ?? "User",
-        userEmail: user?.email ?? "",
-        userPlan: user?.plan ?? "FREE",
-        message: message.trim(),
-        imageName,
-        imageBuffer,
-        imageContentType,
-      });
-    }
 
-    // Forward to n8n webhook (fire-and-forget — never block the user response)
+    // Forward to n8n webhook (fire-and-forget — never block the user response).
+    // If n8n is unreachable, the ticket is still saved (DB) and admins are
+    // notified in-app; only the emails are skipped.
     const n8nUrl = process.env.N8N_SUPPORT_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
     if (n8nUrl) {
       void fetch(n8nUrl, {

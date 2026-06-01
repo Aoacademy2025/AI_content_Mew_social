@@ -296,7 +296,7 @@ export default function DashboardPage() {
         </p>
 
         {/* Quick actions — premium CTA row */}
-        <div className="dash-fade-up grid grid-cols-2 md:grid-cols-4 gap-3 mb-8" style={{ animationDelay: "220ms" }}>
+        <div className="dash-fade-up grid grid-cols-2 md:grid-cols-4 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
           {[
             { label: "Video Editor", desc: "Timeline editor", href: "/video-editor", Icon: Clapperboard, color: "190 100% 50%" },
             { label: "Content",      desc: "Generate script",  href: "/content",      Icon: FileText,     color: "252 80% 60%" },
@@ -346,7 +346,7 @@ export default function DashboardPage() {
         )}
 
         {/* Stats grid — 3 numbered cards */}
-        <div className="dash-fade-up grid gap-4 grid-cols-1 sm:grid-cols-3 mb-8" style={{ animationDelay: "300ms" }}>
+        <div className="dash-fade-up grid gap-4 grid-cols-1 sm:grid-cols-3 mb-8" style={{ animationDelay: "180ms" }}>
           {[
             { label: "Styles",  count: stats?.styleCount ?? 0,   limit: stats?.limits?.styles ?? null,   icon: Palette,  href: "/style",   color: "220 90% 65%" },
             { label: "Content", count: stats?.contentCount ?? 0, limit: stats?.limits?.contents ?? null, icon: FileText, href: "/content", color: "252 70% 65%" },
@@ -387,9 +387,9 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Recent activity */}
-        {!loading && ((stats?.recentContents?.length ?? 0) > 0 || (stats?.recentVideos?.length ?? 0) > 0) && (
-          <div className="dash-fade-up grid gap-5 md:grid-cols-2 mb-8" style={{ animationDelay: "400ms" }}>
+        {/* Recent activity — render whenever there's data; skipped silently when none exists */}
+        {((stats?.recentContents?.length ?? 0) > 0 || (stats?.recentVideos?.length ?? 0) > 0) && (
+          <div className="dash-fade-up grid gap-5 md:grid-cols-2 mb-8" style={{ animationDelay: "240ms" }}>
             {(stats?.recentContents?.length ?? 0) > 0 && (
               <div className="dash-card overflow-hidden relative">
                 <span aria-hidden className="dash-card-border" />

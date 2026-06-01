@@ -9,11 +9,15 @@
 N8N_SUPPORT_WEBHOOK_URL="https://<your-n8n-host>/webhook/Contactus"
 ```
 
-ยิงแบบ **fire-and-forget** — ไม่บล็อก user. ถ้า n8n ล่ม user ยังส่ง ticket ได้ปกติ (DB + email ผ่าน Gmail/Resend ยังทำงาน) แค่ไม่เข้า n8n.
+ยิงแบบ **fire-and-forget** — ไม่บล็อก user.
 
-> หมายเหตุ: เว็บ**ส่ง email อยู่แล้ว** (Gmail API → Resend fallback) ไปยัง `SUPPORT_EMAIL`.
-> n8n เป็น**ช่องทางเสริม** — ถ้าจะให้ n8n เป็นตัวส่ง email หลัก ให้เคลียร์ `SUPPORT_EMAIL`
-> ในเว็บเพื่อกัน email ซ้ำ (เว็บจะข้ามการส่ง email เองเมื่อไม่มี `SUPPORT_EMAIL`).
+> **n8n เป็นเจ้าของอีเมลทั้งหมด** (เมลแจ้งทีมงาน + เมล ack user). เว็บ**ไม่ส่งอีเมลเอง**แล้ว
+> เพื่อกันอีเมลซ้ำ — เว็บแค่บันทึก ticket ลง DB, แจ้ง admin ใน app (กระดิ่ง), แล้วยิง payload ไป n8n.
+> ถ้า n8n ล่ม: ticket ยังเข้า DB + admin เห็นในกระดิ่ง แต่**อีเมลจะไม่ออก** — ต้องดู ticket
+> ผ่าน Admin Panel แทน.
+>
+> ปลายทางอีเมลทีมงาน (`supportEmails` ใน payload) มาจาก **Admin → Settings → Support Email**
+> (เก็บใน DB) ถ้าไม่ได้ตั้งจะ fallback ไป env `SUPPORT_EMAIL`.
 
 ## 2. Payload ที่เว็บส่งไป n8n
 
@@ -44,30 +48,31 @@ N8N_SUPPORT_WEBHOOK_URL="https://<your-n8n-host>/webhook/Contactus"
 
 ## 3. Workflow (`support-ticket-workflow.json`)
 
-Import ไฟล์นี้เข้า n8n แล้วผูก Gmail credential (แทนที่ `REPLACE_WITH_GMAIL_CRED_ID` ทั้ง 3 node หรือเลือก credential จาก UI).
+Import ไฟล์นี้เข้า n8n แล้วผูก Gmail credential (ทุก Gmail node ตั้ง id `OVuTDXJsRYkGhSCM` ไว้ — ถ้า credential คนละตัว ให้เลือกใหม่จาก dropdown ใน UI ของแต่ละ node).
 
 ```
 Webhook (POST /Contactus)
    ├─→ Respond 200            (ตอบกลับเว็บทันที — ไม่ให้รอ email)
-   └─→ Priority?  (user.isPaid)
-          ├─ true  → Email Team (Priority)  ─┐
-          └─ false → Email Team (Normal)    ─┴─→ Email User (Acknowledge)
+   └─→ มีรูปแนบ?  (body.attachment exists)
+          ├─ true  → base64 → File → Email Team (มีรูป)   ─┐
+          └─ false → Email Team (ไม่มีรูป)                  ─┴─→ Email User (Acknowledge)
 ```
+
+**จุดสำคัญ:** node `base64 → File` (Convert to File) แปลง `body.attachment.dataUrl` เป็น binary
+ชื่อ `attachment` ก่อนเข้า Gmail — แก้ error *"expects binary file 'attachment', but none was found"*.
+ส่วนเคสไม่มีรูป จะไปที่ Gmail node ที่**ไม่ตั้ง attachment** จึงไม่ error.
+Priority (Pro/Business) จัดการในตัว Gmail node เลย — เติม `[PLAN]` + `⚡ PRIORITY` ในหัวข้อ/เนื้อหา
+อัตโนมัติด้วยเงื่อนไข `user.isPaid` (ไม่ต้องแยก node).
 
 ## 4. อีเมลที่ส่ง — ส่งอะไร / ส่งเมื่อไหร่ / ส่งหาใคร
 
 | # | อีเมล | ส่งเมื่อไหร่ | ส่งหาใคร | เนื้อหา |
 |---|-------|-------------|----------|---------|
-| 1 | **Email Team (Priority)** | ทันทีที่ ticket เข้า **และ** user เป็น Pro/Business (`isPaid = true`) | `supportEmails` (ทีมงาน) | หัวข้อมี `[PLAN]` นำหน้า, ข้อมูล user + ข้อความ + รูปแนบ, `Reply-To = user email` |
-| 2 | **Email Team (Normal)** | ทันทีที่ ticket เข้า **และ** user เป็น Free | `supportEmails` (ทีมงาน) | เหมือนข้อ 1 แต่ไม่มี tag priority |
+| 1 | **Email Team (มีรูป)** | ทันทีที่ ticket เข้า **และมี**รูปแนบ | `supportEmails` (ทีมงาน) | ข้อมูล user + ข้อความ + **ไฟล์แนบ**, `Reply-To = user email`, เติม `[PLAN] ⚡ PRIORITY` ถ้า user จ่ายเงิน |
+| 2 | **Email Team (ไม่มีรูป)** | ทันทีที่ ticket เข้า **และไม่มี**รูปแนบ | `supportEmails` (ทีมงาน) | เหมือนข้อ 1 แต่ไม่มีไฟล์แนบ |
 | 3 | **Email User (Acknowledge)** | ทันทีหลังส่งเมลแจ้งทีมงานเสร็จ | **user** (`user.email`) | "เราได้รับคำร้องแล้ว จะติดต่อกลับใน 24 ชม." + สำเนาข้อความที่เขาส่ง |
 
 ทั้งหมดเกิดขึ้น **เรียลไทม์** ตอน user กดส่ง (ไม่มี delay/schedule). Email ทีมงานตั้ง **Reply-To = user email** ดังนั้นทีมงานกด Reply ในกล่องเมลได้เลย ข้อความจะวิ่งไปหา user ตรงๆ.
-
-> **เรื่องรูปแนบ:** node Gmail ใช้ field `attachment` แบบ binary. n8n เวอร์ชันใหม่อ่าน base64 `dataUrl`
-> ใน JSON body ตรงๆ เป็น binary ไม่ได้ ต้องมี **Convert to File / Extract from File** node คั่นก่อน
-> (อ่าน `body.attachment.dataUrl` → แปลงเป็น binary ชื่อ `attachment`). ถ้ายังไม่ทำขั้นนี้
-> เมลทีมงานจะส่งได้ปกติแต่**ไม่มีไฟล์แนบ** — รูปยังดูได้เสมอผ่าน Admin Panel (เก็บใน DB).
 
 ## 5. การตอบกลับ user
 
