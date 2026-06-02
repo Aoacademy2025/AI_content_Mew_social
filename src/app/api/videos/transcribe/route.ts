@@ -1563,15 +1563,155 @@ Total audio: ${audioDur.toFixed(2)}s`;
             .filter(c => c.text.length > 0);
         }
 
+        // ── Word-snap: replace LLM-reported timestamps with real STT word timestamps.
+        //
+        // Why: Gemini sometimes copies/rounds the start/end times wrong even when we
+        // hand it word-level timestamps in the prompt (it does math instead of copying).
+        // Result: captions appear before the speaker starts and disappear after they
+        // stop → user reported "เริ่ม/จบไม่พร้อมเสียง".
+        //
+        // Fix: for each LLM caption, walk the words array left-to-right and find the
+        // contiguous span whose concatenated text matches the caption text (whitespace
+        // & punctuation ignored). Use the FIRST matched word's start and the LAST
+        // matched word's end. This guarantees subtitle on/off transitions land
+        // exactly on the audio waveform of the spoken phrase.
+        //
+        // Only runs when we have word-level timestamps from STT.
+        if (words.length > 0 && llmCaptions.length > 0) {
+          const stripForMatch = (s: string) =>
+            s.replace(/\s+/g, "").replace(/[.,!?…฿"'`()\[\]{}—–\-]/g, "").toLowerCase();
+          const wordChars = words.map(w => stripForMatch(w.word));
+          const wordText = wordChars.join("");
+          const cumWordChars: number[] = [];
+          for (let i = 0, sum = 0; i < wordChars.length; i++) {
+            sum += wordChars[i].length;
+            cumWordChars.push(sum);
+          }
+          const charIndexToWordIndex = (charIndex: number): number => {
+            for (let wi = 0; wi < cumWordChars.length; wi++) {
+              if (charIndex < cumWordChars[wi]) return wi;
+            }
+            return wordChars.length - 1;
+          };
+
+          // snapped[idx] = true if caption idx got real word timestamps.
+          // For unmatched ones we interpolate later from neighbours.
+          const snapped: boolean[] = llmCaptions.map(() => false);
+          let cursor = 0;
+          let snappedCount = 0;
+
+          for (let idx = 0; idx < llmCaptions.length; idx++) {
+            const cap = llmCaptions[idx];
+            const target = stripForMatch(cap.text);
+            if (!target) continue;
+
+            const cursorChar = cursor > 0 ? cumWordChars[cursor - 1] : 0;
+
+            let foundStart = -1;
+            let foundEnd = -1;
+            let bestScore = -Infinity;
+            let bestRange: { start: number; end: number } | null = null;
+
+            // 1) Try exact substring match starting at/after the cursor.
+            //    indexOf returns char index in the concatenated wordText, so we map
+            //    that char range back to word indices.
+            const exactIndex = wordText.indexOf(target, cursorChar);
+            if (exactIndex >= 0) {
+              const startWi = charIndexToWordIndex(exactIndex);
+              const endWi = charIndexToWordIndex(exactIndex + target.length - 1);
+              if (startWi >= cursor) {
+                foundStart = startWi;
+                foundEnd = endWi;
+              }
+            }
+
+            // 2) Fuzzy fallback: scan word boundaries; keep best partial match.
+            //    Only runs if exact match didn't land at/after cursor.
+            if (foundStart < 0) {
+              for (let i = cursor; i < wordChars.length; i++) {
+                let acc = "";
+                for (let j = i; j < wordChars.length; j++) {
+                  acc += wordChars[j];
+                  if (acc.length > target.length + 4) break;
+
+                  if (acc === target) {
+                    foundStart = i;
+                    foundEnd = j;
+                    break;
+                  }
+
+                  const commonPrefix = (() => {
+                    const minLen = Math.min(acc.length, target.length);
+                    let len = 0;
+                    while (len < minLen && acc[len] === target[len]) len++;
+                    return len;
+                  })();
+                  const score = commonPrefix - Math.abs(acc.length - target.length) * 0.3;
+                  if (score > bestScore) {
+                    bestScore = score;
+                    bestRange = { start: i, end: j };
+                  }
+                }
+                if (foundStart >= 0) break;
+              }
+              if (foundStart < 0 && bestRange && bestScore >= Math.max(3, target.length * 0.5)) {
+                foundStart = bestRange.start;
+                foundEnd = bestRange.end;
+              }
+            }
+
+            if (foundStart >= cursor && foundEnd >= foundStart) {
+              cap.startMs = Math.round(words[foundStart].start * 1000);
+              cap.endMs = Math.round(words[foundEnd].end * 1000);
+              cursor = foundEnd + 1;
+              snapped[idx] = true;
+              snappedCount++;
+            }
+          }
+
+          // ── Fill unmatched captions by interpolating between snapped neighbours.
+          //    Position matters: caption k must sit between caption k-1's end and
+          //    caption k+1's start. Earlier impl shoved all unmatched through
+          //    alignPhrasesToSegmentTimestamps but lost index info, so timings
+          //    drifted to whichever segment matched first.
+          if (snappedCount < llmCaptions.length) {
+            for (let idx = 0; idx < llmCaptions.length; idx++) {
+              if (snapped[idx]) continue;
+              // Nearest snapped predecessor / successor
+              let prevSnap = -1;
+              for (let p = idx - 1; p >= 0; p--) if (snapped[p]) { prevSnap = p; break; }
+              let nextSnap = -1;
+              for (let n = idx + 1; n < llmCaptions.length; n++) if (snapped[n]) { nextSnap = n; break; }
+
+              const prevEnd = prevSnap >= 0 ? llmCaptions[prevSnap].endMs : 0;
+              const nextStart = nextSnap >= 0 ? llmCaptions[nextSnap].startMs : totalAudioMs;
+
+              const gap = Math.max(0, nextStart - prevEnd);
+              // Count unmatched run inside [prevSnap+1 .. nextSnap-1] so we can divide
+              // the gap proportionally between them.
+              const runStart = prevSnap + 1;
+              const runEnd = nextSnap >= 0 ? nextSnap - 1 : llmCaptions.length - 1;
+              const runLen = runEnd - runStart + 1;
+              const slot = idx - runStart;
+              const slice = runLen > 0 ? gap / runLen : 0;
+              const s = Math.round(prevEnd + slot * slice);
+              const e = Math.round(prevEnd + (slot + 1) * slice);
+              llmCaptions[idx].startMs = s;
+              llmCaptions[idx].endMs   = Math.max(e, s + 1);
+            }
+            console.warn(`[transcribe] word-snap: interpolated ${llmCaptions.length - snappedCount}/${llmCaptions.length} unmatched captions between snapped neighbours`);
+          }
+          console.log(`[transcribe] word-snap: ${snappedCount}/${llmCaptions.length} captions snapped to real word timestamps`);
+        }
+
         // Preserve real spoken timing — do NOT stretch captions across silent gaps.
         //
         // Previously we did: if (next.start > prev.end) prev.end = next.start
         // That bridged silence onto the previous caption, which made subtitles linger
         // on screen while the speaker had paused → user reported "ซับยังโผล่ตอนเงียบ".
         //
-        // Instead: trust Gemini's per-caption start/end (they came from real word
-        // timestamps), only clamp to avoid overlap and ensure last caption doesn't
-        // extend past audio.
+        // Instead: trust the (now word-snapped) per-caption start/end and only clamp
+        // overlap, and ensure last caption doesn't extend past audio.
         for (let i = 0; i < llmCaptions.length - 1; i++) {
           const a = llmCaptions[i] as { endMs: number };
           const b = llmCaptions[i + 1] as { startMs: number };
