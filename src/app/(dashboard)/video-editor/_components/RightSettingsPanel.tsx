@@ -174,18 +174,38 @@ export function RightSettingsPanel(p: RightPanelProps) {
         {p.activeTab === "font" && (
           <>
             <div>
+              <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Font</div>
-              <div className="relative">
-                <select value={p.subFontFamily} onChange={e => p.setSubFontFamily(e.target.value)}
-                  className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2.5 text-[12px] font-semibold text-slate-200 appearance-none cursor-pointer hover:border-[#3a3a4a] transition-colors outline-none">
-                  {FONTS_LIST.map(f => <option key={f.value} value={f.value} style={{ background: "#1a1a2e" }}>{f.label}</option>)}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500 pointer-events-none" />
-              </div>
-              {/* Font preview */}
-              <div className="mt-2 rounded-lg px-3 py-2.5 bg-black/40 border border-[#2a2a36] text-center"
-                style={{ fontFamily: p.subFontFamily, fontSize: 20, fontWeight: p.subFontWeight, color: p.subColor }}>
-                สวัสดี Hello 123
+              {/* Font grid — each card renders its own typeface and animates with the
+                  currently-selected text effect, so the user sees font + animation
+                  together exactly as it will render, before downloading. */}
+              <div className={cn("grid gap-1.5", cols4 ? "grid-cols-3" : "grid-cols-2")}>
+                {FONTS_LIST.map(f => {
+                  const isSelected = p.subFontFamily === f.value;
+                  return (
+                    <button key={f.value} onClick={() => p.setSubFontFamily(f.value)}
+                      className="flex flex-col items-center gap-1 rounded-xl py-2 px-1.5 transition-all"
+                      style={isSelected
+                        ? { background: "hsl(262 83% 45% / 0.12)", border: "1px solid hsl(262 83% 58% / 0.5)" }
+                        : { background: "#1a1a22", border: "1px solid #2a2a36" }}>
+                      <div className="w-full h-9 flex items-center justify-center rounded-lg overflow-hidden"
+                        style={{ background: "rgba(0,0,0,0.45)" }}>
+                        <span style={{
+                          fontFamily: f.value, fontSize: 15, fontWeight: 700, color: p.subColor,
+                          textShadow: "-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000",
+                          whiteSpace: "nowrap", display: "inline-block",
+                          animation: effectAnim(p.subEffect),
+                        }}>
+                          {f.preview}
+                        </span>
+                      </div>
+                      <span className="text-[9px] font-medium leading-tight text-center"
+                        style={{ color: isSelected ? "hsl(262 83% 78%)" : "rgba(148,163,184,0.6)" }}>
+                        {f.label.split("—")[0].trim()}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <div>
