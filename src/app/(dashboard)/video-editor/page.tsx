@@ -1009,13 +1009,20 @@ export default function VideoEditorPage() {
       }));
     };
 
+    // Trust Gemini's caption boundaries — they came from real word timestamps and
+    // breath-aware breaks. Splitting again on the client (forceSplitByLength) created
+    // captions with char-proportion timing that drifted from the actual audio words
+    // → "ซับไม่ตรงเสียง". Long captions that overflow the line are wrapped by CSS
+    // (word-wrap), not split into separate cues.
     let sceneCaptions: Caption[] = [];
     if (rawCaptions.length > 0) {
-      sceneCaptions = rawCaptions.flatMap((cap, i) => {
-        const tag = (cap.tag as "hook" | "body" | "cta" | undefined) ?? (i === 0 ? "hook" : "body");
-        return forceSplitByLength(cap, tag);
-      });
+      sceneCaptions = rawCaptions.map((cap, i) => ({
+        ...cap,
+        text: (cap.text ?? "").trim(),
+        tag: (cap.tag as "hook" | "body" | "cta" | undefined) ?? (i === 0 ? "hook" : "body"),
+      }));
     }
+    void forceSplitByLength;  // keep available for future opt-in modes
 
     sceneCaptions = sceneCaptions
       .map((c, idx) => ({
