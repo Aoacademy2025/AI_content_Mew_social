@@ -3,8 +3,10 @@ import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 
+// Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — burn output must use
+// the same font files (and weights) as the editor preview.
 const FONTS_CSS =
-  "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
+  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;500;600;700&family=Kanit:wght@400;500;600;700;800;900&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700;800;900&family=Noto+Sans+Thai:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=Chonburi&family=Fahkwang:wght@400;500;600;700&family=K2D:wght@400;500;600;700;800&family=Charm:wght@400;700&family=Bai+Jamjuree:wght@400;600;700&family=Krub:wght@400;600;700&family=Pridi:wght@400;600;700&family=Itim&family=Sriracha&family=Oswald:wght@400;500;600;700&family=Anton&family=Bebas+Neue&display=swap";
 
 /**
  * Burns subtitles onto a pre-rendered video using the EXACT same subtitle

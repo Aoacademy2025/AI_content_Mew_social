@@ -105,7 +105,10 @@ export default function VideoEditorPage() {
   const preferredLLMRef = useRef<"gemini" | null>(null);
 
   // ── Subtitle style ────────────────────────────────────────────────────
-  const [subFontFamily, setSubFontFamily] = useState("'Mitr', sans-serif");
+  // Default to Kanit because it ships with weights up to 900 — Mitr only goes to
+  // 700, so the default fontWeight=900 was forcing the browser to synthesize bold,
+  // which looked different in preview vs the burned MP4 (Remotion uses real 900).
+  const [subFontFamily, setSubFontFamily] = useState("'Kanit', sans-serif");
   const [subFontSize, setSubFontSize] = useState(80);
   const [subFontWeight, setSubFontWeight] = useState(900);
   const [subColor, setSubColor] = useState("#ffffff");
@@ -442,7 +445,7 @@ export default function VideoEditorPage() {
     setShowScriptOverride(false);
 
     // Style — restore defaults
-    setSubFontFamily("'Mitr', sans-serif");
+    setSubFontFamily("'Kanit', sans-serif");
     setSubFontSize(80);
     setSubFontWeight(900);
     setSubColor("#ffffff");

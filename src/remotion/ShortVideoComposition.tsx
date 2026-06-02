@@ -15,8 +15,11 @@ import { renderSubtitle } from "./renderSubtitle";
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
 
+// Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — Remotion must load the
+// same files (and weights) as the editor preview, otherwise fonts in the burned
+// MP4 won't match what the user saw on screen.
 const FONTS_CSS =
-  "https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;500;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Itim&family=Bai+Jamjuree:wght@600;700&family=Chonburi&family=Pridi:wght@600;700&family=Krub:wght@600;700&display=swap";
+  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;500;600;700&family=Kanit:wght@400;500;600;700;800;900&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700;800;900&family=Noto+Sans+Thai:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=Chonburi&family=Fahkwang:wght@400;500;600;700&family=K2D:wght@400;500;600;700;800&family=Charm:wght@400;700&family=Bai+Jamjuree:wght@400;600;700&family=Krub:wght@400;600;700&family=Pridi:wght@400;600;700&family=Itim&family=Sriracha&family=Oswald:wght@400;500;600;700&family=Anton&family=Bebas+Neue&display=swap";
 
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
 const CROSSFADE_FRAMES = 8;

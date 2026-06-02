@@ -8,9 +8,13 @@ import { RouteProgress } from "@/components/layout/route-progress";
 
 const inter = Inter({ subsets: ["latin"] });
 
-// Thai + decorative Google Fonts for subtitle editor
+// Thai + decorative Google Fonts for subtitle editor.
+// Includes weights 700–900 because subtitle defaults to fontWeight=900 — without
+// the heavy weights the browser fakes bold by stretching, which makes Thai glyphs
+// look thinner/distorted in preview vs the burned MP4. Keep this in sync with the
+// Remotion font URLs in src/remotion/* — both renderers must load the same files.
 const GOOGLE_FONTS_URL =
-  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;600;700&family=Kanit:wght@400;600;700&family=Sarabun:wght@400;600;700&family=Prompt:wght@400;600;700&family=Noto+Sans+Thai:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Chakra+Petch:wght@400;600;700&family=Chonburi&family=Fahkwang:wght@400;600;700&family=Itim&family=Sriracha&family=Bangers&family=Bebas+Neue&family=Oswald:wght@400;600;700&family=Anton&family=Righteous&family=Playfair+Display:wght@700&family=Pacifico&family=Lobster&display=swap";
+  "https://fonts.googleapis.com/css2?family=Mitr:wght@400;500;600;700&family=Kanit:wght@400;500;600;700;800;900&family=Sarabun:wght@400;500;600;700;800&family=Prompt:wght@400;500;600;700;800;900&family=Noto+Sans+Thai:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=Chonburi&family=Fahkwang:wght@400;500;600;700&family=K2D:wght@400;500;600;700;800&family=Charm:wght@400;700&family=Bai+Jamjuree:wght@400;600;700&family=Krub:wght@400;600;700&family=Pridi:wght@400;600;700&family=Itim&family=Sriracha&family=Bangers&family=Bebas+Neue&family=Oswald:wght@400;500;600;700&family=Anton&family=Righteous&family=Playfair+Display:wght@700;800;900&family=Pacifico&family=Lobster&display=swap";
 
 export const metadata: Metadata = {
   title: "Hero AI Creator Studio",
