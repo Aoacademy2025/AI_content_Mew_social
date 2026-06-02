@@ -1702,6 +1702,20 @@ Total audio: ${audioDur.toFixed(2)}s`;
             console.warn(`[transcribe] word-snap: interpolated ${llmCaptions.length - snappedCount}/${llmCaptions.length} unmatched captions between snapped neighbours`);
           }
           console.log(`[transcribe] word-snap: ${snappedCount}/${llmCaptions.length} captions snapped to real word timestamps`);
+
+          // ── Respect silence at the start of the audio.
+          // If the first spoken word starts at t=1.2s but Gemini gave caption[0].startMs=0,
+          // the subtitle shows up before the speaker is actually heard. Push the first
+          // caption to start when the first audible word begins.
+          if (llmCaptions.length > 0 && words.length > 0 && snapped[0] === false) {
+            const firstWordStartMs = Math.round(words[0].start * 1000);
+            if (llmCaptions[0].startMs < firstWordStartMs) {
+              const oldDur = llmCaptions[0].endMs - llmCaptions[0].startMs;
+              llmCaptions[0].startMs = firstWordStartMs;
+              // Keep the same duration if possible
+              llmCaptions[0].endMs = Math.max(llmCaptions[0].endMs, firstWordStartMs + Math.max(oldDur, 200));
+            }
+          }
         }
 
         // Preserve real spoken timing — do NOT stretch captions across silent gaps.

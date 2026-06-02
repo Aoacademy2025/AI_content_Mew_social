@@ -847,8 +847,21 @@ export default function VideoEditorPage() {
     });
     const data = await res.json();
     assertOk("Stock", res, data);
-    const sv: StockVideo[] = (data.results ?? []).filter((r: StockVideo) => r.localUrl || r.videoUrl);
-    if (!sv.length) throw new Error("ไม่พบ stock video");
+    const svRaw: StockVideo[] = (data.results ?? []).filter((r: StockVideo) => r.localUrl || r.videoUrl);
+    if (!svRaw.length) throw new Error("ไม่พบ stock video");
+
+    // ── Trim to caption count for per-subtitle B-ROLL mode ──
+    // We want 1 B-ROLL clip per caption so cuts land on subtitle boundaries.
+    // If caps already exist (runAll path), apply trim now so the timeline UI
+    // reflects what the renderer will actually use.
+    const caps = pipe.current.sceneCaptions ?? [];
+    const sv = caps.length > 0 && svRaw.length >= caps.length
+      ? svRaw.slice(0, caps.length)
+      : svRaw;
+    if (sv.length !== svRaw.length) {
+      console.log(`[runFetchStock] per-subtitle trim: ${svRaw.length} → ${sv.length} clips`);
+    }
+
     pipe.current.stockVideos = sv;
     setStockVideos(sv);
     const pexelsCnt = sv.filter(v => v.pexelsId < 9_000_000).length;
@@ -3410,21 +3423,32 @@ export default function VideoEditorPage() {
                 })}
               </div>
 
-              {/* B-roll clips — all stockVideos */}
+              {/* B-roll clips — aligned 1:1 with subtitle timing when caption count matches.
+                  Falls back to even-split when stockVideos > captions (pre-config / mismatch). */}
               <div className="h-[38px] relative border-b border-[#1a1a20]">
-                {stockVideos.length > 0 ? stockVideos.map((sv, i) => {
-                  const n = stockVideos.length;
-                  const left = (i / n) * 100;
-                  const width = (1 / n) * 100 - 0.3;
-                  return (
-                    <div key={i} className="absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold bg-sky-500/10 border border-sky-500/25 text-sky-300 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-125 transition-all"
-                      style={{ left: `${left}%`, width: `${width}%` }}>
-                      <div className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize bg-white/10 rounded-l-md" />
-                      <span className="truncate">{sv.keyword || `Clip ${i + 1}`}</span>
-                      <div className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize bg-white/10 rounded-r-md" />
-                    </div>
-                  );
-                }) : (
+                {stockVideos.length > 0 ? (() => {
+                  const perCaption = stockVideos.length === captions.length && totalMs > 0;
+                  return stockVideos.map((sv, i) => {
+                    let left: number, width: number;
+                    if (perCaption) {
+                      const cap = captions[i];
+                      left = (cap.startMs / totalMs) * 100;
+                      width = Math.max(0.5, ((cap.endMs - cap.startMs) / totalMs) * 100 - 0.3);
+                    } else {
+                      const n = stockVideos.length;
+                      left = (i / n) * 100;
+                      width = (1 / n) * 100 - 0.3;
+                    }
+                    return (
+                      <div key={i} className="absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold bg-sky-500/10 border border-sky-500/25 text-sky-300 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-125 transition-all"
+                        style={{ left: `${left}%`, width: `${width}%` }}>
+                        <div className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize bg-white/10 rounded-l-md" />
+                        <span className="truncate">{sv.keyword || `Clip ${i + 1}`}</span>
+                        <div className="absolute right-0 top-0 bottom-0 w-1 cursor-ew-resize bg-white/10 rounded-r-md" />
+                      </div>
+                    );
+                  });
+                })() : (
                   <div className="absolute top-1.5 left-0 right-0 h-[26px] rounded-md border border-dashed border-[#2a2a36] flex items-center justify-center text-[10px] text-slate-700">
                     B-roll shown after render
                   </div>
