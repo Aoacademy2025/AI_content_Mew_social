@@ -920,6 +920,46 @@ export default function VideoEditorPage() {
     const MAX_CHARS = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
     const MIN_CHARS = Math.max(4, Math.floor(MAX_CHARS * 0.25));
 
+    // Look up real spoken time for a substring by matching it to STT word timestamps
+    // that fall inside [capStart, capEnd]. Falls back to char-proportion when STT
+    // words aren't available (e.g. ElevenLabs path with no word-level timing).
+    const wordsInRange = (capStartMs: number, capEndMs: number) =>
+      whisperWords.filter(w => w.endMs > capStartMs && w.startMs < capEndMs);
+
+    function realTimingForChunks(cap: Caption, chunks: string[][]): { startMs: number; endMs: number }[] {
+      const span = Math.max(cap.endMs - cap.startMs, 1);
+      const wordsHere = wordsInRange(cap.startMs, cap.endMs);
+      // Fallback to char proportion if we have no STT word timestamps
+      if (wordsHere.length === 0) {
+        return chunks.map((_, i) => {
+          const start = cap.startMs + Math.floor((span * i) / chunks.length);
+          const end = i === chunks.length - 1 ? cap.endMs : cap.startMs + Math.floor((span * (i + 1)) / chunks.length);
+          return { startMs: start, endMs: Math.max(start + 240, end) };
+        });
+      }
+      // Greedy walk: for each chunk advance a word pointer until accumulated char
+      // length covers the chunk's char length (whichever metric matches better
+      // between Latin word.length and Thai char count).
+      let wi = 0;
+      const totalChars = chunks.reduce((s, c) => s + joinWords(c).replace(/\s/g, "").length, 0) || 1;
+      let consumedChars = 0;
+      return chunks.map((chunk, i) => {
+        const chunkChars = joinWords(chunk).replace(/\s/g, "").length;
+        const startWord = wordsHere[Math.min(wi, wordsHere.length - 1)];
+        // Walk word pointer until we've covered this chunk's share of total chars
+        consumedChars += chunkChars;
+        const targetWordIdx = Math.min(
+          wordsHere.length - 1,
+          Math.max(0, Math.round((consumedChars / totalChars) * wordsHere.length) - 1),
+        );
+        wi = targetWordIdx + 1;
+        const endWord = wordsHere[targetWordIdx];
+        const startMs = i === 0 ? cap.startMs : Math.max(cap.startMs, startWord.startMs);
+        const endMs = i === chunks.length - 1 ? cap.endMs : Math.min(cap.endMs, endWord.endMs);
+        return { startMs, endMs: Math.max(startMs + 240, endMs) };
+      });
+    }
+
     const forceSplitByLength = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
       const src = (cap.text ?? "").trim();
       const capTag = tag ?? (cap.tag as "hook" | "body" | "cta" | undefined);
@@ -957,12 +997,16 @@ export default function VideoEditorPage() {
       }
       const finalChunks = rebalanced.filter(c => c.length > 0);
       if (finalChunks.length <= 1) return [{ ...cap, text: src, tag: capTag }];
-      const span = Math.max(cap.endMs - cap.startMs, 1);
-      return finalChunks.map((tokens, i) => {
-        const start = cap.startMs + Math.floor((span * i) / finalChunks.length);
-        const end = i === finalChunks.length - 1 ? cap.endMs : cap.startMs + Math.floor((span * (i + 1)) / finalChunks.length);
-        return { text: joinWords(tokens), startMs: start, endMs: Math.max(start + 240, end), tag: capTag };
-      });
+
+      // Use STT word timestamps for split timing instead of char-proportion math.
+      // Falls back to char proportion when word timestamps aren't available.
+      const timings = realTimingForChunks(cap, finalChunks);
+      return finalChunks.map((tokens, i) => ({
+        text: joinWords(tokens),
+        startMs: timings[i].startMs,
+        endMs: timings[i].endMs,
+        tag: capTag,
+      }));
     };
 
     let sceneCaptions: Caption[] = [];

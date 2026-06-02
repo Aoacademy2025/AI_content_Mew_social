@@ -517,15 +517,27 @@ function SettingsContent() {
                   </p>
                 </div>
               </div>
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
-                style={{
-                  background: "hsl(0 0% 100% / 0.03)",
-                  border: "1px solid hsl(0 0% 100% / 0.08)",
-                  color: "var(--ui-text-secondary)",
-                }}>
-                Get Gemini Key <ExternalLink className="h-3 w-3" />
-              </a>
+              <div className="flex flex-col items-end gap-1.5">
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
+                  style={{
+                    background: "hsl(0 0% 100% / 0.03)",
+                    border: "1px solid hsl(0 0% 100% / 0.08)",
+                    color: "var(--ui-text-secondary)",
+                  }}>
+                  ① Get Gemini Key <ExternalLink className="h-3 w-3" />
+                </a>
+                <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
+                  style={{
+                    background: "hsl(38 92% 50% / 0.08)",
+                    border: "1px solid hsl(38 92% 50% / 0.3)",
+                    color: "hsl(38 100% 70%)",
+                  }}>
+                  ② Enable Gemini API <ExternalLink className="h-3 w-3" />
+                </a>
+                <p className="text-[10px] text-white/30 text-right max-w-[180px]">ต้องทำทั้ง 2 ขั้น ไม่งั้นเจอ 403</p>
+              </div>
             </div>
             <ApiKeySettings />
           </div>

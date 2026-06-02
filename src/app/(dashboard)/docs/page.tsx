@@ -451,7 +451,14 @@ function ApiSetupDoc() {
             <p>กด <b className="text-white">Save Settings</b> มุมขวาล่าง — key ที่บันทึกแล้วจะมี badge <b className="text-green-400">Active</b> กำกับ</p>
           </Step>
         </div>
-        <InfoBox>Gemini key สร้างใน Google AI Studio แล้ว <b className="text-white">ใช้ได้เลย</b> ส่วนใหญ่ไม่ต้องไปเปิด API ใน Cloud Console เอง — ถ้าเจอปัญหาดูหัวข้อ "เจอปัญหา? วิธีแก้" ด้านล่าง</InfoBox>
+        <InfoBox>
+          <span className="block space-y-2">
+            <span className="block"><b className="text-white">ขั้นตอนที่ต้องทำก่อนใช้งาน Gemini Key:</b></span>
+            <span className="block">① สร้าง key ที่ <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline text-cyan-300 hover:text-cyan-200">Google AI Studio → Create API Key</a></span>
+            <span className="block">② <b className="text-white">เปิด Gemini API</b> ที่ <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer" className="underline text-cyan-300 hover:text-cyan-200">Google Cloud Console → Enable Generative Language API</a> — ถ้าข้ามขั้นนี้จะเจอ error 403</span>
+            <span className="block text-white/50 text-[11px]">เข้า Console → เลือก project → ค้นหา "Generative Language API" → กด Enable</span>
+          </span>
+        </InfoBox>
       </Section>
 
       <Section title="API Keys ที่ต้องใส่" icon={Settings2}>
@@ -461,9 +468,16 @@ function ApiSetupDoc() {
           <ApiRow
             name="Gemini API Key"
             required
-            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — TTS, subtitle split, keyword extraction, style analysis, content generation สร้างใน Google AI Studio แล้ววางได้เลย"
+            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — TTS, subtitle split, keyword extraction, style analysis, content generation  |  ต้องทำ 2 ขั้น: (1) สร้าง key ใน AI Studio  (2) เปิด Generative Language API ใน Google Cloud Console (ถ้าข้ามขั้นนี้จะเจอ 403)"
             link="https://aistudio.google.com/app/apikey"
-            linkLabel="Google AI Studio → Create API Key"
+            linkLabel="① AI Studio → Create API Key"
+          />
+          <ApiRow
+            name=""
+            required={false}
+            desc="หลังสร้าง key แล้ว ต้องเปิด API นี้ด้วย — เข้า Console → เลือก project → ค้นหา Generative Language API → Enable"
+            link="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
+            linkLabel="② Google Cloud Console → Enable Generative Language API"
           />
 
           <p className="text-[12px] text-white/40 uppercase tracking-widest font-bold pt-2">Stock Video — B-roll</p>
