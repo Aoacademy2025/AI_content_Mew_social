@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, Lock, ChevronDown, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
+import { useState } from "react";
+import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User, Maximize2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -10,6 +11,7 @@ import { renderSubEl } from "./subtitle-renderer";
 import { EffectPreviewCard, EFFECT_KEYFRAMES } from "./EffectPreviewCard";
 import { SliderRow } from "./SliderRow";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
+import { StylePreviewModal } from "./StylePreviewModal";
 
 export interface RightPanelProps {
   wide: boolean; detached: boolean; dragging: boolean; panelPos: { x: number; y: number };
@@ -57,8 +59,26 @@ export interface RightPanelProps {
   onPlanError?: (msg: string) => void;
 }
 
+// Map a text effect to a looping CSS animation for the font-card previews.
+// Reuses the ef-* keyframes from EffectPreviewCard. Inline effects that need
+// per-character or per-color setup (karaoke / highlight / glow / typewriter)
+// fall back to a gentle "pop" so the card still feels alive without breaking.
+function effectAnim(effect: SubTextEffect): string {
+  const ease = "cubic-bezier(.4,0,.2,1)";
+  switch (effect) {
+    case "pop":    return `ef-pop 1.8s ${ease} infinite`;
+    case "bounce": return `ef-bounce 2s ${ease} infinite`;
+    case "fade":   return `ef-fade 2s ease infinite`;
+    case "quick":  return `ef-quick 1.4s ${ease} infinite`;
+    case "slide":  return `ef-slide 2s ${ease} infinite`;
+    case "flip":   return `ef-flip 2s ${ease} infinite`;
+    default:       return `ef-pop 1.8s ${ease} infinite`;
+  }
+}
+
 export function RightSettingsPanel(p: RightPanelProps) {
   const cols4 = p.detached || (p.panelWidth !== undefined ? p.panelWidth >= 420 : p.wide);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   return (
     <div
@@ -86,7 +106,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
       </div>
 
       {/* Live subtitle preview strip */}
-      <div className="border-b border-[#1e1e28] bg-[#0e0e13] flex-shrink-0 flex items-center justify-center py-3 px-4 min-h-[52px]">
+      <div className="relative border-b border-[#1e1e28] bg-[#0e0e13] flex-shrink-0 flex items-center justify-center py-3 px-4 min-h-[52px]">
         {(() => {
           const cap = p.displayCaptions[p.activeSegIdx] ?? p.displayCaptions[0];
           if (!cap) return <span className="text-[10px] text-slate-700">Type script to preview</span>;
@@ -96,7 +116,28 @@ export function RightSettingsPanel(p: RightPanelProps) {
             </div>
           );
         })()}
+        {/* Full-screen style preview — see font + animation on a 9:16 canvas before render */}
+        <button onClick={() => setPreviewOpen(true)}
+          title="ดูตัวอย่างเต็มจอ"
+          className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-semibold text-cyan-300/80 hover:text-cyan-200 bg-cyan-500/10 hover:bg-cyan-500/15 border border-cyan-500/25 transition-colors">
+          <Maximize2 className="w-3 h-3" />
+          Preview
+        </button>
       </div>
+
+      <StylePreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        captions={p.displayCaptions}
+        subColor={p.subColor}
+        subAccentColor={p.subAccentColor}
+        subPreset={p.subPreset}
+        subFontFamily={p.subFontFamily}
+        subFontSize={p.subFontSize}
+        subFontWeight={p.subFontWeight}
+        subEffect={p.subEffect}
+        subPosition={p.subPosition}
+      />
 
       {/* Tabs */}
       <div className="flex border-b border-[#1e1e28] flex-shrink-0 overflow-x-auto scrollbar-none">

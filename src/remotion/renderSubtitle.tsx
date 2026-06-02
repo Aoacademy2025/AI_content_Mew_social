@@ -175,7 +175,11 @@ export function renderSubtitle(
       );
 
     case "neon-green":
-      return <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return (
+        <div style={{ display: "inline-block", background: "#111", border: "2px solid #00ff88", borderRadius: 16, padding: "6px 24px 10px", boxShadow: "0 0 12px #00ff88, 0 0 30px #00ff88, inset 0 0 20px rgba(0,255,136,0.15)" }}>
+          <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" }}>{text}</span>
+        </div>
+      );
 
     case "neon-red":
       return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;

@@ -5,7 +5,7 @@ export const PRESETS_DATA: { value: SubPreset; label: string }[] = [
   { value: "stroke",        label: "มาตรฐาน" },
   { value: "plain",         label: "มินิมอล" },
   { value: "bold-shadow",   label: "ตัวหนาเด่น" },
-  { value: "neon-green",    label: "น็ออนเขียว" },
+  { value: "neon-green",    label: "นีออนเขียว" },
   { value: "karaoke-box",   label: "คาราโอเกะ" },
   { value: "pop-outline",   label: "ป็อปไลน์" },
   { value: "pastel",        label: "พาสเทล" },
