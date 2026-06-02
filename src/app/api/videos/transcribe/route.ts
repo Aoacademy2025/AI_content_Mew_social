@@ -1023,35 +1023,46 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
-        const timestampPrompt = `You are a professional Thai subtitle editor for TikTok/Reels short videos. Transcribe this audio and split into subtitle segments with PRECISE timestamps AND word-level timestamps.
+        const timestampPrompt = `You are a forced-alignment transcriber for Thai TikTok/Reels videos.
+Your ONLY job is to listen to the audio and report when each word is actually heard.
+You are NOT a subtitle editor — do NOT pad, smooth, or "make it look nice."
 
 Return ONLY valid JSON, no markdown, no explanation:
 {"segments":[{"text":"...","start":0.0,"end":2.5,"words":[{"word":"คำ","start":0.0,"end":0.5},...]},...], "fullText":"..."}
 
-━━━ TIMESTAMP RULES (critical) ━━━
-1. start = exact second speaker starts the FIRST word of this segment (listen carefully to the audio)
-2. end = exact second speaker FINISHES the LAST word — wait until mouth closes / breath taken
-3. NEVER cut end early — subtitle must stay until speech is done, even if next segment starts right after
-4. next segment start = at or slightly after previous end (no overlap allowed)
-5. Use 0.05s precision. When unsure, round end UP (subtitle staying 0.1s too long is better than disappearing early)
+━━━ HONEST TIMING — THIS IS THE WHOLE JOB ━━━
+1. word.start = the exact second the speaker BEGINS to articulate that word (vowel onset / consonant attack you can hear)
+2. word.end   = the exact second the speaker FINISHES that word (release / mouth closes)
+3. If there is silence BEFORE the first word, the first word's start is NOT 0.0 — it is whenever the speaker actually begins. Silence stays as silence.
+4. If there is silence BETWEEN two words (breath, pause, dramatic beat), the gap MUST appear in the timestamps:
+   prev.end < next.start with a real gap between them. DO NOT close gaps. DO NOT make words touch.
+5. If there is silence AFTER the last word, that silence is NOT subtitled.
+6. NEVER round end UP. NEVER add padding to make subtitles "linger". A word that ends at 1.83s ends at 1.83s, not 1.95s.
+7. NEVER overlap: word[i].end ≤ word[i+1].start, segment[i].end ≤ segment[i+1].start.
+8. Use 0.05s precision. When unsure, listen again — do not guess.
 
-━━━ WORD-LEVEL TIMESTAMPS (critical for word-by-word subtitles) ━━━
-6. Each segment MUST include "words" array with timestamp for every Thai word in the segment
-7. Thai words = meaningful units: คำ, กำลัง, เปลี่ยน, มือ, เงียบๆ (NOT individual syllables, NOT whole phrases)
-8. word.start = exact second this word begins, word.end = exact second this word ends
-9. words must be non-overlapping and cover the full segment duration
-10. English brand names count as one word: "GPT-4" → one entry
+━━━ WORDS (the atomic unit) ━━━
+9. Thai word = meaningful syllabic unit as a native speaker hears it: คำ, กำลัง, เปลี่ยน, เงียบๆ.
+   NOT individual letters. NOT whole phrases. NOT one segment-per-word.
+10. English brand names = one word: "GPT-4", "Anthropic", "Claude", "OpenAI", "Enterprise".
+11. Every spoken word MUST appear in the words array of exactly one segment.
+12. words array MUST be in spoken order with monotonic start times.
 
-━━━ SPLITTING STYLE — TikTok/Reels dramatic pacing ━━━
-11. Split at EVERY natural pause or breath in the audio, even very short ones
-12. Short punchy phrases get their OWN segment — especially sentence-ending words that the speaker pauses after
-    EXAMPLE: "บริษัทนี้อาจไม่ใช่เบอร์ 1 ของโลก..." → split → "...อีกต่อไป" (separate segment for dramatic effect)
-13. Each segment = one breath unit as spoken — not a fixed character count
-14. If the speaker pauses mid-sentence for effect, SPLIT there (dramatic pause = segment break)
-15. NEVER cut mid-word. Thai has no spaces — identify complete words before splitting
-16. NEVER split in the middle of a phrase that flows without pause — wait for actual breath/pause
-17. Keep English brand names intact: Anthropic, GPT, Claude, Enterprise, etc.
-18. fullText = all segment texts joined in order${script ? `\n19. The script text for reference (match wording exactly): ${script.trim().slice(0, 2000)}` : ""}`;
+━━━ SEGMENT GROUPING (for the subtitle cards) ━━━
+13. Start a new segment when the speaker takes a breath / pauses ≥ 0.20s, OR completes a sentence (ครับ, ค่ะ, .).
+14. segment.start = first word's start in that segment.
+15. segment.end   = last word's end in that segment.  ← copy from the word, do not extend.
+16. NEVER cut mid-word.
+17. Short standalone punchlines get their own segment (e.g. "...อีกต่อไป" after a dramatic pause).
+
+━━━ TEXT FIDELITY ━━━
+18. fullText = all segment texts joined in order with single spaces.
+19. Keep English brand names spelled exactly as heard.${script ? `
+20. SCRIPT REFERENCE (this is what was actually said — match wording exactly, but get timestamps from the AUDIO):
+${script.trim().slice(0, 2000)}` : ""}
+
+━━━ REMINDER ━━━
+The downstream system trusts your timestamps as truth. If you guess, subtitles will appear before the speaker talks or linger after they stop. Listen, mark, move on. No editorial padding.`;
 
         // Transcribe with model fallback chain. Google's gemini-2.5-flash frequently returns
         // 503 "high demand" — fall through to older but stabler models instead of failing the
@@ -1339,10 +1350,15 @@ Return ONLY valid JSON, no markdown, no explanation:
           `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
         ).join("\n");
 
-        // Word-level timestamps — these are the ATOMIC UNITS the LLM must group.
-        // LLM picks contiguous spans; never splits inside a word. Eliminates mid-word cuts.
+        // Word-level timestamps — ATOMIC UNITS the LLM must group.
+        // Send BOTH start and end so the LLM has a real endMs for the last word
+        // of each card. Earlier we only sent start (W1 [0.42s] "วงการ"), which
+        // forced the LLM to guess endMs → captions disappeared too early or
+        // lingered too long depending on the guess.
         const wordList = words.length > 0
-          ? words.map((w, i) => `W${i + 1} [${w.start.toFixed(2)}s] "${w.word}"`).join(" ")
+          ? words.map((w, i) =>
+              `W${i + 1}[${w.start.toFixed(2)}-${w.end.toFixed(2)}s] "${w.word}"`
+            ).join(" ")
           : "(no word-level timestamps available — group SEGMENTS instead)";
 
         const scriptForPrompt = sourceText.trim().slice(0, 3000);
@@ -1563,38 +1579,48 @@ Total audio: ${audioDur.toFixed(2)}s`;
             .filter(c => c.text.length > 0);
         }
 
-        // ── Word-snap: replace LLM-reported timestamps with real STT word timestamps.
+        // ── Snap LLM-reported timestamps to real STT timestamps.
         //
-        // Why: Gemini sometimes copies/rounds the start/end times wrong even when we
-        // hand it word-level timestamps in the prompt (it does math instead of copying).
-        // Result: captions appear before the speaker starts and disappear after they
-        // stop → user reported "เริ่ม/จบไม่พร้อมเสียง".
+        // Why: Gemini sometimes invents/rounds start/end even when we hand it real
+        // timestamps in the prompt. Captions then appear before/after the speaker
+        // → user report: "เริ่ม/จบไม่พร้อมเสียง", "ซับไม่ตรงเสียง".
         //
-        // Fix: for each LLM caption, walk the words array left-to-right and find the
-        // contiguous span whose concatenated text matches the caption text (whitespace
-        // & punctuation ignored). Use the FIRST matched word's start and the LAST
-        // matched word's end. This guarantees subtitle on/off transitions land
-        // exactly on the audio waveform of the spoken phrase.
+        // What we snap TO depends on language:
+        //   • Thai → segment timestamps. Gemini's Thai WORD timestamps are unreliable
+        //     because Thai has no whitespace and Gemini's tokenization drifts; this
+        //     was documented in commit 2385146 ("skip Strategy C for Thai — word
+        //     timestamps unreliable without spaces"). SEGMENT timestamps from Gemini
+        //     transcribe come from actual silence/breath detection in the audio and
+        //     are far more reliable.
+        //   • Non-Thai → word timestamps (whitespace tokenization is unambiguous).
         //
-        // Only runs when we have word-level timestamps from STT.
-        if (words.length > 0 && llmCaptions.length > 0) {
+        // The match strategy is the same: walk the snap-source (words or segments)
+        // left-to-right, find the contiguous span whose concatenated text equals the
+        // caption text (whitespace & punctuation ignored), use first.start / last.end.
+        type SnapUnit = { text: string; start: number; end: number };
+        const snapUnits: SnapUnit[] = isThai
+          ? mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end }))
+          : words.map((w) => ({ text: w.word, start: w.start, end: w.end }));
+        const snapSourceLabel = isThai ? "segments" : "words";
+        console.log(`[transcribe] snap source: ${snapSourceLabel} (${snapUnits.length} units, isThai=${isThai})`);
+        if (snapUnits.length > 0 && llmCaptions.length > 0) {
           const stripForMatch = (s: string) =>
             s.replace(/\s+/g, "").replace(/[.,!?…฿"'`()\[\]{}—–\-]/g, "").toLowerCase();
-          const wordChars = words.map(w => stripForMatch(w.word));
-          const wordText = wordChars.join("");
-          const cumWordChars: number[] = [];
-          for (let i = 0, sum = 0; i < wordChars.length; i++) {
-            sum += wordChars[i].length;
-            cumWordChars.push(sum);
+          const unitChars = snapUnits.map(u => stripForMatch(u.text));
+          const unitText = unitChars.join("");
+          const cumChars: number[] = [];
+          for (let i = 0, sum = 0; i < unitChars.length; i++) {
+            sum += unitChars[i].length;
+            cumChars.push(sum);
           }
-          const charIndexToWordIndex = (charIndex: number): number => {
-            for (let wi = 0; wi < cumWordChars.length; wi++) {
-              if (charIndex < cumWordChars[wi]) return wi;
+          const charIndexToUnitIndex = (charIndex: number): number => {
+            for (let wi = 0; wi < cumChars.length; wi++) {
+              if (charIndex < cumChars[wi]) return wi;
             }
-            return wordChars.length - 1;
+            return unitChars.length - 1;
           };
 
-          // snapped[idx] = true if caption idx got real word timestamps.
+          // snapped[idx] = true if caption idx got real STT timestamps.
           // For unmatched ones we interpolate later from neighbours.
           const snapped: boolean[] = llmCaptions.map(() => false);
           let cursor = 0;
@@ -1605,33 +1631,28 @@ Total audio: ${audioDur.toFixed(2)}s`;
             const target = stripForMatch(cap.text);
             if (!target) continue;
 
-            const cursorChar = cursor > 0 ? cumWordChars[cursor - 1] : 0;
+            const cursorChar = cursor > 0 ? cumChars[cursor - 1] : 0;
 
             let foundStart = -1;
             let foundEnd = -1;
             let bestScore = -Infinity;
             let bestRange: { start: number; end: number } | null = null;
 
-            // 1) Try exact substring match starting at/after the cursor.
-            //    indexOf returns char index in the concatenated wordText, so we map
-            //    that char range back to word indices.
-            const exactIndex = wordText.indexOf(target, cursorChar);
+            const exactIndex = unitText.indexOf(target, cursorChar);
             if (exactIndex >= 0) {
-              const startWi = charIndexToWordIndex(exactIndex);
-              const endWi = charIndexToWordIndex(exactIndex + target.length - 1);
+              const startWi = charIndexToUnitIndex(exactIndex);
+              const endWi = charIndexToUnitIndex(exactIndex + target.length - 1);
               if (startWi >= cursor) {
                 foundStart = startWi;
                 foundEnd = endWi;
               }
             }
 
-            // 2) Fuzzy fallback: scan word boundaries; keep best partial match.
-            //    Only runs if exact match didn't land at/after cursor.
             if (foundStart < 0) {
-              for (let i = cursor; i < wordChars.length; i++) {
+              for (let i = cursor; i < unitChars.length; i++) {
                 let acc = "";
-                for (let j = i; j < wordChars.length; j++) {
-                  acc += wordChars[j];
+                for (let j = i; j < unitChars.length; j++) {
+                  acc += unitChars[j];
                   if (acc.length > target.length + 4) break;
 
                   if (acc === target) {
@@ -1661,8 +1682,8 @@ Total audio: ${audioDur.toFixed(2)}s`;
             }
 
             if (foundStart >= cursor && foundEnd >= foundStart) {
-              cap.startMs = Math.round(words[foundStart].start * 1000);
-              cap.endMs = Math.round(words[foundEnd].end * 1000);
+              cap.startMs = Math.round(snapUnits[foundStart].start * 1000);
+              cap.endMs = Math.round(snapUnits[foundEnd].end * 1000);
               cursor = foundEnd + 1;
               snapped[idx] = true;
               snappedCount++;
@@ -1704,16 +1725,15 @@ Total audio: ${audioDur.toFixed(2)}s`;
           console.log(`[transcribe] word-snap: ${snappedCount}/${llmCaptions.length} captions snapped to real word timestamps`);
 
           // ── Respect silence at the start of the audio.
-          // If the first spoken word starts at t=1.2s but Gemini gave caption[0].startMs=0,
+          // If the first spoken unit starts at t=1.2s but Gemini gave caption[0].startMs=0,
           // the subtitle shows up before the speaker is actually heard. Push the first
-          // caption to start when the first audible word begins.
-          if (llmCaptions.length > 0 && words.length > 0 && snapped[0] === false) {
-            const firstWordStartMs = Math.round(words[0].start * 1000);
-            if (llmCaptions[0].startMs < firstWordStartMs) {
+          // caption to start when the first audible unit begins.
+          if (llmCaptions.length > 0 && snapUnits.length > 0 && snapped[0] === false) {
+            const firstStartMs = Math.round(snapUnits[0].start * 1000);
+            if (llmCaptions[0].startMs < firstStartMs) {
               const oldDur = llmCaptions[0].endMs - llmCaptions[0].startMs;
-              llmCaptions[0].startMs = firstWordStartMs;
-              // Keep the same duration if possible
-              llmCaptions[0].endMs = Math.max(llmCaptions[0].endMs, firstWordStartMs + Math.max(oldDur, 200));
+              llmCaptions[0].startMs = firstStartMs;
+              llmCaptions[0].endMs = Math.max(llmCaptions[0].endMs, firstStartMs + Math.max(oldDur, 200));
             }
           }
         }
