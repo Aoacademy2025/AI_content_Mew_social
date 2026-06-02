@@ -2213,12 +2213,21 @@ export default function VideoEditorPage() {
 
   return (
     <div className={cn(
-      "ve-no-padding flex flex-col bg-[#0c0c0f] text-slate-100 overflow-hidden text-[13px]",
+      "ve-no-padding relative flex flex-col bg-[#0c0c0f] text-slate-100 overflow-hidden text-[13px]",
       isEditorExpanded ? "fixed inset-0 z-[200]" : "flex-1 min-h-0"
     )}>
+      {/* Sci-fi accent — subtle neon grid + cyan glow so the editor matches the
+          rest of the app's theme. Purely decorative: sits behind all UI, never
+          intercepts clicks, and leaves every panel/timeline colour untouched. */}
+      <div aria-hidden className="ve-scifi-grid pointer-events-none absolute inset-0 z-0" />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 h-64 w-[60%] rounded-full blur-3xl z-0"
+        style={{ background: "radial-gradient(closest-side, hsl(190 100% 50% / 0.10), transparent)" }}
+      />
 
       {/* ── TOPBAR ── */}
-      <div className="h-12 bg-[#111115] border-b border-[#1e1e28] flex items-center gap-2 px-4 flex-shrink-0">
+      <div className="relative z-10 h-12 bg-[#111115]/85 backdrop-blur-sm border-b border-cyan-500/15 flex items-center gap-2 px-4 flex-shrink-0">
         <div className="w-px h-5 bg-[#2a2a36] mx-1" />
 
         {/* Project name (editable) + pencil hint */}
@@ -2392,10 +2401,10 @@ export default function VideoEditorPage() {
       )}
 
       {/* ── MAIN BODY ── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative z-10 flex flex-1 overflow-hidden">
 
         {/* ── LEFT: TRANSCRIPT ── */}
-        <div className="relative flex-shrink-0 bg-[#111115] border-r border-[#1e1e28] flex flex-col" style={{ width: leftPanelWidth }}>
+        <div className="relative flex-shrink-0 bg-[#111115]/90 border-r border-cyan-500/15 flex flex-col" style={{ width: leftPanelWidth }}>
           {/* Left resize handle */}
           <div
             className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 group"
@@ -2793,7 +2802,7 @@ export default function VideoEditorPage() {
         </div>
 
         {/* ── CENTER: PREVIEW ── */}
-        <div ref={centerPanelRef} className="flex-1 flex flex-col bg-[#0c0c0f] min-w-0">
+        <div ref={centerPanelRef} className="flex-1 flex flex-col bg-[#0c0c0f]/80 min-w-0">
           {/* Preview area with dot grid */}
           <div className="flex-1 flex items-center justify-center relative overflow-hidden"
             style={{ backgroundImage: "radial-gradient(circle,#1e1e2a 1px,transparent 1px)", backgroundSize: "24px 24px" }}>
@@ -3156,7 +3165,7 @@ export default function VideoEditorPage() {
       )}
 
       {/* ── TIMELINE ── */}
-      <div className="relative flex-shrink-0 bg-[#0e0e13] border-t border-[#1e1e28] flex flex-col" style={{ height: timelineHeight }}>
+      <div className="relative z-10 flex-shrink-0 bg-[#0e0e13] border-t border-[#1e1e28] flex flex-col" style={{ height: timelineHeight }}>
         {/* Timeline resize handle */}
         <div
           className="absolute top-0 left-0 right-0 h-1 cursor-row-resize z-10 group"

@@ -1563,16 +1563,25 @@ Total audio: ${audioDur.toFixed(2)}s`;
             .filter(c => c.text.length > 0);
         }
 
-        // Bridge gaps and extend last caption to audio end — pure timeline math, no text edits.
-        // We TRUST the LLM's text grouping (it had word-level timestamps + script as source of truth).
-        // No char-count hard-split, no orphan-merge, no script-snap — those were hardcoded hacks
-        // that LLM's word-concatenator output makes unnecessary.
+        // Preserve real spoken timing — do NOT stretch captions across silent gaps.
+        //
+        // Previously we did: if (next.start > prev.end) prev.end = next.start
+        // That bridged silence onto the previous caption, which made subtitles linger
+        // on screen while the speaker had paused → user reported "ซับยังโผล่ตอนเงียบ".
+        //
+        // Instead: trust Gemini's per-caption start/end (they came from real word
+        // timestamps), only clamp to avoid overlap and ensure last caption doesn't
+        // extend past audio.
         for (let i = 0; i < llmCaptions.length - 1; i++) {
           const a = llmCaptions[i] as { endMs: number };
           const b = llmCaptions[i + 1] as { startMs: number };
-          if (b.startMs > a.endMs) a.endMs = b.startMs;
+          if (a.endMs > b.startMs) a.endMs = b.startMs; // clamp overlap only
         }
-        if (llmCaptions.length > 0) (llmCaptions[llmCaptions.length - 1] as { endMs: number }).endMs = totalAudioMs;
+        if (llmCaptions.length > 0) {
+          const last = llmCaptions[llmCaptions.length - 1] as { endMs: number };
+          // Clamp last caption to audio end if it overshoots; do NOT stretch it forward
+          if (last.endMs > totalAudioMs) last.endMs = totalAudioMs;
+        }
 
         // ── Tail recovery: Gemini sometimes drops the very last words of the script
         // (e.g. "...ของบริษัทชื่อ Anthropic" missing) because its segmentation stops short.
