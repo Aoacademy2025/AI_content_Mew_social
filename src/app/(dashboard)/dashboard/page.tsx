@@ -7,6 +7,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import Link from "next/link";
+import { PremiumBackdrop, CornerBrackets } from "@/components/layout/premium-page";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -23,27 +24,6 @@ interface Stats {
 
 function daysLeft(isoDate: string): number {
   return Math.ceil((new Date(isoDate).getTime() - Date.now()) / 86400000);
-}
-
-/* ═══════════════════════════════════════════════════
-   SCI-FI / NEON COMPONENTS
-═══════════════════════════════════════════════════ */
-
-function CornerBrackets({ color = "cyan" }: { color?: "cyan" | "violet" | "amber" }) {
-  const colorMap = {
-    cyan:   "border-cyan-400/40",
-    violet: "border-violet-400/40",
-    amber:  "border-amber-400/40",
-  };
-  const C = `absolute h-3 w-3 ${colorMap[color]} pointer-events-none`;
-  return (
-    <>
-      <span aria-hidden className={`${C} top-2 left-2 border-t border-l rounded-tl-sm`} />
-      <span aria-hidden className={`${C} top-2 right-2 border-t border-r rounded-tr-sm`} />
-      <span aria-hidden className={`${C} bottom-2 left-2 border-b border-l rounded-bl-sm`} />
-      <span aria-hidden className={`${C} bottom-2 right-2 border-b border-r rounded-br-sm`} />
-    </>
-  );
 }
 
 function statusStyle(s: string) {
@@ -96,161 +76,22 @@ export default function DashboardPage() {
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      {/* ── Full-page sci-fi backdrop — same vibe as /docs ────────────── */}
-      <div aria-hidden className="dash-grid-bg pointer-events-none fixed inset-0 z-0" />
-      <div aria-hidden className="pointer-events-none fixed inset-0 z-0">
-        <div className="dash-orb-1 absolute -top-32 left-[15%] h-112 w-md rounded-full blur-3xl"
-          style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)" }} />
-        <div className="dash-orb-2 absolute -top-20 right-[10%] h-96 w-96 rounded-full blur-3xl"
-          style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)" }} />
-        <div className="dash-orb-3 absolute top-[40%] left-1/2 -translate-x-1/2 h-80 w-80 rounded-full blur-3xl"
-          style={{ background: "radial-gradient(closest-side, hsl(285 70% 60%), transparent)" }} />
-        <div className="dash-orb-1 absolute bottom-[15%] right-[8%] h-96 w-96 rounded-full blur-3xl"
-          style={{ background: "radial-gradient(closest-side, hsl(190 100% 50%), transparent)", animationDelay: "-7s" }} />
-        <div className="dash-orb-2 absolute bottom-[5%] left-[10%] h-80 w-80 rounded-full blur-3xl"
-          style={{ background: "radial-gradient(closest-side, hsl(252 80% 60%), transparent)", animationDelay: "-12s" }} />
-      </div>
-
-      {/* ── Premium animations & decorations ─────────────────────────── */}
-      <style jsx global>{`
-        @keyframes dash-orb-1 {
-          0%,100% { transform: translate(0,0) scale(1); opacity: 0.32; }
-          33%     { transform: translate(50px,40px) scale(1.18); opacity: 0.45; }
-          66%     { transform: translate(-40px,60px) scale(0.95); opacity: 0.28; }
-        }
-        @keyframes dash-orb-2 {
-          0%,100% { transform: translate(0,0) scale(1); opacity: 0.25; }
-          50%     { transform: translate(-60px,50px) scale(1.22); opacity: 0.42; }
-        }
-        @keyframes dash-orb-3 {
-          0%,100% { transform: translate(0,0) scale(1); opacity: 0.20; }
-          50%     { transform: translate(40px,-50px) scale(1.12); opacity: 0.35; }
-        }
-        @keyframes dash-grid-drift {
-          0%   { background-position: 0 0; }
-          100% { background-position: 40px 40px; }
-        }
-        @keyframes dash-border-spin {
-          0%   { background-position: 0% 50%; }
-          100% { background-position: 200% 50%; }
-        }
-        @keyframes dash-shimmer {
-          0%   { background-position: -200% 0; }
-          100% { background-position: 200% 0; }
-        }
-        @keyframes dash-fade-up {
-          0%   { opacity: 0; transform: translateY(14px); }
-          100% { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes dash-fade-in {
-          0%   { opacity: 0; }
-          100% { opacity: 1; }
-        }
-        @keyframes dash-icon-pulse {
-          0%,100% { box-shadow: 0 0 0 1px hsl(var(--c-accent) / 0.35) inset, 0 0 12px hsl(var(--c-accent) / 0.20); }
-          50%     { box-shadow: 0 0 0 1px hsl(var(--c-accent) / 0.55) inset, 0 0 22px hsl(var(--c-accent) / 0.40); }
-        }
-        @keyframes dash-chip-pulse {
-          0%,100% { opacity: 1; }
-          50%     { opacity: 0.55; }
-        }
-
-        .dash-orb-1 { animation: dash-orb-1 24s cubic-bezier(.45,.05,.55,.95) infinite; }
-        .dash-orb-2 { animation: dash-orb-2 28s cubic-bezier(.45,.05,.55,.95) infinite; }
-        .dash-orb-3 { animation: dash-orb-3 21s cubic-bezier(.45,.05,.55,.95) infinite; }
-        .dash-grid-bg {
-          background-image:
-            linear-gradient(hsl(0 0% 100% / 0.025) 1px, transparent 1px),
-            linear-gradient(90deg, hsl(0 0% 100% / 0.025) 1px, transparent 1px);
-          background-size: 40px 40px;
-          animation: dash-grid-drift 30s linear infinite;
-          mask-image: linear-gradient(to bottom, black 0%, black 70%, hsl(0 0% 0% / 0.7) 100%);
-        }
-        .dash-fade-up { animation: dash-fade-up 0.6s cubic-bezier(.2,.65,.3,1) both; }
-        .dash-fade-in { animation: dash-fade-in 0.5s ease-out both; }
-        .dash-chip-dot { animation: dash-chip-pulse 2s ease-in-out infinite; }
-
-        .dash-card {
-          position: relative;
-          background:
-            radial-gradient(120% 80% at 0% 0%, hsl(190 100% 50% / 0.04), transparent 50%),
-            radial-gradient(120% 80% at 100% 100%, hsl(252 80% 60% / 0.04), transparent 50%),
-            hsl(220 30% 6% / 0.85);
-          backdrop-filter: blur(12px);
-          box-shadow:
-            0 1px 0 hsl(0 0% 100% / 0.04) inset,
-            0 24px 48px hsl(0 0% 0% / 0.35);
-          border-radius: 1rem;
-        }
-        .dash-card-border {
-          position: absolute;
-          inset: 0;
-          padding: 1px;
-          border-radius: 1rem;
-          background: linear-gradient(110deg,
-            hsl(0 0% 100% / 0.04) 0%,
-            hsl(190 100% 50% / 0.40) 20%,
-            hsl(252 80% 60% / 0.30) 40%,
-            hsl(0 0% 100% / 0.04) 60%,
-            hsl(190 100% 50% / 0.35) 80%,
-            hsl(0 0% 100% / 0.04) 100%);
-          background-size: 200% 100%;
-          animation: dash-border-spin 8s linear infinite;
-          -webkit-mask:
-            linear-gradient(#000 0 0) content-box,
-            linear-gradient(#000 0 0);
-          -webkit-mask-composite: xor;
-                  mask-composite: exclude;
-          pointer-events: none;
-        }
-        .dash-card-interactive:hover .dash-card-border { animation-duration: 3.5s; }
-        .dash-card-interactive { transition: transform 220ms cubic-bezier(.2,.65,.3,1); }
-        .dash-card-interactive:hover { transform: translateY(-2px); }
-
-        .dash-icon-frame {
-          background: linear-gradient(135deg, hsl(var(--c-accent) / 0.18), hsl(var(--c-accent) / 0.06));
-          border: 1px solid hsl(var(--c-accent) / 0.40);
-          animation: dash-icon-pulse 3.6s ease-in-out infinite;
-        }
-
-        /* Skeleton — shimmer placeholder that matches card aesthetic, no spinner */
-        @keyframes dash-skeleton-shimmer {
-          0%   { background-position: -200% 0; }
-          100% { background-position: 200% 0; }
-        }
-        .dash-skeleton {
-          background:
-            linear-gradient(90deg,
-              hsl(0 0% 100% / 0.04) 0%,
-              hsl(190 100% 50% / 0.08) 40%,
-              hsl(252 80% 60% / 0.06) 60%,
-              hsl(0 0% 100% / 0.04) 100%);
-          background-size: 200% 100%;
-          animation: dash-skeleton-shimmer 1.6s ease-in-out infinite;
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-          .dash-orb-1, .dash-orb-2, .dash-orb-3, .dash-grid-bg, .dash-fade-up, .dash-fade-in,
-          .dash-chip-dot, .dash-card-border, .dash-icon-frame, .dash-skeleton {
-            animation: none !important;
-          }
-        }
-      `}</style>
+      <PremiumBackdrop />
 
       {/* ── Content ───────────────────────────────────────────────────── */}
       <div className="relative z-10 mx-auto max-w-6xl px-4 md:px-6 pt-3 md:pt-4 pb-12">
 
         {/* Eyebrow */}
-        <div className="dash-fade-up flex items-center gap-2 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
+        <div className="pp-fade-up flex items-center gap-2 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"
           style={{ animationDelay: "0ms" }}>
           <span className="h-px w-6 bg-linear-to-r from-transparent to-cyan-400/50" />
           Dashboard
-          <span className="dash-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+          <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
           {planLabel}
         </div>
 
         {/* Title row */}
-        <div className="dash-fade-up flex flex-wrap items-end justify-between gap-4 mb-1" style={{ animationDelay: "60ms" }}>
+        <div className="pp-fade-up flex flex-wrap items-end justify-between gap-4 mb-1" style={{ animationDelay: "60ms" }}>
           <h1 className="text-4xl md:text-5xl font-black tracking-tight text-white leading-tight">
             สวัสดีคุณ{" "}
             <span className="inline-block bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">
@@ -291,20 +132,20 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <p className="dash-fade-up text-base text-white/55 max-w-2xl leading-relaxed mb-6" style={{ animationDelay: "140ms" }}>
+        <p className="pp-fade-up text-base text-white/55 max-w-2xl leading-relaxed mb-6" style={{ animationDelay: "140ms" }}>
           เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม
         </p>
 
         {/* Quick actions — premium CTA row */}
-        <div className="dash-fade-up grid grid-cols-2 md:grid-cols-4 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
+        <div className="pp-fade-up grid grid-cols-2 md:grid-cols-4 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
           {[
             { label: "Video Editor", desc: "Timeline editor", href: "/video-editor", Icon: Clapperboard, color: "190 100% 50%" },
             { label: "Content",      desc: "Generate script",  href: "/content",      Icon: FileText,     color: "252 80% 60%" },
             { label: "Gallery",      desc: "ดู renders เก่า",   href: "/videos",       Icon: Video,        color: "142 70% 45%" },
             { label: "Docs",         desc: "วิธีใช้งาน",        href: "/docs",         Icon: BookOpen,     color: "35 90% 55%" },
           ].map(({ label, desc, href, Icon, color }) => (
-            <Link key={href} href={href} className="dash-card dash-card-interactive overflow-hidden relative group">
-              <span aria-hidden className="dash-card-border" />
+            <Link key={href} href={href} className="pp-card pp-card-interactive overflow-hidden relative group">
+              <span aria-hidden className="pp-card-border" />
               <CornerBrackets />
               <div className="relative p-4 flex items-start gap-3">
                 <div className="relative flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
@@ -327,7 +168,7 @@ export default function DashboardPage() {
 
         {/* Limit warning — only for unpaid users at limit */}
         {!isPaid && (atStyleLimit || atContentLimit) && (
-          <div className="dash-fade-in relative overflow-hidden rounded-xl px-4 py-3 mb-6 flex items-center gap-3"
+          <div className="pp-fade-in relative overflow-hidden rounded-xl px-4 py-3 mb-6 flex items-center gap-3"
             style={{
               background: "linear-gradient(135deg, hsl(35 100% 50% / 0.10), hsl(15 100% 50% / 0.05))",
               border: "1px solid hsl(35 100% 50% / 0.35)",
@@ -346,14 +187,14 @@ export default function DashboardPage() {
         )}
 
         {/* Stats grid — 3 numbered cards */}
-        <div className="dash-fade-up grid gap-4 grid-cols-1 sm:grid-cols-3 mb-8" style={{ animationDelay: "180ms" }}>
+        <div className="pp-fade-up grid gap-4 grid-cols-1 sm:grid-cols-3 mb-8" style={{ animationDelay: "180ms" }}>
           {[
             { label: "Styles",  count: stats?.styleCount ?? 0,   limit: stats?.limits?.styles ?? null,   icon: Palette,  href: "/style",   color: "220 90% 65%" },
             { label: "Content", count: stats?.contentCount ?? 0, limit: stats?.limits?.contents ?? null, icon: FileText, href: "/content", color: "252 70% 65%" },
             { label: "Videos",  count: stats?.videoCount ?? 0,   limit: null,                            icon: Video,    href: "/videos",  color: "142 60% 50%" },
           ].map(({ label, count, limit, icon: Icon, href, color }) => (
-            <Link key={href} href={href} className="dash-card dash-card-interactive overflow-hidden block">
-              <span aria-hidden className="dash-card-border" />
+            <Link key={href} href={href} className="pp-card pp-card-interactive overflow-hidden block">
+              <span aria-hidden className="pp-card-border" />
               <CornerBrackets />
               <div className="relative p-6">
                 <div className="flex items-start justify-between mb-5">
@@ -361,7 +202,7 @@ export default function DashboardPage() {
                     <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-white/50">{label}</p>
                     <p className="text-[10px] font-mono text-white/30 mt-0.5">#{href.slice(1)}</p>
                   </div>
-                  <div className="dash-icon-frame relative flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
+                  <div className="pp-icon-frame relative flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
                     style={{ "--c-accent": color } as React.CSSProperties}>
                     <Icon className="h-4.5 w-4.5" style={{ color: `hsl(${color})` }} strokeWidth={2.25} />
                   </div>
@@ -386,10 +227,10 @@ export default function DashboardPage() {
 
         {/* Recent activity — render whenever there's data; skipped silently when none exists */}
         {((stats?.recentContents?.length ?? 0) > 0 || (stats?.recentVideos?.length ?? 0) > 0) && (
-          <div className="dash-fade-up grid gap-5 md:grid-cols-2 mb-8" style={{ animationDelay: "240ms" }}>
+          <div className="pp-fade-up grid gap-5 md:grid-cols-2 mb-8" style={{ animationDelay: "240ms" }}>
             {(stats?.recentContents?.length ?? 0) > 0 && (
-              <div className="dash-card overflow-hidden relative">
-                <span aria-hidden className="dash-card-border" />
+              <div className="pp-card overflow-hidden relative">
+                <span aria-hidden className="pp-card-border" />
                 <CornerBrackets />
                 <div className="relative p-6">
                   <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
@@ -418,8 +259,8 @@ export default function DashboardPage() {
               </div>
             )}
             {(stats?.recentVideos?.length ?? 0) > 0 && (
-              <div className="dash-card overflow-hidden relative">
-                <span aria-hidden className="dash-card-border" />
+              <div className="pp-card overflow-hidden relative">
+                <span aria-hidden className="pp-card-border" />
                 <CornerBrackets />
                 <div className="relative p-6">
                   <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
@@ -451,8 +292,8 @@ export default function DashboardPage() {
 
         {/* Upgrade CTA */}
         {stats && !isBusiness && (
-          <div className="dash-fade-in dash-card overflow-hidden relative" style={{ animationDelay: "500ms" }}>
-            <span aria-hidden className="dash-card-border" />
+          <div className="pp-fade-in pp-card overflow-hidden relative" style={{ animationDelay: "500ms" }}>
+            <span aria-hidden className="pp-card-border" />
             <CornerBrackets color={isPro ? "violet" : "amber"} />
             <div className="relative p-5 flex items-center gap-4">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl shrink-0"
@@ -493,7 +334,7 @@ export default function DashboardPage() {
         )}
 
         {/* Footer */}
-        <div className="dash-fade-in mt-12 flex items-center justify-center gap-2 text-[10px] text-white/25 font-mono" style={{ animationDelay: "600ms" }}>
+        <div className="pp-fade-in mt-12 flex items-center justify-center gap-2 text-[10px] text-white/25 font-mono" style={{ animationDelay: "600ms" }}>
           <span className="h-px w-12 bg-linear-to-r from-transparent to-white/15" />
           <Sparkles className="h-3 w-3" />
           <span>Hero AI Studio · studio.heroaiengine.com</span>

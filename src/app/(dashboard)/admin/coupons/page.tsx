@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Ticket, Plus, Trash2, Loader2, RefreshCw, Crown, Copy, Building2, Gift } from "lucide-react";
 import { toast } from "sonner";
+import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 
 interface Coupon {
   id: string;
@@ -81,12 +82,18 @@ export default function AdminCouponsPage() {
   }
 
   return (
-    <>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-6">
+        <div className="pp-fade-up flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">จัดการคูปอง</h1>
-            <p className="text-sm text-zinc-400">สร้างและจัดการรหัสคูปองสำหรับอัปเกรดแผน</p>
+            <PremiumEyebrow className="mb-2">
+              Admin
+              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+              Coupons
+            </PremiumEyebrow>
+            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">จัดการคูปอง</h1>
+            <p className="text-sm text-white/50 mt-1">สร้างและจัดการรหัสคูปองสำหรับอัปเกรดแผน</p>
           </div>
           <Button variant="ghost" size="sm" onClick={fetchCoupons} disabled={loading} className="gap-2 text-zinc-400 hover:text-white">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -231,6 +238,6 @@ export default function AdminCouponsPage() {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

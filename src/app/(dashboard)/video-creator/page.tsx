@@ -2212,14 +2212,14 @@ export default function ShortVideoPage() {
       {renderPopupOpen && (
         <div key={renderPopupKey} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"
-            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
+            style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
             <div className="flex flex-col items-center gap-1">
               <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
               <span className="text-sm" style={{ color: renderProgressError ? "hsl(0 80% 65%)" : renderProgress >= 100 ? "hsl(142 72% 55%)" : "rgba(255,255,255,0.45)" }}>
                 {renderProgressError ? "Render error" : renderProgress >= 100 ? "เสร็จแล้ว! ✓" : "Rendering..."}
               </span>
             </div>
-            <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "hsl(220 30% 14%)" }}>
+            <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "hsl(0 0% 100% / 0.05)" }}>
               <div
                 className="h-full rounded-full transition-all duration-500"
                 style={{
@@ -2252,7 +2252,7 @@ export default function ShortVideoPage() {
                 }
               }}
               className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
-              style={{ background: "hsl(220 30% 14%)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(220 30% 20%)" }}
+              style={{ background: "hsl(0 0% 100% / 0.05)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(0 0% 100% / 0.08)" }}
             >
               {renderProgressError || renderProgress >= 100 ? "Close" : "Cancel"}
             </button>
@@ -2286,23 +2286,23 @@ export default function ShortVideoPage() {
           style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
           onClick={e => { if (e.target === e.currentTarget) setShowClearCacheDialog(false); }}>
           <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "hsl(221 39% 9%)", border: "1px solid hsl(220 30% 18%)" }}>
-            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(220 30% 14%)" }}>
+            style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
+            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(0 0% 100% / 0.05)" }}>
               <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
             </div>
             <div className="px-5 py-4 space-y-3">
-              <p className="text-sm" style={{ color: "hsl(220 15% 65%)" }}>
+              <p className="text-sm" style={{ color: "hsl(240 5% 70%)" }}>
                 ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
               </p>
-              <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(220 15% 75%)" }}>
+              <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(240 5% 80%)" }}>
                 <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
                 <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
               </ol>
             </div>
-            <div className="px-5 py-4 flex gap-3" style={{ borderTop: "1px solid hsl(220 30% 14%)" }}>
+            <div className="px-5 py-4 flex gap-3" style={{ borderTop: "1px solid hsl(0 0% 100% / 0.05)" }}>
               <button
                 className="flex-1 rounded-lg py-2 text-sm font-medium"
-                style={{ background: "hsl(220 30% 18%)", color: "hsl(220 15% 65%)" }}
+                style={{ background: "hsl(0 0% 100% / 0.08)", color: "hsl(240 5% 70%)" }}
                 onClick={() => setShowClearCacheDialog(false)}>
                 ปิด
               </button>
@@ -2760,7 +2760,7 @@ export default function ShortVideoPage() {
 
                     {/* Mock phone frame */}
                     <div className="relative rounded-2xl overflow-hidden w-full max-w-[200px] lg:max-w-[260px] mx-auto"
-                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(220 30% 22%)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)" }}>
+                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(0 0% 100% / 0.1)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)" }}>
                       {/* Background */}
                       <div className="absolute inset-0" style={{ background: "linear-gradient(160deg, #0d1f3c 0%, #070e1c 50%, #020408 100%)" }} />
                       {/* Fake scene lines */}
@@ -2836,7 +2836,7 @@ export default function ShortVideoPage() {
                     <span className={useAvatar ? "text-white" : "text-white/40"}>Avatar</span>
                     {!useAvatar && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide"
-                        style={{ background: "var(--sv-input)", color: "hsl(220 30% 40%)" }}>
+                        style={{ background: "var(--sv-input)", color: "hsl(240 4% 45%)" }}>
                         off
                       </span>
                     )}
@@ -3455,7 +3455,7 @@ export default function ShortVideoPage() {
                                               aspectRatio: "9/16",
                                               border: selected
                                                 ? "2px solid hsl(190 100% 55%)"
-                                                : "2px solid hsl(220 30% 18%)",
+                                                : "2px solid hsl(0 0% 100% / 0.08)",
                                               opacity: disabled ? 0.3 : excluded ? 0.5 : 1,
                                               cursor: disabled ? "not-allowed" : "pointer",
                                             }}

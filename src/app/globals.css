@@ -544,13 +544,15 @@ button, a {
 
 /* ── Short-video page — CSS variables that flip with light/dark ── */
 .sv-dark {
-  --sv-bg:      hsl(221 30% 9%);
-  --sv-card:    hsl(221 30% 11%);
-  --sv-card2:   hsl(221 28% 13%);
-  --sv-input:   hsl(221 26% 16%);
-  --sv-border:  hsl(220 24% 20%);
-  --sv-border2: hsl(220 22% 25%);
-  --sv-text:    hsl(213 31% 91%);
+  /* Matches the /dashboard premium-dark palette — near-black with a faint
+     violet tint (hue 240) instead of the old blue-gray (hue 221). */
+  --sv-bg:      hsl(240 10% 4%);
+  --sv-card:    hsl(240 9% 7%);
+  --sv-card2:   hsl(240 8% 9%);
+  --sv-input:   hsl(240 10% 6%);
+  --sv-border:  hsl(0 0% 100% / 0.06);
+  --sv-border2: hsl(0 0% 100% / 0.08);
+  --sv-text:    hsl(0 0% 98%);
   --sv-muted:   rgba(255,255,255,0.3);
 }
 :root:not(.dark) .sv-dark {
@@ -671,3 +673,131 @@ button, a {
 :root:not(.dark) .bg-black\/60 { background-color: rgba(10, 10, 30, 0.45); }
 :root:not(.dark) .bg-black\/80 { background-color: rgba(10, 10, 30, 0.55); }
 :root:not(.dark) .bg-black\/20 { background-color: rgba(10, 10, 30, 0.08); }
+
+/* ═══════════════════════════════════════════════════════
+   SHARED PREMIUM PAGE THEME (pp-*)
+   The sci-fi / neon look from /dashboard, extracted so EVERY
+   page can share one source of truth. Use with <PremiumBackdrop>,
+   <PremiumCard>, <CornerBrackets> from components/layout/premium-page.
+   ═══════════════════════════════════════════════════════ */
+
+@keyframes pp-orb-1 {
+  0%,100% { transform: translate(0,0) scale(1); opacity: 0.32; }
+  33%     { transform: translate(50px,40px) scale(1.18); opacity: 0.45; }
+  66%     { transform: translate(-40px,60px) scale(0.95); opacity: 0.28; }
+}
+@keyframes pp-orb-2 {
+  0%,100% { transform: translate(0,0) scale(1); opacity: 0.25; }
+  50%     { transform: translate(-60px,50px) scale(1.22); opacity: 0.42; }
+}
+@keyframes pp-orb-3 {
+  0%,100% { transform: translate(0,0) scale(1); opacity: 0.20; }
+  50%     { transform: translate(40px,-50px) scale(1.12); opacity: 0.35; }
+}
+@keyframes pp-grid-drift {
+  0%   { background-position: 0 0; }
+  100% { background-position: 40px 40px; }
+}
+@keyframes pp-border-spin {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+@keyframes pp-fade-up {
+  0%   { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes pp-fade-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes pp-icon-pulse {
+  0%,100% { box-shadow: 0 0 0 1px hsl(var(--c-accent) / 0.35) inset, 0 0 12px hsl(var(--c-accent) / 0.20); }
+  50%     { box-shadow: 0 0 0 1px hsl(var(--c-accent) / 0.55) inset, 0 0 22px hsl(var(--c-accent) / 0.40); }
+}
+@keyframes pp-chip-pulse {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.55; }
+}
+
+.pp-orb-1 { animation: pp-orb-1 24s cubic-bezier(.45,.05,.55,.95) infinite; }
+.pp-orb-2 { animation: pp-orb-2 28s cubic-bezier(.45,.05,.55,.95) infinite; }
+.pp-orb-3 { animation: pp-orb-3 21s cubic-bezier(.45,.05,.55,.95) infinite; }
+
+.pp-grid-bg {
+  background-image:
+    linear-gradient(hsl(0 0% 100% / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(0 0% 100% / 0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+  animation: pp-grid-drift 30s linear infinite;
+  mask-image: linear-gradient(to bottom, black 0%, black 70%, hsl(0 0% 0% / 0.7) 100%);
+}
+/* In light mode the grid lines need a dark tint to stay visible */
+:root:not(.dark) .pp-grid-bg {
+  background-image:
+    linear-gradient(hsl(222 47% 11% / 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(222 47% 11% / 0.04) 1px, transparent 1px);
+}
+
+.pp-fade-up { animation: pp-fade-up 0.6s cubic-bezier(.2,.65,.3,1) both; }
+.pp-fade-in { animation: pp-fade-in 0.5s ease-out both; }
+.pp-chip-dot { animation: pp-chip-pulse 2s ease-in-out infinite; }
+
+.pp-card {
+  position: relative;
+  background:
+    radial-gradient(120% 80% at 0% 0%, hsl(190 100% 50% / 0.04), transparent 50%),
+    radial-gradient(120% 80% at 100% 100%, hsl(252 80% 60% / 0.04), transparent 50%),
+    hsl(220 30% 6% / 0.85);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 1px 0 hsl(0 0% 100% / 0.04) inset,
+    0 24px 48px hsl(0 0% 0% / 0.35);
+  border-radius: 1rem;
+}
+:root:not(.dark) .pp-card {
+  background:
+    radial-gradient(120% 80% at 0% 0%, hsl(190 100% 50% / 0.05), transparent 50%),
+    radial-gradient(120% 80% at 100% 100%, hsl(252 80% 60% / 0.05), transparent 50%),
+    hsl(0 0% 100% / 0.9);
+  box-shadow:
+    0 1px 0 hsl(0 0% 100% / 0.6) inset,
+    0 18px 40px -12px hsl(222 47% 30% / 0.18);
+}
+
+.pp-card-border {
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: 1rem;
+  background: linear-gradient(110deg,
+    hsl(0 0% 100% / 0.04) 0%,
+    hsl(190 100% 50% / 0.40) 20%,
+    hsl(252 80% 60% / 0.30) 40%,
+    hsl(0 0% 100% / 0.04) 60%,
+    hsl(190 100% 50% / 0.35) 80%,
+    hsl(0 0% 100% / 0.04) 100%);
+  background-size: 200% 100%;
+  animation: pp-border-spin 8s linear infinite;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+.pp-card-interactive { transition: transform 220ms cubic-bezier(.2,.65,.3,1); }
+.pp-card-interactive:hover { transform: translateY(-2px); }
+.pp-card-interactive:hover .pp-card-border { animation-duration: 3.5s; }
+
+.pp-icon-frame {
+  background: linear-gradient(135deg, hsl(var(--c-accent) / 0.18), hsl(var(--c-accent) / 0.06));
+  border: 1px solid hsl(var(--c-accent) / 0.40);
+  animation: pp-icon-pulse 3.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp-orb-1, .pp-orb-2, .pp-orb-3, .pp-grid-bg, .pp-fade-up, .pp-fade-in,
+  .pp-chip-dot, .pp-card-border, .pp-icon-frame {
+    animation: none !important;
+  }
+}

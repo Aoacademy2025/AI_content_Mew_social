@@ -10,6 +10,7 @@ import {
 import { Sparkles, Edit, Trash2, Link2, Search, Loader2, LayoutGrid, ArrowRight, Brain, Network } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { PremiumPage, PremiumCard, PremiumEyebrow } from "@/components/layout/premium-page";
 
 interface Style {
   id: string;
@@ -19,9 +20,6 @@ interface Style {
   instructionPrompt: string;
   createdAt: string;
 }
-
-const CARD: React.CSSProperties = { background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" };
-const INNER: React.CSSProperties = { background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" };
 
 const STATUS_BADGES: Record<number, { label: string; color: string; bg: string; border: string }> = {
   0: { label: "Active",       color: "hsl(190 100% 50%)",  bg: "hsl(190 100% 50% / 0.1)",  border: "hsl(190 100% 50% / 0.3)" },
@@ -130,13 +128,21 @@ export default function StylePage() {
   const filtered = styles.filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <>
+    <PremiumPage maxWidth="max-w-6xl">
       <div className="space-y-5">
 
         {/* Page header */}
-        <div>
-          <h1 className="text-2xl font-bold" style={{ color: "var(--ui-text-primary)" }}>Style Manager</h1>
-          <p className="mt-1 text-sm max-w-xl" style={{ color: "var(--ui-text-muted)" }}>
+        <div className="pp-fade-up">
+          <PremiumEyebrow className="mb-2">
+            Style Manager
+            <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+            AI Voice Training
+          </PremiumEyebrow>
+          <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">
+            Style{" "}
+            <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">Manager</span>
+          </h1>
+          <p className="mt-2 text-sm max-w-xl text-white/55 leading-relaxed">
             Train AI to replicate your unique voice. Upload samples, analyze linguistic patterns, and manage your library of custom writing personalities.
           </p>
         </div>
@@ -146,13 +152,13 @@ export default function StylePage() {
 
           {/* ── Left: Train form ── */}
           <div className="space-y-4">
-            <div className="rounded-2xl p-6" style={CARD}>
-              <div className="flex items-center justify-between mb-5">
+            <PremiumCard className="pp-fade-up p-6" brackets={false}>
+              <div className="relative flex items-center justify-between mb-5">
                 <div className="flex items-center gap-2">
                   <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ background: "hsl(190 100% 50% / 0.12)" }}>
                     <Sparkles className="h-4 w-4 text-cyan-400" />
                   </div>
-                  <h2 className="text-base font-semibold" style={{ color: "var(--ui-text-primary)" }}>
+                  <h2 className="text-base font-bold text-white">
                     {editingStyle ? `Edit: ${editingStyle.name}` : "Train New Style"}
                   </h2>
                 </div>
@@ -223,11 +229,11 @@ export default function StylePage() {
               </div>
 
               {editingStyle && (
-                <button onClick={resetForm} className="mt-3 text-xs transition-colors hover:opacity-80" style={{ color: "var(--ui-text-muted)" }}>
+                <button onClick={resetForm} className="mt-3 text-xs text-white/45 transition-colors hover:text-white/70">
                   ← Cancel editing
                 </button>
               )}
-            </div>
+            </PremiumCard>
 
             {/* Workflow cards */}
             <div className="grid gap-4 sm:grid-cols-2">
@@ -235,21 +241,21 @@ export default function StylePage() {
                 { icon: Sparkles, title: "Tone Archetypes", desc: "Identify emotional resonance and sentiment patterns." },
                 { icon: Network,  title: "Syntactic Mapping", desc: "Analysis of sentence structure and complexity." },
               ].map(({ icon: Icon, title, desc }) => (
-                <div key={title} className="rounded-2xl p-5" style={CARD}>
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl mb-4" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
+                <PremiumCard key={title} className="p-5" brackets={false}>
+                  <div className="relative flex h-9 w-9 items-center justify-center rounded-xl mb-4" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
                     <Icon className="h-4 w-4 text-cyan-400/70" />
                   </div>
-                  <p className="text-sm font-semibold mb-1" style={{ color: "var(--ui-text-secondary)" }}>{title}</p>
-                  <p className="text-xs leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
-                </div>
+                  <p className="relative text-sm font-bold mb-1 text-white">{title}</p>
+                  <p className="relative text-xs leading-relaxed text-white/50">{desc}</p>
+                </PremiumCard>
               ))}
             </div>
           </div>
 
           {/* ── Right: Saved Library ── */}
-          <div className="rounded-2xl p-5 h-fit" style={CARD}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>Saved Library</h2>
+          <PremiumCard className="pp-fade-up p-5 h-fit" brackets={false}>
+            <div className="relative flex items-center justify-between mb-4">
+              <h2 className="text-sm font-bold text-white">Saved Library</h2>
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2" style={{ color: "var(--ui-text-muted)" }} />
                 <Input
@@ -275,11 +281,11 @@ export default function StylePage() {
                   const confidence = CONFIDENCE[i % CONFIDENCE.length];
                   const tags = style.sampleText ? "TEXT • SAMPLE" : "URL • SOURCE";
                   return (
-                    <div key={style.id} className="group rounded-xl p-4 transition-all" style={INNER}>
+                    <div key={style.id} className="group rounded-xl p-4 transition-all border border-white/10 bg-white/3 hover:bg-white/5">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between mb-0.5">
-                            <p className="text-sm font-bold truncate" style={{ color: "var(--ui-text-primary)" }}>{style.name}</p>
+                            <p className="text-sm font-bold truncate text-white">{style.name}</p>
                             <span className="text-sm font-bold text-cyan-400 shrink-0 ml-2">{confidence}%</span>
                           </div>
                           <p className="text-[10px] font-medium uppercase tracking-wider mb-2" style={{ color: "var(--ui-text-muted)" }}>{tags}</p>
@@ -316,29 +322,30 @@ export default function StylePage() {
             )}
 
             {filtered.length > 0 && (
-              <button className="mt-4 flex w-full items-center justify-center gap-1.5 py-2 text-xs transition-colors hover:opacity-80" style={{ color: "var(--ui-text-muted)" }}>
+              <button className="relative mt-4 flex w-full items-center justify-center gap-1.5 py-2 text-xs text-white/45 transition-colors hover:text-white/70">
                 View All Style Profiles <ArrowRight className="h-3 w-3" />
               </button>
             )}
-          </div>
+          </PremiumCard>
         </div>
 
         {/* Bottom stats */}
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="pp-fade-up grid gap-4 sm:grid-cols-3">
           {[
             { label: "Styles Analyzed", value: styles.length > 0 ? (styles.length * 416).toLocaleString() : "0", accent: "hsl(190 100% 50%)" },
             { label: "Active Training",  value: `${styles.length} Profiles`, accent: "hsl(271 91% 65%)" },
             { label: "Avg. Accuracy",    value: styles.length > 0 ? "94.2%" : "—", accent: "hsl(142 72% 50%)" },
           ].map(({ label, value, accent }) => (
-            <div key={label} className="rounded-2xl p-5 flex items-center gap-4" style={{ background: "var(--ui-card-bg)", border: `1px solid var(--ui-card-border)`, borderLeftColor: accent, borderLeftWidth: 3 }}>
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: accent + "18" }}>
+            <PremiumCard key={label} className="p-5 flex items-center gap-4" brackets={false}
+              style={{ borderLeft: `3px solid ${accent}` }}>
+              <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ background: accent + "18" }}>
                 <LayoutGrid className="h-5 w-5" style={{ color: accent }} />
               </div>
-              <div>
-                <p className="text-xs mb-0.5" style={{ color: "var(--ui-text-muted)" }}>{label}</p>
-                <p className="text-xl font-bold" style={{ color: "var(--ui-text-primary)" }}>{value}</p>
+              <div className="relative">
+                <p className="text-xs mb-0.5 text-white/50">{label}</p>
+                <p className="text-xl font-black text-white">{value}</p>
               </div>
-            </div>
+            </PremiumCard>
           ))}
         </div>
       </div>
@@ -356,6 +363,6 @@ export default function StylePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </PremiumPage>
   );
 }

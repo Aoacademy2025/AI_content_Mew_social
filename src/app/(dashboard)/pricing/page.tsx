@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { PremiumBackdrop } from "@/components/layout/premium-page";
 
 // ── Plan visual definitions ──────────────────────────────────────────────
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
@@ -96,10 +97,10 @@ function PricingContent() {
             เลือกแพ็กเกจที่เหมาะกับคุณ
           </span>
         </div>
-        <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold tracking-tight leading-tight" style={{ color: "var(--ui-text-primary)" }}>
-          สร้างคอนเทนต์อย่าง <span className="gradient-text">มืออาชีพ</span><br className="md:hidden" /> ด้วย AI
+        <h1 className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tight leading-tight text-white">
+          สร้างคอนเทนต์อย่าง <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">มืออาชีพ</span><br className="md:hidden" /> ด้วย AI
         </h1>
-        <p className="text-base md:text-lg max-w-xl mx-auto" style={{ color: "var(--ui-text-secondary)" }}>
+        <p className="text-base md:text-lg max-w-xl mx-auto text-white/60">
           ชำระเงินครั้งเดียว ใช้ได้ 30 วัน — ไม่มีการตัดเงินอัตโนมัติ
         </p>
       </header>
@@ -331,9 +332,10 @@ function PricingContent() {
           { icon: ShieldCheck, label: "ไม่ตัดเงินอัตโนมัติ", desc: "ใช้ครบกำหนดแล้วต่ออายุเอง" },
           { icon: Gift, label: "ใช้คูปองได้", desc: "ที่หน้า Settings ของคุณ" },
         ].map(({ icon: Icon, label, desc }) => (
-          <div key={label} className="premium-card p-5 flex items-start gap-3">
+          <div key={label} className="pp-card p-5 flex items-start gap-3">
+            <span aria-hidden className="pp-card-border" />
             <div
-              className="flex h-9 w-9 items-center justify-center rounded-lg shrink-0"
+              className="relative flex h-9 w-9 items-center justify-center rounded-lg shrink-0"
               style={{
                 background: "hsl(var(--accent-primary) / 0.08)",
                 border: "1px solid hsl(var(--accent-primary) / 0.18)",
@@ -341,26 +343,27 @@ function PricingContent() {
             >
               <Icon className="h-4 w-4" style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2} />
             </div>
-            <div>
-              <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>{label}</p>
-              <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>{desc}</p>
+            <div className="relative">
+              <p className="text-sm font-bold text-white">{label}</p>
+              <p className="text-xs mt-0.5 text-white/50">{desc}</p>
             </div>
           </div>
         ))}
       </div>
 
       {/* ── FAQ teaser ──────────────────────────────────────────────── */}
-      <div className="premium-card p-6 max-w-3xl mx-auto flex items-center gap-4">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
+      <div className="pp-card p-6 max-w-3xl mx-auto flex items-center gap-4">
+        <span aria-hidden className="pp-card-border" />
+        <div className="relative flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
           style={{
             background: "hsl(var(--accent-secondary) / 0.1)",
             border: "1px solid hsl(var(--accent-secondary) / 0.2)",
           }}>
           <HelpCircle className="h-5 w-5" style={{ color: "hsl(var(--accent-secondary))" }} strokeWidth={2} />
         </div>
-        <div className="flex-1">
-          <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>มีคำถาม?</p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
+        <div className="relative flex-1">
+          <p className="text-sm font-bold text-white">มีคำถาม?</p>
+          <p className="text-xs mt-0.5 text-white/50">
             ติดต่อทีมงานผ่าน Support — Pro/Business ตอบกลับภายใน 24 ชม.
           </p>
         </div>
@@ -372,10 +375,13 @@ function PricingContent() {
 
 export default function PricingPage() {
   return (
-    <>
-      <Suspense fallback={null}>
-        <PricingContent />
-      </Suspense>
-    </>
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 px-4 md:px-6 pt-3 md:pt-4 pb-12">
+        <Suspense fallback={null}>
+          <PricingContent />
+        </Suspense>
+      </div>
+    </div>
   );
 }

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
+import { PremiumBackdrop } from "@/components/layout/premium-page";
 
 interface AdminStats {
   totalUsers: number; freeUsers: number; paidUsers: number; suspendedUsers: number;
@@ -452,10 +453,11 @@ export default function AdminDashboardPage() {
   };
 
   return (
-    <>
-      <div className="space-y-8">
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-8">
         {/* Header */}
-        <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-linear-to-br from-red-900/40 via-orange-900/20 to-yellow-900/30 p-8 backdrop-blur-xl">
+        <div className="pp-fade-up relative overflow-hidden rounded-2xl border border-white/10 bg-linear-to-br from-red-900/40 via-orange-900/20 to-yellow-900/30 p-8 backdrop-blur-xl">
           <div className="absolute right-0 top-0 h-40 w-40 animate-pulse rounded-full bg-red-500/20 blur-3xl" />
           <div className="relative z-10 flex items-start justify-between">
             <div>
@@ -990,6 +992,6 @@ export default function AdminDashboardPage() {
         </div>
 
       </div>
-    </>
+    </div>
   );
 }

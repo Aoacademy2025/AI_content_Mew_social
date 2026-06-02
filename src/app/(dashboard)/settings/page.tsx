@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 
 // ── Coupon Box ───────────────────────────────────────────────────────────
 function CouponBox() {
@@ -37,7 +38,7 @@ function CouponBox() {
   }
 
   return (
-    <div className="premium-card p-7">
+    <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
       <div className="flex items-start gap-4">
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
           style={{
@@ -200,7 +201,7 @@ function BillingTab() {
         <p className="eyebrow">ประวัติการชำระเงิน</p>
 
         {loading ? null : payments.length === 0 ? (
-          <div className="premium-card p-12 text-center">
+          <div className="pp-card p-12 text-center"><span aria-hidden className="pp-card-border" />
             <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl mb-3"
               style={{ background: "hsl(0 0% 100% / 0.04)", border: "1px solid hsl(0 0% 100% / 0.06)" }}>
               <CreditCard className="h-5 w-5" style={{ color: "var(--ui-text-muted)" }} strokeWidth={1.75} />
@@ -215,7 +216,7 @@ function BillingTab() {
               const isPending = p.status === "PENDING";
               const isActioning = actionLoading === p.id;
               return (
-                <div key={p.id} className="premium-card p-4 transition-colors hover:bg-white/3">
+                <div key={p.id} className="rounded-2xl border border-white/10 bg-white/3 p-4 transition-colors hover:bg-white/5">
                   <div className="flex items-center gap-4">
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
                       style={{
@@ -419,10 +420,16 @@ function SettingsContent() {
       )}
 
       {/* Page header */}
-      <div className="space-y-2">
-        <p className="eyebrow" style={{ color: "hsl(var(--accent-primary))" }}>Account</p>
-        <h1 className="section-heading">Settings</h1>
-        <p className="text-base" style={{ color: "var(--ui-text-secondary)" }}>
+      <div className="pp-fade-up space-y-2">
+        <PremiumEyebrow>
+          Account
+          <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+          Settings
+        </PremiumEyebrow>
+        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">
+          <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">Settings</span>
+        </h1>
+        <p className="text-base text-white/55">
           จัดการบัญชี, API keys และการชำระเงินของคุณ
         </p>
       </div>
@@ -465,7 +472,7 @@ function SettingsContent() {
 
         {/* Profile Tab */}
         {tab === "profile" && (
-          <div className="premium-card p-7">
+          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
             <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl"
                 style={{
@@ -490,7 +497,7 @@ function SettingsContent() {
 
         {/* API Keys Tab */}
         {tab === "api-keys" && (
-          <div className="premium-card p-7">
+          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
             <div className="flex items-center justify-between mb-6 pb-5 border-b border-white/5">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl"
@@ -526,7 +533,7 @@ function SettingsContent() {
 
         {/* Billing Tab */}
         {tab === "billing" && (
-          <div className="premium-card p-7">
+          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
             <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl"
                 style={{
@@ -553,7 +560,7 @@ function SettingsContent() {
         <CouponBox />
 
         {/* Contact Us banner — premium */}
-        <div className="premium-card p-6 flex items-center gap-4">
+        <div className="pp-card p-6 flex items-center gap-4"><span aria-hidden className="pp-card-border" />
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
             style={{
               background: "linear-gradient(135deg, hsl(252 70% 65% / 0.18), hsl(280 80% 65% / 0.08))",
@@ -598,8 +605,11 @@ function SettingsContent() {
 
 export default function SettingsPage() {
   return (
-    <>
-      <SettingsContent />
-    </>
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 px-4 md:px-6 pt-3 md:pt-4 pb-12">
+        <SettingsContent />
+      </div>
+    </div>
   );
 }

@@ -21,6 +21,7 @@ import {
   Check,
 } from "lucide-react";
 import { toast } from "sonner";
+import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
@@ -171,13 +172,19 @@ export default function AdminUsersPage() {
   );
 
   return (
-    <>
-      <div className="space-y-6">
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="pp-fade-up flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">จัดการผู้ใช้งาน</h1>
-            <p className="text-sm text-zinc-400">ผู้ใช้งานทั้งหมด {users.length} ราย</p>
+            <PremiumEyebrow className="mb-2">
+              Admin
+              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+              Users
+            </PremiumEyebrow>
+            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">จัดการผู้ใช้งาน</h1>
+            <p className="text-sm text-white/50 mt-1">ผู้ใช้งานทั้งหมด {users.length} ราย</p>
           </div>
           <Button
             variant="ghost"
@@ -468,6 +475,6 @@ export default function AdminUsersPage() {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

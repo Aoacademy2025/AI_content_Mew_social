@@ -3,10 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUser, useClerk } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
-import { LogOut, Menu, Sun, Moon, Sparkles } from "lucide-react";
+import { LogOut, Menu, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useTheme } from "next-themes";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,10 +24,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
   const { user, isLoaded } = useUser();
   const { signOut } = useClerk();
-  const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => { setMounted(true); }, []);
 
   const displayName = user?.fullName ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "";
   const displayEmail = user?.primaryEmailAddress?.emailAddress ?? "";
@@ -108,18 +102,6 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
 
       {/* Right — actions */}
       <div className="flex items-center gap-2">
-        <button
-          onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-          className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
-          style={{
-            border: "1px solid var(--ui-btn-border)",
-            color: "var(--ui-text-secondary)",
-          }}
-          suppressHydrationWarning
-        >
-          {mounted && resolvedTheme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-        </button>
-
         <NotificationBell />
 
         <FadeSwap

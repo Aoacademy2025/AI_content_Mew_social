@@ -9,6 +9,7 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { PremiumPage, PremiumCard, PremiumEyebrow } from "@/components/layout/premium-page";
 
 interface VideoItem {
   id: string;
@@ -78,14 +79,22 @@ export default function VideosGalleryPage() {
   };
 
   return (
-    <>
+    <PremiumPage maxWidth="max-w-7xl">
       <div className="space-y-6">
 
         {/* ── Page header ── */}
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="pp-fade-up flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold" style={{ color: "var(--ui-text-primary)" }}>Recent Generations</h1>
-            <p className="mt-1 text-sm" style={{ color: "var(--ui-text-muted)" }}>Manage and download your AI-crafted cinematic shorts.</p>
+            <PremiumEyebrow className="mb-2">
+              Gallery
+              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+              Recent Renders
+            </PremiumEyebrow>
+            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">
+              Recent{" "}
+              <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">Generations</span>
+            </h1>
+            <p className="mt-2 text-sm text-white/55">Manage and download your AI-crafted cinematic shorts.</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -160,31 +169,27 @@ export default function VideosGalleryPage() {
         )}
 
         {/* ── Bottom stats ── */}
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="pp-fade-up grid gap-4 sm:grid-cols-3">
           {[
-            { icon: Cpu,       label: "GPU CREDITS",       value: videos.length * 4,             suffix: `/ ${videos.length * 4 + 5000}`, color: "hsl(190 100% 50%)" },
-            { icon: HardDrive, label: "STORAGE USED",      value: (totalSize / 1024).toFixed(1), suffix: "GB",                            color: "hsl(271 91% 65%)" },
-            { icon: Film,      label: "TOTAL GENERATIONS", value: videos.length,                 suffix: "",                              color: "hsl(190 100% 50%)" },
+            { icon: Cpu,       label: "GPU CREDITS",       value: videos.length * 4,             suffix: `/ ${videos.length * 4 + 5000}`, color: "190 100% 50%" },
+            { icon: HardDrive, label: "STORAGE USED",      value: (totalSize / 1024).toFixed(1), suffix: "GB",                            color: "271 91% 65%" },
+            { icon: Film,      label: "TOTAL GENERATIONS", value: videos.length,                 suffix: "",                              color: "190 100% 50%" },
           ].map(({ icon: Icon, label, value, suffix, color }) => (
-            <div
-              key={label}
-              className="flex items-center gap-4 rounded-2xl p-5"
-              style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}
-            >
+            <PremiumCard key={label} className="flex items-center gap-4 p-5" brackets={false}>
               <div
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
-                style={{ background: color + "22", border: `1px solid ${color}44` }}
+                className="pp-icon-frame relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
+                style={{ "--c-accent": color } as React.CSSProperties}
               >
-                <Icon className="h-5 w-5" style={{ color }} />
+                <Icon className="h-5 w-5" style={{ color: `hsl(${color})` }} />
               </div>
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--ui-text-muted)" }}>{label}</p>
-                <p className="text-2xl font-bold leading-none" style={{ color: "var(--ui-text-primary)" }}>
+              <div className="relative">
+                <p className="text-[10px] font-bold uppercase tracking-widest mb-1 text-white/50">{label}</p>
+                <p className="text-2xl font-black leading-none text-white">
                   {typeof value === "number" ? value.toLocaleString() : value}
-                  {suffix && <span className="ml-1 text-sm font-normal" style={{ color: "var(--ui-text-muted)" }}>{suffix}</span>}
+                  {suffix && <span className="ml-1 text-sm font-normal text-white/40">{suffix}</span>}
                 </p>
               </div>
-            </div>
+            </PremiumCard>
           ))}
         </div>
       </div>
@@ -217,9 +222,7 @@ export default function VideosGalleryPage() {
           </div>
         </div>
       )}
-
-
-    </>
+    </PremiumPage>
   );
 }
 

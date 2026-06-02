@@ -48,6 +48,7 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 
 interface Style {
   id: string;
@@ -231,23 +232,29 @@ export default function ContentPage() {
   }
 
   return (
-    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden min-h-0">
-      <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="ve-no-padding relative flex flex-1 flex-col overflow-hidden min-h-0 isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 flex flex-1 flex-col overflow-hidden">
 
         {/* ── Page Header ── */}
-        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: "var(--ui-divider)" }}>
+        <div className="pp-fade-up flex items-center justify-between px-6 py-4 border-b border-white/5 backdrop-blur-sm">
           <div>
-            <h1 className="text-lg font-semibold" style={{ color: "var(--ui-text-primary)" }}>Content Generator</h1>
-            <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>AI-powered social media content creation</p>
+            <PremiumEyebrow className="mb-1.5">
+              Content
+              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+              AI Studio
+            </PremiumEyebrow>
+            <h1 className="text-xl font-black tracking-tight text-white">Content Generator</h1>
           </div>
           <div className="flex gap-2">
             <button
               onClick={() => setView("create")}
               className={cn(
-                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
-                view === "create" ? "bg-cyan-500/15 text-cyan-400" : "hover:bg-black/5 dark:hover:bg-white/5"
+                "flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition-all border",
+                view === "create"
+                  ? "bg-cyan-500/15 text-cyan-300 border-cyan-400/40 shadow-[0_0_12px_hsl(190_100%_50%/0.2)]"
+                  : "text-white/45 border-white/10 hover:bg-white/5 hover:text-white/70"
               )}
-              style={{ color: view === "create" ? undefined : "var(--ui-text-muted)" }}
             >
               <Sparkles className="h-3.5 w-3.5" />
               Generate
@@ -255,16 +262,16 @@ export default function ContentPage() {
             <button
               onClick={() => setView("library")}
               className={cn(
-                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
-                view === "library" ? "bg-cyan-500/15 text-cyan-400" : "hover:bg-black/5 dark:hover:bg-white/5"
+                "flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition-all border",
+                view === "library"
+                  ? "bg-cyan-500/15 text-cyan-300 border-cyan-400/40 shadow-[0_0_12px_hsl(190_100%_50%/0.2)]"
+                  : "text-white/45 border-white/10 hover:bg-white/5 hover:text-white/70"
               )}
-              style={{ color: view === "library" ? undefined : "var(--ui-text-muted)" }}
             >
               <BookOpen className="h-3.5 w-3.5" />
               Library
               {contents.length > 0 && (
-                <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px]"
-                  style={{ background: "var(--ui-btn-bg)", color: "var(--ui-text-muted)" }}>
+                <span className="ml-1 rounded-full px-1.5 py-0.5 text-[10px] bg-white/5 text-white/50 border border-white/10">
                   {contents.length}
                 </span>
               )}
@@ -509,10 +516,10 @@ export default function ContentPage() {
                 {contents.map((content) => (
                   <div
                     key={content.id}
-                    className="group rounded-xl p-4 transition-all"
-                    style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}
+                    className="pp-card pp-card-interactive group p-4"
                   >
-                    <div className="flex items-start justify-between mb-2">
+                    <span aria-hidden className="pp-card-border" />
+                    <div className="relative flex items-start justify-between mb-2">
                       <div className="flex items-center gap-1.5 text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
                         <Globe className="h-3 w-3" />
                         {content.language === "TH" ? "ไทย" : "English"}
@@ -527,19 +534,19 @@ export default function ContentPage() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
-                    <p className="text-sm font-medium line-clamp-2 mb-1" style={{ color: "var(--ui-text-secondary)" }}>
+                    <p className="relative text-sm font-bold line-clamp-2 mb-1 text-white">
                       {content.headline || "Untitled"}
                     </p>
                     {content.subheadline && (
-                      <p className="text-xs line-clamp-2 mb-2" style={{ color: "var(--ui-text-muted)" }}>{content.subheadline}</p>
+                      <p className="relative text-xs line-clamp-2 mb-2 text-white/50">{content.subheadline}</p>
                     )}
                     {content.hashtags && (
-                      <p className="text-[10px] text-cyan-400/60 line-clamp-1 mb-3">
+                      <p className="relative text-[10px] text-cyan-400/70 line-clamp-1 mb-3">
                         <Hash className="inline h-3 w-3 mr-0.5" />
                         {content.hashtags}
                       </p>
                     )}
-                    <div className="flex gap-2">
+                    <div className="relative flex gap-2">
                       <button
                         onClick={() => { setViewingContent(content); setViewDialogOpen(true); }}
                         className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs hover:opacity-80 transition-colors"
