@@ -58,6 +58,33 @@ button, a {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
+/* ── Video editor: phone-frame fullscreen ───────────────────────────────────
+   The phone-frame container is 260×462 in the editor. When entered into the
+   Fullscreen API we need it to fill the viewport — otherwise the user sees a
+   tiny phone-sized rectangle floating on a black backdrop. Subtitle overlay is
+   positioned with % values, so it scales automatically as the frame grows. */
+.video-editor-phone-frame:fullscreen,
+.video-editor-phone-frame:-webkit-full-screen {
+  width: 100vw !important;
+  height: 100vh !important;
+  background: #000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.video-editor-phone-frame:fullscreen > div,
+.video-editor-phone-frame:-webkit-full-screen > div {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+/* Keep subtitle text size proportional to the viewport in fullscreen.
+   Editor preview uses scale factor previewScale (260/1080) — in fullscreen the
+   container grows to ~100vh so we override the inline px size via clamp. */
+.video-editor-phone-frame:fullscreen [data-subtitle-text],
+.video-editor-phone-frame:-webkit-full-screen [data-subtitle-text] {
+  font-size: clamp(28px, 5vw, 80px) !important;
+}
+
 /* Map CSS variables to Tailwind v4 theme tokens
    so utilities like `border-border` and `bg-background` work. */
 @theme {

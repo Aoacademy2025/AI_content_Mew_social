@@ -271,8 +271,6 @@ export function renderSubtitle(
       return (
         <span style={{
           ...base,
-          textShadow:
-            "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 3px 8px rgba(0,0,0,0.95)",
           WebkitTextStroke: "2px #000",
           paintOrder: "stroke fill",
         } as React.CSSProperties}>{text}</span>

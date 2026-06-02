@@ -2853,8 +2853,11 @@ export default function VideoEditorPage() {
           <div className="flex-1 flex items-center justify-center relative overflow-hidden"
             style={{ backgroundImage: "radial-gradient(circle,#1e1e2a 1px,transparent 1px)", backgroundSize: "24px 24px" }}>
 
-            {/* Phone frame */}
-            <div ref={phoneFrameRef} className="relative select-none" style={{ width: 260, height: 462 }}>
+            {/* Phone frame.
+                In fullscreen the .video-editor-phone-frame CSS rule expands this
+                to 100vw/100vh — subtitle overlay travels along because it uses
+                percentage positioning. */}
+            <div ref={phoneFrameRef} className="video-editor-phone-frame relative select-none" style={{ width: 260, height: 462 }}>
 
               {/* Video layer */}
               <div className="absolute inset-0 rounded-2xl overflow-hidden shadow-[0_0_0_1px_#2a2a36,0_24px_64px_rgba(0,0,0,0.8)]"
@@ -2925,8 +2928,11 @@ export default function VideoEditorPage() {
                         className="px-1.5 py-0.5 bg-[#1e1e28] border border-[#3a3a4a] rounded text-[9px] text-slate-400 hover:bg-[#2a2a36]">↺</button>
                     </div>
 
-                    {/* Subtitle text — matches Remotion render exactly */}
-                    <div style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
+                    {/* Subtitle text — matches Remotion render exactly.
+                        data-subtitle-text lets the :fullscreen CSS upscale the font
+                        when the phone-frame is fullscreened, so the subtitle stays
+                        legible at viewport-width sizes. */}
+                    <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
                       {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale)}
                     </div>
                   </div>
@@ -3030,21 +3036,22 @@ export default function VideoEditorPage() {
               )}
             </div>
 
-            {/* Fullscreen — fullscreen the video itself (most reliable across browsers).
-                Falls back to the CENTER panel if the video element isn't ready, then to
-                the document body. Surfaces errors via toast so the user knows why nothing happened. */}
+            {/* Fullscreen — fullscreen the PHONE FRAME (video + subtitle overlay).
+                Earlier this fullscreened the <video> element directly, which left
+                the absolute-positioned subtitle <div> behind in the editor → user
+                report: 'ขยายหน้าจอแล้วไม่มีซับ'.
+                Now we fullscreen phoneFrameRef so the subtitle overlay travels with
+                the video. Falls back to center panel → document body. */}
             <button onClick={async () => {
                 try {
                   if (document.fullscreenElement) {
                     await document.exitFullscreen();
                     return;
                   }
-                  // Prefer the video element (Chrome/Safari/Firefox all support video fullscreen reliably).
                   const target =
-                    (videoRef.current as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> } | null)
+                    (phoneFrameRef.current as HTMLElement | null)
                     ?? (centerPanelRef.current as HTMLElement | null)
                     ?? document.documentElement;
-                  // Webkit (Safari) uses webkitRequestFullscreen
                   const req = (target as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> }).webkitRequestFullscreen
                     ?? target.requestFullscreen;
                   if (req) await req.call(target);
