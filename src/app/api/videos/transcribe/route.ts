@@ -1574,6 +1574,41 @@ Total audio: ${audioDur.toFixed(2)}s`;
         }
         if (llmCaptions.length > 0) (llmCaptions[llmCaptions.length - 1] as { endMs: number }).endMs = totalAudioMs;
 
+        // ── Tail recovery: Gemini sometimes drops the very last words of the script
+        // (e.g. "...ของบริษัทชื่อ Anthropic" missing) because its segmentation stops short.
+        // If the concatenation of all captions doesn't end at the script's tail, append the
+        // missing tail to the last caption so the spoken ending is also subtitled.
+        if (llmCaptions.length > 0 && sourceText.trim()) {
+          const normalize = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+          const scriptNorm = normalize(sourceText);
+          const concatNorm = normalize(llmCaptions.map(c => c.text).join(""));
+          // If captions cover < 92% of script chars, find the tail and append it
+          if (concatNorm.length < scriptNorm.length * 0.92) {
+            // Find where the last caption ends inside the script and grab what's left
+            const last = llmCaptions[llmCaptions.length - 1];
+            const lastNorm = normalize(last.text);
+            const idx = scriptNorm.lastIndexOf(lastNorm);
+            if (idx >= 0 && idx + lastNorm.length < scriptNorm.length) {
+              // Build a position map from script source chars to normalized chars
+              // so we can recover the original (non-normalized) tail with proper spaces
+              let consumed = 0;
+              let tailStart = -1;
+              for (let i = 0; i < sourceText.length; i++) {
+                if (/\s/.test(sourceText[i])) continue;
+                if (consumed === idx + lastNorm.length) { tailStart = i; break; }
+                consumed++;
+              }
+              if (tailStart > 0) {
+                const tail = sourceText.slice(tailStart).trim();
+                if (tail.length > 0) {
+                  last.text = `${last.text.trim()} ${tail}`.trim();
+                  console.log(`[transcribe] tail-recovery: appended "${tail}" to last caption`);
+                }
+              }
+            }
+          }
+        }
+
         const tagged = (llmCaptions as { text: string; startMs: number; endMs: number; tag?: string }[]).map((c, i) => ({
           text: c.text,
           startMs: c.startMs,
