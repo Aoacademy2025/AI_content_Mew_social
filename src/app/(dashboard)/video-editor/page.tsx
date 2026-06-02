@@ -1123,16 +1123,39 @@ export default function VideoEditorPage() {
 
   async function runConfig(sv: StockVideo[], voiceUrl: string, audioDurationMs: number, caps: Caption[]) {
     setStep("config", "running");
+
+    // ── Force per-subtitle B-ROLL mode ──────────────────────────────────────
+    // Gemini gives us N captions with accurate word-timestamps. We want 1 B-ROLL
+    // clip per caption so every B-ROLL cut lands exactly on a subtitle boundary
+    // and stays in sync with the audio (the issue: ซับไม่ตรงเสียง / B-ROLL กระตุก).
+    //
+    // The keyword pipeline used to emit ~scenes*5 stock clips (e.g. 30 for 6
+    // scenes), which made generate-config fall back to scene-aware mode and
+    // produced 30+ tiny B-ROLL cuts unrelated to caption timing.
+    //
+    // Fix: trim to caps.length and emit sceneClipCounts=[1,1,...] so config
+    // takes the isPerSubtitleTop branch.
+    let svForConfig = sv;
+    let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
+    const capN = caps.length;
+    if (capN > 0 && sv.length >= capN) {
+      svForConfig = sv.slice(0, capN);
+      sceneClipCountsForConfig = Array.from({ length: capN }, () => 1);
+      console.log(`[runConfig] per-subtitle mode: trimmed ${sv.length} → ${capN} clips`);
+      setStockVideos(svForConfig);
+      pipe.current.stockVideos = svForConfig;
+    }
+
     const res = await fetch("/api/videos/generate-config", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
       body: JSON.stringify({
-        sceneCaptions: caps, stockVideos: sv, voiceFile: voiceUrl, audioDurationMs,
+        sceneCaptions: caps, stockVideos: svForConfig, voiceFile: voiceUrl, audioDurationMs,
         fontFamily: subFontFamily, subtitlePosition: subPosition, subtitleSize: subFontSize,
         subtitleColor: subColor, subtitleAccentColor: subAccentColor,
         subtitleStylePreset: subPreset, subtitleTextEffect: subEffect, subtitleFontWeight: subFontWeight,
         scenes: pipe.current.scenes ?? [], keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
-        sceneClipCounts: pipe.current.sceneClipCounts ?? [], sceneDurations: pipe.current.sceneDurations ?? [],
+        sceneClipCounts: sceneClipCountsForConfig, sceneDurations: pipe.current.sceneDurations ?? [],
         preferredLLM: preferredLLMRef.current,
       }),
     });
