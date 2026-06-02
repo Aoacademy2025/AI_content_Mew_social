@@ -137,10 +137,9 @@ export default function DashboardPage() {
         </p>
 
         {/* Quick actions — premium CTA row */}
-        <div className="pp-fade-up grid grid-cols-2 md:grid-cols-4 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
+        <div className="pp-fade-up grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
           {[
             { label: "Video Editor", desc: "Timeline editor", href: "/video-editor", Icon: Clapperboard, color: "190 100% 50%" },
-            { label: "Content",      desc: "Generate script",  href: "/content",      Icon: FileText,     color: "252 80% 60%" },
             { label: "Gallery",      desc: "ดู renders เก่า",   href: "/videos",       Icon: Video,        color: "142 70% 45%" },
             { label: "Docs",         desc: "วิธีใช้งาน",        href: "/docs",         Icon: BookOpen,     color: "35 90% 55%" },
           ].map(({ label, desc, href, Icon, color }) => (

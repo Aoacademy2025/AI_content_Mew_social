@@ -102,3 +102,7 @@ skills-lock.json
 
 # IDE TS build cache (rebuilds on VPS anyway)
 tsconfig.tsbuildinfo
+
+# Scratch files (verify scripts, ad-hoc screenshots)
+_vc-*
+_verify-*
