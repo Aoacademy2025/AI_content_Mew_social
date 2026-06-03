@@ -426,17 +426,23 @@ export async function POST(req: Request) {
 
           let safeClipDuration = v.clipDuration;
           let safeEnd = v.end;
+          let safeClipOffset = v.clipOffset ?? 0;
           if (actualDur != null) {
-            // Subtract 0.1s safety margin from end of file
-            const safeMax = Math.max(0.5, actualDur - 0.1);
+            // 0.5s safety margin — compositor errors happen when the last frames
+            // are missing from the container even though the duration header claims they exist
+            const safeMax = Math.max(0.5, actualDur - 0.5);
             if (!safeClipDuration || safeClipDuration > safeMax) safeClipDuration = safeMax;
             const segLen = v.end - v.start;
             if (segLen > safeMax) {
               safeEnd = v.start + safeMax;
               console.warn(`[render] clamped bgVideo segment ${(v.end - v.start).toFixed(2)}s → ${(safeEnd - v.start).toFixed(2)}s (file is ${actualDur.toFixed(2)}s)`);
             }
+            // Clamp clipOffset so startFrom never exceeds safe duration
+            if (safeClipOffset >= safeMax) {
+              safeClipOffset = safeClipOffset % safeMax;
+            }
           }
-          resolvedBgVideos.push({ ...v, src: resolvedSrc, end: safeEnd, clipDuration: safeClipDuration });
+          resolvedBgVideos.push({ ...v, src: resolvedSrc, end: safeEnd, clipDuration: safeClipDuration, clipOffset: safeClipOffset });
         } catch (e) {
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }

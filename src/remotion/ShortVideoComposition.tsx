@@ -48,10 +48,14 @@ function VideoClip({
   const { width, height } = useVideoConfig();
 
   const totalFrames = segDurFrames + tailFrames;
-  // Clamp endAt so we never ask for frames past the actual clip duration —
-  // prevents Remotion "No frame found at position X" compositor errors.
-  const rawEndAt = startFrom + totalFrames;
-  const endAt = clipDurFrames ? Math.min(rawEndAt, clipDurFrames - 1) : rawEndAt;
+  // Clamp startFrom and endAt so we never request frames past the clip's
+  // actual duration — prevents "No frame found at position X" errors.
+  // If startFrom is already near the end, loop back to frame 0.
+  const safeStart = clipDurFrames && startFrom >= clipDurFrames
+    ? 0
+    : startFrom;
+  const rawEndAt = safeStart + totalFrames;
+  const endAt = clipDurFrames ? Math.min(rawEndAt, Math.max(0, clipDurFrames - 2)) : rawEndAt;
 
   // Opacity: fade-in (entry) × fade-out (tail for next clip)
   const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" }) : 1;
@@ -64,7 +68,7 @@ function VideoClip({
     <AbsoluteFill style={{ opacity }}>
       <OffthreadVideo
         src={src}
-        startFrom={startFrom}
+        startFrom={safeStart}
         endAt={endAt}
         style={{
           position: "absolute",
