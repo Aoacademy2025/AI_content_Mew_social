@@ -93,8 +93,8 @@ const renderJobs = new Map<string, RenderJob>();
 // Track the latest jobId per user — older jobs are superseded and must not write results
 const latestJobPerUser = new Map<string, string>();
 
-// AbortController per user — abort previous render when a new one starts
-const activeRenderAbort = new Map<string, AbortController>();
+// Cancel function per user — cancel previous render when a new one starts
+const activeRenderCancel = new Map<string, () => void>();
 
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
@@ -186,14 +186,12 @@ export async function POST(req: Request) {
     }
 
     const jobId = `${userId}-${Date.now()}`;
-    // Abort any previous render for this user before starting a new one
-    const prevAbort = activeRenderAbort.get(userId);
-    if (prevAbort) {
-      console.log(`[Render] aborting previous job for user ${userId}`);
-      prevAbort.abort();
+    // Cancel any previous render for this user before starting a new one
+    const prevCancel = activeRenderCancel.get(userId);
+    if (prevCancel) {
+      console.log(`[Render] cancelling previous job for user ${userId}`);
+      prevCancel();
     }
-    const renderAbortController = new AbortController();
-    activeRenderAbort.set(userId, renderAbortController);
     // Register this as the latest job for this user — any older job will be superseded
     latestJobPerUser.set(userId, jobId);
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
@@ -228,7 +226,7 @@ export async function POST(req: Request) {
     // and traversing into esbuild native binaries (README.md, .node files).
     // serverExternalPackages ensures they're loaded from node_modules at runtime.
     const { bundle } = await import(/* webpackIgnore: true */ "@remotion/bundler" as string);
-    const { renderMedia, selectComposition } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
+    const { renderMedia, selectComposition, makeCancelSignal } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
 
     // Ensure output directory exists (moved up so cacheImageLocally can use rendersDir)
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -593,6 +591,9 @@ export async function POST(req: Request) {
         ];
         console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
 
+        const { cancel, cancelSignal } = makeCancelSignal();
+        activeRenderCancel.set(userId, cancel);
+
         await renderMedia({
           composition,
           serveUrl: bundleLocation,
@@ -601,7 +602,7 @@ export async function POST(req: Request) {
           inputProps,
           timeoutInMilliseconds: 7200000,
           concurrency: renderConcurrency,
-          cancelSignal: renderAbortController.signal,
+          cancelSignal,
           x264Preset: isLowResourceHost ? "faster" : "medium",
           jpegQuality,
           offthreadVideoCacheSizeInBytes,
@@ -626,7 +627,7 @@ export async function POST(req: Request) {
         });
 
         // Cleanup abort controller for this user if it's still ours
-        if (activeRenderAbort.get(userId) === renderAbortController) activeRenderAbort.delete(userId);
+        activeRenderCancel.delete(userId);
 
         // If a newer job was started for this user, discard this result silently
         if (latestJobPerUser.get(userId) !== jobId) {
