@@ -1598,10 +1598,15 @@ Total audio: ${audioDur.toFixed(2)}s`;
         // left-to-right, find the contiguous span whose concatenated text equals the
         // caption text (whitespace & punctuation ignored), use first.start / last.end.
         type SnapUnit = { text: string; start: number; end: number };
-        const snapUnits: SnapUnit[] = isThai
-          ? mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end }))
-          : words.map((w) => ({ text: w.word, start: w.start, end: w.end }));
-        const snapSourceLabel = isThai ? "segments" : "words";
+        // Prefer word-level timestamps when available — they give per-word resolution
+        // instead of per-segment, so more LLM captions can be snapped directly rather
+        // than interpolated. Thai word timestamps come from Gemini's word array (193 words
+        // for a 50-caption script vs only 28 segments → 25/53 unmatched with segments).
+        const hasEnoughWords = words.length >= llmCaptions.length * 1.5;
+        const snapUnits: SnapUnit[] = hasEnoughWords
+          ? words.map((w) => ({ text: w.word, start: w.start, end: w.end }))
+          : mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end }));
+        const snapSourceLabel = hasEnoughWords ? "words" : "segments";
         console.log(`[transcribe] snap source: ${snapSourceLabel} (${snapUnits.length} units, isThai=${isThai})`);
         if (snapUnits.length > 0 && llmCaptions.length > 0) {
           const stripForMatch = (s: string) =>
