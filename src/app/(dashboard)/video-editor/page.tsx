@@ -3319,20 +3319,20 @@ export default function VideoEditorPage() {
                 e.currentTarget.setPointerCapture(e.pointerId);
                 const r = e.currentTarget.getBoundingClientRect();
                 const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 150));
+                setTlZoom(Math.round(50 + pct * 750));
               }}
               onPointerMove={e => {
                 if (e.buttons !== 1) return;
                 const r = e.currentTarget.getBoundingClientRect();
                 const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 150));
+                setTlZoom(Math.round(50 + pct * 750));
               }}
             >
               <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 150) * 100}%` }} />
+                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 750) * 100}%` }} />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: `${((tlZoom - 50) / 150) * 100}%` }}
+                  style={{ left: `${((tlZoom - 50) / 750) * 100}%` }}
                 />
               </div>
             </div>
