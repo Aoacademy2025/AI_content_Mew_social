@@ -1345,7 +1345,29 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
         const mergedSegments = premergedSegments;
         console.log(`[transcribe] pre-merge: ${segments.length} → ${mergedSegments.length} segments`);
 
-        // Format segments as numbered list for LLM
+        // ── Use Gemini segments directly as captions (no LLM merge needed) ──
+        // Gemini's segment timestamps are already accurate — running another LLM
+        // pass creates more captions than segments, forcing ~12/40 to be interpolated.
+        // Skipping the merge keeps timing 100% snapped to real STT boundaries.
+        const segmentCaptions = mergedSegments.map((s, i) => ({
+          text: s.text.trim(),
+          startMs: Math.round(s.start * 1000),
+          endMs: Math.round(s.end * 1000),
+          tag: i === 0 ? "hook" : "body",
+        }));
+        console.log(`[transcribe] using segments directly as captions: ${segmentCaptions.length} captions`);
+        captions = segmentCaptions.map(c => ({
+          text: c.text,
+          startMs: c.startMs,
+          endMs: c.endMs,
+          timestampMs: c.startMs,
+          confidence: 1,
+          tag: c.tag as "hook" | "body" | "cta",
+        }));
+        // (audioDurationMs set below in sanitizeCaptionsTimeline pass)
+
+        // Skip LLM merge — jump straight to snap+post-process
+        // (keep segList/wordList for future use or fallback)
         const segList = mergedSegments.map((s, i) =>
           `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
         ).join("\n");
@@ -1522,7 +1544,13 @@ ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
 
-        let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = [];
+        // Segments are already accurate — skip LLM merge entirely.
+        // LLM merge creates more captions than segments, forcing ~12/40 to be
+        // interpolated (timestamp guessing) → subtitle drift. Segments from
+        // Gemini transcribe already have silence/breath-based timestamps.
+        let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = segmentCaptions;
+        const skipLlmMerge = true;
+        if (!skipLlmMerge) {
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
           console.log(`[transcribe] Gemini merge raw (${raw.length} chars): ${raw.slice(0, 300)}`);
@@ -1577,15 +1605,9 @@ Total audio: ${audioDur.toFixed(2)}s`;
           }
         } catch (e) {
           console.warn("[transcribe] Gemini merge LLM failed:", e);
+          llmCaptions = segmentCaptions; // fallback to segments
         }
-
-        // Fallback: use pre-merged segments directly if LLM failed
-        if (llmCaptions.length === 0) {
-          console.warn("[transcribe] Gemini merge fallback: using raw segments");
-          llmCaptions = mergedSegments
-            .map(s => ({ text: sanitizePhraseText(s.text), startMs: Math.round(s.start * 1000), endMs: Math.round(s.end * 1000) }))
-            .filter(c => c.text.length > 0);
-        }
+        } // end if (!skipLlmMerge)
 
         // ── Snap LLM-reported timestamps to real STT timestamps.
         //
