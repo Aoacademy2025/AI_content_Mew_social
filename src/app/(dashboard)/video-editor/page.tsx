@@ -311,17 +311,30 @@ export default function VideoEditorPage() {
     const urlJobId = new URL(window.location.href).searchParams.get("jobId");
     if (urlJobId) {
       activeJobIdRef.current = urlJobId;
+      runningRef.current = true; setRunning(true);
       setStep("render", "running", "Rendering...");
       setRenderProgressError(null);
 
       let pollStopped = false;
       let renderPollTimer: ReturnType<typeof setInterval> | null = null;
+      let resumeTimeoutId: ReturnType<typeof setTimeout> | null = null;
       const stopPoll = () => {
         pollStopped = true;
         if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
+        if (resumeTimeoutId) { clearTimeout(resumeTimeoutId); resumeTimeoutId = null; }
         try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
       };
       stopRenderPollRef.current = stopPoll;
+
+      // Auto-stop if render hangs after 10 minutes with no progress
+      resumeTimeoutId = setTimeout(() => {
+        if (!pollStopped) {
+          stopPoll();
+          setRenderProgressError("Render ค้างนานเกิน 10 นาที — กรุณาลองใหม่");
+          setStep("render", "error", "Render ค้างนานเกิน 10 นาที");
+          runningRef.current = false; setRunning(false);
+        }
+      }, 10 * 60 * 1000);
 
       // Poll progress (fast)
       renderPollTimer = setInterval(async () => {
@@ -363,9 +376,13 @@ export default function VideoEditorPage() {
         } catch {}
       }, 3000);
 
-      // ล้าง status poller เมื่อ component unmount
+      // ล้าง status poller เมื่อ component unmount หรือ stopAll() ถูกเรียก
       const origStop = stopRenderPollRef.current;
-      stopRenderPollRef.current = () => { origStop(); clearInterval(si); };
+      stopRenderPollRef.current = () => {
+        origStop();
+        clearInterval(si);
+        runningRef.current = false; setRunning(false);
+      };
     }
 
     // Stop all polling and abort when tab closes/refreshes
@@ -1330,8 +1347,8 @@ export default function VideoEditorPage() {
       // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
       try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 120 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 120 * 60 * 1000;
+      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 10 นาที → ถือว่า hang → error
+      const STALE_TIMEOUT_MS = 10 * 60 * 1000;
       let lastProgressValue = -1;
       let lastProgressChangedAt = Date.now();
 
@@ -1484,6 +1501,7 @@ export default function VideoEditorPage() {
             chromaColor: "0x00ff00",
             chromaSimilarity,
             chromaBlend,
+            audioFromAvatar: true,
           })
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
