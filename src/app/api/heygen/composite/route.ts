@@ -56,18 +56,20 @@ function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
 // ─────────────────────────────────────────────
 async function directComposite(bgPath: string, avatarPath: string, outPath: string): Promise<void> {
   const ffmpeg = getFfmpegPath();
+  // Scale bg to 1080x1920, overlay avatar centered, take audio from avatarPath (has TTS audio)
   const filter = [
-    `[1:v][0:v]scale2ref=iw:ih[fg_s][bg]`,
-    `[fg_s]format=yuva444p[fg]`,
-    `[bg][fg]overlay=0.5*W-w/2:0.5*H-h/2:format=auto[out]`,
+    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
+    `[bg][fg]overlay=0:0:format=auto[out]`,
   ].join(";");
 
   console.log("[direct-composite] filter:", filter);
   await runFfmpeg(ffmpeg, [
     "-y", "-i", bgPath, "-i", avatarPath,
     "-filter_complex", filter,
-    "-map", "[out]", "-map", "0:a?",
+    "-map", "[out]", "-map", "1:a?",
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+    "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
   ]);
@@ -86,6 +88,7 @@ async function chromakeyComposite(
   similarity = 0.28,
   blend = 0.04,
   chromaColor = "0x12FF05",
+  audioFromAvatar = false,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
@@ -133,7 +136,8 @@ async function chromakeyComposite(
     "-i", avatarPath,
     "-filter_complex", filterComplex,
     "-map", "[out]",
-    "-map", "0:a?",
+    // Direct URL mode: audio lives in avatarPath (input 1), not bgPath
+    "-map", audioFromAvatar ? "1:a?" : "0:a?",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
     "-threads", "0",
     "-c:a", "aac", "-b:a", "128k",
@@ -426,6 +430,7 @@ export async function POST(req: Request) {
     chromaBlend = 0.04,
     chromaColor = "0x12FF05",
     rembgModel = "u2net",
+    audioFromAvatar = false,
   } = body ?? {};
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
@@ -483,7 +488,7 @@ export async function POST(req: Request) {
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {
-      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor);
+      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor, audioFromAvatar);
     }
 
     if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");
