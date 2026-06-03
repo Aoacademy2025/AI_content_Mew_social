@@ -471,7 +471,11 @@ export function AnimatedSubtitle({
         alignItems: "center",
         ...extra,
       }}>
-        <div style={{ maxWidth: "80%", textAlign: "center", paddingLeft: "10%", paddingRight: "10%", display: "flex", justifyContent: "center", alignItems: "center" }}>
+        {/* Width MUST match the editor preview (page.tsx uses left:4% / right:4%
+            → 92% usable). Earlier this was maxWidth 80% with 10% padding each
+            side, leaving only 60% usable → captions that fit on one line in the
+            preview wrapped to two lines in the burned MP4. */}
+        <div style={{ width: "92%", textAlign: "center", display: "flex", justifyContent: "center", alignItems: "center" }}>
           {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900, frame, captionDurFrames, textEffect, popup.accentColor ?? accentColor)}
         </div>
       </div>
