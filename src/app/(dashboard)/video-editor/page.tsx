@@ -903,7 +903,7 @@ export default function VideoEditorPage() {
   }
 
   async function runTranscribe(voiceUrl: string): Promise<Caption[]> {
-    setStep("transcribe", "running", "Whisper transcribing...");
+    setStep("transcribe", "running", "กำลังถอดเสียง...");
     const cleanScriptForTx = scriptOverride.trim() || preprocessScript(script);
     const fullUrl = voiceUrl.startsWith("http") ? voiceUrl : `${window.location.origin}${voiceUrl}`;
     const res = await fetch("/api/videos/transcribe", {
