@@ -555,17 +555,18 @@ export async function POST(req: Request) {
 
         const cpuCount = os.cpus().length;
         const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 1.5;
+        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
+        const isCriticalLowMem = freeMemGb < 0.8;
         const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-        const safeConcurrency = isLowResourceHost ? 1 : Math.min(2, Math.max(1, cpuCount - 1));
+        const safeConcurrency = (isLowResourceHost || isCriticalLowMem) ? 1 : Math.min(2, Math.max(1, cpuCount - 1));
         const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
           ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
           : safeConcurrency;
         const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-        const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 64
+        const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 32
           ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-          : isLowResourceHost ? 64 * 1024 * 1024 : 128 * 1024 * 1024;
-        const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isLowResourceHost ? 80 : 95);
+          : isCriticalLowMem ? 32 * 1024 * 1024 : isLowResourceHost ? 64 * 1024 * 1024 : 128 * 1024 * 1024;
+        const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95);
         const isWindows = process.platform === "win32";
         const chromiumArgs = [
           "--disable-dev-shm-usage",
