@@ -57,13 +57,19 @@ async function searchPexels(query: string, apiKey: string, minDuration = 3, perP
   return (data.videos ?? []) as PexelsVideo[];
 }
 
-// Pick best video file: prefer HD portrait, fallback to any
+// Pick best video file: prefer HD portrait ≤1080p, fallback to any
+// Cap at 1920px on the long side — 4K files (2160p) are too large to download reliably
 function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   const files = video.video_files.filter(f => f.file_type === "video/mp4");
+  const under1080 = (f: PexelsVideoFile) => Math.max(f.width, f.height) <= 1920;
   const portrait = files.filter(f => f.height > f.width);
-  const hd = portrait.find(f => f.quality === "hd") ?? portrait[0];
+  const hdPortrait = portrait.filter(under1080).find(f => f.quality === "hd")
+    ?? portrait.filter(under1080)[0];
+  if (hdPortrait) return hdPortrait;
+  if (portrait[0]) return portrait[0]; // fallback: any portrait even if large
+  const hd = files.filter(under1080).find(f => f.quality === "hd") ?? files.filter(under1080)[0];
   if (hd) return hd;
-  return files.find(f => f.quality === "hd") ?? files[0] ?? null;
+  return files[0] ?? null;
 }
 
 function safeUnlink(filePath: string) {

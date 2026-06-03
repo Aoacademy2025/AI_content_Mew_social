@@ -1499,6 +1499,14 @@ TAGS
 • "body" = everything else
 
 ═══════════════════════════════════════════════════════════
+TARGET CARD COUNT
+═══════════════════════════════════════════════════════════
+Aim for approximately ${mergedSegments.length} cards total (≈ 1 card per STT segment).
+This ensures every card can be snapped to a real timestamp.
+• If the script naturally fits in fewer cards, that is fine.
+• Do NOT create more than ${Math.round(mergedSegments.length * 1.5)} cards — prefer merging short phrases.
+
+═══════════════════════════════════════════════════════════
 OUTPUT (JSON only — no markdown, no explanation)
 ═══════════════════════════════════════════════════════════
 {"captions":[{"text":"...","startMs":0,"endMs":1200,"tag":"hook"},...]}
