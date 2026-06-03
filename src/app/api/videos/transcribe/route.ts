@@ -805,11 +805,11 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   // sorting would reorder text content and cause subtitles to appear out of sync
   const normalized: SubtitleItem[] = skipCursorPush
     ? (() => {
-        let minStart = 0;
+        let cursor = 0;
         return mapped.map((c) => {
-          const startMs = Math.max(minStart, c.startMs);
+          const startMs = Math.max(cursor, c.startMs);
           const endMs = Math.max(startMs + 1, c.endMs);
-          minStart = startMs;
+          cursor = endMs;  // next caption must start at or after this one ends
           return { ...c, startMs, endMs };
         });
       })()
