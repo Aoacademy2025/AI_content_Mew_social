@@ -1738,22 +1738,31 @@ Total audio: ${audioDur.toFixed(2)}s`;
           }
         }
 
-        // Preserve real spoken timing — do NOT stretch captions across silent gaps.
+        // Enforce strict monotonic, non-overlapping timeline.
         //
-        // Previously we did: if (next.start > prev.end) prev.end = next.start
-        // That bridged silence onto the previous caption, which made subtitles linger
-        // on screen while the speaker had paused → user reported "ซับยังโผล่ตอนเงียบ".
+        // We preserve real spoken timing — do NOT stretch captions across silent
+        // gaps. Earlier impl only checked `a.endMs > b.startMs` (back-overlap),
+        // but in Direct URL mode the snap+interpolation pass occasionally
+        // produces out-of-order timestamps (next caption starts BEFORE current
+        // caption) which then renders as visually overlapping pills on the
+        // timeline — user report: 'ซับซ้อนกันไปหมด'.
         //
-        // Instead: trust the (now word-snapped) per-caption start/end and only clamp
-        // overlap, and ensure last caption doesn't extend past audio.
+        // Two passes now:
+        //   1. If b.startMs < a.endMs (any overlap or out-of-order start), push
+        //      b.startMs forward to a.endMs and keep b's duration if possible.
+        //   2. If a.endMs > b.startMs (back-overlap), trim a.endMs to b.startMs.
         for (let i = 0; i < llmCaptions.length - 1; i++) {
-          const a = llmCaptions[i] as { endMs: number };
-          const b = llmCaptions[i + 1] as { startMs: number };
-          if (a.endMs > b.startMs) a.endMs = b.startMs; // clamp overlap only
+          const a = llmCaptions[i] as { startMs: number; endMs: number };
+          const b = llmCaptions[i + 1] as { startMs: number; endMs: number };
+          if (b.startMs < a.endMs) {
+            const bDur = Math.max(1, b.endMs - b.startMs);
+            b.startMs = a.endMs;
+            if (b.endMs <= b.startMs) b.endMs = b.startMs + bDur;
+          }
+          if (a.endMs > b.startMs) a.endMs = b.startMs;
         }
         if (llmCaptions.length > 0) {
           const last = llmCaptions[llmCaptions.length - 1] as { endMs: number };
-          // Clamp last caption to audio end if it overshoots; do NOT stretch it forward
           if (last.endMs > totalAudioMs) last.endMs = totalAudioMs;
         }
 
