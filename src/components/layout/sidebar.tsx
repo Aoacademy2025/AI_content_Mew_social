@@ -31,7 +31,7 @@ const userNavItems: { title: string; href: string; icon: React.ElementType; lock
   { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
   { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
-  { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard, locked: true },
+  { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard },
   { title: "Gallery",       href: "/videos",      icon: Video },
   { title: "Pricing",       href: "/pricing",     icon: CreditCard },
   { title: "Settings",      href: "/settings",    icon: Settings },

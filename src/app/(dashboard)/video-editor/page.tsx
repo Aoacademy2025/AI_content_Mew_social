@@ -870,16 +870,22 @@ export default function VideoEditorPage() {
     const svRaw: StockVideo[] = (data.results ?? []).filter((r: StockVideo) => r.localUrl || r.videoUrl);
     if (!svRaw.length) throw new Error("ไม่พบ stock video");
 
-    // ── Trim to caption count for per-subtitle B-ROLL mode ──
+    // ── Match stock count to caption count for per-subtitle B-ROLL mode ──
     // We want 1 B-ROLL clip per caption so cuts land on subtitle boundaries.
-    // If caps already exist (runAll path), apply trim now so the timeline UI
-    // reflects what the renderer will actually use.
+    // If caps already exist (runAll path), apply now so the timeline UI
+    // reflects what the renderer will actually use:
+    //   sv ≥ caps → trim down to caps.length
+    //   sv  < caps → cycle clips so every caption still has one
     const caps = pipe.current.sceneCaptions ?? [];
-    const sv = caps.length > 0 && svRaw.length >= caps.length
-      ? svRaw.slice(0, caps.length)
-      : svRaw;
-    if (sv.length !== svRaw.length) {
-      console.log(`[runFetchStock] per-subtitle trim: ${svRaw.length} → ${sv.length} clips`);
+    let sv = svRaw;
+    if (caps.length > 0 && svRaw.length > 0) {
+      if (svRaw.length >= caps.length) {
+        sv = svRaw.slice(0, caps.length);
+        console.log(`[runFetchStock] per-subtitle: trimmed ${svRaw.length} → ${sv.length} clips`);
+      } else {
+        sv = Array.from({ length: caps.length }, (_, i) => svRaw[i % svRaw.length]);
+        console.log(`[runFetchStock] per-subtitle: cycled ${svRaw.length} clips → ${sv.length} (one per caption)`);
+      }
     }
 
     pipe.current.stockVideos = sv;
@@ -1158,23 +1164,30 @@ export default function VideoEditorPage() {
     setStep("config", "running");
 
     // ── Force per-subtitle B-ROLL mode ──────────────────────────────────────
-    // Gemini gives us N captions with accurate word-timestamps. We want 1 B-ROLL
-    // clip per caption so every B-ROLL cut lands exactly on a subtitle boundary
-    // and stays in sync with the audio (the issue: ซับไม่ตรงเสียง / B-ROLL กระตุก).
+    // Want exactly 1 B-ROLL clip per caption so every cut lands on a subtitle
+    // boundary (fixes 'ซับไม่ตรงเสียง / B-ROLL กระตุก').
     //
-    // The keyword pipeline used to emit ~scenes*5 stock clips (e.g. 30 for 6
-    // scenes), which made generate-config fall back to scene-aware mode and
-    // produced 30+ tiny B-ROLL cuts unrelated to caption timing.
+    // Two cases to handle:
+    //   • sv ≥ caps (script short): trim the stock pool to caps.length
+    //   • sv  < caps (script long): cycle through sv to fill caps.length
     //
-    // Fix: trim to caps.length and emit sceneClipCounts=[1,1,...] so config
-    // takes the isPerSubtitleTop branch.
+    // Either way the resulting stock list has the same length as caps and we
+    // emit sceneClipCounts=[1,1,...] so generate-config takes the
+    // isPerSubtitleTop branch instead of falling back to scene-aware mode
+    // (which produced the 30 even-split cuts seen in the user's log).
     let svForConfig = sv;
     let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
     const capN = caps.length;
-    if (capN > 0 && sv.length >= capN) {
-      svForConfig = sv.slice(0, capN);
+    if (capN > 0 && sv.length > 0) {
+      if (sv.length >= capN) {
+        svForConfig = sv.slice(0, capN);
+        console.log(`[runConfig] per-subtitle: trimmed ${sv.length} → ${capN} clips`);
+      } else {
+        // Cycle the available clips so every caption gets a clip
+        svForConfig = Array.from({ length: capN }, (_, i) => sv[i % sv.length]);
+        console.log(`[runConfig] per-subtitle: cycled ${sv.length} clips → ${capN} (one per caption)`);
+      }
       sceneClipCountsForConfig = Array.from({ length: capN }, () => 1);
-      console.log(`[runConfig] per-subtitle mode: trimmed ${sv.length} → ${capN} clips`);
       setStockVideos(svForConfig);
       pipe.current.stockVideos = svForConfig;
     }
