@@ -93,6 +93,9 @@ const renderJobs = new Map<string, RenderJob>();
 // Track the latest jobId per user — older jobs are superseded and must not write results
 const latestJobPerUser = new Map<string, string>();
 
+// AbortController per user — abort previous render when a new one starts
+const activeRenderAbort = new Map<string, AbortController>();
+
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
   persistJob(jobId, job);
@@ -183,6 +186,14 @@ export async function POST(req: Request) {
     }
 
     const jobId = `${userId}-${Date.now()}`;
+    // Abort any previous render for this user before starting a new one
+    const prevAbort = activeRenderAbort.get(userId);
+    if (prevAbort) {
+      console.log(`[Render] aborting previous job for user ${userId}`);
+      prevAbort.abort();
+    }
+    const renderAbortController = new AbortController();
+    activeRenderAbort.set(userId, renderAbortController);
     // Register this as the latest job for this user — any older job will be superseded
     latestJobPerUser.set(userId, jobId);
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
@@ -590,6 +601,7 @@ export async function POST(req: Request) {
           inputProps,
           timeoutInMilliseconds: 7200000,
           concurrency: renderConcurrency,
+          cancelSignal: renderAbortController.signal,
           x264Preset: isLowResourceHost ? "faster" : "medium",
           jpegQuality,
           offthreadVideoCacheSizeInBytes,
@@ -612,6 +624,9 @@ export async function POST(req: Request) {
             }
           },
         });
+
+        // Cleanup abort controller for this user if it's still ours
+        if (activeRenderAbort.get(userId) === renderAbortController) activeRenderAbort.delete(userId);
 
         // If a newer job was started for this user, discard this result silently
         if (latestJobPerUser.get(userId) !== jobId) {
