@@ -186,10 +186,9 @@ export default function DashboardPage() {
         )}
 
         {/* Stats grid — 3 numbered cards */}
-        <div className="pp-fade-up grid gap-4 grid-cols-1 sm:grid-cols-3 mb-8" style={{ animationDelay: "180ms" }}>
+        <div className="pp-fade-up grid gap-4 grid-cols-1 sm:grid-cols-2 mb-8" style={{ animationDelay: "180ms" }}>
           {[
             { label: "Styles",  count: stats?.styleCount ?? 0,   limit: stats?.limits?.styles ?? null,   icon: Palette,  href: "/style",   color: "220 90% 65%" },
-            { label: "Content", count: stats?.contentCount ?? 0, limit: stats?.limits?.contents ?? null, icon: FileText, href: "/content", color: "252 70% 65%" },
             { label: "Videos",  count: stats?.videoCount ?? 0,   limit: null,                            icon: Video,    href: "/videos",  color: "142 60% 50%" },
           ].map(({ label, count, limit, icon: Icon, href, color }) => (
             <Link key={href} href={href} className="pp-card pp-card-interactive overflow-hidden block">
