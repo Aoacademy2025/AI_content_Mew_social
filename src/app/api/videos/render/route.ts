@@ -451,6 +451,18 @@ export async function POST(req: Request) {
         throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
       }
 
+      // Gap-fill pass: if a segment was clamped short, extend the NEXT segment's start
+      // back to fill the gap — prevents black screen between clips (which makes subs
+      // look out of sync even when timing is correct)
+      for (let i = 0; i < resolvedBgVideos.length - 1; i++) {
+        const cur  = resolvedBgVideos[i];
+        const next = resolvedBgVideos[i + 1];
+        if (next.start > cur.end + 0.04) {
+          console.warn(`[render] gap ${cur.end.toFixed(2)}s→${next.start.toFixed(2)}s — extending next segment back`);
+          next.start = cur.end;
+        }
+      }
+
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
