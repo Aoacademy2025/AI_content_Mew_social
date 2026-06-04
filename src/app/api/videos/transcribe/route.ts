@@ -1376,8 +1376,8 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
         }));
         // (audioDurationMs set below in sanitizeCaptionsTimeline pass)
 
-        // Skip LLM merge — jump straight to snap+post-process
-        // (keep segList/wordList for future use or fallback)
+        // Segment timestamps are accurate — skip both word-split and LLM merge.
+        // captions[] already set from mergedSegments above. Jump to post-process.
         const segList = mergedSegments.map((s, i) =>
           `${i + 1}. [${s.start.toFixed(2)}s–${s.end.toFixed(2)}s] "${s.text.trim()}"`
         ).join("\n");
@@ -1555,7 +1555,7 @@ ${segList}
 Total audio: ${audioDur.toFixed(2)}s`;
 
         let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = segmentCaptions;
-        const skipLlmMerge = false;
+        const skipLlmMerge = true; // segments already have accurate timestamps
         if (!skipLlmMerge) {
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
