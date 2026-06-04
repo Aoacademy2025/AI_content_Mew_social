@@ -59,12 +59,43 @@ export const runtime = "nodejs";
 
 // Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
 type RenderJob = {
-  status: "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error";
   videoUrl?: string;
   error?: string;
   startedAt: number;
   progress?: number; // 0–100
+  queuePosition?: number; // set while status === "queued"
 };
+
+// Global semaphore: limits concurrent Remotion renders to RENDER_MAX_CONCURRENT (default 2).
+// Prevents VPS OOM when many users render simultaneously.
+const MAX_CONCURRENT = Math.max(1, Number(process.env.RENDER_MAX_CONCURRENT) || 2);
+let activeRenderCount = 0;
+const renderQueue: Array<() => void> = []; // resolvers waiting for a slot
+
+function acquireRenderSlot(): Promise<void> {
+  if (activeRenderCount < MAX_CONCURRENT) {
+    activeRenderCount++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => { renderQueue.push(resolve); });
+}
+
+function releaseRenderSlot() {
+  const next = renderQueue.shift();
+  if (next) {
+    next(); // hand slot directly to next waiter — count stays the same
+  } else {
+    activeRenderCount--;
+  }
+}
+
+// Returns how many jobs are waiting ahead of a given waiter index (0 = next up)
+function getQueuePosition(waiterId: number): number {
+  // waiterId is the index in renderQueue array at the time of enqueue
+  // Since we shift() from front, position = index in current array
+  return waiterId; // caller stores the index at enqueue time
+}
 
 function jobsDir(): string {
   const d = path.join(process.cwd(), ".tmp", "render-jobs");
@@ -503,13 +534,38 @@ export async function POST(req: Request) {
 
     // Clear stale progress file and register job immediately — before bundle build
     try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
-    setRenderJob(jobId, { status: "running", startedAt: Date.now() });
+
+    // Enqueue: check BEFORE acquiring slot so we know if this job will queue or run immediately.
+    const willQueue = activeRenderCount >= MAX_CONCURRENT;
+    const queuePos = willQueue ? renderQueue.length + 1 : 0; // 1-based position in queue
+    if (willQueue) {
+      setRenderJob(jobId, { status: "queued", startedAt: Date.now(), queuePosition: queuePos });
+      try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, queued: true, queuePosition: queuePos })); } catch {}
+      console.log(`[Render] job=${jobId} queued at position ${queuePos}, active=${activeRenderCount}/${MAX_CONCURRENT}`);
+    } else {
+      setRenderJob(jobId, { status: "running", startedAt: Date.now() });
+    }
+    const slotPromise = acquireRenderSlot();
 
     // Fire-and-forget: bundle + render in background so HTTP response returns immediately.
     // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
     (async () => {
       let lastProgress = -1;
       try {
+        // Wait for a render slot (immediate if under MAX_CONCURRENT, otherwise queued)
+        await slotPromise;
+
+        // Slot acquired — check if job was superseded while waiting in queue
+        if (latestJobPerUser.get(userId) !== jobId) {
+          releaseRenderSlot();
+          console.log(`[Render] job=${jobId} superseded while queued — discarding`);
+          return;
+        }
+
+        // Transition queued → running
+        setRenderJob(jobId, { status: "running", startedAt: getRenderJob(jobId)?.startedAt ?? Date.now() });
+        try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
+        console.log(`[Render] job=${jobId} dequeued, slots=${activeRenderCount}/${MAX_CONCURRENT}`);
         // Bundle (may be cached) — runs in background after jobId is returned
         // Use mtime+size fingerprint of all remotion source files to detect changes
         const remotionSrcDir = path.resolve(process.cwd(), "src/remotion");
@@ -628,6 +684,7 @@ export async function POST(req: Request) {
 
         // Cleanup abort controller for this user if it's still ours
         activeRenderCancel.delete(userId);
+        releaseRenderSlot();
 
         // If a newer job was started for this user, discard this result silently
         if (latestJobPerUser.get(userId) !== jobId) {
@@ -654,6 +711,7 @@ export async function POST(req: Request) {
             body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
           }).catch(() => {});
       } catch (error) {
+        releaseRenderSlot();
         if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
         console.error("Render error:", error);
         const detail = error instanceof Error ? error.message : String(error);

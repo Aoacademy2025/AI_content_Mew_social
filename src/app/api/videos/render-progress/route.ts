@@ -22,14 +22,16 @@ export async function GET(req: Request) {
 
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");
-    const parsed = JSON.parse(raw) as { progress?: number; videoUrl?: string; error?: string };
+    const parsed = JSON.parse(raw) as { progress?: number; videoUrl?: string; error?: string; queued?: boolean; queuePosition?: number };
     const progress = Number(parsed?.progress);
     return NextResponse.json({
       progress: Number.isFinite(progress) ? progress : 0,
       videoUrl: parsed?.videoUrl ?? null,
       error: parsed?.error ?? null,
+      queued: parsed?.queued ?? false,
+      queuePosition: parsed?.queuePosition ?? null,
     });
   } catch {
-    return NextResponse.json({ progress: 0, videoUrl: null, error: null });
+    return NextResponse.json({ progress: 0, videoUrl: null, error: null, queued: false, queuePosition: null });
   }
 }
