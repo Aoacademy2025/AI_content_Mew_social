@@ -1284,7 +1284,17 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
       // STT (Whisper/Gemini) is used ONLY for timestamps, never for subtitle text.
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
         ? script.trim() : fullText;
-      const sourceText = sanitizeTranscriptionText(sourceRaw);
+      // Strip any subtitle metadata headers that users may accidentally paste in
+      // e.g. "ซับไตเติลขนาด 9:16 (แบ่งตามจังหวะคำพูด)\n#1 · hook\n\nก่อนที่..."
+      const stripSubtitleMetadata = (s: string): string => {
+        return s
+          .replace(/ซับไตเติล[^\n]*/g, "")
+          .replace(/^#\d+\s*·\s*(hook|body|cta)[^\n]*/gim, "")
+          .replace(/^\d+:\d+–\d+:\d+\s*/gm, "")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+      };
+      const sourceText = sanitizeTranscriptionText(stripSubtitleMetadata(sourceRaw));
       console.log(`[transcribe] sourceText from ${typeof script === "string" && script.trim().length > 0 ? "script (real)" : "STT fullText (fallback)"}: ${sourceText.slice(0, 80)}`);
       const fallbackDur = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 1000 : 30;
       const audioDur = Math.max(
