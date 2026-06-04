@@ -568,16 +568,18 @@ export async function POST(req: Request) {
 
         const cpuCount = os.cpus().length;
         const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
         const isCriticalLowMem = freeMemGb < 0.8;
+        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
         // Scale down threads-per-job as more jobs run in parallel — share CPU fairly
         const jobsNow = Math.max(1, activeRenderCount);
         const totalThreadBudget = Math.max(1, cpuCount - 1);
         const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-        const safeConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+        // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
+        const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
           ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
+          : isCriticalLowMem ? 1
+          : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / jobsNow))
           : Math.max(1, Math.floor(totalThreadBudget / jobsNow));
-        const renderConcurrency = (isLowResourceHost || isCriticalLowMem) ? 1 : safeConcurrency;
         const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
         // Scale down cache per job when running many in parallel
         const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
