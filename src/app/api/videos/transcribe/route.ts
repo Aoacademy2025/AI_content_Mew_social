@@ -1544,12 +1544,8 @@ ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
 
-        // Segments are already accurate — skip LLM merge entirely.
-        // LLM merge creates more captions than segments, forcing ~12/40 to be
-        // interpolated (timestamp guessing) → subtitle drift. Segments from
-        // Gemini transcribe already have silence/breath-based timestamps.
         let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = segmentCaptions;
-        const skipLlmMerge = true;
+        const skipLlmMerge = false;
         if (!skipLlmMerge) {
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
@@ -1629,9 +1625,16 @@ Total audio: ${audioDur.toFixed(2)}s`;
         // caption text (whitespace & punctuation ignored), use first.start / last.end.
         type SnapUnit = { text: string; start: number; end: number };
         const snapUnits: SnapUnit[] = isThai
-          ? mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end }))
+          // For Thai: prefer word timestamps when we have enough words vs captions
+          // (193 words >> 40 captions → near-100% snap rate)
+          // Fall back to segments only when word count is too low
+          ? (words.length >= llmCaptions.length * 1.5
+              ? words.map((w) => ({ text: w.word, start: w.start, end: w.end }))
+              : mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end })))
           : words.map((w) => ({ text: w.word, start: w.start, end: w.end }));
-        const snapSourceLabel = isThai ? "segments" : "words";
+        const snapSourceLabel = isThai
+          ? (words.length >= llmCaptions.length * 1.5 ? "words(thai)" : "segments")
+          : "words";
         console.log(`[transcribe] snap source: ${snapSourceLabel} (${snapUnits.length} units, isThai=${isThai})`);
         if (snapUnits.length > 0 && llmCaptions.length > 0) {
           const stripForMatch = (s: string) =>
