@@ -1422,163 +1422,41 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
           : "(no word-level timestamps available — group SEGMENTS instead)";
 
         const scriptForPrompt = sourceText.trim().slice(0, 3000);
-        const geminiMergePrompt = `You are a Thai subtitle editor for TikTok / Reels / Shorts.
+        const geminiMergePrompt = `แบ่งสคริปต์ภาษาไทยนี้เป็นซับไตเติ้ลสำหรับ TikTok/Reels/Shorts
 
-YOUR ROLE: Create SHORT, PUNCHY, ONE-LINE subtitle cards that match speech rhythm.
-Each card must fit on ONE LINE — short enough to read in 1 glance (max ~20 Thai chars).
-Make each card feel exciting and engaging — like a professional TikTok subtitle.
+กฎหลัก:
+1. ห้ามตัดกลางคำ — คำในรายการ WORDS คือหน่วยที่แบ่งไม่ได้
+2. ซับแต่ละการ์ดต้อง อ่านได้ใน 1 วินาที — ไม่เกิน 15-20 ตัวอักษรไทย
+3. ตัดที่ช่วงเงียบ (gap ≥ 0.3s), คำเชื่อม (แต่/เพราะ/ถ้า/และ), หรือจบประโยค
+4. คำเชื่อมขึ้นต้นการ์ดใหม่เสมอ: แต่, เพราะ, ถ้า, และ, หรือ, จึง, ดังนั้น
+5. ห้ามข้ามคำ ห้ามสลับ ห้ามแก้ข้อความ
+6. startMs = เวลาเริ่มของคำแรก × 1000, endMs = เวลาจบของคำสุดท้าย × 1000
 
-═══════════════════════════════════════════════════════════
-CORE RULE — INDIVISIBLE WORD BLOCKS
-═══════════════════════════════════════════════════════════
-Each WORD in the WORDS list below is ATOMIC. You MUST:
-  ✓ Pick contiguous spans of words (W3..W7, then W8..W12, etc.)
-  ✓ Concatenate their text verbatim (no edits, no reorder)
-  ✓ Use the FIRST word's start time as startMs, the LAST word's end time as endMs
-  ✗ NEVER take a slice INSIDE a word (no "ไม" from "ไม่ทัน")
-  ✗ NEVER skip a word, NEVER duplicate, NEVER reorder
-  ✗ NEVER edit any word's text
+สไตล์ที่ต้องการ:
+- ซับสั้น กระชับ อ่านฉับ เหมือน TikTok มืออาชีพ
+- คำเด็ดๆ เป็นการ์ดเดี่ยวได้: "ทำมันพัง" / "จริงๆ" / "ทันที"
+- การ์ดแรก (hook) ต้องดึงดูด ชวนติดตาม
+- แบ่งตาม rhythm การพูด ไม่ใช่ประโยคไวยากรณ์
 
-If you follow this one rule, you can never produce mid-word cuts.
+tags: "hook"=การ์ดแรกเท่านั้น, "cta"=กดติดตาม/ไลค์/แชร์, "body"=ทั้งหมดที่เหลือ
 
-═══════════════════════════════════════════════════════════
-HOW TO CHOOSE GROUP BOUNDARIES (the real skill)
-═══════════════════════════════════════════════════════════
-Walk the WORDS list left-to-right. End the current group AT word W[i] when:
+ตัวอย่างที่ดี (script: "ก่อนที่ Claude รุ่นใหม่จะถึงมือคุณ มีทีมเล็กๆ ที่ได้ลองก่อน"):
+  Card 1: "ก่อนที่ Claude รุ่นใหม่จะถึงมือคุณ" → hook
+  Card 2: "มีทีมเล็กๆ" → body
+  Card 3: "ที่ได้ลองก่อนทุกคน" → body
 
-  PRIORITY 1 — Natural sentence end after W[i]:
-    • Last word is a sentence-ender: ครับ, ค่ะ, นะคะ, แล้ว, เลย, จริงๆ
-    • Next word starts a new sentence: คือ, แล้ว, แต่, ดังนั้น, ส่วน, อย่างไรก็ตาม
-    • Sentence-ending punctuation in the script (. ? ! ฯ) appears between W[i] and W[i+1]
+ตัวอย่างที่ผิด: "ก่อนที่Claudeรุ่นใหม่จะถึงมือคุณมีทีมเล็กๆที่ได้ลองก่อนทุกคน" (ยาวเกินไป)
 
-  PRIORITY 2 — Clear conjunction break BEFORE next word:
-    • Next word is: และ, หรือ, แต่, จึง, เพราะ, ถ้า, เพื่อ, ส่วน
-    • End BEFORE the conjunction so it leads the next card
+OUTPUT: JSON เท่านั้น ไม่มี markdown
+{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},{"text":"...","startMs":2500,"endMs":4000,"tag":"body"},...]}
 
-  PRIORITY 3 — Long silence between W[i] and W[i+1]:
-    • Time gap ≥ 0.35s = natural breath, safe to split there
-
-  PRIORITY 4 — Group has grown big enough:
-    • Group reads as a complete clause AND would exceed ~50 Thai chars if extended
-
-NEVER end a group when:
-  ✗ Next word is a final-particle of current phrase (นะ, ค่ะ, ครับ, เลย, แล้ว)
-  ✗ Next word is a noun completing a preposition (current word is ใน, บน, กับ, ของ, ที่)
-  ✗ Next word is a classifier (current word is a noun + number)
-  ✗ Current word ends with a connector (เพราะ, ดังนั้น, แล้ว...ก็)
-
-═══════════════════════════════════════════════════════════
-LENGTH RULE — ONE LINE ONLY
-═══════════════════════════════════════════════════════════
-• HARD LIMIT: max 20 Thai characters per card — if longer, SPLIT into 2 cards
-• Sweet spot: 1–2 seconds of speech per card
-• Single dramatic words are great: "ทำมันพัง" / "ทันที" / "จริงๆ"
-• Split at every natural pause (gap ≥ 0.3s between words)
-• Conjunctions (แต่ เพราะ ถ้า และ) always START a new card
-
-═══════════════════════════════════════════════════════════
-WORKED EXAMPLES (study these carefully)
-═══════════════════════════════════════════════════════════
-
-EXAMPLE 1 — Good sentence grouping
-  WORDS: W1[0.0]"วงการ" W2[0.4]"AI" W3[0.7]"กำลัง" W4[1.0]"เปลี่ยน" W5[1.4]"มือ"
-         W6[1.9]"เงียบๆ" W7[2.4]"ครับ" W8[3.0]"และ" W9[3.3]"OpenAI" W10[3.9]"อาจ"
-         W11[4.2]"ไม่ใช่" W12[4.6]"เบอร์1" W13[5.0]"ของโลก" W14[5.4]"อีกต่อไป"
-
-  GOOD output:
-    Card 1 (W1–W7): "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ"
-      → ends at ครับ (sentence-ender), W8 "และ" starts new sentence
-    Card 2 (W8–W14): "และ OpenAI อาจไม่ใช่เบอร์1 ของโลกอีกต่อไป"
-      → conjunction "และ" leads; ends at อีกต่อไป (natural close)
-
-  BAD output (don't do this):
-    "วงการ AI กำลัง" + "เปลี่ยนมือเงียบๆ" + "ครับและ OpenAI"
-      → splits inside a sentence; "ครับ" stranded with "และ" (different sentences)
-
-EXAMPLE 2 — Conjunction leads new card
-  WORDS: W1"เพราะว่า" W2"เรา" W3"ตั้งใจ" W4"ทำ" W5"โปรเจกต์นี้" W6"มากๆ"
-         W7"ดังนั้น" W8"ผลลัพธ์" W9"เลย" W10"ออกมา" W11"ดี"
-
-  GOOD: "เพราะว่าเราตั้งใจทำโปรเจกต์นี้มากๆ" (W1–W6) + "ดังนั้นผลลัพธ์เลยออกมาดี" (W7–W11)
-  BAD : "เพราะว่าเราตั้งใจทำโปรเจกต์นี้" + "มากๆ ดังนั้นผลลัพธ์เลยออกมาดี"
-        (cuts off มากๆ from its verb, and dangles into next sentence)
-
-EXAMPLE 3 — Don't strand particles or prepositional objects
-  WORDS: W1"ให้" W2"รางวัล" W3"กับ" W4"ตัวเอง"
-  GOOD: "ให้รางวัลกับตัวเอง" (W1–W4, one phrase)
-  BAD : "ให้รางวัล" + "กับตัวเอง" (กับ requires its object to be in the same card)
-
-EXAMPLE 4 — Full paragraph showing how cards stack naturally (this is the gold standard)
-
-  SCRIPT: "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ และ OpenAI อาจไม่ใช่เบอร์ 1
-           ของโลกอีกต่อไป หลายคนอาจไม่ทันสังเกต แต่ในวงการนักพัฒนา enterprise
-           ระดับโลก กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
-
-  GOOD output (5 cards):
-    Card 1: "วงการ AI กำลังเปลี่ยนมือเงียบๆ ครับ"
-            ↳ ends at ครับ (sentence-ender). Next word "และ" starts new sentence.
-    Card 2: "และ OpenAI อาจไม่ใช่เบอร์ 1 ของโลกอีกต่อไป"
-            ↳ conjunction และ leads. Ends at "อีกต่อไป" (sentence closer).
-    Card 3: "หลายคนอาจไม่ทันสังเกต"
-            ↳ complete thought (subject+verb+object). Next word "แต่" starts contrast.
-    Card 4: "แต่ในวงการนักพัฒนา enterprise ระดับโลก"
-            ↳ conjunction แต่ leads. Ends at "ระดับโลก" — the subject is set up,
-              verb comes in next card to keep length readable.
-    Card 5: "กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
-            ↳ verb phrase that completes Card 4's subject. Ends the paragraph.
-
-  BAD outputs to avoid:
-    ✗ "วงการ AI กำลัง" + "เปลี่ยนมือเงียบๆ ครับและ OpenAI"
-      (mid-sentence cut; ครับ+และ glued across sentences)
-    ✗ "อาจไม่ใช่เบอร์ 1 ของ" + "โลกอีกต่อไป"
-      (cuts off prepositional object "โลก" from "ของ")
-    ✗ "หลายคนอาจไม" + "่ทันสังเกต"
-      (mid-syllable cut — tone mark ่ stranded; word is "ไม่ทัน")
-    ✗ "แต่ในวงการนักพัฒนา enterprise ระดับโลก กำลังย้ายจาก GPT ไปใช้ Claude ของบริษัทชื่อ Anthropic"
-      (one mega-card; viewer can't read this in one breath — split at the verb)
-
-═══════════════════════════════════════════════════════════
-TIMESTAMPS — copy from WORDS, no math
-═══════════════════════════════════════════════════════════
-For card grouping W_a..W_b:
-  • startMs = W_a.start × 1000
-  • endMs   = W_b.end   × 1000  (use SEGMENT end if word.end unavailable)
-  • No rounding tricks, no overlap, monotonic increasing
-
-═══════════════════════════════════════════════════════════
-SCRIPT FIDELITY (script is source of truth)
-═══════════════════════════════════════════════════════════
-• Output text MUST equal the concatenated WORDS verbatim
-• If WORDS differ from SCRIPT (STT mishear), trust SCRIPT spelling but keep WORD timing
-• Parenthetical hints like "(อ่านว่า ...)" in SCRIPT are NOT spoken — skip them
-
-═══════════════════════════════════════════════════════════
-TAGS
-═══════════════════════════════════════════════════════════
-• "hook" = ONLY card index 0
-• "cta"  = cards containing: กดติดตาม, ไลค์, แชร์, subscribe, กดระฆัง (max 2)
-• "body" = everything else
-
-═══════════════════════════════════════════════════════════
-TARGET CARD COUNT
-═══════════════════════════════════════════════════════════
-Aim for approximately ${mergedSegments.length} cards total (≈ 1 card per STT segment).
-This ensures every card can be snapped to a real timestamp.
-• If the script naturally fits in fewer cards, that is fine.
-• Do NOT create more than ${Math.round(mergedSegments.length * 1.5)} cards — prefer merging short phrases.
-
-═══════════════════════════════════════════════════════════
-OUTPUT (JSON only — no markdown, no explanation)
-═══════════════════════════════════════════════════════════
-{"captions":[{"text":"...","startMs":0,"endMs":1200,"tag":"hook"},...]}
-
-━━━ SCRIPT (verbatim source of truth) ━━━
+━━━ SCRIPT (ต้นฉบับ) ━━━
 ${scriptForPrompt}
 
-━━━ WORDS (atomic units — concatenate, never split inside) ━━━
+━━━ WORDS (คำ+timestamp — ห้ามตัดกลาง) ━━━
 ${wordList}
 
-━━━ SEGMENTS (reference for sentence boundaries — gaps and breath cues) ━━━
+━━━ SEGMENTS (ขอบเขตประโยค อ้างอิงเท่านั้น) ━━━
 ${segList}
 
 Total audio: ${audioDur.toFixed(2)}s`;
