@@ -1358,7 +1358,7 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
         // ── Use Gemini segments directly as captions ──
         // For long segments (>3.5s) subdivide using word timestamps so each
         // caption is short enough to read in one glance (~2s sweet spot).
-        const MAX_SEG_SEC = 2.0;
+        const MAX_SEG_SEC = 3.5;
         const segmentCaptions: { text: string; startMs: number; endMs: number; tag: "hook"|"body"|"cta" }[] = [];
         for (let si2 = 0; si2 < mergedSegments.length; si2++) {
           const seg = mergedSegments[si2];
@@ -1422,11 +1422,11 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
           : "(no word-level timestamps available — group SEGMENTS instead)";
 
         const scriptForPrompt = sourceText.trim().slice(0, 3000);
-        const geminiMergePrompt = `You are a Thai subtitle GROUPER for TikTok / Reels / Shorts.
+        const geminiMergePrompt = `You are a Thai subtitle editor for TikTok / Reels / Shorts.
 
-YOUR ROLE: You are NOT a text splitter. You are a CONCATENATOR.
-You receive pre-tokenized WORDS (atomic units from STT) and you GROUP consecutive
-words into subtitle CARDS that read as natural Thai sentences or phrases.
+YOUR ROLE: Create SHORT, PUNCHY, ONE-LINE subtitle cards that match speech rhythm.
+Each card must fit on ONE LINE — short enough to read in 1 glance (max ~20 Thai chars).
+Make each card feel exciting and engaging — like a professional TikTok subtitle.
 
 ═══════════════════════════════════════════════════════════
 CORE RULE — INDIVISIBLE WORD BLOCKS
@@ -1468,12 +1468,13 @@ NEVER end a group when:
   ✗ Current word ends with a connector (เพราะ, ดังนั้น, แล้ว...ก็)
 
 ═══════════════════════════════════════════════════════════
-LENGTH GUIDANCE (soft — never break the CORE RULE for length)
+LENGTH RULE — ONE LINE ONLY
 ═══════════════════════════════════════════════════════════
-• Sweet spot per card: 2–6 word blocks (≈ 1 spoken phrase)
-• OK to go up to 8 blocks if the phrase needs it to feel complete
-• OK to be just 1 block if it's a strong standalone (ครับ! / แต่... / OpenAI)
-• Don't count characters. Count phrases.
+• HARD LIMIT: max 20 Thai characters per card — if longer, SPLIT into 2 cards
+• Sweet spot: 1–2 seconds of speech per card
+• Single dramatic words are great: "ทำมันพัง" / "ทันที" / "จริงๆ"
+• Split at every natural pause (gap ≥ 0.3s between words)
+• Conjunctions (แต่ เพราะ ถ้า และ) always START a new card
 
 ═══════════════════════════════════════════════════════════
 WORKED EXAMPLES (study these carefully)
@@ -1583,7 +1584,7 @@ ${segList}
 Total audio: ${audioDur.toFixed(2)}s`;
 
         let llmCaptions: { text: string; startMs: number; endMs: number; tag?: string }[] = segmentCaptions;
-        const skipLlmMerge = true; // segments already have accurate timestamps
+        const skipLlmMerge = false;
         if (!skipLlmMerge) {
         try {
           const raw = await geminiGenerateText(apiKey, geminiMergePrompt, 16384);
