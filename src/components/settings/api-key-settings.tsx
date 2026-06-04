@@ -113,31 +113,19 @@ export function ApiKeySettings() {
           <div className="px-4 pb-4 pt-1 space-y-3 text-[12px] text-slate-300 leading-relaxed">
             <ol className="space-y-2 list-decimal list-inside marker:text-violet-400 marker:font-bold">
               <li>
-                เข้า{" "}
+                สร้าง key ที่{" "}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
                   className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
                   aistudio.google.com/apikey <ExternalLink className="h-3 w-3" />
+                </a>
+              </li>
+              <li>
+                เข้า{" "}
+                <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                  className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                  Cloud Console <ExternalLink className="h-3 w-3" />
                 </a>{" "}
-                แล้วล็อกอินด้วย Google account
-              </li>
-              <li>
-                กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">+ Create API key</span>
-                {" "}— เลือก project ที่มีอยู่ หรือสร้างใหม่ (default project ก็ได้)
-              </li>
-              <li>
-                <span className="font-semibold text-violet-200">Enable Generative Language API</span> สำหรับ project นั้น:
-                <div className="ml-5 mt-1 text-slate-400">
-                  เข้า{" "}
-                  <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
-                    className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
-                    Cloud Console <ExternalLink className="h-3 w-3" />
-                  </a>{" "}
-                  → เลือก project เดียวกับที่สร้าง key → กดปุ่ม <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 font-mono text-[11px]">ENABLE</span> → รอ 1-2 นาที
-                </div>
-              </li>
-              <li>
-                Copy key (ขึ้นต้น <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AIza...</code> หรือ <code className="px-1 py-0.5 rounded bg-black/30 text-cyan-300 font-mono text-[11px]">AQ....</code>)
-                มาวางในช่อง Gemini API Key ข้างล่าง → กด <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 font-mono text-[11px]">Test</span> เพื่อยืนยัน
+                แล้วกด <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 font-mono text-[11px]">Enable</span> Gemini key
               </li>
             </ol>
             <div className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
