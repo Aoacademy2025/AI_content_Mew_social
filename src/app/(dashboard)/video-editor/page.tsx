@@ -342,7 +342,7 @@ export default function VideoEditorPage() {
         try {
           const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
           if (!r.ok) return;
-          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null; queued?: boolean; queuePosition?: number | null };
+          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
           if (d.videoUrl) {
             stopPoll();
             pipe.current.renderedVideoUrl = d.videoUrl;
@@ -352,12 +352,6 @@ export default function VideoEditorPage() {
             return;
           }
           if (d.error) { stopPoll(); setRenderProgressError(d.error); setStep("render", "error", d.error); return; }
-          if (d.queued) {
-            const pos = d.queuePosition ?? "?";
-            setStep("render", "running", `รอคิว... (อันดับที่ ${pos})`);
-            setRenderProgress(0);
-            return;
-          }
           const p = Number(d.progress);
           if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
         } catch {}
@@ -1314,7 +1308,7 @@ export default function VideoEditorPage() {
       try {
         const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
         if (!r.ok) return;
-        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null; queued?: boolean; queuePosition?: number | null };
+        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
         if (d.videoUrl) {
           // progress file บอก done → resolve ทันที แล้วหยุด poll ทั้งคู่
           if (resolveRenderUrl) { resolveRenderUrl(d.videoUrl); resolveRenderUrl = null; }
@@ -1322,12 +1316,6 @@ export default function VideoEditorPage() {
           return;
         }
         if (d.error) { renderFailedMessage = d.error; setRenderProgressError(d.error); setStep("render", "error", d.error); stopPoll(); return; }
-        if (d.queued) {
-          const pos = d.queuePosition ?? "?";
-          setStep("render", "running", `รอคิว... (อันดับที่ ${pos})`);
-          setRenderProgress(0);
-          return;
-        }
         const p = Number(d.progress);
         if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
       } catch {}
@@ -1910,10 +1898,9 @@ export default function VideoEditorPage() {
       try {
         const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
         if (!r.ok) return;
-        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null; queued?: boolean; queuePosition?: number | null };
+        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
         if (d.videoUrl && resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; return; }
         if (d.error) { burnFailedMessage = d.error; setRenderProgressError(d.error); setStep("burnSubtitles", "error", d.error); return; }
-        if (d.queued) { const pos = d.queuePosition ?? "?"; setStep("burnSubtitles", "running", `รอคิว... (อันดับที่ ${pos})`); setRenderProgress(0); return; }
         const p = Number(d.progress);
         if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("burnSubtitles", "running", `Burning... ${Math.round(p)}%`); }
       } catch {}

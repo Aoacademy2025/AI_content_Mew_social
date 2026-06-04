@@ -1040,7 +1040,7 @@ export default function ShortVideoPage() {
           }
           return;
         }
-        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null; queued?: boolean; queuePosition?: number | null };
+        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
         if (pollStopped) return; // stopped while parsing
         // Only resolve from progress file if we have a confirmed jobId — prevents resolving with stale videoUrl from a previous render
         if (progressData?.videoUrl && resolveRenderUrl && currentJobId) {
@@ -1050,13 +1050,6 @@ export default function ShortVideoPage() {
         }
         if (progressData?.error) {
           markRenderError(progressData.error);
-          return;
-        }
-        if (progressData?.queued) {
-          pollFailCount = 0;
-          const pos = progressData.queuePosition ?? "?";
-          setRenderProgress(0);
-          setStep("render", "running", `รอคิว... (อันดับที่ ${pos})`);
           return;
         }
         const progress = Number(progressData?.progress);
