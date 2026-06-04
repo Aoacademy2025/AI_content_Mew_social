@@ -47,6 +47,7 @@ const PLAN_DEFS: PlanDef[] = [
 function PricingContent() {
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState<string | null>(null);
+  const [period, setPeriod] = useState<"monthly" | "annual">("annual");
   const [currentPlan, setCurrentPlan] = useState<string>("FREE");
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
@@ -72,7 +73,7 @@ function PricingContent() {
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planKey }),
+        body: JSON.stringify({ plan: planKey, period, method: "card" }),
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "เกิดข้อผิดพลาด"); return; }
@@ -106,6 +107,14 @@ function PricingContent() {
           ชำระเงินครั้งเดียว ใช้ได้ 30 วัน — ไม่มีการตัดเงินอัตโนมัติ
         </p>
       </header>
+
+      {/* ── Billing period toggle ───────────────────────────────────── */}
+      <div className="flex justify-center">
+        <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
+          <button onClick={() => setPeriod("monthly")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", period === "monthly" ? "bg-white/10 text-white" : "text-white/50")}>รายเดือน</button>
+          <button onClick={() => setPeriod("annual")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", period === "annual" ? "text-white" : "text-white/50")} style={period === "annual" ? { background: "linear-gradient(135deg,#7c3aed,#06b6d4)" } : undefined}>รายปี · ประหยัด 2 เดือน</button>
+        </div>
+      </div>
 
       {/* ── Payment result banner ────────────────────────────────────── */}
       {paymentResult === "success" && (
@@ -237,9 +246,9 @@ function PricingContent() {
                     <div className="flex items-baseline gap-1">
                       <span className="text-2xl font-semibold mt-2" style={{ color: "var(--ui-text-muted)" }}>฿</span>
                       <span className="text-5xl font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
-                        {price.toLocaleString()}
+                        {(period === "annual" ? price * 10 : price).toLocaleString()}
                       </span>
-                      <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>/30 วัน</span>
+                      <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>{period === "annual" ? "/ปี" : "/30 วัน"}</span>
                     </div>
                   )}
                 </div>
