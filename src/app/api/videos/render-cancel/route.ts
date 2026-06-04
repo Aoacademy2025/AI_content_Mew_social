@@ -1,33 +1,29 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
-import { cancelByJobId, activeRenderCancel, getRenderJob, setRenderJob } from "@/app/api/videos/render/cancel-registry";
+import { cancelByJobId, getRenderJob, setRenderJob } from "@/app/api/videos/render/cancel-registry";
 export const runtime = "nodejs";
 
+// Called via sendBeacon on page unload — browser does NOT send auth cookies with sendBeacon.
+// Security model: jobId = "{userId}-{timestamp}" is treated as an unguessable token.
+// Only the browser that started the render knows the jobId, so no auth check needed.
 export async function POST(req: Request) {
-  const authUser = await getCurrentUser();
-  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
   const { searchParams } = new URL(req.url);
   const jobId = searchParams.get("jobId");
 
-  if (jobId) {
-    const cancelFn = cancelByJobId.get(jobId);
-    if (cancelFn) {
-      cancelFn();
-      cancelByJobId.delete(jobId);
-      console.log(`[Render] job=${jobId} cancelled by user ${authUser.id} (unload)`);
-    }
-    const existing = getRenderJob(jobId);
-    if (existing && existing.status === "running") {
-      setRenderJob(jobId, { status: "error", error: "cancelled", startedAt: existing.startedAt });
-    }
-  } else {
-    const cancelFn = activeRenderCancel.get(authUser.id);
-    if (cancelFn) {
-      cancelFn();
-      activeRenderCancel.delete(authUser.id);
-    }
+  if (!jobId || !/^[a-zA-Z0-9_-]+$/.test(jobId)) {
+    return NextResponse.json({ error: "invalid jobId" }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true });
+  const cancelFn = cancelByJobId.get(jobId);
+  if (cancelFn) {
+    cancelFn();
+    cancelByJobId.delete(jobId);
+    console.log(`[Render] job=${jobId} cancelled via page unload`);
+  }
+
+  const existing = getRenderJob(jobId);
+  if (existing && existing.status === "running") {
+    setRenderJob(jobId, { status: "error", error: "cancelled", startedAt: existing.startedAt });
+  }
+
+  return new Response(null, { status: 204 });
 }
