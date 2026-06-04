@@ -358,6 +358,7 @@ export default function VideoEditorPage() {
       }, 600);
 
       // Poll status (slow — authoritative)
+      let notFoundCount = 0;
       const si = setInterval(async () => {
         if (pollStopped) { clearInterval(si); return; }
         try {
@@ -369,9 +370,18 @@ export default function VideoEditorPage() {
             pipe.current.renderedVideoNoSubUrl = sd.videoUrl;
             setPreRenderUrl(sd.videoUrl); setVideoUrl(sd.videoUrl);
             setStep("render", "done", sd.videoUrl); setRenderProgress(100);
+            runningRef.current = false; setRunning(false);
           } else if (sd.status === "error") {
             clearInterval(si); stopPoll();
             setRenderProgressError(sd.error ?? "Render failed"); setStep("render", "error", sd.error ?? "Render failed");
+            runningRef.current = false; setRunning(false);
+          } else if (sd.status === "not_found" || sr.status === 404) {
+            notFoundCount++;
+            if (notFoundCount >= 3) {
+              clearInterval(si); stopPoll();
+              setStep("render", "idle");
+              runningRef.current = false; setRunning(false);
+            }
           }
         } catch {}
       }, 3000);
