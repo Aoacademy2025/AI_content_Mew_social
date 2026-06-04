@@ -1358,7 +1358,7 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
         // ── Use Gemini segments directly as captions ──
         // For long segments (>3.5s) subdivide using word timestamps so each
         // caption is short enough to read in one glance (~2s sweet spot).
-        const MAX_SEG_SEC = 3.5;
+        const MAX_SEG_SEC = 2.0;
         const segmentCaptions: { text: string; startMs: number; endMs: number; tag: "hook"|"body"|"cta" }[] = [];
         for (let si2 = 0; si2 < mergedSegments.length; si2++) {
           const seg = mergedSegments[si2];
