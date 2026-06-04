@@ -9,6 +9,7 @@ import fs from "fs";
 import { execSync, spawn } from "child_process";
 import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { activeRenderCancel, cancelByJobId } from "./cancel-registry";
 
 function getRenderTmpDir(): string {
   const base =
@@ -96,9 +97,6 @@ const renderJobs = new Map<string, RenderJob>();
 
 // Track the latest jobId per user — older jobs are superseded and must not write results
 const latestJobPerUser = new Map<string, string>();
-
-// Cancel function per user — cancel previous render when a new one starts
-const activeRenderCancel = new Map<string, () => void>();
 
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
@@ -605,6 +603,7 @@ export async function POST(req: Request) {
 
         const { cancel, cancelSignal } = makeCancelSignal();
         activeRenderCancel.set(userId, cancel);
+        cancelByJobId.set(jobId, cancel);
 
         await renderMedia({
           composition,
@@ -640,6 +639,7 @@ export async function POST(req: Request) {
 
         // Cleanup abort controller for this user if it's still ours
         activeRenderCancel.delete(userId);
+        cancelByJobId.delete(jobId);
         activeRenderCount = Math.max(0, activeRenderCount - 1);
 
         // If a newer job was started for this user, discard this result silently
@@ -667,6 +667,8 @@ export async function POST(req: Request) {
             body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
           }).catch(() => {});
       } catch (error) {
+        activeRenderCancel.delete(userId);
+        cancelByJobId.delete(jobId);
         activeRenderCount = Math.max(0, activeRenderCount - 1);
         if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
         console.error("Render error:", error);
@@ -690,3 +692,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่", detail }, { status: 500 });
   }
 }
+

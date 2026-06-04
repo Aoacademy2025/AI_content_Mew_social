@@ -395,8 +395,16 @@ export default function VideoEditorPage() {
       };
     }
 
-    // Stop all polling and abort when tab closes/refreshes
-    const onUnload = () => { abortControllerRef.current?.abort(); stopRenderPollRef.current?.(); };
+    // Stop all polling and cancel active render job when tab closes/refreshes
+    const onUnload = () => {
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      const jobId = activeJobIdRef.current;
+      if (jobId) {
+        // sendBeacon survives page unload; fetch does not
+        navigator.sendBeacon(`/api/videos/render-cancel?jobId=${encodeURIComponent(jobId)}`);
+      }
+    };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps

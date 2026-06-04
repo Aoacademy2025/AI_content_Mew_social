@@ -444,6 +444,17 @@ export default function ShortVideoPage() {
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
+
+    // Cancel active render job when tab closes/refreshes
+    const onUnload = () => {
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      const jobId = activeJobIdRef.current;
+      if (jobId) navigator.sendBeacon(`/api/videos/render-cancel?jobId=${encodeURIComponent(jobId)}`);
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
   }, []);
 
   // Auto-save Avatar ID when user changes it (debounced 800ms)
