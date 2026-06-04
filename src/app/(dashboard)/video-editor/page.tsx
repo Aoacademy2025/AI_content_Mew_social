@@ -326,15 +326,15 @@ export default function VideoEditorPage() {
       };
       stopRenderPollRef.current = stopPoll;
 
-      // Auto-stop if render hangs after 10 minutes with no progress
+      // Auto-stop if render hangs after 60 minutes with no progress
       resumeTimeoutId = setTimeout(() => {
         if (!pollStopped) {
           stopPoll();
-          setRenderProgressError("Render ค้างนานเกิน 10 นาที — กรุณาลองใหม่");
-          setStep("render", "error", "Render ค้างนานเกิน 10 นาที");
+          setRenderProgressError("Render ค้างนานเกิน 60 นาที — กรุณาลองใหม่");
+          setStep("render", "error", "Render ค้างนานเกิน 60 นาที");
           runningRef.current = false; setRunning(false);
         }
-      }, 10 * 60 * 1000);
+      }, 60 * 60 * 1000);
 
       // Poll progress (fast)
       renderPollTimer = setInterval(async () => {
@@ -1378,8 +1378,8 @@ export default function VideoEditorPage() {
       // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
       try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 10 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 10 * 60 * 1000;
+      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 60 นาที → ถือว่า hang → error
+      const STALE_TIMEOUT_MS = 60 * 60 * 1000;
       let lastProgressValue = -1;
       let lastProgressChangedAt = Date.now();
 
@@ -1396,7 +1396,7 @@ export default function VideoEditorPage() {
           if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
           else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
             clearInterval(si); resolveRenderUrl = null;
-            reject(new Error("Render หยุดค้างนานเกิน 120 นาที — กรุณาลองใหม่"));
+            reject(new Error("Render หยุดค้างนานเกิน 60 นาที — กรุณาลองใหม่"));
             return;
           }
 
