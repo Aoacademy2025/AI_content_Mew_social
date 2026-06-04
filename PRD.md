@@ -2,6 +2,10 @@
 
 ## Product Requirement Document
 
+> ⚠️ **หมายเหตุ (อัปเดต 2026-06-04):** เอกสารนี้คือ **"วิชันเดิม"** — หลายส่วนล้าสมัย / ไม่ตรงกับระบบจริง
+> **สถานะ + สถาปัตยกรรมจริง → ดู [STATUS.md](STATUS.md) และ [CLAUDE.md](CLAUDE.md)**
+> ของจริงโดยย่อ: Auth = **Clerk** · DB = **SQLite** · Host = **Hostinger VPS** · AI = **Gemini/HeyGen/ElevenLabs (BYOK)** · Render = **Remotion บนเครื่อง** · Product = **Faceless + AI Avatar auto video editor**
+
 ---
 
 ## 1. Product Overview
@@ -16,19 +20,23 @@
 
 ## 2. Tech Stack
 
-| เทคโนโลยี | เครื่องมือ |
+> ตารางนี้แก้ให้ตรงกับ **ของจริง** แล้ว (เดิมระบุ NextAuth/OpenAI/Neon/Vercel ซึ่งไม่ตรง)
+
+| เทคโนโลยี | ของจริง (2026-06-04) |
 |---|---|
-| Frontend Framework | Next.js 15 (App Router) |
-| Styling | Tailwind CSS + shadcn/ui |
-| Database ORM | Prisma v7 |
-| Database | SQLite (development), Neon PostgreSQL (production) |
-| File Storage | Vercel Blob |
-| Authentication | NextAuth.js v4 (Credentials Provider) |
-| AI / LLM | OpenAI GPT API (user's own key OR server key) |
-| Avatar Video | HeyGen API (user's own key) |
-| Voice Cloning | ElevenLabs API (user's own key) |
-| Automation | n8n (webhook integration) |
-| Deployment | Vercel |
+| Frontend Framework | Next.js 15 (App Router) + React 19 |
+| Styling | Tailwind v4 + shadcn/ui |
+| Database ORM | Prisma 6 |
+| Database | **SQLite** (`prisma/dev.db`) — *ไม่ใช่ Neon/Postgres* |
+| File Storage | Local disk บน VPS (`public/renders`, `stocks`) |
+| Authentication | **Clerk** — *(NextAuth ใน `src/lib/auth.ts` = ของเก่า)* |
+| AI / LLM | **Google Gemini** (BYOK — user key) |
+| Avatar Video | HeyGen API (BYOK) |
+| Voice / TTS | ElevenLabs + Gemini TTS (BYOK) |
+| Stock footage | Pexels / Pixabay (BYOK) |
+| Render | **Remotion + ffmpeg** บน VPS (local, ไม่มี GPU) |
+| Payments | Stripe (one-time → กำลังเพิ่ม subscription) |
+| Deployment | **Hostinger VPS** + PM2 + Nginx — *ไม่ใช่ Vercel* |
 
 ---
 
