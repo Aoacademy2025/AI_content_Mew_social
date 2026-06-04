@@ -1624,17 +1624,14 @@ Total audio: ${audioDur.toFixed(2)}s`;
         // left-to-right, find the contiguous span whose concatenated text equals the
         // caption text (whitespace & punctuation ignored), use first.start / last.end.
         type SnapUnit = { text: string; start: number; end: number };
+        // Thai: always snap to segments. Segment timestamps come from silence/breath
+        // detection in the audio and are reliable. Thai word timestamps from Gemini
+        // drift because Thai has no whitespace and tokenization is ambiguous.
+        // Non-Thai: snap to words (whitespace tokenization is unambiguous).
         const snapUnits: SnapUnit[] = isThai
-          // For Thai: prefer word timestamps when we have enough words vs captions
-          // (193 words >> 40 captions → near-100% snap rate)
-          // Fall back to segments only when word count is too low
-          ? (words.length >= llmCaptions.length * 1.5
-              ? words.map((w) => ({ text: w.word, start: w.start, end: w.end }))
-              : mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end })))
+          ? mergedSegments.map((s) => ({ text: s.text, start: s.start, end: s.end }))
           : words.map((w) => ({ text: w.word, start: w.start, end: w.end }));
-        const snapSourceLabel = isThai
-          ? (words.length >= llmCaptions.length * 1.5 ? "words(thai)" : "segments")
-          : "words";
+        const snapSourceLabel = isThai ? "segments" : "words";
         console.log(`[transcribe] snap source: ${snapSourceLabel} (${snapUnits.length} units, isThai=${isThai})`);
         if (snapUnits.length > 0 && llmCaptions.length > 0) {
           const stripForMatch = (s: string) =>
@@ -1729,9 +1726,12 @@ Total audio: ${audioDur.toFixed(2)}s`;
           //    alignPhrasesToSegmentTimestamps but lost index info, so timings
           //    drifted to whichever segment matched first.
           if (snappedCount < llmCaptions.length) {
+            // For unmatched captions: trust LLM timestamps directly.
+            // LLM received word timestamps in the prompt and computed startMs/endMs
+            // from them — these are more accurate than linear interpolation.
+            // Only clamp to fit within the window [prevSnap.end .. nextSnap.start].
             for (let idx = 0; idx < llmCaptions.length; idx++) {
               if (snapped[idx]) continue;
-              // Nearest snapped predecessor / successor
               let prevSnap = -1;
               for (let p = idx - 1; p >= 0; p--) if (snapped[p]) { prevSnap = p; break; }
               let nextSnap = -1;
@@ -1740,20 +1740,24 @@ Total audio: ${audioDur.toFixed(2)}s`;
               const prevEnd = prevSnap >= 0 ? llmCaptions[prevSnap].endMs : 0;
               const nextStart = nextSnap >= 0 ? llmCaptions[nextSnap].startMs : totalAudioMs;
 
-              const gap = Math.max(0, nextStart - prevEnd);
-              // Count unmatched run inside [prevSnap+1 .. nextSnap-1] so we can divide
-              // the gap proportionally between them.
-              const runStart = prevSnap + 1;
-              const runEnd = nextSnap >= 0 ? nextSnap - 1 : llmCaptions.length - 1;
-              const runLen = runEnd - runStart + 1;
-              const slot = idx - runStart;
-              const slice = runLen > 0 ? gap / runLen : 0;
-              const s = Math.round(prevEnd + slot * slice);
-              const e = Math.round(prevEnd + (slot + 1) * slice);
-              llmCaptions[idx].startMs = s;
-              llmCaptions[idx].endMs   = Math.max(e, s + 1);
+              // Keep LLM timestamps if they already fall within the valid window
+              const llmStart = llmCaptions[idx].startMs;
+              const llmEnd   = llmCaptions[idx].endMs;
+              if (llmStart >= prevEnd && llmEnd <= nextStart && llmEnd > llmStart) {
+                // LLM timestamps are valid — use them as-is
+              } else {
+                // LLM timestamps out of range — linear interpolation as fallback
+                const gap = Math.max(0, nextStart - prevEnd);
+                const runStart = prevSnap + 1;
+                const runEnd = nextSnap >= 0 ? nextSnap - 1 : llmCaptions.length - 1;
+                const runLen = runEnd - runStart + 1;
+                const slot = idx - runStart;
+                const slice = runLen > 0 ? gap / runLen : 0;
+                llmCaptions[idx].startMs = Math.round(prevEnd + slot * slice);
+                llmCaptions[idx].endMs   = Math.max(Math.round(prevEnd + (slot + 1) * slice), llmCaptions[idx].startMs + 1);
+              }
             }
-            console.warn(`[transcribe] word-snap: interpolated ${llmCaptions.length - snappedCount}/${llmCaptions.length} unmatched captions between snapped neighbours`);
+            console.warn(`[transcribe] word-snap: interpolated ${llmCaptions.length - snappedCount}/${llmCaptions.length} unmatched captions (LLM timestamps used where valid)`);
           }
           console.log(`[transcribe] word-snap: ${snappedCount}/${llmCaptions.length} captions snapped to real word timestamps`);
 
