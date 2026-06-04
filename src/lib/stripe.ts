@@ -43,21 +43,41 @@ export const PLANS = {
   PRO: {
     name: "Pro",
     thb: 599,
-    periodDays: 30,
-    get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY ?? ""; },
     clips: 100,
     maxMin: 6,
     retention: storageDaysForPlan("PRO"),
+    // legacy (current one-time checkout/webhook use these until Phase 2b/2c migrate to resolvePrice)
+    periodDays: 30,
+    get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY ?? ""; },
+    // Phase 2 — dual pricing (card subscription monthly/annual + PromptPay annual one-time)
+    monthly:       { get priceId() { return process.env.STRIPE_PRICE_PRO_MONTHLY ?? ""; }, periodDays: 30,  recurring: true },
+    annual:        { get priceId() { return process.env.STRIPE_PRICE_PRO_ANNUAL ?? ""; },  periodDays: 365, recurring: true },
+    annualOnetime: { get priceId() { return process.env.STRIPE_PRICE_PRO_ANNUAL_ONETIME ?? ""; }, periodDays: 365, recurring: false },
   },
   BUSINESS: {
     name: "Business",
     thb: 990,
-    periodDays: 30,
-    get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? ""; },
     clips: 300,
     maxMin: 10,
     retention: storageDaysForPlan("BUSINESS"),
+    periodDays: 30,
+    get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? ""; },
+    monthly:       { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_MONTHLY ?? ""; }, periodDays: 30,  recurring: true },
+    annual:        { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_ANNUAL ?? ""; },  periodDays: 365, recurring: true },
+    annualOnetime: { get priceId() { return process.env.STRIPE_PRICE_BUSINESS_ANNUAL_ONETIME ?? ""; }, periodDays: 365, recurring: false },
   },
 } as const;
 
 export type PlanKey = keyof typeof PLANS;
+export type BillingPeriod = "monthly" | "annual";
+
+/**
+ * Pick the Stripe price + period for a checkout.
+ * - monthly  → card subscription only (recurring)
+ * - annual   → card subscription (recurring) OR PromptPay one-time
+ */
+export function resolvePrice(plan: PlanKey, period: BillingPeriod, method: "card" | "promptpay") {
+  const p = PLANS[plan];
+  if (period === "monthly") return p.monthly;
+  return method === "promptpay" ? p.annualOnetime : p.annual;
+}
