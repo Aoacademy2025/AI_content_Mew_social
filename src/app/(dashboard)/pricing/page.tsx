@@ -104,7 +104,7 @@ function PricingContent() {
           สร้างคอนเทนต์อย่าง <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">มืออาชีพ</span><br className="md:hidden" /> ด้วย AI
         </h1>
         <p className="text-base md:text-lg max-w-xl mx-auto text-white/60">
-          ชำระเงินครั้งเดียว ใช้ได้ 30 วัน — ไม่มีการตัดเงินอัตโนมัติ
+          เลือกได้: รายปีจ่ายครั้งเดียว หรือ รายเดือนต่ออัตโนมัติ · ยกเลิกได้ทุกเมื่อ
         </p>
       </header>
 

@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
+import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
 
@@ -120,6 +121,8 @@ function BillingTab() {
             style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2.5} />
         </div>
       </a>
+
+      <ManageSubscriptionButton />
 
       {/* Payment history */}
       <div className="space-y-3">
