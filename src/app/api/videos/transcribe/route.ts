@@ -1355,17 +1355,45 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
         const mergedSegments = premergedSegments;
         console.log(`[transcribe] pre-merge: ${segments.length} → ${mergedSegments.length} segments`);
 
-        // ── Use Gemini segments directly as captions (no LLM merge needed) ──
-        // Gemini's segment timestamps are already accurate — running another LLM
-        // pass creates more captions than segments, forcing ~12/40 to be interpolated.
-        // Skipping the merge keeps timing 100% snapped to real STT boundaries.
-        const segmentCaptions = mergedSegments.map((s, i) => ({
-          text: s.text.trim(),
-          startMs: Math.round(s.start * 1000),
-          endMs: Math.round(s.end * 1000),
-          tag: i === 0 ? "hook" : "body",
-        }));
-        console.log(`[transcribe] using segments directly as captions: ${segmentCaptions.length} captions`);
+        // ── Use Gemini segments directly as captions ──
+        // For long segments (>3.5s) subdivide using word timestamps so each
+        // caption is short enough to read in one glance (~2s sweet spot).
+        const MAX_SEG_SEC = 3.5;
+        const segmentCaptions: { text: string; startMs: number; endMs: number; tag: "hook"|"body"|"cta" }[] = [];
+        for (let si2 = 0; si2 < mergedSegments.length; si2++) {
+          const seg = mergedSegments[si2];
+          const dur = seg.end - seg.start;
+          const tag: "hook"|"body"|"cta" = si2 === 0 ? "hook" : "body";
+          if (dur <= MAX_SEG_SEC || words.length === 0) {
+            segmentCaptions.push({ text: seg.text.trim(), startMs: Math.round(seg.start * 1000), endMs: Math.round(seg.end * 1000), tag });
+            continue;
+          }
+          // Get words within this segment
+          const segWords = words.filter(w => w.start >= seg.start - 0.05 && w.end <= seg.end + 0.05);
+          if (segWords.length <= 1) {
+            segmentCaptions.push({ text: seg.text.trim(), startMs: Math.round(seg.start * 1000), endMs: Math.round(seg.end * 1000), tag });
+            continue;
+          }
+          // Split into ~2s chunks using word boundaries
+          let chunk: typeof segWords = [];
+          let chunkStart = seg.start;
+          for (let wi = 0; wi < segWords.length; wi++) {
+            chunk.push(segWords[wi]);
+            const chunkDur = segWords[wi].end - chunkStart;
+            const isLast = wi === segWords.length - 1;
+            const nextGap = !isLast ? segWords[wi + 1].start - segWords[wi].end : 1;
+            if (isLast || chunkDur >= MAX_SEG_SEC || nextGap >= 0.35) {
+              segmentCaptions.push({
+                text: chunk.map(w => w.word).join("").trim(),
+                startMs: Math.round(chunkStart * 1000),
+                endMs: Math.round(segWords[wi].end * 1000),
+                tag,
+              });
+              if (!isLast) { chunk = []; chunkStart = segWords[wi + 1].start; }
+            }
+          }
+        }
+        console.log(`[transcribe] segments → ${segmentCaptions.length} captions (split long segments with word timestamps)`);
         captions = segmentCaptions.map(c => ({
           text: c.text,
           startMs: c.startMs,
