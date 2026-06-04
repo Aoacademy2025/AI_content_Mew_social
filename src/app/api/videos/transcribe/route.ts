@@ -418,9 +418,11 @@ export async function POST(req: Request) {
 
     type WhisperWord = { word: string; start: number; end: number };
     type WhisperSegment = { text: string; start: number; end: number };
+    type CaptionItem = { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" };
     let words: WhisperWord[] = [];
     let segments: WhisperSegment[] = [];
     let fullText = "";
+    let geminiDirectCaptions: CaptionItem[] = []; // captions from combined Gemini response
 
     if (useGeminiTranscribe) {
       // ── Gemini Audio Transcribe with timestamps ──
@@ -460,46 +462,45 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
-        const timestampPrompt = `You are a forced-alignment transcriber for Thai TikTok/Reels videos.
-Your ONLY job is to listen to the audio and report when each word is actually heard.
-You are NOT a subtitle editor — do NOT pad, smooth, or "make it look nice."
+        const timestampPrompt = `คุณคือผู้ตัดซับไตเติ้ลภาษาไทยสำหรับ TikTok/Reels มืออาชีพ
 
-Return ONLY valid JSON, no markdown, no explanation:
-{"segments":[{"text":"...","start":0.0,"end":2.5,"words":[{"word":"คำ","start":0.0,"end":0.5},...]},...], "fullText":"..."}
+ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง
 
-━━━ HONEST TIMING — THIS IS THE WHOLE JOB ━━━
-1. word.start = the exact second the speaker BEGINS to articulate that word (vowel onset / consonant attack you can hear)
-2. word.end   = the exact second the speaker FINISHES that word (release / mouth closes)
-3. If there is silence BEFORE the first word, the first word's start is NOT 0.0 — it is whenever the speaker actually begins. Silence stays as silence.
-4. If there is silence BETWEEN two words (breath, pause, dramatic beat), the gap MUST appear in the timestamps:
-   prev.end < next.start with a real gap between them. DO NOT close gaps. DO NOT make words touch.
-5. If there is silence AFTER the last word, that silence is NOT subtitled.
-6. NEVER round end UP. NEVER add padding to make subtitles "linger". A word that ends at 1.83s ends at 1.83s, not 1.95s.
-7. NEVER overlap: word[i].end ≤ word[i+1].start, segment[i].end ≤ segment[i+1].start.
-8. Use 0.05s precision. When unsure, listen again — do not guess.
+━━━ กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี ━━━
+ตัดหลังจุลภาค จุด หรือช่วงหยุดเสียง ≥ 0.25s
+ห้ามตัดกลางประโยคที่ความหมายยังค้างอยู่
+✗ ผิด: "มึงเคยคิดปะ ว่า" | "ความรู้ที่เรียนมา"
+✓ ถูก: "มึงเคยคิดปะ..." | "ว่าความรู้ที่เรียนมา"
 
-━━━ WORDS (the atomic unit) ━━━
-9. Thai word = meaningful syllabic unit as a native speaker hears it: คำ, กำลัง, เปลี่ยน, เงียบๆ.
-   NOT individual letters. NOT whole phrases. NOT one segment-per-word.
-10. English brand names = one word: "GPT-4", "Anthropic", "Claude", "OpenAI", "Enterprise".
-11. Every spoken word MUST appear in the words array of exactly one segment.
-12. words array MUST be in spoken order with monotonic start times.
+━━━ กฎ 2 — 1 ซับ = 1 ความคิด ━━━
+ถ้าประโยคมี 2 ไอเดีย ให้แยกเป็น 2 ซับ แม้จะสั้น
+✗ ผิด: "อิเล็กตรอนหนีออก ทิ้งหลุมว่าง เรียกว่าโฮล จับคู่กลายเป็นเอ็กซิตอน"
+✓ ถูก: "อิเล็กตรอนหนี" | "ทิ้งหลุมว่าง โฮล" | "จับคู่กัน" | "กลายเป็นเอ็กซิตอน"
 
-━━━ SEGMENT GROUPING (for the subtitle cards) ━━━
-13. Start a new segment when the speaker takes a breath / pauses ≥ 0.20s, OR completes a sentence (ครับ, ค่ะ, .).
-14. segment.start = first word's start in that segment.
-15. segment.end   = last word's end in that segment.  ← copy from the word, do not extend.
-16. NEVER cut mid-word.
-17. Short standalone punchlines get their own segment (e.g. "...อีกต่อไป" after a dramatic pause).
+━━━ กฎ 3 — ซับช็อก ให้สั้นพิเศษ ━━━
+twist / punchline / คำเด็ด → 3-8 คำ การ์ดเดี่ยว เช่น "แม่งแหกทุกกฎที่เคยมีมา"
 
-━━━ TEXT FIDELITY ━━━
-18. fullText = all segment texts joined in order with single spaces.
-19. Keep English brand names spelled exactly as heard.${script ? `
-20. SCRIPT REFERENCE (this is what was actually said — match wording exactly, but get timestamps from the AUDIO):
+━━━ กฎ 4 — ห้ามซับค้างนานเกิน 5 วินาที ━━━
+ถ้า segment ยาว ให้แบ่งซับเพิ่มตามจังหวะพูด
+
+━━━ กฎ 5 — gap ระหว่างซับ ━━━
+endMs ของซับ[i] ต้องน้อยกว่า startMs ของซับ[i+1] เสมอ (≥ 40ms)
+
+━━━ กฎ timestamp ━━━
+- startMs = เวลาเริ่มพูดคำแรก × 1000 (ms) — ฟังจาก audio เท่านั้น อย่าเดา
+- endMs = เวลาจบคำสุดท้าย × 1000 — ห้าม pad
+- ห้าม overlap
+
+━━━ tags ━━━
+"hook"=การ์ดแรก (ดึงดูด), "cta"=กดติดตาม/ไลค์/แชร์ (max 2), "body"=ทั้งหมดที่เหลือ${script ? `
+
+━━━ SCRIPT (spelling reference — timestamps ต้องมาจาก audio) ━━━
 ${script.trim().slice(0, 2000)}` : ""}
 
-━━━ REMINDER ━━━
-The downstream system trusts your timestamps as truth. If you guess, subtitles will appear before the speaker talks or linger after they stop. Listen, mark, move on. No editorial padding.`;
+━━━ OUTPUT — JSON เท่านั้น ไม่มี markdown ━━━
+{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},...],"words":[{"word":"...","start":0.0,"end":0.35},...], "fullText":"..."}
+
+ใส่ words array ด้วยเพื่อให้ระบบ verify timestamps`;
 
         const transcribeBody = JSON.stringify({
           contents: [{
@@ -600,64 +601,67 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
           const match = stripped.match(/\{[\s\S]*\}/) ?? (allMatches.length > 0 ? allMatches[allMatches.length - 1] : null);
 
           if (match) {
-            let parsed: { fullText?: string; segments?: unknown[] } | null = null;
+            type GeminiWord = { word?: string; start?: number; end?: number };
+            type GeminiCap = { text?: string; startMs?: number; endMs?: number; tag?: string };
+            type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
+            let parsed: { fullText?: string; captions?: GeminiCap[]; segments?: GeminiSeg[]; words?: GeminiWord[] } | null = null;
             try {
               parsed = JSON.parse(match[0]);
             } catch {
-              // Salvage: extract all complete segment objects before the truncation point
-              const completeSegs: string[] = [];
-              const segRegex = /\{"text":"((?:[^"\\]|\\.)*)","start":([\d.]+),"end":([\d.]+)\}/g;
-              let m2: RegExpExecArray | null;
-              while ((m2 = segRegex.exec(match[0])) !== null) {
-                completeSegs.push(m2[0]);
-              }
-              if (completeSegs.length > 0) {
-                const repairedJson = `{"segments":[${completeSegs.join(",")}],"fullText":""}`;
-                try { parsed = JSON.parse(repairedJson); } catch { /* give up */ }
-              } else {
-                // Last resort: close the array
-                const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}")
-                  .replace(/,\s*$/, "").replace(/\]\s*$/, "]}");
-                try { parsed = JSON.parse(truncated); } catch { /* give up */ }
-              }
+              const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}").replace(/,\s*$/, "").replace(/\]\s*$/, "]}");
+              try { parsed = JSON.parse(truncated); } catch { /* give up */ }
             }
 
             if (parsed) {
-              fullText = parsed.fullText?.trim() ||
-                (Array.isArray(parsed.segments)
-                  ? (parsed.segments as { text?: string }[]).map(s => s.text ?? "").join(" ").trim()
-                  : rawGeminiText);
-              if (Array.isArray(parsed.segments) && parsed.segments.length > 0) {
-                type GeminiWord = { word?: string; start?: number; end?: number };
-                type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
-                const rawSegs = parsed.segments as GeminiSeg[];
-                segments = rawSegs
-                  .filter((s) =>
-                    typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number"
-                  )
-                  .map((s) => ({
-                    text: (s.text as string).trim(),
-                    start: s.start as number,
-                    end: s.end as number,
-                  }));
-                // Extract word-level timestamps from Gemini if provided
-                const geminiWords: typeof words = [];
-                for (const s of rawSegs) {
-                  if (!Array.isArray(s.words)) continue;
-                  for (const w of s.words) {
-                    if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number") {
+              // Extract word timestamps (top-level or nested in segments)
+              const geminiWords: typeof words = [];
+              if (Array.isArray(parsed.words)) {
+                for (const w of parsed.words) {
+                  if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
+                    geminiWords.push({ word: w.word, start: w.start, end: w.end });
+                }
+              }
+              if (geminiWords.length === 0 && Array.isArray(parsed.segments)) {
+                for (const s of parsed.segments) {
+                  for (const w of (s.words ?? [])) {
+                    if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
                       geminiWords.push({ word: w.word, start: w.start, end: w.end });
-                    }
                   }
                 }
-                if (geminiWords.length > 0) {
-                  words = geminiWords;
-                  console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments, ${words.length} words`);
-                } else {
-                  console.log(`[transcribe] Gemini OK — ${fullText.length} chars, ${segments.length} segments (no word timestamps)`);
+              }
+              if (geminiWords.length > 0) words = geminiWords;
+
+              // Try new combined captions format first
+              if (Array.isArray(parsed.captions) && parsed.captions.length > 0) {
+                const validCaps = parsed.captions.filter(c =>
+                  typeof c.text === "string" && typeof c.startMs === "number" && typeof c.endMs === "number"
+                );
+                if (validCaps.length > 0) {
+                  geminiDirectCaptions = validCaps.map((c, i) => ({
+                    text: sanitizePhraseText(c.text!),
+                    startMs: c.startMs!,
+                    endMs: c.endMs!,
+                    timestampMs: c.startMs!,
+                    confidence: 1 as number,
+                    tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
+                  })).filter(c => c.text.length > 0);
+                  fullText = parsed.fullText?.trim() || geminiDirectCaptions.map(c => c.text).join(" ");
+                  segments = geminiDirectCaptions.map(c => ({ text: c.text, start: c.startMs / 1000, end: c.endMs / 1000 }));
+                  console.log(`[transcribe] Gemini OK (combined) — ${geminiDirectCaptions.length} captions, ${words.length} words`);
                 }
-              } else {
-                console.warn("[transcribe] Gemini returned no segments, falling back to text-only");
+              }
+
+              // Fallback: old segments-only format
+              if (geminiDirectCaptions.length === 0 && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+                segments = parsed.segments
+                  .filter(s => typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number")
+                  .map(s => ({ text: (s.text as string).trim(), start: s.start as number, end: s.end as number }));
+                fullText = parsed.fullText?.trim() || segments.map(s => s.text).join(" ").trim();
+                console.log(`[transcribe] Gemini OK (segments) — ${segments.length} segments, ${words.length} words`);
+              }
+
+              if (geminiDirectCaptions.length === 0 && segments.length === 0) {
+                console.warn("[transcribe] Gemini returned no captions/segments");
                 fullText = parsed.fullText?.trim() || stripped;
               }
             } else {
@@ -698,7 +702,13 @@ The downstream system trusts your timestamps as truth. If you guess, subtitles w
 
     let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-    if (isThai || words.length === 0) {
+    // Use captions from combined Gemini response directly — skip all further processing
+    if (geminiDirectCaptions.length > 0) {
+      captions = geminiDirectCaptions;
+      console.log(`[transcribe] using combined Gemini captions directly: ${captions.length} captions`);
+    }
+
+    if ((isThai || words.length === 0) && captions.length === 0) {
       // Always use the real script as source text — STT text may be inaccurate.
       // STT (Gemini) is used ONLY for timestamps, never for subtitle text.
       const sourceRaw: string = (typeof script === "string" && script.trim().length > 0)
