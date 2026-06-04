@@ -9,6 +9,8 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { PremiumBackdrop } from "@/components/layout/premium-page";
+import Link from "next/link";
+import { CouponBox } from "@/components/settings/coupon-box";
 
 // ── Plan visual definitions ──────────────────────────────────────────────
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
@@ -130,6 +132,9 @@ function PricingContent() {
         </div>
       )}
 
+      {/* ── Coupon redemption ───────────────────────────────────────── */}
+      <div className="max-w-xl mx-auto mb-8"><CouponBox /></div>
+
       {/* ── Plan cards ──────────────────────────────────────────────── */}
       <div className="grid gap-5 grid-cols-1 md:grid-cols-3 max-w-6xl mx-auto">
         {PLAN_DEFS.map((def) => {
@@ -234,7 +239,7 @@ function PricingContent() {
                       <span className="text-5xl font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
                         {price.toLocaleString()}
                       </span>
-                      <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>/เดือน</span>
+                      <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>/30 วัน</span>
                     </div>
                   )}
                 </div>
@@ -268,7 +273,7 @@ function PricingContent() {
                 {isPaid ? (
                   <button
                     onClick={() => handleUpgrade(def.key as "PRO" | "BUSINESS")}
-                    disabled={isCurrent || loading !== null}
+                    disabled={isCurrent || isLoading}
                     className={cn(
                       "w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold tracking-tight",
                       "transition-[transform,box-shadow,filter] duration-200 ease-out",
@@ -300,24 +305,22 @@ function PricingContent() {
                       </>
                     )}
                   </button>
-                ) : (
+                ) : isCurrent ? (
                   <div
                     className="w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold"
-                    style={{
-                      background: isCurrent ? `${def.color}15` : "transparent",
-                      border: `1px solid ${isCurrent ? `${def.color}40` : "hsl(0 0% 100% / 0.08)"}`,
-                      color: isCurrent ? def.color : "var(--ui-text-muted)",
-                    }}
+                    style={{ background: `${def.color}15`, border: `1px solid ${def.color}40`, color: def.color }}
                   >
-                    {isCurrent ? (
-                      <>
-                        <ShieldCheck className="h-4 w-4" strokeWidth={2.5} />
-                        แผนปัจจุบันของคุณ
-                      </>
-                    ) : (
-                      "เริ่มใช้งานฟรี"
-                    )}
+                    <ShieldCheck className="h-4 w-4" strokeWidth={2.5} />
+                    แผนปัจจุบันของคุณ
                   </div>
+                ) : (
+                  <Link
+                    href="/dashboard"
+                    className="w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-all hover:-translate-y-0.5"
+                    style={{ background: "transparent", border: "1px solid hsl(0 0% 100% / 0.08)", color: "var(--ui-text-muted)" }}
+                  >
+                    เริ่มสร้างวิดีโอ
+                  </Link>
                 )}
               </div>
             </div>
@@ -330,7 +333,7 @@ function PricingContent() {
         {[
           { icon: CreditCard, label: "ชำระผ่าน Stripe", desc: "บัตรเครดิต / เดบิต ปลอดภัย" },
           { icon: ShieldCheck, label: "ไม่ตัดเงินอัตโนมัติ", desc: "ใช้ครบกำหนดแล้วต่ออายุเอง" },
-          { icon: Gift, label: "ใช้คูปองได้", desc: "ที่หน้า Settings ของคุณ" },
+          { icon: Gift, label: "ใช้คูปองได้", desc: "กรอกโค้ดด้านบนได้เลย" },
         ].map(({ icon: Icon, label, desc }) => (
           <div key={label} className="pp-card p-5 flex items-start gap-3">
             <span aria-hidden className="pp-card-border" />
