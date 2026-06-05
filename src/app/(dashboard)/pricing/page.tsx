@@ -49,6 +49,7 @@ function PricingContent() {
   const [loading, setLoading] = useState<string | null>(null);
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
   const [method, setMethod] = useState<"card" | "promptpay">("card");
+  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; percentOff: number | null } | null>(null);
   const [currentPlan, setCurrentPlan] = useState<string>("FREE");
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
@@ -74,7 +75,7 @@ function PricingContent() {
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planKey, period, method }),
+        body: JSON.stringify({ plan: planKey, period, method, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "เกิดข้อผิดพลาด"); return; }
@@ -162,7 +163,15 @@ function PricingContent() {
       )}
 
       {/* ── Coupon redemption ───────────────────────────────────────── */}
-      <div className="max-w-xl mx-auto mb-8"><CouponBox /></div>
+      <div className="max-w-xl mx-auto mb-8">
+        <CouponBox onDiscountApplied={(c) => setAppliedCoupon({ code: c.code, percentOff: c.percentOff })} />
+        {appliedCoupon && (
+          <div className="mt-2 flex items-center justify-center gap-2 text-xs" style={{ color: "hsl(142 60% 60%)" }}>
+            <span>ใช้โค้ด {appliedCoupon.code} · ลด {appliedCoupon.percentOff}%</span>
+            <button onClick={() => setAppliedCoupon(null)} className="underline opacity-80 hover:opacity-100">ลบ</button>
+          </div>
+        )}
+      </div>
 
       {/* ── Plan cards ──────────────────────────────────────────────── */}
       <div className="grid gap-5 grid-cols-1 md:grid-cols-3 max-w-6xl mx-auto">
@@ -262,15 +271,26 @@ function PricingContent() {
                       <span className="text-5xl font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>ฟรี</span>
                       <span className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ตลอดไป</span>
                     </div>
-                  ) : (
-                    <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-semibold mt-2" style={{ color: "var(--ui-text-muted)" }}>฿</span>
-                      <span className="text-5xl font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
-                        {(period === "annual" ? price * 10 : price).toLocaleString()}
-                      </span>
-                      <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>{period === "annual" ? "/ปี" : "/30 วัน"}</span>
-                    </div>
-                  )}
+                  ) : (() => {
+                    const base = period === "annual" ? price * 10 : price;
+                    const pct = appliedCoupon?.percentOff ?? 0;
+                    const final = pct > 0 ? Math.round(base * (1 - pct / 100)) : base;
+                    return (
+                      <div className="flex items-baseline gap-1 flex-wrap">
+                        <span className="text-2xl font-semibold mt-2" style={{ color: "var(--ui-text-muted)" }}>฿</span>
+                        <span className="text-5xl font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
+                          {final.toLocaleString()}
+                        </span>
+                        <span className="text-sm ml-1" style={{ color: "var(--ui-text-muted)" }}>{period === "annual" ? "/ปี" : "/30 วัน"}</span>
+                        {pct > 0 && (
+                          <span className="ml-2 text-sm line-through" style={{ color: "var(--ui-text-muted)" }}>฿{base.toLocaleString()}</span>
+                        )}
+                        {pct > 0 && (
+                          <span className="ml-1 text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ background: "hsl(142 60% 50% / 0.15)", color: "hsl(142 60% 60%)" }}>ลด {pct}%</span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Features */}

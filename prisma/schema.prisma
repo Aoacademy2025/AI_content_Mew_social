@@ -182,6 +182,11 @@ model Coupon {
   maxUses     Int       @default(1)
   usedCount   Int       @default(0)
   expiresAt   DateTime?
+  type                  String   @default("GRANT") // GRANT | DISCOUNT
+  percentOff            Int?                         // 1-100, DISCOUNT only
+  discountDuration      String?                      // "once" | "forever", DISCOUNT only
+  stripeCouponId        String?                      // Stripe Coupon id (DISCOUNT)
+  stripePromotionCodeId String?                      // Stripe Promotion Code id (DISCOUNT)
   createdAt   DateTime  @default(now())
   redemptions CouponRedemption[]
 }

@@ -13,8 +13,8 @@ export async function POST(req: Request) {
     const userId = authUser.id;
 
     // period: "monthly" | "annual" (default annual) · method: "card" | "promptpay" (default card)
-    const { plan, period = "annual", method = "card" } =
-      await req.json() as { plan: PlanKey; period?: BillingPeriod; method?: "card" | "promptpay" };
+    const { plan, period = "annual", method = "card", couponCode } =
+      await req.json() as { plan: PlanKey; period?: BillingPeriod; method?: "card" | "promptpay"; couponCode?: string };
 
     const planConfig = PLANS[plan];
     if (!planConfig) return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
@@ -43,6 +43,20 @@ export async function POST(req: Request) {
       data: { status: "FAILED" },
     });
 
+    // Resolve an optional DISCOUNT coupon (ignored if invalid — never block the purchase)
+    let discountCoupon: { id: string; stripePromotionCodeId: string } | null = null;
+    if (couponCode?.trim()) {
+      const c = await prisma.coupon.findUnique({
+        where: { code: couponCode.trim().toUpperCase() },
+        include: { redemptions: { where: { userId } } },
+      });
+      const usable = c && c.type === "DISCOUNT" && c.stripePromotionCodeId
+        && (!c.expiresAt || c.expiresAt >= new Date())
+        && (c.maxUses <= 0 || c.usedCount < c.maxUses)
+        && c.redemptions.length === 0;
+      if (usable && c?.stripePromotionCodeId) discountCoupon = { id: c.id, stripePromotionCodeId: c.stripePromotionCodeId };
+    }
+
     const origin = req.headers.get("origin") ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
 
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -50,7 +64,8 @@ export async function POST(req: Request) {
       customer: customerId,
       payment_method_types: method === "promptpay" ? ["promptpay"] : ["card"],
       line_items: [{ price: priceCfg.priceId, quantity: 1 }],
-      metadata: { userId, plan, period, periodDays: String(priceCfg.periodDays), method },
+      ...(discountCoupon ? { discounts: [{ promotion_code: discountCoupon.stripePromotionCodeId }] } : {}),
+      metadata: { userId, plan, period, periodDays: String(priceCfg.periodDays), method, ...(discountCoupon ? { couponId: discountCoupon.id } : {}) },
       ...(isSub
         ? { subscription_data: { metadata: { userId, plan, period } } }
         : { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 }), // one-time session expires in 30 min
