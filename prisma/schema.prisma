@@ -37,6 +37,8 @@ model User {
   stripeSubscriptionId String?
   subStatus            String?  // active | past_due | canceled
   billingPeriod        String?  // monthly | annual
+  cancelAtPeriodEnd    Boolean  @default(false) // portal-scheduled cancel; resume clears it
+  cancelAt             DateTime?                  // exact lapse date from Stripe sub.cancel_at
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime  @default(now())
