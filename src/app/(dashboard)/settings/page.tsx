@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
+import { ReactivateBanner } from "@/components/settings/reactivate-banner";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
 
@@ -122,6 +123,7 @@ function BillingTab() {
         </div>
       </a>
 
+      <ReactivateBanner />
       <ManageSubscriptionButton />
 
       {/* Payment history */}
