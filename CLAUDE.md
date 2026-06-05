@@ -15,7 +15,7 @@
 | Hosting | **Hostinger VPS** (Ubuntu, 4 vCPU/15GB) + PM2 + Nginx + Let's Encrypt (NOT Vercel) |
 | Render | **Remotion + headless Chromium + ffmpeg**, runs locally on the VPS (software, no GPU) |
 | AI (all **BYOK** — users supply their own keys; no server AI keys) | Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS), Pexels/Pixabay (stock) |
-| Payments | Stripe (currently one-time; subscription/pricing work in progress) |
+| Payments | Stripe — **subscription (auto-renew) + one-time/PromptPay, LIVE since 06-05**; config in DB `SiteConfig` (NOT `.env`), loaded by `src/lib/load-stripe-config.ts` |
 | Plans | FREE / PRO / BUSINESS — limits in `src/lib/plan-limits.ts` |
 
 ## Run / build / deploy
