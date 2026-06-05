@@ -106,3 +106,5 @@ tsconfig.tsbuildinfo
 # Scratch files (verify scripts, ad-hoc screenshots)
 _vc-*
 _verify-*
+
+.superpowers/
