@@ -1,97 +1,61 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { stripe, PLANS, PlanKey } from "@/lib/stripe";
+import { stripe, PLANS, PlanKey, BillingPeriod, resolvePrice } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
-
-// Reuse a pending session if created within this window (Stripe sessions expire after 24h)
-const PENDING_REUSE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 export async function POST(req: Request) {
   try {
     await ensureStripeConfig();
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const userId = authUser.id;
 
-    const { plan } = await req.json() as { plan: PlanKey };
+    // period: "monthly" | "annual" (default annual) · method: "card" | "promptpay" (default card)
+    const { plan, period = "annual", method = "card" } =
+      await req.json() as { plan: PlanKey; period?: BillingPeriod; method?: "card" | "promptpay" };
+
     const planConfig = PLANS[plan];
     if (!planConfig) return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
-    if (!planConfig.priceId) return NextResponse.json({ error: "Stripe price not configured" }, { status: 500 });
+
+    const priceCfg = resolvePrice(plan, period, method);
+    if (!priceCfg.priceId) return NextResponse.json({ error: "Stripe price not configured" }, { status: 500 });
+    const isSub = priceCfg.recurring; // card monthly/annual → subscription · PromptPay annual → one-time
 
     const user = await prisma.user.findUnique({
-      where: { id: authUser.id },
-      select: { email: true, name: true },
+      where: { id: userId },
+      select: { email: true, name: true, stripeCustomerId: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const userId = authUser.id;
-    const now = new Date();
-    const reuseAfter = new Date(now.getTime() - PENDING_REUSE_WINDOW_MS);
-
-    // ── Step 1: Try to reuse an existing PENDING for the same plan ─────────
-    const existingPending = await prisma.payment.findFirst({
-      where: {
-        userId,
-        plan: plan as any,
-        status: "PENDING",
-        createdAt: { gte: reuseAfter },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (existingPending) {
-      try {
-        const existingSession = await stripe.checkout.sessions.retrieve(existingPending.stripeSessionId);
-        if (existingSession.url && existingSession.status === "open") {
-          // ── Step 2: Cancel OTHER pending payments (different plan) ───────
-          await prisma.payment.updateMany({
-            where: {
-              userId,
-              status: "PENDING",
-              id: { not: existingPending.id },
-            },
-            data: { status: "FAILED" },
-          });
-          console.log(`[checkout] Reusing existing PENDING ${existingPending.id} for ${plan}`);
-          return NextResponse.json({ url: existingSession.url, reused: true });
-        }
-        // Session expired/completed on Stripe side — mark our record and create new
-        await prisma.payment.update({
-          where: { id: existingPending.id },
-          data: { status: "FAILED" },
-        });
-      } catch {
-        // Stripe retrieval failed → treat as stale, mark failed and create new
-        await prisma.payment.update({
-          where: { id: existingPending.id },
-          data: { status: "FAILED" },
-        });
-      }
+    // ── Ensure a Stripe Customer (needed for subscriptions + billing portal) ──
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({ email: user.email ?? undefined, metadata: { userId } });
+      customerId = customer.id;
+      await prisma.user.update({ where: { id: userId }, data: { stripeCustomerId: customerId } });
     }
 
-    // ── Step 3: Cancel ALL other pending payments for this user (different plan) ──
+    // ── Cancel any leftover pending one-time payments for this user ──
     await prisma.payment.updateMany({
       where: { userId, status: "PENDING" },
       data: { status: "FAILED" },
     });
 
-    // ── Step 4: Create new Stripe session + Payment record ─────────────────
     const origin = req.headers.get("origin") ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
 
     const checkoutSession = await stripe.checkout.sessions.create({
-      mode: "payment",
-      payment_method_types: ["card", "promptpay"],
-      customer_email: user.email ?? undefined,
-      line_items: [{ price: planConfig.priceId, quantity: 1 }],
-      metadata: {
-        userId,
-        plan,
-        periodDays: String(planConfig.periodDays),
-      },
+      mode: isSub ? "subscription" : "payment",
+      customer: customerId,
+      payment_method_types: method === "promptpay" ? ["promptpay"] : ["card"],
+      line_items: [{ price: priceCfg.priceId, quantity: 1 }],
+      metadata: { userId, plan, period, periodDays: String(priceCfg.periodDays), method },
+      ...(isSub
+        ? { subscription_data: { metadata: { userId, plan, period } } }
+        : { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 }), // one-time session expires in 30 min
       success_url: `${origin}/settings?tab=billing&payment=success`,
       cancel_url: `${origin}/pricing?payment=cancelled`,
-      expires_at: Math.floor(Date.now() / 1000) + 30 * 60, // expire in 30 minutes (Stripe min)
     });
 
     await prisma.payment.create({
@@ -99,14 +63,15 @@ export async function POST(req: Request) {
         userId,
         stripeSessionId: checkoutSession.id,
         plan: plan as any,
-        amount: planConfig.thb * 100,
+        // satang: monthly = thb*100, annual ≈ thb*1000 (10 months). Informational only — real charge is the Stripe price.
+        amount: planConfig.thb * (period === "annual" ? 1000 : 100),
         currency: "thb",
         status: "PENDING",
-        periodDays: planConfig.periodDays,
+        periodDays: priceCfg.periodDays,
       },
     });
 
-    return NextResponse.json({ url: checkoutSession.url, reused: false });
+    return NextResponse.json({ url: checkoutSession.url });
   } catch (error) {
     return apiError({ route: "POST /api/payments/checkout", error });
   }

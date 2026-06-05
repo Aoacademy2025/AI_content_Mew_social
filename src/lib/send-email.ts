@@ -330,3 +330,21 @@ ${ticketLink ? `<div style="margin:24px 0 8px">${premiumButton({ href: ticketLin
     }),
   });
 }
+
+export async function sendRenewalReminderEmail(opts: { to: string; plan: string; daysLeft: number; pricingUrl: string }): Promise<boolean> {
+  return sendEmail({
+    to: opts.to,
+    subject: `แพ็ก ${opts.plan} ใกล้หมดอายุ (อีก ${opts.daysLeft} วัน) — ${BRAND}`,
+    html: emailShell({
+      title: "ต่ออายุแพ็กเกจ",
+      previewText: `แพ็ก ${opts.plan} หมดอายุในอีก ${opts.daysLeft} วัน — ต่อก่อนหมดล็อกราคาผู้ก่อตั้ง`,
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">แพ็ก ${escapeHtml(opts.plan)} ใกล้หมดอายุ</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">แพ็กเกจของคุณจะหมดอายุในอีก <b style="color:#fff">${opts.daysLeft} วัน</b> — ต่ออายุตอนนี้เพื่อใช้งานต่อแบบไม่สะดุด</p>
+${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย" })}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#71717a;font-size:12px">💡 ต่อก่อนหมดอายุ = ล็อกราคาผู้ก่อตั้งไว้</p>
+`.trim(),
+    }),
+  });
+}

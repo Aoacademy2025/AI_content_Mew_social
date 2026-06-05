@@ -32,6 +32,11 @@ model User {
   geminiVoiceName    String?  @default("Aoede")
   suspended     Boolean   @default(false)
   planExpiresAt DateTime?
+  // Phase 2 — subscriptions (card auto-renew cohort)
+  stripeCustomerId     String?  @unique
+  stripeSubscriptionId String?
+  subStatus            String?  // active | past_due | canceled
+  billingPeriod        String?  // monthly | annual
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime  @default(now())

@@ -6,6 +6,11 @@ const DB_KEYS = [
   { db: "stripe_webhook_secret", env: "STRIPE_WEBHOOK_SECRET" },
   { db: "stripe_price_pro", env: "STRIPE_PRICE_PRO_MONTHLY" },
   { db: "stripe_price_business", env: "STRIPE_PRICE_BUSINESS_MONTHLY" },
+  // Phase 2 — annual + one-time prices
+  { db: "stripe_price_pro_annual", env: "STRIPE_PRICE_PRO_ANNUAL" },
+  { db: "stripe_price_pro_annual_onetime", env: "STRIPE_PRICE_PRO_ANNUAL_ONETIME" },
+  { db: "stripe_price_business_annual", env: "STRIPE_PRICE_BUSINESS_ANNUAL" },
+  { db: "stripe_price_business_annual_onetime", env: "STRIPE_PRICE_BUSINESS_ANNUAL_ONETIME" },
 ];
 
 /**

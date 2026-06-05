@@ -33,5 +33,18 @@ module.exports = {
         CRON_SECRET: process.env.CRON_SECRET || "",
       },
     },
+    {
+      name: "renewal-reminders",
+      cwd: "/var/www/ai-content",
+      script: "scripts/renewal-reminders.js",
+      cron_restart: "0 9 * * *", // every day at 9:00 AM — remind PromptPay/one-time users before plan expiry
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
   ],
 };
