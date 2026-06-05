@@ -65,6 +65,14 @@ export async function POST(req: Request) {
         title: `ชำระเงินสำเร็จ — ${plan} Plan`,
         body: `แพ็กเกจ ${plan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
       }).catch(() => {});
+      const couponId = s.metadata?.couponId;
+      if (couponId) {
+        try {
+          await prisma.couponRedemption.create({ data: { couponId, userId } });
+          await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
+          console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
+        } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
+      }
       console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
     }
   }
