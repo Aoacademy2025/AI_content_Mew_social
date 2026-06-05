@@ -48,6 +48,7 @@ function PricingContent() {
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState<string | null>(null);
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
+  const [method, setMethod] = useState<"card" | "promptpay">("card");
   const [currentPlan, setCurrentPlan] = useState<string>("FREE");
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
@@ -73,7 +74,7 @@ function PricingContent() {
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planKey, period, method: "card" }),
+        body: JSON.stringify({ plan: planKey, period, method }),
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "เกิดข้อผิดพลาด"); return; }
@@ -111,10 +112,29 @@ function PricingContent() {
       {/* ── Billing period toggle ───────────────────────────────────── */}
       <div className="flex justify-center">
         <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
-          <button onClick={() => setPeriod("monthly")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", period === "monthly" ? "bg-white/10 text-white" : "text-white/50")}>รายเดือน</button>
+          <button onClick={() => { setPeriod("monthly"); setMethod("card"); }} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", period === "monthly" ? "bg-white/10 text-white" : "text-white/50")}>รายเดือน</button>
           <button onClick={() => setPeriod("annual")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", period === "annual" ? "text-white" : "text-white/50")} style={period === "annual" ? { background: "linear-gradient(135deg,#7c3aed,#06b6d4)" } : undefined}>รายปี · ประหยัด 2 เดือน</button>
         </div>
       </div>
+
+      {/* ── Payment method toggle (annual only) ─────────────────────── */}
+      {period === "annual" && (
+        <div className="flex justify-center">
+          <div className="inline-flex rounded-full border border-white/10 bg-white/5 p-1">
+            <button onClick={() => setMethod("card")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", method === "card" ? "text-white" : "text-white/50")} style={method === "card" ? { background: "linear-gradient(135deg,#7c3aed,#06b6d4)" } : undefined}>💳 บัตร · ต่ออัตโนมัติ</button>
+            <button onClick={() => setMethod("promptpay")} className={cn("px-5 py-2 rounded-full text-sm font-semibold transition", method === "promptpay" ? "text-white" : "text-white/50")} style={method === "promptpay" ? { background: "linear-gradient(135deg,#7c3aed,#06b6d4)" } : undefined}>📱 PromptPay · จ่ายครั้งเดียว</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Selection reassurance caption ───────────────────────────── */}
+      <p className="text-center text-xs -mt-3" style={{ color: "var(--ui-text-muted)" }}>
+        {period === "monthly"
+          ? "ต่ออัตโนมัติทุกเดือน · ยกเลิกได้ทุกเมื่อ"
+          : method === "promptpay"
+            ? "จ่ายครั้งเดียว ไม่ตัดเงินอัตโนมัติ"
+            : "ต่ออัตโนมัติทุกปี · ยกเลิกได้ทุกเมื่อ"}
+      </p>
 
       {/* ── Payment result banner ────────────────────────────────────── */}
       {paymentResult === "success" && (
