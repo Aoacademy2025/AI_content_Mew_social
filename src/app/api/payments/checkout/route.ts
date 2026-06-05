@@ -81,7 +81,7 @@ export async function POST(req: Request) {
 
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: "payment",
-      payment_method_types: ["card"],
+      payment_method_types: ["card", "promptpay"],
       customer_email: user.email ?? undefined,
       line_items: [{ price: planConfig.priceId, quantity: 1 }],
       metadata: {

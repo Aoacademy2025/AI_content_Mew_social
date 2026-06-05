@@ -263,7 +263,7 @@ export default async function Home() {
                 <p className="font-semibold text-white">Pro</p>
                 <p className="mt-2 text-4xl font-black text-white">
                   ฿{planConfig.pro.price.toLocaleString()}
-                  <span className="ml-1 text-base font-normal text-zinc-400">/เดือน</span>
+                  <span className="ml-1 text-base font-normal text-zinc-400">/30 วัน</span>
                 </p>
               </div>
               <ul className="flex-1 space-y-3">
@@ -291,7 +291,7 @@ export default async function Home() {
                 <p className="font-semibold text-white">Business</p>
                 <p className="mt-2 text-4xl font-black text-white">
                   ฿{planConfig.business.price.toLocaleString()}
-                  <span className="ml-1 text-base font-normal text-zinc-400">/เดือน</span>
+                  <span className="ml-1 text-base font-normal text-zinc-400">/30 วัน</span>
                 </p>
               </div>
               <ul className="flex-1 space-y-3">
@@ -319,7 +319,7 @@ export default async function Home() {
           </div>
           <span className="text-sm font-bold text-white">Hero AI Creator Studio</span>
         </div>
-        <p className="text-xs text-zinc-600">© 2025 Hero AI Creator Studio. All rights reserved.</p>
+        <p className="text-xs text-zinc-600">© 2026 Hero AI Creator Studio. All rights reserved.</p>
       </footer>
 
     </div>
