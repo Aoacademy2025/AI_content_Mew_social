@@ -4,7 +4,9 @@ import { useState } from "react";
 import { Ticket, Loader2, Crown } from "lucide-react";
 import { toast } from "sonner";
 
-export function CouponBox() {
+type ValidatedCoupon = { code: string; type: "GRANT" | "DISCOUNT"; plan: string; percentOff: number | null; discountDuration: string | null; durationDays: number };
+
+export function CouponBox({ onDiscountApplied }: { onDiscountApplied?: (c: ValidatedCoupon) => void } = {}) {
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -12,9 +14,24 @@ export function CouponBox() {
     if (!code.trim()) return;
     setLoading(true);
     try {
+      const vr = await fetch("/api/coupons/validate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const v = await vr.json();
+      if (!vr.ok) { toast.error(v.error ?? "รหัสคูปองไม่ถูกต้อง"); return; }
+
+      if (v.type === "DISCOUNT") {
+        if (!onDiscountApplied) { toast.message("ใช้โค้ดส่วนลดนี้ที่หน้าราคา"); return; }
+        onDiscountApplied(v as ValidatedCoupon);
+        toast.success(`ใช้ส่วนลด ${v.percentOff}% แล้ว`);
+        setCode("");
+        return;
+      }
+
+      // GRANT — redeem instantly (unchanged behavior)
       const res = await fetch("/api/coupons/redeem", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
       });
       const data = await res.json();
