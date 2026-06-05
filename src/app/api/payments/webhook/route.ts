@@ -96,6 +96,28 @@ export async function POST(req: Request) {
     }
   }
 
+  // ── Subscription updated → sync scheduled-cancel state (covers cancel AND resume) ──
+  if (event.type === "customer.subscription.updated") {
+    const sub = event.data.object as any;
+    const user = await prisma.user.findFirst({
+      where: { OR: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: sub.customer }] },
+      select: { id: true },
+    });
+    if (user) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          cancelAtPeriodEnd: !!sub.cancel_at_period_end,
+          cancelAt: sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
+          subStatus: sub.status,
+        },
+      });
+      console.log(`[stripe-webhook] subscription.updated ${user.id} cancelAtPeriodEnd=${!!sub.cancel_at_period_end}`);
+    } else {
+      console.warn(`[stripe-webhook] subscription.updated: no user for sub ${sub.id}`);
+    }
+  }
+
   // ── Failed renewal → dunning ─────────────────────────────────────────────
   if (event.type === "invoice.payment_failed") {
     const inv = event.data.object as any;

@@ -21,6 +21,8 @@ export async function GET() {
         usageCount: true,
         usageLimit: true,
         avatar: true,
+        cancelAtPeriodEnd: true,
+        cancelAt: true,
       } as any,
     });
 
