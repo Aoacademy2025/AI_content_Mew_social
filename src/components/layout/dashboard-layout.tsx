@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Sidebar } from "./sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { TopNav } from "./top-nav";
+import { TrialBanner } from "./trial-banner";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -30,6 +31,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TopNav onMenuClick={() => setMobileMenuOpen(true)} />
+      <TrialBanner />
 
       <div className="flex flex-1 overflow-hidden">
         <aside className="hidden md:block shrink-0">
