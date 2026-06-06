@@ -25,6 +25,9 @@ machinery.
   session is created, and released if the session expires / payment fails. Guarantees the
   founding price is handed to **at most 100** purchases.
 - **100 total**, shared across PRO + BUSINESS (one pool of founding members).
+- **50% off, forever** (`percentOff: 50`, `discountDuration: "forever"`). On card auto-renew
+  the 50% applies to **every** annual renewal (locked for life — PRO ฿5,990→฿2,995/yr,
+  BUSINESS ฿9,900→฿4,950/yr). On PromptPay one-time it's 50% off that one annual payment.
 - Reuse the existing **DISCOUNT coupon** mechanism (Stripe coupon + promotion code,
   `discountDuration: "forever"`) as the discount engine. The founding offer is one
   designated coupon; this feature adds only the atomic counter + reservation lifecycle + the
@@ -41,7 +44,7 @@ released or confirmed.
 
 - A normal DISCOUNT coupon created via the existing `POST /api/admin/coupons`, identified by
   a **sentinel code** `FOUNDING100`: `type:"DISCOUNT"`, `discountDuration:"forever"`,
-  `percentOff` admin-chosen (e.g. 50), `maxUses:100`. Creation already provisions a Stripe
+  `percentOff:50`, `maxUses:100`. Creation already provisions a Stripe
   Coupon + Promotion Code (with `max_redemptions:100` as a backstop) and stores
   `stripeCouponId` + `stripePromotionCodeId`.
 - For **this coupon only**, `usedCount` means **seats held = reserved + confirmed**, and
@@ -201,8 +204,8 @@ re-count). On `expired`/`payment_failed`/`subscription.deleted` → `releaseSeat
   `npx prisma db push` on the VPS, then `deploy/deploy.sh`. Coordinate with wao1234
   (`schema.prisma` shared).
 - No new env keys — uses the live Stripe client (SiteConfig). The `FOUNDING100` coupon
-  created in prod creates a **live** Stripe Coupon/Promotion Code; set `percentOff` and the
-  banner copy before launch.
+  created in prod (`percentOff:50`, `forever`, `maxUses:100`) creates a **live** Stripe
+  Coupon/Promotion Code; create it + confirm the banner copy before launch.
 - Branch `mew/founding-100` → PR into `main` (never push broken code to `main` = prod).
 </content>
 </invoke>
