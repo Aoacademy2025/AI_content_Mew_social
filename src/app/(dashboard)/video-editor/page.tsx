@@ -2004,14 +2004,17 @@ export default function VideoEditorPage() {
     : captions;
 
   const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
-  // Timeline scale = ความยาว "เสียงพูด/ซับ", NOT ความยาววิดีโอ.
-  // วิดีโอที่ render มักยาวกว่าเสียง (avatar tail / padding ท้ายคลิป). ถ้า normalize
-  // ด้วย durationMs (วิดีโอ) ทุก subtitle/B-ROLL clip จะถูกบีบสัดส่วนผิด → "ซับไม่ตรงเสียง"
-  // ทั้งที่ caption timing ถูกต้อง. ใช้ captionEndMs (ซับสุดท้ายจบ = เสียงจบ) เป็นหลัก;
-  // เผื่อ durationMs เฉพาะตอนที่ยังไม่มี caption (เช่นก่อน transcribe เสร็จ).
-  const totalMs = captionEndMs > 0
-    ? captionEndMs
-    : durationMs > 0 ? durationMs : 0;
+  // Timeline scale MUST match the <video> element that's actually playing, because
+  // the playhead position comes from video.currentTime. The caption clips, the
+  // playhead, and click-to-seek all divide by totalMs — so they only stay aligned
+  // with each other (and with the moving video) if totalMs == the video's real
+  // duration. Using captionEndMs (audio length) while the video is longer made the
+  // playhead run faster than the clips → "เล่นแล้วซับไม่ตรง / วิดีโอเล่นตามแท็บล่าง".
+  // Prefer the real video duration; fall back to captionEndMs only before the video
+  // has loaded (so the timeline still renders during transcribe).
+  const totalMs = durationMs > 0
+    ? durationMs
+    : captionEndMs > 0 ? captionEndMs : 0;
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
