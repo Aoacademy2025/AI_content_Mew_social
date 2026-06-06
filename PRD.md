@@ -2,9 +2,9 @@
 
 ## Product Requirement Document
 
-> ⚠️ **หมายเหตุ (อัปเดต 2026-06-04):** เอกสารนี้คือ **"วิชันเดิม"** — หลายส่วนล้าสมัย / ไม่ตรงกับระบบจริง
-> **สถานะ + สถาปัตยกรรมจริง → ดู [STATUS.md](STATUS.md) และ [CLAUDE.md](CLAUDE.md)**
-> ของจริงโดยย่อ: Auth = **Clerk** · DB = **SQLite** · Host = **Hostinger VPS** · AI = **Gemini/HeyGen/ElevenLabs (BYOK)** · Render = **Remotion บนเครื่อง** · Product = **Faceless + AI Avatar auto video editor**
+> ⚠️ **หมายเหตุ (อัปเดต 2026-06-07):** เอกสารนี้คือ **"วิชันเดิม"** — หลายส่วน**ล้าสมัย/ไม่ตรงกับระบบจริง** (เช่น OpenAI→จริงใช้ Gemini, NextAuth→Clerk, Vercel/Neon→Hostinger VPS+SQLite, n8n→Remotion บนเครื่อง, Plan FREE/PAID→FREE/PRO/BUSINESS)
+> **สถานะ + สถาปัตยกรรมจริง → ดู [STATUS.md](STATUS.md) + [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-07.md](docs/HANDOFF-2026-06-07.md) เสมอ** (อย่าเชื่อ PRD นี้เมื่อขัดกัน)
+> ของจริงโดยย่อ (06-07): Auth = **Clerk** · DB = **SQLite/Prisma** · Host = **Hostinger VPS + PM2 + Nginx** · AI = **Gemini/HeyGen/ElevenLabs (BYOK)** · Render = **Remotion บนเครื่อง** · Payments = **Stripe LIVE** (subscription + PromptPay + **Founding-100 50%/forever** + **Free trial 7 วัน**) · Product = **Faceless + AI Avatar auto video editor** · หน้าแรก = **evergreen sale page**
 
 ---
 
