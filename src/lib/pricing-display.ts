@@ -17,7 +17,7 @@ export interface DisplayPrice {
   base: number;
   /** Final price after any discount (THB, rounded). */
   final: number;
-  /** Percent off applied (0 when none). */
+  /** Percent off applied (0 when none, or when the coupon is a fixed-amount type — pct: 0 does NOT imply that no coupon is present). */
   pct: number;
   /** True when the founding price (not a manual coupon) is what's applied. */
   isFounding: boolean;
@@ -25,6 +25,7 @@ export interface DisplayPrice {
 
 export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
   const { monthlyPrice, period, coupon, founding } = input;
+  // annual = 10 months billed (2 months free)
   const base = period === "annual" ? monthlyPrice * 10 : monthlyPrice;
   const foundingPct =
     !coupon && founding?.active && period === "annual" ? founding.percentOff : 0;

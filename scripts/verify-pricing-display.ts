@@ -47,6 +47,16 @@ check("annual / founding inactive",
   computeDisplayPrice({ monthlyPrice: 599, period: "annual", coupon: null, founding: { active: false, percentOff: 50 } }),
   { base: 5990, final: 5990, pct: 0, isFounding: false });
 
+// 8) Annual + fixed-amount coupon (percentOff null) -> no percent shown, founding suppressed
+check("annual / coupon fixed-amount (percentOff null)",
+  computeDisplayPrice({ monthlyPrice: 599, period: "annual", coupon: { percentOff: null }, founding: null }),
+  { base: 5990, final: 5990, pct: 0, isFounding: false });
+
+// 9) Monthly + coupon 20%
+check("monthly / coupon 20%",
+  computeDisplayPrice({ monthlyPrice: 599, period: "monthly", coupon: { percentOff: 20 }, founding: null }),
+  { base: 599, final: 479, pct: 20, isFounding: false });
+
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);
