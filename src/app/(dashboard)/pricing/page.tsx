@@ -4,7 +4,7 @@ import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Check, Zap, Crown, Building2, Loader2, AlertCircle, Sparkles,
-  ArrowRight, ShieldCheck, CreditCard, Gift, HelpCircle,
+  ArrowRight, ShieldCheck, CreditCard, Gift, HelpCircle, Flame,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -50,6 +50,7 @@ function PricingContent() {
   const [period, setPeriod] = useState<"monthly" | "annual">("annual");
   const [method, setMethod] = useState<"card" | "promptpay">("card");
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; percentOff: number | null } | null>(null);
+  const [founding, setFounding] = useState<{ active: boolean; remaining: number; total: number; percentOff: number } | null>(null);
   const [currentPlan, setCurrentPlan] = useState<string>("FREE");
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
@@ -61,6 +62,7 @@ function PricingContent() {
   useEffect(() => {
     fetch("/api/plans").then(r => r.json()).then(setPlanConfig).catch(() => {});
     fetch("/api/user/me").then(r => r.json()).then(d => { if (d.plan) setCurrentPlan(d.plan); }).catch(() => {});
+    fetch("/api/founding/status").then(r => r.json()).then(setFounding).catch(() => {});
   }, []);
 
   function getPlanData(def: PlanDef) {
@@ -136,6 +138,22 @@ function PricingContent() {
             ? "จ่ายครั้งเดียว ไม่ตัดเงินอัตโนมัติ"
             : "ต่ออัตโนมัติทุกปี · ยกเลิกได้ทุกเมื่อ"}
       </p>
+
+      {/* ── Founding-100 banner ─────────────────────────────────────── */}
+      {founding?.active && period === "annual" && !appliedCoupon && (
+        <div className="flex items-center justify-center gap-3 rounded-xl p-4 max-w-2xl mx-auto"
+          style={{
+            background: "linear-gradient(90deg, hsl(38 92% 50% / 0.14), hsl(280 80% 60% / 0.10))",
+            border: "1px solid hsl(38 92% 55% / 0.35)",
+            boxShadow: "0 8px 24px hsl(38 92% 50% / 0.12)",
+          }}>
+          <Flame className="h-5 w-5 shrink-0 text-amber-400" strokeWidth={2.5} />
+          <p className="text-sm font-semibold text-amber-200">
+            ราคา Founding · ลด {founding.percentOff}% ล็อกตลอดชีพ —
+            เหลืออีก <span className="font-black text-white">{founding.remaining}</span> / {founding.total} ที่นั่ง
+          </p>
+        </div>
+      )}
 
       {/* ── Payment result banner ────────────────────────────────────── */}
       {paymentResult === "success" && (
@@ -273,7 +291,10 @@ function PricingContent() {
                     </div>
                   ) : (() => {
                     const base = period === "annual" ? price * 10 : price;
-                    const pct = appliedCoupon?.percentOff ?? 0;
+                    // manual coupon wins; otherwise the founding price applies on annual while seats remain
+                    const foundingPct = (!appliedCoupon && founding?.active && period === "annual") ? founding.percentOff : 0;
+                    const pct = appliedCoupon?.percentOff ?? foundingPct;
+                    const isFoundingPrice = !appliedCoupon && foundingPct > 0;
                     const final = pct > 0 ? Math.round(base * (1 - pct / 100)) : base;
                     return (
                       <div className="flex items-baseline gap-1 flex-wrap">
@@ -286,7 +307,12 @@ function PricingContent() {
                           <span className="ml-2 text-sm line-through" style={{ color: "var(--ui-text-muted)" }}>฿{base.toLocaleString()}</span>
                         )}
                         {pct > 0 && (
-                          <span className="ml-1 text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ background: "hsl(142 60% 50% / 0.15)", color: "hsl(142 60% 60%)" }}>ลด {pct}%</span>
+                          <span className="ml-1 text-[11px] font-bold px-2 py-0.5 rounded-full"
+                            style={isFoundingPrice
+                              ? { background: "hsl(38 92% 50% / 0.18)", color: "hsl(38 92% 62%)" }
+                              : { background: "hsl(142 60% 50% / 0.15)", color: "hsl(142 60% 60%)" }}>
+                            {isFoundingPrice ? `Founding · ลด ${pct}% ตลอดชีพ` : `ลด ${pct}%`}
+                          </span>
                         )}
                       </div>
                     );
