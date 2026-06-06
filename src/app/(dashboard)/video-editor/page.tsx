@@ -77,6 +77,11 @@ export default function VideoEditorPage() {
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   const [activeCaptionIdx, setActiveCaptionIdx] = useState(-1);
   const [editingCapIdx, setEditingCapIdx] = useState<number | null>(null);
+  const activeSegCardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [activeCaptionIdx]);
 
   // ── Playback ──────────────────────────────────────────────────────────
   const [playing, setPlaying] = useState(false);
@@ -2619,6 +2624,7 @@ export default function VideoEditorPage() {
               const isEditing = editingCapIdx === i;
               return (
                 <div key={i}
+                  ref={isActive ? activeSegCardRef : null}
                   className={cn("rounded-xl border transition-all group",
                     isActive ? "bg-violet-500/10 border-violet-500/40" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
 
