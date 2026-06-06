@@ -2004,17 +2004,20 @@ export default function VideoEditorPage() {
     : captions;
 
   const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
-  // Timeline scale MUST match the <video> element that's actually playing, because
-  // the playhead position comes from video.currentTime. The caption clips, the
-  // playhead, and click-to-seek all divide by totalMs — so they only stay aligned
-  // with each other (and with the moving video) if totalMs == the video's real
-  // duration. Using captionEndMs (audio length) while the video is longer made the
-  // playhead run faster than the clips → "เล่นแล้วซับไม่ตรง / วิดีโอเล่นตามแท็บล่าง".
-  // Prefer the real video duration; fall back to captionEndMs only before the video
-  // has loaded (so the timeline still renders during transcribe).
-  const totalMs = durationMs > 0
-    ? durationMs
-    : captionEndMs > 0 ? captionEndMs : 0;
+  // Timeline scale = caption/audio length (captionEndMs), available immediately and
+  // never 0 once transcribed — so clips don't shift when the <video> finishes
+  // loading ("ตอนแรกไม่ตรง แล้วตรง"). Fall back to durationMs only if no captions.
+  const totalMs = captionEndMs > 0
+    ? captionEndMs
+    : durationMs > 0 ? durationMs : 0;
+  // The playhead is driven by video.currentTime, which lives in VIDEO time-space.
+  // The video can be longer than the audio (avatar tail), so if we drew the playhead
+  // at currentMs/totalMs it would run faster than the caption clips and drift. Map
+  // video-time → caption-time so the playhead stays glued to the clips at every
+  // moment. When video & caption length match (or video not loaded) this is a no-op.
+  const playheadMs = (durationMs > 0 && captionEndMs > 0)
+    ? currentMs * (captionEndMs / durationMs)
+    : currentMs;
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
@@ -2613,7 +2616,11 @@ export default function VideoEditorPage() {
                     onClick={() => {
                       setActiveSegIdx(i);
                       setActiveCaptionIdx(i);
-                      if (videoRef.current && cap.startMs) videoRef.current.currentTime = cap.startMs / 1000;
+                      // cap.startMs is caption-space; map to video-space before seeking.
+                      if (videoRef.current && cap.startMs) {
+                        const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                        videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                      }
                     }}>
                     <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", tagColor(cap.tag).replace("text-", "bg-"))} />
                     <span className={cn("text-[9px] font-black uppercase tracking-wider", tagColor(cap.tag))}>
@@ -2868,7 +2875,7 @@ export default function VideoEditorPage() {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/40">
-                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }} />
+                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }} />
                 </div>
               </div>
 
@@ -3358,15 +3365,23 @@ export default function VideoEditorPage() {
                   if (!videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  videoRef.current.currentTime = pct * (totalMs / 1000);
-                  setCurrentMs(pct * totalMs);
+                  // Timeline is in caption-space but video.currentTime is video-space.
+                  // Seek by the video's own duration so clicking the far right lands at
+                  // the true end of the clip, not at captionEnd.
+                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
+                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
+                  setCurrentMs(pct * seekScaleMs);
                 }}
                 onPointerMove={e => {
                   if (e.buttons !== 1 || !videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  videoRef.current.currentTime = pct * (totalMs / 1000);
-                  setCurrentMs(pct * totalMs);
+                  // Timeline is in caption-space but video.currentTime is video-space.
+                  // Seek by the video's own duration so clicking the far right lands at
+                  // the true end of the clip, not at captionEnd.
+                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
+                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
+                  setCurrentMs(pct * seekScaleMs);
                 }}
               >
                 {[0,0.15,0.32,0.5,0.68,0.82,1].map((pct, i) => (
@@ -3403,7 +3418,10 @@ export default function VideoEditorPage() {
                       onClick={() => {
                         if (clipResizeRef.current?.moved) return;
                         setActiveSegIdx(i);
-                        if (videoRef.current) videoRef.current.currentTime = cap.startMs / 1000;
+                        if (videoRef.current) {
+                          const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                          videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                        }
                       }}
                       className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
                         i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
@@ -3466,9 +3484,10 @@ export default function VideoEditorPage() {
                 </div>
               </div>
 
-              {/* Playhead */}
+              {/* Playhead — uses playheadMs (video-time mapped into caption-time) so it
+                  tracks the caption clips exactly, even when the video is longer. */}
               <div className="absolute top-0 bottom-0 w-[1.5px] bg-violet-500 pointer-events-none z-10"
-                style={{ left: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }}>
+                style={{ left: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }}>
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.8)]" />
               </div>
             </div>
