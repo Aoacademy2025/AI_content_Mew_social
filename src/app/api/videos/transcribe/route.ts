@@ -160,6 +160,64 @@ type SubtitleItem = {
   tag?: "hook" | "body" | "cta";
 };
 
+// Thai leading vowels render BEFORE their consonant. A caption that STARTS with one
+// means the previous caption was cut mid-word → merge it back. Also catches tiny
+// syllable fragments (≤3 Thai chars, no terminal punctuation).
+const THAI_LEADING_VOWEL_RE = /^[เแโใไ]/;
+function isThaiSyllableFragment(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  const thaiLen = (t.match(/[฀-๿]/g) ?? []).length;
+  return thaiLen > 0 && thaiLen <= 3 && !/[.!?ฯ]/.test(t);
+}
+
+// Merge captions that were split mid-word (leading-vowel start / tiny fragment).
+// Keeps the earlier caption's start and the later caption's end so timing stays
+// anchored to real audio boundaries.
+function mergeFragmentCaptions<T extends { text: string; startMs: number; endMs: number }>(
+  caps: T[],
+  maxMergeChars = 48,
+): T[] {
+  if (caps.length < 2) return caps;
+  const out: T[] = [];
+  for (const cap of caps) {
+    const text = cap.text.trim();
+    if (out.length > 0) {
+      const prev = out[out.length - 1];
+      const startsMidWord = THAI_LEADING_VOWEL_RE.test(text);
+      const isFragment = isThaiSyllableFragment(text);
+      const prevIsFragment = isThaiSyllableFragment(prev.text);
+      const combinedLen = prev.text.trim().length + text.length;
+      if ((startsMidWord || isFragment || prevIsFragment) && combinedLen <= maxMergeChars) {
+        prev.text = (prev.text.trim() + text).trim();
+        prev.endMs = cap.endMs;
+        continue;
+      }
+    }
+    out.push({ ...cap, text });
+  }
+  return out;
+}
+
+// Hard guarantee for principle #2: the last subtitle must END close to the real
+// audio length. Gemini is told this in the prompt but doesn't always obey, so we
+// clamp here. Only stretches the tail when the gap is meaningful (> 250ms) and not
+// absurd (< 8s, which would signal a transcription that genuinely stopped early).
+function clampLastCaptionToAudioEnd<T extends { startMs: number; endMs: number }>(
+  caps: T[],
+  audioDurationMs: number,
+): T[] {
+  if (caps.length === 0 || audioDurationMs <= 0) return caps;
+  const last = caps[caps.length - 1];
+  const gap = audioDurationMs - last.endMs;
+  if (gap > 250 && gap < 8000) {
+    last.endMs = audioDurationMs;
+  } else if (last.endMs > audioDurationMs) {
+    last.endMs = Math.max(last.startMs + 1, audioDurationMs);
+  }
+  return caps;
+}
+
 function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, fps = 30, skipCursorPush = false): SubtitleItem[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
@@ -286,6 +344,15 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   }
 
   if (out.length > 0 && out[out.length - 1].endMs > totalMs) out[out.length - 1].endMs = totalMs;
+
+  // ถ้า caption สุดท้ายจบก่อน audio duration เกิน 3s — extend ให้ครบ
+  // (Gemini บางครั้งตัด caption ก่อนเสียงจบ โดยเฉพาะช่วงท้ายที่เงียบหรือพูดช้า)
+  if (out.length > 0 && totalMs > 0) {
+    const last = out[out.length - 1];
+    if (totalMs - last.endMs > 3000) {
+      out[out.length - 1] = { ...last, endMs: totalMs };
+    }
+  }
 
   return out;
 }
@@ -462,9 +529,14 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
+        const audioLenSec = sourceAudioDurationMs > 0 ? (sourceAudioDurationMs / 1000).toFixed(1) : null;
         const timestampPrompt = `คุณคือผู้ตัดซับไตเติ้ลภาษาไทยสำหรับ TikTok/Reels มืออาชีพ
 
-ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง
+ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง${audioLenSec ? `
+
+⚠️ audio นี้ยาว ${audioLenSec} วินาที — ต้องถอดเสียงให้ครบจนถึงวินาทีสุดท้าย
+caption สุดท้าย endMs ต้องอยู่ใกล้ ${audioLenSec}s (ห่างได้ไม่เกิน 3s)
+ถ้าถอดไม่ถึงท้าย = ผิด ต้องฟังต่อจนจบไฟล์` : ""}
 
 ━━━ กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี ━━━
 ตัดหลังจุลภาค จุด หรือช่วงหยุดเสียง ≥ 0.25s
@@ -518,14 +590,27 @@ ${script.trim().slice(0, 2000)}` : ""}
           generationConfig: {
             temperature: 0,
             maxOutputTokens: 131072,
-            thinkingConfig: { thinkingBudget: 0 },
+            // Small thinking budget (not 0): lets the model sanity-check its own
+            // timestamps — e.g. that captions stay in order and the last one ends
+            // near the real audio length — which improves "ซับตรงเสียง". The JSON
+            // parser below already extracts the {...} object from any surrounding
+            // text, so a thought preamble doesn't break output.
+            thinkingConfig: { thinkingBudget: 2048 },
           },
         });
 
+        // Model order is chosen for TIMESTAMP accuracy, not text quality.
+        // Gen-3 models (gemini-3.x-flash / 3.1-pro) have a confirmed progressive
+        // timestamp-drift bug in audio transcription (Google AI Dev forum, May 2026):
+        // a ~12-min clip drifts up to -157s by the end, so subtitles end well before
+        // the audio does ("ซับไม่จบพร้อมเสียง"). gemini-2.5-flash is Google's own
+        // accurate-timestamp baseline — keep it FIRST. Gen-3 is intentionally NOT used
+        // for transcription here; its better text quality doesn't matter because we
+        // take subtitle TEXT from the user's script, only TIMESTAMPS from the audio.
         const TRANSCRIBE_MODELS = [
-          "gemini-3.5-flash",   // production native-audio model (most stable per Google docs)
-          "gemini-2.5-flash",   // fallback when 3.5 not available for the user's key/region
-          "gemini-1.5-pro",     // classic, almost always available
+          "gemini-2.5-flash",   // accurate-timestamp baseline (Google ref) — primary
+          "gemini-1.5-pro",     // classic, accurate timing, almost always available
+          "gemini-1.5-flash",   // last-resort fallback for older keys/regions
         ];
 
         let geminiRes: Response | null = null;
@@ -718,10 +803,12 @@ ${script.trim().slice(0, 2000)}` : ""}
 
     let captions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" }[] = [];
 
-    // Use captions from combined Gemini response directly — skip all further processing
+    // Use captions from combined Gemini response directly — but still run the
+    // fragment-merge + tail-clamp guards so principles #1/#2 hold even on this path.
     if (geminiDirectCaptions.length > 0) {
-      captions = geminiDirectCaptions;
-      console.log(`[transcribe] using combined Gemini captions directly: ${captions.length} captions`);
+      const merged = mergeFragmentCaptions(geminiDirectCaptions);
+      captions = clampLastCaptionToAudioEnd(merged, sourceAudioDurationMs);
+      console.log(`[transcribe] combined Gemini captions: ${geminiDirectCaptions.length} → ${captions.length} after fragment-merge + tail-clamp`);
     }
 
     if ((isThai || words.length === 0) && captions.length === 0) {
@@ -1204,16 +1291,35 @@ Total audio: ${audioDur.toFixed(2)}s`;
     }
 
     const safeFullText = sanitizeTranscriptionText(fullText);
-    const resolvedDurationMs = Math.max(
-      sourceAudioDurationMs,
+    // GUARD: Gemini occasionally returns a wildly wrong timestamp (wrong unit, JSON
+    // glitch) — e.g. a last-caption endMs of 123,800,000ms (~34h). A naive Math.max
+    // then propagates that as the video duration → durationInFrames in the millions
+    // → a render that can never finish / OOMs. sourceAudioDurationMs comes from
+    // ffprobe and is authoritative, so when present it caps everything: allow only a
+    // small tail (2s) beyond the real audio. Fall back to the max() of model values
+    // only when ffprobe couldn't read the duration.
+    const TAIL_MS = 2000;
+    const rawMaxMs = Math.max(
       captions.at(-1)?.endMs ?? 0,
       rawSegments.at(-1)?.endMs ?? 0,
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
+    const resolvedDurationMs = sourceAudioDurationMs > 0
+      ? Math.min(rawMaxMs, sourceAudioDurationMs + TAIL_MS) || sourceAudioDurationMs
+      : rawMaxMs;
+    if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
+      console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${resolvedDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
+    }
     // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = (isThai || words.length === 0) && segments.length >= 3;
-    const timelineFixedCaptions = sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect);
+    // Use sourceAudioDurationMs (real ffprobe length) for the tail-clamp, not
+    // resolvedDurationMs — the latter is a max() that already includes caption
+    // endMs, so clamping against it would never stretch the tail.
+    const timelineFixedCaptions = clampLastCaptionToAudioEnd(
+      sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect),
+      sourceAudioDurationMs,
+    );
 
     return NextResponse.json({
       captions: timelineFixedCaptions,

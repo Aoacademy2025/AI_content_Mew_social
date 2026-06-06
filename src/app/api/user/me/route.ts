@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { limitsForPlan } from "@/lib/plan-limits";
 
 export async function GET() {
   try {
@@ -32,7 +33,8 @@ export async function GET() {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    return NextResponse.json(user);
+    const limits = limitsForPlan((user as any).plan ?? "FREE");
+    return NextResponse.json({ ...user, usageLimit: limits.clips });
   } catch (error) {
     return apiError({ route: "user/me", error });
   }

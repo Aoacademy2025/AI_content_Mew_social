@@ -51,10 +51,12 @@ if [ ! -f "$APP_DIR/.env" ]; then
   exit 1
 fi
 
-echo "=== [4/6] Prisma generate ==="
-if [ "$MIGRATE" = "1" ]; then
-  npx prisma migrate deploy
-fi
+echo "=== [4/6] Prisma sync schema + generate ==="
+# SQLite project uses db push (no migrations dir). Sync new columns into the
+# live DB so queries referencing new fields (e.g. cancelAtPeriodEnd) don't 500.
+# No --accept-data-loss: additive changes (new nullable/defaulted columns) apply
+# safely; a destructive change will fail loudly instead of dropping data.
+npx prisma db push --skip-generate
 npx prisma generate
 
 echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEAP_MB}MB) ==="

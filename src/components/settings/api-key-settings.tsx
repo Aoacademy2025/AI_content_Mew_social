@@ -16,7 +16,7 @@ type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 type TestResult = { ok: boolean; message: string } | null;
 
 const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
-  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza...",                   description: "Google Gemini — ใช้สำหรับ AI ทุกฟังก์ชัน",   link: "https://aistudio.google.com/app/apikey" },
+  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza... หรือ AQ.",          description: "Google Gemini — ใช้สำหรับ AI ทุกฟังก์ชัน (รองรับ key ทั้งแบบ AIza และ AQ)",   link: "https://aistudio.google.com/app/apikey" },
   { id: "heygenKey",     keyType: "heygen",     label: "HeyGen API Key",     placeholder: "Enter your HeyGen key",    description: "Avatar video creation",                      link: "https://app.heygen.com/settings?nav=API" },
   { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
   { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },

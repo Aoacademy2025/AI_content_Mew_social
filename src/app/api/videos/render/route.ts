@@ -709,8 +709,21 @@ export async function POST(req: Request) {
         decrementActiveRenderCount();
         resolveDone();
         if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
-        console.error("Render error:", error);
+
+        // Intentional cancel (page refresh / new render) — not a real failure.
+        // Don't log as error, don't mark job errored, don't notify the user.
         const detail = error instanceof Error ? error.message : String(error);
+        const wasCancelled = /got cancelled|Request closed|cancelSignal|aborted/i.test(detail);
+        if (wasCancelled) {
+          console.log(`[Render] job=${jobId} cancelled — skipping error notification`);
+          const existing = getRenderJob(jobId);
+          if (existing && existing.status === "running") {
+            setRenderJob(jobId, { status: "error", error: "cancelled", startedAt: existing.startedAt });
+          }
+          return;
+        }
+
+        console.error("Render error:", error);
         setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
 

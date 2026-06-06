@@ -1,5 +1,5 @@
 # STATUS — สถานะจริงของโปรเจกต์
-> อัปเดต: 2026-06-05 · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) ประกอบ
+> อัปเดต: 2026-06-07 · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) ประกอบ
 
 ## ภาพรวม
 **HERO AI** (studio.heroaiengine.com) — SaaS เปลี่ยนสคริปต์ 1 ชุด เป็นวิดีโอสั้นพร้อมโพสต์อัตโนมัติ (Faceless + AI Avatar + ซับไทย)
@@ -18,11 +18,11 @@
 
 ## 🔄 Payment vertical (Mew)
 - ✅ **subscription LIVE แล้ว (06-05)** — บัตร auto-renew + PromptPay one-time + billing portal + webhook lifecycle (config อยู่ใน DB `SiteConfig` ไม่ใช่ `.env`)
-- 🧪 **Founding-100 (merged to main 06-06)** — 100 คนแรกที่อัปเกรดรายปีได้ราคา founding 50% ล็อกตลอดชีพ อัตโนมัติ · atomic seat counter (race-safe) ต่อยอด DISCOUNT coupon (`FOUNDING100`) · ผ่าน unit/concurrency proof + Stripe test-mode integration + build · **รอ E2E + deploy** (`npx prisma db push` model `FoundingReservation` + `pm2 start --only founding-sweep` บน VPS · อย่าสร้าง coupon live ก่อน db push) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-founding-100*`
-- 🧪 **Free trial (code-complete 06-06, branch `mew/free-trial`)** — สมัครได้ PRO 7 วันอัตโนมัติ (ไม่ใช้บัตร) → หมดแล้ว revert FREE + prompt อัปเกรดรายปี (cron `trial-expiry`) · กลไกรับ duration (claim page เรียก `grantTrial(id,30)` ทีหลัง) · 1 trial/คน · ผ่าน tsx proof (`scripts/verify-trial.ts`) + build + holistic review · **รอ E2E + deploy** (`prisma db push` 2 คอลัมน์ trial + `pm2 start --only trial-expiry`) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-free-trial*`
-- 🔜 **หน้าขาย/หน้าราคา redesign** + ปุ่ม PromptPay ← งานหลักถัดไป
-- 🔜 **แคมเปญเปิดตัว** (claim page → Skool/allowlist → โค้ดเฉพาะตัว) + ส่วนลดตามกลุ่ม
-- 🔜 **Onboarding ตั้ง API key** (เพราะ BYOK)
+- 🟢 **Founding-100 (LIVE on prod 06-07)** — 100 คนแรกอัปเกรดรายปีได้ราคา founding 50% ล็อกตลอดชีพ อัตโนมัติ · atomic seat counter (race-safe) ต่อยอด DISCOUNT coupon `FOUNDING100` · code+ตาราง `FoundingReservation` deploy แล้ว (ยังไม่สร้าง coupon `FOUNDING100` live → bar ยังซ่อน) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-founding-100*`
+- 🟢 **Pricing redesign (LIVE 06-07, PR #10)** — หน้า `/pricing` ใหม่ + founding bar/ราคา founding บนการ์ดรายปี · 🟢 **Sale page (LIVE 06-07, PR #11)** — homepage `/` = evergreen sale page (ราคาสด + founding bar read-only)
+- 🧪 **Free trial (PR #9 — กำลัง deploy 06-07)** — สมัครได้ PRO 7 วันอัตโนมัติ (ไม่ใช้บัตร) → หมด revert FREE + prompt อัปเกรดรายปี (cron `trial-expiry`) · 1 trial/คน · กลไกรับ duration (claim page เรียก `grantTrial(id,30)` ทีหลัง) · ผ่าน tsx proof (`scripts/verify-trial.ts`) + build · เพิ่ม 2 คอลัมน์ใน `User` → `deploy.sh` รัน `prisma db push` ก่อน restart (ปลอดภัย) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-free-trial*`
+- ⏸️ **Claim/allowlist page** — รอ center DB API เช็ค member (Mew กำลังทำ)
+- ⏸️ **Onboarding ตั้ง API key (BYOK)** — wao1234 ทำระบบ api-key บน main
 - ⏳ follow-ups: renewal-reminders cron (รอ `CRON_SECRET`) · เทสจ่ายจริง+refund · cancel-at-period-end UI
 - *(รายละเอียดกลยุทธ์/ตัวเลข/ขั้นตอน live อยู่ใน internal docs — ไม่อยู่ใน repo)*
 

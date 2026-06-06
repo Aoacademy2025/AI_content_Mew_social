@@ -307,92 +307,12 @@ export default function VideoEditorPage() {
     }).catch(() => {});
     fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
 
-    // Resume render polling if page was refreshed mid-render (jobId in URL)
+    // If jobId is in URL from a previous render session, cancel that job and clear the URL.
+    // Refresh = stop render immediately — no auto-resume.
     const urlJobId = new URL(window.location.href).searchParams.get("jobId");
     if (urlJobId) {
-      activeJobIdRef.current = urlJobId;
-      runningRef.current = true; setRunning(true);
-      setStep("render", "running", "Rendering...");
-      setRenderProgressError(null);
-
-      let pollStopped = false;
-      let renderPollTimer: ReturnType<typeof setInterval> | null = null;
-      let resumeTimeoutId: ReturnType<typeof setTimeout> | null = null;
-      const stopPoll = () => {
-        pollStopped = true;
-        if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
-        if (resumeTimeoutId) { clearTimeout(resumeTimeoutId); resumeTimeoutId = null; }
-        try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
-      };
-      stopRenderPollRef.current = stopPoll;
-
-      // Auto-stop if render hangs after 60 minutes with no progress
-      resumeTimeoutId = setTimeout(() => {
-        if (!pollStopped) {
-          stopPoll();
-          setRenderProgressError("Render ค้างนานเกิน 60 นาที — กรุณาลองใหม่");
-          setStep("render", "error", "Render ค้างนานเกิน 60 นาที");
-          runningRef.current = false; setRunning(false);
-        }
-      }, 60 * 60 * 1000);
-
-      // Poll progress (fast)
-      renderPollTimer = setInterval(async () => {
-        if (pollStopped) return;
-        try {
-          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
-          if (!r.ok) return;
-          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
-          if (d.videoUrl) {
-            stopPoll();
-            pipe.current.renderedVideoUrl = d.videoUrl;
-            pipe.current.renderedVideoNoSubUrl = d.videoUrl;
-            setPreRenderUrl(d.videoUrl); setVideoUrl(d.videoUrl);
-            setStep("render", "done", d.videoUrl); setRenderProgress(100);
-            return;
-          }
-          if (d.error) { stopPoll(); setRenderProgressError(d.error); setStep("render", "error", d.error); return; }
-          const p = Number(d.progress);
-          if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
-        } catch {}
-      }, 600);
-
-      // Poll status (slow — authoritative)
-      let notFoundCount = 0;
-      const si = setInterval(async () => {
-        if (pollStopped) { clearInterval(si); return; }
-        try {
-          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
-          const sd = await sr.json();
-          if (sd.status === "done" && sd.videoUrl) {
-            clearInterval(si); stopPoll();
-            pipe.current.renderedVideoUrl = sd.videoUrl;
-            pipe.current.renderedVideoNoSubUrl = sd.videoUrl;
-            setPreRenderUrl(sd.videoUrl); setVideoUrl(sd.videoUrl);
-            setStep("render", "done", sd.videoUrl); setRenderProgress(100);
-            runningRef.current = false; setRunning(false);
-          } else if (sd.status === "error") {
-            clearInterval(si); stopPoll();
-            setRenderProgressError(sd.error ?? "Render failed"); setStep("render", "error", sd.error ?? "Render failed");
-            runningRef.current = false; setRunning(false);
-          } else if (sd.status === "not_found" || sr.status === 404) {
-            notFoundCount++;
-            if (notFoundCount >= 3) {
-              clearInterval(si); stopPoll();
-              setStep("render", "idle");
-              runningRef.current = false; setRunning(false);
-            }
-          }
-        } catch {}
-      }, 3000);
-
-      // ล้าง status poller เมื่อ component unmount หรือ stopAll() ถูกเรียก
-      const origStop = stopRenderPollRef.current;
-      stopRenderPollRef.current = () => {
-        origStop();
-        clearInterval(si);
-        runningRef.current = false; setRunning(false);
-      };
+      navigator.sendBeacon(`/api/videos/render-cancel?jobId=${encodeURIComponent(urlJobId)}`);
+      try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
     }
 
     // Stop all polling and cancel active render job when tab closes/refreshes
@@ -847,7 +767,7 @@ export default function VideoEditorPage() {
     console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
     const res = await fetch("/api/videos/extract-keywords", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenes: sc, audioDurationSec: estimatedDurSec, preferredLLM: preferredLLMRef.current }),
+      body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
       signal: abortControllerRef.current?.signal,
     });
     const data = await res.json();
@@ -2083,7 +2003,21 @@ export default function VideoEditorPage() {
     ? segments.map((s, i) => ({ text: s, startMs: i * 3000, endMs: (i + 1) * 3000, tag: i === 0 ? "hook" as const : i === segments.length - 1 ? "cta" as const : "body" as const }))
     : captions;
 
-  const totalMs = durationMs > 0 ? durationMs : 0;
+  const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
+  // Timeline scale = caption/audio length (captionEndMs), available immediately and
+  // never 0 once transcribed — so clips don't shift when the <video> finishes
+  // loading ("ตอนแรกไม่ตรง แล้วตรง"). Fall back to durationMs only if no captions.
+  const totalMs = captionEndMs > 0
+    ? captionEndMs
+    : durationMs > 0 ? durationMs : 0;
+  // The playhead is driven by video.currentTime, which lives in VIDEO time-space.
+  // The video can be longer than the audio (avatar tail), so if we drew the playhead
+  // at currentMs/totalMs it would run faster than the caption clips and drift. Map
+  // video-time → caption-time so the playhead stays glued to the clips at every
+  // moment. When video & caption length match (or video not loaded) this is a no-op.
+  const playheadMs = (durationMs > 0 && captionEndMs > 0)
+    ? currentMs * (captionEndMs / durationMs)
+    : currentMs;
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
@@ -2682,7 +2616,11 @@ export default function VideoEditorPage() {
                     onClick={() => {
                       setActiveSegIdx(i);
                       setActiveCaptionIdx(i);
-                      if (videoRef.current && cap.startMs) videoRef.current.currentTime = cap.startMs / 1000;
+                      // cap.startMs is caption-space; map to video-space before seeking.
+                      if (videoRef.current && cap.startMs) {
+                        const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                        videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                      }
                     }}>
                     <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", tagColor(cap.tag).replace("text-", "bg-"))} />
                     <span className={cn("text-[9px] font-black uppercase tracking-wider", tagColor(cap.tag))}>
@@ -2937,7 +2875,7 @@ export default function VideoEditorPage() {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/40">
-                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }} />
+                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }} />
                 </div>
               </div>
 
@@ -3343,14 +3281,14 @@ export default function VideoEditorPage() {
                 if (e.buttons !== 1) return;
                 const r = e.currentTarget.getBoundingClientRect();
                 const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 750));
+                setTlZoom(Math.round(50 + pct * 4950));
               }}
             >
               <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 750) * 100}%` }} />
+                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 4950) * 100}%` }} />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: `${((tlZoom - 50) / 750) * 100}%` }}
+                  style={{ left: `${((tlZoom - 50) / 4950) * 100}%` }}
                 />
               </div>
             </div>
@@ -3386,17 +3324,22 @@ export default function VideoEditorPage() {
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
                   if (j !== r.capIdx) return c;
+                  const prevClip = prev[j - 1];
+                  const nextClip = prev[j + 1];
+                  const minGap = 50; // ms gap ระหว่าง clip
+                  const lowerBound = prevClip ? prevClip.endMs + minGap : 0;
+                  const upperBound = nextClip ? nextClip.startMs - minGap : (totalMs || 999999);
                   if (r.edge === "left") {
-                    const newStart = Math.max(0, Math.min(c.endMs - 200, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, r.startMs + dxMs));
                     return { ...c, startMs: Math.round(newStart) };
                   } else if (r.edge === "right") {
-                    const newEnd = Math.max(c.startMs + 200, Math.min(totalMs || 999999, r.startMs + dxMs));
+                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, r.startMs + dxMs));
                     return { ...c, endMs: Math.round(newEnd) };
                   } else {
-                    // "move" — slide whole clip, preserving duration
+                    // "move" — slide whole clip, preserving duration, clamp between neighbors
                     const dur = r.durMs ?? (c.endMs - c.startMs);
-                    const maxStart = Math.max(0, (totalMs || 999999) - dur);
-                    const newStart = Math.max(0, Math.min(maxStart, r.startMs + dxMs));
+                    const maxStart = Math.max(lowerBound, upperBound - dur);
+                    const newStart = Math.max(lowerBound, Math.min(maxStart, r.startMs + dxMs));
                     return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
@@ -3422,15 +3365,23 @@ export default function VideoEditorPage() {
                   if (!videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  videoRef.current.currentTime = pct * (totalMs / 1000);
-                  setCurrentMs(pct * totalMs);
+                  // Timeline is in caption-space but video.currentTime is video-space.
+                  // Seek by the video's own duration so clicking the far right lands at
+                  // the true end of the clip, not at captionEnd.
+                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
+                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
+                  setCurrentMs(pct * seekScaleMs);
                 }}
                 onPointerMove={e => {
                   if (e.buttons !== 1 || !videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  videoRef.current.currentTime = pct * (totalMs / 1000);
-                  setCurrentMs(pct * totalMs);
+                  // Timeline is in caption-space but video.currentTime is video-space.
+                  // Seek by the video's own duration so clicking the far right lands at
+                  // the true end of the clip, not at captionEnd.
+                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
+                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
+                  setCurrentMs(pct * seekScaleMs);
                 }}
               >
                 {[0,0.15,0.32,0.5,0.68,0.82,1].map((pct, i) => (
@@ -3446,7 +3397,7 @@ export default function VideoEditorPage() {
                 {displayCaptions.map((cap, i) => {
                   const left = totalMs > 0 ? (cap.startMs / totalMs) * 100 : i * (100 / displayCaptions.length);
                   const width = totalMs > 0 ? ((cap.endMs - cap.startMs) / totalMs) * 100 : (100 / displayCaptions.length) - 0.5;
-                  // Find the track container ancestor (the element that holds the onPointerMove handler) for pointer capture
+                  const isTiny = width < 0.3; // clip แคบมากจริงๆ เท่านั้นถึงซ่อนข้อความ
                   const startResize = (e: React.PointerEvent, edge: "left" | "right" | "move") => {
                     e.stopPropagation();
                     const trackContent = e.currentTarget.closest(".tl-track-content") as HTMLElement | null;
@@ -3462,19 +3413,22 @@ export default function VideoEditorPage() {
                   };
                   return (
                     <div key={i}
+                      title={cap.text}
                       onPointerDown={e => startResize(e, "move")}
                       onClick={() => {
-                        // Treat as click only if no drag happened — handled in onPointerUp; this still fires for taps
                         if (clipResizeRef.current?.moved) return;
                         setActiveSegIdx(i);
-                        if (videoRef.current) videoRef.current.currentTime = cap.startMs / 1000;
+                        if (videoRef.current) {
+                          const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                          videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                        }
                       }}
-                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
+                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
                         i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
-                      style={{ left: `${left}%`, width: `${Math.max(3, width)}%` }}>
+                      style={{ left: `${left}%`, width: `calc(${Math.max(0.4, width)}% - 2px)`, marginRight: "2px" }}>
                       <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10"
                         onPointerDown={e => startResize(e, "left")} />
-                      <span className="truncate px-2 pointer-events-none">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "..." : ""}</span>
+                      {!isTiny && <span className="truncate px-3 pointer-events-none">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "…" : ""}</span>}
                       <div className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-r-md z-10"
                         onPointerDown={e => startResize(e, "right")} />
                     </div>
@@ -3530,9 +3484,10 @@ export default function VideoEditorPage() {
                 </div>
               </div>
 
-              {/* Playhead */}
+              {/* Playhead — uses playheadMs (video-time mapped into caption-time) so it
+                  tracks the caption clips exactly, even when the video is longer. */}
               <div className="absolute top-0 bottom-0 w-[1.5px] bg-violet-500 pointer-events-none z-10"
-                style={{ left: totalMs > 0 ? `${(currentMs / totalMs) * 100}%` : "0%" }}>
+                style={{ left: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }}>
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.8)]" />
               </div>
             </div>
