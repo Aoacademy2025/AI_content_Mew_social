@@ -462,9 +462,14 @@ export async function POST(req: Request) {
         if (!fileUri) throw new Error("Gemini File API did not return file URI");
         console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
 
+        const audioLenSec = sourceAudioDurationMs > 0 ? (sourceAudioDurationMs / 1000).toFixed(1) : null;
         const timestampPrompt = `คุณคือผู้ตัดซับไตเติ้ลภาษาไทยสำหรับ TikTok/Reels มืออาชีพ
 
-ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง
+ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง${audioLenSec ? `
+
+⚠️ audio นี้ยาว ${audioLenSec} วินาที — ต้องถอดเสียงให้ครบจนถึงวินาทีสุดท้าย
+caption สุดท้าย endMs ต้องอยู่ใกล้ ${audioLenSec}s (ห่างได้ไม่เกิน 3s)
+ถ้าถอดไม่ถึงท้าย = ผิด ต้องฟังต่อจนจบไฟล์` : ""}
 
 ━━━ กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี ━━━
 ตัดหลังจุลภาค จุด หรือช่วงหยุดเสียง ≥ 0.25s
