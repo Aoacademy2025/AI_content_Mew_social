@@ -2004,10 +2004,14 @@ export default function VideoEditorPage() {
     : captions;
 
   const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
-  // ใช้ video duration เป็นหลัก ถ้ายังไม่มีให้ใช้ caption end + 10% buffer
-  const totalMs = durationMs > 0
-    ? Math.max(durationMs, captionEndMs)
-    : captionEndMs > 0 ? Math.round(captionEndMs * 1.1) : 0;
+  // Timeline scale = ความยาว "เสียงพูด/ซับ", NOT ความยาววิดีโอ.
+  // วิดีโอที่ render มักยาวกว่าเสียง (avatar tail / padding ท้ายคลิป). ถ้า normalize
+  // ด้วย durationMs (วิดีโอ) ทุก subtitle/B-ROLL clip จะถูกบีบสัดส่วนผิด → "ซับไม่ตรงเสียง"
+  // ทั้งที่ caption timing ถูกต้อง. ใช้ captionEndMs (ซับสุดท้ายจบ = เสียงจบ) เป็นหลัก;
+  // เผื่อ durationMs เฉพาะตอนที่ยังไม่มี caption (เช่นก่อน transcribe เสร็จ).
+  const totalMs = captionEndMs > 0
+    ? captionEndMs
+    : durationMs > 0 ? durationMs : 0;
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
