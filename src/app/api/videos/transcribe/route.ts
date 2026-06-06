@@ -345,6 +345,15 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
 
   if (out.length > 0 && out[out.length - 1].endMs > totalMs) out[out.length - 1].endMs = totalMs;
 
+  // ถ้า caption สุดท้ายจบก่อน audio duration เกิน 3s — extend ให้ครบ
+  // (Gemini บางครั้งตัด caption ก่อนเสียงจบ โดยเฉพาะช่วงท้ายที่เงียบหรือพูดช้า)
+  if (out.length > 0 && totalMs > 0) {
+    const last = out[out.length - 1];
+    if (totalMs - last.endMs > 3000) {
+      out[out.length - 1] = { ...last, endMs: totalMs };
+    }
+  }
+
   return out;
 }
 

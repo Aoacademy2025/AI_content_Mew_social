@@ -2004,7 +2004,10 @@ export default function VideoEditorPage() {
     : captions;
 
   const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
-  const totalMs = Math.max(durationMs, captionEndMs);
+  // ใช้ video duration เป็นหลัก ถ้ายังไม่มีให้ใช้ caption end + 10% buffer
+  const totalMs = durationMs > 0
+    ? Math.max(durationMs, captionEndMs)
+    : captionEndMs > 0 ? Math.round(captionEndMs * 1.1) : 0;
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
