@@ -202,36 +202,22 @@ export function RightSettingsPanel(p: RightPanelProps) {
             <div>
               <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Font</div>
-              {/* Font grid — each card renders its own typeface and animates with the
-                  currently-selected text effect, so the user sees font + animation
-                  together exactly as it will render, before downloading. */}
-              <div className={cn("grid gap-1.5", cols4 ? "grid-cols-3" : "grid-cols-2")}>
-                {FONTS_LIST.map(f => {
-                  const isSelected = p.subFontFamily === f.value;
-                  return (
-                    <button key={f.value} onClick={() => p.setSubFontFamily(f.value)}
-                      className="flex flex-col items-center gap-1 rounded-xl py-2 px-1.5 transition-all"
-                      style={isSelected
-                        ? { background: "hsl(262 83% 45% / 0.12)", border: "1px solid hsl(262 83% 58% / 0.5)" }
-                        : { background: "#1a1a22", border: "1px solid #2a2a36" }}>
-                      <div className="w-full h-9 flex items-center justify-center rounded-lg overflow-hidden"
-                        style={{ background: "rgba(0,0,0,0.45)" }}>
-                        <span style={{
-                          fontFamily: f.value, fontSize: 15, fontWeight: 700, color: p.subColor,
-                          textShadow: "-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000",
-                          whiteSpace: "nowrap", display: "inline-block",
-                          animation: effectAnim(p.subEffect),
-                        }}>
-                          {f.preview}
-                        </span>
-                      </div>
-                      <span className="text-[9px] font-medium leading-tight text-center"
-                        style={{ color: isSelected ? "hsl(262 83% 78%)" : "rgba(148,163,184,0.6)" }}>
-                        {f.label.split("—")[0].trim()}
-                      </span>
-                    </button>
-                  );
-                })}
+              <div className="relative">
+                <select
+                  value={p.subFontFamily}
+                  onChange={e => p.setSubFontFamily(e.target.value)}
+                  className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-xl px-3 py-2.5 text-[13px] text-slate-200 outline-none appearance-none cursor-pointer hover:border-violet-500/50 focus:border-violet-500/70 transition-colors pr-8"
+                  style={{ fontFamily: p.subFontFamily }}
+                >
+                  {FONTS_LIST.map(f => (
+                    <option key={f.value} value={f.value} style={{ fontFamily: f.value, background: "#1a1a22", color: "#e2e8f0" }}>
+                      {f.label.split("—")[0].trim()}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
               </div>
             </div>
             <div>
