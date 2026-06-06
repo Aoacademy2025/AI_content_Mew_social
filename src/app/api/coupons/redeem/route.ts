@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
+import { FOUNDING_CODE } from "@/lib/founding";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,8 @@ export async function POST(req: Request) {
 
     const { code } = await req.json();
     if (!code?.trim()) return NextResponse.json({ error: "กรุณากรอกรหัสคูปอง" }, { status: 400 });
+    if (code.trim().toUpperCase() === FOUNDING_CODE)
+      return NextResponse.json({ error: "โค้ดนี้ใช้อัตโนมัติที่หน้าราคา — ไม่ต้องกรอก" }, { status: 400 });
 
     const coupon = await prisma.coupon.findUnique({
       where: { code: code.trim().toUpperCase() },
