@@ -307,92 +307,12 @@ export default function VideoEditorPage() {
     }).catch(() => {});
     fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
 
-    // Resume render polling if page was refreshed mid-render (jobId in URL)
+    // If jobId is in URL from a previous render session, cancel that job and clear the URL.
+    // Refresh = stop render immediately — no auto-resume.
     const urlJobId = new URL(window.location.href).searchParams.get("jobId");
     if (urlJobId) {
-      activeJobIdRef.current = urlJobId;
-      runningRef.current = true; setRunning(true);
-      setStep("render", "running", "Rendering...");
-      setRenderProgressError(null);
-
-      let pollStopped = false;
-      let renderPollTimer: ReturnType<typeof setInterval> | null = null;
-      let resumeTimeoutId: ReturnType<typeof setTimeout> | null = null;
-      const stopPoll = () => {
-        pollStopped = true;
-        if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
-        if (resumeTimeoutId) { clearTimeout(resumeTimeoutId); resumeTimeoutId = null; }
-        try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
-      };
-      stopRenderPollRef.current = stopPoll;
-
-      // Auto-stop if render hangs after 60 minutes with no progress
-      resumeTimeoutId = setTimeout(() => {
-        if (!pollStopped) {
-          stopPoll();
-          setRenderProgressError("Render ค้างนานเกิน 60 นาที — กรุณาลองใหม่");
-          setStep("render", "error", "Render ค้างนานเกิน 60 นาที");
-          runningRef.current = false; setRunning(false);
-        }
-      }, 60 * 60 * 1000);
-
-      // Poll progress (fast)
-      renderPollTimer = setInterval(async () => {
-        if (pollStopped) return;
-        try {
-          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
-          if (!r.ok) return;
-          const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
-          if (d.videoUrl) {
-            stopPoll();
-            pipe.current.renderedVideoUrl = d.videoUrl;
-            pipe.current.renderedVideoNoSubUrl = d.videoUrl;
-            setPreRenderUrl(d.videoUrl); setVideoUrl(d.videoUrl);
-            setStep("render", "done", d.videoUrl); setRenderProgress(100);
-            return;
-          }
-          if (d.error) { stopPoll(); setRenderProgressError(d.error); setStep("render", "error", d.error); return; }
-          const p = Number(d.progress);
-          if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
-        } catch {}
-      }, 600);
-
-      // Poll status (slow — authoritative)
-      let notFoundCount = 0;
-      const si = setInterval(async () => {
-        if (pollStopped) { clearInterval(si); return; }
-        try {
-          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(urlJobId)}`, { cache: "no-store" });
-          const sd = await sr.json();
-          if (sd.status === "done" && sd.videoUrl) {
-            clearInterval(si); stopPoll();
-            pipe.current.renderedVideoUrl = sd.videoUrl;
-            pipe.current.renderedVideoNoSubUrl = sd.videoUrl;
-            setPreRenderUrl(sd.videoUrl); setVideoUrl(sd.videoUrl);
-            setStep("render", "done", sd.videoUrl); setRenderProgress(100);
-            runningRef.current = false; setRunning(false);
-          } else if (sd.status === "error") {
-            clearInterval(si); stopPoll();
-            setRenderProgressError(sd.error ?? "Render failed"); setStep("render", "error", sd.error ?? "Render failed");
-            runningRef.current = false; setRunning(false);
-          } else if (sd.status === "not_found" || sr.status === 404) {
-            notFoundCount++;
-            if (notFoundCount >= 3) {
-              clearInterval(si); stopPoll();
-              setStep("render", "idle");
-              runningRef.current = false; setRunning(false);
-            }
-          }
-        } catch {}
-      }, 3000);
-
-      // ล้าง status poller เมื่อ component unmount หรือ stopAll() ถูกเรียก
-      const origStop = stopRenderPollRef.current;
-      stopRenderPollRef.current = () => {
-        origStop();
-        clearInterval(si);
-        runningRef.current = false; setRunning(false);
-      };
+      navigator.sendBeacon(`/api/videos/render-cancel?jobId=${encodeURIComponent(urlJobId)}`);
+      try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
     }
 
     // Stop all polling and cancel active render job when tab closes/refreshes
@@ -3343,14 +3263,14 @@ export default function VideoEditorPage() {
                 if (e.buttons !== 1) return;
                 const r = e.currentTarget.getBoundingClientRect();
                 const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 750));
+                setTlZoom(Math.round(50 + pct * 4950));
               }}
             >
               <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 750) * 100}%` }} />
+                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 4950) * 100}%` }} />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: `${((tlZoom - 50) / 750) * 100}%` }}
+                  style={{ left: `${((tlZoom - 50) / 4950) * 100}%` }}
                 />
               </div>
             </div>
