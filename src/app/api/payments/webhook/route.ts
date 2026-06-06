@@ -17,7 +17,7 @@ async function activatePlan(userId: string, plan: string, periodDays: number) {
   const newExpiry = new Date(base.getTime() + periodDays * 24 * 60 * 60 * 1000);
   await prisma.user.update({
     where: { id: userId },
-    data: { plan: plan as any, planExpiresAt: newExpiry, usageCount: 0, usageLimit: planConfig?.clips ?? 100 },
+    data: { plan: plan as any, planExpiresAt: newExpiry, usageCount: 0, usageLimit: planConfig?.clips ?? 100, trialEndsAt: null },
   });
   await extendVideoExpiryForPlan(userId, plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   return newExpiry;
