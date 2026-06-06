@@ -128,9 +128,12 @@ After the existing optional manual-coupon resolution, before creating the sessio
     **skip** the existing `usedCount { increment }` (already counted at reservation).
   - Non-founding coupon → existing behavior unchanged (increment `usedCount`, record
     redemption).
-- `checkout.session.expired`, `invoice.payment_failed`, `customer.subscription.deleted`:
-  call `releaseSeat(session/related session id)` so an unpaid/failed seat returns to the pool.
-  (Idempotent via the status guard.)
+- `checkout.session.expired`: call `releaseSeat(session.id)` so an unpaid founding seat
+  returns to the pool (idempotent via the status guard). This is the only event that carries
+  the checkout session id our reservation keys on; `invoice.payment_failed` /
+  `customer.subscription.deleted` are **not** release triggers (by the time they fire the
+  seat is already CONFIRMED or was never reserved). `releaseStaleReservations` is the backstop
+  for a missed `expired` webhook.
 
 ### F) Status endpoint — `GET /api/founding/status` (new)
 
@@ -166,7 +169,7 @@ re-count). On `expired`/`payment_failed`/`subscription.deleted` → `releaseSeat
 | Concurrent claims at the last seat | Atomic `updateMany usedCount<cap` → exactly one wins; others get full price |
 | Stripe session-create fails after claim | Catch → release the seat (decrement) so it isn't leaked |
 | `completed` webhook for a founding session | `confirmSeat`; **no** second increment (idempotent) |
-| `expired`/`failed`/`deleted` for a RESERVED seat | `releaseSeat` decrements once; status guard prevents double-release |
+| `checkout.session.expired` for a RESERVED seat | `releaseSeat` decrements once; status guard prevents double-release |
 | Missed `expired` webhook | `releaseStaleReservations` frees seats older than ~35 min |
 | User already CONFIRMED tries again | `claimSeat` returns null → full price (already a founding member) |
 | User enters `FOUNDING100` manually | validate/redeem reject it (auto-applied only) |
