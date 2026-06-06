@@ -215,7 +215,7 @@ function PricingContent() {
                 Founding
               </span>
               <p className="text-sm text-white/80">
-                ราคา Founding ลด {founding.percentOff}% ล็อกตลอดชีพ — เหลืออีก{" "}
+                ราคา Founding (รายปี) ลด {founding.percentOff}% ล็อกตลอดชีพ — เหลืออีก{" "}
                 <span className="font-black text-white">{founding.remaining}</span>/{founding.total} ที่นั่ง
               </p>
             </>

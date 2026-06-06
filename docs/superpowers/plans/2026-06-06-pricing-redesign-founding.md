@@ -173,7 +173,7 @@ export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
 - [ ] **Step 4: Run the verification to confirm it passes**
 
 Run: `npx tsx scripts/verify-pricing-display.ts`
-Expected: 7 PASS lines + "All pricing-display checks passed".
+Expected: 9 PASS lines + "All pricing-display checks passed".
 
 - [ ] **Step 5: Commit**
 
