@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,8 @@ export interface RightPanelProps {
   onDragStart: (sx: number, sy: number) => void;
   onDragMove: (cx: number, cy: number) => void;
   onDragEnd: () => void;
-  activeTab: "style" | "font"; onTab: (t: "style" | "font") => void;
+  activeTab: "style" | "font" | "transcript"; onTab: (t: "style" | "font" | "transcript") => void;
+  allCaptions?: Caption[]; activeCaptionIdx?: number; onSeekCaption?: (idx: number) => void;
   subColor: string; subAccentColor: string; subPreset: SubPreset;
   subFontFamily: string; subFontSize: number; subFontWeight: number;
   subEffect: SubTextEffect; subPosition: number; subShadow: boolean;
@@ -117,7 +119,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
 
       {/* Tabs */}
       <div className="flex border-b border-[#1e1e28] flex-shrink-0 overflow-x-auto scrollbar-none">
-        {([ ["style","สไตล์"], ["font","Font"] ] as ["style"|"font", string][]).map(([tab, label]) => (
+        {([ ["style","สไตล์"], ["font","Font"], ["transcript","Transcript"] ] as ["style"|"font"|"transcript", string][]).map(([tab, label]) => (
           <button key={tab} onClick={() => p.onTab(tab)}
             className={cn("px-3 py-2.5 text-[11px] font-bold whitespace-nowrap transition-colors border-b-2",
               p.activeTab === tab ? "text-violet-300 border-violet-500" : "text-slate-600 border-transparent hover:text-slate-300")}>
@@ -631,7 +633,69 @@ export function RightSettingsPanel(p: RightPanelProps) {
             </div>
           </>
         )}
+
+        {p.activeTab === "transcript" && (
+          <TranscriptTab
+            captions={p.allCaptions ?? []}
+            activeCaptionIdx={p.activeCaptionIdx ?? -1}
+            onSeek={p.onSeekCaption ?? (() => {})}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+function TranscriptTab({ captions, activeCaptionIdx, onSeek }: {
+  captions: Caption[];
+  activeCaptionIdx: number;
+  onSeek: (idx: number) => void;
+}) {
+  const activeRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [activeCaptionIdx]);
+
+  function fmt(ms: number) {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    return `${m}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  if (captions.length === 0) {
+    return <div className="text-[11px] text-slate-600 text-center py-8">ยังไม่มี transcript<br/>กด Transcribe ก่อน</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-1 -m-4 px-2 py-2">
+      {captions.map((cap, i) => {
+        const isActive = i === activeCaptionIdx;
+        const tag = (cap as { tag?: string }).tag ?? "body";
+        const tagColors: Record<string, string> = { hook: "text-violet-400", cta: "text-amber-400", body: "text-slate-500" };
+        const tagColor = tagColors[tag] ?? "text-slate-500";
+        return (
+          <div
+            key={i}
+            ref={isActive ? activeRef : null}
+            onClick={() => onSeek(i)}
+            className={cn(
+              "rounded-xl border px-3 py-2.5 cursor-pointer transition-all",
+              isActive
+                ? "bg-violet-500/10 border-violet-500/40"
+                : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]"
+            )}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className={cn("text-[9px] font-black uppercase tracking-wider", tagColor)}>
+                #{i + 1} · {tag}
+              </span>
+              <span className="text-[9px] text-slate-600 font-mono">{fmt(cap.startMs)}–{fmt(cap.endMs)}</span>
+            </div>
+            <p className="text-[12px] text-slate-300 leading-snug">{cap.text}</p>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -119,7 +119,7 @@ export default function VideoEditorPage() {
   const [subShadow, setSubShadow] = useState(true);
   const [subOutline, setSubOutline] = useState(false);
   const [subOutlineSize, setSubOutlineSize] = useState(2);
-  const [activeRightTab, setActiveRightTab] = useState<"style" | "font">("font");
+  const [activeRightTab, setActiveRightTab] = useState<"style" | "font" | "transcript">("font");
   const [orderPanelOpen, setOrderPanelOpen] = useState(true);
 
   // ── Avatar (HeyGen pipeline) ───────────────────────────────────────────
@@ -2932,19 +2932,37 @@ export default function VideoEditorPage() {
                         legible at viewport-width sizes. */}
                     <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
                       {(() => {
-                        // Drive frame-based effects (glow-pulse / highlight / karaoke /
-                        // typewriter) + entrance animations live, using the same
-                        // renderSubtitle the MP4 render uses.
-                        // IMPORTANT: only animate while PLAYING. When paused, pass
-                        // frame = -1 (resting/fully-visible). Otherwise a paused caption
-                        // sits at frame 0 = the first frame of the entrance, where the
-                        // text is mid-fade/mid-scale → looks faint & misaligned.
                         const PREVIEW_FPS = 30;
                         const capDurMs = Math.max(1, cap.endMs - cap.startMs);
                         const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
                         const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
+                        // frame for the INNER text effects (glow-pulse/highlight/karaoke/
+                        // typewriter). -1 when paused = resting/fully-visible.
                         const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
-                        return renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames);
+
+                        // Container ENTRANCE animation — must MATCH AnimatedSubtitle
+                        // (ShortVideoComposition) so preview === burned MP4. We can't
+                        // call Remotion spring() here, so approximate it: same start/end
+                        // values and similar durations, with an ease that mimics the
+                        // spring's settle. Only animates while playing; when paused we
+                        // show the resting state (transform none, opacity 1).
+                        const f = playing ? Math.max(0, Math.round((elapsedMs / 1000) * PREVIEW_FPS)) : 9999;
+                        const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+                        const easeBack = (t: number) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+                        const prog = (dur: number) => Math.min(1, f / dur);
+                        const fadeIn = Math.min(1, f / 5);
+                        let tf = "", op = 1;
+                        if (subEffect === "pop")        { const t = easeOut(prog(12)); tf = `translateY(${6*(1-t)}px) scale(${0.76+0.24*t})`; }
+                        else if (subEffect === "bounce"){ const t = easeBack(prog(18)); tf = `translateY(${14*(1-Math.min(1,t))}px) scale(${0.5+0.5*t})`; }
+                        else if (subEffect === "quick") { const t = easeOut(prog(6));  tf = `translateY(${8*(1-t)}px) scale(${0.6+0.4*t})`; }
+                        else if (subEffect === "fade")  { op = Math.min(1, f/8); }
+                        else if (subEffect === "slide") { const t = easeOut(prog(16)); tf = `translateY(${40*(1-t)}px)`; op = fadeIn; }
+                        else if (subEffect === "flip")  { const t = easeOut(prog(14)); tf = `perspective(600px) rotateX(${90*(1-t)}deg)`; op = Math.min(1, f/6); }
+                        return (
+                          <div style={{ transform: tf || undefined, opacity: op, transformOrigin: subEffect === "flip" ? "center top" : "center" }}>
+                            {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames)}
+                          </div>
+                        );
                       })()}
                     </div>
                   </div>
@@ -3136,6 +3154,16 @@ export default function VideoEditorPage() {
                 onClose={() => { setRightPanelOpen(false); setRightPanelWidth(268); }}
                 onDragStart={() => {}} onDragMove={() => {}} onDragEnd={() => {}}
                 activeTab={activeRightTab} onTab={setActiveRightTab}
+                allCaptions={captions} activeCaptionIdx={activeCaptionIdx}
+                onSeekCaption={idx => {
+                  setActiveCaptionIdx(idx);
+                  setActiveSegIdx(idx);
+                  const cap = captions[idx];
+                  if (cap && videoRef.current) {
+                    const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                    videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                  }
+                }}
                 subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
                 subFontFamily={subFontFamily} subFontSize={subFontSize} subFontWeight={subFontWeight}
                 subEffect={subEffect} subPosition={subPosition} subShadow={subShadow}
@@ -3192,6 +3220,16 @@ export default function VideoEditorPage() {
             onDragMove={(cx, cy) => { if (!panelDragRef.current) return; setPanelPos({ x: Math.max(0, panelDragRef.current.startPx + cx - panelDragRef.current.startX), y: Math.max(0, panelDragRef.current.startPy + cy - panelDragRef.current.startY) }); }}
             onDragEnd={() => { panelDragRef.current = null; setPanelDragging(false); }}
             activeTab={activeRightTab} onTab={setActiveRightTab}
+            allCaptions={captions} activeCaptionIdx={activeCaptionIdx}
+            onSeekCaption={idx => {
+              setActiveCaptionIdx(idx);
+              setActiveSegIdx(idx);
+              const cap = captions[idx];
+              if (cap && videoRef.current) {
+                const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
+                videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+              }
+            }}
             subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
             subFontFamily={subFontFamily} subFontSize={subFontSize} subFontWeight={subFontWeight}
             subEffect={subEffect} subPosition={subPosition} subShadow={subShadow}
