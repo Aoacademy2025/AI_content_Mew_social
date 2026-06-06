@@ -1291,13 +1291,26 @@ Total audio: ${audioDur.toFixed(2)}s`;
     }
 
     const safeFullText = sanitizeTranscriptionText(fullText);
-    const resolvedDurationMs = Math.max(
-      sourceAudioDurationMs,
+    // GUARD: Gemini occasionally returns a wildly wrong timestamp (wrong unit, JSON
+    // glitch) — e.g. a last-caption endMs of 123,800,000ms (~34h). A naive Math.max
+    // then propagates that as the video duration → durationInFrames in the millions
+    // → a render that can never finish / OOMs. sourceAudioDurationMs comes from
+    // ffprobe and is authoritative, so when present it caps everything: allow only a
+    // small tail (2s) beyond the real audio. Fall back to the max() of model values
+    // only when ffprobe couldn't read the duration.
+    const TAIL_MS = 2000;
+    const rawMaxMs = Math.max(
       captions.at(-1)?.endMs ?? 0,
       rawSegments.at(-1)?.endMs ?? 0,
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
+    const resolvedDurationMs = sourceAudioDurationMs > 0
+      ? Math.min(rawMaxMs, sourceAudioDurationMs + TAIL_MS) || sourceAudioDurationMs
+      : rawMaxMs;
+    if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
+      console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${resolvedDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
+    }
     // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = (isThai || words.length === 0) && segments.length >= 3;
     // Use sourceAudioDurationMs (real ffprobe length) for the tail-clamp, not
