@@ -202,6 +202,18 @@ model CouponRedemption {
   @@unique([couponId, userId])
 }
 
+model FoundingReservation {
+  id              String    @id @default(cuid())
+  userId          String
+  stripeSessionId String    @unique
+  status          String    @default("RESERVED") // RESERVED | CONFIRMED | RELEASED
+  createdAt       DateTime  @default(now())
+  confirmedAt     DateTime?
+  releasedAt      DateTime?
+
+  @@index([userId])
+}
+
 model Payment {
   id                String        @id @default(cuid())
   userId            String
