@@ -5,14 +5,20 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/next",
       args: "start",
-      max_memory_restart: "12G",
+      // Raise the Node heap so renderMedia (which runs in this process) doesn't
+      // hit the default ~4GB ceiling and OOM mid-render even though the VPS has
+      // ~15GB RAM. Long videos accumulate frames/buffers past 4GB → fatal heap
+      // limit. 12GB leaves headroom under the 15GB box + max_memory_restart 12G.
+      node_args: "--max-old-space-size=12288",
+      max_memory_restart: "13G",
       env: {
         NODE_ENV: "production",
         PORT: 3000,
         NEXT_DISABLE_ESLINT: "1",
-        // Render tuning — increase concurrency and cache for faster renders
+        // Render tuning. Offthread cache lowered 512→128MB: a large per-job cache
+        // inflates heap usage during long renders, which contributed to the OOM.
         RENDER_CONCURRENCY: "4",
-        RENDER_OFFTHREAD_CACHE_MB: "512",
+        RENDER_OFFTHREAD_CACHE_MB: "128",
         RENDER_JPEG_QUALITY: "70",
       },
       env_production: {
