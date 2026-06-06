@@ -1,0 +1,42 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Sparkles, ArrowRight } from "lucide-react";
+
+type Me = { plan: string; trialStartedAt: string | null; trialEndsAt: string | null };
+
+export function TrialBanner() {
+  const [me, setMe] = useState<Me | null>(null);
+
+  useEffect(() => {
+    fetch("/api/user/me").then(r => r.json()).then(setMe).catch(() => {});
+  }, []);
+
+  if (!me) return null;
+
+  const now = Date.now();
+  const endsAt = me.trialEndsAt ? new Date(me.trialEndsAt).getTime() : 0;
+  const trialing = endsAt > now;
+  const ended = me.plan === "FREE" && !!me.trialStartedAt && !me.trialEndsAt;
+  if (!trialing && !ended) return null;
+
+  const daysLeft = trialing ? Math.ceil((endsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+  const text = trialing
+    ? `ทดลอง PRO เหลืออีก ${daysLeft} วัน`
+    : "ทดลอง PRO หมดแล้ว — อัปเกรดรายปีรับราคาพิเศษ";
+
+  return (
+    <Link
+      href="/pricing"
+      className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
+      style={{ background: "linear-gradient(90deg,#7c3aed,#06b6d4)" }}
+    >
+      <Sparkles className="h-4 w-4" strokeWidth={2.5} />
+      <span>{text}</span>
+      <span className="inline-flex items-center gap-1 underline underline-offset-2">
+        {trialing ? "อัปเกรดเลย" : "ดูแพ็กเกจ"} <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.5} />
+      </span>
+    </Link>
+  );
+}

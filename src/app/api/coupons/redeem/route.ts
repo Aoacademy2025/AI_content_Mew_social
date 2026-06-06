@@ -47,6 +47,7 @@ export async function POST(req: Request) {
         where: { id: authUser.id },
         data: {
           plan: coupon.plan,
+          trialEndsAt: null, // redeeming supersedes any running trial
           ...(planExpiresAt ? {} : {}), // permanent if durationDays=0
         },
       }),

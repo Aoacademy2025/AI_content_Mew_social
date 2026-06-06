@@ -24,6 +24,8 @@ export async function GET() {
         avatar: true,
         cancelAtPeriodEnd: true,
         cancelAt: true,
+        trialStartedAt: true,
+        trialEndsAt: true,
       } as any,
     });
 

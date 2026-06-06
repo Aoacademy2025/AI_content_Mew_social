@@ -39,6 +39,9 @@ model User {
   billingPeriod        String?  // monthly | annual
   cancelAtPeriodEnd    Boolean  @default(false) // portal-scheduled cancel; resume clears it
   cancelAt             DateTime?                  // exact lapse date from Stripe sub.cancel_at
+  // Free trial (public 7-day PRO trial, no card)
+  trialStartedAt DateTime?  // set once; never cleared (one-trial-per-user guard)
+  trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime  @default(now())

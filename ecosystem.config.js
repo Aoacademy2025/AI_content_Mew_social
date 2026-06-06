@@ -75,5 +75,18 @@ module.exports = {
         CRON_SECRET: process.env.CRON_SECRET || "",
       },
     },
+    {
+      name: "trial-expiry",
+      cwd: "/var/www/ai-content",
+      script: "scripts/trial-expiry.js",
+      cron_restart: "0 8 * * *", // daily 8:00 — revert expired free trials + upgrade prompt
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
   ],
 };
