@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
+import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 
 type ClerkUserEvent = {
   type: string;
@@ -59,11 +60,11 @@ export async function POST(req: NextRequest) {
         data: { clerkId: data.id },
       });
     } else {
-      // Create brand new user
+      // Create brand new user + start their 7-day PRO trial
       const name =
         `${data.first_name ?? ""} ${data.last_name ?? ""}`.trim() ||
         primaryEmail.split("@")[0];
-      await prisma.user.create({
+      const created = await prisma.user.create({
         data: {
           clerkId: data.id,
           name,
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
           image: data.image_url ?? null,
         },
       });
+      await grantTrial(created.id, TRIAL_DAYS_PUBLIC);
     }
   }
 

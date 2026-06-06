@@ -1,6 +1,7 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import type { User } from "@prisma/client";
+import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 
 /**
  * Get the current authenticated user from Prisma (server-side, Clerk-based).
@@ -37,8 +38,8 @@ export async function getCurrentUser(): Promise<User | null> {
     });
   }
 
-  // New user — create Prisma record
-  return prisma.user.create({
+  // New user — create Prisma record + start their 7-day PRO trial
+  const created = await prisma.user.create({
     data: {
       clerkId: userId,
       name:
@@ -49,6 +50,8 @@ export async function getCurrentUser(): Promise<User | null> {
       ...(isAdminEmail ? { role: "ADMIN" } : {}),
     },
   });
+  await grantTrial(created.id, TRIAL_DAYS_PUBLIC); // idempotent if the webhook already granted
+  return prisma.user.findUnique({ where: { id: created.id } }) as Promise<typeof created>;
 }
 
 /**
