@@ -73,11 +73,27 @@ export async function attachReservation(userId: string, stripeSessionId: string)
   await prisma.foundingReservation.create({ data: { userId, stripeSessionId, status: "RESERVED" } });
 }
 
-/** Confirm a reserved seat after payment. Does NOT touch usedCount (already counted at claim). Idempotent. */
+/**
+ * Confirm a seat after payment. Idempotent (a webhook retry is a no-op once CONFIRMED).
+ * - RESERVED → CONFIRMED: the seat is already counted, so usedCount is untouched.
+ * - RELEASED → CONFIRMED: the user paid on a session we had self-healed/released (its count was
+ *   returned to the pool), so we re-increment to honor the paid customer. This can briefly push
+ *   usedCount to maxUses+1 in a rare race; that's intentional — a real paid founding customer is
+ *   never refused their counted seat.
+ */
 export async function confirmSeat(stripeSessionId: string): Promise<void> {
-  await prisma.foundingReservation.updateMany({
-    where: { stripeSessionId, status: "RESERVED" },
-    data: { status: "CONFIRMED", confirmedAt: new Date() },
+  await prisma.$transaction(async (tx) => {
+    const r = await tx.foundingReservation.findUnique({
+      where: { stripeSessionId }, select: { id: true, status: true },
+    });
+    if (!r || r.status === "CONFIRMED") return; // unknown session / already confirmed → no-op
+    const flipped = await tx.foundingReservation.updateMany({
+      where: { id: r.id, status: { in: ["RESERVED", "RELEASED"] } },
+      data: { status: "CONFIRMED", confirmedAt: new Date() },
+    });
+    if (flipped.count === 1 && r.status === "RELEASED") {
+      await tx.coupon.updateMany({ where: { code: FOUNDING_CODE }, data: { usedCount: { increment: 1 } } });
+    }
   });
 }
 

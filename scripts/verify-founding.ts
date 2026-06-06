@@ -77,6 +77,18 @@ async function main() {
   assert(swept === 1, "sweep released 1 stale reservation");
   cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 0, "stale release decremented usedCount");
 
+  // ── confirmSeat re-counts a seat that was released then actually paid (self-heal edge) ──
+  await reset(); await seed(5, 0);
+  await claimSeat("userC"); await attachReservation("userC", "sess_C"); // usedCount 1, RESERVED
+  await releaseSeat("sess_C");                                          // usedCount 0, RELEASED
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 0, "released before pay → usedCount 0");
+  await confirmSeat("sess_C");                                          // user paid the old (released) session
+  const mc = await prisma.foundingReservation.findUnique({ where: { stripeSessionId: "sess_C" } });
+  assert(mc?.status === "CONFIRMED", "paid-after-release → CONFIRMED");
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "paid-after-release re-counts the seat");
+  await confirmSeat("sess_C");                                          // webhook retry
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "confirm idempotent (no double re-count)");
+
   // ── releaseUnattachedSeat: decrements once, never below zero (claim-then-Stripe-fails rollback) ──
   await reset(); await seed(5, 1);
   await releaseUnattachedSeat((await getFoundingCoupon())!.id);
