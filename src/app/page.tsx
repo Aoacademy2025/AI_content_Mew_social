@@ -13,6 +13,7 @@ export const metadata = {
   openGraph: {
     title: "HERO AI — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
     description: "Faceless + AI Avatar + ซับไทยอัตโนมัติ มีแค่สคริปต์ก็ได้คลิปพร้อมโพสต์",
+    url: "https://studio.heroaiengine.com",
     type: "website",
   },
 };
@@ -44,7 +45,7 @@ async function getPlanPrices() {
 async function getFounding() {
   try {
     const c = await getFoundingCoupon();
-    if (!c) return null;
+    if (!c || c.maxUses <= 0) return null;
     const remaining = Math.max(0, c.maxUses - c.usedCount);
     return { active: remaining > 0, remaining, total: c.maxUses, percentOff: c.percentOff };
   } catch {
@@ -128,6 +129,7 @@ export default async function Home() {
         </div>
       </nav>
 
+      <main>
       {/* hero */}
       <header className="relative px-5 pb-14 pt-12 text-center">
         <div className="mx-auto max-w-[820px]">
@@ -229,6 +231,8 @@ export default async function Home() {
           </div>
         </div>
       </section>
+
+      </main>
 
       {/* final CTA */}
       <footer className="relative border-t border-white/10 px-5 py-20 text-center">
