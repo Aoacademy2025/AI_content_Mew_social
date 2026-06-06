@@ -18,7 +18,8 @@
 
 ## 🔄 Payment vertical (Mew)
 - ✅ **subscription LIVE แล้ว (06-05)** — บัตร auto-renew + PromptPay one-time + billing portal + webhook lifecycle (config อยู่ใน DB `SiteConfig` ไม่ใช่ `.env`)
-- 🧪 **Founding-100 (code-complete 06-06, branch `mew/founding-100`)** — 100 คนแรกที่อัปเกรดรายปีได้ราคา founding 50% ล็อกตลอดชีพ อัตโนมัติ · atomic seat counter (race-safe) ต่อยอด DISCOUNT coupon (`FOUNDING100`) · ผ่าน unit/concurrency proof (`scripts/verify-founding.ts`) + build · **รอ E2E (Stripe test mode) + deploy** (`npx prisma db push` model `FoundingReservation` บน VPS ก่อน) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-founding-100*`
+- 🧪 **Founding-100 (merged to main 06-06)** — 100 คนแรกที่อัปเกรดรายปีได้ราคา founding 50% ล็อกตลอดชีพ อัตโนมัติ · atomic seat counter (race-safe) ต่อยอด DISCOUNT coupon (`FOUNDING100`) · ผ่าน unit/concurrency proof + Stripe test-mode integration + build · **รอ E2E + deploy** (`npx prisma db push` model `FoundingReservation` + `pm2 start --only founding-sweep` บน VPS · อย่าสร้าง coupon live ก่อน db push) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-founding-100*`
+- 🧪 **Free trial (code-complete 06-06, branch `mew/free-trial`)** — สมัครได้ PRO 7 วันอัตโนมัติ (ไม่ใช้บัตร) → หมดแล้ว revert FREE + prompt อัปเกรดรายปี (cron `trial-expiry`) · กลไกรับ duration (claim page เรียก `grantTrial(id,30)` ทีหลัง) · 1 trial/คน · ผ่าน tsx proof (`scripts/verify-trial.ts`) + build + holistic review · **รอ E2E + deploy** (`prisma db push` 2 คอลัมน์ trial + `pm2 start --only trial-expiry`) · spec/plan: `docs/superpowers/{specs,plans}/2026-06-06-free-trial*`
 - 🔜 **หน้าขาย/หน้าราคา redesign** + ปุ่ม PromptPay ← งานหลักถัดไป
 - 🔜 **แคมเปญเปิดตัว** (claim page → Skool/allowlist → โค้ดเฉพาะตัว) + ส่วนลดตามกลุ่ม
 - 🔜 **Onboarding ตั้ง API key** (เพราะ BYOK)
