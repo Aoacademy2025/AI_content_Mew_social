@@ -28,8 +28,10 @@ export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; b
   return (
     <div>
       {/* billing toggle */}
-      <div className="mx-auto my-8 inline-flex rounded-full border border-white/10 bg-white/[0.045] p-1">
+      <div role="group" aria-label="รูปแบบการชำระเงิน" className="mx-auto my-8 inline-flex rounded-full border border-white/10 bg-white/[0.045] p-1">
         <button
+          type="button"
+          aria-pressed={!yearly}
           onClick={() => setPeriod("monthly")}
           className={`rounded-full px-5 py-2 text-sm font-semibold transition ${!yearly ? "text-white" : "text-white/55"}`}
           style={!yearly ? { background: BRAND } : undefined}
@@ -37,6 +39,8 @@ export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; b
           รายเดือน
         </button>
         <button
+          type="button"
+          aria-pressed={yearly}
           onClick={() => setPeriod("yearly")}
           className={`inline-flex items-center rounded-full px-5 py-2 text-sm font-semibold transition ${yearly ? "text-white" : "text-white/55"}`}
           style={yearly ? { background: BRAND } : undefined}
@@ -54,7 +58,7 @@ export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; b
           name="PRO"
           amount={`฿${proAmt.toLocaleString()}`}
           unit={yearly ? "/ปี" : "/เดือน"}
-          perm={yearly ? `≈ ฿${proPrice.toLocaleString()}/เดือน · ` : "เก็บรายเดือน ยกเลิกได้"}
+          perm={yearly ? `≈ ฿${Math.round((proPrice * 10) / 12).toLocaleString()}/เดือน · ` : "เก็บรายเดือน ยกเลิกได้"}
           was={yearly ? `฿${(proPrice * 12).toLocaleString()}` : undefined}
           features={PRO_FEATURES}
           cta="เริ่มใช้ PRO"
@@ -65,7 +69,7 @@ export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; b
           name="BUSINESS"
           amount={`฿${bizAmt.toLocaleString()}`}
           unit={yearly ? "/ปี" : "/เดือน"}
-          perm={yearly ? `≈ ฿${businessPrice.toLocaleString()}/เดือน · ` : "เก็บรายเดือน"}
+          perm={yearly ? `≈ ฿${Math.round((businessPrice * 10) / 12).toLocaleString()}/เดือน · ` : "เก็บรายเดือน"}
           was={yearly ? `฿${(businessPrice * 12).toLocaleString()}` : undefined}
           features={BUSINESS_FEATURES}
           cta="เลือก BUSINESS"
