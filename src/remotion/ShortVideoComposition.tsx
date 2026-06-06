@@ -271,13 +271,13 @@ function __removed_legacy_renderSubtitle(
       );
 
     case "neon-green":
-      return <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
 
     case "neon-red":
-      return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
 
     case "neon-blue":
-      return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
 
     case "bold-shadow":
       return <span style={{ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" }}>{text}</span>;

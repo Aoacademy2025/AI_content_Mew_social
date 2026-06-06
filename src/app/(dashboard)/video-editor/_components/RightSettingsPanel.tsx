@@ -11,19 +11,6 @@ import { EffectPreviewCard, EFFECT_KEYFRAMES } from "./EffectPreviewCard";
 import { SliderRow } from "./SliderRow";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 
-// Maps a text effect to its CSS keyframe name (from EFFECT_KEYFRAMES) so the
-// Caption Style cards can loop the selected entrance animation as a live preview.
-// Inline effects (glow-pulse/highlight/karaoke/typewriter) animate inside
-// renderSubEl itself, so they have no wrapper animation here.
-const ENTRANCE_CSS: Partial<Record<SubTextEffect, string>> = {
-  pop: "ef-pop",
-  bounce: "ef-bounce",
-  fade: "ef-fade",
-  quick: "ef-quick",
-  slide: "ef-slide",
-  flip: "ef-flip",
-};
-
 export interface RightPanelProps {
   wide: boolean; detached: boolean; dragging: boolean; panelPos: { x: number; y: number };
   panelWidth?: number;
@@ -149,9 +136,6 @@ export function RightSettingsPanel(p: RightPanelProps) {
         {p.activeTab === "style" && (
           <>
             <div>
-              {/* Inject the shared entrance keyframes so Caption Style cards can loop
-                  the selected animation as a live preview. */}
-              <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Caption Style</div>
               <div className={cn("grid gap-1.5", cols4 ? "grid-cols-4" : "grid-cols-2")}>
                 {PRESETS_DATA.map(pr => {
@@ -162,17 +146,14 @@ export function RightSettingsPanel(p: RightPanelProps) {
                       style={isSelected
                         ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)" }
                         : { background: "#1a1a22", border: "1px solid #2a2a36" }}>
-                      <div className="w-full h-9 flex items-center justify-center rounded-lg overflow-hidden" style={{ background: "rgba(0,0,0,0.45)" }}>
-                        {/* Loop the currently-selected entrance animation so each Style
-                            card previews look + motion together (kliprapp-style). Only
-                            the 6 entrance effects have a CSS keyframe; the inline ones
-                            (glow-pulse/highlight/karaoke/typewriter) animate inside
-                            renderSubEl, so the wrapper stays still for those. */}
-                        <div style={{
-                          display: "inline-block",
-                          animation: ENTRANCE_CSS[p.subEffect] ? `${ENTRANCE_CSS[p.subEffect]} 1.8s cubic-bezier(.4,0,.2,1) infinite` : undefined,
-                        }}>
-                          {renderSubEl("ตัวอย่าง", p.subColor, p.subAccentColor, false, pr.value, p.subFontFamily, Math.round(p.subFontSize * 0.38), p.subFontWeight, 1, p.subEffect)}
+                      <div className="w-full h-10 flex items-center justify-center rounded-lg overflow-hidden px-0.5 [&_span]:whitespace-nowrap! [&_span]:break-normal! [&_div]:px-2!" style={{ background: "rgba(0,0,0,0.45)" }}>
+                        {/* Static preset preview — STYLE only (no motion). The
+                            arbitrary selectors force every inner span to one line and
+                            shrink the box-preset paddings, because renderSubtitle sets
+                            whiteSpace:normal + break-all (correct for real subtitles)
+                            which would otherwise wrap "ตัวอย่าง" inside the small card. */}
+                        <div style={{ lineHeight: 1, transform: "scale(0.82)" }}>
+                          {renderSubEl("ตัวอย่าง", p.subColor, p.subAccentColor, false, pr.value, p.subFontFamily, 15, p.subFontWeight, 1)}
                         </div>
                       </div>
                       <span className="text-[9px] font-medium leading-tight text-center"

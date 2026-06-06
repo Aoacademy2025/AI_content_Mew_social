@@ -37,7 +37,12 @@ export function renderSubtitle(
   // type but never implemented, so captions just appeared statically. Driven by
   // `frame` (0 at caption start), they make subs "pop in" like kliprapp/CapCut.
   // Preview passes a live frame so it matches the burned MP4 exactly.
+  // A negative frame is the "resting / fully-visible" sentinel used by static
+  // preview cards (style/font pickers) that drive motion via CSS instead — it
+  // skips the entrance transform so the text never renders at opacity 0. Live
+  // callers (overlay + Remotion render) pass frame >= 0 to play the entrance.
   const entranceStyle: React.CSSProperties = (() => {
+    if (frame < 0) return {};
     // ease-out cubic for snappy, professional motion
     const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
     // back-ease (overshoot) for bounce
@@ -166,7 +171,10 @@ export function renderSubtitle(
 
     if (textEffect === "typewriter") {
       const totalChars = text.length;
-      const charsToShow = Math.min(totalChars, Math.floor((frame / Math.max(1, captionDurFrames)) * totalChars) + 1);
+      // frame < 0 = resting/static preview → show full text (no reveal animation).
+      const charsToShow = frame < 0
+        ? totalChars
+        : Math.max(0, Math.min(totalChars, Math.floor((frame / Math.max(1, captionDurFrames)) * totalChars) + 1));
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const inner = (
         <span style={{ ...base, display: "inline", textShadow: stroke }}>
@@ -222,17 +230,13 @@ export function renderSubtitle(
       );
 
     case "neon-green":
-      return (
-        <div style={{ display: "inline-block", background: "#111", border: "2px solid #00ff88", borderRadius: 16, padding: "6px 24px 10px", boxShadow: "0 0 12px #00ff88, 0 0 30px #00ff88, inset 0 0 20px rgba(0,255,136,0.15)" }}>
-          <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" }}>{text}</span>
-        </div>
-      );
+      return <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" }}>{text}</span>;
 
     case "neon-red":
-      return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022" }}>{text}</span>;
 
     case "neon-blue":
-      return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" }}>{text}</span>;
 
     case "bold-shadow":
       return <span style={{ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" }}>{text}</span>;

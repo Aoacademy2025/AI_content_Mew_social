@@ -2933,15 +2933,17 @@ export default function VideoEditorPage() {
                     <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
                       {(() => {
                         // Drive frame-based effects (glow-pulse / highlight / karaoke /
-                        // typewriter) live in the preview using the same renderSubtitle
-                        // the MP4 render uses. Frame = time elapsed inside this caption,
-                        // at the render fps (30). When paused before playback, frame 0
-                        // shows the resting look — matching the first rendered frame.
+                        // typewriter) + entrance animations live, using the same
+                        // renderSubtitle the MP4 render uses.
+                        // IMPORTANT: only animate while PLAYING. When paused, pass
+                        // frame = -1 (resting/fully-visible). Otherwise a paused caption
+                        // sits at frame 0 = the first frame of the entrance, where the
+                        // text is mid-fade/mid-scale → looks faint & misaligned.
                         const PREVIEW_FPS = 30;
                         const capDurMs = Math.max(1, cap.endMs - cap.startMs);
-                        const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
-                        const frame = Math.round((elapsedMs / 1000) * PREVIEW_FPS);
                         const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
+                        const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
+                        const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
                         return renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames);
                       })()}
                     </div>

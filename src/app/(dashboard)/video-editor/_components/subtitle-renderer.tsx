@@ -25,8 +25,9 @@ export function renderSubEl(
   textEffect: SubTextEffect = "pop",
   // Pass a live frame + the caption's total duration (in frames) to drive the
   // frame-based effects (glow-pulse / highlight / karaoke / typewriter) in the
-  // preview. Defaults reproduce the old static (resting-frame) look.
-  frame = 0,
+  // preview. Default frame = -1 = the resting/fully-visible look (entrance skipped),
+  // so static callers (style/font cards) never render the text at opacity 0.
+  frame = -1,
   captionDurFrames = 1,
 ): React.ReactNode {
   // The Remotion renderer expects the final pixel size; scale it here so the

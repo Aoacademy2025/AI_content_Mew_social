@@ -212,7 +212,7 @@ export async function POST(req: Request) {
       console.log(`[Render] previous job finished — starting ${jobId}`);
     }
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality } = await req.json();
 
     // Duration check for FREE plan
     if (isFree(dbUser.plan) && videoDuration && videoDuration > FREE_LIMITS.durationSec) {
@@ -233,7 +233,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "scenes, avatarVideoUrl, shortVideoConfig, or subtitleOverlayConfig is required" }, { status: 400 });
     }
 
-    const fps = 30;
+    const fps = [24, 30, 50, 60].includes(Number(requestedFps)) ? Number(requestedFps) : 30;
     const safeDuration = Number.isFinite(videoDuration) && videoDuration > 0 ? videoDuration : 60;
     const durationInFrames = Math.max(Math.round(safeDuration * fps), fps);
     // Note: AvatarComposition uses calculateMetadata to auto-detect duration from video,
@@ -621,7 +621,8 @@ export async function POST(req: Request) {
         const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 32
           ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
           : perJobCacheMb * 1024 * 1024;
-        const jpegQuality = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95);
+        const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
+        const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
         const isWindows = process.platform === "win32";
         const chromiumArgs = [
           "--disable-dev-shm-usage",
