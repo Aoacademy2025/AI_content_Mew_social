@@ -227,6 +227,22 @@ export async function POST(req: Request) {
     return { ...c, endMs };
   });
 
+  // Close gaps between consecutive captions so subtitles never disappear mid-speech.
+  // Gemini sometimes returns a caption whose endMs stops well before the next caption
+  // begins (e.g. ends at 68s, next starts at 100s). Extend the earlier caption's endMs
+  // to fill the gap — a subtitle staying on screen is better than a blank stretch.
+  // Cap the extension so a genuine silence (no speech) doesn't get a frozen caption.
+  const MAX_GAP_FILL_MS = 8000; // extend up to 8s; longer gaps are likely real silence
+  for (let i = 0; i < gapFilled.length - 1; i++) {
+    const gap = gapFilled[i + 1].startMs - gapFilled[i].endMs;
+    if (gap > minFrameMs && gap <= MAX_GAP_FILL_MS) {
+      gapFilled[i].endMs = gapFilled[i + 1].startMs - minFrameMs;
+    } else if (gap > MAX_GAP_FILL_MS) {
+      console.warn(`[config] large caption gap ${(gapFilled[i].endMs/1000).toFixed(1)}s→${(gapFilled[i+1].startMs/1000).toFixed(1)}s (${(gap/1000).toFixed(1)}s) — extending ${(MAX_GAP_FILL_MS/1000)}s only`);
+      gapFilled[i].endMs = gapFilled[i].endMs + MAX_GAP_FILL_MS;
+    }
+  }
+
   const keywordPopups: KeywordPopupItem[] = gapFilled
     .map((c) => {
       const text = c.text.trim();
