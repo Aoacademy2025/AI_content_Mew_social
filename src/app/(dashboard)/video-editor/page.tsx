@@ -2003,7 +2003,8 @@ export default function VideoEditorPage() {
     ? segments.map((s, i) => ({ text: s, startMs: i * 3000, endMs: (i + 1) * 3000, tag: i === 0 ? "hook" as const : i === segments.length - 1 ? "cta" as const : "body" as const }))
     : captions;
 
-  const totalMs = durationMs > 0 ? durationMs : 0;
+  const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
+  const totalMs = Math.max(durationMs, captionEndMs);
 
   // activeSub: only show when video is ready AND a caption is active at current time
   const hasVideo = !!(videoUrl || preRenderUrl);
@@ -3306,17 +3307,22 @@ export default function VideoEditorPage() {
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
                   if (j !== r.capIdx) return c;
+                  const prevClip = prev[j - 1];
+                  const nextClip = prev[j + 1];
+                  const minGap = 50; // ms gap ระหว่าง clip
+                  const lowerBound = prevClip ? prevClip.endMs + minGap : 0;
+                  const upperBound = nextClip ? nextClip.startMs - minGap : (totalMs || 999999);
                   if (r.edge === "left") {
-                    const newStart = Math.max(0, Math.min(c.endMs - 200, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, r.startMs + dxMs));
                     return { ...c, startMs: Math.round(newStart) };
                   } else if (r.edge === "right") {
-                    const newEnd = Math.max(c.startMs + 200, Math.min(totalMs || 999999, r.startMs + dxMs));
+                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, r.startMs + dxMs));
                     return { ...c, endMs: Math.round(newEnd) };
                   } else {
-                    // "move" — slide whole clip, preserving duration
+                    // "move" — slide whole clip, preserving duration, clamp between neighbors
                     const dur = r.durMs ?? (c.endMs - c.startMs);
-                    const maxStart = Math.max(0, (totalMs || 999999) - dur);
-                    const newStart = Math.max(0, Math.min(maxStart, r.startMs + dxMs));
+                    const maxStart = Math.max(lowerBound, upperBound - dur);
+                    const newStart = Math.max(lowerBound, Math.min(maxStart, r.startMs + dxMs));
                     return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
@@ -3366,7 +3372,7 @@ export default function VideoEditorPage() {
                 {displayCaptions.map((cap, i) => {
                   const left = totalMs > 0 ? (cap.startMs / totalMs) * 100 : i * (100 / displayCaptions.length);
                   const width = totalMs > 0 ? ((cap.endMs - cap.startMs) / totalMs) * 100 : (100 / displayCaptions.length) - 0.5;
-                  // Find the track container ancestor (the element that holds the onPointerMove handler) for pointer capture
+                  const isTiny = width < 0.3; // clip แคบมากจริงๆ เท่านั้นถึงซ่อนข้อความ
                   const startResize = (e: React.PointerEvent, edge: "left" | "right" | "move") => {
                     e.stopPropagation();
                     const trackContent = e.currentTarget.closest(".tl-track-content") as HTMLElement | null;
@@ -3382,19 +3388,19 @@ export default function VideoEditorPage() {
                   };
                   return (
                     <div key={i}
+                      title={cap.text}
                       onPointerDown={e => startResize(e, "move")}
                       onClick={() => {
-                        // Treat as click only if no drag happened — handled in onPointerUp; this still fires for taps
                         if (clipResizeRef.current?.moved) return;
                         setActiveSegIdx(i);
                         if (videoRef.current) videoRef.current.currentTime = cap.startMs / 1000;
                       }}
-                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center px-2 text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
+                      className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
                         i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
-                      style={{ left: `${left}%`, width: `${Math.max(3, width)}%` }}>
+                      style={{ left: `${left}%`, width: `calc(${Math.max(0.4, width)}% - 2px)`, marginRight: "2px" }}>
                       <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10"
                         onPointerDown={e => startResize(e, "left")} />
-                      <span className="truncate px-2 pointer-events-none">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "..." : ""}</span>
+                      {!isTiny && <span className="truncate px-3 pointer-events-none">{cap.text.slice(0, 20)}{cap.text.length > 20 ? "…" : ""}</span>}
                       <div className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-r-md z-10"
                         onPointerDown={e => startResize(e, "right")} />
                     </div>

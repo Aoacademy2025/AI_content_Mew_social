@@ -53,6 +53,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const [role, setRole] = useState<"ADMIN" | "USER">(roleProp);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
+  const [usageCount, setUsageCount] = useState<number>(0);
+  const [usageLimit, setUsageLimit] = useState<number>(2);
 
   useEffect(() => {
     fetch("/api/user/me")
@@ -61,6 +63,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         if (data.plan) setPlan(data.plan);
         if (data.name) setUserName(data.name);
         if (data.role) setRole(data.role);
+        if (typeof data.usageCount === "number") setUsageCount(data.usageCount);
+        if (typeof data.usageLimit === "number") setUsageLimit(data.usageLimit);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -85,7 +89,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
 
   return (
     <div
-      className={cn("relative flex h-full flex-col transition-all duration-200", collapsed ? "w-14" : "w-56")}
+      className={cn("relative flex h-full flex-col transition-all duration-200", collapsed ? "w-14" : "w-64")}
       style={{ background: "var(--ui-sidebar-bg)", borderRight: "1px solid var(--ui-sidebar-border)" }}
     >
       {/* Toggle */}
@@ -206,10 +210,38 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
             skeleton={<div className="h-8 w-full rounded-xl skeleton-wave" />}
           >
             {!isPaid ? (
-              <Link href="/settings?tab=billing"
-                className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
-                style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
-                Upgrade to Pro
+              <Link href="/settings?tab=billing" className="block w-full rounded-2xl overflow-hidden relative group"
+                style={{ background: "linear-gradient(145deg, #0f0f18, #16102a)", border: "1px solid rgba(139,92,246,0.25)", boxShadow: "0 0 24px rgba(109,40,217,0.15)" }}>
+                {/* glow top */}
+                <div className="absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(167,139,250,0.6), transparent)" }} />
+                <div className="p-3 space-y-1.5">
+                  {/* header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-bold tracking-widest uppercase" style={{ color: "rgba(167,139,250,0.7)" }}>Free Plan</span>
+                    </div>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(139,92,246,0.15)", color: "rgba(167,139,250,0.9)", border: "1px solid rgba(139,92,246,0.3)" }}>
+                      {usageCount}/{usageLimit} คลิป
+                    </span>
+                  </div>
+                  {/* progress bar */}
+                  <div className="h-0.75 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
+                    <div className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(100, (usageCount / usageLimit) * 100)}%`,
+                        background: usageCount >= usageLimit
+                          ? "linear-gradient(90deg, hsl(0 80% 55%), hsl(20 90% 55%))"
+                          : "linear-gradient(90deg, hsl(252 83% 65%), hsl(190 100% 55%))",
+                        boxShadow: usageCount >= usageLimit ? "0 0 8px rgba(239,68,68,0.6)" : "0 0 8px rgba(139,92,246,0.8)",
+                      }} />
+                  </div>
+                  {/* cta */}
+                  <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-[11px] font-bold text-white transition-all group-hover:brightness-110"
+                    style={{ background: "linear-gradient(135deg, hsl(252 83% 58%), hsl(220 90% 62%))", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
+                    <span>⚡</span>
+                    <span>Upgrade to Pro</span>
+                  </div>
+                </div>
               </Link>
             ) : isPro ? (
               <Link href="/settings?tab=billing"
