@@ -767,7 +767,7 @@ export default function VideoEditorPage() {
     console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
     const res = await fetch("/api/videos/extract-keywords", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenes: sc, audioDurationSec: estimatedDurSec, preferredLLM: preferredLLMRef.current }),
+      body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
       signal: abortControllerRef.current?.signal,
     });
     const data = await res.json();

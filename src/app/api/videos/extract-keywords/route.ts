@@ -312,15 +312,15 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   //   clips_needed = ceil(300/3.5 × 1.6) = 138 clips
   //   keywords_needed = max(numScenes, ceil(138/4)) = max(numScenes, 35)
   //   → ถ้า 26 scenes จะได้ kwPerScene = 2 (52 keywords รวม)
-  const durSec = Number(audioDurationSec) > 0 ? Number(audioDurationSec) : 0;
+  const durSec = Number(audioDurationSec) > 0 ? Math.min(1800, Number(audioDurationSec)) : 0;
   const CLIP_AVG_SEC = 3.5;
   const BUFFER = 1.6;
   const CLIPS_PER_KW = 4; // realistic — fetch-stock caps at 15 but typical pick is ~4–6
   const clipsNeeded = durSec > 0 ? Math.ceil((durSec / CLIP_AVG_SEC) * BUFFER) : numScenes;
   const keywordsNeeded = Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
   // แต่ละ scene สร้างกี่ keyword (ปัดขึ้น)
-  const kwPerScene = Math.max(1, Math.ceil(keywordsNeeded / numScenes));
-  const totalKw = numScenes * kwPerScene;
+  const kwPerScene = Math.max(1, Math.min(10, Math.ceil(keywordsNeeded / numScenes)));
+  const totalKw = Math.min(500, numScenes * kwPerScene);
 
   console.log(`[extract-keywords] dur=${durSec}s clips_needed=${clipsNeeded} keywords_needed=${keywordsNeeded} kw/scene=${kwPerScene} total=${totalKw}`);
 
