@@ -9,7 +9,16 @@ import fs from "fs";
 import { execSync, spawn } from "child_process";
 import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
-import { activeRenderCancel, cancelByJobId } from "./cancel-registry";
+import {
+  activeRenderCancel,
+  cancelByJobId,
+  renderJobDoneByUser,
+  getBundleInProgress,
+  setBundleInProgress,
+  getActiveRenderCount,
+  incrementActiveRenderCount,
+  decrementActiveRenderCount,
+} from "./cancel-registry";
 
 function getRenderTmpDir(): string {
   const base =
@@ -67,9 +76,7 @@ type RenderJob = {
   progress?: number; // 0–100
 };
 
-// Track active render count so each job can scale down its resource usage
-// proportionally — all jobs run in parallel but share the VPS gracefully.
-let activeRenderCount = 0;
+// activeRenderCount is now stored in global via cancel-registry to survive hot-reloads.
 
 function jobsDir(): string {
   const d = path.join(process.cwd(), ".tmp", "render-jobs");
@@ -196,6 +203,14 @@ export async function POST(req: Request) {
     }
     // Register this as the latest job for this user — any older job will be superseded
     latestJobPerUser.set(userId, jobId);
+    // Wait for the previous job to fully exit before the new one starts renderMedia.
+    // Without this, both Chromium instances run concurrently → VPS OOM → one hangs.
+    const prevDone = renderJobDoneByUser.get(userId);
+    if (prevDone) {
+      console.log(`[Render] waiting for previous job to finish before starting ${jobId}`);
+      await prevDone;
+      console.log(`[Render] previous job finished — starting ${jobId}`);
+    }
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig } = await req.json();
 
@@ -506,14 +521,18 @@ export async function POST(req: Request) {
     // Clear stale progress file and register job immediately — before bundle build
     try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
-    activeRenderCount++;
+    incrementActiveRenderCount();
 
     // Fire-and-forget: bundle + render in background so HTTP response returns immediately.
     // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
+    let resolveDone!: () => void;
+    const donePromise = new Promise<void>(resolve => { resolveDone = resolve; });
+    renderJobDoneByUser.set(userId, donePromise);
+
     (async () => {
       let lastProgress = -1;
       try {
-        console.log(`[Render] job=${jobId} starting, activeJobs=${activeRenderCount}`);
+        console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
         // Bundle (may be cached) — runs in background after jobId is returned
         // Use mtime+size fingerprint of all remotion source files to detect changes
         const remotionSrcDir = path.resolve(process.cwd(), "src/remotion");
@@ -529,11 +548,26 @@ export async function POST(req: Request) {
         ) {
           console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
         } else {
-          console.log("[Render] building new webpack bundle...");
-          cachedBundleLocation = await bundle({ entryPoint, webpackOverride: (config: unknown) => config });
-          cachedBundleMtime = remotionFingerprint;
-          saveBundleCache();
-          console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
+          // Global bundle lock — if another job is already bundling, reuse that promise
+          // instead of spawning a second webpack build (which would OOM the VPS).
+          let inFlight = getBundleInProgress();
+          if (!inFlight) {
+            console.log("[Render] building new webpack bundle...");
+            inFlight = bundle({ entryPoint, webpackOverride: (config: unknown) => config })
+              .then((loc: string) => {
+                cachedBundleLocation = loc;
+                cachedBundleMtime = remotionFingerprint;
+                saveBundleCache();
+                setBundleInProgress(null);
+                console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
+                return loc;
+              })
+              .catch((err: unknown) => { setBundleInProgress(null); throw err; });
+            setBundleInProgress(inFlight);
+          } else {
+            console.log("[Render] waiting for concurrent bundle to finish...");
+          }
+          await inFlight;
         }
         const bundleLocation = cachedBundleLocation!;
 
@@ -571,7 +605,7 @@ export async function POST(req: Request) {
         const isCriticalLowMem = freeMemGb < 0.8;
         const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
         // Scale down threads-per-job as more jobs run in parallel — share CPU fairly
-        const jobsNow = Math.max(1, activeRenderCount);
+        const jobsNow = Math.max(1, getActiveRenderCount());
         const totalThreadBudget = Math.max(1, cpuCount - 1);
         const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
         // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
@@ -642,7 +676,8 @@ export async function POST(req: Request) {
         // Cleanup abort controller for this user if it's still ours
         activeRenderCancel.delete(userId);
         cancelByJobId.delete(jobId);
-        activeRenderCount = Math.max(0, activeRenderCount - 1);
+        decrementActiveRenderCount();
+        resolveDone();
 
         // If a newer job was started for this user, discard this result silently
         if (latestJobPerUser.get(userId) !== jobId) {
@@ -671,7 +706,8 @@ export async function POST(req: Request) {
       } catch (error) {
         activeRenderCancel.delete(userId);
         cancelByJobId.delete(jobId);
-        activeRenderCount = Math.max(0, activeRenderCount - 1);
+        decrementActiveRenderCount();
+        resolveDone();
         if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
         console.error("Render error:", error);
         const detail = error instanceof Error ? error.message : String(error);

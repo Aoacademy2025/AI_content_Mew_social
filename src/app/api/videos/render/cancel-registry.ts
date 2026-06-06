@@ -16,6 +16,16 @@ declare global {
   var __renderCancelByJobId: Map<string, () => void> | undefined;
   // eslint-disable-next-line no-var
   var __renderCancelByUserId: Map<string, () => void> | undefined;
+  // Promise that resolves when the in-flight render for a given user finishes (or is cancelled).
+  // New jobs wait on this before calling renderMedia so only one Chromium runs per user.
+  // eslint-disable-next-line no-var
+  var __renderJobDoneByUserId: Map<string, Promise<void>> | undefined;
+  // Global bundle lock — only one bundle() call runs at a time; others await the same promise.
+  // eslint-disable-next-line no-var
+  var __bundleInProgress: Promise<string> | null | undefined;
+  // Total active render count across hot-reloads.
+  // eslint-disable-next-line no-var
+  var __activeRenderCount: number | undefined;
 }
 
 export const cancelByJobId: Map<string, () => void> =
@@ -23,6 +33,28 @@ export const cancelByJobId: Map<string, () => void> =
 
 export const activeRenderCancel: Map<string, () => void> =
   (global.__renderCancelByUserId ??= new Map());
+
+// Per-user promise: resolves when the current render job for that user is finished.
+export const renderJobDoneByUser: Map<string, Promise<void>> =
+  (global.__renderJobDoneByUserId ??= new Map());
+
+// Global bundle lock.
+export function getBundleInProgress(): Promise<string> | null {
+  return global.__bundleInProgress ?? null;
+}
+export function setBundleInProgress(p: Promise<string> | null) {
+  global.__bundleInProgress = p;
+}
+
+export function getActiveRenderCount(): number {
+  return global.__activeRenderCount ?? 0;
+}
+export function incrementActiveRenderCount() {
+  global.__activeRenderCount = (global.__activeRenderCount ?? 0) + 1;
+}
+export function decrementActiveRenderCount() {
+  global.__activeRenderCount = Math.max(0, (global.__activeRenderCount ?? 1) - 1);
+}
 
 function jobsDir(): string {
   const d = path.join(process.cwd(), ".tmp", "render-jobs");
