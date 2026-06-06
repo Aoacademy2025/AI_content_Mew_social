@@ -32,6 +32,52 @@ export function renderSubtitle(
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
 
+  // ── Entrance animation (pop / bounce / fade / quick / slide / flip) ──────────
+  // These run at the START of each caption and were previously declared in the
+  // type but never implemented, so captions just appeared statically. Driven by
+  // `frame` (0 at caption start), they make subs "pop in" like kliprapp/CapCut.
+  // Preview passes a live frame so it matches the burned MP4 exactly.
+  const entranceStyle: React.CSSProperties = (() => {
+    // ease-out cubic for snappy, professional motion
+    const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+    // back-ease (overshoot) for bounce
+    const easeBack = (t: number) => {
+      const c1 = 1.70158, c3 = c1 + 1;
+      return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+    };
+    const durFrames = (n: number) => Math.max(1, n);
+    switch (textEffect) {
+      case "pop": {        // scale 0.6→1 over ~7 frames
+        const t = Math.min(1, frame / durFrames(7));
+        const s = 0.6 + 0.4 * easeOut(t);
+        return { transform: `scale(${s})`, opacity: Math.min(1, t * 1.5), transformOrigin: "center" };
+      }
+      case "bounce": {     // overshoot spring over ~10 frames
+        const t = Math.min(1, frame / durFrames(10));
+        const s = 0.5 + 0.5 * easeBack(t);
+        return { transform: `scale(${s})`, opacity: Math.min(1, t * 2), transformOrigin: "center" };
+      }
+      case "quick": {      // ultra-fast snap ~3 frames
+        const t = Math.min(1, frame / durFrames(3));
+        return { transform: `scale(${0.85 + 0.15 * t})`, opacity: t, transformOrigin: "center" };
+      }
+      case "fade": {       // fade only, no scale ~8 frames
+        const t = Math.min(1, frame / durFrames(8));
+        return { opacity: easeOut(t) };
+      }
+      case "slide": {      // slide up from below ~9 frames
+        const t = Math.min(1, frame / durFrames(9));
+        return { transform: `translateY(${(1 - easeOut(t)) * 40}px)`, opacity: Math.min(1, t * 1.5) };
+      }
+      case "flip": {       // perspective Y flip-in ~10 frames
+        const t = Math.min(1, frame / durFrames(10));
+        return { transform: `perspective(400px) rotateX(${(1 - easeOut(t)) * 90}deg)`, opacity: Math.min(1, t * 2), transformOrigin: "center" };
+      }
+      default:
+        return {}; // glow-pulse / highlight / karaoke / typewriter handle their own motion
+    }
+  })();
+
   const base: React.CSSProperties = {
     fontFamily,
     fontSize: `${scaledSize}px`,
@@ -45,6 +91,7 @@ export function renderSubtitle(
     wordBreak: "break-all",
     overflowWrap: "anywhere",
     color,
+    ...entranceStyle,
   };
 
   // Caption Styles that fully own their own rendering (ignore Text Effect)

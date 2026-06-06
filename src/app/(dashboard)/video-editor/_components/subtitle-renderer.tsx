@@ -23,6 +23,11 @@ export function renderSubEl(
   fontWeight: number,
   scale = 1,
   textEffect: SubTextEffect = "pop",
+  // Pass a live frame + the caption's total duration (in frames) to drive the
+  // frame-based effects (glow-pulse / highlight / karaoke / typewriter) in the
+  // preview. Defaults reproduce the old static (resting-frame) look.
+  frame = 0,
+  captionDurFrames = 1,
 ): React.ReactNode {
   // The Remotion renderer expects the final pixel size; scale it here so the
   // preview overlay (e.g. 260/1080 phone frame) matches what gets rendered at 1080.
@@ -36,8 +41,8 @@ export function renderSubEl(
     preset,
     fontFamily,
     fontWeight,
-    /* frame */ 0,
-    /* captionDurFrames */ 1,
+    frame,
+    captionDurFrames,
     textEffect,
     accentColor,
   );

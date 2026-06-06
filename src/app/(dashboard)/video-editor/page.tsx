@@ -181,6 +181,13 @@ export default function VideoEditorPage() {
   const lastRenderedStyleRef = useRef<RenderedStyle | null>(null);
   const [styleIsDirty, setStyleIsDirty] = useState(false);
 
+  // ── Render settings modal ─────────────────────────────────────────────
+  const [renderSettingsOpen, setRenderSettingsOpen] = useState(false);
+  const [renderFps, setRenderFps] = useState<24 | 30 | 50 | 60>(30);
+  const [renderQuality, setRenderQuality] = useState<"480p" | "720p" | "1080p">("720p");
+  const renderQualityToJpeg: Record<string, number> = { "480p": 70, "720p": 85, "1080p": 95 };
+  const pendingRunAllRef = useRef<(() => void) | null>(null);
+
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string }>({ open: false });
@@ -1279,7 +1286,7 @@ export default function VideoEditorPage() {
 
       const res = await fetch("/api/videos/render", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: patchedConfig }),
+        body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
         signal: abortControllerRef.current?.signal,
       });
       if (renderFailedMessage) throw new Error(renderFailedMessage);
@@ -2380,7 +2387,11 @@ export default function VideoEditorPage() {
             title={isEditorExpanded ? "Exit fullscreen" : "Expand editor (fullscreen)"}>
             {isEditorExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button onClick={() => running ? stopAll() : runAll()} disabled={!script.trim()}
+          <button onClick={() => {
+              if (running) { stopAll(); return; }
+              if (!script.trim()) return;
+              setRenderSettingsOpen(true);
+            }} disabled={!script.trim()}
             className={cn("flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[12px] font-bold transition-all",
               running
                 ? "bg-red-600 hover:bg-red-700 text-white"
@@ -2920,7 +2931,19 @@ export default function VideoEditorPage() {
                         when the phone-frame is fullscreened, so the subtitle stays
                         legible at viewport-width sizes. */}
                     <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
-                      {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale)}
+                      {(() => {
+                        // Drive frame-based effects (glow-pulse / highlight / karaoke /
+                        // typewriter) live in the preview using the same renderSubtitle
+                        // the MP4 render uses. Frame = time elapsed inside this caption,
+                        // at the render fps (30). When paused before playback, frame 0
+                        // shows the resting look — matching the first rendered frame.
+                        const PREVIEW_FPS = 30;
+                        const capDurMs = Math.max(1, cap.endMs - cap.startMs);
+                        const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
+                        const frame = Math.round((elapsedMs / 1000) * PREVIEW_FPS);
+                        const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
+                        return renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames);
+                      })()}
                     </div>
                   </div>
                 );
@@ -3514,6 +3537,88 @@ export default function VideoEditorPage() {
         message={upgradeModal.message}
         onClose={() => setUpgradeModal({ open: false })}
       />
+
+      {/* Render settings modal */}
+      {renderSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setRenderSettingsOpen(false)}>
+          <div className="relative w-full max-w-sm mx-4 rounded-2xl overflow-hidden" onClick={e => e.stopPropagation()}
+            style={{ background: "linear-gradient(145deg, #0f0f18, #16102a)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 0 40px rgba(109,40,217,0.25)" }}>
+            {/* glow top */}
+            <div className="absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(167,139,250,0.6), transparent)" }} />
+            <div className="p-5 space-y-5">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-white">ตั้งค่าการเรนเดอร์</h3>
+                <button onClick={() => setRenderSettingsOpen(false)} className="text-slate-500 hover:text-slate-300 transition-colors"><X className="w-4 h-4" /></button>
+              </div>
+
+              {/* FPS */}
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">เลือก FPS สำหรับเรนเดอร์</p>
+                <div className="space-y-1.5">
+                  {([
+                    { fps: 24 as const, label: "24 FPS", desc: "ซีเนมาติค เหมาะกับหนัง" },
+                    { fps: 30 as const, label: "30 FPS", desc: "แนะนำ - ไฟล์เล็ก เรนเดอร์เร็ว", recommended: true },
+                    { fps: 50 as const, label: "50 FPS", desc: "อัพเกรดแพลนเพื่อปลดล็อค", locked: true },
+                    { fps: 60 as const, label: "60 FPS", desc: "อัพเกรดแพลนเพื่อปลดล็อค", locked: true },
+                  ] as { fps: 24|30|50|60; label: string; desc: string; recommended?: boolean; locked?: boolean }[]).map(opt => (
+                    <button key={opt.fps}
+                      disabled={opt.locked}
+                      onClick={() => !opt.locked && setRenderFps(opt.fps)}
+                      className={cn("w-full text-left px-3 py-2.5 rounded-xl border transition-all",
+                        opt.locked ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+                        renderFps === opt.fps && !opt.locked
+                          ? "border-violet-500 bg-violet-500/10"
+                          : "border-white/8 hover:border-white/20 bg-white/3"
+                      )}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[13px] font-bold text-white">{opt.label}</span>
+                        {opt.locked && <span className="text-[10px] text-slate-500">🔒</span>}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{opt.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Quality */}
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">คุณภาพไฟล์</p>
+                <div className="space-y-1.5">
+                  {([
+                    { q: "480p" as const, label: "คุณภาพต่ำ", desc: "ไฟล์เล็ก เรนเดอร์เร็วสุด" },
+                    { q: "720p" as const, label: "คุณภาพสูง", desc: "แนะนำ - คุณภาพดี ไฟล์เล็ก", recommended: true },
+                    { q: "1080p" as const, label: "คุณภาพสูงสุด", desc: "อัพเกรดแพลนเพื่อปลดล็อค", locked: true },
+                  ] as { q: "480p"|"720p"|"1080p"; label: string; desc: string; recommended?: boolean; locked?: boolean }[]).map(opt => (
+                    <button key={opt.q}
+                      disabled={opt.locked}
+                      onClick={() => !opt.locked && setRenderQuality(opt.q)}
+                      className={cn("w-full text-left px-3 py-2.5 rounded-xl border transition-all",
+                        opt.locked ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+                        renderQuality === opt.q && !opt.locked
+                          ? "border-violet-500 bg-violet-500/10"
+                          : "border-white/8 hover:border-white/20 bg-white/3"
+                      )}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[13px] font-bold text-white">{opt.label}</span>
+                        {opt.locked && <span className="text-[10px] text-slate-500">🔒</span>}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{opt.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Start button */}
+              <button
+                onClick={() => { setRenderSettingsOpen(false); runAll(); }}
+                className="w-full py-3 rounded-xl text-[13px] font-bold text-white transition-all hover:brightness-110"
+                style={{ background: "linear-gradient(135deg, hsl(252 83% 58%), hsl(220 90% 62%))", boxShadow: "0 2px 16px rgba(109,40,217,0.5)" }}>
+                เริ่มเรนเดอร์
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Hidden audio element for TTS preview before video is ready */}
       <audio ref={audioRef} src={ttsUrl || undefined} muted={avatarInputMode === "direct"} style={{ display: "none" }} />
