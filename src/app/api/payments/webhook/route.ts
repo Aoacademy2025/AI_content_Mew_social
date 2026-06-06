@@ -5,6 +5,7 @@ import { PLANS, PlanKey } from "@/lib/stripe";
 import { createNotification } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
+import { confirmSeat, releaseSeat } from "@/lib/founding";
 
 export const config = { api: { bodyParser: false } };
 
@@ -67,11 +68,18 @@ export async function POST(req: Request) {
       }).catch(() => {});
       const couponId = s.metadata?.couponId;
       if (couponId) {
-        try {
-          await prisma.couponRedemption.create({ data: { couponId, userId } });
-          await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
-          console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
-        } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
+        if (s.metadata?.founding === "1") {
+          // Founding seat was already counted at reservation — just confirm it (no re-increment)
+          await confirmSeat(s.id).catch(() => {});
+          await prisma.couponRedemption.create({ data: { couponId, userId } }).catch(() => {});
+          console.log(`[stripe-webhook] founding seat confirmed: ${userId} (coupon ${couponId})`);
+        } else {
+          try {
+            await prisma.couponRedemption.create({ data: { couponId, userId } });
+            await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
+            console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
+          } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
+        }
       }
       console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
     }
@@ -147,6 +155,7 @@ export async function POST(req: Request) {
   if (event.type === "checkout.session.expired") {
     const s = event.data.object as any;
     await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
+    await releaseSeat(s.id).catch(() => {}); // free the founding seat if this was an unpaid founding checkout
   }
 
   return NextResponse.json({ ok: true });
