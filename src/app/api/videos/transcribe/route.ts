@@ -511,7 +511,7 @@ ${script.trim().slice(0, 2000)}` : ""}
           }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 65536,
+            maxOutputTokens: 131072,
             thinkingConfig: { thinkingBudget: 0 },
           },
         });
@@ -608,8 +608,18 @@ ${script.trim().slice(0, 2000)}` : ""}
             try {
               parsed = JSON.parse(match[0]);
             } catch {
-              const truncated = match[0].replace(/,\s*\{[^}]*$/, "]}").replace(/,\s*$/, "").replace(/\]\s*$/, "]}");
-              try { parsed = JSON.parse(truncated); } catch { /* give up */ }
+              // Step 1: close incomplete last object in array, then close arrays/object
+              let repaired = match[0]
+                .replace(/,\s*\{[^}]*$/, "")   // drop incomplete trailing object
+                .replace(/,\s*$/, "")            // drop trailing comma
+                .trimEnd();
+              // Step 2: count unclosed brackets and close them
+              let open = 0;
+              for (const ch of repaired) { if (ch === "[" || ch === "{") open++; else if (ch === "]" || ch === "}") open--; }
+              // close with matching brackets (best-effort order: arrays before objects)
+              const closing = repaired.endsWith("}") ? "" : (repaired.includes('"captions"') ? "]}" : "}");
+              repaired = repaired + closing;
+              try { parsed = JSON.parse(repaired); } catch { /* give up */ }
             }
 
             if (parsed) {
