@@ -1,5 +1,5 @@
 # STATUS — สถานะจริงของโปรเจกต์
-> อัปเดต: 2026-06-07 · prod `main` = `a5f7077` · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-07.md](docs/HANDOFF-2026-06-07.md) ประกอบ
+> อัปเดต: 2026-06-07 · prod app deploy ล่าสุด = `a5f7077` · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-07.md](docs/HANDOFF-2026-06-07.md) ประกอบ
 
 ## ภาพรวม
 **HERO AI** (studio.heroaiengine.com) — SaaS เปลี่ยนสคริปต์ 1 ชุด เป็นวิดีโอสั้นพร้อมโพสต์อัตโนมัติ (Faceless + AI Avatar + ซับไทย)
