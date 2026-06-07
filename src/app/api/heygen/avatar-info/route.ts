@@ -40,13 +40,41 @@ export async function GET(req: Request) {
     preview_image_url: string;
     preview_video_url: string;
   }> = data.data?.avatars ?? [];
+  // /v2/avatars also returns "talking_photos" (photo/instant avatars) under a
+  // different shape — a valid Avatar ID can live there too. Search both so we
+  // don't false-flag a working custom/photo avatar as "not found".
+  const talkingPhotos: Array<{
+    talking_photo_id: string;
+    talking_photo_name?: string;
+    preview_image_url?: string;
+  }> = data.data?.talking_photos ?? [];
 
   const found = avatars.find((a) => a.avatar_id === avatarId);
-  if (!found) return NextResponse.json({ error: `ไม่พบ Avatar ID นี้ในบัญชี (${avatars.length} avatars)` }, { status: 404 });
+  if (found) {
+    return NextResponse.json({
+      previewImageUrl: found.preview_image_url,
+      previewVideoUrl: found.preview_video_url,
+      name: found.avatar_name,
+    });
+  }
+  const photo = talkingPhotos.find((t) => t.talking_photo_id === avatarId);
+  if (photo) {
+    return NextResponse.json({
+      previewImageUrl: photo.preview_image_url ?? "",
+      previewVideoUrl: "",
+      name: photo.talking_photo_name ?? "Photo Avatar",
+    });
+  }
 
+  // Not in either list. HeyGen's listing is not always exhaustive (shared/group
+  // avatars, region differences), and this ID may still render fine — so DON'T
+  // hard-fail. Return 200 with unverified:true so the UI can say "can't confirm,
+  // but you can still try" instead of falsely blocking a usable avatar.
+  const totalListed = avatars.length + talkingPhotos.length;
   return NextResponse.json({
-    previewImageUrl: found.preview_image_url,
-    previewVideoUrl: found.preview_video_url,
-    name: found.avatar_name,
+    previewImageUrl: "",
+    name: "",
+    unverified: true,
+    note: `ไม่พบใน list (${totalListed} avatars) — อาจยังใช้ได้ ลอง render ดู`,
   });
 }

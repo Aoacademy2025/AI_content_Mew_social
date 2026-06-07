@@ -21,7 +21,7 @@ export interface OrderPanelProps {
   avatarBookendSecs: number; avatarTailSecs: number;
   avatarScale: number; avatarOffsetX: number; avatarOffsetY: number;
   avatarPreviewUrl: string; avatarName: string;
-  onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error";
+  onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error" | "unverified";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
@@ -233,7 +233,13 @@ export function OrderPanel(p: OrderPanelProps) {
                       {p.avatarStatus === "error" && p.avatarId.trim().length >= 10 && (
                         <div className="flex items-center gap-2 rounded-lg px-2.5 py-2 bg-red-500/10 border border-red-500/30">
                           <span className="text-red-400 text-sm">✕</span>
-                          <p className="text-[11px] font-semibold text-red-300">Avatar ID ใช้ไม่ได้ / ไม่พบในบัญชี</p>
+                          <p className="text-[11px] font-semibold text-red-300">เช็คไม่สำเร็จ (key/เน็ต)</p>
+                        </div>
+                      )}
+                      {p.avatarStatus === "unverified" && p.avatarId.trim().length >= 10 && (
+                        <div className="flex items-center gap-2 rounded-lg px-2.5 py-2 bg-amber-500/10 border border-amber-500/30">
+                          <span className="text-amber-400 text-sm">!</span>
+                          <p className="text-[11px] font-semibold text-amber-300">ยืนยันไม่ได้ — แต่ลอง render ได้</p>
                         </div>
                       )}
                       {(p.avatarPreviewUrl || p.avatarName) && (

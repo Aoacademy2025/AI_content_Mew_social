@@ -151,7 +151,7 @@ export default function VideoEditorPage() {
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
   const [avatarName, setAvatarName] = useState("");
   // idle = nothing checked yet, loading = fetching, ok = valid ID, error = not found / invalid
-  const [avatarStatus, setAvatarStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
+  const [avatarStatus, setAvatarStatus] = useState<"idle" | "loading" | "ok" | "error" | "unverified">("idle");
   const [avatarTiming, setAvatarTiming] = useState<"full" | "bookend" | "bookend-both">("full");
   const [avatarBookendSecs, setAvatarBookendSecs] = useState(5);
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
@@ -374,7 +374,14 @@ export default function VideoEditorPage() {
       const d = await r.json();
       setAvatarPreviewUrl(d.previewImageUrl ?? "");
       setAvatarName(d.name ?? "");
-      setAvatarStatus("ok");
+      // unverified = ID not in HeyGen's list, but the list isn't exhaustive so it
+      // may still render. Don't block — show a soft "ลองได้" state.
+      if (d.unverified) {
+        setAvatarStatus("unverified");
+        if (d.note) toast.message(d.note);
+      } else {
+        setAvatarStatus("ok");
+      }
     } catch {
       setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("error");
       toast.error("เช็ค Avatar ID ไม่สำเร็จ — ตรวจสอบ HeyGen key / เน็ต");
