@@ -368,13 +368,16 @@ export default function VideoEditorPage() {
       if (!r.ok) {
         const d = await r.json().catch(() => null);
         setAvatarPreviewUrl(""); setAvatarName("");
-        // Only a real auth failure (401/403) is a key problem — and the key already
-        // comes from Settings, so just point the user there. Everything else
-        // (HeyGen slow/down, network) is NOT a key issue: don't nag to re-enter it,
-        // just mark unverified so they can still render.
-        if (r.status === 401 || r.status === 403) {
+        // Only flag the KEY when the server says so via missingKey:"heygen"
+        // (a real HeyGen 401/403). A bare 401 without missingKey is a Clerk/session
+        // issue, not the HeyGen key — and the key already lives in Settings, so we
+        // never ask the user to re-enter it here. Everything else = unverified.
+        if (d?.missingKey === "heygen") {
           setAvatarStatus("error");
-          toast.error("HeyGen key ใน Settings ไม่ถูกต้อง/หมดสิทธิ์");
+          toast.error("HeyGen key ใน Settings ไม่ถูกต้อง/หมดสิทธิ์ — แก้ที่ Settings");
+        } else if (r.status === 401) {
+          setAvatarStatus("unverified");
+          toast.message("เซสชันหมดอายุ — รีเฟรชหน้าแล้วลองใหม่");
         } else {
           setAvatarStatus("unverified");
           toast.message("เช็ค Avatar ID ไม่ได้ตอนนี้ (HeyGen ช้า) — แต่ลอง render ได้");

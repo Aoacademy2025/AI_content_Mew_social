@@ -22,7 +22,9 @@ export async function GET(req: Request) {
   let res: Response;
   try {
     res = await fetch("https://api.heygen.com/v2/avatars", {
-      headers: { "X-Api-Key": heygenKey },
+      // accept header matches the working /api/heygen/avatars route — some HeyGen
+      // edges 401 a request that omits it.
+      headers: { "X-Api-Key": heygenKey, accept: "application/json" },
       signal: AbortSignal.timeout(20000), // HeyGen's full avatar list can be slow
     });
   } catch {
@@ -35,6 +37,8 @@ export async function GET(req: Request) {
     });
   }
   if (res.status === 401 || res.status === 403) {
+    const body = await res.text().catch(() => "");
+    console.warn(`[avatar-info] HeyGen ${res.status} — key len=${heygenKey.length}, body=${body.slice(0, 200)}`);
     return NextResponse.json({ error: "HeyGen key ไม่ถูกต้อง/หมดสิทธิ์", missingKey: "heygen" }, { status: res.status });
   }
   if (!res.ok) return NextResponse.json({ error: `HeyGen API error ${res.status}` }, { status: 502 });
