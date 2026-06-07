@@ -150,6 +150,8 @@ export default function VideoEditorPage() {
   const [avatarOffsetY, setAvatarOffsetY] = useState(0.13);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
   const [avatarName, setAvatarName] = useState("");
+  // idle = nothing checked yet, loading = fetching, ok = valid ID, error = not found / invalid
+  const [avatarStatus, setAvatarStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [avatarTiming, setAvatarTiming] = useState<"full" | "bookend" | "bookend-both">("full");
   const [avatarBookendSecs, setAvatarBookendSecs] = useState(5);
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
@@ -179,7 +181,7 @@ export default function VideoEditorPage() {
   // ── BGM ───────────────────────────────────────────────────────────────
   const [bgmEnabled, setBgmEnabled] = useState(false);
   const [bgmFile, setBgmFile] = useState("");
-  const [bgmVolume, setBgmVolume] = useState(0.28);
+  const [bgmVolume, setBgmVolume] = useState(0.12);
   const [bgmUploading, setBgmUploading] = useState(false);
   interface SystemTrack { id: string; title: string; filename: string; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
@@ -356,17 +358,35 @@ export default function VideoEditorPage() {
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch avatar preview image when avatarId changes (debounced)
+  // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
+  // the debounced auto-load effect and the manual "โหลด avatar" button.
+  const loadAvatarInfo = useCallback(async (id: string) => {
+    if (!id || id.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("idle"); return; }
+    setAvatarStatus("loading");
+    try {
+      const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}`);
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("error");
+        toast.error(d?.error ? `Avatar ID ใช้ไม่ได้: ${d.error}` : "Avatar ID นี้ใช้ไม่ได้ / ไม่พบในบัญชี HeyGen");
+        return;
+      }
+      const d = await r.json();
+      setAvatarPreviewUrl(d.previewImageUrl ?? "");
+      setAvatarName(d.name ?? "");
+      setAvatarStatus("ok");
+    } catch {
+      setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("error");
+      toast.error("เช็ค Avatar ID ไม่สำเร็จ — ตรวจสอบ HeyGen key / เน็ต");
+    }
+  }, []);
+
+  // Auto-load avatar preview when avatarId changes (debounced)
   useEffect(() => {
     if (!avatarId || avatarId.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); return; }
-    const t = setTimeout(() => {
-      fetch(`/api/heygen/avatar-info?avatarId=${avatarId}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d) { setAvatarPreviewUrl(d.previewImageUrl ?? ""); setAvatarName(d.name ?? ""); } })
-        .catch(() => { setAvatarPreviewUrl(""); setAvatarName(""); });
-    }, 600);
+    const t = setTimeout(() => { void loadAvatarInfo(avatarId); }, 600);
     return () => clearTimeout(t);
-  }, [avatarId]);
+  }, [avatarId, loadAvatarInfo]);
 
   // ── Video sync — rAF loop for smooth subtitle tracking ────────────────
   useEffect(() => {
@@ -465,7 +485,7 @@ export default function VideoEditorPage() {
     // BGM
     setBgmEnabled(false);
     setBgmFile("");
-    setBgmVolume(0.28);
+    setBgmVolume(0.12);
 
     // Avatar
     setUseAvatar(false);
@@ -2884,10 +2904,14 @@ export default function VideoEditorPage() {
                 const isBurnDone = isDone && k === "burnSubtitles" && !!burnedUrl;
                 const isClickable = isDone || isError;
 
+                // Direct-URL mode supplies the avatar video itself — there's
+                // nothing to "generate", so the Avatar/Tail/Composite steps have no
+                // standalone Run action (they run as part of the main pipeline).
+                const isDirectAvatar = avatarInputMode === "direct";
                 // Determine the run action for this step
                 const stepRunAction: (() => void) | null = !running ? (() => {
                   if (k === "burnSubtitles") return () => runBurnSubtitles();
-                  if (k === "avatar" || k === "avatarTail" || k === "composite") return useAvatar ? () => runAvatarPipeline() : null;
+                  if (k === "avatar" || k === "avatarTail" || k === "composite") return (useAvatar && !isDirectAvatar) ? () => runAvatarPipeline() : null;
                   if (k === "render") return pipe.current.config ? () => runRenderOnly() : () => runFrom("render");
                   if (k === "tts" && avatarInputMode === "direct" && avatarDirectUrl.trim()) return null;
                   return () => runFrom(k as keyof StepState);
@@ -2899,7 +2923,7 @@ export default function VideoEditorPage() {
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
                   k !== "burnSubtitles" || (burnHasBase && captions.length > 0 && !running)
                 ) && (
-                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || useAvatar
+                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || (useAvatar && !isDirectAvatar)
                 );
                 const showRerunBtn = !running && (isDone || isError) && stepRunAction !== null;
 
@@ -3337,7 +3361,7 @@ export default function VideoEditorPage() {
                 useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
                 avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
                 avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
+                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
                 avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
                 avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
                 setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -3403,7 +3427,7 @@ export default function VideoEditorPage() {
             useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
             avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
             avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
+            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
             avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
             avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
             setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}

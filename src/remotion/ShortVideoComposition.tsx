@@ -517,7 +517,7 @@ export function ShortVideoComposition({
   voiceFile,
   voiceVolume = 1,
   bgmFile,
-  bgmVolume = 0.28,
+  bgmVolume = 0.12,
   fontFamily,
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
@@ -598,7 +598,7 @@ export function ShortVideoComposition({
       {voiceFile && <Audio src={voiceFile} volume={voiceVolume} />}
 
       {/* Background music */}
-      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.28} loop />}
+      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
       {/* Subtitles */}
       {keywordPopups.map((p) => {

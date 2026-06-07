@@ -43,7 +43,8 @@ export interface RightPanelProps {
   useAvatar: boolean; avatarId: string; avatarTiming: "full" | "bookend" | "bookend-both";
   avatarBookendSecs: number; avatarTailSecs: number;
   avatarScale: number; avatarOffsetX: number; avatarOffsetY: number;
-  avatarPreviewUrl: string; avatarName: string;
+  avatarPreviewUrl: string; avatarName: string; onReloadAvatar?: () => void;
+  avatarStatus?: "idle" | "loading" | "ok" | "error";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
@@ -119,7 +120,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
 
       {/* Tabs */}
       <div className="flex border-b border-[#1e1e28] flex-shrink-0 overflow-x-auto scrollbar-none">
-        {([ ["style","สไตล์"], ["font","Font"], ["transcript","Transcript"] ] as ["style"|"font"|"transcript", string][]).map(([tab, label]) => (
+        {([ ["style","สไตล์"], ["font","Font"] ] as ["style"|"font"|"transcript", string][]).map(([tab, label]) => (
           <button key={tab} onClick={() => p.onTab(tab)}
             className={cn("px-3 py-2.5 text-[11px] font-bold whitespace-nowrap transition-colors border-b-2",
               p.activeTab === tab ? "text-violet-300 border-violet-500" : "text-slate-600 border-transparent hover:text-slate-300")}>
@@ -425,31 +426,50 @@ export function RightSettingsPanel(p: RightPanelProps) {
 
                   {p.avatarInputMode === "generate" ? (
                     <>
-                      <input value={p.avatarId} onChange={e => p.setAvatarId(e.target.value)} placeholder="HeyGen Avatar ID"
-                        className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-300 outline-none" />
+                      <div className="flex gap-1.5">
+                        <input value={p.avatarId} onChange={e => p.setAvatarId(e.target.value)} placeholder="HeyGen Avatar ID"
+                          className="flex-1 min-w-0 bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-300 outline-none" />
+                        <button
+                          onClick={() => p.onReloadAvatar?.()}
+                          disabled={p.avatarId.trim().length < 10 || p.avatarStatus === "loading"}
+                          title="เช็คว่า Avatar ID นี้ใช้ได้ไหม"
+                          className="px-3 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors bg-violet-600 text-white hover:bg-violet-500 disabled:bg-[#2a2a36] disabled:text-slate-600 disabled:cursor-not-allowed flex items-center gap-1">
+                          {p.avatarStatus === "loading" ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                          เช็ค ID
+                        </button>
+                      </div>
 
-                      {/* Avatar preview — loads automatically from HeyGen as soon as a
-                          valid Avatar ID is typed (page.tsx debounced avatar-info fetch).
-                          Shows the avatar thumbnail + name so the user sees it without
-                          having to render first. */}
-                      {p.avatarId.trim().length >= 10 && (
-                        <div className="flex items-center gap-2.5 bg-[#1a1a22] border border-[#2a2a36] rounded-lg p-2">
-                          {p.avatarPreviewUrl ? (
-                            <img src={p.avatarPreviewUrl} alt={p.avatarName || "avatar"}
-                              className="w-12 h-12 rounded-md object-cover flex-shrink-0 bg-black/30" />
-                          ) : (
-                            <div className="w-12 h-12 rounded-md flex-shrink-0 bg-black/30 flex items-center justify-center">
-                              <Loader2 className="w-4 h-4 text-slate-600 animate-spin" />
+                      {/* Result of the avatar-ID check: thumbnail+name on success (the
+                          ID is valid), a red error row on failure (invalid / not in the
+                          HeyGen account). Auto-loads on typing + manual via "เช็ค ID". */}
+                      {p.avatarId.trim().length >= 10 && p.avatarStatus !== "idle" && (
+                        p.avatarStatus === "error" ? (
+                          <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-lg p-2">
+                            <span className="text-red-400 text-sm flex-shrink-0">✕</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[11px] font-semibold text-red-300">Avatar ID ใช้ไม่ได้</div>
+                              <div className="text-[9px] text-slate-500 truncate">{p.avatarId}</div>
                             </div>
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-semibold text-slate-200 truncate">
-                              {p.avatarPreviewUrl ? (p.avatarName || "Avatar") : "กำลังโหลด avatar..."}
-                            </div>
-                            <div className="text-[9px] text-slate-600 truncate">{p.avatarId}</div>
                           </div>
-                          {p.avatarPreviewUrl && <span className="text-emerald-400 text-[10px] flex-shrink-0">✓</span>}
-                        </div>
+                        ) : (
+                          <div className="flex items-center gap-2.5 bg-[#1a1a22] border border-[#2a2a36] rounded-lg p-2">
+                            {p.avatarStatus === "ok" && p.avatarPreviewUrl ? (
+                              <img src={p.avatarPreviewUrl} alt={p.avatarName || "avatar"}
+                                className="w-12 h-12 rounded-md object-cover flex-shrink-0 bg-black/30" />
+                            ) : (
+                              <div className="w-12 h-12 rounded-md flex-shrink-0 bg-black/30 flex items-center justify-center">
+                                <Loader2 className="w-4 h-4 text-slate-600 animate-spin" />
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[11px] font-semibold text-slate-200 truncate">
+                                {p.avatarStatus === "ok" ? (p.avatarName || "Avatar") : "กำลังเช็ค..."}
+                              </div>
+                              <div className="text-[9px] text-slate-600 truncate">{p.avatarId}</div>
+                            </div>
+                            {p.avatarStatus === "ok" && <span className="text-emerald-400 text-[10px] flex-shrink-0">✓ ใช้ได้</span>}
+                          </div>
+                        )
                       )}
 
                       <div>
@@ -645,68 +665,8 @@ export function RightSettingsPanel(p: RightPanelProps) {
           </>
         )}
 
-        {p.activeTab === "transcript" && (
-          <TranscriptTab
-            captions={p.allCaptions ?? []}
-            activeCaptionIdx={p.activeCaptionIdx ?? -1}
-            onSeek={p.onSeekCaption ?? (() => {})}
-          />
-        )}
       </div>
     </div>
   );
 }
 
-function TranscriptTab({ captions, activeCaptionIdx, onSeek }: {
-  captions: Caption[];
-  activeCaptionIdx: number;
-  onSeek: (idx: number) => void;
-}) {
-  const activeRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [activeCaptionIdx]);
-
-  function fmt(ms: number) {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    return `${m}:${String(s % 60).padStart(2, "0")}`;
-  }
-
-  if (captions.length === 0) {
-    return <div className="text-[11px] text-slate-600 text-center py-8">ยังไม่มี transcript<br/>กด Transcribe ก่อน</div>;
-  }
-
-  return (
-    <div className="flex flex-col gap-1 -m-4 px-2 py-2">
-      {captions.map((cap, i) => {
-        const isActive = i === activeCaptionIdx;
-        const tag = (cap as { tag?: string }).tag ?? "body";
-        const tagColors: Record<string, string> = { hook: "text-violet-400", cta: "text-amber-400", body: "text-slate-500" };
-        const tagColor = tagColors[tag] ?? "text-slate-500";
-        return (
-          <div
-            key={i}
-            ref={isActive ? activeRef : null}
-            onClick={() => onSeek(i)}
-            className={cn(
-              "rounded-xl border px-3 py-2.5 cursor-pointer transition-all",
-              isActive
-                ? "bg-violet-500/10 border-violet-500/40"
-                : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]"
-            )}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className={cn("text-[9px] font-black uppercase tracking-wider", tagColor)}>
-                #{i + 1} · {tag}
-              </span>
-              <span className="text-[9px] text-slate-600 font-mono">{fmt(cap.startMs)}–{fmt(cap.endMs)}</span>
-            </div>
-            <p className="text-[12px] text-slate-300 leading-snug">{cap.text}</p>
-          </div>
-        );
-      })}
-    </div>
-  );
-}

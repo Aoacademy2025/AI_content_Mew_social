@@ -19,10 +19,19 @@ export async function GET(req: Request) {
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-  const res = await fetch("https://api.heygen.com/v2/avatars", {
-    headers: { "X-Api-Key": heygenKey },
-  });
-  if (!res.ok) return NextResponse.json({ error: "HeyGen API failed" }, { status: 500 });
+  let res: Response;
+  try {
+    res = await fetch("https://api.heygen.com/v2/avatars", {
+      headers: { "X-Api-Key": heygenKey },
+      signal: AbortSignal.timeout(15000), // HeyGen avatar list can be slow; cap at 15s
+    });
+  } catch {
+    return NextResponse.json({ error: "HeyGen ตอบช้า/ไม่ตอบ — ลองใหม่อีกครั้ง" }, { status: 504 });
+  }
+  if (res.status === 401 || res.status === 403) {
+    return NextResponse.json({ error: "HeyGen key ไม่ถูกต้อง/หมดสิทธิ์", missingKey: "heygen" }, { status: res.status });
+  }
+  if (!res.ok) return NextResponse.json({ error: `HeyGen API error ${res.status}` }, { status: 502 });
 
   const data = await res.json();
   const avatars: Array<{
@@ -33,7 +42,7 @@ export async function GET(req: Request) {
   }> = data.data?.avatars ?? [];
 
   const found = avatars.find((a) => a.avatar_id === avatarId);
-  if (!found) return NextResponse.json({ error: "Avatar not found" }, { status: 404 });
+  if (!found) return NextResponse.json({ error: `ไม่พบ Avatar ID นี้ในบัญชี (${avatars.length} avatars)` }, { status: 404 });
 
   return NextResponse.json({
     previewImageUrl: found.preview_image_url,
