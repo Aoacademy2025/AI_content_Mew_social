@@ -1996,6 +1996,7 @@ export default function VideoEditorPage() {
           color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
           captions: captionsRef.current.map(c => ({ ...c })),
         };
+        setStyleIsDirty(false);
         setStep("burnSubtitles", "done", url);
         setRenderProgress(100);
         // Update Gallery: replace videoUrl with the burned-in version (final result)
