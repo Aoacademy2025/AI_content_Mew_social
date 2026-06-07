@@ -3,8 +3,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
+import { computeDisplayPrice } from "@/lib/pricing-display";
 
 type Period = "monthly" | "yearly";
+type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
 
 const FREE_FEATURES = ["ทดลอง PRO ฟรี 7 วัน", "ไม่ต้องใช้บัตร", "หลังทดลอง: 2 คลิป/เดือน"];
 const PRO_FEATURES = [
@@ -19,11 +21,38 @@ const BUSINESS_FEATURES = ["ทุกอย่างใน PRO", "300 คลิ�
 const BRAND = "linear-gradient(120deg,#8b5cf6,#22d3ee)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 
-export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; businessPrice: number }) {
+export function PricingToggle({
+  proPrice,
+  businessPrice,
+  founding = null,
+}: {
+  proPrice: number;
+  businessPrice: number;
+  founding?: FoundingStatus;
+}) {
   const [period, setPeriod] = useState<Period>("yearly");
   const yearly = period === "yearly";
-  const proAmt = yearly ? proPrice * 10 : proPrice;
-  const bizAmt = yearly ? businessPrice * 10 : businessPrice;
+  const pricePeriod = yearly ? "annual" : "monthly";
+  const proDisplay = computeDisplayPrice({ monthlyPrice: proPrice, period: pricePeriod, coupon: null, founding });
+  const bizDisplay = computeDisplayPrice({ monthlyPrice: businessPrice, period: pricePeriod, coupon: null, founding });
+  const hasFounding = Boolean(yearly && founding?.active);
+
+  function priceMeta(display: typeof proDisplay, monthlyPrice: number) {
+    if (!yearly) return { perm: "เก็บรายเดือน ยกเลิกได้", was: undefined };
+    if (display.isFounding) {
+      return {
+        perm: `≈ ฿${Math.round(display.final / 12).toLocaleString()}/เดือน · Founding ลด ${display.pct}%`,
+        was: `฿${display.base.toLocaleString()}`,
+      };
+    }
+    return {
+      perm: `≈ ฿${Math.round(display.base / 12).toLocaleString()}/เดือน · `,
+      was: `฿${(monthlyPrice * 12).toLocaleString()}`,
+    };
+  }
+
+  const proMeta = priceMeta(proDisplay, proPrice);
+  const bizMeta = priceMeta(bizDisplay, businessPrice);
 
   return (
     <div>
@@ -52,28 +81,35 @@ export function PricingToggle({ proPrice, businessPrice }: { proPrice: number; b
         </button>
       </div>
 
+      {hasFounding && founding && (
+        <p className="mb-5 text-center text-sm font-semibold text-amber-200">
+          Founding รายปีลด {founding.percentOff}% เหลือ {founding.remaining}/{founding.total} ที่นั่ง
+        </p>
+      )}
+
       <div className="grid gap-4 text-left md:grid-cols-3">
         <Tier name="FREE" amount="฿0" features={FREE_FEATURES} cta="เริ่มใช้ฟรี" ghost />
         <Tier
           name="PRO"
-          amount={`฿${proAmt.toLocaleString()}`}
+          amount={`฿${proDisplay.final.toLocaleString()}`}
           unit={yearly ? "/ปี" : "/เดือน"}
-          perm={yearly ? `≈ ฿${Math.round((proPrice * 10) / 12).toLocaleString()}/เดือน · ` : "เก็บรายเดือน ยกเลิกได้"}
-          was={yearly ? `฿${(proPrice * 12).toLocaleString()}` : undefined}
+          perm={proMeta.perm}
+          was={proMeta.was}
           features={PRO_FEATURES}
           cta="เริ่มใช้ PRO"
           best
-          badge="แนะนำ ⭐"
+          badge={proDisplay.isFounding ? "Founding" : "แนะนำ"}
         />
         <Tier
           name="BUSINESS"
-          amount={`฿${bizAmt.toLocaleString()}`}
+          amount={`฿${bizDisplay.final.toLocaleString()}`}
           unit={yearly ? "/ปี" : "/เดือน"}
-          perm={yearly ? `≈ ฿${Math.round((businessPrice * 10) / 12).toLocaleString()}/เดือน · ` : "เก็บรายเดือน"}
-          was={yearly ? `฿${(businessPrice * 12).toLocaleString()}` : undefined}
+          perm={bizMeta.perm}
+          was={bizMeta.was}
           features={BUSINESS_FEATURES}
           cta="เลือก BUSINESS"
           ghost
+          badge={bizDisplay.isFounding ? "Founding" : undefined}
         />
       </div>
 

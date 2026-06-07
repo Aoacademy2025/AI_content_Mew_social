@@ -9,6 +9,29 @@ export const runtime = "nodejs";
 // PENDING payments older than this are auto-cancelled
 const PENDING_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
+function safePublicPath(publicDir: string, ...segments: string[]): string | null {
+  const base = path.resolve(publicDir);
+  const resolved = path.resolve(base, ...segments);
+  return resolved === base || resolved.startsWith(`${base}${path.sep}`) ? resolved : null;
+}
+
+function renderFile(publicDir: string, filename: string): string | null {
+  if (!filename || /[/\\]/.test(filename)) return null;
+  return safePublicPath(publicDir, "renders", filename);
+}
+
+function localFilePath(publicDir: string, url: string | null): string | null {
+  if (!url || url.startsWith("http://") || url.startsWith("https://")) return null;
+  if (url.startsWith("/api/renders/")) {
+    return renderFile(publicDir, url.slice("/api/renders/".length));
+  }
+  if (url.startsWith("/renders/")) {
+    return renderFile(publicDir, url.slice("/renders/".length));
+  }
+  if (!url.startsWith("/")) return null;
+  return safePublicPath(publicDir, url.replace(/^\/+/, ""));
+}
+
 // GET /api/cron/cleanup-videos
 // Called by a cron job (or Vercel Cron) every day to delete expired videos.
 // Protected by CRON_SECRET env variable.
@@ -62,12 +85,10 @@ export async function GET(req: Request) {
     const publicDir = path.join(process.cwd(), "public");
     for (const video of expired) {
       for (const url of [video.videoUrl, video.avatarVideoUrl, video.audioUrl, video.thumbnail]) {
-        if (!url) continue;
+        const filePath = localFilePath(publicDir, url);
+        if (!filePath) continue;
         try {
-          if (url.startsWith("/")) {
-            const filePath = path.join(publicDir, url);
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-          }
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
         } catch { /* ignore file errors */ }
       }
     }

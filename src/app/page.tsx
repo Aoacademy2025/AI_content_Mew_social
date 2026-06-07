@@ -213,7 +213,7 @@ export default async function Home() {
         <div className="mx-auto max-w-[1140px] text-center">
           <p className="text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ราคา</p>
           <h2 className="mt-2 text-3xl font-bold sm:text-4xl" style={HEAD}>เลือกแพ็กที่ใช่</h2>
-          <PricingToggle proPrice={plan.proPrice} businessPrice={plan.businessPrice} />
+          <PricingToggle proPrice={plan.proPrice} businessPrice={plan.businessPrice} founding={founding} />
         </div>
       </section>
 
