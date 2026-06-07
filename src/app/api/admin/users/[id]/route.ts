@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
+import { usageWindowForPlan } from "@/lib/usage-limits";
 
 const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
 const VALID_ROLES = new Set(["ADMIN", "USER"]);
@@ -29,7 +30,9 @@ export async function PATCH(
     }
 
     const data: Record<string, unknown> = {};
-    if (plan !== undefined) data.plan = plan;
+    if (plan !== undefined) {
+      Object.assign(data, { plan, ...usageWindowForPlan(plan) });
+    }
     if (role !== undefined) data.role = role;
     if (suspended !== undefined) data.suspended = suspended;
 

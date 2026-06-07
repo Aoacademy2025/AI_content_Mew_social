@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { FOUNDING_CODE } from "@/lib/founding";
+import { usageWindowForPlan } from "@/lib/usage-limits";
 
 export const runtime = "nodejs";
 
@@ -31,8 +32,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "คุณเคยใช้คูปองนี้แล้ว" }, { status: 400 });
 
     // Calculate plan expiry
+    const now = new Date();
     const planExpiresAt = coupon.durationDays > 0
-      ? new Date(Date.now() + coupon.durationDays * 24 * 60 * 60 * 1000)
+      ? new Date(now.getTime() + coupon.durationDays * 24 * 60 * 60 * 1000)
       : null;
 
     await prisma.$transaction([
@@ -47,8 +49,9 @@ export async function POST(req: Request) {
         where: { id: authUser.id },
         data: {
           plan: coupon.plan,
+          planExpiresAt,
           trialEndsAt: null, // redeeming supersedes any running trial
-          ...(planExpiresAt ? {} : {}), // permanent if durationDays=0
+          ...usageWindowForPlan(coupon.plan, now),
         },
       }),
     ]);

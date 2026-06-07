@@ -3,10 +3,13 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import axios from "axios";
 import { apiError } from "@/lib/api-error";
-import { videoExpiryFor } from "@/lib/plan-limits";
+import { isPaid, videoExpiryFor } from "@/lib/plan-limits";
+import { refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
 
 // POST /api/videos/generate - Generate avatar video via n8n webhook
 export async function POST(req: Request) {
+  let quotaReserved = false;
+  let reservedUserId: string | null = null;
   try {
     const authUser = await getCurrentUser();
 
@@ -24,9 +27,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    if (user.plan !== "PRO") {
+    if (!isPaid(user.plan)) {
       return NextResponse.json(
-        { error: "Video generation is only available for Pro users" },
+        { error: "Video generation is only available for Pro and Business users" },
         { status: 403 }
       );
     }
@@ -89,6 +92,12 @@ export async function POST(req: Request) {
       );
     }
 
+    const quota = await reserveClipUsage(authUser.id);
+    if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
+    quotaReserved = true;
+    reservedUserId = authUser.id;
+
     // Create video record with PENDING status (expiresAt set by user's plan)
     const video = await prisma.video.create({
       data: {
@@ -144,6 +153,7 @@ export async function POST(req: Request) {
             where: { id: video.id },
             data: { status: "FAILED" },
           });
+          await refundClipUsage(authUser.id).catch(() => {});
         });
     } else {
       // No webhook configured - use mock data
@@ -165,6 +175,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json(video, { status: 201 });
   } catch (error) {
+    if (quotaReserved && reservedUserId) {
+      await refundClipUsage(reservedUserId).catch(() => {});
+    }
     return apiError({ route: "videos/generate", error });
   }
 }

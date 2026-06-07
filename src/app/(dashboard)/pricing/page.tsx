@@ -49,7 +49,7 @@ const PLAN_DEFS: PlanDef[] = [
   {
     key: "FREE",
     name: "Free",
-    tagline: "เริ่มลองระบบได้ทันที ไม่ต้องผูกบัตร",
+    tagline: "ทดลอง PRO ฟรี 7 วัน แล้วใช้ Free ต่อได้",
     icon: Zap,
     color: "#94a3b8",
   },
@@ -130,6 +130,10 @@ const FAQS = [
     a: "ได้ ถ้ามีโค้ดส่วนลดสามารถกรอกในส่วน pricing ก่อน checkout ได้ทันที",
   },
   {
+    q: "ราคา Founding คิดจากอะไร?",
+    a: "ระบบคำนวณจากราคารายปีจริงบนหน้า checkout และใช้ส่วนลด Founding กับแผนรายปีเท่านั้น",
+  },
+  {
     q: "เหมาะกับใครที่สุด?",
     a: "เหมาะกับ creator สาย faceless, เพจความรู้, เพจขายของ และทีมที่ต้องการผลิต short-form content ให้ไวขึ้น",
   },
@@ -143,7 +147,8 @@ function PricingContent() {
   const [faqOpen, setFaqOpen] = useState<number>(0);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; percentOff: number | null } | null>(null);
   const [founding, setFounding] = useState<{ active: boolean; remaining: number; total: number; percentOff: number } | null>(null);
-  const [currentPlan, setCurrentPlan] = useState<string>("FREE");
+  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+  const [userChecked, setUserChecked] = useState(false);
   const [planConfig, setPlanConfig] = useState<{
     free?: { price: number; features: string[] };
     pro: { price: number; features: string[] };
@@ -154,15 +159,23 @@ function PricingContent() {
 
   useEffect(() => {
     fetch("/api/plans").then((r) => r.json()).then(setPlanConfig).catch(() => {});
-    fetch("/api/user/me").then((r) => r.json()).then((d) => {
-      if (d.plan) setCurrentPlan(d.plan);
-    }).catch(() => {});
+    fetch("/api/user/me")
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((d) => setCurrentPlan(d?.plan ?? null))
+      .catch(() => setCurrentPlan(null))
+      .finally(() => setUserChecked(true));
     fetch("/api/founding/status").then((r) => r.json()).then(setFounding).catch(() => {});
   }, []);
 
+  function freeFeatures(features: string[]) {
+    return features.some((f) => f.includes("ทดลอง PRO"))
+      ? features
+      : ["ทดลอง PRO ฟรี 7 วัน", ...features];
+  }
+
   function getPlanData(def: PlanDef) {
     if (def.key === "FREE") {
-      return { price: planConfig?.free?.price ?? 0, features: planConfig?.free?.features ?? [] };
+      return { price: planConfig?.free?.price ?? 0, features: freeFeatures(planConfig?.free?.features ?? []) };
     }
     if (def.key === "PRO") {
       return { price: planConfig?.pro.price ?? 599, features: planConfig?.pro.features ?? [] };
@@ -180,6 +193,11 @@ function PricingContent() {
   }
 
   async function handleUpgrade(planKey: "PRO" | "BUSINESS") {
+    if (userChecked && !currentPlan) {
+      window.location.href = "/register";
+      return;
+    }
+
     setLoading(planKey);
     try {
       const res = await fetch("/api/payments/checkout", {
@@ -215,7 +233,7 @@ function PricingContent() {
                 Founding
               </span>
               <p className="text-sm text-white/80">
-                ราคา Founding (รายปี) ลด {founding.percentOff}% ล็อกตลอดชีพ — เหลืออีก{" "}
+                Founding รายปีลด {founding.percentOff}% — บัตรลดทุกปีที่ต่ออายุ, PromptPay ลดรอบปีที่ชำระ — เหลืออีก{" "}
                 <span className="font-black text-white">{founding.remaining}</span>/{founding.total} ที่นั่ง
               </p>
             </>
@@ -501,9 +519,10 @@ function PricingContent() {
           {PLAN_DEFS.map((def) => {
             const Icon = def.icon;
             const { price, features } = getPlanData(def);
-            const isCurrent = currentPlan === def.key;
+            const isCurrent = !!currentPlan && currentPlan === def.key;
             const isPaid = def.key !== "FREE";
             const isLoading = loading === def.key;
+            const isSignedOut = userChecked && !currentPlan;
             const display = price > 0 ? getDisplayPrice(price) : null;
 
             return (
@@ -552,7 +571,7 @@ function PricingContent() {
                     {price === 0 ? (
                       <div className="flex items-end gap-2">
                         <span className="text-5xl font-black tracking-tight text-white">ฟรี</span>
-                        <span className="pb-1 text-sm text-white/48">ตลอดไป</span>
+                        <span className="pb-1 text-sm text-white/48">หลังทดลอง</span>
                       </div>
                     ) : (
                       <>
@@ -575,7 +594,11 @@ function PricingContent() {
                                   display.isFounding ? "bg-amber-400/14 text-amber-300" : "bg-emerald-400/12 text-emerald-300",
                                 )}
                               >
-                                {display.isFounding ? `Founding · ลด ${display.pct}% ตลอดชีพ` : `ลด ${display.pct}%`}
+                                {display.isFounding
+                                  ? method === "promptpay"
+                                    ? `Founding · ลด ${display.pct}% รอบปีนี้`
+                                    : `Founding · ลด ${display.pct}% ทุกปี`
+                                  : `ลด ${display.pct}%`}
                               </span>
                             </>
                           )}
@@ -611,7 +634,7 @@ function PricingContent() {
                   {isPaid ? (
                     <button
                       onClick={() => handleUpgrade(def.key as "PRO" | "BUSINESS")}
-                      disabled={isCurrent || isLoading}
+                      disabled={isCurrent || isLoading || !userChecked}
                       className={cn(
                         "inline-flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold transition-all",
                         "disabled:cursor-not-allowed disabled:opacity-60",
@@ -626,7 +649,12 @@ function PricingContent() {
                         boxShadow: isCurrent ? "none" : `0 14px 34px ${def.color}40`,
                       }}
                     >
-                      {isLoading ? (
+                      {!userChecked ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          กำลังตรวจสอบ
+                        </>
+                      ) : isLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : isCurrent ? (
                         <>
@@ -635,7 +663,7 @@ function PricingContent() {
                         </>
                       ) : (
                         <>
-                          อัปเกรดเป็น {def.name}
+                          {isSignedOut ? `สมัครเพื่อเลือก ${def.name}` : `อัปเกรดเป็น ${def.name}`}
                           <ArrowRight className="h-4 w-4" strokeWidth={2.5} />
                         </>
                       )}
@@ -645,12 +673,24 @@ function PricingContent() {
                       <ShieldCheck className="h-4 w-4" strokeWidth={2.5} />
                       แผนปัจจุบันของคุณ
                     </div>
+                  ) : !userChecked ? (
+                    <div className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/4 px-4 py-3 text-sm font-semibold text-white/60">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      กำลังตรวจสอบ
+                    </div>
+                  ) : isSignedOut ? (
+                    <Link
+                      href="/register"
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/4 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/7"
+                    >
+                      ทดลอง PRO ฟรี 7 วัน
+                    </Link>
                   ) : (
                     <Link
                       href="/dashboard"
                       className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/4 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/7"
                     >
-                      เริ่มใช้ฟรี
+                      ใช้แผน Free
                     </Link>
                   )}
                 </div>

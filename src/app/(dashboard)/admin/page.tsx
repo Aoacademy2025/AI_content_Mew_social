@@ -206,7 +206,7 @@ export default function AdminDashboardPage() {
 
   // Plan config
   const [planFreePrice, setPlanFreePrice] = useState("0");
-  const [planFreeFeatures, setPlanFreeFeatures] = useState("หลังหมดทดลอง: 2 คลิป/เดือน|ความยาววิดีโอสูงสุด 2 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 3 วัน|สร้างคอนเทนต์ด้วย AI (จำกัด 5 ชิ้น)|ใช้ Gemini API key ของตัวเอง|Font พื้นฐานเท่านั้น");
+  const [planFreeFeatures, setPlanFreeFeatures] = useState("ทดลอง PRO ฟรี 7 วัน|หลังหมดทดลอง: 2 คลิป/เดือน|ความยาววิดีโอสูงสุด 2 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 3 วัน|สร้างคอนเทนต์ด้วย AI (จำกัด 5 ชิ้น)|ใช้ Gemini API key ของตัวเอง|Font พื้นฐานเท่านั้น");
   const [planProPrice, setPlanProPrice] = useState("599");
   const [planProFeatures, setPlanProFeatures] = useState("100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน|ความยาววิดีโอสูงสุด 6 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 7 วัน|รองรับ Avatar ทุกรูปแบบ รวมถึง HeyGen|Text-to-Speech ครบทุกผู้ให้บริการ (ElevenLabs, Gemini, HeyGen)|เลือกใช้ Font ได้ครบทุก Style|ลบพื้นหลังอัตโนมัติด้วย AI (Background Removal)|เพิ่มเพลงประกอบวิดีโอ|ปรับแต่ง Subtitle Style ได้ทุกรูปแบบ|Video Editor ขั้นสูงครบฟีเจอร์|สร้างคอนเทนต์ด้วย AI ไม่จำกัดจำนวน|Support ทาง Email — ทีมงานตอบสนองภายใน 48 ชั่วโมง");
   const [planBusinessPrice, setPlanBusinessPrice] = useState("990");

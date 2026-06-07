@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
-import { apiError } from "@/lib/api-error";
-import { FREE_LIMITS, isFree } from "@/lib/plan-limits";
+import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
+import { refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
 import path from "path";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
@@ -159,6 +159,8 @@ function saveBundleCache() {
 
 export async function POST(req: Request) {
   loadBundleCache();
+  let quotaReserved = false;
+  let reservedUserId: string | null = null;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
@@ -178,49 +180,14 @@ export async function POST(req: Request) {
 
     const userId = authUser.id;
 
-    // Plan + usage check
     const dbUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { plan: true, usageCount: true, usageLimit: true },
+      select: { plan: true },
     });
     if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    if (isFree(dbUser.plan)) {
-      if (dbUser.usageCount >= dbUser.usageLimit) {
-        return NextResponse.json(
-          { error: `Free plan จำกัด ${dbUser.usageLimit} คลิป/เดือน กรุณาอัปเกรดเป็น Pro` },
-          { status: 403 }
-        );
-      }
-    }
-
-    const jobId = `${userId}-${Date.now()}`;
-    // Cancel any previous render for this user before starting a new one
-    const prevCancel = activeRenderCancel.get(userId);
-    if (prevCancel) {
-      console.log(`[Render] cancelling previous job for user ${userId}`);
-      prevCancel();
-    }
-    // Register this as the latest job for this user — any older job will be superseded
-    latestJobPerUser.set(userId, jobId);
-    // Wait for the previous job to fully exit before the new one starts renderMedia.
-    // Without this, both Chromium instances run concurrently → VPS OOM → one hangs.
-    const prevDone = renderJobDoneByUser.get(userId);
-    if (prevDone) {
-      console.log(`[Render] waiting for previous job to finish before starting ${jobId}`);
-      await prevDone;
-      console.log(`[Render] previous job finished — starting ${jobId}`);
-    }
-    const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality } = await req.json();
 
-    // Duration check for FREE plan
-    if (isFree(dbUser.plan) && videoDuration && videoDuration > FREE_LIMITS.durationSec) {
-      return NextResponse.json(
-        { error: `Free plan จำกัดวิดีโอสูงสุด ${FREE_LIMITS.durationSec / 60} นาที/คลิป` },
-        { status: 403 }
-      );
-    }
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
 
@@ -234,7 +201,52 @@ export async function POST(req: Request) {
     }
 
     const fps = [24, 30, 50, 60].includes(Number(requestedFps)) ? Number(requestedFps) : 30;
-    const safeDuration = Number.isFinite(videoDuration) && videoDuration > 0 ? videoDuration : 60;
+    const explicitDurationSec = Number(videoDuration);
+    const configDurationFrames = Number(shortVideoConfig?.durationInFrames ?? subtitleOverlayConfig?.durationInFrames);
+    const requestedDurationSec =
+      Number.isFinite(explicitDurationSec) && explicitDurationSec > 0
+        ? explicitDurationSec
+        : Number.isFinite(configDurationFrames) && configDurationFrames > 0
+          ? configDurationFrames / fps
+          : null;
+
+    const planLimits = limitsForPlan(dbUser.plan);
+    if (requestedDurationSec && requestedDurationSec > planLimits.durationSec) {
+      const planName = dbUser.plan === "BUSINESS" ? "Business" : dbUser.plan === "PRO" ? "Pro" : "Free";
+      return NextResponse.json(
+        { error: `${planName} plan จำกัดวิดีโอสูงสุด ${planLimits.durationSec / 60} นาที/คลิป` },
+        { status: 403 }
+      );
+    }
+
+    const jobId = `${userId}-${Date.now()}`;
+    // Register this as the latest job for this user before cancelling the old one, so its
+    // background catch can identify itself as superseded and refund the reserved usage.
+    latestJobPerUser.set(userId, jobId);
+
+    const prevCancel = activeRenderCancel.get(userId);
+    if (prevCancel) {
+      console.log(`[Render] cancelling previous job for user ${userId}`);
+      prevCancel();
+    }
+    // Wait for the previous job to fully exit before the new one starts renderMedia.
+    // Without this, both Chromium instances run concurrently → VPS OOM → one hangs.
+    const prevDone = renderJobDoneByUser.get(userId);
+    if (prevDone) {
+      console.log(`[Render] waiting for previous job to finish before starting ${jobId}`);
+      await prevDone;
+      console.log(`[Render] previous job finished — starting ${jobId}`);
+    }
+
+    const quota = await reserveClipUsage(userId);
+    if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
+    quotaReserved = true;
+    reservedUserId = userId;
+
+    const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+
+    const safeDuration = requestedDurationSec ?? 60;
     const durationInFrames = Math.max(Math.round(safeDuration * fps), fps);
     // Note: AvatarComposition uses calculateMetadata to auto-detect duration from video,
     // so durationInFrames below is only used as fallback for non-avatar mode.
@@ -690,14 +702,6 @@ export async function POST(req: Request) {
         setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
 
-        // Increment usageCount for FREE users
-        try {
-          const u = await prisma.user.findUnique({ where: { id: userId }, select: { plan: true } });
-          if (u && isFree(u.plan)) {
-            await prisma.user.update({ where: { id: userId }, data: { usageCount: { increment: 1 } } });
-          }
-        } catch {}
-
         createNotification({
             userId,
             type: "VIDEO_COMPLETED",
@@ -709,12 +713,14 @@ export async function POST(req: Request) {
         cancelByJobId.delete(jobId);
         decrementActiveRenderCount();
         resolveDone();
-        if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
 
         // Intentional cancel (page refresh / new render) — not a real failure.
         // Don't log as error, don't mark job errored, don't notify the user.
         const detail = error instanceof Error ? error.message : String(error);
         const wasCancelled = /got cancelled|Request closed|cancelSignal|aborted/i.test(detail);
+        await refundClipUsage(userId).catch(() => {});
+        if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
+
         if (wasCancelled) {
           console.log(`[Render] job=${jobId} cancelled — skipping error notification`);
           const existing = getRenderJob(jobId);
@@ -739,9 +745,11 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ jobId });
   } catch (error) {
+    if (quotaReserved && reservedUserId) {
+      await refundClipUsage(reservedUserId).catch(() => {});
+    }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่", detail }, { status: 500 });
   }
 }
-

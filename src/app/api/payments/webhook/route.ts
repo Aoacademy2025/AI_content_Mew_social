@@ -1,23 +1,23 @@
 import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
-import { PLANS, PlanKey } from "@/lib/stripe";
 import { createNotification } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
+import { usageWindowForPlan } from "@/lib/usage-limits";
 
 export const config = { api: { bodyParser: false } };
 
 /** Set/extend a user's plan access. planExpiresAt extends from the later of now or current expiry. */
 async function activatePlan(userId: string, plan: string, periodDays: number) {
-  const planConfig = PLANS[plan as PlanKey];
+  const now = new Date();
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { planExpiresAt: true } });
-  const base = user?.planExpiresAt && user.planExpiresAt > new Date() ? user.planExpiresAt : new Date();
+  const base = user?.planExpiresAt && user.planExpiresAt > now ? user.planExpiresAt : now;
   const newExpiry = new Date(base.getTime() + periodDays * 24 * 60 * 60 * 1000);
   await prisma.user.update({
     where: { id: userId },
-    data: { plan: plan as any, planExpiresAt: newExpiry, usageCount: 0, usageLimit: planConfig?.clips ?? 100, trialEndsAt: null },
+    data: { plan: plan as any, planExpiresAt: newExpiry, ...usageWindowForPlan(plan, now), trialEndsAt: null },
   });
   await extendVideoExpiryForPlan(userId, plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   return newExpiry;

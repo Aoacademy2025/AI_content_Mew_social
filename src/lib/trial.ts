@@ -1,16 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { limitsForPlan } from "@/lib/plan-limits";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { createNotification } from "@/lib/notifications";
+import { usageWindowForPlan } from "@/lib/usage-limits";
 
 export const TRIAL_DAYS_PUBLIC = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Clip allotment for a plan as a finite number (FREE=2, PRO=100, BUSINESS=300). */
-function clipsFor(plan: string): number {
-  const c = limitsForPlan(plan).clips;
-  return Number.isFinite(c) ? (c as number) : 100;
-}
 
 /**
  * Grant a PRO trial of `days` — only if the user has NEVER trialed and isn't an active
@@ -31,8 +25,7 @@ export async function grantTrial(userId: string, days: number): Promise<boolean>
       planExpiresAt: end,
       trialStartedAt: now,
       trialEndsAt: end,
-      usageCount: 0,
-      usageLimit: clipsFor("PRO"),
+      ...usageWindowForPlan("PRO", now),
     },
   });
   if (res.count !== 1) return false;
@@ -59,7 +52,7 @@ export async function revertExpiredTrials(): Promise<number> {
     const res = await prisma.user.updateMany({
       // re-guard mirrors the outer query (idempotent + closes the TOCTOU where a user pays mid-loop)
       where: { id: u.id, trialEndsAt: { not: null, lte: now }, OR: [{ subStatus: null }, { subStatus: { not: "active" } }] },
-      data: { plan: "FREE", planExpiresAt: null, trialEndsAt: null, usageCount: 0, usageLimit: clipsFor("FREE") },
+      data: { plan: "FREE", planExpiresAt: null, trialEndsAt: null, ...usageWindowForPlan("FREE", now) },
     });
     if (res.count !== 1) continue;
     reverted++;

@@ -19,6 +19,7 @@ model User {
   plan          Plan      @default(FREE)
   usageCount    Int       @default(0)
   usageLimit    Int       @default(2)
+  usagePeriodStartedAt DateTime?
   openaiKey          String?
   geminiKey          String?
   heygenKey          String?

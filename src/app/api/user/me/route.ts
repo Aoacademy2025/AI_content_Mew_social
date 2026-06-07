@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { limitsForPlan } from "@/lib/plan-limits";
+import { syncUsageWindow } from "@/lib/usage-limits";
 
 export async function GET() {
   try {
@@ -21,6 +22,7 @@ export async function GET() {
         plan: true,
         usageCount: true,
         usageLimit: true,
+        usagePeriodStartedAt: true,
         avatar: true,
         cancelAtPeriodEnd: true,
         cancelAt: true,
@@ -34,7 +36,14 @@ export async function GET() {
     }
 
     const limits = limitsForPlan((user as any).plan ?? "FREE");
-    return NextResponse.json({ ...user, usageLimit: limits.clips });
+    const usage = await syncUsageWindow(authUser.id);
+    return NextResponse.json({
+      ...user,
+      usageCount: usage?.usageCount ?? user.usageCount,
+      usageLimit: usage?.usageLimit ?? limits.clips,
+      usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
+      usageResetAt: usage?.resetAt ?? null,
+    });
   } catch (error) {
     return apiError({ route: "user/me", error });
   }
