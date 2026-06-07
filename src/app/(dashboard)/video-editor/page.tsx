@@ -2147,8 +2147,19 @@ export default function VideoEditorPage() {
     ? currentMs * (captionEndMs / durationMs)
     : currentMs;
 
-  // activeSub: only show when video is ready AND a caption is active at current time
-  const hasVideo = !!(videoUrl || preRenderUrl);
+  const burnedPreviewUrl = pipe.current.burnedVideoUrl || "";
+  const burnedPreviewIsClean = Boolean(burnedPreviewUrl && !styleIsDirty);
+  const editablePreviewUrl = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl || preRenderUrl || "";
+  const previewVideoUrl = burnedPreviewIsClean
+    ? burnedPreviewUrl
+    : editablePreviewUrl || videoUrl || preRenderUrl;
+  const previewUsesBurnedOutput = Boolean(burnedPreviewUrl && previewVideoUrl === burnedPreviewUrl);
+
+  // activeSub: only show when video is ready AND a caption is active at current time.
+  // Burned MP4s already contain subtitles. When the style becomes dirty we switch
+  // back to the no-sub/composite base so the draggable live overlay does not stack
+  // on top of old burned subtitles.
+  const hasVideo = !!previewVideoUrl;
   const activeSub = hasVideo && captions.length > 0 && activeCaptionIdx >= 0
     ? captions[activeCaptionIdx]
     : null;
@@ -2982,10 +2993,10 @@ export default function VideoEditorPage() {
               {/* Video layer */}
               <div className="absolute inset-0 rounded-2xl overflow-hidden shadow-[0_0_0_1px_#2a2a36,0_24px_64px_rgba(0,0,0,0.8)]"
                 style={{ background: "linear-gradient(160deg,#0f0f1a 0%,#1a0f2e 40%,#0f1a2e 100%)" }}>
-                {(videoUrl || preRenderUrl) ? (
+                {previewVideoUrl ? (
                   <video
                     ref={videoRef}
-                    src={videoUrl || preRenderUrl}
+                    src={previewVideoUrl}
                     className="w-full h-full object-cover"
                     loop playsInline
                     onClick={playToggle}
@@ -3013,7 +3024,7 @@ export default function VideoEditorPage() {
               </div>
 
               {/* Subtitle overlay — draggable, clickable */}
-              {(() => {
+              {!previewUsesBurnedOutput && (() => {
                 // Show active caption when playing, or first caption when paused/before play
                 const cap = activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null);
                 if (!cap) return null;
