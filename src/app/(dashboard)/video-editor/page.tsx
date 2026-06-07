@@ -32,6 +32,20 @@ import { ApiCallError } from "./_components/ApiCallError";
 import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
+import { trackEvent } from "@/lib/client-telemetry";
+
+const STEP_EVENT_LABELS: Record<string, string> = {
+  keywords: "หา keyword",
+  fetchStock: "หา B-roll",
+  tts: "สร้างเสียง",
+  transcribe: "ถอดเสียงเป็นซับ",
+  config: "จัดลำดับคลิป",
+  render: "เรนเดอร์",
+  avatar: "สร้าง Avatar",
+  avatarTail: "Avatar ปิดท้าย",
+  composite: "วาง Avatar บนวิดีโอ",
+  burnSubtitles: "ฝังซับลงวิดีโอ",
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
@@ -53,6 +67,7 @@ export default function VideoEditorPage() {
   // ── Pipeline state (copied from video-creator) ─────────────────────────
   const [steps, setSteps] = useState<StepState>({ ...DEFAULT_STEPS });
   const stepsRef = useRef<StepState>({ ...DEFAULT_STEPS });
+  const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
   const abortRef = useRef(false);
@@ -635,6 +650,41 @@ export default function VideoEditorPage() {
   // ── Pipeline helpers (copied from video-creator) ───────────────────────
 
   function setStep(key: keyof StepState, status: StepStatus, log?: string) {
+    const previous = stepsRef.current[key];
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const label = STEP_EVENT_LABELS[String(key)] ?? String(key);
+
+    if (status === "running" && previous !== "running") {
+      stepStartedAtRef.current[key] = now;
+      trackEvent("pipeline_step_started", {
+        category: "pipeline",
+        path: "/video-editor",
+        step: String(key),
+        status: "running",
+        properties: { label },
+      });
+    }
+
+    if ((status === "done" || status === "error" || status === "skip") && previous !== status) {
+      const startedAt = stepStartedAtRef.current[key];
+      const durationMs = typeof startedAt === "number" ? now - startedAt : undefined;
+      trackEvent(
+        status === "done" ? "pipeline_step_done" : status === "error" ? "pipeline_step_error" : "pipeline_step_skipped",
+        {
+          category: status === "error" ? "error" : "pipeline",
+          path: "/video-editor",
+          step: String(key),
+          status,
+          durationMs,
+          properties: {
+            label,
+            message: log ? log.slice(0, 180) : undefined,
+          },
+        },
+      );
+      if (status !== "error") delete stepStartedAtRef.current[key];
+    }
+
     setSteps(s => { const next = { ...s, [key]: status }; stepsRef.current = next; return next; });
     if (log) setLogs(l => ({ ...l, [key]: log }));
   }
@@ -1668,6 +1718,18 @@ export default function VideoEditorPage() {
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     setSteps({ ...DEFAULT_STEPS }); stepsRef.current = { ...DEFAULT_STEPS };
+    stepStartedAtRef.current = {};
+    trackEvent("editor_script_ready", {
+      category: "product",
+      path: "/video-editor",
+      status: "started",
+      properties: {
+        scriptChars: script.trim().length,
+        ttsProvider,
+        stockSource,
+        useAvatar,
+      },
+    });
 
     const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
 
@@ -1728,6 +1790,18 @@ export default function VideoEditorPage() {
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
+    trackEvent("editor_script_ready", {
+      category: "product",
+      path: "/video-editor",
+      status: "started",
+      properties: {
+        scriptChars: script.trim().length,
+        resumedFrom: String(startStep),
+        ttsProvider,
+        stockSource,
+        useAvatar,
+      },
+    });
     try {
       // ── Always ensure we have voice + caps first (so keywords gets accurate duration) ──
       const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();

@@ -9,6 +9,7 @@ import fs from "fs";
 import { execSync, spawn } from "child_process";
 import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -158,6 +159,7 @@ function saveBundleCache() {
 }
 
 export async function POST(req: Request) {
+  const requestStartedAt = Date.now();
   loadBundleCache();
   let quotaReserved = false;
   let reservedUserId: string | null = null;
@@ -543,6 +545,7 @@ export async function POST(req: Request) {
 
     (async () => {
       let lastProgress = -1;
+      let renderStartedAt = Date.now();
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
         // Bundle (may be cached) — runs in background after jobId is returned
@@ -649,6 +652,25 @@ export async function POST(req: Request) {
           ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
         ];
         console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
+        renderStartedAt = Date.now();
+        await recordTelemetryEvent(userId, {
+          name: "render_server_started",
+          category: "performance",
+          source: "server",
+          step: "render",
+          status: "started",
+          properties: {
+            jobId,
+            compositionId,
+            activeJobs: jobsNow,
+            cpuCount,
+            renderConcurrency,
+            freeMemGb: Number(freeMemGb.toFixed(2)),
+            lowResource: isLowResourceHost,
+            fps,
+            jpegQuality,
+          },
+        }).catch(() => {});
 
         const { cancel, cancelSignal } = makeCancelSignal();
         activeRenderCancel.set(userId, cancel);
@@ -701,6 +723,22 @@ export async function POST(req: Request) {
         const videoUrl = `/api/renders/${filename}`;
         setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
+        await recordTelemetryEvent(userId, {
+          name: "render_server_done",
+          category: "performance",
+          source: "server",
+          step: "render",
+          status: "done",
+          durationMs: Date.now() - renderStartedAt,
+          properties: {
+            jobId,
+            compositionId,
+            activeJobs: jobsNow,
+            renderConcurrency,
+            freeMemGb: Number(freeMemGb.toFixed(2)),
+            outputMb: fs.existsSync(outputLocation) ? Number((fs.statSync(outputLocation).size / (1024 * 1024)).toFixed(1)) : null,
+          },
+        }).catch(() => {});
 
         createNotification({
             userId,
@@ -727,12 +765,33 @@ export async function POST(req: Request) {
           if (existing && existing.status === "running") {
             setRenderJob(jobId, { status: "error", error: "cancelled", startedAt: existing.startedAt });
           }
+          await recordTelemetryEvent(userId, {
+            name: "render_server_cancelled",
+            category: "pipeline",
+            source: "server",
+            step: "render",
+            status: "cancelled",
+            durationMs: Date.now() - renderStartedAt,
+            properties: { jobId },
+          }).catch(() => {});
           return;
         }
 
         console.error("Render error:", error);
         setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });
         try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
+        await recordTelemetryEvent(userId, {
+          name: "render_server_error",
+          category: "error",
+          source: "server",
+          step: "render",
+          status: "error",
+          durationMs: Date.now() - renderStartedAt,
+          properties: {
+            jobId,
+            message: detail.slice(0, 220),
+          },
+        }).catch(() => {});
 
         createNotification({
             userId,
@@ -750,6 +809,17 @@ export async function POST(req: Request) {
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
+    if (reservedUserId) {
+      await recordTelemetryEvent(reservedUserId, {
+        name: "render_server_setup_error",
+        category: "error",
+        source: "server",
+        step: "render",
+        status: "error",
+        durationMs: Date.now() - requestStartedAt,
+        properties: { message: detail.slice(0, 220) },
+      }).catch(() => {});
+    }
     return NextResponse.json({ error: "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่", detail }, { status: 500 });
   }
 }

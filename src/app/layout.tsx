@@ -5,6 +5,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import { RouteProgress } from "@/components/layout/route-progress";
+import { TelemetryProvider } from "@/components/telemetry/telemetry-provider";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -36,6 +37,7 @@ export default function RootLayout({
       </head>
       <body className={inter.className}>
         <Providers>
+          <TelemetryProvider />
           <RouteProgress />
           {children}
           <Toaster

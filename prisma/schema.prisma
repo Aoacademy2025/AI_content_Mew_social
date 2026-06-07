@@ -56,6 +56,7 @@ model User {
   supportTickets     SupportTicket[]
   couponRedemptions  CouponRedemption[]
   payments           Payment[]
+  telemetryEvents    TelemetryEvent[]
 }
 
 model Style {
@@ -231,6 +232,30 @@ model Payment {
   periodDays        Int           @default(30)
   createdAt         DateTime      @default(now())
   paidAt            DateTime?
+}
+
+model TelemetryEvent {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId   String?
+  name        String
+  category    String   @default("product") // product | pipeline | performance | error
+  source      String   @default("client")  // client | server
+  path        String?
+  step        String?
+  status      String?
+  durationMs  Int?
+  value       Float?
+  properties  String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([name, createdAt])
+  @@index([category, createdAt])
+  @@index([step, createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
 }
 
 enum PaymentStatus {
