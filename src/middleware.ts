@@ -14,6 +14,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/stocks(.*)",
   "/api/renders(.*)",
   "/api/music(.*)",
+  "/api/telemetry(.*)",
   "/api/cron(.*)",  // protected by CRON_SECRET inside each route
 ]);
 
