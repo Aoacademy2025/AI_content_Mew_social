@@ -1337,6 +1337,14 @@ export default function VideoEditorPage() {
         subtitleAccentColor: subAccentColor,
         fontFamily: subFontFamily,
         keywordPopups: [],
+        // Always sync BGM from current UI state, not the cached config. The
+        // config object is built once by runConfig; if the user toggles/sets
+        // background music afterward and hits Render (which reuses
+        // pipe.current.config), the cached config wouldn't carry bgmFile and the
+        // render would come out silent. Patch it here so BGM always applies.
+        ...(bgmEnabled && bgmFile
+          ? { bgmFile, bgmVolume }
+          : { bgmFile: undefined }),
       } : config;
 
       const res = await fetch("/api/videos/render", {
@@ -1951,6 +1959,11 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
+        // Mix BGM in at the burn step. For the avatar path, baseVideo is the
+        // avatar+voice composite, which never carried background music (BGM only
+        // existed in the ShortVideoComposition render path). Passing it here lets
+        // the burn pass add the music track so the final video isn't silent.
+        ...(bgmEnabled && bgmFile ? { bgmFile, bgmVolume } : {}),
       };
 
       const res = await fetch("/api/videos/render", {

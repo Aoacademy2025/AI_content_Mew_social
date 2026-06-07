@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 
@@ -20,6 +20,8 @@ export function SubtitleOverlayComposition({
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
   subtitleAccentColor = "#FFE500",
+  bgmFile,
+  bgmVolume = 0.12,
 }: SubtitleOverlayConfig) {
   const { width, height } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
@@ -31,11 +33,16 @@ export function SubtitleOverlayComposition({
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
       <link rel="stylesheet" href={FONTS_CSS} />
 
-      {/* Background video — plays WITH original audio (TTS + BGM already mixed in) */}
+      {/* Background video — plays WITH its original audio (TTS / voice). */}
       <OffthreadVideo
         src={videoUrl}
         style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: "cover" }}
       />
+
+      {/* Background music — mixed in here so the avatar path (whose composite has
+          voice only) still gets BGM in the final burned video. Looped to cover
+          the whole duration. */}
+      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
       {keywordPopups.map((p) => {

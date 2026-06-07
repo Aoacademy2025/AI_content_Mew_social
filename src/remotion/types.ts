@@ -100,6 +100,8 @@ export interface SubtitleOverlayConfig {
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
   subtitleAccentColor?: string;
+  bgmFile?: string;
+  bgmVolume?: number;
 }
 
 export interface ShortVideoConfig {

@@ -519,13 +519,20 @@ export async function POST(req: Request) {
       );
     }
 
-    // For SubtitleOverlay: resolve videoUrl → absolute URL
+    // For SubtitleOverlay: resolve videoUrl → absolute URL, and bgmFile (if any)
+    // to a real on-disk asset so Remotion's <Audio> can load it (the avatar path
+    // mixes BGM in at this burn step).
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
       const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
-      resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl };
+      const resolvedBgm = subtitleOverlayConfig.bgmFile
+        ? toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile))
+        : undefined;
+      resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl, bgmFile: resolvedBgm };
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
+      if (resolvedBgm) assertExistingAsset(resolvedBgm, "bgm");
+      console.log(`[render] subtitle-overlay bgmFile: ${resolvedBgm ?? "(none)"}`);
       // Warmup /api/stocks route so Remotion doesn't timeout on first compile
       if (resolvedUrl?.includes("/api/stocks/")) {
         try { await fetch(resolvedUrl, { method: "HEAD" }); } catch {}

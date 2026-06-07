@@ -32,56 +32,11 @@ export function renderSubtitle(
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
 
-  // ── Entrance animation (pop / bounce / fade / quick / slide / flip) ──────────
-  // These run at the START of each caption and were previously declared in the
-  // type but never implemented, so captions just appeared statically. Driven by
-  // `frame` (0 at caption start), they make subs "pop in" like kliprapp/CapCut.
-  // Preview passes a live frame so it matches the burned MP4 exactly.
-  // A negative frame is the "resting / fully-visible" sentinel used by static
-  // preview cards (style/font pickers) that drive motion via CSS instead — it
-  // skips the entrance transform so the text never renders at opacity 0. Live
-  // callers (overlay + Remotion render) pass frame >= 0 to play the entrance.
-  const entranceStyle: React.CSSProperties = (() => {
-    if (frame < 0) return {};
-    // ease-out cubic for snappy, professional motion
-    const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-    // back-ease (overshoot) for bounce
-    const easeBack = (t: number) => {
-      const c1 = 1.70158, c3 = c1 + 1;
-      return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
-    };
-    const durFrames = (n: number) => Math.max(1, n);
-    switch (textEffect) {
-      case "pop": {        // scale 0.6→1 over ~7 frames
-        const t = Math.min(1, frame / durFrames(7));
-        const s = 0.6 + 0.4 * easeOut(t);
-        return { transform: `scale(${s})`, opacity: Math.min(1, t * 1.5), transformOrigin: "center" };
-      }
-      case "bounce": {     // overshoot spring over ~10 frames
-        const t = Math.min(1, frame / durFrames(10));
-        const s = 0.5 + 0.5 * easeBack(t);
-        return { transform: `scale(${s})`, opacity: Math.min(1, t * 2), transformOrigin: "center" };
-      }
-      case "quick": {      // ultra-fast snap ~3 frames
-        const t = Math.min(1, frame / durFrames(3));
-        return { transform: `scale(${0.85 + 0.15 * t})`, opacity: t, transformOrigin: "center" };
-      }
-      case "fade": {       // fade only, no scale ~8 frames
-        const t = Math.min(1, frame / durFrames(8));
-        return { opacity: easeOut(t) };
-      }
-      case "slide": {      // slide up from below ~9 frames
-        const t = Math.min(1, frame / durFrames(9));
-        return { transform: `translateY(${(1 - easeOut(t)) * 40}px)`, opacity: Math.min(1, t * 1.5) };
-      }
-      case "flip": {       // perspective Y flip-in ~10 frames
-        const t = Math.min(1, frame / durFrames(10));
-        return { transform: `perspective(400px) rotateX(${(1 - easeOut(t)) * 90}deg)`, opacity: Math.min(1, t * 2), transformOrigin: "center" };
-      }
-      default:
-        return {}; // glow-pulse / highlight / karaoke / typewriter handle their own motion
-    }
-  })();
+  // NOTE: renderSubtitle renders the TEXT + per-character/word effects only
+  // (glow-pulse / highlight / karaoke / typewriter). The container ENTRANCE
+  // animation (pop/bounce/slide/flip scale+translate) is owned by the caller —
+  // AnimatedSubtitle for render, and a matching wrapper in the editor preview —
+  // so do NOT add entrance transforms here, or render would double-animate.
 
   const base: React.CSSProperties = {
     fontFamily,
@@ -96,7 +51,6 @@ export function renderSubtitle(
     wordBreak: "break-all",
     overflowWrap: "anywhere",
     color,
-    ...entranceStyle,
   };
 
   // Caption Styles that fully own their own rendering (ignore Text Effect)
@@ -121,22 +75,31 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
-      const progress = captionDurFrames > 0 ? Math.min(frame / (captionDurFrames * 0.6), 1) : 1;
-      const stroke = "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000";
+      const tokens = text.split(/\s+/).filter(w => w.length > 0);
+      const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
+      const cumulative: number[] = [];
+      let cum = 0;
+      for (const w of tokens) { cum += w.length / totalChars; cumulative.push(cum); }
+      const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
+      const activeIdx = cumulative.findIndex(c => progress < c);
+      const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
+      const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       return (
-        <div style={{ position: "relative", display: "inline-block" }}>
-          <div style={{
-            position: "absolute",
-            top: "10%", bottom: "10%",
-            left: 0,
-            width: `${progress * 100}%`,
-            background: accentColor,
-            opacity: 0.35,
-            borderRadius: 4,
-            zIndex: 0,
-          }} />
-          <span style={{ ...base, position: "relative", zIndex: 1, textShadow: stroke }}>{text}</span>
-        </div>
+        <span style={{ ...base, display: "inline", textShadow: stroke }}>
+          {tokens.map((word, i) => (
+            <React.Fragment key={i}>
+              <span style={{
+                background: i === active ? accentColor : "transparent",
+                color: i === active ? "#000" : color,
+                borderRadius: 4,
+                padding: i === active ? "0 0.15em" : undefined,
+                boxDecorationBreak: "clone",
+                WebkitBoxDecorationBreak: "clone",
+              } as React.CSSProperties}>{word}</span>
+              {i < tokens.length - 1 ? " " : null}
+            </React.Fragment>
+          ))}
+        </span>
       );
     }
 

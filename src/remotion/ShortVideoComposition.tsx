@@ -166,22 +166,31 @@ function __removed_legacy_renderSubtitle(
     }
 
     if (textEffect === "highlight") {
-      const progress = captionDurFrames > 0 ? Math.min(frame / (captionDurFrames * 0.6), 1) : 1;
-      const stroke = "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000";
+      const tokens = text.split(/\s+/).filter(w => w.length > 0);
+      const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
+      const cumulative: number[] = [];
+      let cum = 0;
+      for (const w of tokens) { cum += w.length / totalChars; cumulative.push(cum); }
+      const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
+      const activeIdx = cumulative.findIndex(c => progress < c);
+      const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
+      const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       return (
-        <div style={{ position: "relative", display: "inline-block" }}>
-          <div style={{
-            position: "absolute",
-            top: "10%", bottom: "10%",
-            left: 0,
-            width: `${progress * 100}%`,
-            background: accentColor,
-            opacity: 0.35,
-            borderRadius: 4,
-            zIndex: 0,
-          }} />
-          <span style={{ ...base, position: "relative", zIndex: 1, textShadow: stroke }}>{text}</span>
-        </div>
+        <span style={{ ...base, display: "inline", textShadow: stroke }}>
+          {tokens.map((word, i) => (
+            <React.Fragment key={i}>
+              <span style={{
+                background: i === active ? accentColor : "transparent",
+                color: i === active ? "#000" : color,
+                borderRadius: 4,
+                padding: i === active ? "0 0.15em" : undefined,
+                boxDecorationBreak: "clone",
+                WebkitBoxDecorationBreak: "clone",
+              } as React.CSSProperties}>{word}</span>
+              {i < tokens.length - 1 ? " " : null}
+            </React.Fragment>
+          ))}
+        </span>
       );
     }
 
