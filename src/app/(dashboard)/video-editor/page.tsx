@@ -3312,6 +3312,7 @@ export default function VideoEditorPage() {
               avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
               avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
               avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
+              onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
               avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
               avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
               setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}

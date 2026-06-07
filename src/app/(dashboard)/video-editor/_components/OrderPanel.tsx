@@ -21,6 +21,7 @@ export interface OrderPanelProps {
   avatarBookendSecs: number; avatarTailSecs: number;
   avatarScale: number; avatarOffsetX: number; avatarOffsetY: number;
   avatarPreviewUrl: string; avatarName: string;
+  onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
@@ -218,8 +219,23 @@ export function OrderPanel(p: OrderPanelProps) {
                   <>
                     <div className="space-y-1.5">
                       <div className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">Heygen Avatar ID</div>
-                      <input value={p.avatarId} onChange={e => p.setAvatarId(e.target.value)} placeholder="ID: josh_lite_2023..."
-                        className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] font-mono text-slate-300 outline-none" />
+                      <div className="flex gap-1.5">
+                        <input value={p.avatarId} onChange={e => p.setAvatarId(e.target.value)} placeholder="ID: josh_lite_2023..."
+                          className="flex-1 min-w-0 bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] font-mono text-slate-300 outline-none" />
+                        <button
+                          onClick={() => p.onReloadAvatar?.()}
+                          disabled={p.avatarId.trim().length < 10 || p.avatarStatus === "loading"}
+                          title="เช็คว่า Avatar ID นี้ใช้ได้ไหม"
+                          className="px-3 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors bg-violet-600 text-white hover:bg-violet-500 disabled:bg-[#2a2a36] disabled:text-slate-600 disabled:cursor-not-allowed">
+                          {p.avatarStatus === "loading" ? "..." : "เช็ค ID"}
+                        </button>
+                      </div>
+                      {p.avatarStatus === "error" && p.avatarId.trim().length >= 10 && (
+                        <div className="flex items-center gap-2 rounded-lg px-2.5 py-2 bg-red-500/10 border border-red-500/30">
+                          <span className="text-red-400 text-sm">✕</span>
+                          <p className="text-[11px] font-semibold text-red-300">Avatar ID ใช้ไม่ได้ / ไม่พบในบัญชี</p>
+                        </div>
+                      )}
                       {(p.avatarPreviewUrl || p.avatarName) && (
                         <div className="flex items-center gap-2 rounded-lg px-2.5 py-2 bg-[#1a1a22] border border-[#2a2a36]">
                           {p.avatarPreviewUrl && <img src={p.avatarPreviewUrl} className="h-8 w-8 rounded-md object-cover shrink-0" />}
