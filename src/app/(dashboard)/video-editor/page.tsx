@@ -1779,7 +1779,7 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
 
-      await runBurnSubtitles();
+      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
       if (!abortRef.current) toast.success("เสร็จแล้ว! วิดีโอพร้อม Download");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
@@ -1858,7 +1858,7 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
 
-      await runBurnSubtitles();
+      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
       if (!abortRef.current) toast.success("เสร็จแล้ว! วิดีโอพร้อม Download");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
@@ -1879,7 +1879,7 @@ export default function VideoEditorPage() {
     try {
       await runRender(pipe.current.config);
       if (abortRef.current) return;
-      await runBurnSubtitles();
+      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
       if (!abortRef.current) toast.success("Render + Burn Subtitles เสร็จแล้ว!");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
@@ -1892,14 +1892,13 @@ export default function VideoEditorPage() {
   // Burn subtitles onto an already-rendered video using SubtitleOverlayComposition.
   // Priority: compositeUrl (render + avatar) > renderedVideoNoSubUrl (render only).
   // Using compositeUrl ensures the avatar is preserved in the final burned video.
-  async function runBurnSubtitles() {
+  async function burnSubtitlesCore({
+    toastOnSuccess = true,
+    toastOnError = true,
+  }: { toastOnSuccess?: boolean; toastOnError?: boolean } = {}) {
     const baseVideo = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
-    if (!baseVideo) { toast.error("ต้อง Render วิดีโอก่อน แล้วค่อย Burn Subtitles"); return; }
-    if (!captions.length) { toast.error("ไม่มีซับให้ Burn — กรุณา Transcribe ก่อน"); return; }
-    if (runningRef.current) return;
-    runningRef.current = true; setRunning(true);
-    abortRef.current = false;
-    abortControllerRef.current = new AbortController();
+    if (!baseVideo) throw new Error("ต้อง Render วิดีโอก่อน แล้วค่อย Burn Subtitles");
+    if (!captionsRef.current.length) throw new Error("ไม่มีซับให้ Burn — กรุณา Transcribe ก่อน");
     setStep("burnSubtitles", "running", "Burning subtitles...");
     setRenderProgressError(null);
     renderProgressRef.current = 0;
@@ -1950,6 +1949,13 @@ export default function VideoEditorPage() {
       const lastCapMs = currentCaps.length > 0 ? Math.max(...currentCaps.map(c => c.endMs)) : 0;
       const durMs = Math.max(audioDurMs, lastCapMs, 1000);
       const durationInFrames = Math.max(Math.round(durMs / 1000 * fps), fps);
+      const shouldMixBgmInBurn = Boolean(
+        bgmEnabled &&
+        bgmFile &&
+        avatarInputMode === "direct" &&
+        pipe.current.compositeUrl &&
+        baseVideo === pipe.current.compositeUrl,
+      );
 
       const subtitleOverlayConfig = {
         videoUrl: baseVideo,
@@ -1959,11 +1965,9 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
-        // Mix BGM in at the burn step. For the avatar path, baseVideo is the
-        // avatar+voice composite, which never carried background music (BGM only
-        // existed in the ShortVideoComposition render path). Passing it here lets
-        // the burn pass add the music track so the final video isn't silent.
-        ...(bgmEnabled && bgmFile ? { bgmFile, bgmVolume } : {}),
+        // Only direct-avatar composite takes audio from the avatar input and drops
+        // the BGM from the background render. Other burn paths already carry BGM.
+        ...(shouldMixBgmInBurn ? { bgmFile, bgmVolume } : {}),
       };
 
       const res = await fetch("/api/videos/render", {
@@ -1990,7 +1994,7 @@ export default function VideoEditorPage() {
           videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
           status: "COMPLETED",
         });
-        toast.success("Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download");
+        if (toastOnSuccess) toast.success("Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download");
       };
 
       if (data.videoUrl) {
@@ -2044,12 +2048,26 @@ export default function VideoEditorPage() {
 
       finalizeBurn(url);
     } catch (err) {
-      if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       setStep("burnSubtitles", "error", msg);
-      toast.error(msg);
+      if (toastOnError) toast.error(msg);
+      throw err;
     } finally {
       stopPoll();
+    }
+  }
+
+  async function runBurnSubtitles() {
+    if (runningRef.current) return;
+    runningRef.current = true; setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    try {
+      await burnSubtitlesCore();
+    } catch (err) {
+      if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+    } finally {
       runningRef.current = false; setRunning(false);
     }
   }
