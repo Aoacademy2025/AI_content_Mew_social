@@ -21,8 +21,8 @@
 ## Run / build / deploy
 - Dev: `npm run dev` · Build: `npm run build`
 - DB: `npm run db:migrate` · seed: `npm run db:seed`
-- Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (12GB heap, OOM-retry) + `pm2 restart ai-content`.
-- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`; `cleanup-videos` off). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env).
+- Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (OOM-retry) + `pm2 restart ai-content`. Current safe low-heap deploy env used on prod: `BUILD_HEAP_MB=4096 BUILD_WORKER_HEAP_MB=512 BUILD_HEAP_MB_LOW=3072 BUILD_WORKER_HEAP_MB_LOW=512 BUILD_NO_LINT=1`.
+- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env).
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
 ## Key directories
@@ -37,7 +37,8 @@
 ## Gotchas (important)
 - **`main` = production.** The VPS deploys from `main`. Never push broken code to main.
 - **Two devs, vertical ownership:** **Mew** owns the Payment/pricing vertical (Stripe, checkout, coupons, pricing pages + their schema). The other engineer (git author **`wao1234`**) owns the video/AI render backend. Coordinate before touching shared files: `prisma/schema.prisma`, `package.json`, `next.config.ts`.
-- **Render has NO global queue**, and PRO/BUSINESS clip caps are **not enforced** (only FREE is) — see `STATUS.md`.
+- **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
+- **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.
 - **BYOK:** paid features need the user's own API keys → onboarding must guide key setup.
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.
 

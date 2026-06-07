@@ -1,5 +1,5 @@
 # STATUS — สถานะจริงของโปรเจกต์
-> อัปเดต: 2026-06-07 · prod app deploy ล่าสุด = `a5f7077` · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-07.md](docs/HANDOFF-2026-06-07.md) ประกอบ
+> อัปเดต: 2026-06-08 · prod app deploy ล่าสุด = `e69f589` · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md) ประกอบ
 
 ## ภาพรวม
 **HERO AI** (studio.heroaiengine.com) — SaaS เปลี่ยนสคริปต์ 1 ชุด เป็นวิดีโอสั้นพร้อมโพสต์อัตโนมัติ (Faceless + AI Avatar + ซับไทย)
@@ -13,6 +13,7 @@
 - Auth (Clerk) · 3 แพ็ก FREE/PRO/BUSINESS · **Stripe subscription + one-time/PromptPay — LIVE (06-05)** (บัตร auto-renew · billing portal · webhook lifecycle)
 - **Video creator + video editor (timeline)** ด้วย Remotion
 - ฟีเจอร์หลัก: AI Avatar (เต็ม/เปิด-ปิด/ไม่มี) · ซับไทยอัตโนมัติ (ยาว/keyword) · B-roll 3-5วิ · โคลนเสียง · เพลง · ตัดต่ออัตโนมัติ
+- **Video editor preview/export flow fixed (LIVE 06-08, `e69f589`)** — Render หยุดที่ editable preview ที่มี voice/avatar+BGM + live subtitle overlay; Burn Subtitles ใช้เป็น final export เท่านั้น; Mew test ผ่าน 2 clips แล้ว
 - Coupon system · Admin · Notifications · Support tickets
 - First-party telemetry + Admin Insights (`/admin/insights`) — เก็บ page view, frontend error, Web Vitals, render pipeline/performance event เพื่อใช้วิเคราะห์ drop-off/error/resource จริง
 - Deploy: Hostinger VPS + PM2 + Nginx · render ด้วย Remotion/ffmpeg บนเครื่อง
@@ -39,6 +40,10 @@
 - **Clip cap enforce แล้ว** ผ่าน `reserveClipUsage`: FREE 2, PRO 100, BUSINESS 300 ต่อ 30 วัน; ยังไม่มี global render queue
 - **VPS ตัวเดียว ไม่มี GPU** = คอขวด render ตอน scale (GPU ไม่ช่วย Remotion → ใช้ CPU/Lambda)
 - **BYOK** = ผู้ใช้ต้องตั้ง key เอง → adoption friction → ต้องทำ onboarding ให้ดี
+
+## 🐞 Video editor bug status (06-08)
+- ✅ **Mew BGM/subtitle preview bug closed** — deployed `b6bf434` → `5e78754` → `f720314` → `014c6e2` → `e69f589`; final UX: Render preview first, edit subtitles live, Burn & Download only at the end
+- ⏳ **Customer backlog: `kapokja@gmail.com`** — paid annual PRO customer; not a payment issue. Tomorrow continue root fixes for avatar half-body, stale render jobs, and customer-specific recovery/backfill. Full audit notes in [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md)
 
 ## 🗺️ Roadmap (ย่อ)
 1. **Phase 1:** ราคา/subscription/PromptPay + หน้าราคาใหม่ + Quick Wins (CRO) — ✅ เสร็จ
