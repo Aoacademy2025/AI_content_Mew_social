@@ -1244,7 +1244,6 @@ export default function VideoEditorPage() {
       const payload = {
         videoUrl: opts.videoUrl,
         audioUrl: opts.audioUrl ?? pipe.current.voiceUrl ?? null,
-        avatarVideoUrl: opts.avatarVideoUrl ?? null,
         thumbnail: thumbnailUrl,
         script: script.trim() || null,
         avatarModel: avatarId || "none",
@@ -1253,6 +1252,9 @@ export default function VideoEditorPage() {
         renderConfig: pipe.current.config ?? null,
         status: opts.status ?? "COMPLETED",
       };
+      if (opts.avatarVideoUrl !== undefined) {
+        Object.assign(payload, { avatarVideoUrl: opts.avatarVideoUrl });
+      }
 
       if (existingVideoId) {
         // UPDATE existing record
@@ -1616,7 +1618,13 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
       await runComposite(pipe.current.renderedVideoUrl, avUrl, tailUrl);
-      toast.success("Avatar composite เสร็จแล้ว!");
+      if (captionsRef.current.length > 0) {
+        await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
+        if (abortRef.current) return;
+        toast.success("Avatar composite + Burn Subtitles เสร็จแล้ว!");
+      } else {
+        toast.success("Avatar composite เสร็จแล้ว!");
+      }
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -1979,8 +1987,10 @@ export default function VideoEditorPage() {
       if (!res.ok) throw new Error(data.error ?? "Burn subtitles failed");
 
       const finalizeBurn = (url: string) => {
-        // Store in dedicated field only — do not touch preview (videoUrl/preRenderUrl)
+        // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
+        // the editable base, but show/download/save the burned version.
         pipe.current.burnedVideoUrl = url;
+        setVideoUrl(url);
         lastRenderedStyleRef.current = {
           fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
           color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
@@ -1992,6 +2002,7 @@ export default function VideoEditorPage() {
         saveToGallery({
           videoUrl: url,
           videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+          avatarVideoUrl: pipe.current.compositeUrl ? avatarGreenUrl || undefined : undefined,
           status: "COMPLETED",
         });
         if (toastOnSuccess) toast.success("Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download");
