@@ -689,6 +689,23 @@ export default function VideoEditorPage() {
     if (log) setLogs(l => ({ ...l, [key]: log }));
   }
 
+  function clearDerivedPreviewOutputs({ clearComposite = false }: { clearComposite?: boolean } = {}) {
+    pipe.current.burnedVideoUrl = "";
+    if (clearComposite) pipe.current.compositeUrl = "";
+    setSteps(s => {
+      const next = { ...s, burnSubtitles: "idle" as StepStatus };
+      if (clearComposite) next.composite = "idle";
+      stepsRef.current = next;
+      return next;
+    });
+    setLogs(l => {
+      const next = { ...l };
+      delete next.burnSubtitles;
+      if (clearComposite) delete next.composite;
+      return next;
+    });
+  }
+
   function assertOk(prefix: string, res: Response, data: Record<string, unknown>) {
     if (!res.ok) throw new ApiCallError(prefix, data, res.status);
   }
@@ -1362,6 +1379,8 @@ export default function VideoEditorPage() {
       const immediateUrl = data.videoUrl as string | undefined;
       if (immediateUrl) {
         pipe.current.renderedVideoUrl = immediateUrl;
+        pipe.current.renderedVideoNoSubUrl = immediateUrl;
+        clearDerivedPreviewOutputs({ clearComposite: true });
         setPreRenderUrl(immediateUrl); setVideoUrl(immediateUrl);
         setStep("render", "done", immediateUrl); setRenderProgress(100); return immediateUrl;
       }
@@ -1415,9 +1434,10 @@ export default function VideoEditorPage() {
       // Render always produces a no-sub video — Burn Subtitles adds them separately
       pipe.current.renderedVideoUrl = url;
       pipe.current.renderedVideoNoSubUrl = url;
+      clearDerivedPreviewOutputs({ clearComposite: true });
       setPreRenderUrl(url); setVideoUrl(url);
-      // Auto-save to gallery (creates record on first render, updates on subsequent)
-      saveToGallery({ videoUrl: url, videoUrlNoSub: url, status: "COMPLETED" });
+      // Save the editable preview as PROCESSING; Burn Subtitles promotes it to final.
+      saveToGallery({ videoUrl: url, videoUrlNoSub: url, status: "PROCESSING" });
       // Snapshot style at render time so user can reset back to this
       lastRenderedStyleRef.current = {
         fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
@@ -1524,7 +1544,8 @@ export default function VideoEditorPage() {
             chromaColor: "0x00ff00",
             chromaSimilarity,
             chromaBlend,
-            audioFromAvatar: true,
+            // The rendered background already contains the direct-avatar voice plus BGM.
+            audioFromAvatar: false,
           })
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
@@ -1546,13 +1567,14 @@ export default function VideoEditorPage() {
     assertOk("Composite", compRes, compData);
     const finalUrl = compData.videoUrl as string;
     pipe.current.compositeUrl = finalUrl;
+    clearDerivedPreviewOutputs();
     setVideoUrl(finalUrl);
     setStep("composite", "done", finalUrl);
-    // Update Gallery — composite is the final video for avatar mode
+    // Composite is still an editable preview; Burn Subtitles exports the final video.
     saveToGallery({
       videoUrl: finalUrl,
       avatarVideoUrl: avatarUrl,
-      status: "COMPLETED",
+      status: "PROCESSING",
     });
     return finalUrl;
   }
@@ -1618,13 +1640,10 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
       await runComposite(pipe.current.renderedVideoUrl, avUrl, tailUrl);
-      if (captionsRef.current.length > 0) {
-        await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
-        if (abortRef.current) return;
-        toast.success("Avatar composite + Burn Subtitles เสร็จแล้ว!");
-      } else {
-        toast.success("Avatar composite เสร็จแล้ว!");
-      }
+      if (abortRef.current) return;
+      toast.success(captionsRef.current.length > 0
+        ? "Avatar preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ"
+        : "Avatar preview พร้อมแล้ว");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -1787,8 +1806,7 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
 
-      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
-      if (!abortRef.current) toast.success("เสร็จแล้ว! วิดีโอพร้อม Download");
+      if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -1866,8 +1884,7 @@ export default function VideoEditorPage() {
         if (abortRef.current) return;
       }
 
-      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
-      if (!abortRef.current) toast.success("เสร็จแล้ว! วิดีโอพร้อม Download");
+      if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -1887,8 +1904,7 @@ export default function VideoEditorPage() {
     try {
       await runRender(pipe.current.config);
       if (abortRef.current) return;
-      await burnSubtitlesCore({ toastOnSuccess: false, toastOnError: false });
-      if (!abortRef.current) toast.success("Render + Burn Subtitles เสร็จแล้ว!");
+      if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (!handlePlanError(err)) showErrorToast(err);
@@ -1957,14 +1973,6 @@ export default function VideoEditorPage() {
       const lastCapMs = currentCaps.length > 0 ? Math.max(...currentCaps.map(c => c.endMs)) : 0;
       const durMs = Math.max(audioDurMs, lastCapMs, 1000);
       const durationInFrames = Math.max(Math.round(durMs / 1000 * fps), fps);
-      const shouldMixBgmInBurn = Boolean(
-        bgmEnabled &&
-        bgmFile &&
-        avatarInputMode === "direct" &&
-        pipe.current.compositeUrl &&
-        baseVideo === pipe.current.compositeUrl,
-      );
-
       const subtitleOverlayConfig = {
         videoUrl: baseVideo,
         keywordPopups,
@@ -1973,9 +1981,6 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
-        // Only direct-avatar composite takes audio from the avatar input and drops
-        // the BGM from the background render. Other burn paths already carry BGM.
-        ...(shouldMixBgmInBurn ? { bgmFile, bgmVolume } : {}),
       };
 
       const res = await fetch("/api/videos/render", {
