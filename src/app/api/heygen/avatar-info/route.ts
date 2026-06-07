@@ -23,10 +23,16 @@ export async function GET(req: Request) {
   try {
     res = await fetch("https://api.heygen.com/v2/avatars", {
       headers: { "X-Api-Key": heygenKey },
-      signal: AbortSignal.timeout(15000), // HeyGen avatar list can be slow; cap at 15s
+      signal: AbortSignal.timeout(20000), // HeyGen's full avatar list can be slow
     });
   } catch {
-    return NextResponse.json({ error: "HeyGen ตอบช้า/ไม่ตอบ — ลองใหม่อีกครั้ง" }, { status: 504 });
+    // Timeout / network blip listing ALL avatars doesn't mean the ID is bad — the
+    // list call is just slow. Return unverified (not an error) so the UI shows the
+    // soft "can't confirm, but you can still render" state instead of a red block.
+    return NextResponse.json({
+      previewImageUrl: "", name: "", unverified: true,
+      note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
+    });
   }
   if (res.status === 401 || res.status === 403) {
     return NextResponse.json({ error: "HeyGen key ไม่ถูกต้อง/หมดสิทธิ์", missingKey: "heygen" }, { status: res.status });
