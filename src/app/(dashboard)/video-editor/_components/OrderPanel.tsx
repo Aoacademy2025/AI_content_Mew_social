@@ -299,7 +299,10 @@ export function OrderPanel(p: OrderPanelProps) {
                           </div>
                           {p.avatarPreviewUrl && (
                             <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*64}%`, aspectRatio:"15/16", left:`${51.5+(p.avatarOffsetX/200)*50}%`, bottom:`${(0.09-(p.avatarOffsetY/200))*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
-                              <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center 130%" }} />
+                              {/* objectPosition top-anchored so the head shows. The old
+                                  "center 130%" pushed the image so far down only the
+                                  chest/neck was visible (avatar looked headless). */}
+                              <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center 12%" }} />
                             </div>
                           )}
                           {p.avatarGreenUrl && (
