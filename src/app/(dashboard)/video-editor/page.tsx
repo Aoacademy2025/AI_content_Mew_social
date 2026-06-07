@@ -367,8 +367,18 @@ export default function VideoEditorPage() {
       const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}`);
       if (!r.ok) {
         const d = await r.json().catch(() => null);
-        setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("error");
-        toast.error(d?.error ? `Avatar ID ใช้ไม่ได้: ${d.error}` : "Avatar ID นี้ใช้ไม่ได้ / ไม่พบในบัญชี HeyGen");
+        setAvatarPreviewUrl(""); setAvatarName("");
+        // Only a real auth failure (401/403) is a key problem — and the key already
+        // comes from Settings, so just point the user there. Everything else
+        // (HeyGen slow/down, network) is NOT a key issue: don't nag to re-enter it,
+        // just mark unverified so they can still render.
+        if (r.status === 401 || r.status === 403) {
+          setAvatarStatus("error");
+          toast.error("HeyGen key ใน Settings ไม่ถูกต้อง/หมดสิทธิ์");
+        } else {
+          setAvatarStatus("unverified");
+          toast.message("เช็ค Avatar ID ไม่ได้ตอนนี้ (HeyGen ช้า) — แต่ลอง render ได้");
+        }
         return;
       }
       const d = await r.json();
@@ -383,8 +393,9 @@ export default function VideoEditorPage() {
         setAvatarStatus("ok");
       }
     } catch {
-      setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("error");
-      toast.error("เช็ค Avatar ID ไม่สำเร็จ — ตรวจสอบ HeyGen key / เน็ต");
+      // Network blip — not a key problem. Soft state, no "check your key" nag.
+      setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("unverified");
+      toast.message("เช็ค Avatar ID ไม่ได้ตอนนี้ — แต่ลอง render ได้");
     }
   }, []);
 
