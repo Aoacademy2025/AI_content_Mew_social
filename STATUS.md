@@ -1,5 +1,5 @@
 # STATUS — สถานะจริงของโปรเจกต์
-> อัปเดต: 2026-06-08 · prod app deploy ล่าสุด = `e69f589` · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md) ประกอบ
+> อัปเดต: 2026-06-08 · prod app deploy ล่าสุดที่ Codex verify = `e69f589` · repo main มี commit ใหม่หลัง prod deploy (ดู handoff) · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md) ประกอบ
 
 ## ภาพรวม
 **HERO AI** (studio.heroaiengine.com) — SaaS เปลี่ยนสคริปต์ 1 ชุด เป็นวิดีโอสั้นพร้อมโพสต์อัตโนมัติ (Faceless + AI Avatar + ซับไทย)
