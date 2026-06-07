@@ -6,15 +6,15 @@ import { Check } from "lucide-react";
 
 type Period = "monthly" | "yearly";
 
-const FREE_FEATURES = ["ทดลองระบบ", "2 คลิป/เดือน", "มีลายน้ำ"];
+const FREE_FEATURES = ["ทดลอง PRO ฟรี 7 วัน", "ไม่ต้องใช้บัตร", "หลังทดลอง: 2 คลิป/เดือน"];
 const PRO_FEATURES = [
   "AI Avatar + ตัดต่ออัตโนมัติ",
   "ซับไทย (ยาว/keyword)",
   "B-roll + เพลง + โคลนเสียง",
   "100 คลิป/เดือน",
-  "ไม่มีลายน้ำ",
+  "เก็บวิดีโอ 7 วัน",
 ];
-const BUSINESS_FEATURES = ["ทุกอย่างใน PRO", "300 คลิป/เดือน", "คลิปยาว 10 นาที", "เก็บไฟล์นานขึ้น"];
+const BUSINESS_FEATURES = ["ทุกอย่างใน PRO", "300 คลิป/เดือน", "คลิปยาว 10 นาที", "เก็บวิดีโอ 14 วัน"];
 
 const BRAND = "linear-gradient(120deg,#8b5cf6,#22d3ee)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;

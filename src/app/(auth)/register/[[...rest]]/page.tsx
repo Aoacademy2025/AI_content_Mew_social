@@ -44,13 +44,13 @@ export default function RegisterPage() {
               </span>
             </h1>
             <p className="text-zinc-400 text-lg leading-relaxed max-w-sm">
-              สมัครฟรี สร้างวิดีโอคุณภาพสูงพร้อม Avatar และซับไตเติ้ลอัตโนมัติ
+              สมัครฟรี ทดลอง PRO 7 วัน พร้อม Avatar และซับไตเติ้ลอัตโนมัติ
             </p>
           </div>
 
           <div className="space-y-4">
             {[
-              { icon: Zap, text: "10 วิดีโอฟรีทันทีหลังสมัคร" },
+              { icon: Zap, text: "ทดลอง PRO ฟรี 7 วันหลังสมัคร" },
               { icon: Shield, text: "ปลอดภัย เข้ารหัสทุกไฟล์" },
               { icon: Star, text: "อัปเกรดเป็น PRO ได้ตลอดเวลา" },
             ].map(({ icon: Icon, text }) => (

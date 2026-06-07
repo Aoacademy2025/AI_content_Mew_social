@@ -127,7 +127,7 @@ export default function VideosGalleryPage() {
           style={{ background: "hsl(38 90% 50% / 0.08)", border: "1px solid hsl(38 90% 50% / 0.25)" }}>
           <Clock className="h-4 w-4 shrink-0" style={{ color: "hsl(38 90% 60%)" }} />
           <p className="text-xs" style={{ color: "hsl(38 90% 70%)" }}>
-            วิดีโอในแกลเลอรีจะ<span className="font-semibold">หมดอายุและถูกลบอัตโนมัติภายใน 7 วัน</span>หลังจากสร้าง — ดาวน์โหลดไว้ก่อนหมดอายุ
+            วิดีโอในแกลเลอรีจะหมดอายุอัตโนมัติตามแพ็กเกจ <span className="font-semibold">Free 3 วัน · Pro 7 วัน · Business 14 วัน</span> — ดาวน์โหลดไว้ก่อนหมดอายุ
           </p>
         </div>
 

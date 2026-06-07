@@ -17,7 +17,7 @@ export const FREE_LIMITS = {
 export const PRO_LIMITS = {
   clips: 100,         // คลิป/เดือน
   durationSec: 360,   // สูงสุด 6 นาที/คลิป
-  storageDays: 30,    // เก็บวิดีโอ 30 วัน
+  storageDays: 7,     // เก็บวิดีโอ 7 วัน
   styles: Infinity,
   contents: Infinity,
   images: Infinity,
@@ -32,7 +32,7 @@ export const PRO_LIMITS = {
 export const BUSINESS_LIMITS = {
   clips: 300,         // คลิป/เดือน
   durationSec: 600,   // สูงสุด 10 นาที/คลิป
-  storageDays: 90,    // เก็บวิดีโอ 90 วัน
+  storageDays: 14,    // เก็บวิดีโอ 14 วัน
   styles: Infinity,
   contents: Infinity,
   images: Infinity,

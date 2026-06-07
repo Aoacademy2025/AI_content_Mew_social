@@ -103,7 +103,7 @@ export async function POST(req: Request) {
       renderConfig,
     } = await req.json();
 
-    // Compute expiresAt based on user's current plan (FREE: 3d, PRO: 30d, BUSINESS: 90d)
+    // Compute expiresAt based on user's current plan (FREE: 3d, PRO: 7d, BUSINESS: 14d)
     const dbUser = await prisma.user.findUnique({
       where: { id: authUser.id },
       select: { plan: true },
