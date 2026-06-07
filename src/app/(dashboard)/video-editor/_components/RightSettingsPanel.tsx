@@ -427,6 +427,31 @@ export function RightSettingsPanel(p: RightPanelProps) {
                     <>
                       <input value={p.avatarId} onChange={e => p.setAvatarId(e.target.value)} placeholder="HeyGen Avatar ID"
                         className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-300 outline-none" />
+
+                      {/* Avatar preview — loads automatically from HeyGen as soon as a
+                          valid Avatar ID is typed (page.tsx debounced avatar-info fetch).
+                          Shows the avatar thumbnail + name so the user sees it without
+                          having to render first. */}
+                      {p.avatarId.trim().length >= 10 && (
+                        <div className="flex items-center gap-2.5 bg-[#1a1a22] border border-[#2a2a36] rounded-lg p-2">
+                          {p.avatarPreviewUrl ? (
+                            <img src={p.avatarPreviewUrl} alt={p.avatarName || "avatar"}
+                              className="w-12 h-12 rounded-md object-cover flex-shrink-0 bg-black/30" />
+                          ) : (
+                            <div className="w-12 h-12 rounded-md flex-shrink-0 bg-black/30 flex items-center justify-center">
+                              <Loader2 className="w-4 h-4 text-slate-600 animate-spin" />
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[11px] font-semibold text-slate-200 truncate">
+                              {p.avatarPreviewUrl ? (p.avatarName || "Avatar") : "กำลังโหลด avatar..."}
+                            </div>
+                            <div className="text-[9px] text-slate-600 truncate">{p.avatarId}</div>
+                          </div>
+                          {p.avatarPreviewUrl && <span className="text-emerald-400 text-[10px] flex-shrink-0">✓</span>}
+                        </div>
+                      )}
+
                       <div>
                         <div className="text-[10px] text-slate-600 mb-1.5 font-bold uppercase tracking-wider">Avatar Timing</div>
                         <div className="flex gap-1.5">

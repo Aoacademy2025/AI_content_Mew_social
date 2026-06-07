@@ -179,7 +179,7 @@ export default function VideoEditorPage() {
   // ── BGM ───────────────────────────────────────────────────────────────
   const [bgmEnabled, setBgmEnabled] = useState(false);
   const [bgmFile, setBgmFile] = useState("");
-  const [bgmVolume, setBgmVolume] = useState(0.12);
+  const [bgmVolume, setBgmVolume] = useState(0.28);
   const [bgmUploading, setBgmUploading] = useState(false);
   interface SystemTrack { id: string; title: string; filename: string; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
@@ -465,7 +465,7 @@ export default function VideoEditorPage() {
     // BGM
     setBgmEnabled(false);
     setBgmFile("");
-    setBgmVolume(0.12);
+    setBgmVolume(0.28);
 
     // Avatar
     setUseAvatar(false);
@@ -2860,12 +2860,20 @@ export default function VideoEditorPage() {
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Process</div>
             <div className="flex flex-col gap-0.5">
               {/* Order matches runAll: TTS → Transcribe → Keywords → B-roll → Config → Render → (Avatar/Composite) → Burn */}
-              {([ ["tts","TTS Voice"], ["transcribe","Transcribe"], ["keywords","Keywords"], ["fetchStock","B-roll"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
+              {(() => {
+              const visibleSteps = ([ ["tts","TTS Voice"], ["transcribe","Transcribe"], ["keywords","Keywords"], ["fetchStock","B-roll"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
                 if (!useAvatar && (k === "avatar" || k === "avatarTail" || k === "composite")) return false;
                 if (k === "avatarTail" && avatarTiming !== "bookend-both") return false;
                 if (k === "burnSubtitles" && steps.burnSubtitles === "idle" && steps.render === "idle") return false;
                 return true;
-              }).map(([k, label]) => {
+              });
+              // The next action = first idle step whose previous step is already done.
+              // Used to highlight exactly ONE row so the user knows what to click next
+              // (e.g. after the avatar pipeline stops at Composite → Burn Subtitles).
+              const nextActionIdx = visibleSteps.findIndex(([k], i) =>
+                steps[k] === "idle" && (i === 0 || steps[visibleSteps[i - 1][0]] === "done")
+              );
+              return visibleSteps.map(([k, label], stepIdx) => {
                 const isDone = steps[k] === "done";
                 const isError = steps[k] === "error";
                 const isIdle = steps[k] === "idle";
@@ -2901,10 +2909,16 @@ export default function VideoEditorPage() {
                   : showRunBtn ? "text-slate-400"
                   : "text-slate-600";
 
+                // The single next-action step (e.g. Burn after the avatar pipeline
+                // stops at Composite) gets a highlighted row so it's obvious what to
+                // click next — but only when it's actually runnable.
+                const isNextAction = showRunBtn && stepIdx === nextActionIdx;
+
                 return (
                   <div key={k}
                     className={cn("flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors group",
-                      isClickable ? "cursor-pointer hover:bg-[#1a1a22]" : "")}
+                      isClickable ? "cursor-pointer hover:bg-[#1a1a22]" : "",
+                      isNextAction ? "bg-emerald-500/10 ring-1 ring-emerald-500/40 animate-pulse" : "")}
                     onClick={() => {
                       if (!isClickable) return;
                       if (isBurnDone) { setVideoUrl(burnedUrl); }
@@ -2937,10 +2951,12 @@ export default function VideoEditorPage() {
                     {showRunBtn && (
                       <button
                         onClick={e => { e.stopPropagation(); stepRunAction?.(); }}
-                        className={cn("px-2 py-0.5 rounded text-[9px] font-bold text-white transition-colors",
-                          k === "burnSubtitles" ? "bg-emerald-600/80 hover:bg-emerald-500" : "bg-violet-700/70 hover:bg-violet-600"
+                        className={cn("rounded font-bold text-white transition-colors",
+                          k === "burnSubtitles"
+                            ? "px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-500 shadow-sm shadow-emerald-500/30"
+                            : "px-2 py-0.5 text-[9px] bg-violet-700/70 hover:bg-violet-600"
                         )}
-                      >▶ Run</button>
+                      >{k === "burnSubtitles" ? "▶ Burn ซับ" : "▶ Run"}</button>
                     )}
                     {showRerunBtn && (
                       <button
@@ -2951,7 +2967,8 @@ export default function VideoEditorPage() {
                     )}
                   </div>
                 );
-              })}
+              });
+              })()}
             </div>
             {renderProgressError && <div className="mt-2 text-[11px] text-red-400 bg-red-500/10 rounded-lg px-2 py-1.5 leading-snug">{renderProgressError}</div>}
             {steps.render === "running" && renderProgress > 0 && (

@@ -396,7 +396,7 @@ export default function ShortVideoPage() {
   // Background music
   const [bgmEnabled, setBgmEnabled] = useState(false);
   const [bgmFile, setBgmFile] = useState("");
-  const [bgmVolume, setBgmVolume] = useState(0.12);
+  const [bgmVolume, setBgmVolume] = useState(0.28);
   const [bgmUploading, setBgmUploading] = useState(false);
   interface SystemTrack { id: string; title: string; filename: string; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);

@@ -21,7 +21,7 @@ export function SubtitleOverlayComposition({
   subtitleTextEffect = "pop",
   subtitleAccentColor = "#FFE500",
   bgmFile,
-  bgmVolume = 0.12,
+  bgmVolume = 0.28,
 }: SubtitleOverlayConfig) {
   const { width, height } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
@@ -42,7 +42,7 @@ export function SubtitleOverlayComposition({
       {/* Background music — mixed in here so the avatar path (whose composite has
           voice only) still gets BGM in the final burned video. Looped to cover
           the whole duration. */}
-      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
+      {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.28} loop />}
 
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
       {keywordPopups.map((p) => {

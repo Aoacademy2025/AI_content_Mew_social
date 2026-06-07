@@ -673,7 +673,7 @@ export async function POST(req: Request) {
     keywordPopups,
     voiceFile,
     voiceVolume: 1.0,
-    bgmVolume: 0.12,
+    bgmVolume: 0.28,
     durationInFrames,
     fontFamily,
     subtitleStylePreset,

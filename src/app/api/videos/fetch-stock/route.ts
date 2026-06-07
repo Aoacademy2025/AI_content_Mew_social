@@ -2,8 +2,59 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import path from "path";
 import fs from "fs";
+
+const execFileAsync = promisify(execFile);
+
+// Remotion's compositor seeks frame-accurately and fails with
+// "No frame found at position X" on clips that use B-frames or whose fps
+// doesn't match the composition (Pexels/Pixabay ship 25fps + B-frames).
+// Re-encode every downloaded clip to a clean 30fps CFR, no-B-frame stream
+// with a keyframe every frame so seeking is always exact.
+const TARGET_FPS = 30;
+// We can't rely on ffprobe (the Windows @ffmpeg-installer package ships none)
+// to detect whether a cached clip is already normalized, so drop a tiny marker
+// file next to each clip after a successful re-encode. Cheap and unambiguous.
+function normalizedMarkerPath(filePath: string): string {
+  return `${filePath}.normalized`;
+}
+
+async function normalizeForRemotion(filePath: string): Promise<void> {
+  const marker = normalizedMarkerPath(filePath);
+  if (fs.existsSync(marker)) return; // already normalized in a previous run
+  const ffmpeg = getFfmpegPath();
+  const tmp = `${filePath}.norm.mp4`;
+  try {
+    await execFileAsync(ffmpeg, [
+      "-y", "-i", filePath,
+      "-an",                              // B-roll is muted in render anyway
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-pix_fmt", "yuv420p",
+      "-r", String(TARGET_FPS),           // force constant frame rate
+      "-g", String(TARGET_FPS),           // keyframe interval = 1s
+      "-keyint_min", String(TARGET_FPS),
+      "-bf", "0",                          // no B-frames → in-order PTS
+      "-vsync", "cfr",
+      "-movflags", "+faststart",
+      tmp,
+    ], { maxBuffer: 64 * 1024 * 1024 });
+    // Swap normalized file in only if it produced a valid result
+    if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
+      fs.renameSync(tmp, filePath);
+      try { fs.writeFileSync(marker, ""); } catch {}
+    } else {
+      safeUnlink(tmp);
+    }
+  } catch (e) {
+    // If normalization fails, keep the original download rather than losing the clip
+    console.warn(`[fetch-stock] normalize failed for ${path.basename(filePath)}, keeping original:`, e);
+    safeUnlink(tmp);
+  }
+}
 
 export const maxDuration = 600;
 export const runtime = "nodejs";
@@ -346,7 +397,10 @@ export async function POST(req: Request) {
     for (const f of fs.readdirSync(rendersDir)) {
       if (!f.startsWith(userPrefix) || !f.endsWith(".mp4")) continue;
       const fp = path.join(rendersDir, f);
-      if (Date.now() - fs.statSync(fp).mtimeMs > MAX_AGE_MS) fs.unlinkSync(fp);
+      if (Date.now() - fs.statSync(fp).mtimeMs > MAX_AGE_MS) {
+        fs.unlinkSync(fp);
+        safeUnlink(normalizedMarkerPath(fp)); // drop its normalize marker too
+      }
     }
   } catch {}
 
@@ -577,12 +631,19 @@ export async function POST(req: Request) {
       const outPath = path.join(rendersDir, outFile);
       if (isValidMp4Path(outPath)) {
         console.log(`[fetch-stock] cache hit: ${outFile}`);
+        // Older cached clips may predate normalization (or were left B-frame'd) —
+        // normalizeForRemotion no-ops if already clean, re-encodes otherwise.
+        await normalizeForRemotion(outPath);
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
         return;
       }
       console.log(`[fetch-stock] downloading: ${outFile}`);
       try {
         await downloadAndCrop(link, outPath);
+        if (!isValidMp4Path(outPath)) return;
+        // Re-encode to Remotion-safe CFR/no-B-frame so the compositor can seek
+        // every frame (fixes "No frame found at position X" render crashes).
+        await normalizeForRemotion(outPath);
         if (!isValidMp4Path(outPath)) return;
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
       } catch (e) {

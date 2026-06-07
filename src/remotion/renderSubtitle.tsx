@@ -32,6 +32,28 @@ export function renderSubtitle(
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
 
+  // Tokenize for per-word effects (highlight / karaoke).
+  // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
+  // returns the whole line as one token → the entire caption highlights at once
+  // (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
+  // real words; it also handles spaced scripts (English) correctly. Falls back
+  // to whitespace splitting where Segmenter is unavailable.
+  const segmentWords = (s: string): string[] => {
+    const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+    if (Seg) {
+      try {
+        const seg = new Seg("th", { granularity: "word" });
+        const out: string[] = [];
+        for (const { segment, isWordLike } of seg.segment(s)) {
+          // Keep word-like tokens; skip pure whitespace/punctuation separators
+          if (isWordLike && segment.trim().length > 0) out.push(segment);
+        }
+        if (out.length > 0) return out;
+      } catch { /* fall through */ }
+    }
+    return s.split(/\s+/).filter(w => w.length > 0);
+  };
+
   // NOTE: renderSubtitle renders the TEXT + per-character/word effects only
   // (glow-pulse / highlight / karaoke / typewriter). The container ENTRANCE
   // animation (pop/bounce/slide/flip scale+translate) is owned by the caller —
@@ -75,7 +97,10 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
-      const tokens = text.split(/\s+/).filter(w => w.length > 0);
+      const tokens = segmentWords(text);
+      // Thai words are written with no separating space; only re-insert a space
+      // between tokens when the original text actually used spaces (English).
+      const hasSpaces = /\s/.test(text.trim());
       const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
       const cumulative: number[] = [];
       let cum = 0;
@@ -83,28 +108,37 @@ export function renderSubtitle(
       const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
       const activeIdx = cumulative.findIndex(c => progress < c);
       const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
-      const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
+      // Thinner outline + drop shadow only — heavy 4-way stroke smeared the
+      // small text into an unreadable blob. The active word reads dark-on-yellow,
+      // so it needs no stroke; inactive words keep a light outline for contrast.
       return (
-        <span style={{ ...base, display: "inline", textShadow: stroke }}>
-          {tokens.map((word, i) => (
-            <React.Fragment key={i}>
-              <span style={{
-                background: i === active ? accentColor : "transparent",
-                color: i === active ? "#000" : color,
-                borderRadius: 4,
-                padding: i === active ? "0 0.15em" : undefined,
-                boxDecorationBreak: "clone",
-                WebkitBoxDecorationBreak: "clone",
-              } as React.CSSProperties}>{word}</span>
-              {i < tokens.length - 1 ? " " : null}
-            </React.Fragment>
-          ))}
+        <span style={{ ...base, display: "inline" }}>
+          {tokens.map((word, i) => {
+            const isActive = i === active;
+            return (
+              <React.Fragment key={i}>
+                <span style={{
+                  background: isActive ? accentColor : "transparent",
+                  color: isActive ? "#000" : color,
+                  borderRadius: "0.12em",
+                  padding: isActive ? "0.02em 0.18em" : undefined,
+                  textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
+                  WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
+                  paintOrder: "stroke fill",
+                  boxDecorationBreak: "clone",
+                  WebkitBoxDecorationBreak: "clone",
+                } as React.CSSProperties}>{word}</span>
+                {hasSpaces && i < tokens.length - 1 ? " " : null}
+              </React.Fragment>
+            );
+          })}
         </span>
       );
     }
 
     if (textEffect === "karaoke") {
-      const tokens = text.split(/\s+/).filter(w => w.length > 0);
+      const tokens = segmentWords(text);
+      const hasSpaces = /\s/.test(text.trim());
       const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
       const cumulative: number[] = [];
       let cum = 0;
@@ -121,7 +155,7 @@ export function renderSubtitle(
                 color: i === active ? accentColor : `${color}60`,
                 fontWeight: i === active ? fontWeight : Math.min(fontWeight, 500),
               }}>{word}</span>
-              {i < tokens.length - 1 ? " " : null}
+              {hasSpaces && i < tokens.length - 1 ? " " : null}
             </React.Fragment>
           ))}
         </span>

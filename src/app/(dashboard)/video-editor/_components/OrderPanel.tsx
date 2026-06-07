@@ -40,14 +40,17 @@ export function OrderPanel(p: OrderPanelProps) {
   const posCanvasRef = React.useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = React.useState(false);
 
+  // Note: page.tsx uses range -200..200 for avatarOffsetX/Y.
+  // OrderPanel uses -2..2 internally for drag precision, but converts to
+  // the page's scale (×100) before writing to state.
   function updatePosFromPointer(clientX: number, clientY: number) {
     const el = posCanvasRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const nx = ((clientX - rect.left) / rect.width - 0.5) * 2;
     const ny = -((clientY - rect.top) / rect.height - 0.5) * 2;
-    p.setAvatarOffsetX(Math.max(-2, Math.min(2, Math.round(nx * 100) / 100)));
-    p.setAvatarOffsetY(Math.max(-2, Math.min(2, Math.round(ny * 100) / 100)));
+    p.setAvatarOffsetX(Math.max(-200, Math.min(200, Math.round(nx * 100))));
+    p.setAvatarOffsetY(Math.max(-200, Math.min(200, Math.round(ny * 100))));
   }
 
   return (
@@ -270,34 +273,34 @@ export function OrderPanel(p: OrderPanelProps) {
                           {[25,50,75].map(v => <div key={`gv${v}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left:`${v}%`, width:1, background:v===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
                           {[25,50,75].map(v => <div key={`gh${v}`} className="absolute left-0 right-0 pointer-events-none" style={{ top:`${v}%`, height:1, background:v===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
                           <div className="absolute top-1.3 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
-                            X: {p.avatarOffsetX.toFixed(2)}<br />Y: {p.avatarOffsetY.toFixed(2)}<br />SCALE: {p.avatarScale.toFixed(2)}
+                            X: {p.avatarOffsetX}<br />Y: {p.avatarOffsetY}<br />SCALE: {p.avatarScale.toFixed(2)}
                           </div>
                           {p.avatarPreviewUrl && (
-                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*64}%`, aspectRatio:"15/16", left:`${51.5+p.avatarOffsetX*50}%`, bottom:`${(0.09-p.avatarOffsetY)*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
+                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*64}%`, aspectRatio:"15/16", left:`${51.5+(p.avatarOffsetX/200)*50}%`, bottom:`${(0.09-(p.avatarOffsetY/200))*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
                               <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center 130%" }} />
                             </div>
                           )}
                           {p.avatarGreenUrl && (
                             <video src={p.avatarGreenUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
                           )}
-                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+p.avatarOffsetX*50}%`, bottom:`${(-0.05-p.avatarOffsetY)*50}%`, transform:"translate(-50%, 50%)" }} />
+                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, bottom:`${(-0.05-(p.avatarOffsetY/200))*50}%`, transform:"translate(-50%, 50%)" }} />
                         </div>
                         {/* Sliders */}
                         <div className="space-y-2">
                           {([
-                            { label:"Offset X", value:p.avatarOffsetX, onChange:p.setAvatarOffsetX, min:-2, max:2, step:0.01 },
-                            { label:"Offset Y", value:p.avatarOffsetY, onChange:p.setAvatarOffsetY, min:-2, max:2, step:0.01 },
+                            { label:"Offset X", value:p.avatarOffsetX, onChange:p.setAvatarOffsetX, min:-200, max:200, step:1 },
+                            { label:"Offset Y", value:p.avatarOffsetY, onChange:p.setAvatarOffsetY, min:-200, max:200, step:1 },
                             { label:"Scale",    value:p.avatarScale,   onChange:p.setAvatarScale,   min:0.1, max:5.0, step:0.01 },
                           ] as const).map(({label,value,onChange,min,max,step})=>(
                             <div key={label} className="space-y-1">
                               <div className="flex justify-between">
                                 <span className="text-[9px] font-bold uppercase tracking-widest text-slate-600">{label}</span>
-                                <span className="text-[9px] font-mono text-cyan-400">{value.toFixed(2)}</span>
+                                <span className="text-[9px] font-mono text-cyan-400">{typeof value === 'number' && Number.isInteger(value) ? value : value.toFixed(2)}</span>
                               </div>
                               <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(Number(e.target.value))} className="w-full accent-cyan-400 h-1" />
                             </div>
                           ))}
-                          <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0.13);p.setAvatarScale(2.02);}} className="text-[9px] text-slate-600 hover:text-slate-400 w-full text-center">↺ Reset</button>
+                          <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0.13*200);p.setAvatarScale(2.02);}} className="text-[9px] text-slate-600 hover:text-slate-400 w-full text-center">↺ Reset</button>
                         </div>
                       </div>
                     </div>
