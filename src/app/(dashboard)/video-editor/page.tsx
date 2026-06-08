@@ -1630,7 +1630,7 @@ export default function VideoEditorPage() {
     setAvatarTailGreenUrl("");
     const trimRes = await fetch("/api/videos/trim-audio", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audioUrl, durationSecs: avatarTailSecs, fromEnd: true }),
+      body: JSON.stringify({ audioUrl, durationSecs: 0, tailSecs: avatarTailSecs }),
       signal: abortControllerRef.current?.signal,
     });
     const trimData = await trimRes.json();

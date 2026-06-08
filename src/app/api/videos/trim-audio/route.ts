@@ -36,8 +36,10 @@ function probeDuration(ffmpeg: string, filePath: string): Promise<number> {
 }
 
 // POST /api/videos/trim-audio
-// Body: { audioUrl, durationSecs, tailSecs? }
+// Body: { audioUrl, durationSecs?, tailSecs?, fromEnd? }
 // - durationSecs only: trim to first N seconds (bookend intro)
+// - tailSecs only: trim to last T seconds (bookend outro)
+// - fromEnd + durationSecs: legacy tail-only request, trim to last N seconds
 // - durationSecs + tailSecs: concat first N seconds + last T seconds (bookend-both)
 // Returns: { audioUrl }
 export async function POST(req: Request) {
@@ -45,11 +47,18 @@ export async function POST(req: Request) {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { audioUrl, durationSecs, tailSecs } = body ?? {};
+  const { audioUrl } = body ?? {};
+  const requestedDurationSecs = Number(body?.durationSecs ?? 0);
+  const requestedTailSecs = Number(body?.tailSecs ?? 0);
+  const fromEnd = body?.fromEnd === true;
+  const durationSecs = Number.isFinite(requestedDurationSecs) ? requestedDurationSecs : 0;
+  const tailSecs = Number.isFinite(requestedTailSecs) ? requestedTailSecs : 0;
+  const effectiveDurationSecs = fromEnd ? 0 : durationSecs;
+  const effectiveTailSecs = tailSecs > 0 ? tailSecs : (fromEnd ? durationSecs : 0);
 
   if (!audioUrl) return NextResponse.json({ error: "audioUrl required" }, { status: 400 });
   // Allow durationSecs=0 when only tailSecs is needed (tail-only extraction)
-  if ((!durationSecs || durationSecs <= 0) && (!tailSecs || tailSecs <= 0))
+  if (effectiveDurationSecs <= 0 && effectiveTailSecs <= 0)
     return NextResponse.json({ error: "durationSecs or tailSecs required" }, { status: 400 });
 
   const normalizedUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
@@ -69,15 +78,15 @@ export async function POST(req: Request) {
     const outFile = `tts-trimmed-${ts}${ext}`;
     const outPath = path.join(rendersDir, outFile);
 
-    if (tailSecs && tailSecs > 0 && (!durationSecs || durationSecs <= 0)) {
+    if (effectiveTailSecs > 0 && effectiveDurationSecs <= 0) {
       // tail-only: extract last T seconds
-      const tailStart = Math.max(0, totalDur - tailSecs);
+      const tailStart = Math.max(0, totalDur - effectiveTailSecs);
       await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-ss", String(tailStart), "-c", "copy", outPath]);
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
-    } else if (tailSecs && tailSecs > 0 && durationSecs > 0) {
+    } else if (effectiveTailSecs > 0 && effectiveDurationSecs > 0) {
       // bookend-both concat: intro[0..N] + tail[totalDur-T..end]
-      const N = Math.min(durationSecs, totalDur);
-      const tailStart = Math.max(N, totalDur - tailSecs);
+      const N = Math.min(effectiveDurationSecs, totalDur);
+      const tailStart = Math.max(N, totalDur - effectiveTailSecs);
       const introPath = path.join(rendersDir, `tts-intro-${ts}${ext}`);
       const tailPath  = path.join(rendersDir, `tts-tail-${ts}${ext}`);
       const listPath  = path.join(rendersDir, `tts-concat-${ts}.txt`);
@@ -89,7 +98,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
     } else {
       // intro only: first N seconds
-      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-t", String(durationSecs), "-c", "copy", outPath]);
+      await runFfmpeg(ffmpeg, ["-y", "-i", srcPath, "-t", String(effectiveDurationSecs), "-c", "copy", outPath]);
       return NextResponse.json({ audioUrl: `/api/renders/${outFile}` });
     }
   } catch (e) {
