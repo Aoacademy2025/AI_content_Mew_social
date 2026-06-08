@@ -29,7 +29,7 @@ export async function GET() {
       newThisWeek,
     ] = await Promise.all([
       prisma.user.count(),
-      prisma.user.count({ where: { plan: "PRO" } }),
+      prisma.user.count({ where: { plan: { in: ["PRO", "BUSINESS"] } } }),
       prisma.user.count({ where: { suspended: true } }),
       prisma.content.count(),
       prisma.video.count(),

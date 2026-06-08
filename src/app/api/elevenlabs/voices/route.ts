@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import axios from "axios";
+import { isPaid } from "@/lib/plan-limits";
 
 // GET /api/elevenlabs/voices - Fetch available voice models from ElevenLabs
 export async function GET() {
@@ -24,9 +25,9 @@ export async function GET() {
     }
 
     // Check plan
-    if (user.plan !== "PRO") {
+    if (!isPaid(user.plan)) {
       return NextResponse.json(
-        { error: "ElevenLabs voices are only available for Pro users" },
+        { error: "ElevenLabs voices are only available for Pro and Business users" },
         { status: 403 }
       );
     }

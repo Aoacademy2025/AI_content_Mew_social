@@ -436,7 +436,7 @@ export default function AdminDashboardPage() {
 
   const statCards = [
     { title: "ผู้ใช้งานทั้งหมด",    value: stats?.totalUsers ?? 0,    sub: `+${stats?.newToday ?? 0} รายในวันนี้`,                        icon: Users,        color: "purple" },
-    { title: "ผู้ใช้งาน Pro",         value: stats?.paidUsers ?? 0,    sub: `${stats?.freeUsers ?? 0} ผู้ใช้งานระดับ Free`,              icon: Crown,        color: "yellow" },
+    { title: "ผู้ใช้งาน Paid",       value: stats?.paidUsers ?? 0,    sub: `${stats?.freeUsers ?? 0} ผู้ใช้งานระดับ Free`,              icon: Crown,        color: "yellow" },
     { title: "ถูกระงับการใช้งาน",    value: stats?.suspendedUsers ?? 0, sub: "บัญชีที่ถูกระงับการเข้าถึง",                             icon: Ban,          color: "red"    },
     { title: "เนื้อหาทั้งหมด",       value: stats?.totalContents ?? 0,  sub: "รวมจากผู้ใช้งานทุกราย",                                  icon: FileText,     color: "blue"   },
     { title: "วิดีโอทั้งหมด",        value: stats?.totalVideos ?? 0,    sub: "รวมจากผู้ใช้งานทุกราย",                                  icon: Video,        color: "indigo" },
@@ -783,7 +783,7 @@ export default function AdminDashboardPage() {
                 </div>
                 <CardTitle className="mt-2 text-sm text-white">สถิติแผนการใช้งาน</CardTitle>
                 <p className="text-xs text-zinc-500">
-                  {loading ? "..." : `${stats?.paidUsers ?? 0} Pro · ${stats?.freeUsers ?? 0} Free`}
+                  {loading ? "..." : `${stats?.paidUsers ?? 0} Paid · ${stats?.freeUsers ?? 0} Free`}
                 </p>
               </CardHeader>
             </Card>

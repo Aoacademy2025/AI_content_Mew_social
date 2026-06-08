@@ -2,6 +2,7 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import type { User } from "@prisma/client";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
+import { syncUserEntitlement } from "@/lib/entitlements";
 
 /**
  * Get the current authenticated user from Prisma (server-side, Clerk-based).
@@ -15,7 +16,13 @@ export async function getCurrentUser(): Promise<User | null> {
 
   // Fast path: already linked
   let user = await prisma.user.findUnique({ where: { clerkId: userId } });
-  if (user) return user;
+  if (user) {
+    const synced = await syncUserEntitlement(user.id);
+    if (synced?.changed) {
+      return prisma.user.findUnique({ where: { id: user.id } }) as Promise<User | null>;
+    }
+    return user;
+  }
 
   // Slow path: match by email (existing NextAuth user)
   const clerkUser = await currentUser();
@@ -29,13 +36,18 @@ export async function getCurrentUser(): Promise<User | null> {
   user = await prisma.user.findUnique({ where: { email } });
   if (user) {
     // Link clerkId and upgrade to ADMIN if aoacademy.co domain
-    return prisma.user.update({
+    const linked = await prisma.user.update({
       where: { id: user.id },
       data: {
         clerkId: userId,
         ...(isAdminEmail && user.role !== "ADMIN" ? { role: "ADMIN" } : {}),
       },
     });
+    const synced = await syncUserEntitlement(linked.id);
+    if (synced?.changed) {
+      return prisma.user.findUnique({ where: { id: linked.id } }) as Promise<User | null>;
+    }
+    return linked;
   }
 
   // New user — create Prisma record + start their 7-day PRO trial

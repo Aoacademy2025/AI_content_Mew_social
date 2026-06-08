@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { limitsForPlan } from "@/lib/plan-limits";
+import { syncUserEntitlement } from "@/lib/entitlements";
 
 export const USAGE_PERIOD_DAYS = 30;
 
@@ -36,6 +37,7 @@ export type SyncedUsage = {
 
 export async function syncUsageWindow(userId: string): Promise<SyncedUsage | null> {
   const now = new Date();
+  await syncUserEntitlement(userId, now);
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {

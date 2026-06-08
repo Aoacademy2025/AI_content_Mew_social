@@ -3,6 +3,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { syncUserEntitlement } from "@/lib/entitlements";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -42,16 +43,20 @@ export const authOptions: NextAuthOptions = {
           throw new Error("รหัสผ่านไม่ถูกต้อง");
         }
 
-        if (user.suspended) {
+        await syncUserEntitlement(user.id);
+        const syncedUser = await prisma.user.findUnique({ where: { id: user.id } });
+        if (!syncedUser) throw new Error("ไม่พบบัญชีผู้ใช้นี้");
+
+        if (syncedUser.suspended) {
           throw new Error("บัญชีนี้ถูกระงับ กรุณาติดต่อผู้ดูแลระบบ");
         }
 
         return {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          plan: user.plan,
+          id: syncedUser.id,
+          name: syncedUser.name,
+          email: syncedUser.email,
+          role: syncedUser.role,
+          plan: syncedUser.plan,
         };
       },
     }),
@@ -77,7 +82,9 @@ export const authOptions: NextAuthOptions = {
             data: { googleId: account.providerAccountId, image: user.image ?? undefined },
           });
         }
-        if (dbUser.suspended) return false;
+        await syncUserEntitlement(dbUser.id);
+        dbUser = await prisma.user.findUnique({ where: { id: dbUser.id } });
+        if (!dbUser || dbUser.suspended) return false;
         // patch user id so jwt callback gets it
         user.id = dbUser.id;
         (user as any).role = dbUser.role;
@@ -93,6 +100,7 @@ export const authOptions: NextAuthOptions = {
         token.plan = (user as any).plan;
       } else if (token.id) {
         // Subsequent requests — sync plan & role from DB so upgrades reflect immediately
+        await syncUserEntitlement(token.id as string);
         const dbUser = await prisma.user.findUnique({
           where: { id: token.id as string },
           select: { plan: true, role: true, suspended: true },

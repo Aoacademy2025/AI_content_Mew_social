@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import axios from "axios";
 import { apiError } from "@/lib/api-error";
+import { isPaid } from "@/lib/plan-limits";
 
 // GET /api/heygen/avatars - Fetch available avatar models from HeyGen
 export async function GET() {
@@ -24,9 +25,9 @@ export async function GET() {
     }
 
     // Check plan
-    if (user.plan !== "PRO") {
+    if (!isPaid(user.plan)) {
       return NextResponse.json(
-        { error: "HeyGen avatars are only available for Pro users" },
+        { error: "HeyGen avatars are only available for Pro and Business users" },
         { status: 403 }
       );
     }

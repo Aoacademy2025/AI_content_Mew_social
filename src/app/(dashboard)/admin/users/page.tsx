@@ -54,16 +54,10 @@ interface CacheInfo {
 type ActionLoading = string | null;
 
 function planExpiryFrom(user: AdminUser): Date | null {
-  // Prefer authoritative planExpiresAt from user record (set by Stripe payment)
+  // Authoritative expiry lives on the user record. Coupon history is audit data,
+  // not current access state.
   if (user.planExpiresAt) return new Date(user.planExpiresAt);
-  // Fallback to last coupon redemption
-  const redemptions = user.couponRedemptions;
-  if (!redemptions?.length) return null;
-  const r = redemptions[redemptions.length - 1];
-  if (!r.coupon.durationDays) return null;
-  const d = new Date(r.redeemedAt);
-  d.setDate(d.getDate() + r.coupon.durationDays);
-  return d;
+  return null;
 }
 
 function daysLeft(date: Date): number {

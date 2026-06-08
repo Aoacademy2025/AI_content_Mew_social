@@ -31,7 +31,12 @@ export async function PATCH(
 
     const data: Record<string, unknown> = {};
     if (plan !== undefined) {
-      Object.assign(data, { plan, ...usageWindowForPlan(plan) });
+      Object.assign(data, {
+        plan,
+        planExpiresAt: null,
+        trialEndsAt: null,
+        ...usageWindowForPlan(plan),
+      });
     }
     if (role !== undefined) data.role = role;
     if (suspended !== undefined) data.suspended = suspended;

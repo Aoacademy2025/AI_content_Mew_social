@@ -20,11 +20,6 @@ export async function GET() {
           select: {
             plan: true,
             planExpiresAt: true,
-            couponRedemptions: {
-              orderBy: { redeemedAt: "desc" },
-              take: 1,
-              select: { redeemedAt: true, coupon: { select: { durationDays: true } } },
-            },
           },
         }),
         prisma.style.count({ where: { userId } }),
@@ -52,13 +47,6 @@ export async function GET() {
       // Prefer authoritative planExpiresAt (set by Stripe webhook or admin)
       if (user?.planExpiresAt) {
         proExpiresAt = user.planExpiresAt.toISOString();
-      } else if (user?.couponRedemptions?.length) {
-        const r = user.couponRedemptions[0];
-        if (r.coupon.durationDays > 0) {
-          const exp = new Date(r.redeemedAt);
-          exp.setDate(exp.getDate() + r.coupon.durationDays);
-          proExpiresAt = exp.toISOString();
-        }
       }
     }
 
