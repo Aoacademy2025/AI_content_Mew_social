@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -20,20 +20,32 @@ interface SidebarProps {
   sessionLoaded?: boolean;
 }
 
-const adminNavItems = [
+type SidebarNavItem = {
+  title: string;
+  href: string;
+  icon: React.ElementType;
+  locked?: boolean;
+  adminOnly?: boolean;
+  proOnly?: boolean;
+  badge?: number;
+};
+
+const adminNavItems: SidebarNavItem[] = [
   { title: "Admin",       href: "/admin",         icon: Shield,  proOnly: false },
   { title: "Insights",    href: "/admin/insights", icon: Activity, proOnly: false },
+  { title: "Updates",     href: "/admin/updates", icon: Megaphone, proOnly: false },
   { title: "จัดการผู้ใช้", href: "/admin/users",  icon: Users,   proOnly: false },
   { title: "คูปอง",        href: "/admin/coupons", icon: Ticket,  proOnly: false },
 ];
 
-const userNavItems: { title: string; href: string; icon: React.ElementType; locked?: boolean; adminOnly?: boolean }[] = [
+const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",     href: "/dashboard",  icon: LayoutDashboard },
   { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
   { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
   { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
   { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard },
   { title: "Gallery",       href: "/videos",      icon: Video },
+  { title: "Updates",       href: "/updates",     icon: Megaphone },
   { title: "Pricing",       href: "/pricing",     icon: CreditCard },
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];
@@ -56,6 +68,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const [supportOpen, setSupportOpen] = useState(false);
   const [usageCount, setUsageCount] = useState<number>(0);
   const [usageLimit, setUsageLimit] = useState<number>(2);
+  const [updatesUnread, setUpdatesUnread] = useState(0);
+  const [currentVersion, setCurrentVersion] = useState("v0.1.0");
 
   useEffect(() => {
     fetch("/api/user/me")
@@ -71,6 +85,17 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
       .catch(() => setSessionLoaded(true));
   }, []);
 
+  useEffect(() => {
+    if (!sessionLoaded) return;
+    fetch("/api/updates?summary=1", { cache: "no-store" })
+      .then(r => r.json())
+      .then(data => {
+        if (typeof data.currentVersion === "string") setCurrentVersion(data.currentVersion);
+        if (typeof data.unreadCount === "number") setUpdatesUnread(data.unreadCount);
+      })
+      .catch(() => {});
+  }, [sessionLoaded, pathname]);
+
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
   const isPaid = isPro || isBusiness;
@@ -80,9 +105,12 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const visibleUserItems = role === "ADMIN"
     ? userNavItems
     : userNavItems.filter(item => !item.adminOnly);
-  const navItems = role === "ADMIN"
+  const navItems: SidebarNavItem[] = role === "ADMIN"
     ? [...adminNavItems, ...visibleUserItems]
     : visibleUserItems;
+  const navItemsWithBadges: SidebarNavItem[] = navItems.map((item) => item.href === "/updates"
+    ? { ...item, badge: updatesUnread }
+    : item);
 
   const initials = userName
     ? userName.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)
@@ -149,7 +177,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
 
       {/* Nav */}
       <nav className={cn("flex-1 overflow-y-auto py-3 space-y-0.5", collapsed ? "px-1.5" : "px-2")}>
-        {navItems.map((item) => {
+        {navItemsWithBadges.map((item) => {
           const Icon = item.icon;
           // While session loads, don't show lock icon — assume unlocked to avoid flash
           const isLocked = sessionLoaded && !isPaid && (item as { locked?: boolean }).locked;
@@ -197,7 +225,19 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
                 className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-4 w-4")}
                 style={{ color: isActive ? "hsl(190 100% 50%)" : "var(--ui-text-muted)" }}
               />
-              {!collapsed && item.title}
+              {!collapsed && (
+                <>
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  {(item.badge ?? 0) > 0 && (
+                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1.5 text-[10px] font-bold leading-none text-white">
+                      {(item.badge ?? 0) > 9 ? "9+" : item.badge}
+                    </span>
+                  )}
+                </>
+              )}
+              {collapsed && (item.badge ?? 0) > 0 && (
+                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-sky-400" />
+              )}
             </Link>
           );
         })}
@@ -260,6 +300,14 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
             <HelpCircle className="h-3.5 w-3.5" />
             Support
           </button>
+          <Link
+            href="/updates"
+            className="flex items-center justify-between rounded-lg px-2 py-1.5 text-[11px] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            style={{ color: "var(--ui-text-muted)" }}
+          >
+            <span>HeroAI Studio</span>
+            <span className="font-semibold" style={{ color: "var(--ui-text-secondary)" }}>{currentVersion}</span>
+          </Link>
         </div>
       )}
 

@@ -57,6 +57,7 @@ model User {
   couponRedemptions  CouponRedemption[]
   payments           Payment[]
   telemetryEvents    TelemetryEvent[]
+  productUpdateReads ProductUpdateRead[]
 }
 
 model Style {
@@ -158,6 +159,56 @@ enum NotificationType {
   LIMIT_REACHED
   NEW_USER
   ERROR_SYSTEM
+}
+
+model ProductUpdate {
+  id          String                @id @default(cuid())
+  version     String
+  title       String
+  summary     String
+  body        String?
+  category    ProductUpdateCategory @default(IMPROVEMENT)
+  state       ProductUpdateState    @default(DRAFT)
+  isPinned    Boolean               @default(false)
+  targetPath  String?
+  ctaLabel    String?
+  ctaHref     String?
+  imageUrl    String?
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  reads       ProductUpdateRead[]
+
+  @@index([state, publishedAt])
+  @@index([category, publishedAt])
+  @@index([isPinned, publishedAt])
+}
+
+model ProductUpdateRead {
+  id        String        @id @default(cuid())
+  updateId  String
+  update    ProductUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt    DateTime      @default(now())
+
+  @@unique([updateId, userId])
+  @@index([userId, readAt])
+}
+
+enum ProductUpdateCategory {
+  FEATURE
+  IMPROVEMENT
+  FIX
+  PATCH
+  KNOWN_ISSUE
+  IN_PROGRESS
+}
+
+enum ProductUpdateState {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
 }
 
 model SupportTicket {
