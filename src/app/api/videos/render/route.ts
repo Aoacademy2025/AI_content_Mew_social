@@ -19,6 +19,9 @@ import {
   getActiveRenderCount,
   incrementActiveRenderCount,
   decrementActiveRenderCount,
+  getActiveRenderSlots,
+  getRenderSlotQueueLength,
+  withRenderSlot,
 } from "./cancel-registry";
 
 function getRenderTmpDir(): string {
@@ -67,6 +70,17 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 
 export const maxDuration = 60; // only needs to start the background job, not wait for it
 export const runtime = "nodejs";
+
+function readPositiveIntEnv(name: string, fallback: number, max: number): number {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw) || raw < 1) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(raw)));
+}
+
+function getRenderJobConcurrencyLimit(): number {
+  const cpuMax = Math.max(1, Math.min(4, os.cpus().length));
+  return readPositiveIntEnv("RENDER_JOB_CONCURRENCY", 1, cpuMax);
+}
 
 // Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
 type RenderJob = {
@@ -622,137 +636,163 @@ export async function POST(req: Request) {
         const filename = `render-${Date.now()}.mp4`;
         const outputLocation = path.join(rendersDir, filename);
 
-        const cpuCount = os.cpus().length;
-        const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-        const isCriticalLowMem = freeMemGb < 0.8;
-        const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
-        // Scale down threads-per-job as more jobs run in parallel — share CPU fairly
-        const jobsNow = Math.max(1, getActiveRenderCount());
-        const totalThreadBudget = Math.max(1, cpuCount - 1);
-        const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-        // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
-        const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-          ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-          : isCriticalLowMem ? 1
-          : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / jobsNow))
-          : Math.max(1, Math.floor(totalThreadBudget / jobsNow));
-        const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-        // Scale down cache per job when running many in parallel
-        const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
-        const perJobCacheMb = Math.max(32, Math.floor(baseCacheMb / jobsNow));
-        const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 32
-          ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-          : perJobCacheMb * 1024 * 1024;
-        const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
-        const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
-        const isWindows = process.platform === "win32";
-        const chromiumArgs = [
-          "--disable-dev-shm-usage",
-          "--disable-gpu",
-          "--no-zygote",
-          "--no-sandbox",
-          "--js-flags=--max-old-space-size=512",
-          "--disable-extensions",
-          "--disable-background-networking",
-          "--disable-default-apps",
-          "--gpu-process-limit=0",
-          ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
-        ];
-        console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
-        renderStartedAt = Date.now();
-        await recordTelemetryEvent(userId, {
-          name: "render_server_started",
-          category: "performance",
-          source: "server",
-          step: "render",
-          status: "started",
-          properties: {
-            jobId,
-            compositionId,
-            activeJobs: jobsNow,
-            cpuCount,
-            renderConcurrency,
-            freeMemGb: Number(freeMemGb.toFixed(2)),
-            lowResource: isLowResourceHost,
-            fps,
-            jpegQuality,
-          },
-        }).catch(() => {});
-
-        const { cancel, cancelSignal } = makeCancelSignal();
-        activeRenderCancel.set(userId, cancel);
-        cancelByJobId.set(jobId, cancel);
-
-        await renderMedia({
-          composition,
-          serveUrl: bundleLocation,
-          codec: "h264",
-          outputLocation,
-          inputProps,
-          timeoutInMilliseconds: 7200000,
-          concurrency: renderConcurrency,
-          cancelSignal,
-          x264Preset: isLowResourceHost ? "faster" : "medium",
-          jpegQuality,
-          offthreadVideoCacheSizeInBytes,
-          chromiumOptions: {
-            disableWebSecurity: true,
-            ignoreCertificateErrors: true,
-            gl: "swiftshader",
-            args: chromiumArgs,
-          },
-          onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
-            const p = Math.round(progress * 100);
-            if (p !== lastProgress) {
-              lastProgress = p;
-              try {
-                fs.writeFileSync(progressFile, JSON.stringify({ progress: p, jobId }));
-              } catch {}
-            }
-            if (p % 5 === 0) {
-              console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
-            }
-          },
-        });
-
-        // Cleanup abort controller for this user if it's still ours
-        activeRenderCancel.delete(userId);
-        cancelByJobId.delete(jobId);
-        decrementActiveRenderCount();
-        resolveDone();
-
-        // If a newer job was started for this user, discard this result silently
-        if (latestJobPerUser.get(userId) !== jobId) {
-          console.log(`[Render] job=${jobId} superseded by newer job — discarding result`);
-          return;
+        const renderSlotLimit = getRenderJobConcurrencyLimit();
+        const queuePosition = getActiveRenderSlots() >= renderSlotLimit ? getRenderSlotQueueLength() + 1 : 0;
+        if (queuePosition > 0) {
+          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, jobId, queued: true, queuePosition })); } catch {}
+          console.log(`[Render] job=${jobId} queued at position ${queuePosition} (limit=${renderSlotLimit})`);
         }
 
-        const videoUrl = `/api/renders/${filename}`;
-        setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
-        try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl })); } catch {}
-        await recordTelemetryEvent(userId, {
-          name: "render_server_done",
-          category: "performance",
-          source: "server",
-          step: "render",
-          status: "done",
-          durationMs: Date.now() - renderStartedAt,
-          properties: {
-            jobId,
-            compositionId,
-            activeJobs: jobsNow,
-            renderConcurrency,
-            freeMemGb: Number(freeMemGb.toFixed(2)),
-            outputMb: fs.existsSync(outputLocation) ? Number((fs.statSync(outputLocation).size / (1024 * 1024)).toFixed(1)) : null,
-          },
-        }).catch(() => {});
+        const renderQueueStartedAt = Date.now();
+        let renderCompletedForLatestJob = false;
 
-        createNotification({
+        await withRenderSlot(renderSlotLimit, async () => {
+          const renderQueueWaitMs = Date.now() - renderQueueStartedAt;
+          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, jobId, queued: false, queuePosition: null })); } catch {}
+
+          const cpuCount = os.cpus().length;
+          const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
+          const isCriticalLowMem = freeMemGb < 0.8;
+          const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
+          // Scale down threads-per-job as more CPU-heavy renderMedia slots run in parallel.
+          const activeJobs = Math.max(1, getActiveRenderCount());
+          const activeRenderSlots = Math.max(1, getActiveRenderSlots());
+          const totalThreadBudget = Math.max(1, cpuCount - 1);
+          const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
+          // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
+          const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+            ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
+            : isCriticalLowMem ? 1
+            : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots))
+            : Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots));
+          const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
+          // Scale down cache per job when running many renderMedia slots in parallel
+          const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
+          const perJobCacheMb = Math.max(32, Math.floor(baseCacheMb / activeRenderSlots));
+          const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 32
+            ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
+            : perJobCacheMb * 1024 * 1024;
+          const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
+          const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
+          const isWindows = process.platform === "win32";
+          const chromiumArgs = [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-zygote",
+            "--no-sandbox",
+            "--js-flags=--max-old-space-size=512",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--gpu-process-limit=0",
+            ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
+          ];
+          console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), slots=${activeRenderSlots}/${renderSlotLimit}, queueWaitMs=${renderQueueWaitMs}, lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
+          renderStartedAt = Date.now();
+          await recordTelemetryEvent(userId, {
+            name: "render_server_started",
+            category: "performance",
+            source: "server",
+            step: "render",
+            status: "started",
+            properties: {
+              jobId,
+              compositionId,
+              activeJobs,
+              activeRenderSlots,
+              renderSlotLimit,
+              renderQueueWaitMs,
+              queuedJobs: getRenderSlotQueueLength(),
+              cpuCount,
+              renderConcurrency,
+              freeMemGb: Number(freeMemGb.toFixed(2)),
+              lowResource: isLowResourceHost,
+              fps,
+              jpegQuality,
+            },
+          }).catch(() => {});
+
+          const { cancel, cancelSignal } = makeCancelSignal();
+          activeRenderCancel.set(userId, cancel);
+          cancelByJobId.set(jobId, cancel);
+
+          await renderMedia({
+            composition,
+            serveUrl: bundleLocation,
+            codec: "h264",
+            outputLocation,
+            inputProps,
+            timeoutInMilliseconds: 7200000,
+            concurrency: renderConcurrency,
+            cancelSignal,
+            x264Preset: isLowResourceHost ? "faster" : "medium",
+            jpegQuality,
+            offthreadVideoCacheSizeInBytes,
+            chromiumOptions: {
+              disableWebSecurity: true,
+              ignoreCertificateErrors: true,
+              gl: "swiftshader",
+              args: chromiumArgs,
+            },
+            onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
+              const p = Math.round(progress * 100);
+              if (p !== lastProgress) {
+                lastProgress = p;
+                try {
+                  fs.writeFileSync(progressFile, JSON.stringify({ progress: p, jobId, queued: false, queuePosition: null }));
+                } catch {}
+              }
+              if (p % 5 === 0) {
+                console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
+              }
+            },
+          });
+
+          // Cleanup abort controller for this user if it's still ours
+          activeRenderCancel.delete(userId);
+          cancelByJobId.delete(jobId);
+          decrementActiveRenderCount();
+          resolveDone();
+
+          // If a newer job was started for this user, discard this result silently
+          if (latestJobPerUser.get(userId) !== jobId) {
+            console.log(`[Render] job=${jobId} superseded by newer job — discarding result`);
+            return;
+          }
+
+          const videoUrl = `/api/renders/${filename}`;
+          setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
+          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl, queued: false, queuePosition: null })); } catch {}
+          await recordTelemetryEvent(userId, {
+            name: "render_server_done",
+            category: "performance",
+            source: "server",
+            step: "render",
+            status: "done",
+            durationMs: Date.now() - renderStartedAt,
+            properties: {
+              jobId,
+              compositionId,
+              activeJobs,
+              activeRenderSlots,
+              renderSlotLimit,
+              renderQueueWaitMs,
+              renderConcurrency,
+              freeMemGb: Number(freeMemGb.toFixed(2)),
+              outputMb: fs.existsSync(outputLocation) ? Number((fs.statSync(outputLocation).size / (1024 * 1024)).toFixed(1)) : null,
+            },
+          }).catch(() => {});
+          renderCompletedForLatestJob = true;
+        });
+
+        if (renderCompletedForLatestJob) {
+          createNotification({
             userId,
             type: "VIDEO_COMPLETED",
             title: "วิดีโอสร้างเสร็จแล้ว",
             body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
           }).catch(() => {});
+        }
       } catch (error) {
         activeRenderCancel.delete(userId);
         cancelByJobId.delete(jobId);

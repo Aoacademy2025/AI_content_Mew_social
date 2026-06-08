@@ -29,6 +29,8 @@ type StepRow = {
   started: number;
   done: number;
   error: number;
+  skipped: number;
+  notFinished: number;
   p50Ms: number | null;
   p95Ms: number | null;
   successPct: number;
@@ -52,10 +54,29 @@ type InsightSummary = {
     sessions: number;
     users: number;
     editorSessions: number;
+    editorOpens: number;
+    pipelineJobs: number;
+    pipelineStarts: number;
     events: number;
     errors: number;
+    frontendErrors: number;
+    serverErrors: number;
     renderSuccessPct: number;
+    videoCompletionPct: number;
+    renderTaskSuccessPct: number;
     healthScore: number;
+    videoJobs: {
+      total: number;
+      completed: number;
+      processing: number;
+      failed: number;
+      pending: number;
+      outputReady: number;
+      statusStuckWithOutput: number;
+      processingWithoutOutput: number;
+      completionPct: number;
+      outputReadyPct: number;
+    };
   };
   funnel: FunnelRow[];
   steps: StepRow[];
@@ -63,11 +84,30 @@ type InsightSummary = {
   vitals: VitalRow[];
   resource: {
     renderCount: number;
+    renderStartedCount: number;
+    mainRenderCount: number;
+    mainRenderStartedCount: number;
+    burnRenderCount: number;
+    burnRenderStartedCount: number;
+    renderTaskSuccessPct: number;
     renderP50Ms: number | null;
     renderP95Ms: number | null;
     avgConcurrency: number | null;
+    avgActiveRenderSlots: number | null;
+    renderQueueP50Ms: number | null;
+    renderQueueP95Ms: number | null;
     minFreeMemGb: number | null;
     lowMemoryStarts: number;
+  };
+  staleProcessing: {
+    total: number;
+    completeCandidates: number;
+    failCandidates: number;
+    keepCandidates: number;
+    withOutputUrl: number;
+    existingOutput: number;
+    missingOutput: number;
+    oldestAgeMinutes: number | null;
   };
   recommendations: string[];
 };
@@ -76,11 +116,12 @@ type InsightsResponse = {
   range: { days: number; since: string; until: string };
   current: InsightSummary;
   previous: InsightSummary;
+  processingReconcile?: { dryRun: boolean };
 };
 
 const metricHelp: Record<string, string> = {
-  "Health Score": "คะแนนรวมจากจำนวน error, render success และความช้าของระบบ ยิ่งใกล้ 100 ยิ่งดี",
-  "Drop-off": "เปอร์เซ็นต์ผู้ใช้ที่หลุดจากขั้นก่อนหน้าแล้วไม่ได้ไปต่อถึงขั้นนี้",
+  "Health Score": "คะแนนรวมจาก video completion, error, render latency และ status stuck ยิ่งใกล้ 100 ยิ่งดี",
+  "Drop-off": "เปอร์เซ็นต์ event ที่ไปไม่ถึงขั้นถัดไป ใช้ดูแนวโน้มเท่านั้นจนกว่าจะมี pipelineRunId ต่อหนึ่งงาน",
   "p50": "ค่ากลาง: ผู้ใช้ครึ่งหนึ่งเร็วกว่าเวลานี้ และอีกครึ่งหนึ่งช้ากว่านี้",
   "p75": "75% ของผู้ใช้ได้ผลลัพธ์เร็วกว่า/ดีกว่าค่านี้ ใช้ดูประสบการณ์จริงโดยรวม",
   "p95": "เคสช้าเกือบสุด: 95% ของงานเร็วกว่าเวลานี้ ใช้หาคอขวดและเคสหนัก",
@@ -88,7 +129,10 @@ const metricHelp: Record<string, string> = {
   "INP": "ความหน่วงตอนกด คลิก หรือพิมพ์ ถ้าสูง UI จะรู้สึกหน่วง",
   "CLS": "คะแนนหน้ากระโดดหรือเลื่อนเอง ถ้าสูง ผู้ใช้อาจกดผิดหรืออ่านยาก",
   "Concurrency": "จำนวน thread/งานย่อยที่ server ใช้ช่วยเรนเดอร์พร้อมกัน ยิ่งสูงอาจเร็วขึ้นแต่กิน RAM/CPU มากขึ้น",
+  "Render Queue": "เวลาที่งานรอคิวก่อนเข้า renderMedia ใช้ดูว่ามีการชนกันหลายงานพร้อมกันหรือไม่",
   "Free RAM": "RAM ที่เหลือบน server ตอนเริ่ม render ถ้าต่ำกว่า 1 GB เสี่ยงค้างหรือ fail",
+  "Video completed": "เปอร์เซ็นต์งานจากตาราง Video ที่ status เป็น COMPLETED ในช่วงเวลาที่เลือก",
+  "Telemetry errors": "error ที่ถูกส่งผ่าน telemetry แยกจาก production log โดยตรง",
 };
 
 function InfoTip({ label }: { label: keyof typeof metricHelp | string }) {
@@ -190,7 +234,7 @@ function VitalPill({ vital }: { vital: VitalRow }) {
 }
 
 export default function AdminInsightsPage() {
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(1);
   const [data, setData] = useState<InsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -221,7 +265,7 @@ export default function AdminInsightsPage() {
 
   const current = data?.current;
   const previous = data?.previous;
-  const hasData = !!current && current.totals.events > 0;
+  const hasData = !!current && (current.totals.events > 0 || current.totals.videoJobs.total > 0);
   const worstDrop = useMemo(() => {
     if (!current) return null;
     return current.funnel.slice(1).sort((a, b) => b.dropOffPct - a.dropOffPct)[0] ?? null;
@@ -243,7 +287,7 @@ export default function AdminInsightsPage() {
           </div>
 
           <div className="inline-flex w-full rounded-lg border border-white/10 bg-white/[0.035] p-1 sm:w-auto">
-            {[7, 14, 30].map((option) => (
+            {[1, 7, 14, 30].map((option) => (
               <button
                 key={option}
                 type="button"
@@ -253,7 +297,7 @@ export default function AdminInsightsPage() {
                   days === option ? "bg-white text-slate-950" : "text-slate-400 hover:bg-white/10 hover:text-white",
                 )}
               >
-                {option} วัน
+                {option === 1 ? "24 ชม." : `${option} วัน`}
               </button>
             ))}
           </div>
@@ -289,22 +333,22 @@ export default function AdminInsightsPage() {
               />
               <MetricTile
                 label="คนเข้า Editor"
-                value={formatNumber(current.totals.editorSessions)}
-                helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions`}
+                value={formatNumber(current.totals.editorOpens)}
+                helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions · started ${formatNumber(current.totals.pipelineStarts)} ครั้ง · video jobs ${formatNumber(current.totals.pipelineJobs)}`}
                 icon={Users}
                 tone="border-sky-400/20 bg-sky-500/12 text-sky-300"
               />
               <MetricTile
-                label="Render สำเร็จ"
-                value={`${current.totals.renderSuccessPct}%`}
-                helper={`server render สำเร็จ ${formatNumber(current.resource.renderCount)} ครั้ง`}
+                label="Video completed"
+                value={`${current.totals.videoCompletionPct}%`}
+                helper={`${formatNumber(current.totals.videoJobs.completed)}/${formatNumber(current.totals.videoJobs.total)} jobs · output ready ${formatNumber(current.totals.videoJobs.outputReady)}`}
                 icon={CheckCircle2}
                 tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300"
               />
               <MetricTile
-                label="Error"
+                label="Telemetry errors"
                 value={formatNumber(current.totals.errors)}
-                helper={`events ทั้งหมด ${formatNumber(current.totals.events)}`}
+                helper={`frontend ${formatNumber(current.totals.frontendErrors)} · server ${formatNumber(current.totals.serverErrors)} · events ${formatNumber(current.totals.events)}`}
                 icon={AlertTriangle}
                 tone="border-rose-400/20 bg-rose-500/12 text-rose-300"
               />
@@ -329,7 +373,7 @@ export default function AdminInsightsPage() {
                       <div key={item.key} className="grid gap-2 sm:grid-cols-[150px_1fr_92px] sm:items-center">
                         <div className="min-w-0">
                           <div className="truncate text-sm font-semibold text-slate-100">{index + 1}. {item.label}</div>
-                          <div className="text-xs text-slate-500">{formatNumber(item.count)} sessions</div>
+                          <div className="text-xs text-slate-500">{formatNumber(item.count)} ครั้ง</div>
                         </div>
                         <div className="h-9 overflow-hidden rounded-md bg-slate-900 ring-1 ring-white/10">
                           <div
@@ -367,6 +411,29 @@ export default function AdminInsightsPage() {
                 </div>
 
                 <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                  <h2 className="text-lg font-semibold text-white">Status stuck</h2>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="text-xs text-slate-500">PROCESSING เกิน 20 นาที</div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatNumber(current.staleProcessing.total)}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 sm:col-span-2 xl:col-span-1">
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs text-slate-500">มี output แล้ว</div>
+                        <div className="mt-2 text-xl font-semibold text-emerald-300">{formatNumber(current.staleProcessing.existingOutput)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs text-slate-500">ไม่มี output</div>
+                        <div className="mt-2 text-xl font-semibold text-rose-300">{formatNumber(current.staleProcessing.total - current.staleProcessing.existingOutput)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                    งานเก่าสุด {current.staleProcessing.oldestAgeMinutes == null ? "-" : `${formatNumber(current.staleProcessing.oldestAgeMinutes / 60, 1)} ชม.`} · complete ได้ {formatNumber(current.staleProcessing.completeCandidates)} · fail ได้ {formatNumber(current.staleProcessing.failCandidates)}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
                   <h2 className="text-lg font-semibold text-white">Web Vitals</h2>
                   <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
                     {current.vitals.map((vital) => <VitalPill key={vital.metric} vital={vital} />)}
@@ -392,6 +459,7 @@ export default function AdminInsightsPage() {
                         <th className="py-3 font-semibold">เริ่ม</th>
                         <th className="py-3 font-semibold">สำเร็จ</th>
                         <th className="py-3 font-semibold">Error</th>
+                        <th className="py-3 font-semibold">ยังไม่จบ</th>
                         <th className="py-3 font-semibold">p50</th>
                         <th className="py-3 font-semibold">p95</th>
                         <th className="py-3 font-semibold">Success</th>
@@ -404,6 +472,7 @@ export default function AdminInsightsPage() {
                           <td className="py-3">{formatNumber(step.started)}</td>
                           <td className="py-3 text-emerald-300">{formatNumber(step.done)}</td>
                           <td className="py-3 text-rose-300">{formatNumber(step.error)}</td>
+                          <td className="py-3 text-amber-300">{formatNumber(step.notFinished)}</td>
                           <td className="py-3">{formatMs(step.p50Ms)}</td>
                           <td className="py-3">{formatMs(step.p95Ms)}</td>
                           <td className="py-3">{step.successPct}%</td>
@@ -426,6 +495,13 @@ export default function AdminInsightsPage() {
                   <div className="rounded-md border border-white/10 bg-black/20 p-3">
                     <div className="flex items-center gap-1 text-xs text-slate-500">p95 render <InfoTip label="p95" /></div>
                     <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderP95Ms)}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      render tasks {formatNumber(current.resource.renderCount)}/{formatNumber(current.resource.renderStartedCount)} · {current.resource.renderTaskSuccessPct}%
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center gap-1 text-xs text-slate-500">Queue p95 <InfoTip label="Render Queue" /></div>
+                    <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderQueueP95Ms)}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-md border border-white/10 bg-black/20 p-3">
@@ -438,6 +514,12 @@ export default function AdminInsightsPage() {
                         {current.resource.minFreeMemGb == null ? "-" : `${formatNumber(current.resource.minFreeMemGb, 2)} GB`}
                       </div>
                     </div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                    Active render slots เฉลี่ย: <span className="font-semibold text-sky-300">{formatNumber(current.resource.avgActiveRenderSlots, 1)}</span>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                    Main render: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.mainRenderCount)}/{formatNumber(current.resource.mainRenderStartedCount)}</span> · Burn subtitles: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.burnRenderCount)}/{formatNumber(current.resource.burnRenderStartedCount)}</span>
                   </div>
                   <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
                     RAM ต่ำกว่า 1 GB ตอนเริ่ม render: <span className="font-semibold text-amber-300">{formatNumber(current.resource.lowMemoryStarts)}</span> ครั้ง
