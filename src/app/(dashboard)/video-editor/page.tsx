@@ -890,15 +890,21 @@ export default function VideoEditorPage() {
     const totalDurationSec = sceneDurations.length > 0
       ? sceneDurations.reduce((a, b) => a + b, 0)
       : Math.max(30, Math.ceil((pipe.current.scenes ?? []).reduce((s, sc) => s + sc.replace(/\s/g,"").length, 0) / 3));
+    const caps = pipe.current.sceneCaptions ?? [];
+    const captionClipLimit = caps.length > 0 && kws.length > 0 ? Math.min(caps.length, kws.length) : 0;
+    const perSubtitleClipCount = caps.length > 0 && caps.length === kws.length ? caps.length : 0;
     const res = await fetch("/api/videos/fetch-stock", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
         preferredLLM: preferredLLMRef.current,
-        ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
+        ...(perSubtitleClipCount > 0
+          ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
+          : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit }
+          : targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
-        ...(pipe.current.sceneCaptions?.length ? { subtitleTexts: pipe.current.sceneCaptions.map(c => c.text) } : {}),
+        ...(perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -913,7 +919,6 @@ export default function VideoEditorPage() {
     // reflects what the renderer will actually use:
     //   sv ≥ caps → trim down to caps.length
     //   sv  < caps → cycle clips so every caption still has one
-    const caps = pipe.current.sceneCaptions ?? [];
     let sv = svRaw;
     if (caps.length > 0 && svRaw.length > 0) {
       if (svRaw.length >= caps.length) {
