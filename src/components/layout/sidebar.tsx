@@ -45,7 +45,7 @@ const userNavItems: SidebarNavItem[] = [
   { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
   { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard },
   { title: "Gallery",       href: "/videos",      icon: Video },
-  { title: "Updates",       href: "/updates",     icon: Megaphone },
+  { title: "อัปเดต",       href: "/updates",     icon: Megaphone },
   { title: "Pricing",       href: "/pricing",     icon: CreditCard },
   { title: "Settings",      href: "/settings",    icon: Settings },
 ];
@@ -87,13 +87,25 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
 
   useEffect(() => {
     if (!sessionLoaded) return;
-    fetch("/api/updates?summary=1", { cache: "no-store" })
-      .then(r => r.json())
-      .then(data => {
-        if (typeof data.currentVersion === "string") setCurrentVersion(data.currentVersion);
-        if (typeof data.unreadCount === "number") setUpdatesUnread(data.unreadCount);
-      })
-      .catch(() => {});
+    let cancelled = false;
+
+    function loadUpdatesSummary() {
+      fetch("/api/updates?summary=1", { cache: "no-store" })
+        .then(r => r.json())
+        .then(data => {
+          if (cancelled) return;
+          if (typeof data.currentVersion === "string") setCurrentVersion(data.currentVersion);
+          if (typeof data.unreadCount === "number") setUpdatesUnread(data.unreadCount);
+        })
+        .catch(() => {});
+    }
+
+    loadUpdatesSummary();
+    window.addEventListener("product-updates-read", loadUpdatesSummary);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("product-updates-read", loadUpdatesSummary);
+    };
   }, [sessionLoaded, pathname]);
 
   const isBusiness = plan === "BUSINESS";
@@ -109,7 +121,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
     ? [...adminNavItems, ...visibleUserItems]
     : visibleUserItems;
   const navItemsWithBadges: SidebarNavItem[] = navItems.map((item) => item.href === "/updates"
-    ? { ...item, badge: updatesUnread }
+    ? { ...item, title: updatesUnread > 0 ? "อัปเดตใหม่" : "อัปเดต", badge: updatesUnread }
     : item);
 
   const initials = userName
@@ -305,7 +317,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
             className="flex items-center justify-between rounded-lg px-2 py-1.5 text-[11px] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
             style={{ color: "var(--ui-text-muted)" }}
           >
-            <span>HeroAI Studio</span>
+            <span>{updatesUnread > 0 ? "มีอัปเดตใหม่" : "HeroAI Studio"}</span>
             <span className="font-semibold" style={{ color: "var(--ui-text-secondary)" }}>{currentVersion}</span>
           </Link>
         </div>

@@ -6,6 +6,7 @@ import { apiError } from "@/lib/api-error";
 import {
   cleanUpdateString,
   normalizeUpdateCategory,
+  normalizeUpdateImportance,
   normalizeUpdateState,
   parseUpdateDate,
 } from "@/lib/product-updates";
@@ -24,6 +25,7 @@ function serializeAdminUpdate(update: {
   summary: string;
   body: string | null;
   category: string;
+  importance: string;
   state: string;
   isPinned: boolean;
   targetPath: string | null;
@@ -66,6 +68,7 @@ function buildUpdateData(body: Record<string, unknown>, mode: "create" | "update
     summary,
     body: cleanUpdateString(body.body, 8_000),
     category: normalizeUpdateCategory(body.category),
+    importance: normalizeUpdateImportance(body.importance),
     state,
     isPinned: Boolean(body.isPinned),
     targetPath: cleanUpdateString(body.targetPath, 160),

@@ -168,6 +168,7 @@ model ProductUpdate {
   summary     String
   body        String?
   category    ProductUpdateCategory @default(IMPROVEMENT)
+  importance  ProductUpdateImportance @default(BANNER)
   state       ProductUpdateState    @default(DRAFT)
   isPinned    Boolean               @default(false)
   targetPath  String?
@@ -203,6 +204,12 @@ enum ProductUpdateCategory {
   PATCH
   KNOWN_ISSUE
   IN_PROGRESS
+}
+
+enum ProductUpdateImportance {
+  SILENT
+  BANNER
+  MODAL
 }
 
 enum ProductUpdateState {

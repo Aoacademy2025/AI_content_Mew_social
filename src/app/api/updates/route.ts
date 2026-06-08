@@ -21,6 +21,7 @@ function serializeUpdate(update: {
   summary: string;
   body: string | null;
   category: string;
+  importance: string;
   isPinned: boolean;
   targetPath: string | null;
   ctaLabel: string | null;
@@ -38,6 +39,7 @@ function serializeUpdate(update: {
     summary: update.summary,
     body: update.body,
     category: update.category,
+    importance: update.importance,
     isPinned: update.isPinned,
     targetPath: update.targetPath,
     ctaLabel: update.ctaLabel,
@@ -80,11 +82,23 @@ export async function GET(req: Request) {
       return bt - at;
     })[0] ?? null;
     const unreadCount = updates.filter((update) => update.reads.length === 0).length;
+    const attentionUpdate = updates.find((update) => (
+      update.reads.length === 0
+      && update.isPinned
+      && update.importance !== "SILENT"
+    )) ?? updates.find((update) => (
+      update.reads.length === 0
+      && update.importance === "MODAL"
+    )) ?? updates.find((update) => (
+      update.reads.length === 0
+      && update.importance === "BANNER"
+    )) ?? null;
 
     return NextResponse.json({
       currentVersion: latestByDate?.version ?? APP_VERSION_FALLBACK,
       unreadCount,
       total: updates.length,
+      attentionUpdate: attentionUpdate ? serializeUpdate(attentionUpdate) : null,
       updates: summaryOnly ? [] : updates.map(serializeUpdate),
     });
   } catch (error) {

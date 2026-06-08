@@ -5,6 +5,7 @@ import { Sidebar } from "./sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { TopNav } from "./top-nav";
 import { TrialBanner } from "./trial-banner";
+import { ProductUpdateBanner } from "./product-update-banner";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -44,6 +45,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
         />
 
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+          <ProductUpdateBanner />
           <main className={
             noPadding
               ? "flex-1 overflow-hidden flex flex-col"

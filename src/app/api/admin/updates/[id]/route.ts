@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import {
   cleanUpdateString,
   normalizeUpdateCategory,
+  normalizeUpdateImportance,
   normalizeUpdateState,
   parseUpdateDate,
 } from "@/lib/product-updates";
@@ -31,6 +32,7 @@ function updateData(body: Record<string, unknown>) {
   if (summary) data.summary = summary;
   if (body.body !== undefined) data.body = cleanUpdateString(body.body, 8_000);
   if (body.category !== undefined) data.category = normalizeUpdateCategory(body.category);
+  if (body.importance !== undefined) data.importance = normalizeUpdateImportance(body.importance);
   if (state) data.state = state;
   if (body.isPinned !== undefined) data.isPinned = Boolean(body.isPinned);
   if (body.targetPath !== undefined) data.targetPath = cleanUpdateString(body.targetPath, 160);

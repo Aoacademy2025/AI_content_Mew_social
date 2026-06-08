@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 
 type UpdateCategory = "FEATURE" | "IMPROVEMENT" | "FIX" | "PATCH" | "KNOWN_ISSUE" | "IN_PROGRESS";
 type UpdateState = "DRAFT" | "PUBLISHED" | "ARCHIVED";
+type UpdateImportance = "SILENT" | "BANNER" | "MODAL";
 
 type AdminUpdate = {
   id: string;
@@ -29,6 +30,7 @@ type AdminUpdate = {
   summary: string;
   body: string | null;
   category: UpdateCategory;
+  importance: UpdateImportance;
   state: UpdateState;
   isPinned: boolean;
   targetPath: string | null;
@@ -48,6 +50,7 @@ type FormState = {
   summary: string;
   body: string;
   category: UpdateCategory;
+  importance: UpdateImportance;
   state: UpdateState;
   isPinned: boolean;
   targetPath: string;
@@ -63,6 +66,7 @@ const emptyForm: FormState = {
   summary: "",
   body: "",
   category: "PATCH",
+  importance: "BANNER",
   state: "DRAFT",
   isPinned: false,
   targetPath: "/video-editor",
@@ -80,6 +84,12 @@ const categoryOptions: { value: UpdateCategory; label: string; icon: React.Eleme
   { value: "IN_PROGRESS", label: "In progress", icon: Wrench },
 ];
 
+const importanceOptions: { value: UpdateImportance; label: string; description: string }[] = [
+  { value: "BANNER", label: "Banner", description: "โชว์แถบแจ้งเตือนบน Dashboard และ Video Editor" },
+  { value: "MODAL", label: "Modal", description: "เด้งเป็นประกาศสำคัญครั้งเดียว เหมาะกับ incident หรือ breaking change" },
+  { value: "SILENT", label: "Silent", description: "เก็บไว้ในหน้า Updates อย่างเดียว ไม่ดึงสายตา user" },
+];
+
 function toForm(update: AdminUpdate): FormState {
   return {
     id: update.id,
@@ -88,6 +98,7 @@ function toForm(update: AdminUpdate): FormState {
     summary: update.summary,
     body: update.body ?? "",
     category: update.category,
+    importance: update.importance,
     state: update.state,
     isPinned: update.isPinned,
     targetPath: update.targetPath ?? "",
@@ -267,7 +278,7 @@ export default function AdminUpdatesPage() {
                 />
               </label>
 
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-3">
                 <label className="space-y-1.5">
                   <span className="text-xs font-medium text-slate-500">Category</span>
                   <select
@@ -279,6 +290,21 @@ export default function AdminUpdatesPage() {
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-medium text-slate-500">Importance</span>
+                  <select
+                    value={form.importance}
+                    onChange={(event) => updateForm("importance", event.target.value as UpdateImportance)}
+                    className="h-10 w-full rounded-md border border-white/10 bg-black/20 px-3 text-sm text-white outline-none focus:border-sky-400/50"
+                  >
+                    {importanceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  <span className="block text-[11px] leading-snug text-slate-600">
+                    {importanceOptions.find((option) => option.value === form.importance)?.description}
+                  </span>
                 </label>
                 <label className="space-y-1.5">
                   <span className="text-xs font-medium text-slate-500">State</span>
@@ -406,6 +432,16 @@ export default function AdminUpdatesPage() {
                           </span>
                           <span className="rounded-md border border-white/10 bg-black/20 px-2 py-1 text-xs font-semibold text-slate-300">
                             {update.version}
+                          </span>
+                          <span className={cn(
+                            "rounded-md border px-2 py-1 text-xs font-semibold",
+                            update.importance === "MODAL"
+                              ? "border-rose-400/25 bg-rose-400/10 text-rose-200"
+                              : update.importance === "BANNER"
+                                ? "border-sky-400/25 bg-sky-400/10 text-sky-200"
+                                : "border-slate-400/20 bg-slate-400/10 text-slate-300",
+                          )}>
+                            {update.importance}
                           </span>
                           {update.isPinned && <Pin className="h-3.5 w-3.5 text-amber-300" />}
                         </div>

@@ -10,9 +10,11 @@ export const PRODUCT_UPDATE_CATEGORIES = [
 ] as const;
 
 export const PRODUCT_UPDATE_STATES = ["DRAFT", "PUBLISHED", "ARCHIVED"] as const;
+export const PRODUCT_UPDATE_IMPORTANCE = ["SILENT", "BANNER", "MODAL"] as const;
 
 export type ProductUpdateCategoryValue = typeof PRODUCT_UPDATE_CATEGORIES[number];
 export type ProductUpdateStateValue = typeof PRODUCT_UPDATE_STATES[number];
+export type ProductUpdateImportanceValue = typeof PRODUCT_UPDATE_IMPORTANCE[number];
 
 export function normalizeUpdateCategory(value: unknown): ProductUpdateCategoryValue {
   const raw = typeof value === "string" ? value.toUpperCase() : "";
@@ -26,6 +28,13 @@ export function normalizeUpdateState(value: unknown): ProductUpdateStateValue {
   return PRODUCT_UPDATE_STATES.includes(raw as ProductUpdateStateValue)
     ? raw as ProductUpdateStateValue
     : "DRAFT";
+}
+
+export function normalizeUpdateImportance(value: unknown): ProductUpdateImportanceValue {
+  const raw = typeof value === "string" ? value.toUpperCase() : "";
+  return PRODUCT_UPDATE_IMPORTANCE.includes(raw as ProductUpdateImportanceValue)
+    ? raw as ProductUpdateImportanceValue
+    : "BANNER";
 }
 
 export function cleanUpdateString(value: unknown, max: number): string | null {
