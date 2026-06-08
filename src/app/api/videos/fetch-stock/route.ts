@@ -10,6 +10,37 @@ import fs from "fs";
 
 const execFileAsync = promisify(execFile);
 
+function readConcurrencyEnv(name: string, fallback: number, max: number): number {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw) || raw < 1) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(raw)));
+}
+
+const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
+const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
+const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
+
+let activeNormalizations = 0;
+const normalizeWaiters: (() => void)[] = [];
+
+async function withNormalizeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeNormalizations >= NORMALIZE_CONCURRENCY) {
+    await new Promise<void>((resolve) => normalizeWaiters.push(resolve));
+  } else {
+    activeNormalizations++;
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = normalizeWaiters.shift();
+    if (next) {
+      next();
+    } else {
+      activeNormalizations = Math.max(0, activeNormalizations - 1);
+    }
+  }
+}
+
 // Remotion's compositor seeks frame-accurately and fails with
 // "No frame found at position X" on clips that use B-frames or whose fps
 // doesn't match the composition (Pexels/Pixabay ship 25fps + B-frames).
@@ -29,7 +60,7 @@ async function normalizeForRemotion(filePath: string): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const tmp = `${filePath}.norm.mp4`;
   try {
-    await execFileAsync(ffmpeg, [
+    await withNormalizeSlot(() => execFileAsync(ffmpeg, [
       "-y", "-i", filePath,
       "-an",                              // B-roll is muted in render anyway
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
@@ -41,7 +72,7 @@ async function normalizeForRemotion(filePath: string): Promise<void> {
       "-vsync", "cfr",
       "-movflags", "+faststart",
       tmp,
-    ], { maxBuffer: 64 * 1024 * 1024 });
+    ], { maxBuffer: 64 * 1024 * 1024 }));
     // Swap normalized file in only if it produced a valid result
     if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
       fs.renameSync(tmp, filePath);
@@ -380,11 +411,19 @@ export async function POST(req: Request) {
     : keywords.length;
   const totalClipsNeeded = overrideClipCount > 0 ? overrideClipCount : autoClipsNeeded;
   const cappedClipsNeeded = Math.min(totalClipsNeeded, overrideClipCount > 0 ? 500 : 400);
+  const subtitleCount = Array.isArray(subtitleTexts) ? subtitleTexts.length : 0;
+  const subtitleCountMatchesKeywords = subtitleCount > 0 && subtitleCount === keywords.length;
+  const isPerSubtitleMode = perSubtitleFlag ||
+    subtitleCountMatchesKeywords ||
+    (overrideClipCount > 0 && overrideClipCount === keywords.length);
+  const downloadClipLimit = isPerSubtitleMode
+    ? Math.max(1, Math.min(keywords.length, overrideClipCount > 0 ? overrideClipCount : subtitleCount || keywords.length))
+    : cappedClipsNeeded;
   const clipsPerKeyword = keywords.length > 0
-    ? Math.min(15, Math.max(1, Math.ceil(cappedClipsNeeded / keywords.length)))
+    ? Math.min(15, Math.max(1, Math.ceil(downloadClipLimit / keywords.length)))
     : 1;
 
-  console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords`);
+  console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, limit=${downloadClipLimit}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords${isPerSubtitleMode ? " (per-subtitle)" : ""}`);
 
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
@@ -423,6 +462,19 @@ export async function POST(req: Request) {
     await Promise.all(workers);
   }
 
+  async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++;
+        results[index] = await fn(items[index]!, index);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
   type FoundVideo = { keyword: string; id: number; duration: number; link: string };
   // Extended candidate that keeps Pexels URL slug for LLM ranking
   type CandidateVideo = FoundVideo & { title: string };
@@ -430,14 +482,14 @@ export async function POST(req: Request) {
   const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
-  // perSubtitleMode: explicit flag (survives retry with subset) OR clip count exactly matches keyword count
-  const isPerSubtitleMode = perSubtitleFlag || (overrideClipCount > 0 && overrideClipCount === keywords.length);
   // Pexels supports up to 80 per page — use that headroom for long videos
-  const basePerPage = isPerSubtitleMode ? 25 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
+  const basePerPage = isPerSubtitleMode ? 15 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
 
   // ── Search phase — try keyword alternatives in order until candidates found ──
-  const candidatesByKeyword: CandidateVideo[][] = await Promise.all(
-    keywords.map(async (keyword, ki): Promise<CandidateVideo[]> => {
+  const candidatesByKeyword: CandidateVideo[][] = await mapWithConcurrency(
+    keywords,
+    SEARCH_CONCURRENCY,
+    async (keyword, ki): Promise<CandidateVideo[]> => {
       // Build list of queries to try: alternatives first, then broad fallbacks
       const alts = keywordAlternatives?.[ki] ?? [];
       const queriesToTry = [
@@ -504,7 +556,7 @@ export async function POST(req: Request) {
         console.error(`[fetch-stock] error for "${keyword}":`, err);
         return [];
       }
-    })
+    }
   );
 
   // ── LLM ranking phase (per-subtitle mode only, 1 batched call) ──
@@ -621,11 +673,37 @@ export async function POST(req: Request) {
     }
   }
 
-  console.log(`[fetch-stock] found ${found.length} clips total`);
-  if (!found.length) return NextResponse.json({ results: [] });
+  function capFoundClips(clips: FoundVideo[], limit: number): FoundVideo[] {
+    if (limit <= 0 || clips.length <= limit) return clips;
+    const buckets = new Map<string, FoundVideo[]>();
+    for (const clip of clips) {
+      const bucket = buckets.get(clip.keyword) ?? [];
+      bucket.push(clip);
+      buckets.set(clip.keyword, bucket);
+    }
+    const orderedKeywords = keywords.filter((kw, i, arr) => arr.indexOf(kw) === i);
+    const capped: FoundVideo[] = [];
+    let added = true;
+    while (capped.length < limit && added) {
+      added = false;
+      for (const kw of orderedKeywords) {
+        const bucket = buckets.get(kw);
+        const next = bucket?.shift();
+        if (!next) continue;
+        capped.push(next);
+        added = true;
+        if (capped.length >= limit) break;
+      }
+    }
+    return capped;
+  }
+
+  const clipsToDownload = capFoundClips(found, downloadClipLimit);
+  console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
+  if (!clipsToDownload.length) return NextResponse.json({ results: [] });
 
   // ── Download phase ──
-  await withConcurrency(found, 3, async ({ keyword, id, duration, link }) => {
+  await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async ({ keyword, id, duration, link }) => {
     if (download) {
       const outFile = `${userPrefix}${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
