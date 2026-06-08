@@ -52,6 +52,7 @@ type InsightSummary = {
     sessions: number;
     users: number;
     editorSessions: number;
+    pipelineJobs: number;
     events: number;
     errors: number;
     renderSuccessPct: number;
@@ -66,8 +67,21 @@ type InsightSummary = {
     renderP50Ms: number | null;
     renderP95Ms: number | null;
     avgConcurrency: number | null;
+    avgActiveRenderSlots: number | null;
+    renderQueueP50Ms: number | null;
+    renderQueueP95Ms: number | null;
     minFreeMemGb: number | null;
     lowMemoryStarts: number;
+  };
+  staleProcessing: {
+    total: number;
+    completeCandidates: number;
+    failCandidates: number;
+    keepCandidates: number;
+    withOutputUrl: number;
+    existingOutput: number;
+    missingOutput: number;
+    oldestAgeMinutes: number | null;
   };
   recommendations: string[];
 };
@@ -76,6 +90,7 @@ type InsightsResponse = {
   range: { days: number; since: string; until: string };
   current: InsightSummary;
   previous: InsightSummary;
+  processingReconcile?: { dryRun: boolean };
 };
 
 const metricHelp: Record<string, string> = {
@@ -88,6 +103,7 @@ const metricHelp: Record<string, string> = {
   "INP": "ความหน่วงตอนกด คลิก หรือพิมพ์ ถ้าสูง UI จะรู้สึกหน่วง",
   "CLS": "คะแนนหน้ากระโดดหรือเลื่อนเอง ถ้าสูง ผู้ใช้อาจกดผิดหรืออ่านยาก",
   "Concurrency": "จำนวน thread/งานย่อยที่ server ใช้ช่วยเรนเดอร์พร้อมกัน ยิ่งสูงอาจเร็วขึ้นแต่กิน RAM/CPU มากขึ้น",
+  "Render Queue": "เวลาที่งานรอคิวก่อนเข้า renderMedia ใช้ดูว่ามีการชนกันหลายงานพร้อมกันหรือไม่",
   "Free RAM": "RAM ที่เหลือบน server ตอนเริ่ม render ถ้าต่ำกว่า 1 GB เสี่ยงค้างหรือ fail",
 };
 
@@ -290,7 +306,7 @@ export default function AdminInsightsPage() {
               <MetricTile
                 label="คนเข้า Editor"
                 value={formatNumber(current.totals.editorSessions)}
-                helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions`}
+                helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions · ${formatNumber(current.totals.pipelineJobs)} jobs`}
                 icon={Users}
                 tone="border-sky-400/20 bg-sky-500/12 text-sky-300"
               />
@@ -367,6 +383,29 @@ export default function AdminInsightsPage() {
                 </div>
 
                 <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                  <h2 className="text-lg font-semibold text-white">PROCESSING ค้าง</h2>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="text-xs text-slate-500">ทั้งหมด</div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatNumber(current.staleProcessing.total)}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 sm:col-span-2 xl:col-span-1">
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs text-slate-500">complete ได้</div>
+                        <div className="mt-2 text-xl font-semibold text-emerald-300">{formatNumber(current.staleProcessing.completeCandidates)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="text-xs text-slate-500">fail ได้</div>
+                        <div className="mt-2 text-xl font-semibold text-rose-300">{formatNumber(current.staleProcessing.failCandidates)}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                    งานเก่าสุด {current.staleProcessing.oldestAgeMinutes == null ? "-" : `${formatNumber(current.staleProcessing.oldestAgeMinutes / 60, 1)} ชม.`} · มี output URL {formatNumber(current.staleProcessing.withOutputUrl)}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
                   <h2 className="text-lg font-semibold text-white">Web Vitals</h2>
                   <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
                     {current.vitals.map((vital) => <VitalPill key={vital.metric} vital={vital} />)}
@@ -427,6 +466,10 @@ export default function AdminInsightsPage() {
                     <div className="flex items-center gap-1 text-xs text-slate-500">p95 render <InfoTip label="p95" /></div>
                     <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderP95Ms)}</div>
                   </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center gap-1 text-xs text-slate-500">Queue p95 <InfoTip label="Render Queue" /></div>
+                    <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderQueueP95Ms)}</div>
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-md border border-white/10 bg-black/20 p-3">
                       <div className="flex items-center gap-1 text-xs text-slate-500">Concurrency <InfoTip label="Concurrency" /></div>
@@ -438,6 +481,9 @@ export default function AdminInsightsPage() {
                         {current.resource.minFreeMemGb == null ? "-" : `${formatNumber(current.resource.minFreeMemGb, 2)} GB`}
                       </div>
                     </div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                    Active render slots เฉลี่ย: <span className="font-semibold text-sky-300">{formatNumber(current.resource.avgActiveRenderSlots, 1)}</span>
                   </div>
                   <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
                     RAM ต่ำกว่า 1 GB ตอนเริ่ม render: <span className="font-semibold text-amber-300">{formatNumber(current.resource.lowMemoryStarts)}</span> ครั้ง

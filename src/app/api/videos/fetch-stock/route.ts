@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -54,9 +55,12 @@ function normalizedMarkerPath(filePath: string): string {
   return `${filePath}.normalized`;
 }
 
-async function normalizeForRemotion(filePath: string): Promise<void> {
+type NormalizeResult = { status: "skipped" | "normalized" | "failed"; durationMs: number };
+
+async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> {
+  const startedAt = Date.now();
   const marker = normalizedMarkerPath(filePath);
-  if (fs.existsSync(marker)) return; // already normalized in a previous run
+  if (fs.existsSync(marker)) return { status: "skipped", durationMs: 0 }; // already normalized in a previous run
   const ffmpeg = getFfmpegPath();
   const tmp = `${filePath}.norm.mp4`;
   try {
@@ -77,13 +81,16 @@ async function normalizeForRemotion(filePath: string): Promise<void> {
     if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
       fs.renameSync(tmp, filePath);
       try { fs.writeFileSync(marker, ""); } catch {}
+      return { status: "normalized", durationMs: Date.now() - startedAt };
     } else {
       safeUnlink(tmp);
+      return { status: "failed", durationMs: Date.now() - startedAt };
     }
   } catch (e) {
     // If normalization fails, keep the original download rather than losing the clip
     console.warn(`[fetch-stock] normalize failed for ${path.basename(filePath)}, keeping original:`, e);
     safeUnlink(tmp);
+    return { status: "failed", durationMs: Date.now() - startedAt };
   }
 }
 
@@ -331,8 +338,10 @@ async function llmRankCandidates(
 
 // POST /api/videos/fetch-stock
 export async function POST(req: Request) {
+  const routeStartedAt = Date.now();
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = authUser.id;
 
   const body = await req.json().catch(() => null);
   const {
@@ -428,8 +437,73 @@ export async function POST(req: Request) {
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
 
-  const userId = authUser.id;
   const userPrefix = `stock-${userId}-`;
+
+  const stockTelemetry = {
+    searchQueries: 0,
+    pexelsCandidates: 0,
+    pixabayCandidates: 0,
+    searchCandidatesTotal: 0,
+    keywordsWithCandidates: 0,
+    noCandidateKeywords: 0,
+    page2CandidateHits: 0,
+    llmRankingUsed: false,
+    llmRankingFailed: false,
+    foundCount: 0,
+    cappedCount: 0,
+    selectedPexelsCount: 0,
+    selectedPixabayCount: 0,
+    cacheHitCount: 0,
+    downloadedCount: 0,
+    downloadFailCount: 0,
+    servedClipCount: 0,
+    normalizeRanCount: 0,
+    normalizeSkippedCount: 0,
+    normalizeFailedCount: 0,
+    normalizeMsTotal: 0,
+  };
+
+  function applyNormalizeTelemetry(result: NormalizeResult) {
+    stockTelemetry.normalizeMsTotal += result.durationMs;
+    if (result.status === "normalized") stockTelemetry.normalizeRanCount++;
+    if (result.status === "skipped") stockTelemetry.normalizeSkippedCount++;
+    if (result.status === "failed") stockTelemetry.normalizeFailedCount++;
+  }
+
+  const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
+
+  async function recordFetchStockTelemetry(status: "done" | "error", extra: Record<string, unknown> = {}) {
+    const normalizeAttempts = stockTelemetry.normalizeRanCount + stockTelemetry.normalizeFailedCount;
+    await recordTelemetryEvent(userId, {
+      name: status === "done" ? "fetch_stock_server_done" : "fetch_stock_server_error",
+      category: status === "done" ? "performance" : "error",
+      source: "server",
+      step: "fetchStock",
+      status,
+      durationMs: Date.now() - routeStartedAt,
+      properties: {
+        stockSource,
+        resolvedSource: srcLabel,
+        download,
+        keywordCount: keywords.length,
+        subtitleCount,
+        isPerSubtitleMode,
+        totalDurationSec: Math.round(Number(totalDurationSec) || 0),
+        overrideClipCount,
+        totalClipsNeeded,
+        downloadClipLimit,
+        clipsPerKeyword,
+        canUsePexels,
+        canUsePixabay,
+        searchConcurrency: SEARCH_CONCURRENCY,
+        downloadConcurrency: DOWNLOAD_CONCURRENCY,
+        normalizeConcurrency: NORMALIZE_CONCURRENCY,
+        normalizeMsAvg: normalizeAttempts > 0 ? Math.round(stockTelemetry.normalizeMsTotal / normalizeAttempts) : 0,
+        ...stockTelemetry,
+        ...extra,
+      },
+    }).catch(() => {});
+  }
 
   const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   try {
@@ -479,7 +553,6 @@ export async function POST(req: Request) {
   // Extended candidate that keeps Pexels URL slug for LLM ranking
   type CandidateVideo = FoundVideo & { title: string };
 
-  const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
   console.log(`[fetch-stock] source=${srcLabel}`);
 
   // Pexels supports up to 80 per page — use that headroom for long videos
@@ -502,6 +575,7 @@ export async function POST(req: Request) {
       try {
         for (const query of queriesToTry) {
           console.log(`[fetch-stock] searching "${query}" (perPage=${basePerPage}) from ${srcLabel}`);
+          stockTelemetry.searchQueries++;
 
           const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
             canUsePexels
@@ -514,6 +588,8 @@ export async function POST(req: Request) {
 
           const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
           const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+          stockTelemetry.pexelsCandidates += pexelsVideos.length;
+          stockTelemetry.pixabayCandidates += pixabayVideos.length;
 
           const candidates: CandidateVideo[] = [];
           for (const v of pexelsVideos) {
@@ -529,6 +605,8 @@ export async function POST(req: Request) {
           }
 
           if (candidates.length > 0) {
+            stockTelemetry.searchCandidatesTotal += candidates.length;
+            stockTelemetry.keywordsWithCandidates++;
             console.log(`[fetch-stock] "${query}": ${candidates.length} candidates (used alt ${queriesToTry.indexOf(query) + 1}/${queriesToTry.length})`);
             return candidates;
           }
@@ -539,21 +617,28 @@ export async function POST(req: Request) {
           try {
             const page2 = await searchPexels(queriesToTry[0], pexelsKey!, 3, basePerPage, 2);
             const candidates: CandidateVideo[] = [];
+            stockTelemetry.searchQueries++;
+            stockTelemetry.pexelsCandidates += page2.length;
             for (const v of page2) {
               const file = pickBestFile(v);
               if (!file) continue;
               candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title: slugToTitle(v.url ?? "") });
             }
             if (candidates.length > 0) {
+              stockTelemetry.searchCandidatesTotal += candidates.length;
+              stockTelemetry.keywordsWithCandidates++;
+              stockTelemetry.page2CandidateHits += candidates.length;
               console.log(`[fetch-stock] "${keyword}": ${candidates.length} candidates from page 2`);
               return candidates;
             }
           } catch {}
         }
         console.warn(`[fetch-stock] "${keyword}": no candidates found after ${queriesToTry.length} queries + page2`);
+        stockTelemetry.noCandidateKeywords++;
         return [];
       } catch (err) {
         console.error(`[fetch-stock] error for "${keyword}":`, err);
+        stockTelemetry.noCandidateKeywords++;
         return [];
       }
     }
@@ -566,11 +651,13 @@ export async function POST(req: Request) {
     const candidateTitles = candidatesByKeyword.map(cs => cs.map(c => c.title));
     const hasAnyCandidates = candidateTitles.some(t => t.length > 0);
     if (hasAnyCandidates) {
+      stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
         bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
       } catch (e) {
+        stockTelemetry.llmRankingFailed = true;
         console.error(`[fetch-stock] LLM ranking failed, falling back to best-duration pick:`, e);
         // Fallback: pick candidate with longest duration (more content = better match than index 0)
         bestIdxByKeyword = candidatesByKeyword.map(cs => {
@@ -699,8 +786,15 @@ export async function POST(req: Request) {
   }
 
   const clipsToDownload = capFoundClips(found, downloadClipLimit);
+  stockTelemetry.foundCount = found.length;
+  stockTelemetry.cappedCount = clipsToDownload.length;
+  stockTelemetry.selectedPexelsCount = clipsToDownload.filter((clip) => clip.id < 9_000_000).length;
+  stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount;
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
-  if (!clipsToDownload.length) return NextResponse.json({ results: [] });
+  if (!clipsToDownload.length) {
+    await recordFetchStockTelemetry("done", { emptyResult: true });
+    return NextResponse.json({ results: [] });
+  }
 
   // ── Download phase ──
   await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async ({ keyword, id, duration, link }) => {
@@ -709,22 +803,31 @@ export async function POST(req: Request) {
       const outPath = path.join(rendersDir, outFile);
       if (isValidMp4Path(outPath)) {
         console.log(`[fetch-stock] cache hit: ${outFile}`);
+        stockTelemetry.cacheHitCount++;
         // Older cached clips may predate normalization (or were left B-frame'd) —
         // normalizeForRemotion no-ops if already clean, re-encodes otherwise.
-        await normalizeForRemotion(outPath);
+        applyNormalizeTelemetry(await normalizeForRemotion(outPath));
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
         return;
       }
       console.log(`[fetch-stock] downloading: ${outFile}`);
       try {
         await downloadAndCrop(link, outPath);
-        if (!isValidMp4Path(outPath)) return;
+        if (!isValidMp4Path(outPath)) {
+          stockTelemetry.downloadFailCount++;
+          return;
+        }
+        stockTelemetry.downloadedCount++;
         // Re-encode to Remotion-safe CFR/no-B-frame so the compositor can seek
         // every frame (fixes "No frame found at position X" render crashes).
-        await normalizeForRemotion(outPath);
-        if (!isValidMp4Path(outPath)) return;
+        applyNormalizeTelemetry(await normalizeForRemotion(outPath));
+        if (!isValidMp4Path(outPath)) {
+          stockTelemetry.downloadFailCount++;
+          return;
+        }
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
       } catch (e) {
+        stockTelemetry.downloadFailCount++;
         console.error(`[fetch-stock] failed to download ${outFile}:`, e);
       }
     } else {
@@ -732,6 +835,8 @@ export async function POST(req: Request) {
     }
   });
 
+  stockTelemetry.servedClipCount = results.length;
+  await recordFetchStockTelemetry("done");
   console.log(`[fetch-stock] downloaded ${results.length} clips`);
   return NextResponse.json({ results });
 }

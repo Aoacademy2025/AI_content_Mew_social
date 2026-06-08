@@ -26,6 +26,11 @@ declare global {
   // Total active render count across hot-reloads.
   // eslint-disable-next-line no-var
   var __activeRenderCount: number | undefined;
+  // CPU-heavy renderMedia slot queue across hot-reloads.
+  // eslint-disable-next-line no-var
+  var __activeRenderSlots: number | undefined;
+  // eslint-disable-next-line no-var
+  var __renderSlotWaiters: (() => void)[] | undefined;
 }
 
 export const cancelByJobId: Map<string, () => void> =
@@ -54,6 +59,35 @@ export function incrementActiveRenderCount() {
 }
 export function decrementActiveRenderCount() {
   global.__activeRenderCount = Math.max(0, (global.__activeRenderCount ?? 1) - 1);
+}
+
+export function getActiveRenderSlots(): number {
+  return global.__activeRenderSlots ?? 0;
+}
+
+export function getRenderSlotQueueLength(): number {
+  return (global.__renderSlotWaiters ?? []).length;
+}
+
+export async function withRenderSlot<T>(limit: number, fn: () => Promise<T>): Promise<T> {
+  const safeLimit = Math.max(1, Math.floor(limit));
+  global.__renderSlotWaiters ??= [];
+  if ((global.__activeRenderSlots ?? 0) >= safeLimit) {
+    await new Promise<void>((resolve) => global.__renderSlotWaiters!.push(resolve));
+  } else {
+    global.__activeRenderSlots = (global.__activeRenderSlots ?? 0) + 1;
+  }
+
+  try {
+    return await fn();
+  } finally {
+    const next = global.__renderSlotWaiters.shift();
+    if (next) {
+      next();
+    } else {
+      global.__activeRenderSlots = Math.max(0, (global.__activeRenderSlots ?? 1) - 1);
+    }
+  }
 }
 
 function jobsDir(): string {
