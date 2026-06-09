@@ -31,13 +31,13 @@
 - ⏳ follow-ups: เทสจ่ายจริง+refund · OG image (`public/og.png`) ให้ sale page
 
 ## ⚙️ Cron (PM2 บน prod — รันอยู่, pm2 save แล้ว)
-- `trial-expiry` (8โมง) · `founding-sweep` (ทุก 15น.) · `renewal-reminders` (9โมง — เตือน manual-renew 14/7/1 วันก่อนหมด) · `cleanup-videos` (ตี 3 — ลบ expired videos + cancel stale PENDING payments)
+- `trial-expiry` (8โมง) · `founding-sweep` (ทุก 15น.) · `reconcile-processing` (ทุก 15น. — complete วิดีโอ `PROCESSING` ค้างที่มี output แล้ว) · `renewal-reminders` (9โมง — เตือน manual-renew 14/7/1 วันก่อนหมด) · `cleanup-videos` (ตี 3 — ลบ expired videos + cancel stale PENDING payments)
 - หมายเหตุ PM2: cron apps เป็น one-shot + `autorestart: false` จึงขึ้น `stopped` หลังรันจบ แต่ schedule ยังถูก save ใน PM2 แล้ว
 - `cleanup-videos` เปิดกลับแล้วใน session นี้ และ hotfix path `/api/renders/...` → `public/renders/...` แล้ว; smoke ล่าสุดลบ expired videos ได้ 2 รายการ
 - เปิด cron: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` แล้ว `pm2 start ecosystem.config.js --only <X> --update-env && pm2 save`
 
 ## ⚠️ Known issues (infra — ทีม render / wao1234)
-- **Render ไม่มี global queue** → คนเรนเดอร์พร้อมกันเยอะ = OOM/crash (ปลอดภัย ~3-4 งานพร้อมกัน) → ต้องทำ **queue**
+- **Render queue ยังเป็น in-memory guard** → กัน OOM/งานซ้ำได้ระดับหนึ่ง แต่ restart แล้ว queue ไม่ persist และยังไม่มี admin queue view → ต้องทำ persistent queue/worker ต่อ
 - **Next production build ใช้ memory สูงมาก** → 06-09 build บน VPS เคยถูก OOM kill; เพิ่ม persistent swap `/swapfile-codex-build-extra` 24GB แล้ว + harden deploy script ให้ retry เมื่อ `.next/BUILD_ID` หาย; watch disk usage (หลังเพิ่ม swap เหลือประมาณ 41GB)
 - **Clip cap enforce แล้ว** ผ่าน `reserveClipUsage`: FREE 2, PRO 100, BUSINESS 300 ต่อ 30 วัน; ยังไม่มี global render queue
 - **VPS ตัวเดียว ไม่มี GPU** = คอขวด render ตอน scale (GPU ไม่ช่วย Remotion → ใช้ CPU/Lambda)

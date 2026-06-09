@@ -76,6 +76,19 @@ module.exports = {
       },
     },
     {
+      name: "reconcile-processing",
+      cwd: "/var/www/ai-content",
+      script: "scripts/reconcile-processing.js",
+      cron_restart: "*/15 * * * *", // every 15 min — complete stale PROCESSING videos that already have output files
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
       name: "trial-expiry",
       cwd: "/var/www/ai-content",
       script: "scripts/trial-expiry.js",

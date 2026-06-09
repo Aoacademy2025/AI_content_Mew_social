@@ -183,9 +183,15 @@ export async function getProcessingReconcilePlan(options: {
   };
 }
 
-export async function applyProcessingReconcile(plan: ProcessingReconcilePlan) {
+export async function applyProcessingReconcile(
+  plan: ProcessingReconcilePlan,
+  options: { failMissingOutput?: boolean } = {},
+) {
+  const failMissingOutput = options.failMissingOutput ?? true;
   const completeIds = plan.items.filter((item) => item.action === "complete").map((item) => item.id);
-  const failIds = plan.items.filter((item) => item.action === "fail").map((item) => item.id);
+  const failIds = failMissingOutput
+    ? plan.items.filter((item) => item.action === "fail").map((item) => item.id)
+    : [];
 
   const [completed, failed] = await Promise.all([
     completeIds.length
