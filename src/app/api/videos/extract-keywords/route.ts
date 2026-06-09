@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -48,6 +49,31 @@ function isTooSimilar(candidate: string, usedSet: Set<string>, threshold = 0.6):
 // Minimal validation: must be English, 2-8 words, not noise
 const NOISE_RE = /^(scene|scenes|keywords?|clip|clips?|shot|shots|video|videos)\s*[:\-]?\s*\d*$/i;
 
+const GENERIC_FALLBACK_QUERIES = [
+  "creative workspace",
+  "hands typing keyboard",
+  "business meeting",
+  "city street night",
+  "smartphone close up",
+  "office presentation",
+  "data center servers",
+  "team working laptop",
+  "urban lifestyle",
+  "sunrise nature landscape",
+];
+
+const TEXT_HINT_FALLBACKS: Array<{ pattern: RegExp; queries: string[] }> = [
+  { pattern: /ai|เอไอ|ปัญญาประดิษฐ์|เทคโนโลยี|ระบบ|ข้อมูล|ดิจิทัล|software|technology/i, queries: ["artificial intelligence", "data center servers", "software developer"] },
+  { pattern: /เงิน|รายได้|ธุรกิจ|ขาย|ลูกค้า|ลงทุน|ตลาด|กำไร|business|money|sales|market/i, queries: ["business meeting", "hands counting money", "office presentation"] },
+  { pattern: /สุขภาพ|หมอ|โรงพยาบาล|ยา|ออกกำลัง|health|doctor|medical|fitness/i, queries: ["doctor consultation", "healthy lifestyle", "fitness training"] },
+  { pattern: /เรียน|ศึกษา|โรงเรียน|มหาวิทยาลัย|ครู|นักเรียน|education|student|learn/i, queries: ["student studying", "classroom learning", "online education"] },
+  { pattern: /อาหาร|กิน|ร้าน|ครัว|กาแฟ|food|restaurant|coffee|kitchen/i, queries: ["restaurant kitchen", "coffee shop", "food preparation"] },
+  { pattern: /บ้าน|ครอบครัว|เด็ก|พ่อแม่|family|home|child/i, queries: ["family at home", "children playing", "cozy living room"] },
+  { pattern: /เดินทาง|เที่ยว|รถ|ถนน|เมือง|travel|car|road|city/i, queries: ["city street", "travel suitcase", "car driving road"] },
+  { pattern: /กลัว|เครียด|กังวล|ปัญหา|เสี่ยง|stress|fear|problem|risk/i, queries: ["stressed person", "worried office worker", "dark city street"] },
+  { pattern: /สำเร็จ|เติบโต|เป้าหมาย|แรงบันดาลใจ|success|growth|goal|motivation/i, queries: ["team celebration", "person sunrise", "business growth chart"] },
+];
+
 function sanitizeKeyword(raw: string): string {
   const k = raw
     .replace(/[^a-zA-Z0-9\s\-]/g, "")
@@ -60,6 +86,55 @@ function sanitizeKeyword(raw: string): string {
   const words = k.split(" ").filter(Boolean);
   if (words.length < 2 || words.length > 8) return "";
   return k;
+}
+
+function visualDirectionCandidates(visualDirection: string): string[] {
+  const words = visualDirection
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !NOISE_RE.test(w));
+  const candidates: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    candidates.push(`${words[i]} ${words[i + 1]}`);
+  }
+  return candidates;
+}
+
+function englishTextCandidates(text: string): string[] {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !NOISE_RE.test(w));
+  const candidates: string[] = [];
+  for (let i = 0; i < Math.min(words.length - 1, 4); i++) {
+    candidates.push(`${words[i]} ${words[i + 1]}`);
+  }
+  if (words.length >= 3) candidates.push(words.slice(0, 3).join(" "));
+  return candidates;
+}
+
+function fallbackQueriesForText(text: string, index: number, count: number, visualDirection = ""): string[] {
+  const candidates: string[] = [];
+  for (const hint of TEXT_HINT_FALLBACKS) {
+    if (hint.pattern.test(text)) candidates.push(...hint.queries);
+  }
+  candidates.push(...visualDirectionCandidates(visualDirection));
+  candidates.push(...englishTextCandidates(text));
+
+  for (let i = 0; i < GENERIC_FALLBACK_QUERIES.length; i++) {
+    candidates.push(GENERIC_FALLBACK_QUERIES[(index + i) % GENERIC_FALLBACK_QUERIES.length]);
+  }
+
+  const deduped: string[] = [];
+  for (const candidate of candidates) {
+    const clean = sanitizeKeyword(candidate);
+    if (clean && !deduped.includes(clean)) deduped.push(clean);
+    if (deduped.length >= count) break;
+  }
+
+  return deduped.length > 0 ? deduped : ["creative workspace"];
 }
 
 function parseKeywordAlternatives(raw: string): string[][] {
@@ -112,6 +187,7 @@ function parseKeywordAlternatives(raw: string): string[][] {
 export async function POST(req: Request) {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = authUser.id;
 
   const body = await req.json().catch(() => null);
   const { script, scenes, perSubtitle = false, audioDurationSec = 0 } = body ?? {};
@@ -144,6 +220,31 @@ export async function POST(req: Request) {
     }, { status: info.status });
   }
 
+  let keywordFallbackRecorded = false;
+  function useHeuristicKeywordFallback(error: unknown, mode: "normal" | "perSubtitle", itemCount: number): string | null {
+    const info = getGeminiErrorInfo(error);
+    if (!info.retryable) return null;
+
+    console.log(`[extract-keywords] Gemini ${info.kind}; using heuristic keyword fallback (mode=${mode}, items=${itemCount})`);
+    if (!keywordFallbackRecorded) {
+      keywordFallbackRecorded = true;
+      recordTelemetryEvent(userId, {
+        name: "keyword_fallback_used",
+        category: "pipeline",
+        source: "server",
+        step: "keywords",
+        status: "fallback",
+        properties: {
+          mode,
+          reason: info.kind,
+          providerStatus: info.status,
+          itemCount,
+        },
+      }).catch(() => {});
+    }
+    return info.kind;
+  }
+
   // ── perSubtitle mode ──────────────────────────────────────────────────────────
   if (perSubtitle) {
     const subtitleList: string[] = Array.isArray(scenes) && scenes.length > 0
@@ -155,6 +256,9 @@ export async function POST(req: Request) {
     const fullScript = preprocessScript(
       typeof script === "string" && script.trim() ? script : subtitleList.join(" ")
     );
+
+    let useHeuristicFallback = false;
+    let heuristicFallbackReason: string | null = null;
 
     // Step 0: Analyze script once to get visual direction for consistent B-roll tone
     let visualDirection = "";
@@ -172,7 +276,11 @@ Output ONLY the one-sentence visual direction, nothing else.`;
       visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
       console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
     } catch (e) {
-      console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
+      heuristicFallbackReason = useHeuristicKeywordFallback(e, "perSubtitle", subtitleList.length);
+      useHeuristicFallback = Boolean(heuristicFallbackReason);
+      if (!useHeuristicFallback) {
+        console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
+      }
     }
 
     const BATCH_SIZE = 15;
@@ -232,21 +340,43 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       let rawAlts: string[][] = [];
       let lastBatchError: unknown = null;
 
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          if (attempt > 0) await new Promise(r => setTimeout(r, 6000 * attempt));
-          const text = await callLLM(prompt, maxTokens);
-          console.log(`[extract-keywords] b${b} attempt${attempt}:`, text.slice(0, 120));
-          rawAlts = parseKeywordAlternatives(text);
-          if (rawAlts.length >= Math.floor(batch.length * 0.7)) break;
-        } catch (e) {
-          lastBatchError = e;
-          console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
+      if (useHeuristicFallback) {
+        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+      } else {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            if (attempt > 0) await new Promise(r => setTimeout(r, 6000 * attempt));
+            const text = await callLLM(prompt, maxTokens);
+            console.log(`[extract-keywords] b${b} attempt${attempt}:`, text.slice(0, 120));
+            rawAlts = parseKeywordAlternatives(text);
+            if (rawAlts.length >= Math.floor(batch.length * 0.7)) break;
+          } catch (e) {
+            lastBatchError = e;
+            const reason = useHeuristicKeywordFallback(e, "perSubtitle", subtitleList.length);
+            if (reason) {
+              heuristicFallbackReason = heuristicFallbackReason ?? reason;
+              useHeuristicFallback = true;
+              rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+              break;
+            }
+            console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
+          }
         }
       }
 
       if (rawAlts.length === 0 && lastBatchError) {
-        return geminiErrorResponse(lastBatchError);
+        const reason = useHeuristicKeywordFallback(lastBatchError, "perSubtitle", subtitleList.length);
+        if (reason) {
+          heuristicFallbackReason = heuristicFallbackReason ?? reason;
+          useHeuristicFallback = true;
+          rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+        } else {
+          return geminiErrorResponse(lastBatchError);
+        }
+      }
+
+      if (rawAlts.length === 0 && useHeuristicFallback) {
+        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
       }
 
       // Pad missing entries with empty arrays (will get generic fallback below)
@@ -257,6 +387,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
       for (let i = 0; i < batch.length; i++) {
         const alts = rawAlts[i] ?? [];
+        const fallbackAlts = fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection);
 
         // Pick first valid keyword — in perSubtitle mode allow similar keywords
         // because adjacent subtitles can legitimately share visual themes
@@ -273,24 +404,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
         // Last resort: ask LLM gave nothing useful, use subtitle text words
         if (!picked) {
-          const words = batch[i]
-            .toLowerCase()
-            .replace(/[^\w\s]/g, " ")
-            .split(/\s+/)
-            .filter(w => w.length > 3 && /^[a-z]/.test(w))
-            .slice(0, 3);
-          // derive from visual direction if available, otherwise use first content words
-          if (words.length >= 2) {
-            picked = words.join(" ");
-          } else {
-            const dirWords = visualDirection
-              .toLowerCase()
-              .replace(/[^a-z\s]/g, " ")
-              .split(/\s+/)
-              .filter(w => w.length > 3)
-              .slice(0, 2);
-            picked = dirWords.length >= 2 ? dirWords.join(" ") : dirWords[0] || words[0] || "scene";
-          }
+          picked = fallbackAlts.find((alt) => !usedKeywords.has(alt)) ?? fallbackAlts[0];
         }
 
         usedKeywords.add(picked);
@@ -298,6 +412,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
         // Store alternatives, ensure first matches picked
         const cleanAlts = alts.filter(Boolean);
+        if (cleanAlts.length === 0) cleanAlts.push(...fallbackAlts);
         if (cleanAlts[0] !== picked) cleanAlts.unshift(picked);
         batchAlts.push(cleanAlts.slice(0, 3));
       }
@@ -315,6 +430,8 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       sceneDurations: subtitleList.map(() => 3),
       keywordsPerScene: 1,
       visualDirection,
+      fallback: useHeuristicFallback ? "heuristic" : undefined,
+      fallbackReason: useHeuristicFallback ? heuristicFallbackReason : undefined,
     });
   }
 
@@ -347,6 +464,9 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
   console.log(`[extract-keywords] dur=${durSec}s clips_needed=${clipsNeeded} keywords_needed=${keywordsNeeded} kw/scene=${kwPerScene} total=${totalKw}`);
 
+  let useHeuristicFallback = false;
+  let heuristicFallbackReason: string | null = null;
+
   // Analyze script visual direction first
   let visualDirection = "";
   try {
@@ -356,7 +476,10 @@ Script: ${cleanScript.slice(0, 1500)}
 Output ONLY the one-sentence visual direction, nothing else.`;
     visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
     console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
-  } catch {}
+  } catch (e) {
+    heuristicFallbackReason = useHeuristicKeywordFallback(e, "normal", numScenes);
+    useHeuristicFallback = Boolean(heuristicFallbackReason);
+  }
 
   const directionBlock = visualDirection ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n═══ END DIRECTION ═══\n` : "";
 
@@ -417,6 +540,42 @@ Exactly ${numScenes} arrays in order.
 SCENES:
 ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
 
+  function heuristicNormalResponse(reason: string | null) {
+    const allAlternatives: string[][] = [];
+    const allKeywords: string[] = [];
+
+    for (let i = 0; i < numScenes; i++) {
+      const sceneAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection);
+      for (let j = 0; j < kwPerScene; j++) {
+        const picked = sceneAlts[j % sceneAlts.length];
+        allKeywords.push(picked);
+        allAlternatives.push([picked, ...sceneAlts.filter(a => a !== picked)].slice(0, 3));
+      }
+    }
+
+    const sceneClipCounts = multiKwMode
+      ? sceneList.map(() => kwPerScene)
+      : sceneList.map(() => 1);
+    const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
+
+    console.log(`[extract-keywords] heuristic fallback: ${allKeywords.length} keywords for ${numScenes} scenes (${kwPerScene}/scene)`);
+    return NextResponse.json({
+      keywords: allKeywords,
+      keywordAlternatives: allAlternatives,
+      scenes: sceneList,
+      keywordsPerScene: kwPerScene,
+      sceneClipCounts,
+      sceneDurations,
+      visualDirection,
+      fallback: "heuristic",
+      fallbackReason: reason,
+    });
+  }
+
+  if (useHeuristicFallback) {
+    return heuristicNormalResponse(heuristicFallbackReason);
+  }
+
   try {
     const maxTokens = Math.min(8192, totalKw * 80 + 400);
     const text = await callLLM(prompt, maxTokens);
@@ -435,10 +594,12 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       // แต่ละ scene → kwPerScene keywords แยกกัน
       for (let i = 0; i < numScenes; i++) {
         const sceneAlts = (parsed[i] ?? []).filter(Boolean);
+        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection);
         // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
+        let fallbackIndex = 0;
         while (sceneAlts.length < kwPerScene) {
-          const fallback = sceneAlts[0] || sceneList[i].toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(w => w.length > 3).slice(0, 2).join(" ") || "background scene";
-          sceneAlts.push(fallback);
+          sceneAlts.push(fallbackAlts[fallbackIndex % fallbackAlts.length]);
+          fallbackIndex++;
         }
         // สร้าง keyword แยกสำหรับแต่ละ slot ใน scene
         for (let j = 0; j < kwPerScene; j++) {
@@ -457,6 +618,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     } else {
       for (let i = 0; i < numScenes; i++) {
         const alts = (parsed[i] ?? []).filter(Boolean);
+        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection);
 
         let picked = "";
         for (const alt of alts) {
@@ -465,21 +627,13 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
         if (!picked && alts[0]) picked = alts[0];
 
         if (!picked) {
-          const sceneText = sceneList[i] ?? "";
-          const words = sceneText.toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/)
-            .filter(w => w.length > 3 && /^[a-z]/.test(w)).slice(0, 3);
-          if (words.length >= 2) {
-            picked = words.join(" ");
-          } else {
-            const dirWords = visualDirection.toLowerCase().replace(/[^a-z\s]/g, " ")
-              .split(/\s+/).filter(w => w.length > 3).slice(0, 2);
-            picked = dirWords.join(" ") || words[0] || "scene";
-          }
+          picked = fallbackAlts.find((alt) => !isTooSimilar(alt, usedKeywords)) ?? fallbackAlts[0];
         }
 
         usedKeywords.add(picked);
         allKeywords.push(picked);
         const cleanAlts = alts.filter(Boolean);
+        if (cleanAlts.length === 0) cleanAlts.push(...fallbackAlts);
         if (cleanAlts[0] !== picked) cleanAlts.unshift(picked);
         allAlternatives.push(cleanAlts.slice(0, 3));
       }
@@ -501,6 +655,8 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       visualDirection,
     });
   } catch (e) {
+    const reason = useHeuristicKeywordFallback(e, "normal", numScenes);
+    if (reason) return heuristicNormalResponse(reason);
     return geminiErrorResponse(e);
   }
 }
