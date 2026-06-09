@@ -17,9 +17,17 @@ function readConcurrencyEnv(name: string, fallback: number, max: number): number
   return Math.max(1, Math.min(max, Math.floor(raw)));
 }
 
+function readIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
 const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
+const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 120_000, 30_000, 600_000);
+const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
 
 let activeNormalizations = 0;
 const normalizeWaiters: (() => void)[] = [];
@@ -64,6 +72,7 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
   const ffmpeg = getFfmpegPath();
   const tmp = `${filePath}.norm.mp4`;
   try {
+    safeUnlink(tmp);
     await withNormalizeSlot(() => execFileAsync(ffmpeg, [
       "-y", "-i", filePath,
       "-an",                              // B-roll is muted in render anyway
@@ -76,7 +85,11 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
       "-vsync", "cfr",
       "-movflags", "+faststart",
       tmp,
-    ], { maxBuffer: 64 * 1024 * 1024 }));
+    ], {
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: NORMALIZE_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    }));
     // Swap normalized file in only if it produced a valid result
     if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
       fs.renameSync(tmp, filePath);
@@ -165,6 +178,24 @@ function safeUnlink(filePath: string) {
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   } catch {}
+}
+
+function cleanupStaleTempFiles(dir: string, prefix: string, maxAgeMs: number): number {
+  let deleted = 0;
+  try {
+    if (!fs.existsSync(dir)) return 0;
+    const now = Date.now();
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith(prefix)) continue;
+      if (!name.endsWith(".part") && !name.endsWith(".norm.mp4")) continue;
+      const filePath = path.join(dir, name);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs <= maxAgeMs) continue;
+      safeUnlink(filePath);
+      deleted++;
+    }
+  } catch {}
+  return deleted;
 }
 
 function isValidMp4Path(filePath: string): boolean {
@@ -426,7 +457,11 @@ export async function POST(req: Request) {
     subtitleCountMatchesKeywords ||
     (overrideClipCount > 0 && overrideClipCount === keywords.length);
   const downloadClipLimit = isPerSubtitleMode
-    ? Math.max(1, Math.min(keywords.length, overrideClipCount > 0 ? overrideClipCount : subtitleCount || keywords.length))
+    ? Math.max(1, Math.min(
+        keywords.length,
+        overrideClipCount > 0 ? overrideClipCount : subtitleCount || keywords.length,
+        PER_SUBTITLE_DOWNLOAD_LIMIT,
+      ))
     : cappedClipsNeeded;
   const clipsPerKeyword = keywords.length > 0
     ? Math.min(15, Math.max(1, Math.ceil(downloadClipLimit / keywords.length)))
@@ -438,6 +473,10 @@ export async function POST(req: Request) {
   fs.mkdirSync(rendersDir, { recursive: true });
 
   const userPrefix = `stock-${userId}-`;
+  const staleTempDeleted = cleanupStaleTempFiles(rendersDir, userPrefix, 30 * 60 * 1000);
+  if (staleTempDeleted > 0) {
+    console.log(`[fetch-stock] cleaned ${staleTempDeleted} stale temp files`);
+  }
 
   const stockTelemetry = {
     searchQueries: 0,
@@ -498,6 +537,9 @@ export async function POST(req: Request) {
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
+        normalizeTimeoutMs: NORMALIZE_TIMEOUT_MS,
+        perSubtitleDownloadLimit: PER_SUBTITLE_DOWNLOAD_LIMIT,
+        staleTempDeleted,
         normalizeMsAvg: normalizeAttempts > 0 ? Math.round(stockTelemetry.normalizeMsTotal / normalizeAttempts) : 0,
         ...stockTelemetry,
         ...extra,
