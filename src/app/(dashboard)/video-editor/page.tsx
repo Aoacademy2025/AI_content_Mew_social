@@ -47,6 +47,32 @@ const STEP_EVENT_LABELS: Record<string, string> = {
   burnSubtitles: "ฝังซับลงวิดีโอ",
 };
 
+type RenderProgressPayload = {
+  progress?: number;
+  videoUrl?: string | null;
+  error?: string | null;
+  queued?: boolean;
+  queuePosition?: number | null;
+  stage?: "preparing" | "queued" | "rendering" | "done" | "error" | "cancelled" | string | null;
+  updatedAt?: number | null;
+  queuedAt?: number | null;
+  renderQueueWaitMs?: number | null;
+};
+
+type RenderActivity = {
+  phase: "idle" | "preparing" | "queued" | "rendering" | "burning";
+  label: string;
+  queuePosition: number | null;
+  startedAt: number | null;
+};
+
+function formatElapsed(ms: number) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -202,8 +228,24 @@ export default function VideoEditorPage() {
   const renderProgressRef = useRef(0);
   const [, setRenderProgressTick] = useState(0);
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+  const [renderActivity, setRenderActivity] = useState<RenderActivity>({
+    phase: "idle",
+    label: "",
+    queuePosition: null,
+    startedAt: null,
+  });
+  const [renderElapsedTick, setRenderElapsedTick] = useState(0);
   const renderProgress = renderProgressRef.current;
   function setRenderProgress(v: number) { renderProgressRef.current = v; setRenderProgressTick(t => t + 1); }
+
+  useEffect(() => {
+    if (renderActivity.phase === "idle") return;
+    const timer = window.setInterval(() => setRenderElapsedTick(t => t + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [renderActivity.phase]);
+
+  const renderElapsedMs = renderActivity.startedAt ? Date.now() - renderActivity.startedAt : 0;
+  void renderElapsedTick;
 
   // ── Last-rendered style snapshot (for reset + dirty detection) ────────
   interface RenderedStyle {
@@ -1369,12 +1411,20 @@ export default function VideoEditorPage() {
     setStep("render", "running", "Rendering...");
     setRenderProgressError(null);
     renderProgressRef.current = 0;
+    const renderActivityStartedAt = Date.now();
+    setRenderActivity({
+      phase: "preparing",
+      label: "เตรียมไฟล์สำหรับเรนเดอร์",
+      queuePosition: null,
+      startedAt: renderActivityStartedAt,
+    });
 
     let renderPollTimer: ReturnType<typeof setInterval> | null = null;
     let pollStopped = false;
     let renderFailedMessage: string | null = null;
     let resolveRenderUrl: ((url: string) => void) | null = null;
     let currentJobId: string | null = null;
+    let renderIsQueued = false;
 
     const stopPoll = () => {
       pollStopped = true;
@@ -1387,7 +1437,7 @@ export default function VideoEditorPage() {
       try {
         const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
         if (!r.ok) return;
-        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+        const d = await r.json() as RenderProgressPayload;
         if (d.videoUrl) {
           // progress file บอก done → resolve ทันที แล้วหยุด poll ทั้งคู่
           if (resolveRenderUrl) { resolveRenderUrl(d.videoUrl); resolveRenderUrl = null; }
@@ -1396,7 +1446,40 @@ export default function VideoEditorPage() {
         }
         if (d.error) { renderFailedMessage = d.error; setRenderProgressError(d.error); setStep("render", "error", d.error); stopPoll(); return; }
         const p = Number(d.progress);
-        if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("render", "running", `Rendering... ${Math.round(p)}%`); }
+        renderIsQueued = Boolean(d.queued || d.stage === "queued");
+        if (renderIsQueued) {
+          const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
+          setRenderProgress(0);
+          setRenderActivity({
+            phase: "queued",
+            label: queueText,
+            queuePosition: d.queuePosition ?? null,
+            startedAt: renderActivityStartedAt,
+          });
+          setStep("render", "running", queueText);
+          return;
+        }
+        if (d.stage === "preparing") {
+          setRenderActivity({
+            phase: "preparing",
+            label: "เตรียมไฟล์สำหรับเรนเดอร์",
+            queuePosition: null,
+            startedAt: renderActivityStartedAt,
+          });
+          setStep("render", "running", "Preparing render...");
+          return;
+        }
+        if (Number.isFinite(p)) {
+          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+          setRenderProgress(safeProgress);
+          setRenderActivity({
+            phase: "rendering",
+            label: "กำลังเรนเดอร์",
+            queuePosition: null,
+            startedAt: renderActivityStartedAt,
+          });
+          setStep("render", "running", `Rendering... ${safeProgress}%`);
+        }
       } catch {}
     }, 600);
 
@@ -1452,7 +1535,7 @@ export default function VideoEditorPage() {
         pipe.current.renderedVideoNoSubUrl = immediateUrl;
         clearDerivedPreviewOutputs({ clearComposite: true });
         setPreRenderUrl(immediateUrl); setVideoUrl(immediateUrl);
-        setStep("render", "done", immediateUrl); setRenderProgress(100); return immediateUrl;
+        setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return immediateUrl;
       }
       if (!jobId) throw new Error("Render server did not return jobId");
       currentJobId = jobId; activeJobIdRef.current = jobId;
@@ -1474,7 +1557,9 @@ export default function VideoEditorPage() {
 
           // Stale check: progress ไม่เปลี่ยนนานเกิน 5 นาที → hang
           const curProgress = renderProgressRef.current;
-          if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
+          if (renderIsQueued) {
+            lastProgressChangedAt = Date.now();
+          } else if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
           else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
             clearInterval(si); resolveRenderUrl = null;
             reject(new Error("Render หยุดค้างนานเกิน 60 นาที — กรุณาลองใหม่"));
@@ -1516,7 +1601,7 @@ export default function VideoEditorPage() {
         captions: captionsRef.current.map(c => ({ ...c })),
       };
       setStyleIsDirty(false);
-      setStep("render", "done", url); setRenderProgress(100); return url;
+      setStep("render", "done", url); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return url;
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
@@ -1524,6 +1609,7 @@ export default function VideoEditorPage() {
         const msg = friendlyError(err);
         setRenderProgressError(msg); setStep("render", "error", msg);
       }
+      setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
       throw err;
     } finally {
       stopPoll(); stopRenderPollRef.current = null;
@@ -1996,6 +2082,13 @@ export default function VideoEditorPage() {
     setStep("burnSubtitles", "running", "Burning subtitles...");
     setRenderProgressError(null);
     renderProgressRef.current = 0;
+    const burnActivityStartedAt = Date.now();
+    setRenderActivity({
+      phase: "burning",
+      label: "เตรียมฝังซับ",
+      queuePosition: null,
+      startedAt: burnActivityStartedAt,
+    });
 
     let burnPollTimer: ReturnType<typeof setInterval> | null = null;
     let pollStopped = false;
@@ -2013,11 +2106,33 @@ export default function VideoEditorPage() {
       try {
         const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
         if (!r.ok) return;
-        const d = await r.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+        const d = await r.json() as RenderProgressPayload;
         if (d.videoUrl && resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; return; }
         if (d.error) { burnFailedMessage = d.error; setRenderProgressError(d.error); setStep("burnSubtitles", "error", d.error); return; }
         const p = Number(d.progress);
-        if (Number.isFinite(p)) { setRenderProgress(Math.min(100, Math.max(0, Math.round(p)))); setStep("burnSubtitles", "running", `Burning... ${Math.round(p)}%`); }
+        if (d.queued || d.stage === "queued") {
+          const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
+          setRenderProgress(0);
+          setRenderActivity({
+            phase: "queued",
+            label: queueText,
+            queuePosition: d.queuePosition ?? null,
+            startedAt: burnActivityStartedAt,
+          });
+          setStep("burnSubtitles", "running", queueText);
+          return;
+        }
+        if (Number.isFinite(p)) {
+          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+          setRenderProgress(safeProgress);
+          setRenderActivity({
+            phase: "burning",
+            label: "กำลังฝังซับ",
+            queuePosition: null,
+            startedAt: burnActivityStartedAt,
+          });
+          setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
+        }
       } catch {}
     }, 600);
 
@@ -2074,6 +2189,7 @@ export default function VideoEditorPage() {
         setStyleIsDirty(false);
         setStep("burnSubtitles", "done", url);
         setRenderProgress(100);
+        setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
         // Update Gallery: replace videoUrl with the burned-in version (final result)
         saveToGallery({
           videoUrl: url,
@@ -2138,6 +2254,7 @@ export default function VideoEditorPage() {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       setStep("burnSubtitles", "error", msg);
+      setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
       if (toastOnError) toast.error(msg);
       throw err;
     } finally {
@@ -3032,11 +3149,32 @@ export default function VideoEditorPage() {
               })()}
             </div>
             {renderProgressError && <div className="mt-2 text-[11px] text-red-400 bg-red-500/10 rounded-lg px-2 py-1.5 leading-snug">{renderProgressError}</div>}
-            {steps.render === "running" && renderProgress > 0 && (
-              <div className="mt-2">
-                <div className="flex justify-between text-[10px] text-slate-600 mb-1"><span>Rendering</span><span>{renderProgress}%</span></div>
-                <div className="h-1 bg-[#2a2a36] rounded-full overflow-hidden">
-                  <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${renderProgress}%` }} />
+            {renderActivity.phase !== "idle" && (
+              <div className="mt-2 rounded-lg border border-[#2a2a36] bg-[#12121a] px-2.5 py-2">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-300" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] font-semibold text-slate-200">{renderActivity.label}</span>
+                      <span className="shrink-0 text-[10px] tabular-nums text-slate-500">{formatElapsed(renderElapsedMs)}</span>
+                    </div>
+                    {renderActivity.phase === "queued" ? (
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                        <span>ระบบจะเริ่มเองเมื่อถึงคิว</span>
+                        {renderActivity.queuePosition && <span className="tabular-nums">คิว {renderActivity.queuePosition}</span>}
+                      </div>
+                    ) : (
+                      <div className="mt-1">
+                        <div className="mb-1 flex justify-between text-[10px] text-slate-500">
+                          <span>{renderActivity.phase === "burning" ? "Burn" : "Render"}</span>
+                          <span>{renderProgress}%</span>
+                        </div>
+                        <div className="h-1 overflow-hidden rounded-full bg-[#2a2a36]">
+                          <div className="h-full rounded-full bg-violet-500 transition-all" style={{ width: `${renderProgress}%` }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

@@ -22,7 +22,17 @@ export async function GET(req: Request) {
 
   try {
     const raw = await fs.promises.readFile(progressFile, "utf-8");
-    const parsed = JSON.parse(raw) as { progress?: number; videoUrl?: string; error?: string; queued?: boolean; queuePosition?: number };
+    const parsed = JSON.parse(raw) as {
+      progress?: number;
+      videoUrl?: string;
+      error?: string;
+      queued?: boolean;
+      queuePosition?: number | null;
+      stage?: string;
+      updatedAt?: number;
+      queuedAt?: number;
+      renderQueueWaitMs?: number;
+    };
     const progress = Number(parsed?.progress);
     return NextResponse.json({
       progress: Number.isFinite(progress) ? progress : 0,
@@ -30,8 +40,22 @@ export async function GET(req: Request) {
       error: parsed?.error ?? null,
       queued: parsed?.queued ?? false,
       queuePosition: parsed?.queuePosition ?? null,
+      stage: parsed?.stage ?? null,
+      updatedAt: parsed?.updatedAt ?? null,
+      queuedAt: parsed?.queuedAt ?? null,
+      renderQueueWaitMs: parsed?.renderQueueWaitMs ?? null,
     });
   } catch {
-    return NextResponse.json({ progress: 0, videoUrl: null, error: null, queued: false, queuePosition: null });
+    return NextResponse.json({
+      progress: 0,
+      videoUrl: null,
+      error: null,
+      queued: false,
+      queuePosition: null,
+      stage: null,
+      updatedAt: null,
+      queuedAt: null,
+      renderQueueWaitMs: null,
+    });
   }
 }

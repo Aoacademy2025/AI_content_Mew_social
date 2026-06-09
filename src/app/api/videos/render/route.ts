@@ -265,6 +265,11 @@ export async function POST(req: Request) {
     reservedUserId = userId;
 
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+    const writeProgress = (data: Record<string, unknown>) => {
+      try {
+        fs.writeFileSync(progressFile, JSON.stringify({ jobId, updatedAt: Date.now(), ...data }));
+      } catch {}
+    };
 
     const safeDuration = requestedDurationSec ?? 60;
     const durationInFrames = Math.max(Math.round(safeDuration * fps), fps);
@@ -558,7 +563,7 @@ export async function POST(req: Request) {
     }
 
     // Clear stale progress file and register job immediately — before bundle build
-    try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0 })); } catch {}
+    writeProgress({ progress: 0, stage: "preparing", queued: false, queuePosition: null });
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
     incrementActiveRenderCount();
 
@@ -596,9 +601,7 @@ export async function POST(req: Request) {
           error: "superseded",
           startedAt: existing?.startedAt ?? Date.now(),
         });
-        try {
-          fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: "superseded" }));
-        } catch {}
+        writeProgress({ progress: -1, stage: "cancelled", error: "superseded", queued: false, queuePosition: null });
         await refundReservedClip();
         await recordTelemetryEvent(userId, {
           name: "render_server_cancelled",
@@ -685,7 +688,7 @@ export async function POST(req: Request) {
         const renderSlotLimit = getRenderJobConcurrencyLimit();
         const queuePosition = getActiveRenderSlots() >= renderSlotLimit ? getRenderSlotQueueLength() + 1 : 0;
         if (queuePosition > 0) {
-          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, jobId, queued: true, queuePosition })); } catch {}
+          writeProgress({ progress: 0, stage: "queued", queued: true, queuePosition, queuedAt: Date.now() });
           console.log(`[Render] job=${jobId} queued at position ${queuePosition} (limit=${renderSlotLimit})`);
         }
 
@@ -695,7 +698,7 @@ export async function POST(req: Request) {
         await withRenderSlot(renderSlotLimit, async () => {
           const renderQueueWaitMs = Date.now() - renderQueueStartedAt;
           if (await stopSupersededJob("render_slot")) return;
-          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, jobId, queued: false, queuePosition: null })); } catch {}
+          writeProgress({ progress: 0, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
 
           const cpuCount = os.cpus().length;
           const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
@@ -785,9 +788,7 @@ export async function POST(req: Request) {
               const p = Math.round(progress * 100);
               if (p !== lastProgress) {
                 lastProgress = p;
-                try {
-                  fs.writeFileSync(progressFile, JSON.stringify({ progress: p, jobId, queued: false, queuePosition: null }));
-                } catch {}
+                writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
               }
               if (p % 5 === 0) {
                 console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
@@ -805,7 +806,7 @@ export async function POST(req: Request) {
 
           const videoUrl = `/api/renders/${filename}`;
           setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
-          try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 100, jobId, videoUrl, queued: false, queuePosition: null })); } catch {}
+          writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
           await recordTelemetryEvent(userId, {
             name: "render_server_done",
             category: "performance",
@@ -868,7 +869,7 @@ export async function POST(req: Request) {
 
         console.error("Render error:", error);
         setRenderJob(jobId, { status: "error", error: detail, startedAt: getRenderJob(jobId)!.startedAt });
-        try { fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: detail })); } catch {}
+        writeProgress({ progress: -1, stage: "error", error: detail, queued: false, queuePosition: null });
         await recordTelemetryEvent(userId, {
           name: "render_server_error",
           category: "error",
