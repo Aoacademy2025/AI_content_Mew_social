@@ -1,5 +1,5 @@
 # STATUS — สถานะจริงของโปรเจกต์
-> อัปเดต: 2026-06-08 · prod app deploy ล่าสุดที่ Codex verify = `e69f589` · repo main มี commit ใหม่หลัง prod deploy (ดู handoff) · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md) ประกอบ
+> อัปเดต: 2026-06-09 · prod app deploy ล่าสุดที่ Codex verify = `4430835` · support tickets ล่าสุดปิดครบแล้ว · product update `v0.4.3` published · เอกสารนี้สะท้อน "งานจริง" (PRD.md = วิชันเดิม บางส่วนล้าสมัย) · ดู [CLAUDE.md](CLAUDE.md) + [docs/HANDOFF-2026-06-09.md](docs/HANDOFF-2026-06-09.md) ประกอบ
 
 ## ภาพรวม
 **HERO AI** (studio.heroaiengine.com) — SaaS เปลี่ยนสคริปต์ 1 ชุด เป็นวิดีโอสั้นพร้อมโพสต์อัตโนมัติ (Faceless + AI Avatar + ซับไทย)
@@ -14,6 +14,7 @@
 - **Video creator + video editor (timeline)** ด้วย Remotion
 - ฟีเจอร์หลัก: AI Avatar (เต็ม/เปิด-ปิด/ไม่มี) · ซับไทยอัตโนมัติ (ยาว/keyword) · B-roll 3-5วิ · โคลนเสียง · เพลง · ตัดต่ออัตโนมัติ
 - **Video editor preview/export flow fixed (LIVE 06-08, `e69f589`)** — Render หยุดที่ editable preview ที่มี voice/avatar+BGM + live subtitle overlay; Burn Subtitles ใช้เป็น final export เท่านั้น; Mew test ผ่าน 2 clips แล้ว
+- **Support bugfix release (LIVE 06-09, `161e393` → `4430835`)** — แก้ Gemini/API key + keyword empty-state + transcribe/subtitle duration guard + timeline/playhead sync + zoom 100% + spacebar play/pause + notification click; support tickets ชุดนี้ปิดครบแล้ว
 - Coupon system · Admin · Notifications · Support tickets
 - First-party telemetry + Admin Insights (`/admin/insights`) — เก็บ page view, frontend error, Web Vitals, render pipeline/performance event เพื่อใช้วิเคราะห์ drop-off/error/resource จริง
 - Deploy: Hostinger VPS + PM2 + Nginx · render ด้วย Remotion/ffmpeg บนเครื่อง
@@ -37,12 +38,14 @@
 
 ## ⚠️ Known issues (infra — ทีม render / wao1234)
 - **Render ไม่มี global queue** → คนเรนเดอร์พร้อมกันเยอะ = OOM/crash (ปลอดภัย ~3-4 งานพร้อมกัน) → ต้องทำ **queue**
+- **Next production build ใช้ memory สูงมาก** → 06-09 build บน VPS เคยถูก OOM kill; เพิ่ม persistent swap `/swapfile-codex-build-extra` 24GB แล้ว + harden deploy script ให้ retry เมื่อ `.next/BUILD_ID` หาย; watch disk usage (หลังเพิ่ม swap เหลือประมาณ 41GB)
 - **Clip cap enforce แล้ว** ผ่าน `reserveClipUsage`: FREE 2, PRO 100, BUSINESS 300 ต่อ 30 วัน; ยังไม่มี global render queue
 - **VPS ตัวเดียว ไม่มี GPU** = คอขวด render ตอน scale (GPU ไม่ช่วย Remotion → ใช้ CPU/Lambda)
 - **BYOK** = ผู้ใช้ต้องตั้ง key เอง → adoption friction → ต้องทำ onboarding ให้ดี
 
 ## 🐞 Video editor bug status (06-08)
 - ✅ **Mew BGM/subtitle preview bug closed** — deployed `b6bf434` → `5e78754` → `f720314` → `014c6e2` → `e69f589`; final UX: Render preview first, edit subtitles live, Burn & Download only at the end
+- ✅ **Customer support bug batch closed (06-09)** — deployed `161e393` + deploy hardening `6ba829a`/`4430835`; closed all 7 open tickets from bunchar/sumawadee; `/updates` has published `v0.4.3`
 - ⏳ **Customer backlog: `kapokja@gmail.com`** — paid annual PRO customer; not a payment issue. Tomorrow continue root fixes for avatar half-body, stale render jobs, and customer-specific recovery/backfill. Full audit notes in [docs/HANDOFF-2026-06-08.md](docs/HANDOFF-2026-06-08.md)
 
 ## 🗺️ Roadmap (ย่อ)
