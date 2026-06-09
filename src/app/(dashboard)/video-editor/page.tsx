@@ -73,6 +73,55 @@ function formatElapsed(ms: number) {
   return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
 }
 
+function normalizeCaptionsForTimeline(input: Caption[], durationMs = 0): Caption[] {
+  if (!Array.isArray(input) || input.length === 0) return [];
+  const fallbackEnd = input.reduce((max, c) => Math.max(max, Number(c?.endMs) || 0), 0);
+  const totalMs = Math.max(1, Math.round(Number(durationMs) > 0 ? Number(durationMs) : fallbackEnd));
+  const clean = input
+    .map((c, index) => ({
+      ...c,
+      index,
+      text: typeof c?.text === "string" ? c.text.trim() : "",
+      startMs: Number.isFinite(Number(c?.startMs)) ? Number(c.startMs) : NaN,
+      endMs: Number.isFinite(Number(c?.endMs)) ? Number(c.endMs) : NaN,
+    }))
+    .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs))
+    .sort((a, b) => a.startMs - b.startMs || a.index - b.index);
+
+  const out: Caption[] = [];
+  let cursor = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const cap = clean[i];
+    if (cursor >= totalMs) break;
+    const nextRawStart = i < clean.length - 1
+      ? Math.max(0, Math.min(Math.round(clean[i + 1].startMs), totalMs))
+      : totalMs;
+    let startMs = Math.max(0, Math.round(cap.startMs));
+    const rawEndMs = Math.max(startMs + 1, Math.round(cap.endMs));
+    startMs = Math.min(Math.max(startMs, cursor), totalMs - 1);
+    const endLimit = i < clean.length - 1
+      ? Math.max(startMs + 1, nextRawStart)
+      : totalMs;
+    let endMs = Math.min(rawEndMs, endLimit, totalMs);
+    if (endMs <= startMs) endMs = Math.min(totalMs, startMs + 1);
+    if (endMs <= startMs) continue;
+    const { index: _index, ...caption } = cap;
+    void _index;
+    out.push({ ...caption, startMs, endMs });
+    cursor = endMs;
+  }
+  return out;
+}
+
+function captionsTimelineEqual(a: Caption[], b: Caption[]) {
+  return a.length === b.length && a.every((cap, i) => (
+    cap.text === b[i]?.text &&
+    cap.startMs === b[i]?.startMs &&
+    cap.endMs === b[i]?.endMs &&
+    cap.tag === b[i]?.tag
+  ));
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1278,6 +1327,8 @@ export default function VideoEditorPage() {
       sceneCaptions = groups;
     }
 
+    sceneCaptions = normalizeCaptionsForTimeline(sceneCaptions, audioDurationMs);
+
     pipe.current.captions = rawCaptions;
     pipe.current.sceneCaptions = sceneCaptions;
     pipe.current.audioDurationMs = audioDurationMs;
@@ -1291,6 +1342,11 @@ export default function VideoEditorPage() {
 
   async function runConfig(sv: StockVideo[], voiceUrl: string, audioDurationMs: number, caps: Caption[]) {
     setStep("config", "running");
+    const configCaptions = normalizeCaptionsForTimeline(caps, audioDurationMs);
+    if (!captionsTimelineEqual(captionsRef.current, configCaptions)) {
+      captionsRef.current = configCaptions;
+      setCaptionsRaw(configCaptions);
+    }
 
     // ── Force per-subtitle B-ROLL mode ──────────────────────────────────────
     // Want exactly 1 B-ROLL clip per caption so every cut lands on a subtitle
@@ -1306,7 +1362,7 @@ export default function VideoEditorPage() {
     // (which produced the 30 even-split cuts seen in the user's log).
     let svForConfig = sv;
     let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
-    const capN = caps.length;
+    const capN = configCaptions.length;
     if (capN > 0 && sv.length > 0) {
       if (sv.length >= capN) {
         svForConfig = sv.slice(0, capN);
@@ -1325,7 +1381,7 @@ export default function VideoEditorPage() {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
       body: JSON.stringify({
-        sceneCaptions: caps, stockVideos: svForConfig, voiceFile: voiceUrl, audioDurationMs,
+        sceneCaptions: configCaptions, stockVideos: svForConfig, voiceFile: voiceUrl, audioDurationMs,
         fontFamily: subFontFamily, subtitlePosition: subPosition, subtitleSize: subFontSize,
         subtitleColor: subColor, subtitleAccentColor: subAccentColor,
         subtitleStylePreset: subPreset, subtitleTextEffect: subEffect, subtitleFontWeight: subFontWeight,
@@ -2107,8 +2163,18 @@ export default function VideoEditorPage() {
         const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
         if (!r.ok) return;
         const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl && resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; return; }
-        if (d.error) { burnFailedMessage = d.error; setRenderProgressError(d.error); setStep("burnSubtitles", "error", d.error); return; }
+        if (d.videoUrl) {
+          if (resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; }
+          stopPoll();
+          return;
+        }
+        if (d.error) {
+          burnFailedMessage = d.error;
+          setRenderProgressError(d.error);
+          setStep("burnSubtitles", "error", d.error);
+          stopPoll();
+          return;
+        }
         const p = Number(d.progress);
         if (d.queued || d.stage === "queued") {
           const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
@@ -2138,26 +2204,38 @@ export default function VideoEditorPage() {
 
     try {
       const fps = 30;
-      const currentCaps = captionsRef.current;
-      const keywordPopups = currentCaps.map(c => ({
-        text: c.text,
-        start: Math.round(c.startMs / 1000 * fps),
-        end: Math.round(c.endMs / 1000 * fps),
-        tag: c.tag ?? "body",
-        isHighlight: c.tag === "hook",
-        color: subPreset === "karaoke-box" ? subColor : c.tag === "hook" ? subAccentColor : subColor,
-        accentColor: subAccentColor,
-        fontWeight: subFontWeight,
-        topPercent: subPosition,
-        size: subFontSize,
-        stylePreset: subPreset,
-      }));
-
-      // คำนวณ durationInFrames จาก audioDurationMs หรือ captions สุดท้าย
       const audioDurMs = pipe.current.audioDurationMs ?? 0;
+      const rawLastCapMs = captionsRef.current.length > 0 ? Math.max(...captionsRef.current.map(c => c.endMs)) : 0;
+      const currentCaps = normalizeCaptionsForTimeline(captionsRef.current, Math.max(audioDurMs, rawLastCapMs, 1000));
+      if (!captionsTimelineEqual(captionsRef.current, currentCaps)) {
+        captionsRef.current = currentCaps;
+        pipe.current.sceneCaptions = currentCaps;
+        setCaptionsRaw(currentCaps);
+      }
       const lastCapMs = currentCaps.length > 0 ? Math.max(...currentCaps.map(c => c.endMs)) : 0;
       const durMs = Math.max(audioDurMs, lastCapMs, 1000);
       const durationInFrames = Math.max(Math.round(durMs / 1000 * fps), fps);
+      let frameCursor = 0;
+      const keywordPopups = currentCaps.flatMap(c => {
+        if (frameCursor >= durationInFrames) return [];
+        const popup = {
+          text: c.text,
+          start: Math.round(c.startMs / 1000 * fps),
+          end: Math.round(c.endMs / 1000 * fps),
+          tag: c.tag ?? "body",
+          isHighlight: c.tag === "hook",
+          color: subPreset === "karaoke-box" ? subColor : c.tag === "hook" ? subAccentColor : subColor,
+          accentColor: subAccentColor,
+          fontWeight: subFontWeight,
+          topPercent: subPosition,
+          size: subFontSize,
+          stylePreset: subPreset,
+        };
+        const start = Math.min(Math.max(frameCursor, popup.start), durationInFrames - 1);
+        const end = Math.min(Math.max(popup.end, start + 1), durationInFrames);
+        frameCursor = end;
+        return [{ ...popup, start, end }];
+      });
       const subtitleOverlayConfig = {
         videoUrl: baseVideo,
         keywordPopups,

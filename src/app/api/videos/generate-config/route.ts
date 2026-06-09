@@ -97,31 +97,62 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
   if (!Array.isArray(raw) || raw.length === 0) return [];
 
   const totalMs = Math.max(0, Number(audioDurationMs));
+  const minMs = Math.max(1, Math.round(minFrameMs));
   const captions = raw
-    .map((c) => ({
+    .map((c, index) => ({
       ...c,
+      index,
       text: typeof c?.text === "string" ? c.text.trim() : "",
       startMs: Number.isFinite(Number(c?.startMs)) ? Number(c.startMs) : NaN,
       endMs: Number.isFinite(Number(c?.endMs)) ? Number(c.endMs) : NaN,
     }))
     .filter((c) => c.text.length > 0 && Number.isFinite(c.startMs) && Number.isFinite(c.endMs))
-    .sort((a, b) => a.startMs - b.startMs);
+    .sort((a, b) => a.startMs - b.startMs || a.index - b.index);
 
-  if (!captions.length) return [];
+  if (!captions.length || totalMs <= 0) return [];
 
-  // Preserve original transcript timing — only clamp to audio bounds and ensure minimum frame
-  const out: Cap[] = captions.map((cap) => {
-    const start = Math.max(0, Math.min(cap.startMs, totalMs));
-    let end = Math.max(start + minFrameMs, cap.endMs);
-    if (end > totalMs) end = Math.max(totalMs, start + minFrameMs);
-    return { ...cap, startMs: Math.round(start), endMs: Math.round(end) };
-  });
-
-  // Trim endMs so it never overlaps the next caption start (but never push start)
-  for (let i = 0; i < out.length - 1; i++) {
-    if (out[i].endMs > out[i + 1].startMs) {
-      out[i].endMs = Math.max(out[i].startMs + minFrameMs, out[i + 1].startMs);
+  const out: Cap[] = [];
+  let cursor = 0;
+  for (let i = 0; i < captions.length; i++) {
+    const cap = captions[i];
+    if (cursor >= totalMs) break;
+    const nextRawStart = i < captions.length - 1
+      ? Math.max(0, Math.min(Math.round(captions[i + 1].startMs), totalMs))
+      : totalMs;
+    let start = Math.max(0, Math.round(cap.startMs));
+    const rawEnd = Math.max(start + minMs, Math.round(cap.endMs));
+    start = Math.min(Math.max(start, cursor), Math.max(0, totalMs - 1));
+    const endLimit = i < captions.length - 1
+      ? Math.max(start + minMs, nextRawStart)
+      : totalMs;
+    let end = Math.min(Math.max(rawEnd, start + 1), endLimit, totalMs);
+    if (end <= start) {
+      end = Math.min(totalMs, start + minMs);
     }
+    if (end <= start) continue;
+    const { index: _index, ...cleanCap } = cap;
+    void _index;
+    out.push({ ...cleanCap, startMs: start, endMs: end });
+    cursor = end;
+  }
+
+  return out;
+}
+
+function normalizeKeywordPopups(popups: KeywordPopupItem[], durationInFrames: number): KeywordPopupItem[] {
+  const totalFrames = Math.max(1, Math.round(Number(durationInFrames) || 1));
+  const out: KeywordPopupItem[] = [];
+  let cursor = 0;
+
+  for (const popup of popups) {
+    if (cursor >= totalFrames) break;
+    let start = Number.isFinite(Number(popup.start)) ? Math.round(Number(popup.start)) : cursor;
+    let end = Number.isFinite(Number(popup.end)) ? Math.round(Number(popup.end)) : start + 1;
+    start = Math.min(Math.max(0, start, cursor), totalFrames - 1);
+    end = Math.min(Math.max(end, start + 1), totalFrames);
+    if (end <= start) continue;
+    out.push({ ...popup, start, end });
+    cursor = end;
   }
 
   return out;
@@ -243,7 +274,9 @@ export async function POST(req: Request) {
     }
   }
 
-  const keywordPopups: KeywordPopupItem[] = gapFilled
+  const popupCaptions = normalizeCaptionTimeline(gapFilled, audioDurationMs, minFrameMs);
+
+  const keywordPopups: KeywordPopupItem[] = normalizeKeywordPopups(popupCaptions
     .map((c) => {
       const text = c.text.trim();
       const { color, size } = detectStyle(text, subtitleSize, primaryColor);
@@ -263,7 +296,7 @@ export async function POST(req: Request) {
         tag: c.tag,
         stylePreset: subtitleStylePreset,
       };
-    });
+    }), durationInFrames);
 
   // 2. Build bgVideos
   //
@@ -684,4 +717,3 @@ export async function POST(req: Request) {
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);
   return NextResponse.json({ config });
 }
-
