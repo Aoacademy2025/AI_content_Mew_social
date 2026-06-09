@@ -35,6 +35,16 @@ function getRenderTmpDir(): string {
   return base;
 }
 
+function getRemotionBundlePublicDir(): string {
+  // Remotion inputs are absolute /api/renders and /api/stocks URLs, not staticFile().
+  // Use an empty public dir so bundle() does not duplicate public/renders into cache.
+  const base = path.join(process.cwd(), ".tmp", "remotion-public");
+  try {
+    fs.mkdirSync(base, { recursive: true });
+  } catch {}
+  return base;
+}
+
 function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number) {
   if (process.platform === "win32") return;
   try {
@@ -637,7 +647,11 @@ export async function POST(req: Request) {
           let inFlight = getBundleInProgress();
           if (!inFlight) {
             console.log("[Render] building new webpack bundle...");
-            inFlight = bundle({ entryPoint, webpackOverride: (config: unknown) => config })
+            inFlight = bundle({
+              entryPoint,
+              publicDir: getRemotionBundlePublicDir(),
+              webpackOverride: (config: unknown) => config,
+            })
               .then((loc: string) => {
                 cachedBundleLocation = loc;
                 cachedBundleMtime = remotionFingerprint;
