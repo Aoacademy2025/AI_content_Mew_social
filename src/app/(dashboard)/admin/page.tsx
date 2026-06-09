@@ -30,6 +30,28 @@ interface CleanupInfo {
   protectedCount: number;
 }
 
+interface StorageHealth {
+  checkedAt: string;
+  status: "ok" | "warning" | "high" | "critical";
+  thresholds: { warning: number; high: number; critical: number };
+  disk: {
+    mount: string;
+    filesystem: string;
+    totalGb: number;
+    usedGb: number;
+    availableGb: number;
+    usedPercent: number;
+  };
+  directories: Array<{
+    key: string;
+    label: string;
+    path: string;
+    exists: boolean;
+    sizeMb: number;
+    sizeGb: number;
+  }>;
+}
+
 interface SupportTicket {
   id: string;
   message: string;
@@ -338,6 +360,8 @@ export default function AdminDashboardPage() {
   const [includeStocks, setIncludeStocks] = useState(false);
   const [includeTmp, setIncludeTmp] = useState(false);
   const [showCleanConfirm, setShowCleanConfirm] = useState(false);
+  const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
 
   function loadCleanupInfo() {
     setCleanupLoading(true);
@@ -346,6 +370,22 @@ export default function AdminDashboardPage() {
       .then(d => setCleanupInfo(d))
       .catch(() => {})
       .finally(() => setCleanupLoading(false));
+  }
+
+  function loadStorageHealth() {
+    setStorageLoading(true);
+    fetch("/api/admin/storage", { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.error) setStorageHealth(d);
+      })
+      .catch(() => {})
+      .finally(() => setStorageLoading(false));
+  }
+
+  function refreshStorageInfo() {
+    loadStorageHealth();
+    loadCleanupInfo();
   }
 
   async function runCleanup() {
@@ -360,7 +400,7 @@ export default function AdminDashboardPage() {
       const d = await res.json();
       if (res.ok) {
         toast.success(d.message);
-        loadCleanupInfo();
+        refreshStorageInfo();
       } else {
         toast.error(d.error ?? "ลบไม่สำเร็จ");
       }
@@ -374,6 +414,7 @@ export default function AdminDashboardPage() {
   useEffect(() => {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
     loadCleanupInfo();
+    loadStorageHealth();
     loadTracks();
     loadSettings();
   }, []);
@@ -451,6 +492,37 @@ export default function AdminDashboardPage() {
     indigo: "from-indigo-500 to-purple-500", pink: "from-pink-500 to-rose-500",
     green: "from-green-500 to-emerald-500",  cyan: "from-cyan-500 to-blue-500",
   };
+
+  const storageTone = {
+    ok: {
+      label: "ปกติ",
+      text: "text-green-300",
+      border: "border-green-500/25",
+      bg: "bg-green-500/8",
+      bar: "bg-green-400",
+    },
+    warning: {
+      label: "เฝ้าระวัง",
+      text: "text-yellow-300",
+      border: "border-yellow-500/30",
+      bg: "bg-yellow-500/10",
+      bar: "bg-yellow-400",
+    },
+    high: {
+      label: "สูง",
+      text: "text-orange-300",
+      border: "border-orange-500/35",
+      bg: "bg-orange-500/10",
+      bar: "bg-orange-400",
+    },
+    critical: {
+      label: "วิกฤต",
+      text: "text-red-300",
+      border: "border-red-500/40",
+      bg: "bg-red-500/12",
+      bar: "bg-red-400",
+    },
+  }[storageHealth?.status ?? "ok"];
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
@@ -632,12 +704,55 @@ export default function AdminDashboardPage() {
               <HardDrive className="h-5 w-5 text-orange-400" />
               จัดการพื้นที่ดิสก์
             </h2>
-            <button onClick={loadCleanupInfo} disabled={cleanupLoading}
+            <button onClick={refreshStorageInfo} disabled={cleanupLoading || storageLoading}
               className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1">
-              {cleanupLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3 -rotate-90" />}
+              {cleanupLoading || storageLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3 -rotate-90" />}
               รีเฟรช
             </button>
           </div>
+
+          {storageHealth && (
+            <div className={`mb-4 rounded-2xl border ${storageTone.border} ${storageTone.bg} p-5`}>
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="mb-2 flex items-center gap-2">
+                    <HardDrive className={`h-4 w-4 ${storageTone.text}`} />
+                    <span className={`text-sm font-semibold ${storageTone.text}`}>Disk Status: {storageTone.label}</span>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-zinc-500">
+                      alert {storageHealth.thresholds.warning}/{storageHealth.thresholds.high}/{storageHealth.thresholds.critical}%
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-black/30">
+                    <div
+                      className={`h-full rounded-full ${storageTone.bar}`}
+                      style={{ width: `${Math.min(100, storageHealth.disk.usedPercent)}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    ใช้ไป {storageHealth.disk.usedGb}GB จาก {storageHealth.disk.totalGb}GB · เหลือ {storageHealth.disk.availableGb}GB · mount {storageHealth.disk.mount}
+                  </p>
+                </div>
+
+                <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 lg:w-[520px]">
+                  {storageHealth.directories.map(dir => (
+                    <div key={dir.key} className="rounded-xl border border-white/10 bg-black/15 px-3 py-2">
+                      <p className="truncate text-[10px] text-zinc-500">{dir.label}</p>
+                      <p className="text-sm font-bold text-white">{dir.sizeGb >= 1 ? `${dir.sizeGb}GB` : `${dir.sizeMb}MB`}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {storageHealth.status !== "ok" && (
+                <div className="mt-4 flex items-start gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+                  <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${storageTone.text}`} />
+                  <p className={`text-xs ${storageTone.text}`}>
+                    พื้นที่ดิสก์เกิน threshold แล้ว ควรตรวจ orphan media, stock cache และไฟล์ render ที่โตผิดปกติก่อนปล่อยให้เกิน 90%
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 space-y-5">
             {/* Stats row */}

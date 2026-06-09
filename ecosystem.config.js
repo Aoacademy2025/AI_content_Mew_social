@@ -50,6 +50,18 @@ module.exports = {
       },
     },
     {
+      name: "media-cleanup",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/media-cleanup.ts --olderThanDays=3 --includeStocks --apply",
+      cron_restart: "30 3 * * *", // daily 3:30 AM — reference-aware orphan media cleanup
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
+    {
       name: "renewal-reminders",
       cwd: "/var/www/ai-content",
       script: "scripts/renewal-reminders.js",
