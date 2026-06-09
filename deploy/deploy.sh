@@ -60,15 +60,24 @@ npx prisma db push --skip-generate
 npx prisma generate
 
 echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEAP_MB}MB) ==="
-rm -rf "$APP_DIR/.next"
-if ! npm run build; then
-  echo "Build failed. Retrying with lower memory profile: main=${BUILD_HEAP_MB_LOW}MB worker=${BUILD_WORKER_HEAP_MB_LOW}MB"
+run_next_build() {
   rm -rf "$APP_DIR/.next"
+  if ! npm run build; then
+    return 1
+  fi
+  test -f "$APP_DIR/.next/BUILD_ID"
+}
+
+if ! run_next_build; then
+  echo "Build failed or missing .next/BUILD_ID. Retrying with lower memory profile: main=${BUILD_HEAP_MB_LOW}MB worker=${BUILD_WORKER_HEAP_MB_LOW}MB"
   export BUILD_HEAP_MB="$BUILD_HEAP_MB_LOW"
   export BUILD_WORKER_HEAP_MB="$BUILD_WORKER_HEAP_MB_LOW"
   export NODE_OPTIONS="--max-old-space-size=${BUILD_HEAP_MB} --max-semi-space-size=8"
   export NEXT_PRIVATE_WORKER_OPTIONS="--max-old-space-size=${BUILD_WORKER_HEAP_MB}"
-  npm run build || exit 1
+  if ! run_next_build; then
+    echo "ERROR: build did not generate .next/BUILD_ID (most likely killed by OOM)"
+    exit 1
+  fi
 fi
 
 if [ ! -f "$APP_DIR/.next/BUILD_ID" ]; then
