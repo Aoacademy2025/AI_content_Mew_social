@@ -1,5 +1,69 @@
+declare global {
+  // eslint-disable-next-line no-var
+  var __heroAiUnhandledRejectionGuardInstalled: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __heroAiRemotionTargetClosedRejections: number | undefined;
+  // eslint-disable-next-line no-var
+  var __heroAiRemotionTargetClosedLastLogAt: number | undefined;
+}
+
+function reasonText(reason: unknown): string {
+  if (reason instanceof Error) {
+    return `${reason.name}: ${reason.message}\n${reason.stack ?? ""}`;
+  }
+  if (typeof reason === "string") return reason;
+  try {
+    return JSON.stringify(reason);
+  } catch {
+    return String(reason);
+  }
+}
+
+function reasonSummary(reason: unknown): string {
+  if (reason instanceof Error) return `${reason.name}: ${reason.message}`;
+  return reasonText(reason).slice(0, 240);
+}
+
+function isRemotionTargetClosedRejection(reason: unknown): boolean {
+  const text = reasonText(reason);
+  return (
+    /ProtocolError/i.test(text) &&
+    (
+      /Target\.attachToTarget/i.test(text) ||
+      /Target closed/i.test(text) ||
+      /remotion\.dev\/docs\/target-closed/i.test(text)
+    )
+  );
+}
+
+function installUnhandledRejectionGuard() {
+  if (global.__heroAiUnhandledRejectionGuardInstalled) return;
+  global.__heroAiUnhandledRejectionGuardInstalled = true;
+
+  process.on("unhandledRejection", (reason) => {
+    if (isRemotionTargetClosedRejection(reason)) {
+      global.__heroAiRemotionTargetClosedRejections =
+        (global.__heroAiRemotionTargetClosedRejections ?? 0) + 1;
+      const now = Date.now();
+      const lastLogAt = global.__heroAiRemotionTargetClosedLastLogAt ?? 0;
+      if (now - lastLogAt > 10 * 60 * 1000) {
+        global.__heroAiRemotionTargetClosedLastLogAt = now;
+        console.warn(
+          `[instrumentation] suppressed Remotion target-closed unhandledRejection ` +
+          `(count=${global.__heroAiRemotionTargetClosedRejections}): ${reasonSummary(reason)}`
+        );
+      }
+      return;
+    }
+
+    console.error("[instrumentation] unhandledRejection:", reason);
+  });
+}
+
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    installUnhandledRejectionGuard();
+
     const { prisma } = await import("@/lib/prisma");
     const { resetStripeClient } = await import("@/lib/stripe");
 
