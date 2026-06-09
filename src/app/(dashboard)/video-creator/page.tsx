@@ -591,17 +591,17 @@ export default function ShortVideoPage() {
   /** Custom error that carries the parsed API response body */
   class ApiCallError extends Error {
     data: Record<string, unknown>;
-    constructor(prefix: string, data: Record<string, unknown>) {
+    constructor(prefix: string, data: Record<string, unknown>, status?: number) {
       // Include `detail` from server if present so friendlyError can show it
       const detail = data.detail ? ` — ${String(data.detail).slice(0, 200)}` : "";
       super(`${prefix}: ${data.error ?? "Unknown error"}${detail}`);
-      this.data = data;
+      this.data = status ? { ...data, _status: status } : data;
     }
   }
 
   /** Throw ApiCallError if response is not ok — preserves missingKey and other fields */
   function assertOk(prefix: string, res: Response, data: Record<string, unknown>) {
-    if (!res.ok) throw new ApiCallError(prefix, data);
+    if (!res.ok) throw new ApiCallError(prefix, data, res.status);
   }
 
   function setStep(key: keyof StepState, status: StepStatus, log?: string) {
@@ -629,6 +629,12 @@ export default function ShortVideoPage() {
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
+    if (err instanceof ApiCallError) {
+      const status = (err.data as any)._status as number | undefined;
+      const errMsg = String(err.data.error ?? "");
+      if (status === 429 && errMsg) return errMsg;
+      if (err.data.provider === "gemini" && errMsg) return errMsg;
+    }
 
     // Server returned HTML instead of JSON (crashed, 502, 504, cold start)
     if (raw.includes("Unexpected token '<'") || raw.includes("Unexpected token \"<\"") || raw.includes("<html"))
@@ -712,6 +718,9 @@ export default function ShortVideoPage() {
     const kwData = await kwRes.json();
     assertOk("Keywords", kwRes, kwData);
     const kws: string[] = kwData.keywords ?? [];
+    if (kws.length === 0) {
+      throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+    }
     pipe.current.keywords = kws;
     pipe.current.keywordAlternatives = kwData.keywordAlternatives ?? [];
     pipe.current.keywordsPerScene = kwData.keywordsPerScene ?? 5;
@@ -1632,6 +1641,7 @@ export default function ShortVideoPage() {
         setKeywords([]);
         pipe.current.keywords = [];
         setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
+        let perSubKeywordError: unknown = null;
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
             const kwRes = await fetch("/api/videos/extract-keywords", {
@@ -1639,15 +1649,19 @@ export default function ShortVideoPage() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ scenes: subTexts, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
-            if (!kwRes.ok) continue;
             const kwData = await kwRes.json();
+            if (!kwRes.ok) {
+              perSubKeywordError = new ApiCallError("Keywords", kwData, kwRes.status);
+              continue;
+            }
             const got: string[] = kwData.keywords ?? [];
             const gotAlts: string[][] = kwData.keywordAlternatives ?? [];
             if (kwData.visualDirection) pipe.current.visualDirection = kwData.visualDirection;
             if (got.length >= N) { perSubKws = got; perSubAlts = gotAlts; break; }
             if (got.length > perSubKws.length) { perSubKws = got; perSubAlts = gotAlts; }
-          } catch { continue; }
+          } catch (e) { perSubKeywordError = e; continue; }
         }
+        if (perSubKws.length === 0 && perSubKeywordError) throw perSubKeywordError;
 
         // ── Step B: Safety pad — API guarantees N but guard against total failure ──
         if (perSubKws.length < N) {
@@ -2000,19 +2014,24 @@ export default function ShortVideoPage() {
 
         let perSubKws2: string[] = [];
         setStep("keywords", "running", `mapping ${N2} ซับ → keyword...`);
+        let perSubKeywordError2: unknown = null;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             const r = await fetch("/api/videos/extract-keywords", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ scenes: subTexts2, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
             });
-            if (!r.ok) continue;
             const d = await r.json();
+            if (!r.ok) {
+              perSubKeywordError2 = new ApiCallError("Keywords", d, r.status);
+              continue;
+            }
             const got: string[] = d.keywords ?? [];
             if (got.length >= N2) { perSubKws2 = got; break; }
             if (got.length > perSubKws2.length) perSubKws2 = got;
-          } catch { continue; }
+          } catch (e) { perSubKeywordError2 = e; continue; }
         }
+        if (perSubKws2.length === 0 && perSubKeywordError2) throw perSubKeywordError2;
         setStep("keywords", "done", `${perSubKws2.length} keywords (1/ซับ)`);
         if (perSubKws2.length < N2) {
           const padded = [...perSubKws2];
@@ -3735,6 +3754,3 @@ function PhaseRow({
     </div>
   );
 }
-
-
-

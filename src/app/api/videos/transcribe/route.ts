@@ -6,6 +6,7 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
+import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -13,6 +14,7 @@ const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const MIN_GAP_MS = 1;
 const MIN_CAPTION_MS = 400;
+const INCOMPLETE_TRANSCRIBE_GAP_MS = 5000;
 
 function stripSrtArtifacts(input: string): string {
   return input
@@ -782,13 +784,17 @@ ${script.trim().slice(0, 2000)}` : ""}
       } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
         const status = (e as { status?: number })?.status;
+        const body = (e as { body?: string })?.body;
         if (status === 401) {
           return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
         }
-        if (status === 403) {
-          return NextResponse.json({ error: "Gemini API Key ไม่มีสิทธิ์ใช้งาน กรุณาเปิดใช้งาน Gemini API ใน Google AI Studio", retryable: false }, { status: 403 });
-        }
-        return NextResponse.json({ error: "Gemini transcribe ไม่สำเร็จ กรุณาลองใหม่", retryable: true }, { status: 503 });
+        const info = getGeminiErrorInfo(body ?? e, status ?? 503);
+        return NextResponse.json({
+          error: info.userMessage,
+          retryable: info.retryable,
+          provider: "gemini",
+          reason: info.kind,
+        }, { status: info.status });
       }
     } else {
       try { fs.unlinkSync(mp3Path); } catch {}
@@ -1291,13 +1297,10 @@ Total audio: ${audioDur.toFixed(2)}s`;
     }
 
     const safeFullText = sanitizeTranscriptionText(fullText);
-    // GUARD: Gemini occasionally returns a wildly wrong timestamp (wrong unit, JSON
-    // glitch) — e.g. a last-caption endMs of 123,800,000ms (~34h). A naive Math.max
-    // then propagates that as the video duration → durationInFrames in the millions
-    // → a render that can never finish / OOMs. sourceAudioDurationMs comes from
-    // ffprobe and is authoritative, so when present it caps everything: allow only a
-    // small tail (2s) beyond the real audio. Fall back to the max() of model values
-    // only when ffprobe couldn't read the duration.
+    // GUARD: ffprobe duration is authoritative when available. Gemini can return
+    // timestamps that are too long (wrong units / JSON glitches) or too short
+    // (incomplete transcription). Too long is clamped to ffprobe; too short is a
+    // retryable error so we don't render a video that cuts audio/subtitles early.
     const TAIL_MS = 2000;
     const rawMaxMs = Math.max(
       captions.at(-1)?.endMs ?? 0,
@@ -1305,17 +1308,28 @@ Total audio: ${audioDur.toFixed(2)}s`;
       wordTimestamps.at(-1)?.endMs ?? 0,
       1000,
     );
-    const resolvedDurationMs = sourceAudioDurationMs > 0
-      ? Math.min(rawMaxMs, sourceAudioDurationMs + TAIL_MS) || sourceAudioDurationMs
-      : rawMaxMs;
     if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
-      console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${resolvedDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
+      console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${sourceAudioDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
     }
+    if (sourceAudioDurationMs > 0) {
+      const missingTailMs = sourceAudioDurationMs - rawMaxMs;
+      if (missingTailMs > INCOMPLETE_TRANSCRIBE_GAP_MS) {
+        console.warn(`[transcribe] incomplete transcript: captions end at ${rawMaxMs}ms but audio is ${sourceAudioDurationMs}ms`);
+        return NextResponse.json({
+          error: `ถอดซับไม่ครบ เสียงยาว ${(sourceAudioDurationMs / 1000).toFixed(1)}s แต่ซับจบที่ ${(rawMaxMs / 1000).toFixed(1)}s กรุณากด Transcribe ใหม่`,
+          provider: "gemini",
+          reason: "transcribe_incomplete",
+          retryable: true,
+          sourceAudioDurationMs,
+          captionDurationMs: rawMaxMs,
+        }, { status: 422 });
+      }
+    }
+    const resolvedDurationMs = sourceAudioDurationMs > 0 ? sourceAudioDurationMs : rawMaxMs;
     // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = (isThai || words.length === 0) && segments.length >= 3;
-    // Use sourceAudioDurationMs (real ffprobe length) for the tail-clamp, not
-    // resolvedDurationMs — the latter is a max() that already includes caption
-    // endMs, so clamping against it would never stretch the tail.
+    // Stretch small safe tails to the real ffprobe duration so config/render do not
+    // stop a few frames before the audio ends.
     const timelineFixedCaptions = clampLastCaptionToAudioEnd(
       sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect),
       sourceAudioDurationMs,

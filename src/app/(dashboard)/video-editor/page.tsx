@@ -111,6 +111,18 @@ export default function VideoEditorPage() {
   const centerPanelRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
+  // Timeline is in caption/audio time. The HTML video can differ slightly (burned
+  // output, avatar bookends), so all caption/timeline operations use this mapper.
+  const totalMs = captionEndMs > 0 ? captionEndMs : durationMs > 0 ? durationMs : 0;
+  const videoMsToCaptionMs = useCallback((videoMs: number) => (
+    durationMs > 0 && captionEndMs > 0 ? videoMs * (captionEndMs / durationMs) : videoMs
+  ), [durationMs, captionEndMs]);
+  const captionMsToVideoMs = useCallback((captionMs: number) => (
+    durationMs > 0 && captionEndMs > 0 ? captionMs * (durationMs / captionEndMs) : captionMs
+  ), [durationMs, captionEndMs]);
+  const playheadMs = videoMsToCaptionMs(currentMs);
+
   // ── TTS / Voice ───────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [voiceId, setVoiceId] = useState("");
@@ -215,7 +227,6 @@ export default function VideoEditorPage() {
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string }>({ open: false });
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
-  const [tlZoom, setTlZoom] = useState(100);
 
   // ── Undo / Redo ────────────────────────────────────────────────────────
   function undo() {
@@ -419,8 +430,9 @@ export default function VideoEditorPage() {
     const tick = () => {
       rafId = requestAnimationFrame(tick);
       const ms = v.currentTime * 1000;
+      const captionMs = videoMsToCaptionMs(ms);
       setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => ms >= c.startMs && ms < c.endMs);
+      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
       if (idx !== lastIdx) {
         lastIdx = idx;
         setActiveCaptionIdx(idx);
@@ -435,8 +447,9 @@ export default function VideoEditorPage() {
     // single timeupdate for when video is paused/seeking
     const onTime    = () => {
       const ms = v.currentTime * 1000;
+      const captionMs = videoMsToCaptionMs(ms);
       setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => ms >= c.startMs && ms < c.endMs);
+      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
       setActiveCaptionIdx(idx);
       if (idx >= 0) setActiveSegIdx(idx);
     };
@@ -457,7 +470,7 @@ export default function VideoEditorPage() {
       v.removeEventListener("loadedmetadata", onMeta);
       v.removeEventListener("seeked",      onTime);
     };
-  }, [captions, videoUrl, preRenderUrl]);  // re-run when video src changes so listeners attach to new element
+  }, [captions, videoUrl, preRenderUrl, videoMsToCaptionMs]);  // re-run when video src changes so listeners attach to new element
 
   // ── Reset to a fresh project (mirrors all fields that loadDraftInto restores) ──
   function resetEditorState() {
@@ -772,10 +785,10 @@ export default function VideoEditorPage() {
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
     if (raw.includes("Unexpected token '<'") || raw.includes("<html")) return "Server ไม่ตอบสนอง (502/504)";
     if (raw.includes("ENOSPC")) return "พื้นที่ดิสก์บน Server เต็ม";
-    if (raw.includes("429")) return "API เกิน Rate Limit — รอสักครู่แล้วลองใหม่";
     if (err instanceof ApiCallError) {
       const status = (err.data as any)._status as number | undefined;
       const errMsg = String(err.data.error ?? "");
+      if (status === 429 && errMsg) return errMsg;
       // Key ตั้งไว้แล้วแต่ invalid — บอกรายละเอียดแทนการให้ใส่ซ้ำ
       if (status === 401) {
         if (errMsg.toLowerCase().includes("elevenlabs")) return `ElevenLabs API key ไม่ถูกต้องหรือหมดอายุ — กรุณาตรวจสอบ key ใน Settings`;
@@ -792,6 +805,7 @@ export default function VideoEditorPage() {
       }
       if (err.data.error) return errMsg;
     }
+    if (raw.includes("429")) return "API เกิน Rate Limit — รอสักครู่แล้วลองใหม่";
     return raw.split("\n")[0].slice(0, 200) || "เกิดข้อผิดพลาด";
   }
 
@@ -806,7 +820,9 @@ export default function VideoEditorPage() {
       action = { label: "เปิด API ที่ Cloud Console", url: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" };
     } else if (lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
       action = { label: "สร้าง Key ใหม่", url: "https://aistudio.google.com/apikey" };
-    } else if (lower.includes("high demand") || lower.includes("503") || lower.includes("ขัดข้อง")) {
+    } else if (lower.includes("โควต้าฟรี") || lower.includes("ผูกบัตร google") || lower.includes("quota")) {
+      action = { label: "ไปที่ Settings", url: "/settings?tab=api-keys" };
+    } else if (lower.includes("high demand") || lower.includes("503") || lower.includes("ขัดข้อง") || lower.includes("ใช้งานหนาแน่น")) {
       action = { label: "ดูวิธีแก้", url: "/settings?tab=api-keys" };
     } else if (lower.includes("key") && (lower.includes("settings") || lower.includes("ไม่ถูกต้อง"))) {
       action = { label: "ไปที่ Settings", url: "/settings?tab=api-keys" };
@@ -863,45 +879,53 @@ export default function VideoEditorPage() {
 
   async function runKeywords(): Promise<string[]> {
     setStep("keywords", "running");
-    // If captions are already generated (post-transcribe), use them as "scenes" so each
-    // caption gets its own visual moment — otherwise the LLM-split script ignores audio pacing.
-    // Falls back to line-split for first run before transcribe.
-    const existingCaps = captionsRef.current ?? [];
-    const sc = existingCaps.length > 0
-      ? existingCaps.map(c => c.text)
-      : splitScenes(script);
-    pipe.current.scenes = sc;
-    // ส่ง audioDurationSec เพื่อให้ extract-keywords คำนวณจำนวน keywords ที่เหมาะสม
-    // Priority order: actual TTS duration > script-based estimate
-    //
-    // Thai TTS speaks at ~2 Thai chars/sec for natural pace (slower than English).
-    // We add 10% buffer to over-estimate slightly — better too many keywords than too few.
-    const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
-    const thaiCharCount = (script.match(/[฀-๿]/g) ?? []).length;
-    const englishWordCount = script.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
-    // ~2 Thai chars/sec + ~3 English words/sec (TTS natural rate)
-    const scriptEstimate = thaiCharCount / 2 + englishWordCount / 3;
-    const estimatedDurSec = knownDurSec > 0
-      ? knownDurSec
-      : Math.ceil(scriptEstimate * 1.1);  // 10% buffer
-    console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
-    const res = await fetch("/api/videos/extract-keywords", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
-      signal: abortControllerRef.current?.signal,
-    });
-    const data = await res.json();
-    assertOk("Keywords", res, data);
-    const kws: string[] = data.keywords ?? [];
-    pipe.current.keywords = kws;
-    pipe.current.keywordAlternatives = data.keywordAlternatives ?? [];
-    pipe.current.keywordsPerScene = data.keywordsPerScene ?? 5;
-    pipe.current.sceneClipCounts = data.sceneClipCounts ?? [];
-    pipe.current.sceneDurations = data.sceneDurations ?? [];
-    pipe.current.visualDirection = data.visualDirection ?? "";
-    const totalClips = (data.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
-    setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
-    return kws;
+    try {
+      // If captions are already generated (post-transcribe), use them as "scenes" so each
+      // caption gets its own visual moment — otherwise the LLM-split script ignores audio pacing.
+      // Falls back to line-split for first run before transcribe.
+      const existingCaps = captionsRef.current ?? [];
+      const sc = existingCaps.length > 0
+        ? existingCaps.map(c => c.text)
+        : splitScenes(script);
+      pipe.current.scenes = sc;
+      // ส่ง audioDurationSec เพื่อให้ extract-keywords คำนวณจำนวน keywords ที่เหมาะสม
+      // Priority order: actual TTS duration > script-based estimate
+      //
+      // Thai TTS speaks at ~2 Thai chars/sec for natural pace (slower than English).
+      // We add 10% buffer to over-estimate slightly — better too many keywords than too few.
+      const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
+      const thaiCharCount = (script.match(/[฀-๿]/g) ?? []).length;
+      const englishWordCount = script.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
+      // ~2 Thai chars/sec + ~3 English words/sec (TTS natural rate)
+      const scriptEstimate = thaiCharCount / 2 + englishWordCount / 3;
+      const estimatedDurSec = knownDurSec > 0
+        ? knownDurSec
+        : Math.ceil(scriptEstimate * 1.1);  // 10% buffer
+      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
+      const res = await fetch("/api/videos/extract-keywords", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const data = await res.json();
+      assertOk("Keywords", res, data);
+      const kws: string[] = data.keywords ?? [];
+      if (kws.length === 0) {
+        throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+      }
+      pipe.current.keywords = kws;
+      pipe.current.keywordAlternatives = data.keywordAlternatives ?? [];
+      pipe.current.keywordsPerScene = data.keywordsPerScene ?? 5;
+      pipe.current.sceneClipCounts = data.sceneClipCounts ?? [];
+      pipe.current.sceneDurations = data.sceneDurations ?? [];
+      pipe.current.visualDirection = data.visualDirection ?? "";
+      const totalClips = (data.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
+      setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
+      return kws;
+    } catch (err) {
+      setStep("keywords", "error", friendlyError(err));
+      throw err;
+    }
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
@@ -2183,22 +2207,6 @@ export default function VideoEditorPage() {
     ? segments.map((s, i) => ({ text: s, startMs: i * 3000, endMs: (i + 1) * 3000, tag: i === 0 ? "hook" as const : i === segments.length - 1 ? "cta" as const : "body" as const }))
     : captions;
 
-  const captionEndMs = captions.length > 0 ? Math.max(...captions.map(c => c.endMs)) : 0;
-  // Timeline scale = caption/audio length (captionEndMs), available immediately and
-  // never 0 once transcribed — so clips don't shift when the <video> finishes
-  // loading ("ตอนแรกไม่ตรง แล้วตรง"). Fall back to durationMs only if no captions.
-  const totalMs = captionEndMs > 0
-    ? captionEndMs
-    : durationMs > 0 ? durationMs : 0;
-  // The playhead is driven by video.currentTime, which lives in VIDEO time-space.
-  // The video can be longer than the audio (avatar tail), so if we drew the playhead
-  // at currentMs/totalMs it would run faster than the caption clips and drift. Map
-  // video-time → caption-time so the playhead stays glued to the clips at every
-  // moment. When video & caption length match (or video not loaded) this is a no-op.
-  const playheadMs = (durationMs > 0 && captionEndMs > 0)
-    ? currentMs * (captionEndMs / durationMs)
-    : currentMs;
-
   const burnedPreviewUrl = pipe.current.burnedVideoUrl || "";
   const burnedPreviewIsClean = Boolean(burnedPreviewUrl && !styleIsDirty);
   const editablePreviewUrl = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl || preRenderUrl || "";
@@ -2408,7 +2416,11 @@ export default function VideoEditorPage() {
   function playToggle() {
     const v = videoRef.current;
     if (!v) return;
-    playing ? v.pause() : v.play();
+    if (v.paused || v.ended) {
+      void v.play();
+    } else {
+      v.pause();
+    }
   }
 
   function tagColor(tag?: string) {
@@ -2813,9 +2825,8 @@ export default function VideoEditorPage() {
                       setActiveSegIdx(i);
                       setActiveCaptionIdx(i);
                       // cap.startMs is caption-space; map to video-space before seeking.
-                      if (videoRef.current && cap.startMs) {
-                        const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
-                        videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = captionMsToVideoMs(cap.startMs) / 1000;
                       }
                     }}>
                     <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", tagColor(cap.tag).replace("text-", "bg-"))} />
@@ -3367,8 +3378,7 @@ export default function VideoEditorPage() {
                   setActiveSegIdx(idx);
                   const cap = captions[idx];
                   if (cap && videoRef.current) {
-                    const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
-                    videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                    videoRef.current.currentTime = captionMsToVideoMs(cap.startMs) / 1000;
                   }
                 }}
                 subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
@@ -3433,8 +3443,7 @@ export default function VideoEditorPage() {
               setActiveSegIdx(idx);
               const cap = captions[idx];
               if (cap && videoRef.current) {
-                const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
-                videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                videoRef.current.currentTime = captionMsToVideoMs(cap.startMs) / 1000;
               }
             }}
             subColor={subColor} subAccentColor={subAccentColor} subPreset={subPreset}
@@ -3486,7 +3495,7 @@ export default function VideoEditorPage() {
 
         {/* Timeline toolbar */}
         <div className="h-10 bg-[#111115] border-b border-[#1e1e28] flex items-center gap-2 px-4 flex-shrink-0">
-          <span className="text-violet-400 font-bold tabular-nums text-[12px]">{fmtMs(currentMs)}</span>
+          <span className="text-violet-400 font-bold tabular-nums text-[12px]">{fmtMs(playheadMs)}</span>
           <span className="text-slate-700 text-[11px]">/ {fmtMs(totalMs)}</span>
 
           <div className="flex gap-0.5 ml-3">
@@ -3510,11 +3519,12 @@ export default function VideoEditorPage() {
             {/* Split at playhead */}
             <button
               onClick={() => {
-                if (currentMs <= 0 || activeSegIdx < 0 || activeSegIdx >= displayCaptions.length) return;
+                const splitMs = playheadMs;
+                if (splitMs <= 0 || activeSegIdx < 0 || activeSegIdx >= displayCaptions.length) return;
                 const cap = displayCaptions[activeSegIdx];
-                if (currentMs <= cap.startMs || currentMs >= cap.endMs) return;
-                const a: Caption = { ...cap, endMs: currentMs };
-                const b: Caption = { ...cap, text: cap.text, startMs: currentMs };
+                if (splitMs <= cap.startMs || splitMs >= cap.endMs) return;
+                const a: Caption = { ...cap, endMs: splitMs };
+                const b: Caption = { ...cap, text: cap.text, startMs: splitMs };
                 const next = [...displayCaptions];
                 next.splice(activeSegIdx, 1, a, b);
                 setCaptions(next);
@@ -3537,32 +3547,20 @@ export default function VideoEditorPage() {
 
           <div className="ml-auto flex items-center gap-2">
             <ZoomIn className="w-3 h-3 text-slate-600" />
-            {/* Zoom slider — wider hit area, drag-to-zoom */}
+            {/* Timeline stays at max 100% so playhead/caption positions remain easy to scan. */}
             <div
-              className="relative w-20 h-5 cursor-pointer flex items-center touch-none select-none outline-none"
+              className="relative w-20 h-5 flex items-center touch-none select-none outline-none"
               tabIndex={-1}
-              onPointerDown={e => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                const r = e.currentTarget.getBoundingClientRect();
-                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 750));
-              }}
-              onPointerMove={e => {
-                if (e.buttons !== 1) return;
-                const r = e.currentTarget.getBoundingClientRect();
-                const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                setTlZoom(Math.round(50 + pct * 4950));
-              }}
             >
               <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: `${((tlZoom - 50) / 4950) * 100}%` }} />
+                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: "100%" }} />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: `${((tlZoom - 50) / 4950) * 100}%` }}
+                  style={{ left: "100%" }}
                 />
               </div>
             </div>
-            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">{tlZoom}%</span>
+            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">100%</span>
           </div>
         </div>
 
@@ -3626,7 +3624,7 @@ export default function VideoEditorPage() {
               }
             }}
           >
-            <div className="relative" style={{ width: `${tlZoom}%`, minWidth: "100%" }}>
+            <div className="relative" style={{ width: "100%", minWidth: "100%" }}>
 
               {/* Ruler — click/drag to seek */}
               <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
@@ -3635,23 +3633,21 @@ export default function VideoEditorPage() {
                   if (!videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  // Timeline is in caption-space but video.currentTime is video-space.
-                  // Seek by the video's own duration so clicking the far right lands at
-                  // the true end of the clip, not at captionEnd.
-                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
-                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
-                  setCurrentMs(pct * seekScaleMs);
+                  // Timeline is in caption-space; convert to video-space before seeking.
+                  const captionMs = pct * totalMs;
+                  const videoMs = captionMsToVideoMs(captionMs);
+                  videoRef.current.currentTime = videoMs / 1000;
+                  setCurrentMs(videoMs);
                 }}
                 onPointerMove={e => {
                   if (e.buttons !== 1 || !videoRef.current || !totalMs) return;
                   const r = e.currentTarget.getBoundingClientRect();
                   const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-                  // Timeline is in caption-space but video.currentTime is video-space.
-                  // Seek by the video's own duration so clicking the far right lands at
-                  // the true end of the clip, not at captionEnd.
-                  const seekScaleMs = durationMs > 0 ? durationMs : totalMs;
-                  videoRef.current.currentTime = pct * (seekScaleMs / 1000);
-                  setCurrentMs(pct * seekScaleMs);
+                  // Timeline is in caption-space; convert to video-space before seeking.
+                  const captionMs = pct * totalMs;
+                  const videoMs = captionMsToVideoMs(captionMs);
+                  videoRef.current.currentTime = videoMs / 1000;
+                  setCurrentMs(videoMs);
                 }}
               >
                 {[0,0.15,0.32,0.5,0.68,0.82,1].map((pct, i) => (
@@ -3689,8 +3685,7 @@ export default function VideoEditorPage() {
                         if (clipResizeRef.current?.moved) return;
                         setActiveSegIdx(i);
                         if (videoRef.current) {
-                          const ratio = (durationMs > 0 && captionEndMs > 0) ? durationMs / captionEndMs : 1;
-                          videoRef.current.currentTime = (cap.startMs / 1000) * ratio;
+                          videoRef.current.currentTime = captionMsToVideoMs(cap.startMs) / 1000;
                         }
                       }}
                       className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",

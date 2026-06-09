@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Bell,
   CheckCheck,
@@ -45,6 +46,7 @@ function timeAgo(dateStr: string) {
 }
 
 export function NotificationBell() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
@@ -100,6 +102,13 @@ export function NotificationBell() {
   async function markOneRead(id: string) {
     await fetch(`/api/notifications/${id}`, { method: "PATCH" });
     setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read: true } : n));
+  }
+
+  async function openNotification(n: Notification) {
+    try { await markOneRead(n.id); } catch {}
+    if (n.type !== "VIDEO_COMPLETED") return;
+    setOpen(false);
+    router.push("/videos");
   }
 
   return (
@@ -166,7 +175,7 @@ export function NotificationBell() {
               notifications.map((n) => (
                 <div
                   key={n.id}
-                  onClick={() => markOneRead(n.id)}
+                  onClick={() => openNotification(n)}
                   className={cn(
                     "group flex cursor-pointer items-start gap-3 px-4 py-3 transition-colors hover:bg-white/5",
                     !n.read && "bg-cyan-500/5"

@@ -16,7 +16,7 @@ type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 type TestResult = { ok: boolean; message: string } | null;
 
 const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
-  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza... หรือ AQ.",          description: "Google Gemini — ใช้สำหรับ AI ทุกฟังก์ชัน (รองรับ key ทั้งแบบ AIza และ AQ)",   link: "https://aistudio.google.com/app/apikey" },
+  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza... หรือ AQ.",          description: "Google Gemini — ใช้สำหรับเสียง, ถอดซับ, keyword และ AI หลัก แนะนำผูกบัตร Google เพื่อเพิ่มโควต้า",   link: "https://aistudio.google.com/app/apikey" },
   { id: "heygenKey",     keyType: "heygen",     label: "HeyGen API Key",     placeholder: "Enter your HeyGen key",    description: "Avatar video creation",                      link: "https://app.heygen.com/settings?nav=API" },
   { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
   { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },
@@ -104,8 +104,8 @@ export function ApiKeySettings() {
             <Sparkles className="h-3.5 w-3.5 text-violet-300" />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-violet-200">วิธีสร้าง Gemini API Key (4 ขั้นตอน)</div>
-            <div className="text-[11px] text-violet-300/60 mt-0.5">Gemini ใช้สำหรับ TTS, transcribe, keyword extraction และอีกหลายฟีเจอร์</div>
+            <div className="text-sm font-semibold text-violet-200">ตั้งค่า Gemini API Key ให้พร้อมใช้งาน</div>
+            <div className="text-[11px] text-violet-300/60 mt-0.5">ใช้สำหรับเสียง, ถอดซับ, keyword และ AI หลักของระบบ</div>
           </div>
           {geminiGuideOpen ? <ChevronUp className="h-4 w-4 text-violet-300/70 shrink-0" /> : <ChevronDown className="h-4 w-4 text-violet-300/70 shrink-0" />}
         </button>
@@ -127,7 +127,14 @@ export function ApiKeySettings() {
                 </a>{" "}
                 แล้วกด <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 font-mono text-[11px]">Enable</span> Gemini key
               </li>
+              <li>
+                ถ้าต้องการใช้งานหลายคลิปต่อเนื่อง ให้ผูกบัตร Google ใน project เดียวกับ key เพื่อเพิ่มโควต้า
+              </li>
             </ol>
+            <div className="rounded-lg bg-cyan-500/10 border border-cyan-500/25 px-3 py-2 text-[11px] text-cyan-100/90 leading-relaxed">
+              <span className="font-semibold">แนะนำสำหรับ PRO:</span>{" "}
+              ใช้ Gemini key ที่ผูกบัตร Google แล้ว เพราะโควต้าฟรีมีจำกัดและอาจหมดตอนสร้างเสียง ถอดซับ หรือหา keyword
+            </div>
             <div className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
               <span className="font-semibold">ถ้า Test ขึ้น "Generative Language API ยังไม่ได้เปิด":</span>{" "}
               เข้า{" "}

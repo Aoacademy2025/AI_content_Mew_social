@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
+import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -127,6 +128,22 @@ export async function POST(req: Request) {
     return await geminiGenerateText(apiKey!, prompt, maxTokens);
   }
 
+  function geminiErrorResponse(error: unknown) {
+    const info = getGeminiErrorInfo(error);
+    console.error("[extract-keywords] Gemini failed:", {
+      kind: info.kind,
+      status: info.status,
+      retryable: info.retryable,
+      detail: info.technicalMessage.slice(0, 500),
+    });
+    return NextResponse.json({
+      error: info.userMessage,
+      retryable: info.retryable,
+      provider: "gemini",
+      reason: info.kind,
+    }, { status: info.status });
+  }
+
   // ── perSubtitle mode ──────────────────────────────────────────────────────────
   if (perSubtitle) {
     const subtitleList: string[] = Array.isArray(scenes) && scenes.length > 0
@@ -213,6 +230,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
       const maxTokens = Math.min(4096, batch.length * 120 + 300);
       let rawAlts: string[][] = [];
+      let lastBatchError: unknown = null;
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -222,8 +240,13 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
           rawAlts = parseKeywordAlternatives(text);
           if (rawAlts.length >= Math.floor(batch.length * 0.7)) break;
         } catch (e) {
+          lastBatchError = e;
           console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
         }
+      }
+
+      if (rawAlts.length === 0 && lastBatchError) {
+        return geminiErrorResponse(lastBatchError);
       }
 
       // Pad missing entries with empty arrays (will get generic fallback below)
@@ -478,7 +501,6 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       visualDirection,
     });
   } catch (e) {
-    console.error("[extract-keywords] error:", e);
-    return NextResponse.json({ keywords: [], keywordAlternatives: [], scenes: [], keywordsPerScene: 1, sceneClipCounts: [], sceneDurations: [] });
+    return geminiErrorResponse(e);
   }
 }

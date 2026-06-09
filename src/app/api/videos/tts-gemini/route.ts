@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import path from "path";
 import fs from "fs";
 import { setGlobalDispatcher, Agent } from "undici";
@@ -35,8 +36,8 @@ export async function POST(req: Request) {
     }
     const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
 
-    // Gemini TTS — all current TTS models are preview. Some user keys don't have access
-    // to the newest preview (gemini-3.1-flash-tts-preview), so we try a fallback chain.
+    // Gemini TTS — prefer 2.5 Flash TTS first because it is the expected low-cost path.
+    // Newer preview models can have stricter access/quota, so keep them as fallbacks only.
     // Send key as both ?key= query param AND x-goog-api-key header to support both
     // classic AIza* keys and newer AQ.* keys.
     const requestBody = JSON.stringify({
@@ -52,8 +53,8 @@ export async function POST(req: Request) {
     });
 
     const MODEL_CHAIN = [
-      "gemini-3.1-flash-tts-preview",   // newest, best quality, may be restricted
       "gemini-2.5-flash-preview-tts",   // widely available preview
+      "gemini-3.1-flash-tts-preview",   // newer preview, may be restricted
       "gemini-2.5-pro-preview-tts",     // last resort
     ];
 
@@ -137,10 +138,22 @@ export async function POST(req: Request) {
         }, { status: 404 });
       }
       if (status === 429) {
+        const info = getGeminiErrorInfo(lastErrBody, status);
         return NextResponse.json({
-          error: "Gemini TTS rate-limit เต็มทุก model กรุณาลองใหม่อีก 1-2 นาที",
-          retryable: true,
-        }, { status: 429 });
+          error: info.userMessage,
+          retryable: info.retryable,
+          provider: "gemini",
+          reason: info.kind,
+        }, { status: info.status });
+      }
+      const info = getGeminiErrorInfo(lastErrBody, status);
+      if (info.kind !== "unknown") {
+        return NextResponse.json({
+          error: info.userMessage,
+          retryable: info.retryable,
+          provider: "gemini",
+          reason: info.kind,
+        }, { status: info.status });
       }
       return NextResponse.json({
         error: `Gemini TTS ฝั่ง Google ขัดข้องชั่วคราว (${status}) — ลองอีก 1-2 นาที หรือสลับเป็น ElevenLabs`,

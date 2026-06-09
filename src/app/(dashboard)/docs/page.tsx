@@ -456,7 +456,8 @@ function ApiSetupDoc() {
             <span className="block"><b className="text-white">ขั้นตอนที่ต้องทำก่อนใช้งาน Gemini Key:</b></span>
             <span className="block">① สร้าง key ที่ <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline text-cyan-300 hover:text-cyan-200">Google AI Studio → Create API Key</a></span>
             <span className="block">② <b className="text-white">เปิด Gemini API</b> ที่ <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer" className="underline text-cyan-300 hover:text-cyan-200">Google Cloud Console → Enable Generative Language API</a> — ถ้าข้ามขั้นนี้จะเจอ error 403</span>
-            <span className="block text-white/50 text-[11px]">เข้า Console → เลือก project → ค้นหา "Generative Language API" → กด Enable</span>
+            <span className="block">③ ถ้าใช้งานหลายคลิป แนะนำ <b className="text-white">ผูกบัตร Google</b> ใน project เดียวกัน เพื่อเพิ่มโควต้าและลดปัญหาโควต้าฟรีหมด</span>
+            <span className="block text-white/50 text-[11px]">เข้า Console → เลือก project → ค้นหา "Generative Language API" → กด Enable → ผูกบัตร Google ถ้าต้องใช้งานต่อเนื่อง</span>
           </span>
         </InfoBox>
       </Section>
@@ -468,7 +469,7 @@ function ApiSetupDoc() {
           <ApiRow
             name="Gemini API Key"
             required
-            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — TTS, subtitle split, keyword extraction, style analysis, content generation  |  ต้องทำ 2 ขั้น: (1) สร้าง key ใน AI Studio  (2) เปิด Generative Language API ใน Google Cloud Console (ถ้าข้ามขั้นนี้จะเจอ 403)"
+            desc="ใช้สำหรับ AI ทุกฟังก์ชัน — TTS, subtitle split, keyword extraction, style analysis, content generation  |  ต้องสร้าง key, เปิด Generative Language API และแนะนำให้ผูกบัตร Google ถ้าต้องใช้งานหลายคลิป"
             link="https://aistudio.google.com/app/apikey"
             linkLabel="① AI Studio → Create API Key"
           />
@@ -542,6 +543,10 @@ function ApiSetupDoc() {
             <p>Google Gemini ฝั่ง server overload ชั่วคราว ไม่ใช่ที่ key — ระบบ retry อัตโนมัติให้แล้ว</p>
             <p>→ รอ 5-10 นาทีแล้วลองใหม่ หรือสลับ Voice เป็น <b className="text-white">ElevenLabs</b> ใน Pipeline panel</p>
           </ErrBox>
+          <ErrBox title="ขึ้นว่า Gemini โควต้าฟรีเต็ม / quota เต็ม">
+            <p>Gemini key ใช้โควต้าฟรีอยู่ และโควต้าของ Google หมดแล้ว โดยเฉพาะตอนสร้างเสียง ถอดซับ หรือหา keyword หลายครั้งติดกัน</p>
+            <p>→ รอรอบรีเซ็ตของ Google หรือผูกบัตร Google ใน project เดียวกับ key เพื่อเพิ่มโควต้า</p>
+          </ErrBox>
           <ErrBox title="B-roll หาคลิปไม่เจอ / ขึ้น error ที่ขั้น B-roll">
             <p>เช็คว่าใส่ <b className="text-white">Pexels</b> หรือ <b className="text-white">Pixabay</b> key อย่างน้อย 1 ตัว และกด Test ผ่าน</p>
             <p>→ แนะนำใส่ทั้งคู่ แล้วเลือก Stock Source = <b className="text-white">Both</b> เพื่อให้มีคลิปให้เลือกมากขึ้น</p>
@@ -592,7 +597,7 @@ function VideoOnlyDoc() {
           <p>เลือกค่าก่อนรัน:</p>
           <ul className="list-disc list-inside space-y-0.5 ml-1">
             <li><b className="text-white">Stock Source</b> — Pexels / Pixabay / Both (แนะนำ Both)</li>
-            <li><b className="text-white">Voice</b> — Gemini (default, ฟรี) หรือ ElevenLabs (เสียงดีกว่า)</li>
+            <li><b className="text-white">Voice</b> — Gemini (ใช้ key ของคุณเอง) หรือ ElevenLabs (เสียงดีกว่า)</li>
             <li><b className="text-white">Background Music</b> — toggle on → เลือกเพลง system หรือ upload mp3</li>
             <li><b className="text-white">Avatar (HeyGen)</b> — toggle on ถ้าอยากให้ avatar พูด (ดู tab + Avatar)</li>
           </ul>

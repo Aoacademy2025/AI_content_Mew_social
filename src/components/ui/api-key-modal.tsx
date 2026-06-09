@@ -13,7 +13,7 @@ const KEY_META: Record<RequiredKeyType, {
   link: string;
   hint: string;
 }> = {
-  gemini:     { label: "Gemini API Key",     field: "geminiKey",     placeholder: "AIza... หรือ AQ.",           link: "https://aistudio.google.com/app/apikey",          hint: "ใช้สำหรับ AI ทุกฟังก์ชัน — Keywords, Transcribe, Style analysis (รองรับ key ทั้งแบบ AIza และ AQ)" },
+  gemini:     { label: "Gemini API Key",     field: "geminiKey",     placeholder: "AIza... หรือ AQ.",           link: "https://aistudio.google.com/app/apikey",          hint: "ใช้สำหรับเสียง, ถอดซับ และ keyword — แนะนำผูกบัตร Google เพื่อเพิ่มโควต้า" },
   elevenlabs: { label: "ElevenLabs API Key", field: "elevenlabsKey", placeholder: "Enter your ElevenLabs key", link: "https://elevenlabs.io/app/settings/api-keys",     hint: "ใช้สำหรับ TTS Voice synthesis" },
   heygen:     { label: "HeyGen API Key",     field: "heygenKey",     placeholder: "Enter your HeyGen key",     link: "https://app.heygen.com/settings?nav=API",         hint: "ใช้สำหรับสร้าง Avatar video" },
   pexels:     { label: "Pexels API Key",     field: "pexelsKey",     placeholder: "Enter your Pexels key",     link: "https://www.pexels.com/api/",                     hint: "ใช้สำหรับดาวน์โหลด Stock video" },

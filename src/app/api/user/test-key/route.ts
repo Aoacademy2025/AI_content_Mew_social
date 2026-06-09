@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 
 function decrypt(encrypted: string): string {
   return Buffer.from(encrypted, "base64").toString("utf-8");
@@ -12,7 +13,7 @@ type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 // Test Gemini key against 3 capabilities our app uses:
 // 1. Auth + Generative Language API enabled (models endpoint)
 // 2. Text generation (used by extract-keywords, transcribe merge prompt)
-// 3. TTS (used by tts-gemini) — tries fallback chain since 3.1 preview is flaky
+// 3. TTS (used by tts-gemini)
 async function testGemini(key: string): Promise<{ ok: boolean; message: string }> {
   const authHeaders = { "x-goog-api-key": key, "Content-Type": "application/json" };
 
@@ -44,12 +45,13 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      return { ok: false, message: `⚠️ Auth ผ่าน แต่ text generation ใช้ไม่ได้ (${res.status}) — ${body.slice(0, 120)}` };
+      const info = getGeminiErrorInfo(body, res.status);
+      return { ok: false, message: `⚠️ ${info.userMessage}` };
     }
   } catch { return { ok: false, message: "❌ ติดต่อ text generation ไม่ได้" }; }
 
-  // Step 3 — TTS (try fallback chain; some accounts can't access 3.1 preview)
-  const TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"];
+  // Step 3 — TTS (same order as production route: low-cost 2.5 Flash first)
+  const TTS_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-2.5-pro-preview-tts"];
   const ttsBody = JSON.stringify({
     contents: [{ parts: [{ text: "hi" }] }],
     generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } } },
@@ -64,16 +66,18 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
       });
       if (res.ok) {
         const note = model === TTS_MODELS[0] ? "" : ` (fallback to ${model})`;
-        return { ok: true, message: `✓ Gemini key ใช้งานได้ครบ — text + TTS${note}` };
+        return { ok: true, message: `✓ Gemini key พร้อมใช้งาน — text + TTS${note}. ถ้าใช้งานหลายคลิป แนะนำผูกบัตร Google เพื่อเพิ่มโควต้า` };
       }
-      ttsResults.push(`${model}:${res.status}`);
+      const body = await res.text().catch(() => "");
+      const info = getGeminiErrorInfo(body, res.status);
+      ttsResults.push(`${model}:${info.kind}`);
     } catch {
       ttsResults.push(`${model}:network`);
     }
   }
   return {
     ok: false,
-    message: `⚠️ Auth + text ใช้ได้ แต่ TTS preview ทุก model ใช้ไม่ได้ (${ttsResults.join(", ")}) — รอ Google ปลด preview restriction หรือสลับใช้ ElevenLabs`,
+    message: `⚠️ Text ใช้ได้ แต่ TTS ยังใช้ไม่ได้ (${ttsResults.join(", ")}) — ลองผูกบัตร Google หรือสลับใช้ ElevenLabs`,
   };
 }
 

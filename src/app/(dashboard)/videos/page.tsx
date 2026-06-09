@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
@@ -31,6 +31,7 @@ export default function VideosGalleryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
 
@@ -44,10 +45,20 @@ export default function VideosGalleryPage() {
 
   useEffect(() => { fetchVideos(); }, [fetchVideos]);
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") setPreviewUrl(null); };
+    const h = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "Escape") setPreviewUrl(null);
+      if (e.key === " " && previewUrl) {
+        const v = previewVideoRef.current;
+        if (!v) return;
+        e.preventDefault();
+        if (v.paused || v.ended) void v.play();
+        else v.pause();
+      }
+    };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, []);
+  }, [previewUrl]);
 
   async function handleDelete(id: string) {
     try {
@@ -207,6 +218,7 @@ export default function VideosGalleryPage() {
             onClick={e => e.stopPropagation()}
           >
             <video
+              ref={previewVideoRef}
               src={previewUrl}
               controls
               autoPlay
