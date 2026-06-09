@@ -30,6 +30,10 @@ const child = spawn("npx", buildArgs, {
   shell: true,
 });
 
-child.on("exit", (code) => {
-  process.exit(code ?? 0);
+child.on("exit", (code, signal) => {
+  if (code === null) {
+    console.error(`next build exited without a code${signal ? ` (signal: ${signal})` : ""}`);
+    process.exit(1);
+  }
+  process.exit(code);
 });
