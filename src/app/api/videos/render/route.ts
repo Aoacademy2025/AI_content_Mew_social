@@ -244,14 +244,18 @@ export async function POST(req: Request) {
     if (prevCancel) {
       console.log(`[Render] cancelling previous job for user ${userId}`);
       prevCancel();
-    }
-    // Wait for the previous job to fully exit before the new one starts renderMedia.
-    // Without this, both Chromium instances run concurrently → VPS OOM → one hangs.
-    const prevDone = renderJobDoneByUser.get(userId);
-    if (prevDone) {
-      console.log(`[Render] waiting for previous job to finish before starting ${jobId}`);
-      await prevDone;
-      console.log(`[Render] previous job finished — starting ${jobId}`);
+      // Wait only when the previous job is already inside renderMedia and has a
+      // real cancel handle. Queued/bundling jobs are superseded by latestJobPerUser
+      // and will self-cancel before entering renderMedia; waiting for them here
+      // makes the next request inherit the old queue delay.
+      const prevDone = renderJobDoneByUser.get(userId);
+      if (prevDone) {
+        console.log(`[Render] waiting for previous active render to finish before starting ${jobId}`);
+        await prevDone;
+        console.log(`[Render] previous active render finished — starting ${jobId}`);
+      }
+    } else if (renderJobDoneByUser.has(userId)) {
+      console.log(`[Render] superseding queued/pre-render job for user ${userId} without waiting`);
     }
 
     const quota = await reserveClipUsage(userId);
@@ -567,6 +571,47 @@ export async function POST(req: Request) {
     (async () => {
       let lastProgress = -1;
       let renderStartedAt = Date.now();
+      let jobFinalized = false;
+      let quotaRefunded = false;
+      const finishJob = () => {
+        if (jobFinalized) return;
+        jobFinalized = true;
+        decrementActiveRenderCount();
+        resolveDone();
+      };
+      const refundReservedClip = async () => {
+        if (quotaRefunded) return;
+        quotaRefunded = true;
+        await refundClipUsage(userId).catch(() => {});
+      };
+      const stopSupersededJob = async (stage: string) => {
+        if (latestJobPerUser.get(userId) === jobId) return false;
+
+        console.log(`[Render] job=${jobId} superseded at ${stage} — skipping`);
+        activeRenderCancel.delete(userId);
+        cancelByJobId.delete(jobId);
+        const existing = getRenderJob(jobId);
+        setRenderJob(jobId, {
+          status: "error",
+          error: "superseded",
+          startedAt: existing?.startedAt ?? Date.now(),
+        });
+        try {
+          fs.writeFileSync(progressFile, JSON.stringify({ progress: -1, jobId, error: "superseded" }));
+        } catch {}
+        await refundReservedClip();
+        await recordTelemetryEvent(userId, {
+          name: "render_server_cancelled",
+          category: "pipeline",
+          source: "server",
+          step: "render",
+          status: "cancelled",
+          durationMs: Date.now() - renderStartedAt,
+          properties: { jobId, stage },
+        }).catch(() => {});
+        finishJob();
+        return true;
+      };
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
         // Bundle (may be cached) — runs in background after jobId is returned
@@ -606,6 +651,7 @@ export async function POST(req: Request) {
           await inFlight;
         }
         const bundleLocation = cachedBundleLocation!;
+        if (await stopSupersededJob("bundle")) return;
 
         const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
         const inputProps = isSubtitleOverlay
@@ -648,6 +694,7 @@ export async function POST(req: Request) {
 
         await withRenderSlot(renderSlotLimit, async () => {
           const renderQueueWaitMs = Date.now() - renderQueueStartedAt;
+          if (await stopSupersededJob("render_slot")) return;
           try { fs.writeFileSync(progressFile, JSON.stringify({ progress: 0, jobId, queued: false, queuePosition: null })); } catch {}
 
           const cpuCount = os.cpus().length;
@@ -751,14 +798,10 @@ export async function POST(req: Request) {
           // Cleanup abort controller for this user if it's still ours
           activeRenderCancel.delete(userId);
           cancelByJobId.delete(jobId);
-          decrementActiveRenderCount();
-          resolveDone();
+          finishJob();
 
           // If a newer job was started for this user, discard this result silently
-          if (latestJobPerUser.get(userId) !== jobId) {
-            console.log(`[Render] job=${jobId} superseded by newer job — discarding result`);
-            return;
-          }
+          if (await stopSupersededJob("render_complete")) return;
 
           const videoUrl = `/api/renders/${filename}`;
           setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
@@ -796,15 +839,14 @@ export async function POST(req: Request) {
       } catch (error) {
         activeRenderCancel.delete(userId);
         cancelByJobId.delete(jobId);
-        decrementActiveRenderCount();
-        resolveDone();
+        finishJob();
 
         // Intentional cancel (page refresh / new render) — not a real failure.
         // Don't log as error, don't mark job errored, don't notify the user.
         const detail = error instanceof Error ? error.message : String(error);
         const wasCancelled = /got cancelled|Request closed|cancelSignal|aborted/i.test(detail);
-        await refundClipUsage(userId).catch(() => {});
-        if (latestJobPerUser.get(userId) !== jobId) return; // superseded — ignore error too
+        await refundReservedClip();
+        if (await stopSupersededJob("error")) return; // superseded — ignore error too
 
         if (wasCancelled) {
           console.log(`[Render] job=${jobId} cancelled — skipping error notification`);
