@@ -1685,6 +1685,24 @@ export default function VideoEditorPage() {
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
   const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
 
+  // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
+  type AvatarPollData = {
+    status?: string;
+    videoUrl?: string | null;
+    errorMsg?: string | null;
+    error?: { code?: string; message?: string; userAction?: string } | null;
+    retryAfterSec?: number;
+  };
+
+  function avatarFailureMessage(pollData: AvatarPollData, fallbackPrefix: string): string {
+    if (pollData.error?.message) {
+      return pollData.error.userAction
+        ? `${pollData.error.message} — ${pollData.error.userAction}`
+        : pollData.error.message;
+    }
+    return `${fallbackPrefix}: ${pollData.errorMsg ?? "unknown"}`;
+  }
+
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
     // Direct URL mode — skip HeyGen, use URL directly
     if (avatarInputMode === "direct") {
@@ -1736,7 +1754,7 @@ export default function VideoEditorPage() {
       if (abortRef.current) throw new Error("__SUPERSEDED__");
       // try ครอบเฉพาะ fetch/parse (ข้าม tick เมื่อ network พลาดชั่วคราว) — แต่สถานะ "failed" จาก HeyGen
       // ต้อง throw ออกไปถึง catch ของ pipeline ไม่งั้นจะ poll วิดีโอที่ตายแล้วต่ออีก 30 นาที (อาการ "ค้าง")
-      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
+      let pollData: AvatarPollData = {};
       try {
         const pollRes = await fetch("/api/videos/poll-avatar", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -1749,7 +1767,11 @@ export default function VideoEditorPage() {
         continue;
       }
       if (pollData.status === "completed" && pollData.videoUrl) { avatarVideoUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
+      // Terminal จาก server (key ผิด / ไม่พบวิดีโอ / เครดิตหมด / HeyGen fail) → ล้มทันที ไม่วนต่อ 30 นาที
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Avatar failed"));
+      // HeyGen ขอให้รอ (429) — เคารพ Retry-After ก่อน poll รอบถัดไป (ลูปนี้หน่วงเองอยู่แล้ว 5s)
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
       setStep("avatar", "running", `HeyGen: ${pollData.status} (${i + 1}) ~${Math.round((i + 1) * 5 / 60)}min`);
     }
     if (!avatarVideoUrl) throw new Error("Avatar: timeout หลัง 30 นาที");
@@ -1832,14 +1854,24 @@ export default function VideoEditorPage() {
     for (let i = 0; i < 360; i++) {
       await new Promise(r => setTimeout(r, 5000));
       if (abortRef.current) throw new Error("__SUPERSEDED__");
-      const pollRes = await fetch("/api/videos/poll-avatar", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: genData.videoId }),
-        signal: abortControllerRef.current?.signal,
-      });
-      const pollData = await pollRes.json();
+      // เหมือน loop หลักของ runAvatar: network พลาดชั่วคราว = ข้าม tick — ห้ามฆ่า pipeline ทั้งเส้น
+      let pollData: AvatarPollData = {};
+      try {
+        const pollRes = await fetch("/api/videos/poll-avatar", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: genData.videoId }),
+          signal: abortControllerRef.current?.signal,
+        });
+        pollData = await pollRes.json();
+      } catch (e) {
+        if (e instanceof Error && (e.name === "AbortError" || e.message === "__SUPERSEDED__")) throw e;
+        continue;
+      }
       if (pollData.status === "completed" && pollData.videoUrl) { tailUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Tail avatar failed: ${pollData.errorMsg}`);
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Tail avatar failed"));
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
+      setStep("avatarTail", "running", `HeyGen tail: ${pollData.status ?? "pending"} (${i + 1})`);
     }
     if (!tailUrl) throw new Error("Tail avatar: timeout");
     setAvatarTailGreenUrl(tailUrl);
