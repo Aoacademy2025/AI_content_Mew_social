@@ -33,6 +33,7 @@ import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
 import { trackEvent } from "@/lib/client-telemetry";
+import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -1482,69 +1483,15 @@ export default function VideoEditorPage() {
       startedAt: renderActivityStartedAt,
     });
 
-    let renderPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let renderFailedMessage: string | null = null;
-    let resolveRenderUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-    let renderIsQueued = false;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
-    };
-    stopRenderPollRef.current = stopPoll;
-
-    renderPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          // progress file บอก done → resolve ทันที แล้วหยุด poll ทั้งคู่
-          if (resolveRenderUrl) { resolveRenderUrl(d.videoUrl); resolveRenderUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) { renderFailedMessage = d.error; setRenderProgressError(d.error); setStep("render", "error", d.error); stopPoll(); return; }
-        const p = Number(d.progress);
-        renderIsQueued = Boolean(d.queued || d.stage === "queued");
-        if (renderIsQueued) {
-          const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", queueText);
-          return;
-        }
-        if (d.stage === "preparing") {
-          setRenderActivity({
-            phase: "preparing",
-            label: "เตรียมไฟล์สำหรับเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", "Preparing render...");
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "rendering",
-            label: "กำลังเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", `Rendering... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 3s status interval. pollAbort stops it: chained to the shared
+    // AbortController (stopAll / beforeunload) and exposed via stopRenderPollRef.
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       // Always rebuild keywordPopups from current captions so render matches preview exactly
@@ -1587,7 +1534,6 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
         signal: abortControllerRef.current?.signal,
       });
-      if (renderFailedMessage) throw new Error(renderFailedMessage);
       const data = await res.json();
       assertOk("Render", res, data);
 
@@ -1601,49 +1547,78 @@ export default function VideoEditorPage() {
         setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return immediateUrl;
       }
       if (!jobId) throw new Error("Render server did not return jobId");
-      currentJobId = jobId; activeJobIdRef.current = jobId;
+      activeJobIdRef.current = jobId;
       // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
       try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 60 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 60 * 60 * 1000;
-      let lastProgressValue = -1;
-      let lastProgressChangedAt = Date.now();
-
       let statusNotFoundCount = 0;
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveRenderUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (renderFailedMessage) { clearInterval(si); reject(new Error(renderFailedMessage)); return; }
-          if (!resolveRenderUrl) { clearInterval(si); return; }
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-          // Stale check: progress ไม่เปลี่ยนนานเกิน 5 นาที → hang
-          const curProgress = renderProgressRef.current;
-          if (renderIsQueued) {
-            lastProgressChangedAt = Date.now();
-          } else if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
-          else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
-            clearInterval(si); resolveRenderUrl = null;
-            reject(new Error("Render หยุดค้างนานเกิน 60 นาที — กรุณาลองใหม่"));
-            return;
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — จับเคสที่ progress file หาย
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Render failed" };
+              if (sd.status === "not_found") {
+                statusNotFoundCount++;
+                if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+              }
+            } else if (sr.status === 404) {
+              statusNotFoundCount++;
+              if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+            }
           }
 
-          try {
-            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-            const sd = await sr.json();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (sd.status === "done" && sd.videoUrl) { clearInterval(si); resolveRenderUrl = null; resolve(sd.videoUrl as string); }
-            else if (sd.status === "error") { clearInterval(si); resolveRenderUrl = null; reject(new Error(sd.error ?? "Render failed")); }
-            else if (sd.status === "not_found" || sr.status === 404) {
-              statusNotFoundCount++;
-              if (statusNotFoundCount >= 3) {
-                clearInterval(si);
-                console.warn(`[render] render-status not_found ×${statusNotFoundCount} — falling back to progress-file polling`);
-              }
-            }
-          } catch (e) { if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveRenderUrl = null; reject(e); } }
-        }, 3000);
+          // 502/504 HTML หรือ network ล่ม → throw → pollJob ถือเป็น transient + backoff (ห้าม fail งาน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", queueText);
+            return { status: "pending", resetStale: true }; // รอคิว = งานยังไม่เริ่ม ไม่นับ stale
+          }
+          if (d.stage === "preparing") {
+            setRenderActivity({
+              phase: "preparing",
+              label: "เตรียมไฟล์สำหรับเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", "Preparing render...");
+            return { status: "pending", progress: null }; // preparing ค้างเกิน 10 นาที = stale (ตั้งใจ)
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "rendering",
+              label: "กำลังเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", `Rendering... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
@@ -1668,14 +1643,20 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
-      if (!renderFailedMessage && !(err instanceof Error && err.name === "AbortError")) {
-        const msg = friendlyError(err);
+      // stale/transient-limit: งานฝั่ง server อาจยังทำงานอยู่ — แนะนำให้เช็ค Gallery แล้วค่อยลองใหม่
+      const finalErr = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง")
+        : err;
+      if (!(finalErr instanceof Error && finalErr.name === "AbortError")) {
+        const msg = friendlyError(finalErr);
         setRenderProgressError(msg); setStep("render", "error", msg);
       }
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
-      throw err;
+      throw finalErr;
     } finally {
-      stopPoll(); stopRenderPollRef.current = null;
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
