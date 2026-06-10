@@ -863,19 +863,18 @@ export default function VideoEditorPage() {
   }
 
   function handlePlanError(err: unknown): boolean {
-    if (err instanceof ApiCallError && (err.data as any)._status === 403) {
-      setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
-      return true;
-    }
-    // check via message contains "403"
-    if (err instanceof ApiCallError) {
-      const status = (err.data as any)._status;
-      if (status === 403) {
-        setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
-        return true;
-      }
-    }
-    return false;
+    if (!(err instanceof ApiCallError)) return false;
+    if ((err.data as any)._status !== 403) return false;
+    // PR-1 structured shape: { error: { code: "quota_exceeded", message, userAction } }
+    const rawErr = err.data.error;
+    const structured = typeof rawErr === "object" && rawErr !== null
+      ? (rawErr as { code?: string; message?: string; userAction?: string })
+      : null;
+    const message = structured
+      ? [structured.message, structured.userAction].filter(Boolean).join(" — ")
+      : String(rawErr ?? "");
+    setUpgradeModal({ open: true, message });
+    return true;
   }
 
   function friendlyError(err: unknown): string {
@@ -885,7 +884,13 @@ export default function VideoEditorPage() {
     if (raw.includes("ENOSPC")) return "พื้นที่ดิสก์บน Server เต็ม";
     if (err instanceof ApiCallError) {
       const status = (err.data as any)._status as number | undefined;
-      const errMsg = String(err.data.error ?? "");
+      // PR-1 structured errors: { error: { code, message, userAction } } — เช่น quota_exceeded
+      const structuredErr = typeof err.data.error === "object" && err.data.error !== null
+        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        : null;
+      const errMsg = structuredErr
+        ? [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ")
+        : String(err.data.error ?? "");
       if (status === 429 && errMsg) return errMsg;
       // Key ตั้งไว้แล้วแต่ invalid — บอกรายละเอียดแทนการให้ใส่ซ้ำ
       if (status === 401) {
@@ -2313,8 +2318,10 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ subtitleOverlayConfig }),
         signal: abortControllerRef.current?.signal,
       });
-      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Burn subtitles failed");
+      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
+      // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
+      // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
+      assertOk("Burn", res, data as Record<string, unknown>);
 
       const finalizeBurn = (url: string) => {
         // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
@@ -2392,9 +2399,11 @@ export default function VideoEditorPage() {
       finalizeBurn(url);
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = friendlyError(err);
       setStep("burnSubtitles", "error", msg);
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+      // โควต้าคลิปหมด (403 quota_exceeded) → เปิด Upgrade modal พร้อมลิงก์หน้า Pricing แทน toast
+      if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
       throw err;
     } finally {

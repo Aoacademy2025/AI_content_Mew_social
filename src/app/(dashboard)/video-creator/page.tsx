@@ -631,6 +631,13 @@ export default function ShortVideoPage() {
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
     if (err instanceof ApiCallError) {
       const status = (err.data as any)._status as number | undefined;
+      // PR-1 structured errors จาก /api/videos/render: { error: { code, message, userAction } }
+      const structuredErr = typeof err.data.error === "object" && err.data.error !== null
+        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        : null;
+      if (structuredErr?.message) {
+        return [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ");
+      }
       const errMsg = String(err.data.error ?? "");
       if (status === 429 && errMsg) return errMsg;
       if (err.data.provider === "gemini" && errMsg) return errMsg;
