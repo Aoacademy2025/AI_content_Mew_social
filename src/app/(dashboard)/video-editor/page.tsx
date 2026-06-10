@@ -1674,6 +1674,13 @@ export default function VideoEditorPage() {
 
   // ── Avatar pipeline ────────────────────────────────────────────────────
 
+  // state ตำแหน่ง avatar ผสมหน่วย: ค่า default (0, 0.13) เป็นหน่วย normalized ของ HeyGen
+  // แต่ drag/slider ใน RightSettingsPanel เขียนเป็น px (-200..200) — HeyGen รับเฉพาะ -1..1
+  // แปลงด้วยสเกลเดียวกับ preview (px/200) เพื่อให้ตำแหน่งที่ผู้ใช้ลากมีผลกับวิดีโอจริง
+  function toHeygenOffset(v: number): number {
+    return Math.abs(v) <= 1 ? v : Math.max(-1, Math.min(1, v / 200));
+  }
+
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
     // Direct URL mode — skip HeyGen, use URL directly
     if (avatarInputMode === "direct") {
@@ -1705,7 +1712,7 @@ export default function VideoEditorPage() {
     const genRes = await fetch("/api/heygen/generate-with-bg", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
-      body: JSON.stringify({ audioUrl: avatarAudioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+      body: JSON.stringify({ audioUrl: avatarAudioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: toHeygenOffset(avatarOffsetX), offsetY: toHeygenOffset(avatarOffsetY) }),
     });
     const genData = await genRes.json();
     assertOk("Avatar", genRes, genData);
@@ -1723,17 +1730,23 @@ export default function VideoEditorPage() {
         });
       }
       if (abortRef.current) throw new Error("__SUPERSEDED__");
+      // try ครอบเฉพาะ fetch/parse (ข้าม tick เมื่อ network พลาดชั่วคราว) — แต่สถานะ "failed" จาก HeyGen
+      // ต้อง throw ออกไปถึง catch ของ pipeline ไม่งั้นจะ poll วิดีโอที่ตายแล้วต่ออีก 30 นาที (อาการ "ค้าง")
+      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
       try {
         const pollRes = await fetch("/api/videos/poll-avatar", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ videoId: heygenVideoId }),
           signal: abortControllerRef.current?.signal,
         });
-        const pollData = await pollRes.json();
-        if (pollData.status === "completed" && pollData.videoUrl) { avatarVideoUrl = pollData.videoUrl; break; }
-        if (pollData.status === "failed") throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
-        setStep("avatar", "running", `HeyGen: ${pollData.status} (${i + 1}) ~${Math.round((i + 1) * 5 / 60)}min`);
-      } catch (e) { if (e instanceof Error && (e.name === "AbortError" || e.message === "__SUPERSEDED__")) throw e; }
+        pollData = await pollRes.json();
+      } catch (e) {
+        if (e instanceof Error && (e.name === "AbortError" || e.message === "__SUPERSEDED__")) throw e;
+        continue;
+      }
+      if (pollData.status === "completed" && pollData.videoUrl) { avatarVideoUrl = pollData.videoUrl; break; }
+      if (pollData.status === "failed") throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
+      setStep("avatar", "running", `HeyGen: ${pollData.status} (${i + 1}) ~${Math.round((i + 1) * 5 / 60)}min`);
     }
     if (!avatarVideoUrl) throw new Error("Avatar: timeout หลัง 30 นาที");
     setAvatarGreenUrl(avatarVideoUrl);
@@ -1805,7 +1818,7 @@ export default function VideoEditorPage() {
     const genRes = await fetch("/api/heygen/generate-with-bg", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
-      body: JSON.stringify({ audioUrl: trimData.audioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+      body: JSON.stringify({ audioUrl: trimData.audioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: toHeygenOffset(avatarOffsetX), offsetY: toHeygenOffset(avatarOffsetY) }),
     });
     const genData = await genRes.json();
     assertOk("Tail Avatar", genRes, genData);
@@ -1858,8 +1871,16 @@ export default function VideoEditorPage() {
         : "Avatar preview พร้อมแล้ว");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (handlePlanError(err)) return;
+      // ปิด spinner ของ step ที่ค้างอยู่เสมอ — ไม่งั้นผู้ใช้เห็น "สร้าง Avatar" หมุนค้างตลอดแม้ pipeline ตายไปแล้ว
+      const failMsg = friendlyError(err);
+      const markFailedSteps = () => {
+        for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+          if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+        }
+      };
+      if (handlePlanError(err)) { markFailedSteps(); return; }
       if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err);
+      markFailedSteps();
     } finally {
       runningRef.current = false; setRunning(false);
     }
