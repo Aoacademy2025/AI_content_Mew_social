@@ -40,3 +40,37 @@ du -sh /root/.pm2/logs/
 
 Expected: every live `*.log` is under 50M; `*.log.gz` archives appear
 (at most 5 retained per log).
+
+## 2. SQLite WAL (one-time per DB file)
+
+Why: WAL lets readers and one writer coexist — required before the Phase 2
+render worker shares `prisma/dev.db` with the web process (spec §5 PR-4,
+§12). `journal_mode=WAL` is persistent (stored in the DB file); set it once
+per DB file. `busy_timeout` is per-connection and is set in code
+(`src/lib/prisma.ts`), not here.
+
+Run on the VPS (`ssh -i ~/.ssh/hostinger_heroai_codex root@72.62.196.230`):
+
+```bash
+command -v sqlite3 >/dev/null || apt-get install -y sqlite3
+sqlite3 /var/www/ai-content/prisma/dev.db "PRAGMA journal_mode=WAL;"
+```
+
+Expected output:
+
+```
+wal
+```
+
+If it prints `Error: database is locked`, a write was in flight — retry
+off-peak (the switch needs a moment with no active write lock).
+
+Verify it stuck and sidecar files exist:
+
+```bash
+sqlite3 /var/www/ai-content/prisma/dev.db "PRAGMA journal_mode;"
+ls -lh /var/www/ai-content/prisma/ | grep dev.db
+```
+
+Expected: `wal`, plus `dev.db-wal` / `dev.db-shm` next to `dev.db` (all
+`prisma/*.db*` paths are gitignored, so `git pull` never touches them).
