@@ -94,6 +94,22 @@ export async function POST(req: Request) {
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
   if (!greenScreen && !removeBg && !bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl, greenScreen, or removeBg required" }, { status: 400 });
 
+  // HeyGen ยอมรับ offset เป็นค่า normalized -1..1 เท่านั้น แต่ slider ตำแหน่ง avatar ใน video-editor
+  // ส่งค่าเป็น px (-200..200, สเกลเดียวกับ preview: px/200 = สัดส่วนจากกึ่งกลาง) ทำให้ HeyGen ตอบ
+  // 400 invalid_parameter ทุกครั้งที่ผู้ใช้ลากตำแหน่ง — composite วาง canvas เต็มเฟรม ตำแหน่งสุดท้าย
+  // มาจาก offset ฝั่ง HeyGen เท่านั้น จึงต้องแปลงหน่วยแทนการตัดทิ้ง (กัน client bundle เก่าด้วย)
+  const safeOffset = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    if (Math.abs(n) <= 1) return n;
+    return Math.max(-1, Math.min(1, n / 200));
+  };
+  const hgOffsetX = safeOffset(offsetX, 0.0);
+  const hgOffsetY = safeOffset(offsetY, 0.13);
+  if (hgOffsetX !== Number(offsetX) || hgOffsetY !== Number(offsetY)) {
+    console.warn(`[generate-with-bg] offset adjusted for HeyGen range: (${offsetX}, ${offsetY}) → (${hgOffsetX}, ${hgOffsetY})`);
+  }
+
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decrypt(user.heygenKey);
@@ -147,7 +163,17 @@ export async function POST(req: Request) {
     const uploadData = await uploadRes.json();
     console.log("[generate-with-bg] audio upload result:", uploadRes.status, JSON.stringify(uploadData));
     if (tmpMp3) try { fs.unlinkSync(tmpMp3); } catch {}
-    if (!uploadRes.ok || !uploadData.data?.id) throw new Error(`Audio upload failed: ${uploadData.message ?? uploadRes.status}`);
+    if (!uploadRes.ok || !uploadData.data?.id) {
+      // ตอบ JSON ชัดเจนแทน throw (เดิมกลายเป็น 500 plain text → client parse พัง)
+      // - ห้ามมีคำว่า "Unauthorized"/"401" ในข้อความ: video-creator จะ map เป็น "Session หมดอายุ" ซึ่งผิดเรื่อง
+      // - retryable:false ทุกกรณี: ปัญหา upload ไม่ใช่ key หาย — ไม่ต้องเปิด modal ใส่ key ซ้ำ
+      const keyRejected = uploadRes.status === 401;
+      const msg = keyRejected
+        ? "HeyGen API key ไม่ถูกต้องหรือถูกปฏิเสธ — กรุณาตรวจสอบ HeyGen key ใน Settings"
+        : `HeyGen audio upload ล้มเหลว: ${uploadData.message ?? uploadRes.status}`;
+      console.error(`[generate-with-bg] audio upload failed (${uploadRes.status}): ${JSON.stringify(uploadData).slice(0, 300)}`);
+      return NextResponse.json({ error: msg, retryable: false }, { status: keyRejected ? 401 : 500 });
+    }
 
     const audioAssetId = uploadData.data.id as string;
     console.log("[generate-with-bg] audioAssetId:", audioAssetId);
@@ -163,7 +189,7 @@ export async function POST(req: Request) {
         type: "avatar",
         avatar_id: avatarId,
         avatar_style: "normal",
-        offset: { x: offsetX, y: offsetY },
+        offset: { x: hgOffsetX, y: hgOffsetY },
         scale,
         matting: true,
       },
@@ -183,8 +209,10 @@ export async function POST(req: Request) {
   console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
 
   if (!genRes.ok || !genData.data?.video_id) {
+    // retryable:false — generate ล้มเหลว (เช่น credit หมด, พารามิเตอร์ไม่ผ่าน) ไม่ใช่ key หาย
+    // ไม่งั้น client เปิด modal ใส่ key ซ้ำ ทำให้ผู้ใช้เข้าใจผิดว่า key มีปัญหา
     return NextResponse.json(
-      { error: `HeyGen generate failed: ${JSON.stringify(genData.error ?? genData)}` },
+      { error: `HeyGen generate failed: ${JSON.stringify(genData.error ?? genData)}`, retryable: false },
       { status: 500 }
     );
   }
