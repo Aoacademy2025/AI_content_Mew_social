@@ -3063,6 +3063,9 @@ export default function VideoEditorPage() {
               return (
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
+                  // Offscreen rows skip layout/paint; size hint ≈ row height so the
+                  // panel scrollbar stays stable. scrollIntoView still works.
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}
                   className={cn("rounded-xl border transition-all group",
                     isActive ? "bg-violet-500/10 border-violet-500/40" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
 

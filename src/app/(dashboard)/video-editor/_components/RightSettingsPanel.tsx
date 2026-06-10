@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useDeferredValue, useEffect, useRef } from "react";
 import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -79,6 +79,14 @@ function effectAnim(effect: SubTextEffect): string {
 
 export function RightSettingsPanel(p: RightPanelProps) {
   const cols4 = p.detached || (p.panelWidth !== undefined ? p.panelWidth >= 420 : p.wide);
+  // Deferred copies of the style values rendered inside the 17 preset cards.
+  // While dragging the color picker / switching fonts, the urgent render
+  // updates the live preview strip first; the card grid catches up at
+  // deferred priority instead of janking the input.
+  const dSubColor = useDeferredValue(p.subColor);
+  const dSubAccentColor = useDeferredValue(p.subAccentColor);
+  const dSubFontFamily = useDeferredValue(p.subFontFamily);
+  const dSubFontWeight = useDeferredValue(p.subFontWeight);
 
   return (
     <div
@@ -146,9 +154,15 @@ export function RightSettingsPanel(p: RightPanelProps) {
                   return (
                     <button key={pr.value} onClick={() => p.setSubPreset(pr.value)}
                       className="flex flex-col items-center gap-1 rounded-xl py-2 px-1 transition-all"
-                      style={isSelected
-                        ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)" }
-                        : { background: "#1a1a22", border: "1px solid #2a2a36" }}>
+                      style={{
+                        // Offscreen cards skip layout/paint entirely; the size hint
+                        // keeps the scrollbar stable (≈ card height).
+                        contentVisibility: "auto",
+                        containIntrinsicSize: "auto 72px",
+                        ...(isSelected
+                          ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)" }
+                          : { background: "#1a1a22", border: "1px solid #2a2a36" }),
+                      }}>
                       <div className="w-full h-10 flex items-center justify-center rounded-lg overflow-hidden px-0.5 [&_span]:whitespace-nowrap! [&_span]:break-normal! [&_div]:px-2!" style={{ background: "rgba(0,0,0,0.45)" }}>
                         {/* Static preset preview — STYLE only (no motion). The
                             arbitrary selectors force every inner span to one line and
@@ -156,7 +170,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
                             whiteSpace:normal + break-all (correct for real subtitles)
                             which would otherwise wrap "ตัวอย่าง" inside the small card. */}
                         <div style={{ lineHeight: 1, transform: "scale(0.82)" }}>
-                          {renderSubEl("ตัวอย่าง", p.subColor, p.subAccentColor, false, pr.value, p.subFontFamily, 15, p.subFontWeight, 1)}
+                          {renderSubEl("ตัวอย่าง", dSubColor, dSubAccentColor, false, pr.value, dSubFontFamily, 15, dSubFontWeight, 1)}
                         </div>
                       </div>
                       <span className="text-[9px] font-medium leading-tight text-center"
