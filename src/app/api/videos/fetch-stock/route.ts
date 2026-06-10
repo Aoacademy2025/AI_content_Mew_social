@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { fetchWithBudget } from "@/lib/fetch-budget";
+import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -150,11 +152,12 @@ async function searchPexels(query: string, apiKey: string, minDuration = 3, perP
     page: String(page),
   });
 
-  const res = await fetch(`https://api.pexels.com/videos/search?${params}`, {
+  // Stock-search budget: 20s/attempt, 2 retries (429 honors Retry-After).
+  // Final non-ok throws ProviderError — existing callers already treat a
+  // throw as "no candidates for this keyword".
+  const res = await fetchWithBudget(`https://api.pexels.com/videos/search?${params}`, {
     headers: { Authorization: apiKey },
-  });
-
-  if (!res.ok) throw new Error(`Pexels search failed: ${res.status}`);
+  }, { provider: "pexels", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
   const data = await res.json();
   return (data.videos ?? []) as PexelsVideo[];
 }
@@ -210,19 +213,19 @@ function isValidMp4Path(filePath: string): boolean {
 
 async function downloadAndCrop(url: string, outPath: string): Promise<void> {
   const MAX_ATTEMPTS = 4;
-  const TIMEOUT_MS = 90_000; // 90s — Pixabay CDN บางไฟล์ใหญ่ช้ามาก
+  const TIMEOUT_MS = 120_000; // 120s — Pixabay CDN บางไฟล์ใหญ่ช้ามาก (PR-5 stock-download budget)
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const tmp = `${outPath}.part`;
     try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+      // retries: 0 — downloadAndCrop's own MAX_ATTEMPTS loop already retries
+      // (it also re-validates the file on disk, which fetchWithBudget can't).
+      const res = await fetchWithBudget(url, {
         headers: {
           // บาง CDN บล็อก bot — ใส่ User-Agent เหมือน browser
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
         },
-      });
-      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+      }, { provider: "stock-cdn", timeoutMs: TIMEOUT_MS, retries: 0, wallClockMs: TIMEOUT_MS + 5_000 });
 
       const data = Buffer.from(await res.arrayBuffer());
       if (data.length < 1_500) {
@@ -260,8 +263,8 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
     per_page: "15",
     min_duration: String(minDuration),
   });
-  const res = await fetch(`https://pixabay.com/api/videos/?${params}`);
-  if (!res.ok) throw new Error(`Pixabay search failed: ${res.status}`);
+  const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
+    { provider: "pixabay", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
   const data = await res.json();
   return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string }; large?: { url: string } }; tags?: string }) => ({
     id: h.id,
@@ -569,6 +572,8 @@ export async function POST(req: Request) {
   }[] = [];
 
   const usedIds = new Set<number>();
+  // eslint-disable-next-line prefer-const
+  let stockProviderError = null as ProviderError | null; // จับ invalid_key ไว้รายงานตอนท้าย — เดิมถูกกลืนเงียบ
 
   async function withConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
     const queue = [...items];
@@ -624,10 +629,15 @@ export async function POST(req: Request) {
               ? searchPexels(query, pexelsKey!, 3, basePerPage)
               : Promise.resolve([] as PexelsVideo[]),
             canUsePixabay
-              ? searchPixabay(query, pixabayKey).catch(() => [] as { id: number; duration: number; videoUrl: string }[])
+              ? searchPixabay(query, pixabayKey!)
               : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
           ]);
 
+          for (const settled of [pexelsRaw, pixabayRaw]) {
+            if (settled.status === "rejected" && isProviderError(settled.reason) && !stockProviderError) {
+              stockProviderError = settled.reason;
+            }
+          }
           const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
           const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
           stockTelemetry.pexelsCandidates += pexelsVideos.length;
@@ -834,6 +844,16 @@ export async function POST(req: Request) {
   stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount;
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
   if (!clipsToDownload.length) {
+    // หาคลิปไม่ได้เลยและสาเหตุคือ key ใช้ไม่ได้ — บอกผู้ใช้ตรง ๆ แทน results ว่าง
+    const capturedStockErr = stockProviderError; // capture into const — TS CFA can't narrow a let assigned in closures
+    if (capturedStockErr && capturedStockErr.code === "invalid_key") {
+      await recordFetchStockTelemetry("error", {
+        providerErrorCode: capturedStockErr.code,
+        errorProvider: capturedStockErr.provider,
+      });
+      const { body: errBody, status } = toErrorResponse(capturedStockErr);
+      return NextResponse.json(errBody, { status });
+    }
     await recordFetchStockTelemetry("done", { emptyResult: true });
     return NextResponse.json({ results: [] });
   }
