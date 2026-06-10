@@ -72,5 +72,5 @@ sqlite3 /var/www/ai-content/prisma/dev.db "PRAGMA journal_mode;"
 ls -lh /var/www/ai-content/prisma/ | grep dev.db
 ```
 
-Expected: `wal`, plus `dev.db-wal` / `dev.db-shm` next to `dev.db` (all
+Expected: `wal`; `dev.db-wal` / `dev.db-shm` appear next to `dev.db` after the first write (SQLite creates them lazily and removes them when the last connection closes cleanly) (all
 `prisma/*.db*` paths are gitignored, so `git pull` never touches them).

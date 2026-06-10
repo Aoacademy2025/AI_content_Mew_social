@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 // ⚠️ This file SHADOWS next.config.ts: Next.js resolves config in the order
-// next.config.js → .mjs → .ts (CONFIG_FILES, next 15.3.9), so THIS empty stub
+// next.config.js → .mjs → .ts (CONFIG_FILES, next 15.3.9), so THIS file
 // is the config production actually runs with — everything in next.config.ts
 // (serverExternalPackages, webpack externals, the /renders rewrite, build OOM
 // mitigations) is currently INACTIVE. Unifying the two files is a separate,
