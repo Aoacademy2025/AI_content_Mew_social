@@ -1,0 +1,350 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  clerkId       String?   @unique
+  name          String
+  email         String    @unique
+  password      String?
+  googleId      String?  @unique
+  image         String?
+  role          Role      @default(USER)
+  plan          Plan      @default(FREE)
+  usageCount    Int       @default(0)
+  usageLimit    Int       @default(2)
+  usagePeriodStartedAt DateTime?
+  openaiKey          String?
+  geminiKey          String?
+  heygenKey          String?
+  elevenlabsKey      String?
+  pexelsKey          String?
+  pixabayKey         String?
+  avatar             String?
+  heygenAvatarId     String?
+  elevenlabsVoiceId  String?
+  ttsProvider        String?  @default("elevenlabs")
+  geminiVoiceName    String?  @default("Aoede")
+  suspended     Boolean   @default(false)
+  planExpiresAt DateTime?
+  // Phase 2 — subscriptions (card auto-renew cohort)
+  stripeCustomerId     String?  @unique
+  stripeSubscriptionId String?
+  subStatus            String?  // active | past_due | canceled
+  billingPeriod        String?  // monthly | annual
+  cancelAtPeriodEnd    Boolean  @default(false) // portal-scheduled cancel; resume clears it
+  cancelAt             DateTime?                  // exact lapse date from Stripe sub.cancel_at
+  // Free trial (public 7-day PRO trial, no card)
+  trialStartedAt DateTime?  // set once; never cleared (one-trial-per-user guard)
+  trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
+  resetToken    String?
+  resetExpires  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  styles        Style[]
+  contents      Content[]
+  videos        Video[]
+  images        GeneratedImage[]
+  notifications   Notification[]
+  supportTickets     SupportTicket[]
+  couponRedemptions  CouponRedemption[]
+  payments           Payment[]
+  telemetryEvents    TelemetryEvent[]
+  productUpdateReads ProductUpdateRead[]
+}
+
+model Style {
+  id                String   @id @default(cuid())
+  name              String
+  sampleText        String?  
+  sampleUrl         String?
+  instructionPrompt String   
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Content {
+  id            String   @id @default(cuid())
+  sourceText    String?
+  sourceUrl     String?
+  styleId       String?
+  language      Language @default(TH)
+  imageModel    String?  @default("nanobanana")
+  videoDuration Int?
+  headline      String?
+  subheadline   String?
+  body          String?
+  hashtags      String?
+  imagePrompt   String?
+  visualNotes   String?
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videos        Video[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Video {
+  id              String      @id @default(cuid())
+  contentId       String?
+  content         Content?    @relation(fields: [contentId], references: [id])
+  avatarModel     String
+  voiceModel      String
+  imageModel      String?
+  sceneCount      Int
+  script          String?     
+  sceneMapping    String?     
+  generatedImages String?     
+  audioUrl        String?
+  videoUrl        String?
+  avatarVideoUrl  String?
+  thumbnail       String?
+  thumbnailConfig String?     // JSON: { seekTime, textLayers } for thumbnail editor
+  renderConfig    String?     // JSON: shortVideoConfig for Remotion thumbnail
+  status          VideoStatus @default(PENDING)
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  expiresAt       DateTime?
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum Plan {
+  FREE
+  PRO
+  BUSINESS
+}
+
+enum Language {
+  TH
+  EN
+}
+
+enum VideoStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+}
+
+enum NotificationType {
+  VIDEO_COMPLETED
+  VIDEO_FAILED
+  LIMIT_WARNING
+  LIMIT_REACHED
+  NEW_USER
+  ERROR_SYSTEM
+}
+
+model ProductUpdate {
+  id          String                @id @default(cuid())
+  version     String
+  title       String
+  summary     String
+  body        String?
+  category    ProductUpdateCategory @default(IMPROVEMENT)
+  importance  ProductUpdateImportance @default(BANNER)
+  state       ProductUpdateState    @default(DRAFT)
+  isPinned    Boolean               @default(false)
+  targetPath  String?
+  ctaLabel    String?
+  ctaHref     String?
+  imageUrl    String?
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  reads       ProductUpdateRead[]
+
+  @@index([state, publishedAt])
+  @@index([category, publishedAt])
+  @@index([isPinned, publishedAt])
+}
+
+model ProductUpdateRead {
+  id        String        @id @default(cuid())
+  updateId  String
+  update    ProductUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt    DateTime      @default(now())
+
+  @@unique([updateId, userId])
+  @@index([userId, readAt])
+}
+
+enum ProductUpdateCategory {
+  FEATURE
+  IMPROVEMENT
+  FIX
+  PATCH
+  KNOWN_ISSUE
+  IN_PROGRESS
+}
+
+enum ProductUpdateImportance {
+  SILENT
+  BANNER
+  MODAL
+}
+
+enum ProductUpdateState {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model SupportTicket {
+  id          String              @id @default(cuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message     String
+  imageBase64 String?
+  imageName   String?
+  status      SupportTicketStatus @default(OPEN)
+  adminReply  String?
+  repliedAt   DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+enum SupportTicketStatus {
+  OPEN
+  CLOSED
+}
+
+model Coupon {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  plan        Plan      @default(PRO)
+  durationDays Int      @default(30)  // 0 = permanent
+  maxUses     Int       @default(1)
+  usedCount   Int       @default(0)
+  expiresAt   DateTime?
+  type                  String   @default("GRANT") // GRANT | DISCOUNT
+  percentOff            Int?                         // 1-100, DISCOUNT only
+  discountDuration      String?                      // "once" | "forever", DISCOUNT only
+  stripeCouponId        String?                      // Stripe Coupon id (DISCOUNT)
+  stripePromotionCodeId String?                      // Stripe Promotion Code id (DISCOUNT)
+  createdAt   DateTime  @default(now())
+  redemptions CouponRedemption[]
+}
+
+model CouponRedemption {
+  id        String   @id @default(cuid())
+  couponId  String
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  redeemedAt DateTime @default(now())
+
+  @@unique([couponId, userId])
+}
+
+model FoundingReservation {
+  id              String    @id @default(cuid())
+  userId          String
+  stripeSessionId String    @unique
+  status          String    @default("RESERVED") // RESERVED | CONFIRMED | RELEASED
+  createdAt       DateTime  @default(now())
+  confirmedAt     DateTime?
+  releasedAt      DateTime?
+
+  @@index([userId])
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripeSessionId   String        @unique
+  stripePaymentIntent String?
+  plan              Plan
+  amount            Int           // satang / cents
+  currency          String        @default("thb")
+  status            PaymentStatus @default(PENDING)
+  periodDays        Int           @default(30)
+  createdAt         DateTime      @default(now())
+  paidAt            DateTime?
+}
+
+model TelemetryEvent {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId   String?
+  name        String
+  category    String   @default("product") // product | pipeline | performance | error
+  source      String   @default("client")  // client | server
+  path        String?
+  step        String?
+  status      String?
+  durationMs  Int?
+  value       Float?
+  properties  String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([name, createdAt])
+  @@index([category, createdAt])
+  @@index([step, createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model SiteConfig {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model Music {
+  id          String   @id @default(cuid())
+  title       String
+  filename    String   // file stored in public/music/
+  duration    Float?   // seconds
+  createdAt   DateTime @default(now())
+}
+
+model GeneratedImage {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt       String
+  url          String
+  imageModel   String
+  sceneTitle   String?
+  contentTitle String?
+  createdAt    DateTime @default(now())
+}

@@ -1,0 +1,102 @@
+import type { NextConfig } from "next";
+import fs from "fs";
+
+// Windows: create a short temp path so Remotion's ffmpeg audio-mixing doesn't
+// exceed the 260-char MAX_PATH limit (AppData\Local\Temp\remotion-... is too long).
+if (process.platform === "win32") {
+  try { fs.mkdirSync("C:\\Tmp", { recursive: true }); } catch {}
+  process.env.TEMP   = "C:\\Tmp";
+  process.env.TMP    = "C:\\Tmp";
+  process.env.TMPDIR = "C:\\Tmp";
+}
+
+const nextConfig: NextConfig = {
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  experimental: {
+    // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
+    workerThreads: false,
+    cpus: 1,
+  },
+  async rewrites() {
+    return [
+      // Serve dynamically-written renders via API route (static public/ doesn't serve runtime files in prod)
+      { source: "/renders/:filename", destination: "/api/renders/:filename" },
+    ];
+  },
+  // Prevent Next.js from bundling Remotion server-side packages.
+  // @remotion/bundler and @remotion/renderer include esbuild native binaries
+  // and non-JS files (.md, .node) that webpack/turbopack cannot handle.
+  serverExternalPackages: [
+    "@remotion/bundler",
+    "@remotion/renderer",
+    "esbuild",
+    "puppeteer-core",
+    // fluent-ffmpeg + ffmpeg-installer
+    "fluent-ffmpeg",
+    "@ffmpeg-installer/ffmpeg",
+    "@ffmpeg-installer/win32-x64",
+    "@ffmpeg-installer/win32-ia32",
+    "@ffmpeg-installer/linux-x64",
+    "@ffmpeg-installer/linux-arm64",
+    "@ffmpeg-installer/darwin-x64",
+    "@ffmpeg-installer/darwin-arm64",
+    // @imgly/background-removal-node + onnxruntime
+    "@imgly/background-removal-node",
+    "onnxruntime-node",
+    "sharp",
+    // prisma CLI (not client)
+    "prisma",
+    "@prisma/engines",
+    // esbuild platform-specific packages (nested inside @remotion/bundler)
+    "@esbuild/win32-x64",
+    "@esbuild/win32-ia32",
+    "@esbuild/win32-arm64",
+    "@esbuild/linux-x64",
+    "@esbuild/linux-arm64",
+    "@esbuild/darwin-x64",
+    "@esbuild/darwin-arm64",
+  ],
+  webpack: (config) => {
+    const prevExternals = config.externals ?? [];
+    config.externals = [
+      ...(Array.isArray(prevExternals) ? prevExternals : [prevExternals]),
+      ({ request }: { request?: string }, callback: (err?: Error | null, result?: string) => void) => {
+        if (!request) return callback();
+        // Never bundle native addons or heavy server-only packages
+        if (request.endsWith(".node")) return callback(null, `commonjs ${request}`);
+        if (
+          request === "fluent-ffmpeg" ||
+          request.startsWith("fluent-ffmpeg/") ||
+          request === "@ffmpeg-installer/ffmpeg" ||
+          request.startsWith("@ffmpeg-installer/")
+        ) {
+          return callback(null, `commonjs ${request}`);
+        }
+        callback();
+      },
+    ];
+
+    // Treat .wasm files as asset/resource so webpack emits them as separate files
+    // instead of inlining — inlining large WASM through WasmHash causes OOM/crash.
+    config.module.rules.push({
+      test: /\.wasm$/,
+      type: "asset/resource",
+    });
+
+    // Ignore non-JS files (README.md, .txt) that leak into the
+    // webpack dependency graph through esbuild sub-packages.
+    config.module.rules.push({
+      test: /\.(md|txt)$/,
+      type: "asset/source",
+    });
+
+    return config;
+  },
+};
+
+export default nextConfig;

@@ -1,0 +1,76 @@
+import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/clerk-auth";
+import { prisma } from "@/lib/prisma";
+import { createNotification } from "@/lib/notifications";
+import { apiError } from "@/lib/api-error";
+import { sendSupportReplyEmail } from "@/lib/send-email";
+
+// GET /api/admin/support — list all tickets (admin only)
+export async function GET(req: Request) {
+  try {
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
+    if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+    const { searchParams } = new URL(req.url);
+    const status = searchParams.get("status") ?? "OPEN";
+
+    const tickets = await prisma.supportTicket.findMany({
+      where: status === "ALL" ? {} : { status: status as "OPEN" | "CLOSED" },
+      include: { user: { select: { name: true, email: true, plan: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    return NextResponse.json(tickets);
+  } catch (error) {
+    return apiError({ route: "GET /api/admin/support", error });
+  }
+}
+
+// PATCH /api/admin/support — reply & close ticket
+export async function PATCH(req: Request) {
+  try {
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
+    if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+    const { ticketId, reply, status } = await req.json();
+    if (!ticketId) return NextResponse.json({ error: "ticketId required" }, { status: 400 });
+
+    const ticket = await prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: {
+        adminReply: reply ?? undefined,
+        repliedAt: reply ? new Date() : undefined,
+        status: status ?? undefined,
+      },
+      include: { user: { select: { id: true, name: true, email: true } } },
+    });
+
+    // Notify user in-app + send email reply
+    if (reply) {
+      await createNotification({
+        userId: ticket.userId,
+        type: "VIDEO_COMPLETED",
+        title: "ทีมงานตอบกลับคำร้องของคุณ",
+        body: reply,
+      });
+      if (ticket.user.email) {
+        await sendSupportReplyEmail({
+          userEmail: ticket.user.email,
+          userName: ticket.user.name ?? "User",
+          ticketId: ticket.id,
+          adminReply: reply,
+          originalMessage: ticket.message,
+        });
+      }
+    }
+
+    return NextResponse.json({ ok: true, ticket });
+  } catch (error) {
+    return apiError({ route: "PATCH /api/admin/support", error });
+  }
+}

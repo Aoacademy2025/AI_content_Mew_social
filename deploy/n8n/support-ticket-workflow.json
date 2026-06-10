@@ -1,0 +1,162 @@
+{
+  "name": "Hero AI — Support Ticket",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "Contactus",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-320, 0],
+      "id": "82c7d7c3-eaf1-4670-8aa5-bbc05ce78a23",
+      "name": "Webhook",
+      "webhookId": "c2cb7976-a9b0-4a61-a98e-6f745b3099ff"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-60, -160],
+      "id": "respond-ok",
+      "name": "Respond 200"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has-attachment",
+              "leftValue": "={{ $json.body.attachment }}",
+              "rightValue": "",
+              "operator": { "type": "object", "operation": "exists", "singleValue": true }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-60, 60],
+      "id": "has-image",
+      "name": "มีรูปแนบ?"
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "body.attachment.dataUrl",
+        "options": {
+          "fileName": "={{ $json.body.attachment.name }}",
+          "mimeType": "={{ $json.body.attachment.contentType }}",
+          "dataIsBase64": false,
+          "destinationKey": "attachment"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [200, -40],
+      "id": "to-binary",
+      "name": "base64 → File"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ ($('Webhook').item.json.body.supportEmails || []).join(',') }}",
+        "subject": "={{ $('Webhook').item.json.body.user.isPaid ? '[' + $('Webhook').item.json.body.user.plan + '] ' : '' }}แจ้งปัญหาใหม่ #{{ $('Webhook').item.json.body.ticketShort }} — {{ $('Webhook').item.json.body.user.name }}",
+        "emailType": "html",
+        "message": "=<!doctype html><html lang=\"th\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body style=\"margin:0;padding:0;background:#f3f4f6\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f3f4f6;padding:24px 12px;font-family:'Segoe UI',Arial,'Sarabun',sans-serif\"><tr><td align=\"center\"><table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)\"><tr><td style=\"background:linear-gradient(135deg,#4f46e5,#06b6d4);padding:24px 32px\"><table role=\"presentation\" width=\"100%\"><tr><td style=\"color:#fff;font-size:16px;font-weight:700;letter-spacing:-0.2px\">Hero AI Creator Studio</td><td align=\"right\">{{ $('Webhook').item.json.body.user.isPaid ? '<span style=\"background:rgba(255,255,255,0.22);color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:99px\">PRIORITY</span>' : '' }}</td></tr></table></td></tr><tr><td style=\"padding:28px 32px 8px\"><div style=\"color:#6b7280;font-size:12px;letter-spacing:1px;text-transform:uppercase\">คำร้องแจ้งปัญหาใหม่</div><div style=\"color:#111827;font-size:22px;font-weight:700;margin-top:4px\">Ticket #{{ $('Webhook').item.json.body.ticketShort }}</div><div style=\"color:#9ca3af;font-size:13px;margin-top:4px\">{{ $('Webhook').item.json.body.createdAt }}</div></td></tr><tr><td style=\"padding:16px 32px\"><table role=\"presentation\" width=\"100%\" style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px\"><tr><td style=\"padding:14px 16px\"><table role=\"presentation\" width=\"100%\" style=\"font-size:14px;color:#374151\"><tr><td style=\"padding:3px 0;color:#9ca3af;width:90px\">ผู้แจ้ง</td><td style=\"padding:3px 0;color:#111827;font-weight:600\">{{ $('Webhook').item.json.body.user.name }}</td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">อีเมล</td><td style=\"padding:3px 0\"><a href=\"mailto:{{ $('Webhook').item.json.body.user.email }}\" style=\"color:#4f46e5;text-decoration:none\">{{ $('Webhook').item.json.body.user.email }}</a></td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">แพ็กเกจ</td><td style=\"padding:3px 0;color:#111827\">{{ $('Webhook').item.json.body.user.plan }}</td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">User ID</td><td style=\"padding:3px 0;color:#6b7280;font-size:12px\">{{ $('Webhook').item.json.body.user.id }}</td></tr></table></td></tr></table></td></tr><tr><td style=\"padding:8px 32px 4px;color:#6b7280;font-size:12px;letter-spacing:1px;text-transform:uppercase\">รายละเอียดปัญหา</td></tr><tr><td style=\"padding:0 32px 20px\"><div style=\"padding:16px 18px;background:#ffffff;border:1px solid #e5e7eb;border-left:4px solid #4f46e5;border-radius:8px;color:#1f2937;font-size:15px;line-height:1.6;white-space:pre-wrap;word-wrap:break-word\">{{ $('Webhook').item.json.body.message }}</div></td></tr><tr><td style=\"padding:0 32px 28px\"><div style=\"padding:12px 16px;background:#eef2ff;border-radius:8px;color:#4338ca;font-size:13px;line-height:1.5\">📎 มีไฟล์แนบในอีเมลนี้ · 💬 ตอบกลับอีเมลฉบับนี้ได้โดยตรงเพื่อส่งข้อความถึงลูกค้า (Reply-To ตั้งเป็นอีเมลของลูกค้าแล้ว)</div></td></tr><tr><td style=\"padding:18px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;text-align:center\">อีเมลนี้ส่งอัตโนมัติจากระบบ Support · Hero AI Creator Studio</td></tr></table></td></tr></table></body></html>",
+        "options": {
+          "replyTo": "={{ $('Webhook').item.json.body.user.email }}",
+          "attachmentsUi": {
+            "attachmentsBinary": [ { "property": "attachment" } ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [460, -40],
+      "id": "mail-team-with-image",
+      "name": "Email Team (มีรูป)",
+      "webhookId": "8a1a49ee-b9b6-4e9a-ad48-6ed7834db04e",
+      "credentials": {
+        "gmailOAuth2": { "id": "OVuTDXJsRYkGhSCM", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ ($json.body.supportEmails || []).join(',') }}",
+        "subject": "={{ $json.body.user.isPaid ? '[' + $json.body.user.plan + '] ' : '' }}แจ้งปัญหาใหม่ #{{ $json.body.ticketShort }} — {{ $json.body.user.name }}",
+        "emailType": "html",
+        "message": "=<!doctype html><html lang=\"th\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body style=\"margin:0;padding:0;background:#f3f4f6\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f3f4f6;padding:24px 12px;font-family:'Segoe UI',Arial,'Sarabun',sans-serif\"><tr><td align=\"center\"><table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)\"><tr><td style=\"background:linear-gradient(135deg,#4f46e5,#06b6d4);padding:24px 32px\"><table role=\"presentation\" width=\"100%\"><tr><td style=\"color:#fff;font-size:16px;font-weight:700;letter-spacing:-0.2px\">Hero AI Creator Studio</td><td align=\"right\">{{ $json.body.user.isPaid ? '<span style=\"background:rgba(255,255,255,0.22);color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:99px\">PRIORITY</span>' : '' }}</td></tr></table></td></tr><tr><td style=\"padding:28px 32px 8px\"><div style=\"color:#6b7280;font-size:12px;letter-spacing:1px;text-transform:uppercase\">คำร้องแจ้งปัญหาใหม่</div><div style=\"color:#111827;font-size:22px;font-weight:700;margin-top:4px\">Ticket #{{ $json.body.ticketShort }}</div><div style=\"color:#9ca3af;font-size:13px;margin-top:4px\">{{ $json.body.createdAt }}</div></td></tr><tr><td style=\"padding:16px 32px\"><table role=\"presentation\" width=\"100%\" style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px\"><tr><td style=\"padding:14px 16px\"><table role=\"presentation\" width=\"100%\" style=\"font-size:14px;color:#374151\"><tr><td style=\"padding:3px 0;color:#9ca3af;width:90px\">ผู้แจ้ง</td><td style=\"padding:3px 0;color:#111827;font-weight:600\">{{ $json.body.user.name }}</td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">อีเมล</td><td style=\"padding:3px 0\"><a href=\"mailto:{{ $json.body.user.email }}\" style=\"color:#4f46e5;text-decoration:none\">{{ $json.body.user.email }}</a></td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">แพ็กเกจ</td><td style=\"padding:3px 0;color:#111827\">{{ $json.body.user.plan }}</td></tr><tr><td style=\"padding:3px 0;color:#9ca3af\">User ID</td><td style=\"padding:3px 0;color:#6b7280;font-size:12px\">{{ $json.body.user.id }}</td></tr></table></td></tr></table></td></tr><tr><td style=\"padding:8px 32px 4px;color:#6b7280;font-size:12px;letter-spacing:1px;text-transform:uppercase\">รายละเอียดปัญหา</td></tr><tr><td style=\"padding:0 32px 20px\"><div style=\"padding:16px 18px;background:#ffffff;border:1px solid #e5e7eb;border-left:4px solid #4f46e5;border-radius:8px;color:#1f2937;font-size:15px;line-height:1.6;white-space:pre-wrap;word-wrap:break-word\">{{ $json.body.message }}</div></td></tr><tr><td style=\"padding:0 32px 28px\"><div style=\"padding:12px 16px;background:#eef2ff;border-radius:8px;color:#4338ca;font-size:13px;line-height:1.5\">💬 ตอบกลับอีเมลฉบับนี้ได้โดยตรงเพื่อส่งข้อความถึงลูกค้า (Reply-To ตั้งเป็นอีเมลของลูกค้าแล้ว)</div></td></tr><tr><td style=\"padding:18px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;text-align:center\">อีเมลนี้ส่งอัตโนมัติจากระบบ Support · Hero AI Creator Studio</td></tr></table></td></tr></table></body></html>",
+        "options": {
+          "replyTo": "={{ $json.body.user.email }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [460, 160],
+      "id": "mail-team-no-image",
+      "name": "Email Team (ไม่มีรูป)",
+      "webhookId": "8a1a49ee-b9b6-4e9a-ad48-6ed7834db04f",
+      "credentials": {
+        "gmailOAuth2": { "id": "OVuTDXJsRYkGhSCM", "name": "Gmail account" }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Webhook').item.json.body.user.email }}",
+        "subject": "=ยืนยันการรับเรื่อง #{{ $('Webhook').item.json.body.ticketShort }} — Hero AI Creator Studio",
+        "emailType": "html",
+        "message": "=<!doctype html><html lang=\"th\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body style=\"margin:0;padding:0;background:#f3f4f6\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f3f4f6;padding:24px 12px;font-family:'Segoe UI',Arial,'Sarabun',sans-serif\"><tr><td align=\"center\"><table role=\"presentation\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1)\"><tr><td style=\"background:linear-gradient(135deg,#4f46e5,#06b6d4);padding:24px 32px;color:#fff;font-size:16px;font-weight:700;letter-spacing:-0.2px\">Hero AI Creator Studio</td></tr><tr><td style=\"padding:32px 32px 8px\"><div style=\"color:#111827;font-size:20px;font-weight:700\">เรียน คุณ{{ $('Webhook').item.json.body.user.name }}</div><p style=\"color:#4b5563;font-size:15px;line-height:1.6;margin:14px 0 0\">ขอบคุณที่ติดต่อทีมงาน เราได้รับคำร้องแจ้งปัญหาของท่านเรียบร้อยแล้ว ภายใต้หมายเลข <b style=\"color:#111827\">#{{ $('Webhook').item.json.body.ticketShort }}</b> ทีมงานจะตรวจสอบและติดต่อกลับภายใน <b style=\"color:#111827\">24 ชั่วโมง</b></p></td></tr><tr><td style=\"padding:18px 32px 4px;color:#6b7280;font-size:12px;letter-spacing:1px;text-transform:uppercase\">รายละเอียดที่ท่านแจ้ง</td></tr><tr><td style=\"padding:0 32px 24px\"><div style=\"padding:16px 18px;background:#f9fafb;border:1px solid #e5e7eb;border-left:4px solid #4f46e5;border-radius:8px;color:#374151;font-size:14px;line-height:1.6;white-space:pre-wrap;word-wrap:break-word\">{{ $('Webhook').item.json.body.message }}</div></td></tr><tr><td style=\"padding:0 32px 28px\"><p style=\"color:#9ca3af;font-size:13px;line-height:1.6;margin:0\">หากต้องการเพิ่มข้อมูล สามารถตอบกลับอีเมลฉบับนี้ได้โดยตรง</p></td></tr><tr><td style=\"padding:18px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:12px;text-align:center\">ขอแสดงความนับถือ · ทีมงาน Hero AI Creator Studio</td></tr></table></td></tr></table></body></html>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [820, 60],
+      "id": "mail-user-ack",
+      "name": "Email User (Acknowledge)",
+      "webhookId": "8a1a49ee-b9b6-4e9a-ad48-6ed7834db050",
+      "credentials": {
+        "gmailOAuth2": { "id": "OVuTDXJsRYkGhSCM", "name": "Gmail account" }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Respond 200", "type": "main", "index": 0 },
+          { "node": "มีรูปแนบ?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "มีรูปแนบ?": {
+      "main": [
+        [ { "node": "base64 → File", "type": "main", "index": 0 } ],
+        [ { "node": "Email Team (ไม่มีรูป)", "type": "main", "index": 0 } ]
+      ]
+    },
+    "base64 → File": {
+      "main": [ [ { "node": "Email Team (มีรูป)", "type": "main", "index": 0 } ] ]
+    },
+    "Email Team (มีรูป)": {
+      "main": [ [ { "node": "Email User (Acknowledge)", "type": "main", "index": 0 } ] ]
+    },
+    "Email Team (ไม่มีรูป)": {
+      "main": [ [ { "node": "Email User (Acknowledge)", "type": "main", "index": 0 } ] ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "239648ef1d5249c393e5f5b4f053e6417d4301b6211bf13b0821870ea7961422"
+  }
+}

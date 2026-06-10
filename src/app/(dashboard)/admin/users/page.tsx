@@ -1,0 +1,474 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  Crown,
+  Building2,
+  Ban,
+  ShieldCheck,
+  Trash2,
+  Loader2,
+  CheckCircle2,
+  UserX,
+  RefreshCw,
+  Search,
+  HardDrive,
+  MessageSquareWarning,
+  Ticket,
+  ChevronDown,
+  Check,
+} from "lucide-react";
+import { toast } from "sonner";
+import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+
+type PlanKey = "FREE" | "PRO" | "BUSINESS";
+
+interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  role: "ADMIN" | "USER";
+  plan: PlanKey;
+  planExpiresAt?: string | null;
+  suspended: boolean;
+  createdAt: string;
+  _count: { styles: number; contents: number; videos: number; images: number; supportTickets: number };
+  couponRedemptions: { coupon: { code: string; durationDays: number; plan: PlanKey }; redeemedAt: string }[];
+}
+
+const PLAN_STYLES: Record<PlanKey, { bg: string; text: string; icon: React.ElementType | null; label: string }> = {
+  FREE:     { bg: "bg-zinc-500/15",   text: "text-zinc-400",   icon: null,       label: "FREE" },
+  PRO:      { bg: "bg-yellow-500/15", text: "text-yellow-400", icon: Crown,      label: "PRO" },
+  BUSINESS: { bg: "bg-violet-500/15", text: "text-violet-300", icon: Building2,  label: "BUSINESS" },
+};
+
+interface CacheInfo {
+  stocks: { count: number; sizeMb: number };
+  renders: { count: number; sizeMb: number; protected: number };
+  openTickets: number;
+}
+
+type ActionLoading = string | null;
+
+function planExpiryFrom(user: AdminUser): Date | null {
+  // Authoritative expiry lives on the user record. Coupon history is audit data,
+  // not current access state.
+  if (user.planExpiresAt) return new Date(user.planExpiresAt);
+  return null;
+}
+
+function daysLeft(date: Date): number {
+  return Math.ceil((date.getTime() - Date.now()) / 86400000);
+}
+
+export default function AdminUsersPage() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<ActionLoading>(null);
+  const [search, setSearch] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<Record<string, CacheInfo>>({});
+  const [cacheLoading, setCacheLoading] = useState<string | null>(null);
+  const [clearConfirm, setClearConfirm] = useState<string | null>(null);
+
+  const fetchUsers = useCallback(() => {
+    setLoading(true);
+    fetch("/api/admin/users")
+      .then((r) => r.json())
+      .then((data) => setUsers(Array.isArray(data) ? data : []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
+
+  async function patchUser(id: string, data: { plan?: PlanKey; role?: "ADMIN" | "USER"; suspended?: boolean }) {
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const updated: AdminUser = await res.json();
+      setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updated } : u)));
+      toast.success("อัปเดตข้อมูลสำเร็จ");
+    } catch {
+      toast.error("เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function deleteUser(id: string) {
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error || "Failed");
+      }
+      setUsers((prev) => prev.filter((u) => u.id !== id));
+      toast.success("ลบผู้ใช้งานสำเร็จ");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setActionLoading(null);
+      setDeleteConfirm(null);
+    }
+  }
+
+  async function loadCacheInfo(userId: string) {
+    setCacheLoading(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/cache`);
+      if (!res.ok) throw new Error("Failed");
+      const data: CacheInfo = await res.json();
+      setCacheInfo(prev => ({ ...prev, [userId]: data }));
+    } catch {
+      toast.error("โหลดข้อมูลแคชไม่สำเร็จ");
+    } finally {
+      setCacheLoading(null);
+    }
+  }
+
+  async function clearCache(userId: string, includeRenders: boolean) {
+    setCacheLoading(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/cache`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeRenders }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      toast.success(data.message);
+      // Reload cache info
+      const res2 = await fetch(`/api/admin/users/${userId}/cache`);
+      if (res2.ok) { const d2 = await res2.json(); setCacheInfo(prev => ({ ...prev, [userId]: d2 })); }
+    } catch {
+      toast.error("เคลียร์แคชไม่สำเร็จ");
+    } finally {
+      setCacheLoading(null);
+      setClearConfirm(null);
+    }
+  }
+
+  const filtered = users.filter(
+    (u) =>
+      u.name.toLowerCase().includes(search.toLowerCase()) ||
+      u.email.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <PremiumBackdrop />
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-6">
+        {/* Header */}
+        <div className="pp-fade-up flex items-center justify-between">
+          <div>
+            <PremiumEyebrow className="mb-2">
+              Admin
+              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+              Users
+            </PremiumEyebrow>
+            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">จัดการผู้ใช้งาน</h1>
+            <p className="text-sm text-white/50 mt-1">ผู้ใช้งานทั้งหมด {users.length} ราย</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={fetchUsers}
+            disabled={loading}
+            className="gap-2 text-zinc-400 hover:text-white"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
+
+        {/* Search */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+          <input
+            type="text"
+            placeholder="ค้นหาด้วยชื่อหรืออีเมล..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-zinc-500 outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30"
+          />
+        </div>
+
+        {/* User Cards */}
+        {loading ? null : filtered.length === 0 ? (
+          <Card className="border-white/10 bg-white/5">
+            <CardContent className="flex items-center justify-center py-12 text-zinc-500">
+              ไม่พบผู้ใช้
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {filtered.map((user) => {
+              const isActioning = actionLoading === user.id;
+              return (
+                <Card
+                  key={user.id}
+                  className={`border-white/10 bg-white/5 transition-colors ${
+                    user.suspended ? "border-red-500/20 bg-red-500/5" : ""
+                  }`}
+                >
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-wrap items-start gap-3">
+                      {/* Avatar */}
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-500/20 text-sm font-bold text-purple-300">
+                        {user.name.charAt(0).toUpperCase()}
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <CardTitle className="text-sm text-white">{user.name}</CardTitle>
+                          {/* Plan badge */}
+                          {(() => {
+                            const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
+                            const Icon = ps.icon;
+                            return (
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${ps.bg} ${ps.text}`}>
+                                {Icon && <Icon className="h-3 w-3" />}
+                                {ps.label}
+                              </span>
+                            );
+                          })()}
+                          {/* Plan expiry countdown (PRO/BUSINESS) */}
+                          {user.plan !== "FREE" && (() => {
+                            const exp = planExpiryFrom(user);
+                            if (!exp) return null;
+                            const d = daysLeft(exp);
+                            return (
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${d <= 3 ? "bg-red-500/15 text-red-400" : d <= 7 ? "bg-amber-500/15 text-amber-400" : "bg-white/5 text-white/40"}`}>
+                                {d > 0 ? `หมดใน ${d} วัน` : "หมดอายุแล้ว"}
+                              </span>
+                            );
+                          })()}
+                          {/* Role badge */}
+                          {user.role === "ADMIN" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">
+                              <ShieldCheck className="h-3 w-3" />
+                              ADMIN
+                            </span>
+                          )}
+                          {/* Suspended badge */}
+                          {user.suspended && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
+                              <Ban className="h-3 w-3" />
+                              ถูกระงับการใช้งาน
+                            </span>
+                          )}
+                          {/* Open tickets badge */}
+                          {user._count.supportTickets > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/20 px-2 py-0.5 text-xs font-medium text-orange-400">
+                              <MessageSquareWarning className="h-3 w-3" />
+                              {user._count.supportTickets} report
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 text-xs text-zinc-500">{user.email}</p>
+                        <p className="mt-0.5 text-xs text-zinc-600">
+                          สมัครใช้งานเมื่อ{" "}
+                          {new Date(user.createdAt).toLocaleDateString("th-TH", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "2-digit",
+                          })}
+                          {" · "}
+                          {user._count.styles} styles · {user._count.contents} contents ·{" "}
+                          {user._count.videos} videos · {user._count.images} images
+                        </p>
+                        {/* Coupon redemptions */}
+                        {user.couponRedemptions?.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {user.couponRedemptions.map((r, i) => (
+                              <span key={i} className="inline-flex items-center gap-1 rounded-full bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-400">
+                                <Ticket className="h-3 w-3" />
+                                {r.coupon.code}
+                                {r.coupon.durationDays === 0 ? " (ถาวร)" : ` (${r.coupon.durationDays}วัน)`}
+                                {" · "}{new Date(r.redeemedAt).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "2-digit" })}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Cache info row */}
+                        {cacheInfo[user.id] && (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+                            <span className="flex items-center gap-1">
+                              <HardDrive className="h-3 w-3 text-zinc-600" />
+                              Stock: {cacheInfo[user.id].stocks.count} ไฟล์ ({cacheInfo[user.id].stocks.sizeMb} MB)
+                            </span>
+                            <span>Render: {cacheInfo[user.id].renders.count} ไฟล์ ({cacheInfo[user.id].renders.sizeMb} MB)</span>
+                            {cacheInfo[user.id].openTickets > 0 && (
+                              <span className="text-orange-400">{cacheInfo[user.id].openTickets} ticket เปิดอยู่</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {isActioning || cacheLoading === user.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
+                        ) : (
+                          <>
+                            {/* Plan selector */}
+                            {(() => {
+                              const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
+                              const Icon = ps.icon;
+                              return (
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <button
+                                      className={`h-7 inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-medium outline-none focus:border-purple-500/50 hover:bg-white/10 transition-colors cursor-pointer ${ps.text}`}
+                                      title="เปลี่ยนแพ็กเกจ"
+                                    >
+                                      {Icon && <Icon className="h-3 w-3" />}
+                                      {ps.label}
+                                      <ChevronDown className="h-3 w-3 opacity-60" />
+                                    </button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent
+                                    align="end"
+                                    className="min-w-35 border"
+                                    style={{ background: "rgba(20, 20, 28, 0.98)", borderColor: "rgba(255,255,255,0.1)", backdropFilter: "blur(8px)" }}
+                                  >
+                                    {(["FREE", "PRO", "BUSINESS"] as PlanKey[]).map(opt => {
+                                      const ops = PLAN_STYLES[opt];
+                                      const Icon = ops.icon;
+                                      const isSelected = opt === user.plan;
+                                      return (
+                                        <DropdownMenuItem
+                                          key={opt}
+                                          onClick={() => { if (!isSelected) patchUser(user.id, { plan: opt }); }}
+                                          className={`gap-2 text-xs cursor-pointer ${ops.text} ${isSelected ? "bg-white/5" : ""} focus:bg-white/10`}
+                                        >
+                                          {Icon ? <Icon className="h-3 w-3" /> : <span className="h-3 w-3" />}
+                                          <span className="flex-1">{ops.label}</span>
+                                          {isSelected && <Check className="h-3 w-3 text-emerald-400" />}
+                                        </DropdownMenuItem>
+                                      );
+                                    })}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              );
+                            })()}
+
+                            {/* Toggle Admin */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => patchUser(user.id, { role: user.role === "ADMIN" ? "USER" : "ADMIN" })}
+                              className={`h-7 gap-1 text-xs ${
+                                user.role === "ADMIN"
+                                  ? "text-red-400 hover:text-red-300"
+                                  : "text-zinc-400 hover:text-red-400"
+                              }`}
+                            >
+                              <ShieldCheck className="h-3 w-3" />
+                              {user.role === "ADMIN" ? "→ User" : "→ Admin"}
+                            </Button>
+
+                            {/* Toggle Suspend */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => patchUser(user.id, { suspended: !user.suspended })}
+                              className={`h-7 gap-1 text-xs ${
+                                user.suspended
+                                  ? "text-green-400 hover:text-green-300"
+                                  : "text-red-400 hover:text-red-300"
+                              }`}
+                            >
+                              {user.suspended ? (
+                                <>
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  ปลดล็อกบัญชี
+                                </>
+                              ) : (
+                                <>
+                                  <UserX className="h-3 w-3" />
+                                  ระงับบัญชี
+                                </>
+                              )}
+                            </Button>
+
+                            {/* Cache */}
+                            {clearConfirm === user.id ? (
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-orange-400">เคลียร์ stock เท่านั้น?</span>
+                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, false)}
+                                  className="h-7 text-xs text-orange-400 hover:text-orange-300">Stock</Button>
+                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, true)}
+                                  className="h-7 text-xs text-red-400 hover:text-red-300">Stock+Render</Button>
+                                <Button size="sm" variant="ghost" onClick={() => setClearConfirm(null)}
+                                  className="h-7 text-xs text-zinc-400">ยกเลิก</Button>
+                              </div>
+                            ) : (
+                              <Button size="sm" variant="ghost"
+                                onClick={() => { loadCacheInfo(user.id); setClearConfirm(user.id); }}
+                                className="h-7 gap-1 text-xs text-zinc-500 hover:text-orange-400"
+                                title="เช็คและเคลียร์แคช"
+                              >
+                                <HardDrive className="h-3 w-3" />
+                                แคช
+                              </Button>
+                            )}
+
+                            {/* Delete */}
+                            {deleteConfirm === user.id ? (
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-red-400">ยืนยันการลบ?</span>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => deleteUser(user.id)}
+                                  className="h-7 text-xs text-red-400 hover:text-red-300"
+                                >
+                                  ลบบัญชี
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setDeleteConfirm(null)}
+                                  className="h-7 text-xs text-zinc-400"
+                                >
+                                  ยกเลิก
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setDeleteConfirm(user.id)}
+                                className="h-7 gap-1 text-xs text-zinc-600 hover:text-red-400"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </CardHeader>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

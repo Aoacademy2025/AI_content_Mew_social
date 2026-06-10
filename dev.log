@@ -1,0 +1,128 @@
+
+> intelligent-media-studio@0.1.0 dev
+> node scripts/dev.js
+
+   ▲ Next.js 15.3.9
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.99.94:3000
+   - Environments: .env
+
+ ✓ Starting...
+ ○ Compiling /instrumentation ...
+ ✓ Compiled /instrumentation in 737ms (216 modules)
+ ✓ Ready in 2.9s
+ ✓ Compiled /middleware in 341ms (218 modules)
+ ○ Compiling /api/notifications ...
+ ✓ Compiled /api/notifications in 1272ms (685 modules)
+ GET /api/notifications 200 in 1517ms
+ GET /api/notifications 200 in 23ms
+ GET /api/notifications 200 in 20ms
+ GET /api/notifications 200 in 23ms
+ GET /api/notifications 200 in 28ms
+ GET /api/notifications 200 in 22ms
+ GET /api/notifications 200 in 18ms
+ ○ Compiling /api/telemetry ...
+ ✓ Compiled /api/telemetry in 562ms (688 modules)
+ POST /api/telemetry 200 in 688ms
+ ○ Compiling /video-editor ...
+ ✓ Compiled /video-editor in 2.5s (1884 modules)
+ GET /video-editor 200 in 3222ms
+ ○ Compiling /api/user/video-settings ...
+ ✓ Compiled /api/user/video-settings in 5.1s (2126 modules)
+ GET /api/notifications 200 in 5191ms
+ POST /api/telemetry 200 in 5195ms
+ POST /api/telemetry 200 in 5203ms
+ GET /api/music 200 in 5306ms
+ GET /api/user/video-settings 200 in 5308ms
+ GET /api/user/me 200 in 5310ms
+ GET /api/user/me 200 in 76ms
+ GET /video-editor 200 in 196ms
+ ○ Compiling /favicon.ico ...
+ ✓ Compiled /favicon.ico in 1042ms (2128 modules)
+ GET /favicon.ico 200 in 1079ms
+ GET /video-editor 200 in 105ms
+ GET /api/notifications 200 in 28ms
+ GET /api/notifications 200 in 23ms
+ GET /api/notifications 200 in 25ms
+ GET /api/notifications 200 in 27ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 22ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 28ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 26ms
+ GET /api/notifications 200 in 20ms
+ GET /api/notifications 200 in 23ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 26ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 24ms
+ POST /api/telemetry 200 in 52ms
+ ✓ Compiled in 595ms (689 modules)
+ GET /video-editor 200 in 57ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 24ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 25ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 35ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 16ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 33ms
+ GET /api/notifications 200 in 24ms
+ POST /api/telemetry 200 in 28ms
+ ✓ Compiled in 415ms (689 modules)
+ GET /video-editor 200 in 39ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 42ms
+ GET /api/notifications 200 in 13ms
+ POST /api/telemetry 200 in 21ms
+ ✓ Compiled in 347ms (689 modules)
+ GET /video-editor 200 in 34ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 12ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 15ms
+ GET /api/notifications 200 in 22ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 19ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 28ms
+ GET /api/notifications 200 in 30ms
+ GET /api/notifications 200 in 32ms
+ GET /api/notifications 200 in 24ms
+ GET /api/notifications 200 in 20ms
+ GET /api/notifications 200 in 18ms
+ GET /api/notifications 200 in 21ms
+ GET /api/notifications 200 in 14ms
+ GET /api/notifications 200 in 25ms
+ GET /api/notifications 200 in 17ms
+ GET /api/notifications 200 in 24ms
+ GET /api/notifications 200 in 18ms
+ ✓ Compiled in 2s (1895 modules)
+ GET /video-editor 200 in 272ms
+ GET /api/notifications 200 in 47ms

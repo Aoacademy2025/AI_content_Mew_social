@@ -1,0 +1,3756 @@
+"use client";
+
+import React, { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import {
+  Mic, Captions, Film, Settings2, Video, Download,
+  CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
+  Music2, Upload, X,
+} from "lucide-react";
+import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
+import { MusicPanel } from "./_panels/MusicPanel";
+import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
+
+type StepStatus = "idle" | "running" | "done" | "error" | "skip";
+
+interface StepState {
+  keywords: StepStatus;
+  fetchStock: StepStatus;
+  tts: StepStatus;
+  transcribe: StepStatus;
+  config: StepStatus;
+  render: StepStatus;
+  avatar: StepStatus;
+  avatarTail: StepStatus;
+  composite: StepStatus;
+}
+
+interface Caption { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta"; }
+
+interface StockVideo { keyword: string; localUrl?: string; videoUrl: string; duration: number; pexelsId: number; }
+
+
+const DEFAULT_STEPS: StepState = {
+  keywords: "idle", fetchStock: "idle", tts: "idle",
+  transcribe: "idle", config: "idle", render: "idle", avatar: "idle", avatarTail: "idle", composite: "idle",
+};
+
+// Intermediate data stored between steps
+interface PipelineData {
+  scenes: string[];
+  keywords: string[];
+  keywordAlternatives: string[][];
+  keywordsPerScene: number;
+  sceneClipCounts: number[];  // how many clips each scene needs
+  sceneDurations: number[];   // estimated duration per scene (seconds)
+  visualDirection: string;    // LLM-analyzed visual tone/theme for consistent B-roll
+  stockVideos: StockVideo[];
+  voiceUrl: string;
+  captions: Caption[];
+  sceneCaptions: Caption[];
+  words: { word: string; startMs: number; endMs: number }[];
+  audioDurationMs: number;
+  config: unknown;
+  renderedVideoUrl: string;
+  compositeUrl: string;
+}
+
+type SubPreset = "stroke" | "box" | "box-rounded" | "glow" | "outline-only" | "plain" | "shadow" | "karaoke" | "typewriter"
+  | "neon-green" | "neon-red" | "neon-blue" | "bold-shadow" | "karaoke-box" | "pop-outline"
+  | "pastel" | "classic-yellow" | "hormozi" | "beast" | "box-white" | "box-yellow"
+  | "retro" | "sharp-outline" | "news";
+type SubTextEffect = "pop" | "bounce" | "fade" | "quick" | "glow-pulse" | "slide" | "flip" | "highlight" | "karaoke" | "typewriter";
+
+/** Shared subtitle renderer — used by mini preview, CSS overlay, and modal */
+function renderSubEl(
+  text: string,
+  color: string,
+  accentColor: string,
+  isAccent: boolean,
+  preset: SubPreset,
+  fontFamily: string,
+  fontSizePx: number,
+  fontWeight: number,
+  scale = 1,  // containerWidth / 1080, use 1 for real px
+): React.ReactNode {
+  const c = isAccent ? accentColor : color;
+  const fs = Math.round(fontSizePx * scale);
+  const fw = fontWeight;
+  const sw = Math.max(0.5, 2 * scale); // stroke width
+
+  const base: React.CSSProperties = {
+    fontFamily, fontSize: fs, fontWeight: fw, color: c,
+    lineHeight: 1.3, wordBreak: "keep-all", letterSpacing: "0.01em",
+    display: "inline-block", textAlign: "center",
+  };
+
+  if (preset === "plain") {
+    return <span style={base}>{text}</span>;
+  }
+  if (preset === "shadow") {
+    const d = Math.round(4 * scale), bl = Math.round(16 * scale);
+    return <span style={{ ...base, textShadow: `0 ${d}px ${bl}px rgba(0,0,0,1), 0 2px 4px rgba(0,0,0,0.9)` }}>{text}</span>;
+  }
+  if (preset === "box") {
+    const py = Math.round(6 * scale), px = Math.round(20 * scale), pb = Math.round(8 * scale);
+    return <div style={{ background: "rgba(0,0,0,0.65)", padding: `${py}px ${px}px ${pb}px`, display: "inline-block" }}><span style={base}>{text}</span></div>;
+  }
+  if (preset === "box-rounded") {
+    const py = Math.round(8 * scale), px = Math.round(24 * scale), pb = Math.round(10 * scale), br = Math.round(16 * scale);
+    return <div style={{ background: "rgba(0,0,0,0.72)", padding: `${py}px ${px}px ${pb}px`, borderRadius: br, display: "inline-block" }}><span style={base}>{text}</span></div>;
+  }
+  if (preset === "glow") {
+    const r = parseInt(c.slice(1,3)||"ff",16), g = parseInt(c.slice(3,5)||"ff",16), b = parseInt(c.slice(5,7)||"ff",16);
+    const g1=Math.round(20*scale), g2=Math.round(40*scale), g3=Math.round(60*scale);
+    return <span style={{ ...base, textShadow: `0 0 ${g1}px rgba(${r},${g},${b},0.9), 0 0 ${g2}px rgba(${r},${g},${b},0.6), 0 0 ${g3}px rgba(${r},${g},${b},0.4), 0 2px 4px rgba(0,0,0,0.8)` }}>{text}</span>;
+  }
+  if (preset === "outline-only") {
+    return <span style={{ ...base, color: "#fff", WebkitTextStroke: `${sw * 1.5}px ${c}` } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "karaoke") {
+    // Preview: show first word highlighted, rest dimmed
+    const words = text.split(" ");
+    const py = Math.round(8 * scale), px = Math.round(20 * scale), br = Math.round(12 * scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.72)", padding: `${py}px ${px}px`, display: "inline-block", borderRadius: br }}>
+        <span style={{ ...base, display: "inline", color: "rgba(255,255,255,0.35)" }}>
+          {words.map((w, i) => (
+            <React.Fragment key={i}>
+              <span style={{ color: i === 0 ? c : "rgba(255,255,255,0.35)", fontWeight: i === 0 ? fw : Math.min(fw, 500) }}>{w}</span>
+              {i < words.length - 1 ? " " : null}
+            </React.Fragment>
+          ))}
+        </span>
+      </div>
+    );
+  }
+  if (preset === "typewriter") {
+    // Preview: show first half of chars in color, rest transparent
+    const half = Math.ceil(text.length / 2);
+    const py = Math.round(6 * scale), px = Math.round(20 * scale), br = Math.round(8 * scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.65)", padding: `${py}px ${px}px`, display: "inline-block", borderRadius: br }}>
+        <span style={{ ...base, display: "inline" }}>
+          <span style={{ color: c }}>{text.slice(0, half)}</span>
+          <span style={{ color: "rgba(255,255,255,0.25)" }}>{text.slice(half)}</span>
+        </span>
+      </div>
+    );
+  }
+  if (preset === "neon-green")
+    return <span style={{ ...base, color: "#00ff88", textShadow: `0 0 ${Math.round(8*scale)}px #00ff88, 0 0 ${Math.round(20*scale)}px #00ff88, 0 0 ${Math.round(40*scale)}px #00cc66` }}>{text}</span>;
+  if (preset === "neon-red")
+    return <span style={{ ...base, color: "#ff3344", textShadow: `0 0 ${Math.round(8*scale)}px #ff3344, 0 0 ${Math.round(20*scale)}px #ff1133, 0 0 ${Math.round(40*scale)}px #cc0022` }}>{text}</span>;
+  if (preset === "neon-blue")
+    return <span style={{ ...base, color: "#00cfff", textShadow: `0 0 ${Math.round(8*scale)}px #00cfff, 0 0 ${Math.round(20*scale)}px #0099ff, 0 0 ${Math.round(40*scale)}px #0055cc` }}>{text}</span>;
+  if (preset === "bold-shadow") {
+    const d = Math.round(6*scale), bl = Math.round(20*scale);
+    return <span style={{ ...base, fontWeight: 900, textShadow: `0 ${d}px 0 rgba(0,0,0,0.9), 0 ${d+4}px ${bl}px rgba(0,0,0,0.8)` }}>{text}</span>;
+  }
+  if (preset === "karaoke-box") {
+    const py2 = Math.round(8*scale), px2 = Math.round(22*scale), br2 = Math.round(12*scale);
+    return (
+      <div style={{ background: "rgba(0,0,0,0.75)", padding: `${py2}px ${px2}px`, display: "inline-block", borderRadius: br2 }}>
+        <span style={{ ...base, color }}>{text}</span>
+      </div>
+    );
+  }
+  if (preset === "pop-outline") {
+    const cInv = c === "#ffffff" || c === "#fff" ? "#000000" : "#ffffff";
+    return <span style={{ ...base, WebkitTextStroke: `${Math.max(1, Math.round(2*scale))}px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "pastel")
+    return <span style={{ ...base, color: "#ffb3d9", textShadow: `0 ${Math.round(2*scale)}px ${Math.round(8*scale)}px rgba(255,100,180,0.5)` }}>{text}</span>;
+  if (preset === "classic-yellow") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#FFE500", WebkitTextStroke: `${sw2}px #000`, paintOrder: "stroke fill", textShadow: `-1px -1px 0 #000,1px 1px 0 #000` } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "hormozi") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#ff2244", fontStyle: "italic", fontWeight: 900, WebkitTextStroke: `${sw2}px #fff`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "beast") {
+    const sw2 = Math.max(1, Math.round(2*scale));
+    return <span style={{ ...base, color: "#ffffff", WebkitTextStroke: `${sw2}px #ff8800`, paintOrder: "stroke fill", textShadow: `0 0 ${Math.round(10*scale)}px rgba(255,140,0,0.4)` } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "box-white") {
+    const py2 = Math.round(6*scale), px2 = Math.round(20*scale), pb2 = Math.round(8*scale);
+    return <div style={{ background: "#ffffff", padding: `${py2}px ${px2}px ${pb2}px`, display: "inline-block", borderRadius: Math.round(4*scale) }}><span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span></div>;
+  }
+  if (preset === "box-yellow") {
+    const py2 = Math.round(6*scale), px2 = Math.round(20*scale), pb2 = Math.round(8*scale);
+    return <div style={{ background: "#FFE500", padding: `${py2}px ${px2}px ${pb2}px`, display: "inline-block", borderRadius: Math.round(6*scale) }}><span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span></div>;
+  }
+  if (preset === "retro")
+    return <span style={{ ...base, color: "#ff6600", textShadow: `${Math.round(2*scale)}px ${Math.round(2*scale)}px 0 #cc3300, ${Math.round(4*scale)}px ${Math.round(4*scale)}px 0 rgba(150,0,0,0.4)` }}>{text}</span>;
+  if (preset === "sharp-outline") {
+    const sw3 = Math.max(2, Math.round(3*scale));
+    return <span style={{ ...base, color: "#ffffff", WebkitTextStroke: `${sw3}px ${c}`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+  }
+  if (preset === "news") {
+    const py2 = Math.round(5*scale), px2 = Math.round(18*scale);
+    return <div style={{ background: "rgba(0,0,0,0.88)", padding: `${py2}px ${px2}px`, display: "inline-block" }}><span style={{ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" }}>{text}</span></div>;
+  }
+  // stroke (default)
+  const s1=Math.round(3*scale), s2=Math.round(20*scale), s3=Math.round(32*scale);
+  return <span style={{ ...base, textShadow: `0 ${s1}px 0 #000, 0 -1px 0 #000, 1px 0 0 #000, -1px 0 0 #000, 0 4px ${s2}px rgba(0,0,0,0.95), 0 8px ${s3}px rgba(0,0,0,0.8)`, WebkitTextStroke: `${sw}px #000` } as React.CSSProperties}>{text}</span>;
+}
+
+// ─── Animated effect preview card ─────────────────────────────────────────────
+const EFFECT_KEYFRAMES = `
+@keyframes ef-pop    { 0%,100%{transform:scale(1) translateY(0)} 30%{transform:scale(1.25) translateY(-4px)} 60%{transform:scale(0.95) translateY(1px)} }
+@keyframes ef-bounce { 0%,100%{transform:scale(1) translateY(0)} 25%{transform:scale(0.8) translateY(8px)} 55%{transform:scale(1.3) translateY(-8px)} 80%{transform:scale(0.95) translateY(2px)} }
+@keyframes ef-fade   { 0%,100%{opacity:0} 20%,80%{opacity:1} }
+@keyframes ef-quick  { 0%{transform:scale(0.4) translateY(6px);opacity:0} 18%{transform:scale(1.08) translateY(-2px);opacity:1} 30%,100%{transform:scale(1) translateY(0);opacity:1} }
+@keyframes ef-slide  { 0%{transform:translateY(16px);opacity:0} 35%,80%{transform:translateY(0);opacity:1} 100%{transform:translateY(-8px);opacity:0} }
+@keyframes ef-flip   { 0%{transform:perspective(200px) rotateX(90deg);opacity:0} 40%,75%{transform:perspective(200px) rotateX(0deg);opacity:1} 100%{transform:perspective(200px) rotateX(-30deg);opacity:0} }
+@keyframes ef-hl-bar { 0%{width:0%} 55%,100%{width:100%} }
+@keyframes ef-kar    { 0%,12%{color:inherit} 13%,24%{color:rgba(255,255,255,0.3)} 25%,36%{color:inherit} 37%,48%{color:rgba(255,255,255,0.3)} 49%,60%{color:inherit} 61%,72%{color:rgba(255,255,255,0.3)} 73%,84%{color:inherit} 85%,100%{color:rgba(255,255,255,0.3)} }
+@keyframes ef-type   { 0%{clip-path:inset(0 100% 0 0)} 60%,100%{clip-path:inset(0 0% 0 0)} }
+`;
+
+function EffectPreviewCard({
+  effect, label, desc, color, accentColor, fontFamily, selected, onClick,
+}: {
+  effect: SubTextEffect; label: string; desc: string;
+  color: string; accentColor: string; fontFamily: string;
+  selected: boolean; onClick: () => void;
+}) {
+  const base: React.CSSProperties = {
+    fontFamily, fontSize: 13, fontWeight: 700, color,
+    textShadow: "-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000",
+    display: "inline-block", whiteSpace: "nowrap",
+  };
+  const dur = "1.8s";
+  const ease = "cubic-bezier(.4,0,.2,1)";
+  const inf = "infinite";
+
+  let inner: React.ReactNode;
+
+  if (effect === "pop") {
+    inner = <span style={{ ...base, animation: `ef-pop ${dur} ${ease} ${inf}` }}>ป๊อป</span>;
+  } else if (effect === "bounce") {
+    inner = <span style={{ ...base, animation: `ef-bounce 2s ${ease} ${inf}` }}>เด้ง</span>;
+  } else if (effect === "fade") {
+    inner = <span style={{ ...base, animation: `ef-fade 2s ease ${inf}` }}>เฟด</span>;
+  } else if (effect === "quick") {
+    inner = <span style={{ ...base, animation: `ef-quick 1.4s ${ease} ${inf}` }}>สั้น</span>;
+  } else if (effect === "glow-pulse") {
+    const r=parseInt(color.slice(1,3)||"ff",16),g=parseInt(color.slice(3,5)||"ff",16),b=parseInt(color.slice(5,7)||"ff",16);
+    const glowKf = `@keyframes ef-glow-${r}-${g}-${b} { 0%,100%{text-shadow:0 0 4px rgba(${r},${g},${b},0.6),0 0 8px rgba(${r},${g},${b},0.4)} 50%{text-shadow:0 0 16px rgba(${r},${g},${b},1),0 0 32px rgba(${r},${g},${b},0.8),0 0 48px rgba(${r},${g},${b},0.5)} }`;
+    inner = (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: glowKf }} />
+        <span style={{ ...base, textShadow: `0 0 8px rgba(${r},${g},${b},0.9)`, animation: `ef-glow-${r}-${g}-${b} 1.6s ease ${inf}` }}>แสง</span>
+      </>
+    );
+  } else if (effect === "slide") {
+    inner = <span style={{ ...base, animation: `ef-slide 2s ${ease} ${inf}` }}>เลื่อน</span>;
+  } else if (effect === "flip") {
+    inner = <span style={{ ...base, animation: `ef-flip 2s ${ease} ${inf}` }}>พลิก</span>;
+  } else if (effect === "highlight") {
+    inner = (
+      <span style={{ position: "relative", display: "inline-block" }}>
+        <span style={{ position: "absolute", inset: "5% 0", background: accentColor, opacity: 0.4, borderRadius: 3, animation: `ef-hl-bar 2s ease ${inf}` }} />
+        <span style={{ ...base, position: "relative" }}>ไฮไลท์</span>
+      </span>
+    );
+  } else if (effect === "karaoke") {
+    inner = (
+      <span style={{ fontFamily, fontSize: 12, fontWeight: 700, display: "inline-block" }}>
+        {["คา","รา","โอ","เกะ"].map((s,i) => (
+          <span key={i} style={{ color, animation: `ef-kar 2.4s ${i*0.3}s ease ${inf}` }}>{s}</span>
+        ))}
+      </span>
+    );
+  } else { // typewriter
+    inner = (
+      <span style={{ fontFamily, fontSize: 12, fontWeight: 700, color, display: "inline-block", overflow: "hidden", animation: `ef-type 2s ease ${inf}` }}>
+        พิมพ์ดีด
+      </span>
+    );
+  }
+
+  return (
+    <button onClick={onClick}
+      className="flex flex-col items-center gap-0.5 rounded-xl py-2 px-2 transition-all"
+      style={selected
+        ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)", color: "hsl(190 100% 65%)" }
+        : { background: "var(--sv-card2)", border: "1px solid var(--sv-border)", color: "color-mix(in srgb, var(--sv-text) 60%, transparent)" }
+      }>
+      <div className="h-8 flex items-center justify-center"
+        style={{ background: "rgba(0,0,0,0.4)", borderRadius: 6, width: "100%", overflow: "hidden", position: "relative" }}>
+        {inner}
+      </div>
+      <span className="text-[10px] font-bold mt-0.5">{label}</span>
+      <span className="text-[8px] opacity-50">{desc}</span>
+    </button>
+  );
+}
+
+export default function ShortVideoPage() {
+  const router = useRouter();
+  const [plan, setPlan] = useState<"LOADING" | "PRO" | "BUSINESS" | "FREE">("LOADING");
+
+  useEffect(() => {
+    fetch("/api/user/stats").then(r => r.json()).then(d => {
+      const p: "PRO" | "BUSINESS" | "FREE" = d.plan === "BUSINESS" ? "BUSINESS" : d.plan === "PRO" ? "PRO" : "FREE";
+      setPlan(p);
+      if (p === "FREE") {
+        toast.error("Avatar Cloning สำหรับผู้ใช้งานระดับ Pro ขึ้นไปเท่านั้น");
+        router.replace("/dashboard");
+      }
+    }).catch(() => { router.replace("/dashboard"); });
+  }, [router]);
+
+  useEffect(() => {
+    fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
+  }, []);
+
+  const [script, setScript] = useState("");
+
+  function preprocessScript(raw: string): string {
+    return raw
+      .replace(/\r?\n/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+  }
+
+  const cleanScript = preprocessScript(script);
+  const [voiceId, setVoiceId] = useState("");
+  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
+  const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  const [running, setRunning] = useState(false);
+  const abortRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const stopRenderPollRef = useRef<(() => void) | null>(null);
+  const [steps, setSteps] = useState<StepState>({ ...DEFAULT_STEPS });
+  const stepsRef = useRef<StepState>({ ...DEFAULT_STEPS });
+  const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
+  const [videoUrl, setVideoUrl] = useState("");
+  const [preRenderUrl, setPreRenderUrl] = useState("");
+  const [compositePreviewUrl, setCompositePreviewUrl] = useState("");
+  const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
+  const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState(""); // bookend-both: tail avatar URL
+  const [showGreenRef, setShowGreenRef] = useState(false);
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [, setScenes] = useState<string[]>([]);
+  const [ttsUrl, setTtsUrl] = useState("");
+  const [voicePreviewLoading, setVoicePreviewLoading] = useState(false);
+  const [scriptSaving, setScriptSaving] = useState(false);
+  const [pipeStockVideos, setPipeStockVideos] = useState<StockVideo[]>([]);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const [avatarId, setAvatarId] = useState("");
+  const [avatarScale, setAvatarScale] = useState(2.02);
+  const [avatarOffsetX, setAvatarOffsetX] = useState(0.0);
+  const [avatarOffsetY, setAvatarOffsetY] = useState(0.13);
+  const [useAvatar, setUseAvatar] = useState(true);
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
+  const [avatarName, setAvatarName] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const posCanvasRef = useRef<HTMLDivElement>(null);
+  const [avatarTiming, setAvatarTiming] = useState<"full" | "bookend" | "bookend-both">("full");
+  const [avatarBookendSecs, setAvatarBookendSecs] = useState(5);
+  const [avatarTailSecs, setAvatarTailSecs] = useState(5);
+  const [avatarInputMode, setAvatarInputMode] = useState<"generate" | "direct">("generate");
+  const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
+  // Direct URL workflow states
+  const [directCompositeUrl, setDirectCompositeUrl] = useState(""); // final composite
+  // Scene captions — shown after transcribe for user review/edit before render
+  const [editedSceneCaptions, setEditedSceneCaptions] = useState<Caption[]>([]);
+  // Stock clip count override (0 = auto based on script length)
+  const [targetClipCount, setTargetClipCount] = useState(0);
+  // Auto clip count returned by the last fetch (so UI can show "Auto (12)")
+  const [autoClipCount, setAutoClipCount] = useState(0);
+  // Stock source selection (used for API fetch)
+  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  // Grid display filter (independent from fetch source — doesn't affect API calls)
+  const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
+  // Clips excluded by user (pexelsId set)
+  const [excludedClipIds, setExcludedClipIds] = useState<Set<number>>(new Set());
+
+  // Subtitle style settings
+  const [subFontFamily, setSubFontFamily] = useState("'Kanit', sans-serif");
+  const [subFontSize, setSubFontSize] = useState(80);
+  const [subPosition, setSubPosition] = useState(68);
+  const [subColor, setSubColor] = useState("#FFFFFF");
+  const [subKaraokeColor, setSubKaraokeColor] = useState("#FFE500");
+  const [subStylePreset, setSubStylePreset] = useState<SubPreset>("stroke");
+  const [subTextEffect, setSubTextEffect] = useState<SubTextEffect>("pop");
+  const [subFontWeight, setSubFontWeight] = useState(900);
+  // Composite mode + chroma key tuning (per-avatar)
+  const compositeMode = "chromakey";
+  const [chromaColor] = useState("#00FF00");
+  const [chromaSimilarity, setChromaSimilarity] = useState(0.28);
+  const [chromaBlend, setChromaBlend] = useState(0.04);
+  const [activeCaptionIdx, setActiveCaptionIdx] = useState(-1);
+
+  // Background music
+  const [bgmEnabled, setBgmEnabled] = useState(false);
+  const [bgmFile, setBgmFile] = useState("");
+  const [bgmVolume, setBgmVolume] = useState(0.28);
+  const [bgmUploading, setBgmUploading] = useState(false);
+  interface SystemTrack { id: string; title: string; filename: string; }
+  const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
+
+  const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
+  const [clearingCache, setClearingCache] = useState(false);
+
+  // Render progress popup
+  const [renderPopupOpen, setRenderPopupOpen] = useState(false);
+  const [renderPopupKey, setRenderPopupKey] = useState(0);
+  const renderProgressRef = useRef<number>(0);
+  const [renderProgressTick, setRenderProgressTick] = useState(0);
+  const renderProgress = renderProgressRef.current;
+  const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+
+  function setRenderProgress(v: number) {
+    renderProgressRef.current = v;
+    setRenderProgressTick(t => t + 1);
+  }
+
+  // Missing API key modal
+  const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
+  const [preferredLLM, setPreferredLLM] = useState<"gemini" | null>(null);
+  const preferredLLMRef = useRef<"gemini" | null>(null);
+  const [showClearCacheDialog, setShowClearCacheDialog] = useState(false);
+
+  // Stored pipeline data for partial re-runs
+  const pipe = useRef<Partial<PipelineData>>({});
+
+  // Keep a stable ref to rerunFrom so the debounce closure always calls the latest version
+  const rerunFromRef = useRef<(step: keyof StepState) => Promise<void>>(async () => {});
+  const runningRef = useRef(false);
+  // Track the currently active render jobId — results from any other jobId are discarded
+  const activeJobIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Load stock cache info
+    fetch("/api/stocks").then(r => r.json()).then(d => {
+      if (d.count !== undefined) setStockCacheInfo(d);
+    }).catch(() => {});
+    // Load saved Avatar ID and Voice ID for this user
+    fetch("/api/user/video-settings").then(r => r.json()).then(d => {
+      if (d.heygenAvatarId) setAvatarId(d.heygenAvatarId);
+      if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
+      if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
+      if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+    }).catch(() => {});
+
+    // Cancel active render job when tab closes/refreshes
+    const onUnload = () => {
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      const jobId = activeJobIdRef.current;
+      if (jobId) navigator.sendBeacon(`/api/videos/render-cancel?jobId=${encodeURIComponent(jobId)}`);
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, []);
+
+  // Auto-save Avatar ID when user changes it (debounced 800ms)
+  const saveAvatarIdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function handleSetAvatarId(val: string) {
+    setAvatarId(val);
+    if (saveAvatarIdTimer.current) clearTimeout(saveAvatarIdTimer.current);
+    saveAvatarIdTimer.current = setTimeout(() => {
+      fetch("/api/user/video-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ heygenAvatarId: val }),
+      }).catch(() => {});
+    }, 800);
+  }
+
+  // Auto-save Voice ID when user changes it (debounced 800ms)
+  const saveVoiceIdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function handleSetVoiceId(val: string) {
+    setVoiceId(val);
+    if (saveVoiceIdTimer.current) clearTimeout(saveVoiceIdTimer.current);
+    saveVoiceIdTimer.current = setTimeout(() => {
+      fetch("/api/user/video-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ elevenlabsVoiceId: val }),
+      }).catch(() => {});
+    }, 800);
+  }
+
+  // Immediately save ttsProvider when toggled
+  function handleSetTtsProvider(val: "elevenlabs" | "gemini") {
+    setTtsProvider(val);
+    fetch("/api/user/video-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ttsProvider: val }),
+    }).catch(() => {});
+  }
+
+  // Immediately save geminiVoiceName when changed
+  function handleSetGeminiVoiceName(val: string) {
+    setGeminiVoiceName(val);
+    fetch("/api/user/video-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ geminiVoiceName: val }),
+    }).catch(() => {});
+  }
+
+  async function clearStockCache() {
+    setClearingCache(true);
+    try {
+      const res = await fetch("/api/stocks", { method: "DELETE" });
+      const d = await res.json();
+      toast.success(`ลบ stock cache สำเร็จ ${d.deleted} ไฟล์ (${d.sizeMb} MB)`);
+      setStockCacheInfo({ count: 0, sizeMb: 0 });
+    } catch {
+      toast.error("ไม่สามารถลบ cache ได้ กรุณาลองใหม่อีกครั้ง");
+    } finally {
+      setClearingCache(false);
+    }
+  }
+
+
+  // Fetch avatar preview image when avatarId changes (debounced)
+  useEffect(() => {
+    if (!avatarId || avatarId.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); return; }
+    const t = setTimeout(() => {
+      fetch(`/api/heygen/avatar-info?avatarId=${avatarId}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) { setAvatarPreviewUrl(d.previewImageUrl ?? ""); setAvatarName(d.name ?? ""); } })
+        .catch(() => { setAvatarPreviewUrl(""); setAvatarName(""); });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [avatarId]);
+
+  // Track current subtitle for caption list highlight
+  // Mark render as stale when subtitle style changes so user knows to re-render
+  useEffect(() => {
+    if (stepsRef.current.render === "done") {
+      setSteps(s => ({ ...s, render: "idle" }));
+      stepsRef.current = { ...stepsRef.current, render: "idle" };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subColor, subKaraokeColor, subStylePreset, subTextEffect, subFontSize, subPosition, subFontWeight, subFontFamily]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onTime = () => {
+      const ms = video.currentTime * 1000;
+      setActiveCaptionIdx(editedSceneCaptions.findIndex(c => ms >= c.startMs && ms <= c.endMs));
+    };
+    video.addEventListener("timeupdate", onTime);
+    return () => video.removeEventListener("timeupdate", onTime);
+  }, [editedSceneCaptions]);
+
+  function updatePosFromPointer(clientX: number, clientY: number) {
+    const el = posCanvasRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // X: -1 (left) to 1 (right)
+    const nx = ((clientX - rect.left) / rect.width - 0.5) * 2;
+    // Y: bottom-center reference — clicking canvas bottom = Y 0.28 (default)
+    const mouseYRatio = (clientY - rect.top) / rect.height;
+    const ny = 0.28 - (1 - mouseYRatio) * 2;
+    setAvatarOffsetX(Math.round(Math.max(-1, Math.min(1, nx)) * 100) / 100);
+    setAvatarOffsetY(Math.round(Math.max(-1, Math.min(1, ny)) * 100) / 100);
+  }
+
+  async function saveScript() {
+    if (!script.trim()) return;
+    setScriptSaving(true);
+    try {
+      const res = await fetch("/api/contents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: script, headline: script.split("\n")[0].slice(0, 80) }),
+      });
+      if (res.ok) {
+        toast.success("บันทึก Script แล้ว");
+      } else {
+        const d = await res.json();
+        toast.error(d.error ?? "บันทึกไม่สำเร็จ");
+      }
+    } catch {
+      toast.error("บันทึกไม่สำเร็จ");
+    } finally {
+      setScriptSaving(false);
+    }
+  }
+
+  /** Custom error that carries the parsed API response body */
+  class ApiCallError extends Error {
+    data: Record<string, unknown>;
+    constructor(prefix: string, data: Record<string, unknown>, status?: number) {
+      // Include `detail` from server if present so friendlyError can show it
+      const detail = data.detail ? ` — ${String(data.detail).slice(0, 200)}` : "";
+      super(`${prefix}: ${data.error ?? "Unknown error"}${detail}`);
+      this.data = status ? { ...data, _status: status } : data;
+    }
+  }
+
+  /** Throw ApiCallError if response is not ok — preserves missingKey and other fields */
+  function assertOk(prefix: string, res: Response, data: Record<string, unknown>) {
+    if (!res.ok) throw new ApiCallError(prefix, data, res.status);
+  }
+
+  function setStep(key: keyof StepState, status: StepStatus, log?: string) {
+    setSteps(s => {
+      const next = { ...s, [key]: status };
+      stepsRef.current = next;
+      return next;
+    });
+    if (log) setLogs(l => ({ ...l, [key]: log }));
+  }
+
+  function markError(msg?: string) {
+    setSteps(s => {
+      const u = { ...s };
+      for (const k of Object.keys(u) as (keyof StepState)[]) {
+        if (u[k] === "running") {
+          u[k] = "error";
+          if (msg) setLogs(l => ({ ...l, [k]: msg }));
+        }
+      }
+      return u;
+    });
+  }
+
+  function friendlyError(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
+    if (err instanceof ApiCallError) {
+      const status = (err.data as any)._status as number | undefined;
+      const errMsg = String(err.data.error ?? "");
+      if (status === 429 && errMsg) return errMsg;
+      if (err.data.provider === "gemini" && errMsg) return errMsg;
+    }
+
+    // Server returned HTML instead of JSON (crashed, 502, 504, cold start)
+    if (raw.includes("Unexpected token '<'") || raw.includes("Unexpected token \"<\"") || raw.includes("<html"))
+      return "Server ไม่ตอบสนอง (502/504) — กรุณารอสักครู่แล้วกดรันใหม่";
+
+    if (raw.includes("ENOSPC") || raw.includes("no space left"))
+      return "พื้นที่ดิสก์บน Server เต็ม — กรุณาติดต่อผู้ดูแลระบบ";
+    if (raw.includes("Unauthorized") || raw.includes("401"))
+      return "Session หมดอายุ — กรุณา Login ใหม่";
+    if (raw.includes("403"))
+      return "ไม่มีสิทธิ์เข้าถึง — กรุณาตรวจสอบ API Key ใน Settings";
+    if (raw.includes("429"))
+      return "API เกิน Rate Limit — กรุณารอสักครู่แล้วลองใหม่";
+    if (raw.includes("Server Action") || raw.includes("newer deployment") || raw.includes("older deployment")) {
+      setTimeout(() => { if (confirm("มีการอัพเดตระบบใหม่ — กด OK เพื่อ refresh หน้า")) window.location.reload(); }, 300);
+      return "ระบบมีการอัพเดต — กรุณา Refresh หน้าแล้วรันใหม่";
+    }
+    if (raw.includes("timeout") || raw.includes("ETIMEDOUT") || raw.includes("504"))
+      return "หมดเวลารอ (Timeout) — กรุณากดรันใหม่อีกครั้ง";
+    if (raw.includes("ECONNREFUSED") || raw.includes("fetch failed") || raw.includes("NetworkError"))
+      return "ไม่สามารถเชื่อมต่อ Server — กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต";
+    if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
+      setShowClearCacheDialog(true);
+      return "Keywords ขาดหาย — กรุณาล้างแคชแล้วรันใหม่";
+    }
+    if (raw.includes("pexels") || raw.includes("Pexels"))
+      return "Pexels API มีปัญหา — กรุณาตรวจสอบ API Key ใน Settings แล้วลองใหม่";
+    if (raw.includes("ffmpeg") || raw.includes("ffprobe"))
+      return "Video processing ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
+    if (raw.includes("Whisper") || raw.includes("transcribe"))
+      return "Transcribe ล้มเหลว — กรุณากดรันใหม่อีกครั้ง";
+    if (err instanceof ApiCallError && err.data.retryable)
+      return String(err.data.error ?? "เกิดข้อผิดพลาด — กรุณากดรันใหม่อีกครั้ง");
+    if (err instanceof ApiCallError && err.data.error)
+      return String(err.data.error);
+    const firstLine = raw.split("\n")[0].slice(0, 200);
+    return (firstLine || "เกิดข้อผิดพลาด") + " — กรุณากดรันใหม่อีกครั้ง";
+  }
+
+  /** Returns true if the error is a missing-key error and opens the modal. */
+  function handleMissingKey(
+    err: unknown,
+    fallbackRetry: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline"
+  ): boolean {
+    // If server explicitly says retryable=false → not a key problem, just show toast
+    if (err instanceof ApiCallError && err.data.retryable === false) return false;
+
+    // Only open modal if server sent missingKey field (explicit) — don't guess from error string
+    let keyType = null;
+    if (err instanceof ApiCallError) {
+      keyType = detectMissingKeyType(err.data);
+    }
+    if (!keyType) return false;
+
+    // Find which step is currently "running" — that's the step that failed
+    const runningStep = (Object.keys(stepsRef.current) as (keyof StepState)[])
+      .find(k => stepsRef.current[k] === "running");
+    const retryStep = runningStep ?? fallbackRetry;
+
+    setMissingKey({ type: keyType, retryStep });
+    return true;
+  }
+
+  // ── Individual step runners ──────────────────────────────────────
+
+  function splitScenes(text: string): string[] {
+    return text.split(/\n+/).map(s => s.trim()).filter(s => s.length > 0);
+  }
+
+  async function runKeywords(): Promise<string[]> {
+    setStep("keywords", "running");
+    const sc = splitScenes(cleanScript);
+    setScenes(sc);
+    pipe.current.scenes = sc;
+    const kwRes = await fetch("/api/videos/extract-keywords", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenes: sc, preferredLLM: preferredLLMRef.current }),
+      signal: abortControllerRef.current?.signal,
+    });
+    const kwData = await kwRes.json();
+    assertOk("Keywords", kwRes, kwData);
+    const kws: string[] = kwData.keywords ?? [];
+    if (kws.length === 0) {
+      throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+    }
+    pipe.current.keywords = kws;
+    pipe.current.keywordAlternatives = kwData.keywordAlternatives ?? [];
+    pipe.current.keywordsPerScene = kwData.keywordsPerScene ?? 5;
+    pipe.current.sceneClipCounts = kwData.sceneClipCounts ?? [];
+    pipe.current.sceneDurations = kwData.sceneDurations ?? [];
+    pipe.current.visualDirection = kwData.visualDirection ?? "";
+    setKeywords(kws);
+    const totalClips = (kwData.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
+    setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
+    return kws;
+  }
+
+  async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : "Pexels+Pixabay";
+    setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
+
+    // Use scene durations from extract-keywords (more accurate than char-count estimate)
+    const sceneDurations: number[] = pipe.current.sceneDurations ?? [];
+    const totalDurationSec = sceneDurations.length > 0
+      ? sceneDurations.reduce((a, b) => a + b, 0)
+      : Math.max(30, Math.ceil(
+          (pipe.current.scenes ?? []).reduce((s, sc) => s + sc.replace(/\s/g, "").length, 0) / 3
+        ));
+
+    const stockRes = await fetch("/api/videos/fetch-stock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keywords: kws,
+        download: true,
+        totalDurationSec,
+        stockSource,
+        preferredLLM: preferredLLMRef.current,
+        ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
+        ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+      }),
+      signal: abortControllerRef.current?.signal,
+    });
+    const stockData = await stockRes.json();
+    assertOk("Stock", stockRes, stockData);
+    const stockVideos: StockVideo[] = (stockData.results ?? []).filter(
+      (r: StockVideo) => r.localUrl || r.videoUrl
+    );
+    if (!stockVideos.length) throw new Error("ไม่พบ stock video ที่เหมาะสม");
+    pipe.current.stockVideos = stockVideos;
+    setPipeStockVideos(stockVideos);
+    // Record how many clips the system auto-fetched (shown in UI)
+    setAutoClipCount(stockVideos.length);
+    // Reset to "all selected" — start fresh, user deselects what they don't want
+    setExcludedClipIds(new Set());
+    const pexelsCnt = stockVideos.filter(v => v.pexelsId < 9_000_000).length;
+    const pixabayCnt = stockVideos.filter(v => v.pexelsId >= 9_000_000).length;
+    const srcBreakdown = stockSource === "both" ? ` (P:${pexelsCnt} B:${pixabayCnt})` : "";
+    setStep("fetchStock", "done", `ได้ ${stockVideos.length} คลิป สำหรับ ${Math.round(totalDurationSec)}s${srcBreakdown}`);
+    // Refresh cache info so the clear button appears
+    fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
+    return stockVideos;
+  }
+
+  async function runTts(): Promise<string> {
+    if (ttsProvider === "gemini") {
+      setStep("tts", "running", "Gemini TTS...");
+      const ttsRes = await fetch("/api/videos/tts-gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanScript, voiceName: geminiVoiceName }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const ttsData = await ttsRes.json();
+      assertOk("TTS (Gemini)", ttsRes, ttsData);
+      const voiceUrl = ttsData.voiceUrl as string;
+      pipe.current.voiceUrl = voiceUrl;
+      setTtsUrl(voiceUrl);
+      setStep("tts", "done", voiceUrl);
+      return voiceUrl;
+    } else {
+      setStep("tts", "running", "ElevenLabs...");
+      const ttsRes = await fetch("/api/videos/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanScript, voiceId, languageCode: "th" }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const ttsData = await ttsRes.json();
+      assertOk("TTS", ttsRes, ttsData);
+      const voiceUrl = ttsData.voiceUrl as string;
+      pipe.current.voiceUrl = voiceUrl;
+      setTtsUrl(voiceUrl);
+      setStep("tts", "done", voiceUrl);
+      return voiceUrl;
+    }
+  }
+
+  async function runTranscribe(voiceUrl: string): Promise<{ captions: Caption[]; sceneCaptions: Caption[]; audioDurationMs: number; words: { word: string; startMs: number; endMs: number }[] }> {
+    setStep("transcribe", "running", "Whisper transcribing...");
+    const fullAudioUrl = voiceUrl.startsWith("http://") || voiceUrl.startsWith("https://")
+      ? voiceUrl
+      : `${window.location.origin}${voiceUrl}`;
+    const txRes = await fetch("/api/videos/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audioUrl: fullAudioUrl, scriptPrompt: cleanScript.slice(0, 800), script: cleanScript, preferredLLM: preferredLLMRef.current }),
+      signal: abortControllerRef.current?.signal,
+    });
+    const txData = await txRes.json();
+    assertOk("Transcribe", txRes, txData);
+
+    const whisperWords: { word: string; startMs: number; endMs: number }[] = txData.words ?? [];
+    const captions: Caption[] = txData.captions ?? [];
+    const durationFromServerRaw = Number(txData.audioDurationMs);
+    const durationFromServer = Number.isFinite(durationFromServerRaw) ? durationFromServerRaw : 0;
+
+    const audioDurationMs = durationFromServer > 0
+      ? durationFromServer
+      : whisperWords.length
+      ? whisperWords[whisperWords.length - 1].endMs
+      : captions.length
+        ? Math.max(...captions.map(c => c.endMs))
+        : (txData.segments?.at(-1)?.endMs ?? 60000);
+
+    // ── Use captions from server first, then harden by splitting overly long lines to
+    // keep subtitle timing readable per scene/segment on short-form output.
+    let sceneCaptions: Caption[] = [];
+
+    const forceSplitByLength = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
+      const src = (cap.text ?? "").trim();
+      const capTag = tag ?? (cap.tag as "hook" | "body" | "cta" | undefined);
+      if (!src) return [{ ...cap, text: src, tag: capTag }];
+
+      // Thai has no word spaces — splitting by char position cuts mid-word.
+      // Only split if there are actual space-separated tokens to split at.
+      const MAX_CHARS = 52;
+      const MIN_CHARS = 12;
+      if (src.length <= MAX_CHARS) return [{ ...cap, text: src, tag: capTag }];
+
+      const words = src.split(/\s+/).filter(Boolean);
+      // If no spaces (pure Thai run) → don't split, keep as-is
+      if (words.length <= 1) return [{ ...cap, text: src, tag: capTag }];
+
+      const chunks: string[] = [];
+      let buf = "";
+      for (const p of words) {
+        const next = buf ? `${buf} ${p}` : p;
+        if (next.length > MAX_CHARS && buf) {
+          chunks.push(buf.trim());
+          buf = p;
+        } else {
+          buf = next;
+        }
+      }
+      if (buf.trim()) chunks.push(buf.trim());
+
+      if (!chunks.length) chunks.push(src);
+      // Merge tiny tail chunks back to previous to avoid super-short subtitles
+      const rebalance: string[] = [];
+      for (const piece of chunks) {
+        if (piece.length < MIN_CHARS && rebalance.length > 0) {
+          const merged = `${rebalance[rebalance.length - 1]} ${piece}`.trim();
+          if (merged.length <= MAX_CHARS * 2) {
+            rebalance[rebalance.length - 1] = merged;
+            continue;
+          }
+        }
+        rebalance.push(piece);
+      }
+      const finalChunks = rebalance.filter(Boolean);
+
+      if (finalChunks.length <= 1) return [{ ...cap, text: src, tag: capTag }];
+
+      const span = Math.max(cap.endMs - cap.startMs, 1);
+      return finalChunks.map((t, i) => {
+        const start = cap.startMs + Math.floor((span * i) / finalChunks.length);
+        const end = i === finalChunks.length - 1 ? cap.endMs : cap.startMs + Math.floor((span * (i + 1)) / finalChunks.length);
+        return { text: t, startMs: start, endMs: Math.max(start + 240, end), tag: capTag };
+      });
+    };
+
+    const splitCaption = (cap: Caption, tag: "hook" | "body" | "cta" | undefined): Caption[] => {
+      const src = (cap.text ?? "").trim();
+      if (!src) return [];
+      return forceSplitByLength({ ...cap, text: src }, tag);
+    };
+
+    if (captions.length > 0) {
+      sceneCaptions = captions.flatMap((cap, i) => {
+        const tag = (cap.tag as "hook" | "body" | "cta" | undefined) ?? (i === 0 ? "hook" : "body");
+        const split = splitCaption(cap, tag);
+        return split.length ? split : [];
+      });
+    }
+
+      sceneCaptions = sceneCaptions
+        .map((c, idx) => ({
+          ...c,
+          text: (c.text ?? "").trim(),
+          tag: c.tag ?? (idx === 0 ? "hook" : "body"),
+        startMs: Number.isFinite(c.startMs) ? Math.max(0, Math.floor(c.startMs)) : 0,
+        endMs: Number.isFinite(c.endMs) ? Math.floor(c.endMs) : 0,
+      }))
+        .filter((c) => c.text.length > 0)
+        .sort((a, b) => a.startMs - b.startMs)
+        .reduce<Caption[]>((acc, c) => {
+          if (!acc.length) {
+            return [{ ...c, endMs: c.endMs > c.startMs ? c.endMs : c.startMs + 240 }];
+          }
+          const last = acc[acc.length - 1];
+          const safeStart = Math.max(c.startMs, Math.min(c.endMs - 1, last.endMs + 1));
+          const safeEnd = safeStart < c.endMs ? c.endMs : safeStart + Math.max(240, c.endMs - c.startMs);
+          if (safeStart >= safeEnd) {
+            return [...acc, { ...c, startMs: safeStart, endMs: safeStart + 240 }];
+          }
+          return [...acc, { ...c, startMs: safeStart, endMs: safeEnd }];
+        }, []);
+    // Fallback for non-Thai word-level grouping
+    if (!sceneCaptions.length && whisperWords.length > 0) {
+      const groups: Caption[] = [];
+      let bucket: typeof whisperWords = [];
+      let chars = 0;
+      const flush = () => {
+        if (!bucket.length) return;
+        groups.push({ text: bucket.map(w => w.word).join(" "), startMs: bucket[0].startMs, endMs: bucket[bucket.length - 1].endMs, tag: groups.length === 0 ? "hook" : "body" });
+        bucket = []; chars = 0;
+      };
+      for (const w of whisperWords) {
+        const wc = w.word.replace(/\s/g, "").length;
+        const gap = bucket.length > 0 ? w.startMs - bucket[bucket.length - 1].endMs : 0;
+        if (bucket.length > 0 && (gap >= 500 || chars + wc > 20)) flush();
+        bucket.push(w); chars += wc;
+      }
+      flush();
+      sceneCaptions = groups;
+    }
+
+    pipe.current.captions = captions;
+    pipe.current.sceneCaptions = sceneCaptions;
+    pipe.current.audioDurationMs = audioDurationMs;
+    pipe.current.words = whisperWords;
+    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · ${(audioDurationMs / 1000).toFixed(1)}s`);
+    return { captions, sceneCaptions, audioDurationMs, words: whisperWords };
+  }
+
+  async function runConfig(stockVideos: StockVideo[], voiceUrl: string, audioDurationMs: number, sceneCaptions: Caption[], noSubtitles = false) {
+    setStep("config", "running");
+    const cfgRes = await fetch("/api/videos/generate-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
+      body: JSON.stringify({
+        sceneCaptions: noSubtitles ? [] : sceneCaptions,
+        stockVideos,
+        voiceFile: voiceUrl,
+        audioDurationMs,
+        fontFamily: subFontFamily,
+        subtitlePosition: subPosition,
+        subtitleSize: subFontSize,
+        subtitleColor: subColor,
+        subtitleAccentColor: subKaraokeColor,
+        subtitleStylePreset: subStylePreset,
+        subtitleTextEffect: subTextEffect,
+        subtitleFontWeight: subFontWeight,
+        scenes: pipe.current.scenes ?? [],
+        keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
+        sceneClipCounts: pipe.current.sceneClipCounts ?? [],
+        sceneDurations: pipe.current.sceneDurations ?? [],
+      }),
+    });
+    const cfgData = await cfgRes.json();
+    assertOk("Config", cfgRes, cfgData);
+    const config = cfgData.config;
+    // Inject user's BGM choice into config
+    if (bgmEnabled && bgmFile) {
+      config.bgmFile = bgmFile;
+      config.bgmVolume = bgmVolume;
+    } else {
+      delete config.bgmFile;
+    }
+    pipe.current.config = config;
+    setStep("config", "done", `${(config.durationInFrames / 30).toFixed(0)}s · ${config.bgVideos?.length} clips`);
+    return config;
+  }
+
+  async function runRender(config: unknown): Promise<string> {
+    setStep("render", "running", "Remotion rendering...");
+    setRenderProgressError(null);
+    setPreRenderUrl("");
+    // Reset ref immediately (synchronous) so popup always opens at 0%
+    renderProgressRef.current = 0;
+    setRenderPopupOpen(false);
+    await new Promise(r => setTimeout(r, 16)); // one frame for unmount
+    setRenderPopupKey(k => k + 1);
+    setRenderPopupOpen(true);
+    console.log("[runRender] started");
+
+    let renderPollTimer: ReturnType<typeof setInterval> | null = null;
+    let renderTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollFailCount = 0;
+    let renderFailedMessage: string | null = null;
+    const markRenderError = (msg: string) => {
+      if (renderFailedMessage) return;
+      renderFailedMessage = msg;
+      setRenderProgressError(msg);
+      setStep("render", "error", msg);
+    };
+
+    let pollStopped = false;
+    const stopRenderPoll = () => {
+      pollStopped = true;
+      if (renderPollTimer !== null) {
+        clearInterval(renderPollTimer);
+        renderPollTimer = null;
+      }
+      if (renderTimeoutTimer !== null) {
+        clearTimeout(renderTimeoutTimer);
+        renderTimeoutTimer = null;
+      }
+    };
+    stopRenderPollRef.current = stopRenderPoll;
+
+    let resolveRenderUrl: ((url: string) => void) | null = null;
+    let currentJobId: string | null = null;
+
+    renderPollTimer = setInterval(async () => {
+      if (pollStopped || renderFailedMessage) return;
+      // Don't poll without a jobId — avoids reading stale progress file from a previous render
+      if (!currentJobId) return;
+      try {
+        const progressUrl = `/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`;
+        const progressRes = await fetch(progressUrl, {
+          cache: "no-store",
+          signal: abortControllerRef.current?.signal,
+        });
+        if (pollStopped) return; // stopped while awaiting fetch
+        if (!progressRes.ok) {
+          pollFailCount += 1;
+          if (pollFailCount >= 6) {
+            markRenderError("ไม่สามารถดึงความคืบหน้า Render ได้ต่อเนื่อง กรุณาลองใหม่อีกครั้ง");
+          }
+          return;
+        }
+        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+        if (pollStopped) return; // stopped while parsing
+        // Only resolve from progress file if we have a confirmed jobId — prevents resolving with stale videoUrl from a previous render
+        if (progressData?.videoUrl && resolveRenderUrl && currentJobId) {
+          resolveRenderUrl(progressData.videoUrl);
+          resolveRenderUrl = null;
+          return;
+        }
+        if (progressData?.error) {
+          markRenderError(progressData.error);
+          return;
+        }
+        const progress = Number(progressData?.progress);
+        if (Number.isFinite(progress)) {
+          pollFailCount = 0;
+          const normalized = Math.min(100, Math.max(0, Math.round(progress)));
+          setRenderProgress(normalized);
+          setStep("render", "running", `Rendering... ${normalized}%`);
+        }
+      } catch {
+        if (pollStopped) return;
+        pollFailCount += 1;
+        if (pollFailCount >= 6) {
+          markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
+        }
+      }
+    }, 600);
+
+    renderTimeoutTimer = setTimeout(() => {
+      if (!renderFailedMessage) {
+        markRenderError("Render ใช้เวลานานผิดปกติ (อาจติดขัดที่ขั้นตอนดาวน์โหลด/ประมวลผลวิดีโอ)");
+      }
+    }, 120 * 60 * 1000);
+
+    try {
+      // Fire-and-forget: POST returns {jobId} immediately, then poll for result.
+      // This avoids Nginx 504 Gateway Timeout on long renders (default 60s proxy timeout).
+      // Patch latest style settings into config so color/font/effect changes don't require re-running Config step
+      const patchedConfig = config && typeof config === "object" ? {
+        ...(config as Record<string, unknown>),
+        subtitleStylePreset: subStylePreset,
+        subtitleTextEffect: subTextEffect,
+        fontFamily: subFontFamily,
+        keywordPopups: Array.isArray((config as Record<string, unknown>).keywordPopups)
+          ? ((config as Record<string, unknown>).keywordPopups as Record<string, unknown>[]).map(p => ({
+              ...p,
+              color: subStylePreset === "karaoke-box" ? subColor : (p.tag === "hook" || (!p.tag && p.isHighlight)) ? subKaraokeColor : subColor,
+              accentColor: subKaraokeColor,
+              fontWeight: subFontWeight,
+              topPercent: subPosition,
+              size: subFontSize,
+              stylePreset: subStylePreset,
+            }))
+          : [],
+      } : config;
+      const renderRes = await fetch("/api/videos/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shortVideoConfig: patchedConfig }),
+        signal: abortControllerRef.current?.signal,
+      });
+      if (renderFailedMessage) throw new Error(renderFailedMessage);
+      const renderData = await renderRes.json();
+      assertOk("Render", renderRes, renderData);
+
+      // New: server returns jobId immediately and renders in background
+      const jobId = renderData.jobId as string | undefined;
+      const immediateUrl = renderData.videoUrl as string | undefined;
+
+      if (immediateUrl) {
+        pipe.current.renderedVideoUrl = immediateUrl;
+        setPreRenderUrl(immediateUrl);
+        if (!useAvatar) setVideoUrl(immediateUrl);
+        setStep("render", "done", immediateUrl);
+        setRenderProgressError(null);
+        setRenderProgress(100);
+        return immediateUrl;
+      }
+
+      if (!jobId) throw new Error("Render server did not return jobId");
+      currentJobId = jobId;
+      activeJobIdRef.current = jobId; // mark this as the active job
+
+      let statusNotFoundCount = 0;
+      const url = await new Promise<string>((resolve, reject) => {
+        resolveRenderUrl = resolve;
+        const statusInterval = setInterval(async () => {
+          // If a newer job has taken over, silently abandon this one
+          if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
+          if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
+          try {
+            const statusRes = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, {
+              cache: "no-store",
+              signal: abortControllerRef.current?.signal,
+            });
+            const statusData = await statusRes.json();
+            if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
+            if (statusData.status === "done" && statusData.videoUrl) {
+              clearInterval(statusInterval);
+              resolveRenderUrl = null;
+              resolve(statusData.videoUrl as string);
+            } else if (statusData.status === "error") {
+              clearInterval(statusInterval);
+              resolveRenderUrl = null;
+              reject(new Error(statusData.error ?? "Render failed"));
+            } else if (statusData.status === "not_found" || statusRes.status === 404) {
+              statusNotFoundCount += 1;
+              if (statusNotFoundCount >= 1200) {
+                clearInterval(statusInterval);
+                resolveRenderUrl = null;
+                reject(new Error("Render job lost — server may have restarted. Please try again."));
+              }
+            }
+          } catch (e) {
+            if (e instanceof Error && e.name === "AbortError") {
+              clearInterval(statusInterval);
+              resolveRenderUrl = null;
+              reject(e);
+            }
+          }
+        }, 3000);
+      });
+
+      // Final check: only use result if this job is still active
+      if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
+
+      pipe.current.renderedVideoUrl = url;
+      setPreRenderUrl(url);
+      if (!useAvatar) setVideoUrl(url);
+      setStep("render", "done", url);
+      setRenderProgressError(null);
+      setRenderProgress(100);
+      return url;
+    } catch (err) {
+      // Silently discard results from superseded jobs — a newer render has taken over
+      if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
+      console.log("[runRender] catch:", err instanceof Error ? err.message : String(err));
+      if (!renderFailedMessage && err instanceof Error && err.name === "AbortError") {
+        throw err;
+      }
+      if (!renderFailedMessage) {
+        const msg = friendlyError(err);
+        markRenderError(msg);
+      }
+      throw err;
+    } finally {
+      stopRenderPoll();
+      stopRenderPollRef.current = null;
+      if (renderFailedMessage || abortRef.current) {
+        setRenderProgress(0);
+        setRenderPopupOpen(false);
+        if (!renderFailedMessage) setRenderProgressError(null);
+      }
+    }
+  }
+
+  async function saveToGallery(videoUrl: string) {
+    try {
+      const res = await fetch("/api/videos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl,
+          audioUrl: pipe.current.voiceUrl ?? null,
+          script: script.trim() || null,
+          avatarModel: "none",
+          voiceModel: voiceId || "gemini",
+          sceneCount: pipe.current.scenes?.length ?? 1,
+          renderConfig: pipe.current.config ?? null,
+          status: "COMPLETED",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("[saveToGallery] failed:", res.status, err);
+        toast.error(`บันทึก Gallery ไม่สำเร็จ: ${res.status}`);
+      }
+    } catch (e) {
+      console.error("[saveToGallery] error:", e);
+      toast.error("บันทึก Gallery ไม่สำเร็จ");
+    }
+  }
+
+  // ── Step 7: Avatar — only HeyGen gen + poll, show preview ──
+
+  async function runAvatar(audioUrl: string): Promise<string> {
+    // Direct URL mode — skip HeyGen entirely
+    if (avatarInputMode === "direct") {
+      if (!avatarDirectUrl.trim()) throw new Error("กรอก Avatar Video URL ก่อน");
+      setStep("avatar", "running", "Using direct URL...");
+      setAvatarGreenUrl(avatarDirectUrl.trim());
+      setStep("avatar", "done", avatarDirectUrl.trim());
+      return avatarDirectUrl.trim();
+    }
+
+    setStep("avatar", "running", "HeyGen generating (remove_background)...");
+    setAvatarGreenUrl("");
+
+    // Trim audio for bookend modes before sending to HeyGen
+    let avatarAudioUrl = audioUrl;
+    if (avatarTiming === "bookend" && avatarBookendSecs > 0) {
+      setStep("avatar", "running", `Trimming audio to ${avatarBookendSecs}s...`);
+      const trimRes = await fetch("/api/videos/trim-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl, durationSecs: avatarBookendSecs }),
+      });
+      const trimData = await trimRes.json();
+      assertOk("Trim audio", trimRes, trimData);
+      avatarAudioUrl = trimData.audioUrl;
+      setStep("avatar", "running", `HeyGen generating ${avatarBookendSecs}s avatar...`);
+    } else if (avatarTiming === "bookend-both" && avatarBookendSecs > 0) {
+      // bookend-both split: intro avatar gets only first N secs of audio
+      setStep("avatar", "running", `Trimming intro audio to ${avatarBookendSecs}s...`);
+      const trimRes = await fetch("/api/videos/trim-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl, durationSecs: avatarBookendSecs }),
+      });
+      const trimData = await trimRes.json();
+      assertOk("Trim intro audio", trimRes, trimData);
+      avatarAudioUrl = trimData.audioUrl;
+      setStep("avatar", "running", `HeyGen generating ${avatarBookendSecs}s intro avatar...`);
+    }
+
+    const genRes = await fetch("/api/heygen/generate-with-bg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
+      body: JSON.stringify({
+        audioUrl: avatarAudioUrl,
+        avatarId,
+        greenScreen: true,
+        scale: avatarScale,
+        offsetX: avatarOffsetX,
+        offsetY: avatarOffsetY,
+      }),
+    });
+    const genData = await genRes.json();
+    assertOk("Avatar", genRes, genData);
+    const heygenVideoId = genData.videoId as string;
+    setStep("avatar", "running", `HeyGen video: ${heygenVideoId} — polling...`);
+
+    let avatarVideoUrl = "";
+    const MAX_POLLS = 360;
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      if (abortRef.current) throw new Error("__ABORTED__");
+      // Wait for tab to be visible before fetching (prevents ERR_NETWORK_IO_SUSPENDED)
+      if (document.visibilityState === "hidden") {
+        await new Promise<void>(resolve => {
+          const handler = () => {
+            if (abortRef.current || document.visibilityState === "visible") {
+              document.removeEventListener("visibilitychange", handler);
+              resolve();
+            }
+          };
+          document.addEventListener("visibilitychange", handler);
+        });
+      }
+      if (abortRef.current) throw new Error("__ABORTED__");
+      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
+      try {
+        const pollRes = await fetch("/api/videos/poll-avatar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: heygenVideoId }),
+          signal: abortControllerRef.current?.signal,
+        });
+        pollData = await pollRes.json();
+      } catch {
+        // Network error (suspend/offline) — skip this tick, retry next cycle
+        const elapsed = Math.round((i + 1) * 5 / 60);
+        setStep("avatar", "running", `HeyGen: polling... (${i + 1}) ~${elapsed}min ⏸ retrying`);
+        continue;
+      }
+      if (pollData.status === "completed" && pollData.videoUrl) {
+        avatarVideoUrl = pollData.videoUrl;
+        break;
+      }
+      if (pollData.status === "failed") {
+        throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
+      }
+      const elapsed = Math.round((i + 1) * 5 / 60);
+      setStep("avatar", "running", `HeyGen: ${pollData.status}... (${i + 1}) ~${elapsed}min`);
+    }
+    if (!avatarVideoUrl) throw new Error("Avatar: timeout after 30 minutes");
+
+    setAvatarGreenUrl(avatarVideoUrl);
+    setStep("avatar", "done", "Avatar พร้อม");
+    return avatarVideoUrl;
+  }
+
+  // ── bookend-both: Gen tail avatar separately ──
+  // Core: gen tail avatar, returns url (throws on error) — called by pipeline or standalone
+  async function runAvatarTailCore(voice: string): Promise<string> {
+    setStep("avatarTail", "running", `Trimming tail audio ${avatarTailSecs}s...`);
+    const trimRes = await fetch("/api/videos/trim-audio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audioUrl: voice, durationSecs: 0, tailSecs: avatarTailSecs }),
+    });
+    const trimData = await trimRes.json();
+    assertOk("Trim tail audio", trimRes, trimData);
+    const tailAudioUrl = trimData.audioUrl as string;
+
+    setStep("avatarTail", "running", `HeyGen generating tail avatar ${avatarTailSecs}s...`);
+    const genRes = await fetch("/api/heygen/generate-with-bg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
+      body: JSON.stringify({ audioUrl: tailAudioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+    });
+    const genData = await genRes.json();
+    assertOk("Avatar tail gen", genRes, genData);
+    const heygenVideoId = genData.videoId as string;
+
+    let tailVideoUrl = "";
+    for (let i = 0; i < 360; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      if (abortRef.current) throw new Error("__ABORTED__");
+      const pollRes = await fetch("/api/videos/poll-avatar", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: heygenVideoId }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const pollData = await pollRes.json();
+      if (pollData.status === "completed" && pollData.videoUrl) { tailVideoUrl = pollData.videoUrl; break; }
+      if (pollData.status === "failed") throw new Error(`Tail avatar failed: ${pollData.errorMsg}`);
+      setStep("avatarTail", "running", `HeyGen tail: ${pollData.status}... (${i + 1})`);
+    }
+    if (!tailVideoUrl) throw new Error("Tail avatar: timeout");
+
+    setAvatarTailGreenUrl(tailVideoUrl);
+    setStep("avatarTail", "done", "Tail avatar พร้อม");
+    return tailVideoUrl;
+  }
+
+  // Standalone: gen tail avatar from chip click (manages running state itself)
+  async function runAvatarTailGen() {
+    const voice = pipe.current.voiceUrl;
+    if (!voice) { toast.error("ยังไม่มีไฟล์เสียง — กด Run All ก่อน"); return; }
+    if (!avatarId.trim()) { toast.error("กรอก HeyGen Avatar ID ก่อน"); return; }
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    try {
+      await runAvatarTailCore(voice);
+      toast.success("Gen ท้ายคลิปเสร็จแล้ว — กด Composite ได้เลย");
+    } catch (err) {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว"); markError("ยกเลิก");
+      } else if (!handleMissingKey(err, "runAvatarPipeline")) {
+        const msg = friendlyError(err); toast.error(msg); markError(msg);
+      }
+    } finally {
+      abortRef.current = false; abortControllerRef.current = null; setRunning(false);
+    }
+  }
+
+  // ── Step 8: Composite — AI remove bg + overlay onto Remotion video ──
+
+  async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
+    const isDirect = avatarInputMode === "direct";
+    const modeLabel = isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey ลบ green screen + composite...";
+    setStep("composite", "running", modeLabel);
+    const compRes = await fetch("/api/heygen/composite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abortControllerRef.current?.signal,
+      body: isDirect
+        ? JSON.stringify({
+            avatarVideoUrl: avatarUrl,
+            bgVideoUrl,
+            mode: "chromakey",
+            noScale: true,
+            chromaColor: chromaColor.replace("#", "0x"),
+            chromaSimilarity,
+            chromaBlend,
+          })
+        : JSON.stringify({
+            avatarVideoUrl: avatarUrl,
+            // bookend-both split: pass tail avatar separately so route can composite each independently
+            ...(avatarTiming === "bookend-both" && tailAvatarUrl ? { tailAvatarVideoUrl: tailAvatarUrl } : {}),
+            bgVideoUrl,
+            mode: compositeMode,
+            avatarTiming,
+            avatarBookendSecs,
+            avatarTailSecs,
+            avatarScale,
+            avatarOffsetX,
+            avatarOffsetY,
+            chromaColor: chromaColor.replace("#", "0x"),
+            chromaSimilarity,
+            chromaBlend,
+          }),
+    });
+    const compData = await compRes.json();
+    assertOk("Composite", compRes, compData);
+
+    const finalUrl = compData.videoUrl as string;
+    const usedMode = (compData.usedMode as string) ?? "unknown";
+    if (compData.aiError) {
+      toast.error(`AI failed → ใช้ chromakey fallback: ${compData.aiError}`);
+    }
+    // Store composite URL so subtitle step always burns onto the avatar-composited video
+    pipe.current.compositeUrl = finalUrl;
+    setCompositePreviewUrl(finalUrl);
+    setStep("composite", "done", `${usedMode} — ${finalUrl}`);
+
+    // Save to Gallery
+    try {
+      await fetch("/api/videos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl: finalUrl,
+          avatarVideoUrl: avatarUrl,
+          audioUrl: pipe.current.voiceUrl ?? null,
+          script: script.trim() || null,
+          avatarModel: avatarId || "direct",
+          voiceModel: voiceId || "unknown",
+          sceneCount: pipe.current.scenes?.length ?? 1,
+          renderConfig: pipe.current.config ?? null,
+          status: "COMPLETED",
+        }),
+      });
+      toast.success("บันทึกลง Gallery แล้ว");
+    } catch {
+      // non-critical
+    }
+
+    return finalUrl;
+  }
+
+  // ── Input validation before any pipeline run ────────────────────
+  // Returns true if valid, false + shows toast if something is missing.
+  function validateInputs(phase: "prepare" | "generate" | "avatar"): boolean {
+    const errors: string[] = [];
+
+    if (phase === "prepare" || phase === "generate") {
+      if (!script.trim())
+        errors.push("กรอก Script ก่อนเริ่ม");
+
+      const isDirectMode = avatarInputMode === "direct";
+      if (!isDirectMode) {
+        // TTS required
+        if (ttsProvider === "elevenlabs" && !voiceId.trim())
+          errors.push("เลือก ElevenLabs Voice ID ใน TTS Settings");
+      } else {
+        // Direct URL mode — need avatar URL (audio source)
+        if (!avatarDirectUrl.trim())
+          errors.push("กรอก Avatar Video URL (Direct URL mode)");
+      }
+    }
+
+    if (phase === "generate") {
+      if (!pipe.current.voiceUrl)
+        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
+      if (!editedSceneCaptions.length)
+        errors.push("ยังไม่มีซับไตเติ้ล — กด Run All ก่อน");
+      if (!getActiveStocks().length)
+        errors.push("ยังไม่มี stock video — กด Run All ก่อน");
+    }
+
+    if (phase === "avatar") {
+      if (!pipe.current.voiceUrl && avatarInputMode !== "direct")
+        errors.push("ยังไม่มีไฟล์เสียง — กด Run All ก่อน");
+      if (avatarInputMode === "generate" && !avatarId.trim())
+        errors.push("กรอก HeyGen Avatar ID ใน Avatar Settings");
+      if (avatarInputMode === "direct" && !avatarDirectUrl.trim())
+        errors.push("กรอก Avatar Video URL");
+      if (!pipe.current.renderedVideoUrl)
+        errors.push("ยังไม่มีวิดีโอ — กด Render ก่อน");
+    }
+
+    if (errors.length > 0) {
+      errors.forEach((e, i) => {
+        setTimeout(() => toast.error(e), i * 150);
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // ── Full pipeline ────────────────────────────────────────────────
+
+  // Pipeline Phase 1: Content → Render (stops before HeyGen)
+  async function runAll() {
+    if (!validateInputs("prepare")) return;
+    const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
+
+    // Step 1: Default to Gemini — no picker needed
+    if (!preferredLLMRef.current) {
+      preferredLLMRef.current = "gemini";
+      setPreferredLLM("gemini");
+    }
+
+    // Step 2: Check keys for the chosen provider — show key modal if missing
+    try {
+      const keysRes = await fetch("/api/user/api-keys");
+      if (keysRes.ok) {
+        const keys = await keysRes.json();
+        const hasLLMKey = !!keys.geminiKey;
+        if (!hasLLMKey) {
+          setMissingKey({ type: "gemini", retryStep: "runAll" });
+          return;
+        }
+        // Stock key check
+        const needPexels  = stockSource === "pexels" || stockSource === "both";
+        const needPixabay = stockSource === "pixabay" || stockSource === "both";
+        const canUsePexels = !needPexels || !!keys.pexelsKey;
+        const canUsePixabay = !needPixabay || !!keys.pixabayKey;
+        if (!canUsePexels && !canUsePixabay) {
+          setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
+          return;
+        }
+      }
+    } catch { /* ignore — let pipeline fail naturally if keys really missing */ }
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    stepsRef.current = { ...DEFAULT_STEPS };
+    setSteps({ ...DEFAULT_STEPS });
+    setLogs({});
+    setVideoUrl("");
+    setPreRenderUrl("");
+    setCompositePreviewUrl("");
+    setAvatarGreenUrl("");
+    setAvatarTailGreenUrl("");
+    setTtsUrl("");
+    setPipeStockVideos([]);
+    pipe.current = {};
+
+    const videoOnly = !useAvatar;
+
+    try {
+      if (videoOnly) {
+        setStep("avatar", "skip", "ข้าม (Video Only)");
+        setStep("composite", "skip", "ข้าม (Video Only)");
+      }
+
+      // 1. TTS (keywords run after transcribe in perSubtitle mode)
+      let voiceUrl: string;
+      if (isDirectMode) {
+        setStep("tts", "skip", "ข้าม (Direct URL mode)");
+        const directUrl = avatarDirectUrl.trim();
+        pipe.current.voiceUrl = directUrl;
+        voiceUrl = directUrl;
+        setAvatarGreenUrl(directUrl);
+        pipe.current.compositeUrl = directUrl;
+      } else {
+        voiceUrl = await runTts();
+      }
+
+      // 3. Transcribe
+      if (abortRef.current) throw new Error("__ABORTED__");
+      const { sceneCaptions } = await runTranscribe(voiceUrl);
+      setEditedSceneCaptions(sceneCaptions);
+
+      // 4. Stock — per-subtitle fetch (after transcribe so we have captions)
+      // scene-based pre-fetch removed: per-subtitle fetch below replaces it entirely
+      toast.success("Transcribe เสร็จ — กำลังหา stock ตรงซับ...");
+
+      // ── Per-subtitle stock matching (blocking — must finish before pipeline ends) ──
+      if (sceneCaptions.length > 0) {
+        const prevKws      = pipe.current.keywords ?? [];
+        const prevStocks   = pipe.current.stockVideos ?? [];
+        const N            = sceneCaptions.length;
+        const subTexts     = sceneCaptions.map(c => c.text);
+        const audioDurSec  = (pipe.current.audioDurationMs ?? 60000) / 1000;
+
+        // ── Step A: Fetch per-subtitle keywords (API handles batching for long scripts) ──
+        let perSubKws: string[] = [];
+        let perSubAlts: string[][] = [];
+        // Clear stale scene-based keywords so UI doesn't display them while perSubtitle runs
+        setKeywords([]);
+        pipe.current.keywords = [];
+        setStep("keywords", "running", `mapping ${N} ซับ → keyword...`);
+        let perSubKeywordError: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const kwRes = await fetch("/api/videos/extract-keywords", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scenes: subTexts, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
+            });
+            const kwData = await kwRes.json();
+            if (!kwRes.ok) {
+              perSubKeywordError = new ApiCallError("Keywords", kwData, kwRes.status);
+              continue;
+            }
+            const got: string[] = kwData.keywords ?? [];
+            const gotAlts: string[][] = kwData.keywordAlternatives ?? [];
+            if (kwData.visualDirection) pipe.current.visualDirection = kwData.visualDirection;
+            if (got.length >= N) { perSubKws = got; perSubAlts = gotAlts; break; }
+            if (got.length > perSubKws.length) { perSubKws = got; perSubAlts = gotAlts; }
+          } catch (e) { perSubKeywordError = e; continue; }
+        }
+        if (perSubKws.length === 0 && perSubKeywordError) throw perSubKeywordError;
+
+        // ── Step B: Safety pad — API guarantees N but guard against total failure ──
+        if (perSubKws.length < N) {
+          const padded = [...perSubKws];
+          const paddedAlts = [...perSubAlts];
+          // Derive fallback from the subtitle text itself rather than hardcoded generics
+          while (padded.length < N) {
+            const missingIdx = padded.length;
+            const subtitleText = subTexts[missingIdx] ?? "";
+            const words = subtitleText.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+            const fb = words.length >= 2 ? words.join(" ") : (pipe.current.visualDirection?.split(" ").slice(0, 3).join(" ") || "scene");
+            padded.push(fb);
+            paddedAlts.push([fb]);
+          }
+          perSubKws = padded;
+          perSubAlts = paddedAlts;
+        }
+        pipe.current.keywordAlternatives = perSubAlts;
+
+        if (perSubKws.length === 0) {
+          // Total keyword failure → keep original stocks
+          setStep("keywords", "done", `${prevKws.length} keywords (เดิม)`);
+          setStep("fetchStock", "done", `${prevStocks.length} คลิป (เดิม)`);
+        } else {
+          pipe.current.keywords = perSubKws;
+          pipe.current.sceneClipCounts = perSubKws.map(() => 1);
+          setKeywords(perSubKws);
+          setStep("keywords", "done", `${perSubKws.length} keywords (1/ซับ)`);
+
+          // ── Step C: Fetch stocks with LLM ranking — send full perSubKws+subTexts in 1 call ──
+          // fetch-stock will do: search 15 candidates per keyword → LLM pick best index → dedup
+          setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws.length} คลิปตรงซับ...`);
+
+          // clips keyed by position index (perSubKws[i] → clip) since LLM ranking already picked best
+          const clipAtIdx = new Map<number, StockVideo>();
+          // Track keywords that got no clip for retry
+          let missingIdxs = perSubKws.map((_, i) => i);
+
+          for (let attempt = 0; attempt < 3 && missingIdxs.length > 0; attempt++) {
+            try {
+              const kwsToFetch   = missingIdxs.map(i => perSubKws[i]);
+              const textsToFetch = missingIdxs.map(i => subTexts[i] ?? perSubKws[i]);
+              const altsToFetch  = missingIdxs.map(i => pipe.current.keywordAlternatives?.[i] ?? []);
+              const stockRes = await fetch("/api/videos/fetch-stock", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  keywords: kwsToFetch,
+                  keywordAlternatives: altsToFetch,
+                  subtitleTexts: textsToFetch,
+                  download: true,
+                  totalDurationSec: audioDurSec,
+                  stockSource,
+                  overrideClipCount: kwsToFetch.length,
+                  perSubtitleMode: true,
+                  preferredLLM: preferredLLMRef.current,
+                  ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+                }),
+              });
+              if (!stockRes.ok) {
+                const errData = (await stockRes.json().catch(() => ({}))) as Record<string, unknown>;
+                if (errData.missingKey) {
+                  throw new ApiCallError("Stock", errData);
+                }
+                break;
+              }
+              const stockData = await stockRes.json();
+              const fetched: StockVideo[] = (stockData.results ?? []).filter(
+                (r: StockVideo) => r.localUrl || r.videoUrl
+              );
+              // Map by keyword text (lowercase to avoid case mismatch).
+              // Server returns clips with same keyword string it received.
+              const kwToOrigIdx = new Map<string, number>();
+              missingIdxs.forEach(i => {
+                const key = perSubKws[i].toLowerCase().trim();
+                if (!kwToOrigIdx.has(key)) kwToOrigIdx.set(key, i);
+              });
+              for (const clip of fetched) {
+                const key = (clip.keyword ?? "").toLowerCase().trim();
+                const origIdx = kwToOrigIdx.get(key);
+                if (origIdx !== undefined && !clipAtIdx.has(origIdx)) clipAtIdx.set(origIdx, clip);
+              }
+              missingIdxs = missingIdxs.filter(i => !clipAtIdx.has(i));
+              if (missingIdxs.length === 0) break;
+              if (attempt < 2) setStep("fetchStock", "running", `retry ${attempt + 1}: ${missingIdxs.length} ซับยังขาด clip...`);
+            } catch (fetchErr) {
+              if (fetchErr instanceof ApiCallError) throw fetchErr;
+              break;
+            }
+          }
+
+          // ── Step D: Build ordered clips — clipAtIdx[i] is already LLM-ranked best match ──
+          // Backfill gaps with unused clips first, then allow reuse only if nothing else available.
+          const allFetched: StockVideo[] = [];
+          const seenIds = new Set<number>();
+          for (const clip of clipAtIdx.values()) {
+            if (!seenIds.has(clip.pexelsId)) { allFetched.push(clip); seenIds.add(clip.pexelsId); }
+          }
+
+          const orderedClips: StockVideo[] = [];
+          const usedInOrder = new Set<number>();
+          let backfillIdx = 0;
+          for (let i = 0; i < N; i++) {
+            const clip = clipAtIdx.get(i);
+            if (clip) {
+              orderedClips.push(clip);
+              usedInOrder.add(clip.pexelsId);
+            } else if (allFetched.length > 0) {
+              // Prefer unused clip for this gap
+              let found = false;
+              for (let j = 0; j < allFetched.length; j++) {
+                const candidate = allFetched[(backfillIdx + j) % allFetched.length];
+                if (!usedInOrder.has(candidate.pexelsId)) {
+                  orderedClips.push(candidate);
+                  usedInOrder.add(candidate.pexelsId);
+                  backfillIdx = (backfillIdx + j + 1) % allFetched.length;
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                // No unique clips left — skip this subtitle slot (no repeat allowed)
+                console.warn(`[fetchStock] subtitle ${i}: no unique clip available, skipping`);
+              }
+            }
+          }
+
+          // ── Step E: Fail-safe — per-subtitle fetch got 0 clips, fall back to scene-based ──
+          if (orderedClips.length === 0) {
+            const fallbackKws = prevKws.length > 0 ? prevKws : (pipe.current.keywords ?? []);
+            if (fallbackKws.length === 0) {
+              setStep("fetchStock", "error", "ไม่พบ stock และไม่มี keyword สำรอง");
+              throw new Error("ไม่พบ stock video ที่เหมาะสม และไม่มี keyword สำรอง");
+            }
+            setStep("fetchStock", "running", "ค้นด้วย scene keyword สำรอง...");
+            try {
+              await runFetchStock(fallbackKws);
+            } catch (fallbackErr) {
+              if (fallbackErr instanceof ApiCallError) throw fallbackErr;
+              setStep("fetchStock", "done", `ไม่พบ stock`);
+            }
+          } else {
+            const missing = N - clipAtIdx.size;
+            if (missing > 0) toast(`Backfill ${missing} คลิป — บางซับใช้คลิปซ้ำ`);
+            pipe.current.stockVideos = orderedClips;
+            setPipeStockVideos(orderedClips);
+            setExcludedClipIds(new Set());
+            setStep("fetchStock", "done", `ได้ ${orderedClips.length} คลิป (LLM ranked)`);
+            toast.success(`Stock พร้อม ${orderedClips.length} คลิป — กด Generate Video ได้เลย`);
+            fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว");
+        markError("ยกเลิกโดยผู้ใช้");
+      } else if (!handleMissingKey(err, "runAll")) {
+        const msg = friendlyError(err);
+        toast.error(msg);
+        markError(msg);
+      }
+    } finally {
+      abortRef.current = false;
+      abortControllerRef.current = null;
+      setRunning(false);
+      // Reset so next Run All asks again
+      preferredLLMRef.current = null;
+      setPreferredLLM(null);
+    }
+  }
+
+  // Helper: apply user exclusions to stock videos before config
+  function getActiveStocks() {
+    return (pipe.current.stockVideos ?? []).filter(v => !excludedClipIds.has(v.pexelsId));
+  }
+
+  // Helper: toggle clip selection with max-limit enforcement
+  function toggleClip(pexelsId: number) {
+    setExcludedClipIds(prev => {
+      const next = new Set(prev);
+      if (next.has(pexelsId)) {
+        // Re-include
+        next.delete(pexelsId);
+      } else {
+        // Exclude — only if we'd still have at least 1 clip active (or no limit set)
+        const currentActive = pipeStockVideos.filter(v => !next.has(v.pexelsId)).length;
+        if (targetClipCount > 0 && currentActive <= 1) return prev; // can't go below 1
+        next.add(pexelsId);
+      }
+      // If targetClipCount is set and active count now exceeds limit,
+      // auto-exclude the last one that was added
+      const activeAfter = pipeStockVideos.filter(v => !next.has(v.pexelsId));
+      if (targetClipCount > 0 && activeAfter.length > targetClipCount) {
+        // Find the most recently selected (last in array not in excluded) and exclude it
+        for (let i = pipeStockVideos.length - 1; i >= 0; i--) {
+          const id = pipeStockVideos[i].pexelsId;
+          if (!next.has(id) && id !== pexelsId) { next.add(id); break; }
+        }
+      }
+      return next;
+    });
+  }
+
+  // Pipeline Phase 1b: Render preview WITHOUT subtitles — user previews CSS overlay first
+  async function runGenerate() {
+    if (!validateInputs("generate")) return;
+    const stocks = getActiveStocks();
+    const voice = pipe.current.voiceUrl ?? "";
+    const durMs = pipe.current.audioDurationMs ?? 0;
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    setVideoUrl("");
+    setPreRenderUrl("");
+    try {
+      const config = await runConfig(stocks, voice, durMs, editedSceneCaptions, false);
+      if (abortRef.current) throw new Error("__ABORTED__");
+      const renderedUrl = await runRender(config);
+      if (!useAvatar) {
+        await saveToGallery(renderedUrl);
+        toast.success("Render เสร็จ! บันทึกใน Gallery แล้ว");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === "__SUPERSEDED__") return;
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว");
+        markError("ยกเลิกโดยผู้ใช้");
+      } else if (!handleMissingKey(err, "runGenerate")) {
+        const msg = friendlyError(err);
+        toast.error(msg);
+        markError(msg);
+      }
+    } finally {
+      abortRef.current = false;
+      abortControllerRef.current = null;
+      setRunning(false);
+    }
+  }
+
+  // Pipeline Phase 2: Avatar (HeyGen) → Composite
+  async function runAvatarPipeline() {
+    if (!validateInputs("avatar")) return;
+    const voice = pipe.current.voiceUrl!;
+    const rendered = pipe.current.renderedVideoUrl!;
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    setVideoUrl("");
+    try {
+      let avUrl: string;
+      let tailUrl: string | undefined;
+      if (avatarTiming === "bookend-both" && avatarInputMode === "generate") {
+        // Gen intro avatar (skip if already done)
+        avUrl = avatarGreenUrl || await runAvatar(voice);
+        if (abortRef.current) throw new Error("__ABORTED__");
+        // Gen tail avatar (skip if already done) — use return value, not state
+        tailUrl = avatarTailGreenUrl || await runAvatarTailCore(voice);
+        if (abortRef.current) throw new Error("__ABORTED__");
+      } else {
+        avUrl = await runAvatar(voice);
+      }
+      if (abortRef.current) throw new Error("__ABORTED__");
+      const composited = await runComposite(rendered, avUrl, tailUrl);
+      setVideoUrl(composited);
+      toast.success("เสร็จแล้ว!");
+    } catch (err) {
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว");
+        markError("ยกเลิกโดยผู้ใช้");
+      } else if (!handleMissingKey(err, "runAvatarPipeline")) {
+        const msg = friendlyError(err);
+        toast.error(msg);
+        markError(msg);
+      }
+    } finally {
+      abortRef.current = false;
+      abortControllerRef.current = null;
+      setRunning(false);
+    }
+  }
+
+  // ── Partial re-run from a specific step ──────────────────────────
+
+  async function rerunFrom(step: keyof StepState) {
+    if (running) {
+      // Abort current run immediately, then start fresh
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      setRenderPopupOpen(false);
+      setRenderProgress(0);
+      setRenderProgressError(null);
+      setRunning(false);
+      setPreRenderUrl("");
+      setVideoUrl("");
+      // Small delay to let state settle before restarting
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    // Always reset render progress and stale video URLs before starting a new run
+    setRenderProgress(0);
+    setRenderProgressError(null);
+    setPreRenderUrl("");
+    setVideoUrl("");
+
+    // Pre-check stock keys if step involves stock fetch
+    if (step === "fetchStock" || step === "keywords" || step === "transcribe") {
+      try {
+        const keysRes = await fetch("/api/user/api-keys");
+        if (keysRes.ok) {
+          const keys = await keysRes.json();
+          const needPexels  = stockSource === "pexels" || stockSource === "both";
+          const needPixabay = stockSource === "pixabay" || stockSource === "both";
+          const canUsePexels = !needPexels || !!keys.pexelsKey;
+          const canUsePixabay = !needPixabay || !!keys.pixabayKey;
+          if (!canUsePexels && !canUsePixabay) {
+            setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: step });
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    setVideoUrl("");
+
+    try {
+      let kws = pipe.current.keywords ?? [];
+      let stocks = getActiveStocks();
+      let voice = pipe.current.voiceUrl ?? "";
+      let scCaps = editedSceneCaptions.length > 0 ? editedSceneCaptions : (pipe.current.sceneCaptions ?? []);
+      let durMs = pipe.current.audioDurationMs ?? 0;
+      let cfg = pipe.current.config;
+      let rendered = pipe.current.renderedVideoUrl ?? "";
+
+      const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
+
+      // Helper: per-subtitle stock fetch (same logic as runAll) — reused across re-run cases
+      async function rerunPerSubtitleStock(caps: Caption[]) {
+        if (caps.length === 0) return;
+        const N2 = caps.length;
+        const subTexts2 = caps.map(c => c.text);
+        const audioDurSec2 = (pipe.current.audioDurationMs ?? 60000) / 1000;
+        const sceneKwPool = (pipe.current.keywords ?? []);
+
+        let perSubKws2: string[] = [];
+        setStep("keywords", "running", `mapping ${N2} ซับ → keyword...`);
+        let perSubKeywordError2: unknown = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const r = await fetch("/api/videos/extract-keywords", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ scenes: subTexts2, script: cleanScript, perSubtitle: true, preferredLLM: preferredLLMRef.current }),
+            });
+            const d = await r.json();
+            if (!r.ok) {
+              perSubKeywordError2 = new ApiCallError("Keywords", d, r.status);
+              continue;
+            }
+            const got: string[] = d.keywords ?? [];
+            if (got.length >= N2) { perSubKws2 = got; break; }
+            if (got.length > perSubKws2.length) perSubKws2 = got;
+          } catch (e) { perSubKeywordError2 = e; continue; }
+        }
+        if (perSubKws2.length === 0 && perSubKeywordError2) throw perSubKeywordError2;
+        setStep("keywords", "done", `${perSubKws2.length} keywords (1/ซับ)`);
+        if (perSubKws2.length < N2) {
+          const padded = [...perSubKws2];
+          const fallbackPool2 = padded.length > 0 ? padded : ["lifestyle scene"];
+          while (padded.length < N2) padded.push(fallbackPool2[padded.length % fallbackPool2.length]);
+          perSubKws2 = padded;
+        }
+        if (perSubKws2.length === 0) { setStep("fetchStock", "done", "ไม่สามารถ mapping keyword ได้"); return; }
+
+        pipe.current.keywords = perSubKws2;         // sync so generate-config uses correct count
+        pipe.current.sceneClipCounts = perSubKws2.map(() => 1);
+        setStep("fetchStock", "running", `ดึง + rank stock ${perSubKws2.length} คลิป...`);
+
+        const clipAtIdx2 = new Map<number, StockVideo>();
+        let missingIdxs2 = perSubKws2.map((_, i) => i);
+        for (let attempt = 0; attempt < 3 && missingIdxs2.length > 0; attempt++) {
+          try {
+            const kwsToFetch2   = missingIdxs2.map(i => perSubKws2[i]);
+            const textsToFetch2 = missingIdxs2.map(i => subTexts2[i] ?? perSubKws2[i]);
+            const altsToFetch2  = missingIdxs2.map(i => pipe.current.keywordAlternatives?.[i] ?? []);
+            const r = await fetch("/api/videos/fetch-stock", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                keywords: kwsToFetch2,
+                keywordAlternatives: altsToFetch2,
+                subtitleTexts: textsToFetch2,
+                download: true, totalDurationSec: audioDurSec2, stockSource,
+                overrideClipCount: perSubKws2.length,
+                perSubtitleMode: true,
+                preferredLLM: preferredLLMRef.current,
+                ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+              }),
+            });
+            if (!r.ok) {
+              const errData = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+              if (errData.missingKey) {
+                throw new ApiCallError("Stock", errData);
+              }
+              break;
+            }
+            const d = await r.json();
+            const fetched: StockVideo[] = (d.results ?? []).filter((x: StockVideo) => x.localUrl || x.videoUrl);
+            // Map by keyword text to avoid position mismatch when server returns fewer results
+            const kwToOrigIdx2 = new Map<string, number>();
+            missingIdxs2.forEach(i => { if (!kwToOrigIdx2.has(perSubKws2[i])) kwToOrigIdx2.set(perSubKws2[i], i); });
+            for (const clip of fetched) {
+              const origIdx = kwToOrigIdx2.get(clip.keyword);
+              if (origIdx !== undefined && !clipAtIdx2.has(origIdx)) clipAtIdx2.set(origIdx, clip);
+            }
+            missingIdxs2 = missingIdxs2.filter(i => !clipAtIdx2.has(i));
+          } catch (fetchErr2) {
+            if (fetchErr2 instanceof ApiCallError) throw fetchErr2;
+            break;
+          }
+        }
+
+        const allFetched2 = [...new Map([...clipAtIdx2.values()].map(c => [c.pexelsId, c])).values()];
+        const ordered2: StockVideo[] = [];
+        const usedInOrder2 = new Set<number>();
+        let bfIdx = 0;
+        for (let i = 0; i < N2; i++) {
+          const c = clipAtIdx2.get(i);
+          if (c) {
+            ordered2.push(c);
+            usedInOrder2.add(c.pexelsId);
+          } else if (allFetched2.length > 0) {
+            let found2 = false;
+            for (let j = 0; j < allFetched2.length; j++) {
+              const candidate = allFetched2[(bfIdx + j) % allFetched2.length];
+              if (!usedInOrder2.has(candidate.pexelsId)) {
+                ordered2.push(candidate);
+                usedInOrder2.add(candidate.pexelsId);
+                bfIdx = (bfIdx + j + 1) % allFetched2.length;
+                found2 = true;
+                break;
+              }
+            }
+            if (!found2) { ordered2.push(allFetched2[bfIdx % allFetched2.length]); bfIdx++; }
+          }
+        }
+
+        if (ordered2.length > 0) {
+          pipe.current.stockVideos = ordered2;
+          setPipeStockVideos(ordered2);
+          setExcludedClipIds(new Set());
+          setStep("fetchStock", "done", `ได้ ${ordered2.length} คลิป (LLM ranked)`);
+          fetch("/api/stocks").then(r => r.json()).then(d => { if (d.count !== undefined) setStockCacheInfo(d); }).catch(() => {});
+        } else {
+          setStep("fetchStock", "done", "ไม่พบ stock");
+        }
+      }
+
+      // keywords/tts/transcribe re-runs stop after transcribe — user must review captions then hit Generate
+      if (step === "keywords") {
+        kws = await runKeywords();
+        if (isDirectMode) {
+          voice = avatarDirectUrl.trim();
+          pipe.current.voiceUrl = voice;
+          setStep("tts", "skip", "ข้าม (Direct URL mode)");
+        } else {
+          voice = await runTts();
+        }
+        if (abortRef.current) throw new Error("__ABORTED__");
+        const { sceneCaptions: sc1 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc1);
+        await rerunPerSubtitleStock(sc1);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+      } else if (step === "fetchStock") {
+        // Re-fetch stock for current captions with LLM ranking
+        const caps = editedSceneCaptions.length > 0 ? editedSceneCaptions : (pipe.current.sceneCaptions ?? []);
+        if (caps.length > 0) {
+          await rerunPerSubtitleStock(caps);
+        } else {
+          // No captions yet — fall back to scene-based stock
+          if (!kws.length) kws = await runKeywords();
+          stocks = await runFetchStock(kws);
+        }
+        stocks = getActiveStocks();
+        cfg = await runConfig(stocks, voice, durMs, scCaps, false);
+        const url1 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url1); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
+      } else if (step === "tts") {
+        if (isDirectMode) {
+          voice = avatarDirectUrl.trim();
+          pipe.current.voiceUrl = voice;
+          setStep("tts", "skip", "ข้าม (Direct URL mode)");
+        } else {
+          voice = await runTts();
+        }
+        if (abortRef.current) throw new Error("__ABORTED__");
+        const { sceneCaptions: sc2 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc2);
+        await rerunPerSubtitleStock(sc2);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+      } else if (step === "transcribe") {
+        const { sceneCaptions: sc3 } = await runTranscribe(voice);
+        setEditedSceneCaptions(sc3);
+        await rerunPerSubtitleStock(sc3);
+        toast.success("เสร็จ — ตรวจสอบซับแล้วกด Generate Video");
+      } else if (step === "config") {
+        cfg = await runConfig(stocks, voice, durMs, scCaps, false);
+        const url2 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url2); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
+      } else if (step === "render") {
+        cfg = await runConfig(stocks, voice, durMs, scCaps, false);
+        const url3 = await runRender(cfg);
+        if (!useAvatar) { await saveToGallery(url3); toast.success("เสร็จแล้ว!"); }
+        else toast.success("Render เสร็จ — เช็คตำแหน่ง Avatar แล้วกด 'สร้าง Avatar'");
+      } else if (step === "avatar") {
+        const avUrl = await runAvatar(voice);
+        const composited = await runComposite(rendered, avUrl);
+        setVideoUrl(composited);
+          toast.success("เสร็จแล้ว!");
+      } else if (step === "composite") {
+        if (!avatarGreenUrl) throw new Error("ยังไม่มี Avatar — ต้อง run avatar ก่อน");
+        const composited = await runComposite(rendered, avatarGreenUrl);
+        setVideoUrl(composited);
+          toast.success("เสร็จแล้ว!");
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === "__SUPERSEDED__") return; // newer job took over, ignore silently
+      if ((err instanceof Error && err.message === "__ABORTED__") || (err instanceof Error && err.name === "AbortError")) {
+        toast("หยุดการทำงานแล้ว");
+        markError("ยกเลิกโดยผู้ใช้");
+      } else if (!handleMissingKey(err, step)) {
+        const msg = friendlyError(err);
+        toast.error(msg);
+        markError(msg);
+      }
+    } finally {
+      abortRef.current = false;
+      abortControllerRef.current = null;
+      setRunning(false);
+    }
+  }
+
+  // Sync mutable refs so debounced callbacks always use fresh values
+  rerunFromRef.current = rerunFrom;
+  runningRef.current = running;
+
+  const isDirectMode = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
+  const isVideoOnly = !useAvatar;
+  const STEP_ORDER: (keyof StepState)[] = ["tts","transcribe","keywords","fetchStock","config","render","avatar","avatarTail","composite"]
+    .filter(k => {
+      if (isVideoOnly && (k === "avatar" || k === "avatarTail" || k === "composite")) return false;
+      if (!isVideoOnly && isDirectMode && (k === "avatar" || k === "avatarTail")) return false;
+      if (k === "avatarTail" && avatarTiming !== "bookend-both") return false;
+      return true;
+    }) as (keyof StepState)[];
+  const STEP_DISPLAY: Record<keyof StepState, string> = {
+    keywords: "Keyword Extract (LLM)",
+    fetchStock: "Stock Video Fetch",
+    tts: "Voice Generate (TTS)",
+    transcribe: "Subtitle Sync (STT)",
+    config: "Render Config",
+    render: "Remotion Render",
+    avatar: "Avatar Generate (HeyGen)",
+    avatarTail: "Avatar Tail Generate (HeyGen)",
+    composite: "Video Composite (FFmpeg)",
+  };
+
+  if (plan !== "PRO" && plan !== "BUSINESS") return null; // LOADING หรือ FREE — ไม่ render อะไรเลย ไม่มีแวบ
+
+  return (
+    <div className="ve-no-padding flex flex-1 flex-col overflow-hidden min-h-0">
+      {renderPopupOpen && (
+        <div key={renderPopupKey} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="rounded-2xl shadow-2xl w-[min(90vw,22rem)] p-6 flex flex-col items-center gap-4"
+            style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-4xl font-bold text-white tabular-nums">{renderProgress}%</span>
+              <span className="text-sm" style={{ color: renderProgressError ? "hsl(0 80% 65%)" : renderProgress >= 100 ? "hsl(142 72% 55%)" : "rgba(255,255,255,0.45)" }}>
+                {renderProgressError ? "Render error" : renderProgress >= 100 ? "เสร็จแล้ว! ✓" : "Rendering..."}
+              </span>
+            </div>
+            <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "hsl(0 0% 100% / 0.05)" }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${renderProgress}%`,
+                  background: renderProgressError
+                    ? "hsl(0 80% 50%)"
+                    : renderProgress >= 100
+                    ? "linear-gradient(90deg, hsl(190 100% 50%), hsl(142 72% 50%))"
+                    : "linear-gradient(90deg, hsl(220 100% 55%), hsl(190 100% 50%))",
+                }}
+              />
+            </div>
+            {renderProgressError ? (
+              <p className="text-xs text-red-400 text-center">{renderProgressError}</p>
+            ) : renderProgress >= 100 ? (
+              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.35)" }}>วิดีโอพร้อมแล้ว — กด Close เพื่อดูผลลัพธ์</p>
+            ) : (
+              <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.3)" }}>กรุณารอจนเสร็จ อย่าปิดหน้านี้</p>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (renderProgress >= 100 || renderProgressError) {
+                  setRenderPopupOpen(false);
+                } else {
+                  abortRef.current = true;
+                  abortControllerRef.current?.abort();
+                  stopRenderPollRef.current?.();
+                  setRenderPopupOpen(false);
+                }
+              }}
+              className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+              style={{ background: "hsl(0 0% 100% / 0.05)", color: "rgba(255,255,255,0.5)", border: "1px solid hsl(0 0% 100% / 0.08)" }}
+            >
+              {renderProgressError || renderProgress >= 100 ? "Close" : "Cancel"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {missingKey && (
+        <ApiKeyModal
+          keyType={missingKey.type}
+          onClose={() => {
+            setMissingKey(null);
+            abortRef.current = true;
+            abortControllerRef.current?.abort();
+            setRunning(false);
+            markError("ยกเลิกโดยผู้ใช้");
+          }}
+          onSaved={() => {
+            const step = missingKey.retryStep;
+            setMissingKey(null);
+            if (step === "runAll") runAll();
+            else if (step === "runGenerate") runGenerate();
+            else if (step === "runAvatarPipeline") runAvatarPipeline();
+            else rerunFromRef.current(step as keyof StepState);
+          }}
+        />
+      )}
+
+      {showClearCacheDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowClearCacheDialog(false); }}>
+          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
+            <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(0 0% 100% / 0.05)" }}>
+              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <p className="text-sm" style={{ color: "hsl(240 5% 70%)" }}>
+                ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
+              </p>
+              <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(240 5% 80%)" }}>
+                <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
+                <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
+              </ol>
+            </div>
+            <div className="px-5 py-4 flex gap-3" style={{ borderTop: "1px solid hsl(0 0% 100% / 0.05)" }}>
+              <button
+                className="flex-1 rounded-lg py-2 text-sm font-medium"
+                style={{ background: "hsl(0 0% 100% / 0.08)", color: "hsl(240 5% 70%)" }}
+                onClick={() => setShowClearCacheDialog(false)}>
+                ปิด
+              </button>
+              <button
+                className="flex-1 rounded-lg py-2 text-sm font-semibold text-white"
+                style={{ background: "hsl(14 90% 55%)" }}
+                onClick={async () => {
+                  setShowClearCacheDialog(false);
+                  try {
+                    await fetch("/api/stocks", { method: "DELETE" });
+                  } catch {}
+                  pipe.current = {};
+                  toast.success("ล้าง Cache แล้ว — กด Run ได้เลย");
+                }}>
+                ล้าง Cache แล้วรันใหม่
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* eslint-disable-next-line @next/next/no-page-custom-font */}
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700;800&family=Kanit:wght@700;900&family=Prompt:wght@600;700&family=Mitr:wght@400;600&family=Noto+Sans+Thai:wght@400;700;900&family=K2D:wght@400;700;800&family=Charm:wght@400;700&family=IBM+Plex+Sans+Thai:wght@400;600;700&family=Bai+Jamjuree:wght@600;700&family=Krub:wght@600;700&family=Pridi:wght@600;700&family=Chonburi&family=Itim&display=swap" />
+
+      <div className="sv-dark flex h-full overflow-hidden sv-bg">
+        <div className="flex-1 overflow-y-auto px-3 sm:px-5 pt-4 pb-8 space-y-4">
+
+          {/* ── Page header ── */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ background: "linear-gradient(135deg, hsl(190 100% 40% / 0.2), hsl(230 100% 55% / 0.15))", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+                <Video className="h-4 w-4 text-cyan-400" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-sm font-bold text-white leading-none">Video Creator</h1>
+                <p className="text-[9px] text-white/30 mt-0.5 hidden sm:block">AI-powered pipeline · TTS + Stock + Avatar + Subtitles</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {running && (
+                <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1" style={{ background: "hsl(190 100% 50% / 0.08)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+                  <Loader2 className="h-3 w-3 animate-spin text-cyan-400" />
+                  <span className="text-[10px] font-semibold text-cyan-400">Running...</span>
+                </div>
+              )}
+              {preRenderUrl && !running && (
+                <div className="flex items-center gap-1.5 rounded-full px-2.5 py-1" style={{ background: "hsl(142 72% 29% / 0.15)", border: "1px solid hsl(142 72% 29% / 0.3)" }}>
+                  <CheckCircle2 className="h-3 w-3 text-green-400" />
+                  <span className="text-[10px] font-semibold text-green-400">Ready</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── All inputs: 2-column layout ── */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+
+            {/* LEFT column: Content + ElevenLabs */}
+            <div className="flex flex-col gap-4">
+
+              {/* 1 — Content */}
+              <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+                <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                  <h2 className="flex items-center gap-2 text-sm font-bold text-white">
+                    <FileText className="h-4 w-4 text-cyan-400" />Script
+                  </h2>
+                </div>
+                <div className="p-4 space-y-2">
+                  <Textarea value={script} onChange={e => setScript(e.target.value)}
+                    placeholder={"ป้อนบทภาษาไทยที่นี่..."}
+                    rows={9}
+                    className="resize-none text-sm text-white placeholder:text-white/20 border-0 focus-visible:ring-0"
+                    style={{ background: "var(--sv-card2)", borderRadius: "0.75rem", border: "1px solid var(--sv-border)" }}
+                  />
+                </div>
+              </div>
+
+              {/* 1.5 — Stock Source */}
+              <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+                <div className="flex items-center justify-between gap-2 px-5 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                  <div className="flex items-center gap-2">
+                    <Film className="h-4 w-4 text-cyan-400" />
+                    <h2 className="text-sm font-bold text-white">Stock Source</h2>
+                  </div>
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-white/25">
+                    {stockSource === "both" ? "Pexels + Pixabay" : stockSource === "pexels" ? "Pexels only" : "Pixabay only"}
+                  </span>
+                </div>
+                <div className="p-3">
+                  <div className="flex gap-1 p-1 rounded-xl" style={{ background: "var(--sv-input)" }}>
+                    {(["pexels","pixabay","both"] as const).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => setStockSource(v)}
+                        disabled={running}
+                        className="flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all disabled:opacity-40"
+                        style={
+                          stockSource === v
+                            ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                            : { color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }
+                        }
+                      >
+                        {v === "both" ? "Both" : v === "pexels" ? "Pexels" : "Pixabay"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 2 — Voice Model */}
+              <div className="rounded-2xl overflow-hidden relative" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+                <div className="flex items-center gap-2 px-5 py-3.5" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                  <Mic className="h-4 w-4 text-cyan-400" />
+                  <h2 className="text-sm font-bold text-white">Voice Model</h2>
+                </div>
+                <div className="p-4 space-y-3">
+                  {/* Provider toggle */}
+                  <div className="flex gap-1 p-1 rounded-xl" style={{ background: "var(--sv-input)" }}>
+                    {(["elevenlabs", "gemini"] as const).map(p => (
+                      <button key={p} onClick={() => handleSetTtsProvider(p)}
+                        className="flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all"
+                        style={ttsProvider === p
+                          ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                          : { color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }}>
+                        {p === "elevenlabs" ? "ElevenLabs" : "Google Gemini"}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* ElevenLabs: Voice ID input */}
+                  {ttsProvider === "elevenlabs" && (
+                    <>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Voice ID</p>
+                      <Input value={voiceId} onChange={e => handleSetVoiceId(e.target.value)} placeholder="e.g. 9lvkfodgodpjgdf"
+                        className="text-sm text-white font-mono border-0 focus-visible:ring-0 h-10"
+                        style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}
+                      />
+                      <div className="rounded-lg px-3 py-2.5 flex items-center gap-3" style={{ background: "hsl(190 100% 50% / 0.05)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
+                        <Mic className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                        <p className="text-[11px] text-white/40 font-mono flex-1">{voiceId || "— ยังไม่ได้ใส่ Voice ID"}</p>
+                        <button
+                          disabled={!voiceId.trim() || voicePreviewLoading}
+                          onClick={async () => {
+                            setVoicePreviewLoading(true);
+                            try {
+                              const res = await fetch("/api/videos/tts", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceId }),
+                              });
+                              const data = await res.json();
+                              if (res.ok) {
+                                const url = data.voiceUrl ?? data.url ?? data.audioUrl;
+                                if (url) new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`).play();
+                              } else {
+                                const keyType = detectMissingKeyType(data);
+                                if (keyType) { setMissingKey({ type: keyType, retryStep: "tts" }); }
+                                else toast.error(data.error ?? "Preview voice ไม่สำเร็จ");
+                              }
+                            } catch { toast.error("Preview voice ไม่สำเร็จ"); }
+                            finally { setVoicePreviewLoading(false); }
+                          }}
+                          className="flex items-center gap-1 text-[9px] font-bold text-cyan-400/70 hover:text-cyan-300 disabled:opacity-30 transition-colors shrink-0">
+                          {voicePreviewLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                          Preview
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Gemini: voice dropdown */}
+                  {ttsProvider === "gemini" && (
+                    <>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Gemini Voice</p>
+                      <div className="relative">
+                        <select
+                          value={geminiVoiceName}
+                          onChange={e => handleSetGeminiVoiceName(e.target.value)}
+                          className="w-full h-10 px-3 pr-8 rounded-lg text-sm text-white font-medium appearance-none cursor-pointer"
+                          style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)", outline: "none" }}>
+                          {GEMINI_VOICES.map(v => (
+                            <option key={v.id} value={v.id} style={{ background: "#1a1a2e" }}>
+                              {v.label} — {v.gender}, {v.style}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
+                      </div>
+                      {/* Selected voice info + preview */}
+                      {(() => {
+                        const v = GEMINI_VOICES.find(x => x.id === geminiVoiceName);
+                        return v ? (
+                          <div className="rounded-lg px-3 py-2.5 flex items-center gap-3" style={{ background: "hsl(190 100% 50% / 0.05)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
+                            <Mic className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] font-bold text-white/70">{v.label}</p>
+                              <p className="text-[9px] text-white/30">{v.gender} · {v.style}</p>
+                            </div>
+                            <button
+                              disabled={voicePreviewLoading}
+                              onClick={async () => {
+                                setVoicePreviewLoading(true);
+                                try {
+                                  const res = await fetch("/api/videos/tts-gemini", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ text: "สวัสดีครับ นี่คือตัวอย่างเสียง", voiceName: geminiVoiceName }),
+                                  });
+                                  const data = await res.json();
+                                  if (res.ok) {
+                                    const url = data.voiceUrl;
+                                    if (url) new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`).play();
+                                  } else {
+                                    const keyType = detectMissingKeyType(data);
+                                    if (keyType) { setMissingKey({ type: keyType, retryStep: "tts" }); }
+                                    else toast.error(data.error ?? "Preview voice ไม่สำเร็จ");
+                                  }
+                                } catch { toast.error("Preview voice ไม่สำเร็จ"); }
+                                finally { setVoicePreviewLoading(false); }
+                              }}
+                              className="flex items-center gap-1 text-[9px] font-bold text-cyan-400/70 hover:text-cyan-300 disabled:opacity-30 transition-colors shrink-0">
+                              {voicePreviewLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                              Preview
+                            </button>
+                          </div>
+                        ) : null;
+                      })()}
+                    </>
+                  )}
+
+                {/* Disabled overlay when Direct URL avatar mode is active */}
+                {avatarInputMode === "direct" && avatarDirectUrl.trim() && (
+                  <div className="absolute inset-0 rounded-2xl flex flex-col items-center justify-center gap-1.5 cursor-not-allowed"
+                    style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border2)" }}>
+                    <Mic className="h-5 w-5 text-white/15" />
+                    <p className="text-[11px] font-bold text-white/25">ปิด — Direct URL Mode</p>
+                    <p className="text-[9px] text-white/15">ใช้เสียงจาก Avatar Video</p>
+                  </div>
+                )}
+                </div>
+              </div>
+
+              {/* 3 — Subtitle Style */}
+              <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+                {/* Header */}
+                <div className="flex items-center gap-2 px-5 py-3.5" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                  <Captions className="h-4 w-4 text-cyan-400" />
+                  <h2 className="text-sm font-bold text-white">Subtitle Style</h2>
+                </div>
+
+                {/* Two-column body: controls left, preview right */}
+                <div className="flex flex-col gap-3 lg:flex-row lg:gap-0">
+
+                  {/* Controls */}
+                  <div className="flex-1 p-5 space-y-4 min-w-0">
+
+                    {/* Style Preset */}
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Caption Style</p>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {([
+                          { value: "stroke",        label: "มาตรฐาน" },
+                          { value: "plain",         label: "มินิมอล" },
+                          { value: "bold-shadow",   label: "ตัวหนาเด่น" },
+                          { value: "neon-green",    label: "นีออนเขียว" },
+                          { value: "karaoke-box",   label: "คาราโอเกะ" },
+                          { value: "pop-outline",   label: "ป็อปไลน์" },
+                          { value: "pastel",        label: "พาสเทล" },
+                          { value: "classic-yellow",label: "คลาสสิก" },
+                          { value: "hormozi",       label: "Hormozi" },
+                          { value: "beast",         label: "Beast" },
+                          { value: "box-white",     label: "กล่องขาว" },
+                          { value: "box-yellow",    label: "กล่องเหลือง" },
+                          { value: "retro",         label: "เรโทร" },
+                          { value: "sharp-outline", label: "เส้นขอบชัด" },
+                          { value: "news",          label: "ข่าว" },
+                          { value: "neon-red",      label: "ไฟแดง" },
+                          { value: "neon-blue",     label: "ไฟฟ้า" },
+                        ] as const).map(s => (
+                          <button key={s.value} onClick={() => setSubStylePreset(s.value as SubPreset)}
+                            className="flex flex-col items-center gap-1 rounded-xl py-2 px-1 transition-all"
+                            style={subStylePreset === s.value
+                              ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.5)" }
+                              : { background: "var(--sv-card2)", border: "1px solid var(--sv-border)" }
+                            }>
+                            <div className="w-full h-9 flex items-center justify-center rounded-lg overflow-hidden"
+                              style={{ background: "rgba(0,0,0,0.45)" }}>
+                              {renderSubEl("ตัวอย่าง", subColor, subKaraokeColor, false, s.value as SubPreset, subFontFamily, Math.round(subFontSize * 0.38), subFontWeight, 1)}
+                            </div>
+                            <span className="text-[9px] font-medium leading-tight text-center"
+                              style={{ color: subStylePreset === s.value ? "hsl(190 100% 65%)" : "color-mix(in srgb, var(--sv-text) 55%, transparent)" }}>
+                              {s.label}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Text Effect */}
+                    <div className="space-y-2">
+                      <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
+                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Text Effect</p>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(() => {
+                          // Effects that override text rendering — don't work with locked presets
+                          const LOCKED_PRESETS = ["classic-yellow","hormozi","beast","neon-green","neon-red","neon-blue","pastel","retro","box-white","box-yellow","news"];
+                          const isLocked = LOCKED_PRESETS.includes(subStylePreset);
+                          const INLINE_EFFECTS = ["glow-pulse","highlight","karaoke","typewriter"] as const;
+                          return ([
+                          { value: "pop",        label: "ป๊อป",      desc: "กระโดดเข้า" },
+                          { value: "bounce",     label: "เด้ง",      desc: "สปริงกระดอน" },
+                          { value: "fade",       label: "เฟด",       desc: "ค่อยๆ ปรากฏ" },
+                          { value: "quick",      label: "สั้น",      desc: "กระชับรวดเร็ว" },
+                          { value: "glow-pulse", label: "เรืองแสง",  desc: "กะพริบเรืองแสง" },
+                          { value: "slide",      label: "สไตล์",     desc: "เลื่อนขึ้นจากล่าง" },
+                          { value: "flip",       label: "หมุนชุม",   desc: "พลิกมุมมอง" },
+                          { value: "highlight",  label: "ไฮไลท์",    desc: "แถบไฮไลท์" },
+                          { value: "karaoke",    label: "คาราโอเกะ", desc: "ทีละคำ" },
+                          { value: "typewriter", label: "พิมพ์ดีด",  desc: "ทีละตัว" },
+                          ] as const).filter(ef => !isLocked || !INLINE_EFFECTS.includes(ef.value as typeof INLINE_EFFECTS[number]));
+                        })().map(ef => (
+                          <EffectPreviewCard
+                            key={ef.value}
+                            effect={ef.value}
+                            label={ef.label}
+                            desc={ef.desc}
+                            color={subColor}
+                            accentColor={subKaraokeColor}
+                            fontFamily={subFontFamily}
+                            selected={subTextEffect === ef.value}
+                            onClick={() => setSubTextEffect(ef.value)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+
+                    {/* Font + Weight — same row */}
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Font</p>
+                      <select value={subFontFamily} onChange={e => setSubFontFamily(e.target.value)}
+                        className="w-full rounded-xl px-3 py-2.5 text-sm text-white outline-none cursor-pointer"
+                        style={{ background: "var(--sv-card2)", border: "1px solid var(--sv-border)", fontFamily: subFontFamily }}>
+                        {[
+                          { label: "Kanit — หนา ชัด",           value: "'Kanit', sans-serif" },
+                          { label: "Sarabun — อ่านง่าย",        value: "'Sarabun', sans-serif" },
+                          { label: "Prompt — โมเดิร์น",         value: "'Prompt', sans-serif" },
+                          { label: "Mitr — TikTok",              value: "'Mitr', sans-serif" },
+                          { label: "Noto Sans Thai",             value: "'Noto Sans Thai', sans-serif" },
+                          { label: "K2D — กลม น่ารัก",          value: "'K2D', sans-serif" },
+                          { label: "Bai Jamjuree — คมชัด",      value: "'Bai Jamjuree', sans-serif" },
+                          { label: "Krub — เรียบร้อย",           value: "'Krub', sans-serif" },
+                          { label: "Pridi — สง่างาม",            value: "'Pridi', serif" },
+                          { label: "Chonburi — ตัวหนา display",  value: "'Chonburi', sans-serif" },
+                          { label: "Itim — น่ารัก ลายมือ",       value: "'Itim', cursive" },
+                          { label: "IBM Plex Sans Thai",         value: "'IBM Plex Sans Thai', sans-serif" },
+                        ].map(f => <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Font Weight */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Weight</p>
+                        <span className="text-xs font-mono text-cyan-400">{subFontWeight}</span>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1">
+                        {([300,400,500,600,700,800,900] as const).map(w => (
+                          <button key={w} onClick={() => setSubFontWeight(w)}
+                            className="rounded-lg py-1.5 text-[11px] font-bold transition-all text-center"
+                            style={subFontWeight === w
+                              ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 65%)", border: "1px solid hsl(190 100% 50% / 0.45)" }
+                              : { background: "var(--sv-card2)", color: "color-mix(in srgb, var(--sv-text) 55%, transparent)", border: "1px solid var(--sv-border)" }
+                            }>{w}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Colors */}
+                    {(() => {
+                      // Presets that hard-code their own color — Text Color has no effect
+                      const LOCKED_COLOR_PRESETS = ["classic-yellow","hormozi","beast","neon-green","neon-red","neon-blue","pastel","retro","box-white","box-yellow","news"];
+                      // Presets where Hook/CTA accent color has no effect (color is locked)
+                      // Presets that fully own their color — accent color has no visible effect
+                      const LOCKED_ACCENT_PRESETS = ["neon-green","neon-red","neon-blue","pastel","classic-yellow","hormozi","beast","box-white","box-yellow","retro","news","karaoke-box"];
+                      const isAccentLocked = LOCKED_ACCENT_PRESETS.includes(subStylePreset);
+                      const effectUsesAccent = !isAccentLocked && (subTextEffect === "highlight" || subTextEffect === "karaoke");
+                      const hookUsesAccent   = !isAccentLocked;
+                      const showAccent = effectUsesAccent || hookUsesAccent;
+
+                      const accentLabel = subTextEffect === "highlight" ? "Accent Color (Highlight) · Hook & CTA"
+                        : subTextEffect === "karaoke"   ? "Accent Color (Karaoke) · Hook & CTA"
+                        : "Accent Color · Hook & CTA";
+
+                      return ([
+                        ...(LOCKED_COLOR_PRESETS.includes(subStylePreset)
+                          ? [] : [{ label: "Text Color", val: subColor, set: setSubColor }]),
+                        ...(showAccent
+                          ? [{ label: accentLabel, val: subKaraokeColor, set: setSubKaraokeColor }] : []),
+                      ] as { label: string; val: string; set: (v: string) => void }[]);
+                    })().map(({ label, val, set }) => (
+                      <div key={label} className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40 shrink-0">{label}</p>
+                          <span className="text-xs font-mono font-bold truncate" style={{ color: val }}>{val}</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {["#FFFFFF","#FFE500","#FF4444","#00CFFF","#FF9500","#00FF87","#FF00FF","#000000"].map(c => (
+                            <button key={c} onClick={() => set(c)}
+                              className="rounded-lg transition-all shrink-0"
+                              style={{
+                                width: 28, height: 28,
+                                background: c,
+                                border: val === c ? "2px solid hsl(190 100% 60%)" : "2px solid transparent",
+                                boxShadow: val === c ? "0 0 0 1px hsl(190 100% 60% / 0.5)" : "inset 0 0 0 1px rgba(255,255,255,0.1)",
+                                outline: "none",
+                              }} />
+                          ))}
+                          <label className="relative flex items-center cursor-pointer shrink-0">
+                            <input type="color" value={val} onChange={e => set(e.target.value)}
+                              className="absolute opacity-0 w-0 h-0" />
+                            <span className="flex items-center justify-center rounded-lg text-xs font-bold text-white/50"
+                              style={{ width: 28, height: 28, background: "var(--sv-input)", border: "1.5px dashed rgba(255,255,255,0.2)" }}>
+                              +
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Size + Position */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Size</p>
+                          <span className="text-xs font-mono text-cyan-400">{subFontSize}px</span>
+                        </div>
+                        <Slider value={[subFontSize]} onValueChange={([v]) => setSubFontSize(v)} min={40} max={120} step={2} />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">Position</p>
+                          <span className="text-xs font-mono text-cyan-400">{subPosition}%</span>
+                        </div>
+                        <Slider value={[subPosition]} onValueChange={([v]) => setSubPosition(v)} min={10} max={92} step={1} />
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Subtitle preview panel */}
+                  <div className="shrink-0 flex flex-col items-center justify-start gap-3 border-t lg:border-t-0 lg:border-l p-4 lg:w-72"
+                    style={{ borderColor: "var(--sv-border)" }}>
+                    <p className="text-xs font-semibold uppercase tracking-widest text-white/30 self-start">Preview</p>
+
+                    {/* Mock phone frame */}
+                    <div className="relative rounded-2xl overflow-hidden w-full max-w-[200px] lg:max-w-[260px] mx-auto"
+                      style={{ aspectRatio: "9/16", background: "#000", border: "2px solid hsl(0 0% 100% / 0.1)", boxShadow: "0 8px 32px rgba(0,0,0,0.6)" }}>
+                      {/* Background */}
+                      <div className="absolute inset-0" style={{ background: "linear-gradient(160deg, #0d1f3c 0%, #070e1c 50%, #020408 100%)" }} />
+                      {/* Fake scene lines */}
+                      <div className="absolute top-[12%] left-4 right-4 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.07)" }} />
+                      <div className="absolute top-[17%] left-6 right-10 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.04)" }} />
+                      <div className="absolute top-[22%] left-4 right-6 h-1 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }} />
+                      <div className="absolute inset-x-0 bottom-0 h-2/5" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.6), transparent)" }} />
+
+                      {/* Subtitle preview — body + hook */}
+                      {(() => {
+                        const previewW = 260;
+                        const previewH = previewW * 16 / 9;
+                        const scale = previewW / 1080;
+                        const lineH = Math.round(subFontSize * scale * 1.6);
+                        const topPx = (subPosition / 100) * previewH - lineH;
+                        const isSingleColor = subStylePreset === "karaoke-box";
+                        // highlight uses accentColor as background bar, not text color — don't show Hook line
+                        const showHookLine = !isSingleColor && subTextEffect !== "highlight";
+                        const hookTop = showHookLine ? topPx - lineH * 0.1 : topPx + lineH * 0.45;
+                        return (
+                          <>
+                            {showHookLine && (
+                              <div className="absolute left-0 right-0 flex justify-center pointer-events-none"
+                                style={{ top: topPx - lineH * 0.1, height: lineH, alignItems: "center", display: "flex", paddingLeft: "5%", paddingRight: "5%" }}>
+                                {renderSubEl("Hook & CTA", subKaraokeColor, subKaraokeColor, true, subStylePreset, subFontFamily, subFontSize, subFontWeight, scale)}
+                              </div>
+                            )}
+                            {/* Body line */}
+                            <div className="absolute left-0 right-0 flex justify-center pointer-events-none"
+                              style={{ top: showHookLine ? topPx + lineH * 1.0 : hookTop, height: lineH, alignItems: "center", display: "flex", paddingLeft: "5%", paddingRight: "5%" }}>
+                              {renderSubEl("Body text", subColor, subKaraokeColor, false, subStylePreset, subFontFamily, subFontSize, subFontWeight, scale)}
+                            </div>
+                          </>
+                        );
+                      })()}
+
+                      {/* Position guide line */}
+                      <div className="absolute left-3 right-3 pointer-events-none"
+                        style={{ top: `${subPosition}%`, height: 1, background: "rgba(99,179,237,0.25)", borderRadius: 1 }} />
+                    </div>
+
+                    {/* Legend */}
+                    {subTextEffect !== "karaoke" && subTextEffect !== "highlight" && !["karaoke-box"].includes(subStylePreset) && (
+                      <div className="flex gap-3 items-center">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subColor }} />
+                          <span className="text-[10px] text-white/35">หลัก</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-2.5 rounded-full ring-1 ring-white/10" style={{ background: subKaraokeColor }} />
+                          <span className="text-[10px] text-white/35">ไฮไลท์</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT column: Avatar + Subtitle */}
+            <div className="flex flex-col gap-4 h-full">
+
+              {/* 4 — Avatar */}
+              <div className="rounded-2xl overflow-hidden flex-1" style={{
+                background: "var(--sv-card)",
+                border: `1px solid ${useAvatar ? "var(--sv-border)" : "var(--sv-border)"}`,
+              }}>
+                {/* Header row — mode switcher */}
+                <div className="flex items-center justify-between px-5 py-3.5" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                  <h2 className="flex items-center gap-2 text-sm font-bold text-white">
+                    <User className={cn("h-4 w-4", useAvatar ? "text-cyan-400" : "text-white/25")} />
+                    <span className={useAvatar ? "text-white" : "text-white/40"}>Avatar</span>
+                    {!useAvatar && (
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide"
+                        style={{ background: "var(--sv-input)", color: "hsl(240 4% 45%)" }}>
+                        off
+                      </span>
+                    )}
+                  </h2>
+                  {/* Mode switcher: Video Only ↔ Avatar Overlay */}
+                  <div className="flex gap-1 rounded-lg p-0.5" style={{ background: "var(--sv-card2)", border: "1px solid var(--sv-border)" }}>
+                    <button onClick={() => { setUseAvatar(false); setAvatarDirectUrl(""); setAvatarInputMode("generate"); }}
+                      className="rounded-md px-3 py-1 text-[10px] font-bold transition-all"
+                      style={!useAvatar
+                        ? { background: "var(--sv-border2)", color: "hsl(0 0% 80%)" }
+                        : { background: "transparent", color: "color-mix(in srgb, var(--sv-text) 45%, transparent)" }}>
+                      Video Only
+                    </button>
+                    <button onClick={() => setUseAvatar(true)}
+                      className="rounded-md px-3 py-1 text-[10px] font-bold transition-all"
+                      style={useAvatar
+                        ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 65%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                        : { background: "transparent", color: "color-mix(in srgb, var(--sv-text) 45%, transparent)" }}>
+                      + Avatar
+                    </button>
+                  </div>
+                </div>
+                <div className="p-4 space-y-3">
+
+                {/* Video Only placeholder */}
+                {!useAvatar && (
+                  <div className="flex flex-col items-center justify-center gap-2 rounded-xl py-6"
+                    style={{ background: "var(--sv-card2)", border: "1px dashed var(--sv-border)" }}>
+                    <Film className="h-7 w-7 text-white/10" />
+                    <p className="text-xs font-semibold text-white/25">Video Only Mode</p>
+                    <p className="text-[10px] text-white/15">Pipeline จะ Render วิดีโอโดยไม่ใส่ Avatar</p>
+                    <p className="text-[10px] text-white/15">Phase 3 จะถูกข้ามอัตโนมัติ</p>
+                  </div>
+                )}
+
+                {/* Avatar content — only when enabled */}
+                {useAvatar && (<div className="space-y-3">
+
+                {/* Mode toggle: Generate vs Direct URL */}
+                <div className="flex gap-1.5 rounded-lg p-1" style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
+                  {(["generate", "direct"] as const).map(mode => (
+                    <button key={mode} onClick={() => setAvatarInputMode(mode)}
+                      className={cn("flex-1 rounded-md px-3 py-1.5 text-[11px] font-semibold transition-all")}
+                      style={avatarInputMode === mode
+                        ? { background: "hsl(190 100% 50% / 0.12)", color: "hsl(190 100% 65%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                        : { background: "transparent", color: "color-mix(in srgb, var(--sv-text) 50%, transparent)", border: "1px solid transparent" }
+                      }>
+                      {mode === "generate" ? "Generate (HeyGen)" : "Direct URL"}
+                    </button>
+                  ))}
+                </div>
+
+                {avatarInputMode === "generate" ? (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Heygen Avatar ID</p>
+                    <Input value={avatarId} onChange={e => handleSetAvatarId(e.target.value)} placeholder="ID: josh_lite_2023..."
+                      className="text-xs font-mono text-white border-0 focus-visible:ring-0"
+                      style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
+                    {(avatarPreviewUrl || avatarName) && (
+                      <div className="flex items-center gap-2 rounded-lg px-2.5 py-2" style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
+                        {avatarPreviewUrl && <img src={avatarPreviewUrl} className="h-8 w-8 rounded-md object-cover shrink-0" />}
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-white/80 truncate">{avatarName}</p>
+                          <p className="text-[9px] font-bold text-green-400">● VERIFIED STABLE</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Step 1: URL / Upload */}
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Video URL or Upload</p>
+                      <div className="relative flex items-center">
+                        <Input value={avatarDirectUrl} onChange={e => { setAvatarDirectUrl(e.target.value); setDirectCompositeUrl(""); }}
+                          placeholder="https://... หรือวาง URL วิดีโอ"
+                          className="text-xs font-mono text-white border-0 focus-visible:ring-0 pr-7"
+                          style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }} />
+                        {avatarDirectUrl && (
+                          <button
+                            type="button"
+                            onClick={() => { setAvatarDirectUrl(""); setDirectCompositeUrl(""); }}
+                            className="absolute right-2 flex items-center justify-center rounded-full h-4 w-4 transition-opacity hover:opacity-100 opacity-50"
+                            title="ล้างข้อความ">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3 text-white/60"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        )}
+                      </div>
+                      <label className="flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer transition-colors"
+                        style={{ background: "var(--sv-input)", border: "1px dashed var(--sv-border2)" }}>
+                        <input type="file" accept="video/mp4,video/mov,video/webm,.mp4,.mov,.webm" className="hidden"
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            const fd = new FormData();
+                            fd.append("file", f);
+                            const res = await fetch("/api/videos/upload-avatar", { method: "POST", body: fd });
+                            const data = await res.json();
+                            if (data.url) { setAvatarDirectUrl(data.url); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }
+                          }} />
+                        <span className="text-[10px] text-white/35">อัปโหลดไฟล์วิดีโอ (mp4/mov)</span>
+                      </label>
+                      <div className="flex items-center gap-1.5 px-1">
+                        <span className="w-3 h-3 rounded-sm shrink-0 border border-green-500/40" style={{ background: "#00FF00" }} />
+                        <span className="text-[9px] text-white/30">ใช้พื้นหลัง Green Screen สี <span className="font-mono text-green-400/70">#00FF00</span> เพื่อผลลัพธ์ที่ดีที่สุด</span>
+                      </div>
+                    </div>
+
+                    {/* Preview video */}
+                    {avatarDirectUrl.trim() && (
+                      <video src={avatarDirectUrl.trim()} controls className="w-full rounded-lg" style={{ maxHeight: "min(220px, 48vh)", background: "#000" }} />
+                    )}
+
+
+                    {/* Composite + Download */}
+                    {directCompositeUrl && (
+                      <div className="space-y-2">
+                        <video src={directCompositeUrl} controls className="w-full rounded-lg" style={{ maxHeight: "min(300px, 60vh)", background: "#000" }} />
+                        <a href={directCompositeUrl} download
+                          className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold text-white"
+                          style={{ background: "linear-gradient(135deg, hsl(142 72% 35%), hsl(160 80% 40%))" }}>
+                          <Download className="h-3.5 w-3.5" /> Download MP4
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Avatar Timing — only relevant when generating via HeyGen */}
+                {avatarInputMode === "generate" && <div className="space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">Avatar Timing</p>
+                  <div className="flex gap-2">
+                    {(["full", "bookend", "bookend-both"] as const).map(mode => (
+                      <button key={mode} onClick={() => setAvatarTiming(mode)}
+                        className={cn("flex-1 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all border-0 outline-none",
+                          avatarTiming === mode ? "text-white" : "text-white/35 hover:text-white/60"
+                        )}
+                        style={avatarTiming === mode
+                          ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                          : { background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }
+                        }>
+                        {mode === "full" ? "ตลอดคลิป" : mode === "bookend" ? "ต้นคลิปเท่านั้น" : "ต้นและท้ายคลิป"}
+                      </button>
+                    ))}
+                  </div>
+                  {(avatarTiming === "bookend" || avatarTiming === "bookend-both") && (
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-3 py-2.5"
+                      style={{ background: "hsl(190 100% 50% / 0.05)", border: "1px solid hsl(190 100% 50% / 0.15)" }}>
+                      <span className="text-xs text-white/40 shrink-0">ต้นคลิป</span>
+                      <input
+                        type="number" min={1} max={30} value={avatarBookendSecs}
+                        onChange={e => setAvatarBookendSecs(Math.max(1, Math.min(30, Number(e.target.value))))}
+                        className="w-14 rounded-md px-2 py-1 text-sm font-mono text-center text-cyan-400 border-0 outline-none focus:ring-1 focus:ring-cyan-500/40"
+                        style={{ background: "var(--sv-card2)" }}
+                      />
+                      <span className="text-xs text-white/40">วินาที</span>
+                      {avatarTiming === "bookend-both" && (<>
+                        <span className="text-xs text-white/40 shrink-0">ท้ายคลิป</span>
+                        <input
+                          type="number" min={1} max={30} value={avatarTailSecs}
+                          onChange={e => setAvatarTailSecs(Math.max(1, Math.min(30, Number(e.target.value))))}
+                          className="w-14 rounded-md px-2 py-1 text-sm font-mono text-center text-cyan-400 border-0 outline-none focus:ring-1 focus:ring-cyan-500/40"
+                          style={{ background: "var(--sv-card2)" }}
+                        />
+                        <span className="text-xs text-white/40">วินาที</span>
+                      </>)}
+                    </div>
+                  )}
+                </div>}
+
+                <div className="flex flex-col gap-4 lg:flex-row">
+                  {/* Canvas (position editor) — generate mode only */}
+                   {avatarInputMode === "generate" && <div ref={posCanvasRef} className="relative w-full max-w-[260px] shrink-0 rounded-lg overflow-hidden cursor-crosshair select-none"
+                    style={{ width: "min(260px, 100%)", aspectRatio: "720/1280", background: "#080e1c", border: "1px solid var(--sv-border2)" }}
+                    onMouseDown={(e) => { setIsDragging(true); updatePosFromPointer(e.clientX, e.clientY); }}
+                    onMouseMove={(e) => { if (isDragging) updatePosFromPointer(e.clientX, e.clientY); }}
+                    onMouseUp={() => setIsDragging(false)} onMouseLeave={() => setIsDragging(false)}
+                    onTouchStart={(e) => { setIsDragging(true); updatePosFromPointer(e.touches[0].clientX, e.touches[0].clientY); }}
+                    onTouchMove={(e) => { if (isDragging) updatePosFromPointer(e.touches[0].clientX, e.touches[0].clientY); }}
+                    onTouchEnd={() => setIsDragging(false)}
+                  >
+                    {/* Generate mode: grid + labels + avatar preview */}
+                    <>
+                      {preRenderUrl && <video src={preRenderUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" muted loop autoPlay playsInline onError={() => setPreRenderUrl("")} />}
+                      {[25,50,75].map(p => <div key={`gv${p}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${p}%`, width: 1, background: p===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
+                      {[25,50,75].map(p => <div key={`gh${p}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: `${p}%`, height: 1, background: p===50?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.05)" }} />)}
+                      <div className="absolute top-1.5 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
+                        X: {avatarOffsetX.toFixed(2)}<br />Y: {avatarOffsetY.toFixed(2)}<br />SCALE: {avatarScale.toFixed(2)}
+                      </div>
+                      {avatarPreviewUrl && (
+                        <div className="absolute pointer-events-none overflow-hidden" style={{ width: `${avatarScale*62}%`, aspectRatio: "15/16", left: `${50+avatarOffsetX*50}%`, bottom: `${(0.09-avatarOffsetY)*50}%`, transform: "translateX(-50%)", outline: "1px solid rgba(99,179,237,0.4)" }}>
+                          <img src={avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit: "cover", objectPosition: "center 130%" }} />
+                        </div>
+                      )}
+                      {showGreenRef && avatarGreenUrl && <video src={avatarGreenUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" style={{ mixBlendMode: "screen", opacity: 0.85 }} muted loop autoPlay playsInline />}
+                      <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left: `${50+avatarOffsetX*50}%`, bottom: `${(-0.05-avatarOffsetY)*50}%`, transform: "translate(-50%, 50%)" }} />
+                    </>
+                  </div>}
+                  {/* Sliders — generate mode only */}
+                  {avatarInputMode === "generate" && (
+                  <div className="flex-1 space-y-3 min-w-0">
+                    {([
+                      { label: "Offset X", value: avatarOffsetX, onChange: setAvatarOffsetX, min: -2, max: 2, step: 0.01 },
+                      { label: "Offset Y", value: avatarOffsetY, onChange: setAvatarOffsetY, min: -2, max: 2, step: 0.01 },
+                      { label: "Scale",    value: avatarScale,   onChange: setAvatarScale,   min: 0.1, max: 5.0, step: 0.01 },
+                    ] as const).map(({ label, value, onChange, min, max, step }) => (
+                      <div key={label} className="space-y-1">
+                        <div className="flex justify-between">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-white/30">{label}</p>
+                          <span className="text-[10px] font-mono text-cyan-400">{value.toFixed(2)}</span>
+                        </div>
+                        <Slider value={[value]} onValueChange={([v]) => onChange(v)} min={min} max={max} step={step} />
+                      </div>
+                    ))}
+                    <button onClick={() => { setAvatarOffsetX(0); setAvatarOffsetY(0.13); setAvatarScale(2.02); }}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white/45 transition-colors hover:text-white/70"
+                      style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
+                      <RotateCcw className="h-3.5 w-3.5" /> Reset
+                    </button>
+                  </div>
+                  )}
+                </div>
+              </div>)}{/* end useAvatar */}
+                </div>{/* end p-4 */}
+              </div>{/* end Avatar card */}
+
+              {/* Background Removal panel */}
+              {useAvatar && (
+                <BackgroundRemovalPanel
+                  chromaSimilarity={chromaSimilarity}
+                  setChromaSimilarity={setChromaSimilarity}
+                  chromaBlend={chromaBlend}
+                  setChromaBlend={setChromaBlend}
+                />
+              )}
+
+              {/* Music panel */}
+              <MusicPanel
+                bgmEnabled={bgmEnabled}
+                setBgmEnabled={setBgmEnabled}
+                bgmVolume={bgmVolume}
+                setBgmVolume={setBgmVolume}
+                bgmFile={bgmFile}
+                setBgmFile={setBgmFile}
+                bgmUploading={bgmUploading}
+                setBgmUploading={setBgmUploading}
+                systemTracks={systemTracks}
+              />
+
+            </div>{/* end RIGHT column */}
+          </div>{/* end 2-col grid */}
+
+          {/* ── Execution Pipeline ── */}
+          <div className="rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+
+            {/* Header — sticky so Stop button is always reachable while pipeline runs */}
+            <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 px-4 py-3" style={{ background: "var(--sv-card)", borderBottom: "1px solid var(--sv-border)" }}>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.22)" }}>
+                  <Layers className="h-3.5 w-3.5 text-cyan-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-white text-sm leading-none">Live Status</p>
+                  <p className="text-[10px] text-white/30 mt-0.5 hidden sm:block">กดแต่ละขั้นตอนเพื่อรันหรือรันใหม่</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {stockCacheInfo && stockCacheInfo.count > 0 && (
+                  <button onClick={clearStockCache} disabled={clearingCache}
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40"
+                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
+                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
+                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                    <span className="hidden sm:inline ml-1">Cache</span> {stockCacheInfo.sizeMb}MB
+                  </button>
+                )}
+                {running && (
+                  <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
+                    className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, hsl(0 80% 45%), hsl(20 90% 45%))" }}>
+                    <Square className="h-3 w-3 fill-white" />
+                    <span className="hidden sm:inline ml-1">Stop</span>
+                  </button>
+                )}
+                <button onClick={runAll} disabled={running || !script.trim()}
+                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold text-white transition-all hover:opacity-90 disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+                  {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                  Run All
+                </button>
+              </div>
+            </div>
+
+            {/* Phase rows */}
+            <div className="p-3 space-y-1.5">
+
+              {/* Phase 1 — Prepare */}
+              <PhaseRow
+                phaseNum={1}
+                label="Prepare"
+                color="cyan"
+                steps={[
+                  { key: "tts" as const,        label: "Voice",      icon: Mic,       canRun: !!script.trim() },
+                  { key: "transcribe" as const, label: "Subtitles",  icon: Captions,  canRun: !!pipe.current.voiceUrl },
+                  { key: "keywords" as const,   label: "Keywords",   icon: Wand2,     canRun: !!pipe.current.voiceUrl },
+                  { key: "fetchStock" as const, label: "Stock",      icon: Film,      canRun: !!script.trim() },
+                ]}
+                stepStates={steps}
+                running={running}
+                onRerun={rerunFrom}
+                action={
+                  <button onClick={runAll} disabled={running || !script.trim()}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+                    {running && ["keywords","tts","transcribe","fetchStock"].includes(Object.entries(steps).find(([,v])=>v==="running")?.[0]??"") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                    Run
+                  </button>
+                }
+              />
+
+              {/* Phase 2 — Render */}
+              <PhaseRow
+                phaseNum={2}
+                label="Render"
+                color="blue"
+                steps={[
+                  { key: "config", label: "Config",    icon: Settings2, canRun: !!pipe.current.captions?.length },
+                  { key: "render", label: "Render",    icon: Video,     canRun: !!pipe.current.config },
+                ]}
+                stepStates={steps}
+                running={running}
+                onRerun={rerunFrom}
+                action={
+                  <button onClick={runGenerate} disabled={running || !editedSceneCaptions.length}
+                    className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, hsl(220 100% 50%), hsl(190 100% 38%))" }}>
+                    {running && (steps.config === "running" || steps.render === "running") ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+                    Render
+                  </button>
+                }
+              />
+
+              {/* Phase 3 — Avatar + Composite */}
+              {useAvatar && (
+                <PhaseRow
+                  phaseNum={3}
+                  label="Avatar"
+                  color="purple"
+                  steps={
+                    avatarTiming === "bookend-both" && avatarInputMode === "generate"
+                      ? [
+                          { key: "avatar",     label: `Avatar ต้น (${avatarBookendSecs}s)`, icon: User,   canRun: !!pipe.current.voiceUrl },
+                          { key: "avatarTail", label: `Avatar ท้าย (${avatarTailSecs}s)`,  icon: User,   canRun: !!pipe.current.voiceUrl },
+                          { key: "composite",  label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl && !!avatarTailGreenUrl },
+                        ]
+                      : [
+                          { key: "avatar",    label: "Avatar",    icon: User,   canRun: !!pipe.current.voiceUrl && useAvatar },
+                          { key: "composite", label: "Composite", icon: Layers, canRun: !!preRenderUrl && !!avatarGreenUrl },
+                        ]
+                  }
+                  stepStates={steps}
+                  running={running}
+                  onRerun={(key) => {
+                    if (key === "avatarTail") {
+                      runAvatarTailGen();
+                    } else if (key === "avatar" && avatarTiming === "bookend-both" && avatarInputMode === "generate") {
+                      setRunning(true);
+                      abortRef.current = false;
+                      abortControllerRef.current = new AbortController();
+                      runAvatar(pipe.current.voiceUrl ?? "").catch(e => {
+                        if (!handleMissingKey(e, "runAvatarPipeline")) { const m = friendlyError(e); toast.error(m); markError(m); }
+                      }).finally(() => { abortRef.current = false; abortControllerRef.current = null; setRunning(false); });
+                    } else {
+                      rerunFrom(key);
+                    }
+                  }}
+                  action={
+                    <button
+                      onClick={runAvatarPipeline}
+                      disabled={running}
+                      title={
+                        avatarTiming === "bookend-both" && avatarInputMode === "generate" && (!avatarGreenUrl || !avatarTailGreenUrl)
+                          ? "Gen Avatar ต้นและท้ายให้ครบก่อน (หรือกดชิปซ้ายก่อน)"
+                          : ""
+                      }
+                      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
+                      style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 38%))" }}>
+                      {running && (steps.avatar === "running" || steps.avatarTail === "running" || steps.composite === "running")
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <Play className="h-3 w-3" />}
+                      Run
+                    </button>
+                  }
+                />
+              )}
+
+
+            </div>
+          </div>
+
+          {/* ── Bottom panels ── */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 items-start">
+
+            {/* Col 1 — Live Status (narrow) — full width on mobile (order-last), col on md+ */}
+            <div className="md:col-span-2 lg:col-span-3 rounded-2xl overflow-hidden" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+              <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                <Settings2 className="h-3.5 w-3.5 text-cyan-400" />
+                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Live Status</p>
+              </div>
+              <div className="p-2 space-y-0.5">
+              <div className="space-y-0.5">
+                {STEP_ORDER.map((key, idx) => {
+                  const status = steps[key];
+                  const isDone = status === "done";
+                  const isErr = status === "error";
+                  const isRun = status === "running";
+
+                  return (
+                    <div key={key} className="rounded-lg overflow-hidden"
+                      style={{ background: status !== "idle" ? "var(--sv-input)" : "transparent" }}>
+
+                      {/* Row header */}
+                      <div className="flex items-center gap-2 px-2.5 py-1.5">
+                        <div className={cn("flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-bold border",
+                          isDone ? "border-green-500/40 bg-green-500/10 text-green-400" :
+                          isRun  ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-400" :
+                          isErr  ? "border-red-500/40 bg-red-500/10 text-red-400" :
+                          "border-white/8 bg-white/4 text-white/20"
+                        )}>
+                          {isRun ? <Loader2 className="h-2 w-2 animate-spin" /> :
+                           isDone ? <CheckCircle2 className="h-2 w-2" /> :
+                           isErr  ? "✗" : idx + 1}
+                        </div>
+                        <p className={cn("flex-1 text-[10px] font-medium",
+                          isDone ? "text-white/70" : isRun ? "text-white" : isErr ? "text-red-400" : "text-white/22"
+                        )}>{idx + 1}. {STEP_DISPLAY[key]}</p>
+
+                        {isErr && !running && (
+                          <button onClick={() => rerunFrom(key)}
+                            className="text-[9px] font-bold text-red-400 hover:text-red-300 uppercase shrink-0 px-1.5 py-0.5 rounded"
+                            style={{ background: "hsl(0 84% 60% / 0.1)" }}>RETRY</button>
+                        )}
+                        {isDone && !running && (
+                          <button onClick={() => rerunFrom(key)}
+                            className="text-[9px] font-bold text-white/25 hover:text-cyan-400 uppercase shrink-0">↺ rerun</button>
+                        )}
+                      </div>
+
+                      {/* Inline output — always visible when done or error */}
+                      {(isDone || isErr) && (
+                        <div className="px-2.5 pb-2.5 space-y-2">
+
+                          {/* Error message — friendly, no code */}
+                          {isErr && logs[key] && (
+                            <div className="rounded-lg px-3 py-2.5 flex items-start gap-2"
+                              style={{ background: "hsl(0 84% 60% / 0.08)", border: "1px solid hsl(0 84% 60% / 0.2)" }}>
+                              <span className="text-red-400 shrink-0 mt-0.5">⚠</span>
+                              <p className="text-xs text-red-300 leading-relaxed flex-1">{logs[key]}</p>
+                            </div>
+                          )}
+
+                          {/* keywords → tag chips */}
+                          {key === "keywords" && keywords.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {keywords.map((kw, i) => (
+                                <span key={i} className="rounded px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                                  style={{ background: "hsl(190 100% 50% / 0.1)", color: "hsl(190 100% 60%)", border: "1px solid hsl(190 100% 50% / 0.2)" }}>
+                                  {kw}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* fetchStock → source + clip count + grid clip picker */}
+                          {key === "fetchStock" && (
+                            <div className="space-y-3">
+
+                              {/* Row 1: Source + clip count inline */}
+                              <div className="flex items-center gap-2">
+                                {/* Source pills — filter grid only, does NOT change fetch source */}
+                                <div className="flex gap-1">
+                                  {([
+                                    { v: "both",    label: "All",     color: "hsl(190 100% 50%)" },
+                                    { v: "pexels",  label: "Pexels",  color: "hsl(142 72% 50%)" },
+                                    { v: "pixabay", label: "Pixabay", color: "hsl(262 80% 65%)" },
+                                  ] as const).map(({ v, label, color }) => (
+                                    <button key={v} onClick={() => setGridFilter(v)}
+                                      className="rounded-lg px-2.5 py-1 text-[10px] font-bold transition-all"
+                                      style={gridFilter === v
+                                        ? { background: `${color}20`, color, border: `1px solid ${color}55` }
+                                        : { background: "var(--sv-input)", color: "color-mix(in srgb, var(--sv-text) 45%, transparent)", border: "1px solid var(--sv-border2)" }
+                                      }>{label}</button>
+                                  ))}
+                                </div>
+                                <div className="flex-1" />
+                              </div>
+
+                              {/* Grid clip picker — video thumbnails */}
+                              {pipeStockVideos.length > 0 && (() => {
+                                // Filter grid by selected tab (All/Pexels/Pixabay) — independent from fetch source
+                                const visibleClips = gridFilter === "pexels"
+                                  ? pipeStockVideos.filter(v => v.pexelsId < 9_000_000)
+                                  : gridFilter === "pixabay"
+                                  ? pipeStockVideos.filter(v => v.pexelsId >= 9_000_000)
+                                  : pipeStockVideos;
+                                const activeCnt = pipeStockVideos.filter(v => !excludedClipIds.has(v.pexelsId)).length;
+                                const limit = targetClipCount > 0 ? targetClipCount : pipeStockVideos.length;
+                                const atLimit = targetClipCount > 0 && activeCnt >= targetClipCount;
+                                return (
+                                  <div className="space-y-2">
+                                    {/* Header bar */}
+                                    <div className="flex items-center justify-between px-0.5">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-semibold text-white/60">
+                                          เลือกแล้ว
+                                          <span className="font-mono ml-1" style={{ color: atLimit ? "hsl(45 100% 60%)" : "hsl(190 100% 60%)" }}>
+                                            {activeCnt}
+                                          </span>
+                                          {targetClipCount > 0 && <span className="text-white/30">/{targetClipCount}</span>}
+                                        </span>
+                                        {atLimit && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                            style={{ background: "hsl(45 100% 50% / 0.15)", color: "hsl(45 100% 65%)", border: "1px solid hsl(45 100% 50% / 0.3)" }}>
+                                            ครบแล้ว
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => {
+                                            // Smart-select per scene:
+                                            // pipeStockVideos is ordered by scene (sceneClipCounts windows).
+                                            // Within each scene's window, pick the clip whose keyword best matches that scene's text.
+                                            const counts = pipe.current.sceneClipCounts ?? [];
+                                            const sceneTexts = pipe.current.scenes ?? [];
+
+                                            // Build scene windows with their corresponding scene text
+                                            type SceneWindow = { sceneIdx: number; clips: typeof pipeStockVideos };
+                                            const sceneWindows: SceneWindow[] = [];
+                                            let off = 0;
+                                            if (counts.length > 0) {
+                                              counts.forEach((cnt, si) => {
+                                                sceneWindows.push({ sceneIdx: si, clips: pipeStockVideos.slice(off, off + cnt) });
+                                                off += cnt;
+                                              });
+                                            } else {
+                                              // Fallback: no sceneClipCounts → treat all clips as one scene
+                                              sceneWindows.push({ sceneIdx: 0, clips: pipeStockVideos });
+                                            }
+
+                                            // Score a clip's keyword against its scene text (word overlap)
+                                            function scoreClip(clip: typeof pipeStockVideos[0], si: number): number {
+                                              const text = (sceneTexts[si] ?? sceneTexts.join(" ")).toLowerCase();
+                                              return clip.keyword.toLowerCase().split(/\s+/).filter(w => w && text.includes(w)).length;
+                                            }
+
+                                            // From each scene window, rank clips by match score → best first
+                                            const rankedWindows = sceneWindows.map(w => ({
+                                              ...w,
+                                              ranked: [...w.clips].sort((a, b) => scoreClip(b, w.sceneIdx) - scoreClip(a, w.sceneIdx)),
+                                            }));
+
+                                            const keep = new Set<number>();
+
+                                            if (limit >= rankedWindows.length) {
+                                              rankedWindows.forEach(w => { if (w.ranked[0]) keep.add(w.ranked[0].pexelsId); });
+                                              let extra = limit - keep.size;
+                                              let pickIdx = 1;
+                                              while (extra > 0) {
+                                                let added = 0;
+                                                for (const w of rankedWindows) {
+                                                  if (extra <= 0) break;
+                                                  const clip = w.ranked[pickIdx];
+                                                  if (clip && !keep.has(clip.pexelsId)) {
+                                                    keep.add(clip.pexelsId);
+                                                    extra--; added++;
+                                                  }
+                                                }
+                                                if (added === 0) break;
+                                                pickIdx++;
+                                              }
+                                            } else {
+                                              const step = rankedWindows.length / limit;
+                                              for (let i = 0; i < limit; i++) {
+                                                const si = Math.min(Math.round(i * step), rankedWindows.length - 1);
+                                                const clip = rankedWindows[si].ranked[0];
+                                                if (clip) keep.add(clip.pexelsId);
+                                              }
+                                            }
+
+                                            setExcludedClipIds(new Set(pipeStockVideos.filter(v => !keep.has(v.pexelsId)).map(v => v.pexelsId)));
+                                          }}
+                                          className="text-[9px] text-cyan-400/60 hover:text-cyan-400 transition-colors font-medium">
+                                          เลือก {limit < pipeStockVideos.length ? `${limit} อัน` : "ทั้งหมด"}
+                                        </button>
+                                        <button onClick={() => setExcludedClipIds(new Set())}
+                                          className="text-[9px] text-white/25 hover:text-white/50 transition-colors">ทั้งหมด</button>
+                                        <button onClick={() => setExcludedClipIds(new Set(pipeStockVideos.map(v => v.pexelsId)))}
+                                          className="text-[9px] text-white/25 hover:text-white/50 transition-colors">ล้าง</button>
+                                      </div>
+                                    </div>
+
+                                    {/* 3-col video grid */}
+                                    <div className="grid grid-cols-3 gap-1.5 max-h-80 overflow-y-auto pr-0.5">
+                                      {visibleClips.map((v, i) => {
+                                        const excluded = excludedClipIds.has(v.pexelsId);
+                                        const selected = !excluded;
+                                        const isPixabay = v.pexelsId >= 9_000_000;
+                                        const previewUrl = v.localUrl || v.videoUrl;
+                                        // Grey out + disable if at limit and this clip is not selected
+                                        const disabled = atLimit && excluded;
+                                        return (
+                                          <div key={i}
+                                            className="relative rounded-xl overflow-hidden cursor-pointer group/clip transition-all"
+                                            style={{
+                                              aspectRatio: "9/16",
+                                              border: selected
+                                                ? "2px solid hsl(190 100% 55%)"
+                                                : "2px solid hsl(0 0% 100% / 0.08)",
+                                              opacity: disabled ? 0.3 : excluded ? 0.5 : 1,
+                                              cursor: disabled ? "not-allowed" : "pointer",
+                                            }}
+                                            onClick={() => !disabled && toggleClip(v.pexelsId)}
+                                          >
+                                            {/* Video preview */}
+                                            {previewUrl ? (
+                                              <video
+                                                src={previewUrl}
+                                                muted loop playsInline
+                                                className="absolute inset-0 w-full h-full object-cover"
+                                                onMouseEnter={e => { const el = e.currentTarget as HTMLVideoElement; el.play().catch(() => {}); }}
+                                                onMouseLeave={e => { const el = e.currentTarget as HTMLVideoElement; el.pause(); el.currentTime = 0; }}
+                                              />
+                                            ) : (
+                                              <div className="absolute inset-0" style={{ background: "var(--sv-input)" }} />
+                                            )}
+                                            {/* Dark overlay when not selected */}
+                                            {excluded && <div className="absolute inset-0 bg-black/50" />}
+                                            {/* Selection checkmark */}
+                                            {selected && (
+                                              <div className="absolute top-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded-full"
+                                                style={{ background: "hsl(190 100% 50%)", boxShadow: "0 0 8px hsl(190 100% 50% / 0.6)" }}>
+                                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                                  <path d="M2 5l2.5 2.5L8 3" stroke="#000" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                </svg>
+                                              </div>
+                                            )}
+                                            {/* Number badge */}
+                                            <div className="absolute top-1.5 left-1.5 flex h-4 w-4 items-center justify-center rounded-full text-[8px] font-black"
+                                              style={{ background: "rgba(0,0,0,0.65)", color: selected ? "hsl(190 100% 70%)" : "hsl(0 0% 100% / 0.4)" }}>
+                                              {i+1}
+                                            </div>
+                                            {/* Bottom info bar */}
+                                            <div className="absolute bottom-0 left-0 right-0 px-1.5 py-1"
+                                              style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), transparent)" }}>
+                                              <div className="flex items-center justify-between gap-1">
+                                                <span className="text-[8px] font-medium truncate text-white/70">{v.keyword}</span>
+                                                <div className="flex items-center gap-1 shrink-0">
+                                                  <span className="text-[7px] font-bold px-0.5 rounded"
+                                                    style={isPixabay
+                                                      ? { background: "hsl(262 80% 40% / 0.8)", color: "hsl(262 80% 80%)" }
+                                                      : { background: "hsl(142 72% 25% / 0.8)", color: "hsl(142 72% 65%)" }
+                                                    }>{isPixabay ? "B" : "P"}</span>
+                                                  <span className="text-[7px] font-mono text-white/40">{v.duration?.toFixed(0)}s</span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+
+                          {/* tts → audio player */}
+                          {key === "tts" && ttsUrl && (
+                            <audio src={ttsUrl} controls className="w-full h-8"
+                              style={{ colorScheme: "dark", filter: "invert(0.85) hue-rotate(180deg)" }} />
+                          )}
+
+                          {/* transcribe → log */}
+                          {key === "transcribe" && logs.transcribe && (
+                            <p className="text-[10px] font-mono text-white/50 rounded px-2 py-1.5"
+                              style={{ background: "var(--sv-card2)" }}>{logs.transcribe}</p>
+                          )}
+
+                          {/* config → log string */}
+                          {key === "config" && logs.config && (
+                            <p className="text-[10px] font-mono text-white/50 rounded px-2 py-1.5"
+                              style={{ background: "var(--sv-card2)" }}>{logs.config}</p>
+                          )}
+
+                          {/* render → mini video + thumbnail generator */}
+                          {key === "render" && preRenderUrl && steps.render === "done" && (
+                            <div className="space-y-2">
+                              <video src={preRenderUrl} controls className="w-full rounded-lg"
+                                style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }}
+                                onError={() => setPreRenderUrl("")} />
+                              <div className="flex items-center gap-2">
+                              </div>
+                            </div>
+                          )}
+
+                          {/* avatar → mini video */}
+                          {key === "avatar" && avatarGreenUrl && (
+                            <video src={avatarGreenUrl} controls className="w-full rounded-lg"
+                              style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
+                          )}
+
+                          {/* avatarTail → mini video */}
+                          {key === "avatarTail" && avatarTailGreenUrl && (
+                            <video src={avatarTailGreenUrl} controls className="w-full rounded-lg"
+                              style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
+                          )}
+
+                          {/* composite → composite video */}
+                          {key === "composite" && compositePreviewUrl && (
+                            <video src={compositePreviewUrl} controls className="w-full rounded-lg"
+                              style={{ maxHeight: 160, aspectRatio: "9/16", display: "block", margin: "0 auto" }} />
+                          )}
+
+                          {/* log line fallback */}
+                          {logs[key] && !["keywords","tts","transcribe","fetchStock","config","render","avatar","composite"].includes(key) && (
+                            <p className="text-[9px] font-mono text-white/35 break-all">{logs[key]}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              </div>
+            </div>
+
+            {/* Col 2 — Subtitle Review */}
+            <div className="md:col-span-1 lg:col-span-4 flex flex-col gap-4">
+
+            {/* Subtitle Review — edit before generate */}
+            <SubtitleReviewPanel
+              editedSceneCaptions={editedSceneCaptions}
+              setEditedSceneCaptions={setEditedSceneCaptions}
+              activeCaptionIdx={activeCaptionIdx}
+              onReset={() => setEditedSceneCaptions(pipe.current.sceneCaptions ?? [])}
+            />
+
+            </div>{/* end col-2 */}
+
+            {/* Col 3 — Preview (full height) */}
+            <div className="md:col-span-1 lg:col-span-5 rounded-2xl overflow-hidden flex flex-col min-h-[280px] lg:min-h-[600px]" style={{ background: "var(--sv-card)", border: "1px solid var(--sv-border)" }}>
+              <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ borderBottom: "1px solid var(--sv-border)" }}>
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Preview</p>
+                  {(videoUrl || compositePreviewUrl || preRenderUrl) && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                      style={{ background: "hsl(190 100% 50% / 0.1)", color: "hsl(190 100% 60%)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
+                      {videoUrl ? "Final" : compositePreviewUrl ? "Composite" : "Remotion BG"}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {(videoUrl || compositePreviewUrl || preRenderUrl) ? (
+                <div className="flex flex-col flex-1 min-h-0 p-3 gap-2">
+                  <div className="flex flex-col flex-1 min-h-0">
+                    <div ref={videoContainerRef} className="relative rounded-xl overflow-hidden bg-black flex-1 min-h-[220px] lg:min-h-[420px]">
+                      <video
+                        ref={videoRef}
+                        src={videoUrl || compositePreviewUrl || preRenderUrl}
+                        controls
+                        className="w-full h-full object-contain"
+                        style={{ display: "block" }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 mt-1">
+                    <a
+                      href={videoUrl || compositePreviewUrl || preRenderUrl}
+                      download
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold text-white transition-all hover:opacity-90"
+                      style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
+                      <Download className="h-3.5 w-3.5" /> Download MP4
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center py-12">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full mb-3"
+                    style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
+                    <Play className="h-7 w-7 text-white/12 ml-0.5" />
+                  </div>
+                  <p className="text-xs text-white/25 mb-1">Output will appear here</p>
+                  <p className="text-[9px] text-white/15">หรือวาง path วิดีโอด้านบนเพื่อใส่ซับ</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+
+/* ── PhaseRow component ── */
+type StepKey = "keywords" | "fetchStock" | "tts" | "transcribe" | "config" | "render" | "avatar" | "avatarTail" | "composite";
+
+function PhaseRow({
+  phaseNum, label, color, steps, stepStates, running, onRerun, action, beforeStock,
+}: {
+  phaseNum: number;
+  label: string;
+  color: "cyan" | "blue" | "purple" | "yellow";
+  steps: { key: StepKey; label: string; icon: React.ElementType; canRun: boolean }[];
+  stepStates: StepState;
+  running: boolean;
+  onRerun: (key: StepKey) => void;
+  action: React.ReactNode;
+  beforeStock?: React.ReactNode;
+}) {
+  const colorMap = {
+    cyan:   { bg: "hsl(190 100% 50% / 0.05)", border: "hsl(190 100% 50% / 0.15)", badge: "hsl(190 100% 60%)", badgeBg: "hsl(190 100% 50% / 0.12)" },
+    blue:   { bg: "hsl(220 100% 60% / 0.05)", border: "hsl(220 100% 60% / 0.15)", badge: "hsl(220 100% 70%)", badgeBg: "hsl(220 100% 60% / 0.12)" },
+    purple: { bg: "hsl(252 83% 55% / 0.05)", border: "hsl(252 83% 55% / 0.15)", badge: "hsl(252 83% 75%)", badgeBg: "hsl(252 83% 55% / 0.12)" },
+    yellow: { bg: "hsl(45 100% 50% / 0.05)", border: "hsl(45 100% 50% / 0.15)", badge: "hsl(45 100% 65%)", badgeBg: "hsl(45 100% 50% / 0.12)" },
+  }[color];
+
+  return (
+    <div className="flex items-center gap-3 rounded-xl px-4 py-2.5"
+      style={{ background: colorMap.bg, border: `1px solid ${colorMap.border}` }}>
+      {/* Phase label */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: colorMap.badge }}>P{phaseNum}</span>
+        <span className="text-xs font-semibold text-white/40">{label}</span>
+      </div>
+
+      {/* Step chips */}
+      <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
+        {steps.map(({ key, label: stepLabel, icon: Icon, canRun }, idx) => {
+          const status = stepStates[key as keyof StepState];
+          const isDone = status === "done";
+          const isRun  = status === "running";
+          const isErr  = status === "error";
+          const isSkip = status === "skip";
+          return (
+            <React.Fragment key={key}>
+              {key === "fetchStock" && beforeStock}
+              <button
+                onClick={() => onRerun(key)}
+                disabled={running || (!isDone && !isErr && !canRun)}
+                title={stepLabel}
+                className={cn(
+                  "flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-all disabled:opacity-35 shrink-0",
+                  isDone ? "cursor-pointer hover:opacity-85" :
+                  isErr  ? "cursor-pointer" :
+                  isRun  ? "cursor-default" : "cursor-pointer hover:opacity-80"
+                )}
+                style={{
+                  background: isRun ? "hsl(190 100% 50% / 0.15)" : isDone ? "hsl(142 72% 29% / 0.15)" : isErr ? "hsl(0 84% 60% / 0.12)" : isSkip ? "hsl(45 100% 50% / 0.08)" : "var(--sv-border)",
+                  border: `1px solid ${isRun ? "hsl(190 100% 50% / 0.3)" : isDone ? "hsl(142 72% 29% / 0.35)" : isErr ? "hsl(0 84% 60% / 0.35)" : isSkip ? "hsl(45 100% 50% / 0.25)" : "var(--sv-border2)"}`,
+                  color: isDone ? "hsl(142 72% 55%)" : isRun ? "hsl(190 100% 65%)" : isErr ? "hsl(0 84% 65%)" : isSkip ? "hsl(45 100% 55% / 0.6)" : "rgba(255,255,255,0.35)",
+                }}
+              >
+                {isRun ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> :
+                 isDone ? <CheckCircle2 className="h-2.5 w-2.5" /> :
+                 isErr  ? <RefreshCw className="h-2.5 w-2.5" /> :
+                 <Icon className="h-2.5 w-2.5" />}
+                {stepLabel}
+              </button>
+              {idx < steps.length - 1 && (
+                <span className="text-white/15 shrink-0 text-xs">›</span>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {/* Action button */}
+      <div className="shrink-0">{action}</div>
+    </div>
+  );
+}

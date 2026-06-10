@@ -1,0 +1,110 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Runtime / build cache
+/.tmp
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!deploy/.env.production
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+/src/generated/prisma
+
+# large media files
+/stocks/
+/public/renders/
+
+# database — each environment uses its own file, never share via git
+/prisma/*.db
+/prisma/*.db-journal
+/prisma/*.db-wal
+/prisma/*.db-shm
+*.jpg
+
+# ── Dev-only files that should NOT be deployed to VPS ──────────────
+# Node CPU profiles (created when running with --prof)
+*.cpuprofile
+*.heapsnapshot
+*.heapprofile
+
+# Test / scratch files
+test-*.mjs
+test-*.js
+test-*.txt
+test-*.ts
+scratch-*
+tmp-*
+*.local
+
+# Analysis / planning docs (use git for source, not bundled artifacts)
+pricing-analysis.*
+*-analysis.html
+*-analysis.jpg
+
+# Local UI design mockups (preview only — do NOT bundle into production)
+public/dashboard-designs.html
+public/*-designs.html
+public/*-mockup.html
+
+# Local install helpers — VPS uses its own setup (Linux pm2)
+install-mac.sh
+install-windows.bat
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Skills / agent state (local-only)
+skills-lock.json
+.claude/
+.cursor/
+
+# IDE TS build cache (rebuilds on VPS anyway)
+tsconfig.tsbuildinfo
+
+# Scratch files (verify scripts, ad-hoc screenshots)
+_vc-*
+_verify-*
+
+.superpowers/
