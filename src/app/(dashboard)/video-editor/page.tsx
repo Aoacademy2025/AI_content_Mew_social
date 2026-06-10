@@ -462,6 +462,26 @@ export default function VideoEditorPage() {
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Unmount cleanup ───────────────────────────────────────────────────
+  // SPA navigation away from /video-editor must stop every client-side loop —
+  // เดิม loop พวกนี้รั่วข้ามหน้า (poll ต่อแม้ออกจากหน้าไปแล้ว):
+  // - abortRef = true       → HeyGen 5s for-loops (runAvatar / runAvatarTail) หยุดที่ tick ถัดไป
+  // - abortControllerRef    → ยกเลิก fetch ที่ค้าง + pollJob loops (render/burn) ผ่าน abort chaining
+  // - stopRenderPollRef     → หยุด pollJob loop ที่ active โดยตรง (กันเหนียว)
+  // จงใจไม่ cancel งานฝั่ง server ที่นี่ — การเปลี่ยน semantics ของ
+  // mount-time auto-cancel / beforeunload sendBeacon เป็นงาน Phase 2 PR-9.
+  // (StrictMode dev double-mount ปลอดภัย: ทุก run ตั้ง abortRef = false ใหม่
+  // และ abortControllerRef ถูกสร้างใหม่ต่อ run)
+  useEffect(() => {
+    return () => {
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      stopRenderPollRef.current = null;
+      runningRef.current = false;
+    };
+  }, []);
+
   // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
   // the debounced auto-load effect and the manual "โหลด avatar" button.
   const loadAvatarInfo = useCallback(async (id: string) => {
