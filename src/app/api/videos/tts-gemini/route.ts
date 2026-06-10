@@ -6,10 +6,13 @@ import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import path from "path";
 import fs from "fs";
-import { setGlobalDispatcher, Agent } from "undici";
+import { Agent } from "undici";
 
 // Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
-setGlobalDispatcher(new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 }));
+// for the Gemini TTS call ONLY, via a per-request dispatcher. (Previously this
+// was setGlobalDispatcher, which silently let EVERY fetch in the whole Node
+// process hang up to 10 minutes per phase — design doc §1 root cause 5.)
+const geminiTtsDispatcher = new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 });
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -76,7 +79,9 @@ export async function POST(req: Request) {
             "x-goog-api-key": apiKey,
           },
           body: requestBody,
-        });
+          // undici-specific fetch option — not part of the standard RequestInit type
+          dispatcher: geminiTtsDispatcher,
+        } as RequestInit & { dispatcher: Agent });
 
         if (res.ok) {
           usedModel = model;
