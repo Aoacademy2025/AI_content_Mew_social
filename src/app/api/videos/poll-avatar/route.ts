@@ -40,7 +40,11 @@ export async function POST(req: Request) {
     );
 
     const data = await res.json();
-    console.log("[poll-avatar]", JSON.stringify(data));
+    if (process.env.DEBUG_RENDER === "1") {
+      // Per-poll HeyGen payload dump (~1 line every 3s per active avatar job)
+      // flooded the PM2 logs (414MB error log) — opt in with DEBUG_RENDER=1.
+      console.log("[poll-avatar]", JSON.stringify(data));
+    }
 
     return NextResponse.json({
       status: data.data?.status ?? "unknown",
