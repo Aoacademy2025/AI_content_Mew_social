@@ -2157,61 +2157,17 @@ export default function VideoEditorPage() {
       startedAt: burnActivityStartedAt,
     });
 
-    let burnPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let burnFailedMessage: string | null = null;
-    let resolveBurnUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (burnPollTimer) { clearInterval(burnPollTimer); burnPollTimer = null; }
-    };
-
-    burnPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          if (resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) {
-          burnFailedMessage = d.error;
-          setRenderProgressError(d.error);
-          setStep("burnSubtitles", "error", d.error);
-          stopPoll();
-          return;
-        }
-        const p = Number(d.progress);
-        if (d.queued || d.stage === "queued") {
-          const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", queueText);
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "burning",
-            label: "กำลังฝังซับ",
-            queuePosition: null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 2s checkOnce loop (2 GETs/tick). pollAbort stops it: chained to the
+    // shared AbortController (stopAll / beforeunload) and exposed via
+    // stopRenderPollRef — เดิม burn ไม่เคยลงทะเบียน stop hook เลย ทำให้กด Stop
+    // แล้ว loop ยังวิ่งต่อ; ตอนนี้หยุดได้จริง
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       const fps = 30;
@@ -2296,58 +2252,78 @@ export default function VideoEditorPage() {
 
       const jobId = data.jobId;
       if (!jobId) throw new Error("Burn subtitles: no jobId returned");
-      currentJobId = jobId;
       activeJobIdRef.current = jobId;
 
-      // Check immediately in case server already finished (fast burn or bundle was cached)
-      const checkOnce = async (): Promise<string | null> => {
-        try {
-          // Try progress file first (more reliable, written before in-memory job map)
-          const pr = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          if (pr.ok) {
-            const pd = await pr.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
-            if (pd.videoUrl) return pd.videoUrl;
-            if (pd.error) throw new Error(pd.error);
-          }
-          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
-          if (sd.status === "done" && sd.videoUrl) return sd.videoUrl;
-          if (sd.status === "error") throw new Error(sd.error ?? "Burn subtitles failed");
-        } catch (e) {
-          if (e instanceof Error && e.message && e.message !== "Failed to fetch") throw e;
-        }
-        return null;
-      };
+      // pollJob ยิง fetchOnce ครั้งแรกทันที (tick 0) — ครอบเคส burn เสร็จเร็ว/bundle cache แล้ว
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-      const immediate = await checkOnce();
-      if (immediate) { finalizeBurn(immediate); return; }
-
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveBurnUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (burnFailedMessage) { clearInterval(si); reject(new Error(burnFailedMessage)); return; }
-          try {
-            const found = await checkOnce();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (found) { clearInterval(si); resolveBurnUrl = null; resolve(found); }
-          } catch (e) {
-            if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveBurnUrl = null; reject(e); return; }
-            clearInterval(si); resolveBurnUrl = null; reject(e instanceof Error ? e : new Error(String(e)));
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — เดิม checkOnce ยิง 2 GET ทุก 2 วิ
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Burn subtitles failed" };
+            }
           }
-        }, 2000);
+
+          // 502/504 HTML หรือ network ล่ม → throw → transient + backoff
+          // (ห้าม fail งาน burn — เซิร์ฟเวอร์ยัง burn อยู่ ไม่งั้นผู้ใช้กดซ้ำจน burn ซ้อน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", queueText);
+            return { status: "pending", resetStale: true };
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "burning",
+              label: "กำลังฝังซับ",
+              queuePosition: null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       finalizeBurn(url);
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
+      // stale/transient-limit: เซิร์ฟเวอร์อาจ burn เสร็จแล้วแต่เราเช็คไม่ได้ — ให้เช็ค Gallery ก่อน
+      // retry = กดปุ่ม Burn & Download เดิมอีกครั้งได้เลย (ปุ่มยังอยู่เมื่อ step เป็น error)
+      const msg = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? "Burn ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจเสร็จแล้ว ลองเช็คใน Gallery ก่อน แล้วค่อยกด Burn & Download อีกครั้ง"
+        : err instanceof Error ? err.message : String(err);
       setStep("burnSubtitles", "error", msg);
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
       if (toastOnError) toast.error(msg);
       throw err;
     } finally {
-      stopPoll();
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
