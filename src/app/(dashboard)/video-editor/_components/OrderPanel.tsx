@@ -41,17 +41,16 @@ export function OrderPanel(p: OrderPanelProps) {
   const posCanvasRef = React.useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = React.useState(false);
 
-  // Note: page.tsx uses range -200..200 for avatarOffsetX/Y.
-  // OrderPanel uses -2..2 internally for drag precision, but converts to
-  // the page's scale (×100) before writing to state.
+  // page.tsx เก็บ avatarOffsetX/Y เป็น px ช่วง -200..200 (preview map ด้วย /200, แกน y บวก = ลง)
+  // nx/ny อยู่ในช่วง -1..1 → ×200 ให้เต็มช่วง และห้ามกลับเครื่องหมาย y — ไม่งั้นลากสวนทางกับ preview
   function updatePosFromPointer(clientX: number, clientY: number) {
     const el = posCanvasRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const nx = ((clientX - rect.left) / rect.width - 0.5) * 2;
-    const ny = -((clientY - rect.top) / rect.height - 0.5) * 2;
-    p.setAvatarOffsetX(Math.max(-200, Math.min(200, Math.round(nx * 100))));
-    p.setAvatarOffsetY(Math.max(-200, Math.min(200, Math.round(ny * 100))));
+    const ny = ((clientY - rect.top) / rect.height - 0.5) * 2;
+    p.setAvatarOffsetX(Math.max(-200, Math.min(200, Math.round(nx * 200))));
+    p.setAvatarOffsetY(Math.max(-200, Math.min(200, Math.round(ny * 200))));
   }
 
   return (
