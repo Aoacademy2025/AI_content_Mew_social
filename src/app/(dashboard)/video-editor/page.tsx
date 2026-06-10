@@ -232,9 +232,10 @@ export default function VideoEditorPage() {
   // ── Avatar (HeyGen pipeline) ───────────────────────────────────────────
   const [useAvatar, setUseAvatar] = useState(false);
   const [avatarId, setAvatarId] = useState("");
-  const [avatarScale, setAvatarScale] = useState(2.02);
-  const [avatarOffsetX, setAvatarOffsetX] = useState(0.0);
-  const [avatarOffsetY, setAvatarOffsetY] = useState(0.13);
+  // เลเยอร์ avatar บนเฟรม: scale 1 = เต็มเฟรม, offset px (-200..200; 200 = ครึ่งเฟรม) — ใช้ที่ composite ไม่ใช่ HeyGen
+  const [avatarScale, setAvatarScale] = useState(1);
+  const [avatarOffsetX, setAvatarOffsetX] = useState(0);
+  const [avatarOffsetY, setAvatarOffsetY] = useState(0);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
   const [avatarName, setAvatarName] = useState("");
   // idle = nothing checked yet, loading = fetching, ok = valid ID, error = not found / invalid
@@ -620,9 +621,9 @@ export default function VideoEditorPage() {
     setAvatarTiming("full");
     setAvatarBookendSecs(5);
     setAvatarTailSecs(5);
-    setAvatarScale(2.02);
-    setAvatarOffsetX(0.0);
-    setAvatarOffsetY(0.13);
+    setAvatarScale(1);
+    setAvatarOffsetX(0);
+    setAvatarOffsetY(0);
     setAvatarInputMode("generate");
     setAvatarDirectUrl("");
     setChromaSimilarity(0.28);
@@ -694,9 +695,14 @@ export default function VideoEditorPage() {
     if (d.avatarTiming) setAvatarTiming(d.avatarTiming);
     if (d.avatarBookendSecs !== undefined) setAvatarBookendSecs(d.avatarBookendSecs);
     if (d.avatarTailSecs !== undefined) setAvatarTailSecs(d.avatarTailSecs);
-    if (d.avatarScale !== undefined) setAvatarScale(d.avatarScale);
-    if (d.avatarOffsetX !== undefined) setAvatarOffsetX(d.avatarOffsetX);
-    if (d.avatarOffsetY !== undefined) setAvatarOffsetY(d.avatarOffsetY);
+    if (d.avatarLayoutV2) {
+      if (d.avatarScale !== undefined) setAvatarScale(d.avatarScale);
+      if (d.avatarOffsetX !== undefined) setAvatarOffsetX(d.avatarOffsetX);
+      if (d.avatarOffsetY !== undefined) setAvatarOffsetY(d.avatarOffsetY);
+    } else {
+      // draft เก่าเก็บค่าหน่วย HeyGen-zoom (scale 2-5, offset ปนหน่วย) ซึ่งใช้กับระบบเลเยอร์ใหม่ไม่ได้ — รีเซ็ตเป็น default
+      setAvatarScale(1); setAvatarOffsetX(0); setAvatarOffsetY(0);
+    }
     if (d.avatarInputMode) setAvatarInputMode(d.avatarInputMode);
     if (d.avatarDirectUrl !== undefined) setAvatarDirectUrl(d.avatarDirectUrl);
     if (d.chromaSimilarity !== undefined) setChromaSimilarity(d.chromaSimilarity);
@@ -781,6 +787,7 @@ export default function VideoEditorPage() {
       useAvatar, avatarId, avatarName, avatarPreviewUrl,
       avatarTiming, avatarBookendSecs, avatarTailSecs,
       avatarScale, avatarOffsetX, avatarOffsetY,
+      avatarLayoutV2: true,
       avatarInputMode, avatarDirectUrl,
       chromaSimilarity, chromaBlend,
       avatarGreenUrl, avatarTailGreenUrl,
@@ -1674,15 +1681,9 @@ export default function VideoEditorPage() {
 
   // ── Avatar pipeline ────────────────────────────────────────────────────
 
-  // state ตำแหน่ง avatar ผสมหน่วย: ค่า default (0, 0.13) เป็นหน่วย normalized ของ HeyGen
-  // แต่ drag/slider ใน RightSettingsPanel เขียนเป็น "px" จำนวนเต็ม (-200..200)
-  // HeyGen: offset = สัดส่วนของเฟรมทั้งเฟรม (-1..1, บวก = ขวา/ลง) ส่วน preview ของเรา px=200 = เลื่อน 50% เฟรม
-  // → ตัวแปลงคือ px/400 (y=200 → 0.5 ไม่ใช่ 1.0 — 1.0 จะดัน avatar หลุดเฟรมทั้งตัว)
-  // จำนวนเต็ม = มาจาก slider/drag (px), ทศนิยม = ค่า normalized เดิม (default/draft เก่า) ส่งตรงได้เลย
-  function toHeygenOffset(v: number): number {
-    if (!Number.isInteger(v)) return Math.max(-1, Math.min(1, v));
-    return Math.max(-1, Math.min(1, v / 400));
-  }
+  // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
+  // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
+  const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
 
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
     // Direct URL mode — skip HeyGen, use URL directly
@@ -1715,7 +1716,7 @@ export default function VideoEditorPage() {
     const genRes = await fetch("/api/heygen/generate-with-bg", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
-      body: JSON.stringify({ audioUrl: avatarAudioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: toHeygenOffset(avatarOffsetX), offsetY: toHeygenOffset(avatarOffsetY) }),
+      body: JSON.stringify({ audioUrl: avatarAudioUrl, avatarId, greenScreen: true, scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY }),
     });
     const genData = await genRes.json();
     assertOk("Avatar", genRes, genData);
@@ -1786,6 +1787,8 @@ export default function VideoEditorPage() {
             avatarScale,
             avatarOffsetX,
             avatarOffsetY,
+            // เลเยอร์ตำแหน่ง/ขนาด avatar — composite ใช้ field นี้เท่านั้น (ตัวบนคงไว้เผื่อโค้ดเก่า)
+            avatarLayout: { scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY },
             chromaColor: "0x00ff00",
             chromaSimilarity,
             chromaBlend,
@@ -1821,7 +1824,7 @@ export default function VideoEditorPage() {
     const genRes = await fetch("/api/heygen/generate-with-bg", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
-      body: JSON.stringify({ audioUrl: trimData.audioUrl, avatarId, greenScreen: true, scale: avatarScale, offsetX: toHeygenOffset(avatarOffsetX), offsetY: toHeygenOffset(avatarOffsetY) }),
+      body: JSON.stringify({ audioUrl: trimData.audioUrl, avatarId, greenScreen: true, scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY }),
     });
     const genData = await genRes.json();
     assertOk("Tail Avatar", genRes, genData);

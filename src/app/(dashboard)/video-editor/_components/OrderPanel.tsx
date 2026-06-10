@@ -296,25 +296,24 @@ export function OrderPanel(p: OrderPanelProps) {
                           <div className="absolute top-1.3 left-1.5 bg-black/75 text-[8px] text-white/80 px-1.5 py-1 rounded font-mono pointer-events-none leading-snug">
                             X: {p.avatarOffsetX}<br />Y: {p.avatarOffsetY}<br />SCALE: {p.avatarScale.toFixed(2)}
                           </div>
-                          {p.avatarPreviewUrl && (
-                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*64}%`, aspectRatio:"15/16", left:`${51.5+(p.avatarOffsetX/200)*50}%`, bottom:`${(0.09-(p.avatarOffsetY/200))*50}%`, transform:"translateX(-50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
-                              {/* Show the ORIGINAL avatar image in full (contain) — no
-                                  cropping. cover used to chop the head off; contain fits
-                                  the whole portrait inside the position box. */}
-                              <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"contain", objectPosition:"center top" }} />
+                          {/* เลเยอร์ avatar = สูตรเดียวกับ ffmpeg composite: width = scale×เฟรม, center เลื่อน (px/200)×ครึ่งเฟรม */}
+                          {(p.avatarPreviewUrl || p.avatarGreenUrl) && (
+                            <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*100}%`, aspectRatio:"9/16", left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
+                              {p.avatarGreenUrl ? (
+                                <video src={p.avatarGreenUrl} className="w-full h-full object-cover" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
+                              ) : (
+                                <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center top" }} />
+                              )}
                             </div>
                           )}
-                          {p.avatarGreenUrl && (
-                            <video src={p.avatarGreenUrl} className="absolute inset-0 w-full h-full object-cover pointer-events-none" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
-                          )}
-                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, bottom:`${(-0.05-(p.avatarOffsetY/200))*50}%`, transform:"translate(-50%, 50%)" }} />
+                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)" }} />
                         </div>
                         {/* Sliders */}
                         <div className="space-y-2">
                           {([
                             { label:"Offset X", value:p.avatarOffsetX, onChange:p.setAvatarOffsetX, min:-200, max:200, step:1 },
                             { label:"Offset Y", value:p.avatarOffsetY, onChange:p.setAvatarOffsetY, min:-200, max:200, step:1 },
-                            { label:"Scale",    value:p.avatarScale,   onChange:p.setAvatarScale,   min:0.1, max:5.0, step:0.01 },
+                            { label:"Scale",    value:p.avatarScale,   onChange:p.setAvatarScale,   min:0.1, max:2.5, step:0.01 },
                           ] as const).map(({label,value,onChange,min,max,step})=>(
                             <div key={label} className="space-y-1">
                               <div className="flex justify-between">
@@ -324,7 +323,7 @@ export function OrderPanel(p: OrderPanelProps) {
                               <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(Number(e.target.value))} className="w-full accent-cyan-400 h-1" />
                             </div>
                           ))}
-                          <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0.13*200);p.setAvatarScale(2.02);}} className="text-[9px] text-slate-600 hover:text-slate-400 w-full text-center">↺ Reset</button>
+                          <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0);p.setAvatarScale(1);}} className="text-[9px] text-slate-600 hover:text-slate-400 w-full text-center">↺ Reset</button>
                         </div>
                       </div>
                     </div>
