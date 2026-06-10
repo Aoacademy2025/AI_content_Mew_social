@@ -542,7 +542,8 @@ export function RightSettingsPanel(p: RightPanelProps) {
                           const rect = e.currentTarget.getBoundingClientRect();
                           const move = (ev: PointerEvent) => {
                             const x = ((ev.clientX - rect.left) / rect.width - 0.5) * 2;
-                            const y = -((ev.clientY - rect.top) / rect.height - 0.5) * 2;
+                            // ห้ามกลับเครื่องหมาย: preview/HeyGen ใช้ y บวก = เลื่อนลง — ลากลงต้องได้ค่าบวก
+                            const y = ((ev.clientY - rect.top) / rect.height - 0.5) * 2;
                             p.setAvatarOffsetX(Math.round(Math.max(-200, Math.min(200, x * 200))));
                             p.setAvatarOffsetY(Math.round(Math.max(-200, Math.min(200, y * 200))));
                           };

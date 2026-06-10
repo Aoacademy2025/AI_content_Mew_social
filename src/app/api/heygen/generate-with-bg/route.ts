@@ -94,15 +94,15 @@ export async function POST(req: Request) {
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
   if (!greenScreen && !removeBg && !bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl, greenScreen, or removeBg required" }, { status: 400 });
 
-  // HeyGen ยอมรับ offset เป็นค่า normalized -1..1 เท่านั้น แต่ slider ตำแหน่ง avatar ใน video-editor
-  // ส่งค่าเป็น px (-200..200, สเกลเดียวกับ preview: px/200 = สัดส่วนจากกึ่งกลาง) ทำให้ HeyGen ตอบ
-  // 400 invalid_parameter ทุกครั้งที่ผู้ใช้ลากตำแหน่ง — composite วาง canvas เต็มเฟรม ตำแหน่งสุดท้าย
-  // มาจาก offset ฝั่ง HeyGen เท่านั้น จึงต้องแปลงหน่วยแทนการตัดทิ้ง (กัน client bundle เก่าด้วย)
+  // HeyGen ยอมรับ offset เป็นสัดส่วนของเฟรม -1..1 เท่านั้น (บวก = ขวา/ลง; 1.0 = เลื่อนทั้งเฟรม → avatar หลุดเฟรม)
+  // แต่ slider ตำแหน่ง avatar ใน video-editor (bundle เก่า) ส่งค่าเป็น px (-200..200; px=200 = เลื่อน 50% เฟรม
+  // ตามสเกล preview) ทำให้ HeyGen ตอบ 400 — composite วาง canvas เต็มเฟรม ตำแหน่งสุดท้ายมาจาก offset
+  // ฝั่ง HeyGen เท่านั้น จึงแปลงหน่วยด้วย px/400 แทนการตัดทิ้ง (client ใหม่แปลงเองแล้ว ส่วนนี้กัน bundle เก่า)
   const safeOffset = (v: unknown, fallback: number) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return fallback;
     if (Math.abs(n) <= 1) return n;
-    return Math.max(-1, Math.min(1, n / 200));
+    return Math.max(-1, Math.min(1, n / 400));
   };
   const hgOffsetX = safeOffset(offsetX, 0.0);
   const hgOffsetY = safeOffset(offsetY, 0.13);

@@ -1675,10 +1675,13 @@ export default function VideoEditorPage() {
   // ── Avatar pipeline ────────────────────────────────────────────────────
 
   // state ตำแหน่ง avatar ผสมหน่วย: ค่า default (0, 0.13) เป็นหน่วย normalized ของ HeyGen
-  // แต่ drag/slider ใน RightSettingsPanel เขียนเป็น px (-200..200) — HeyGen รับเฉพาะ -1..1
-  // แปลงด้วยสเกลเดียวกับ preview (px/200) เพื่อให้ตำแหน่งที่ผู้ใช้ลากมีผลกับวิดีโอจริง
+  // แต่ drag/slider ใน RightSettingsPanel เขียนเป็น "px" จำนวนเต็ม (-200..200)
+  // HeyGen: offset = สัดส่วนของเฟรมทั้งเฟรม (-1..1, บวก = ขวา/ลง) ส่วน preview ของเรา px=200 = เลื่อน 50% เฟรม
+  // → ตัวแปลงคือ px/400 (y=200 → 0.5 ไม่ใช่ 1.0 — 1.0 จะดัน avatar หลุดเฟรมทั้งตัว)
+  // จำนวนเต็ม = มาจาก slider/drag (px), ทศนิยม = ค่า normalized เดิม (default/draft เก่า) ส่งตรงได้เลย
   function toHeygenOffset(v: number): number {
-    return Math.abs(v) <= 1 ? v : Math.max(-1, Math.min(1, v / 200));
+    if (!Number.isInteger(v)) return Math.max(-1, Math.min(1, v));
+    return Math.max(-1, Math.min(1, v / 400));
   }
 
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
