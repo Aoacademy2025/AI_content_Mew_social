@@ -38,6 +38,32 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
+// เลเยอร์ avatar บนเฟรม: scale = สัดส่วนต่อเฟรม (1 = เต็มเฟรม = พฤติกรรมเดิม),
+// offset เป็นหน่วย px ของ UI (-200..200; 200 = เลื่อนครึ่งเฟรม) — สูตรเดียวกับ preview ใน editor
+type AvatarLayout = { scale: number; offsetX: number; offsetY: number };
+
+// คืน null เมื่อไม่ได้ส่งมา/เป็นค่า default → ใช้เส้นทาง full-cover เดิมเป๊ะ
+// (client รุ่นเก่าและ video-creator ไม่ส่ง avatarLayout จึงไม่ได้รับผลกระทบ)
+function parseAvatarLayout(raw: unknown): AvatarLayout | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const scale = Number(o.scale), offsetX = Number(o.offsetX), offsetY = Number(o.offsetY);
+  if (!Number.isFinite(scale) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
+  const s = Math.min(4, Math.max(0.05, scale));
+  const x = Math.min(400, Math.max(-400, offsetX));
+  const y = Math.min(400, Math.max(-400, offsetY));
+  if (Math.abs(s - 1) < 0.001 && Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return null;
+  return { scale: s, offsetX: x, offsetY: y };
+}
+
+function layoutGeometry(layout: AvatarLayout) {
+  const w = Math.round((1080 * layout.scale) / 2) * 2;
+  const h = Math.round((1920 * layout.scale) / 2) * 2;
+  const x = Math.round((1080 - w) / 2 + (1080 * layout.offsetX) / 400);
+  const y = Math.round((1920 - h) / 2 + (1920 * layout.offsetY) / 400);
+  return { w, h, x, y };
+}
+
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024 }, (err, _stdout, stderr) => {
@@ -89,6 +115,7 @@ async function chromakeyComposite(
   blend = 0.04,
   chromaColor = "0x12FF05",
   audioFromAvatar = false,
+  layout: AvatarLayout | null = null,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
@@ -100,14 +127,26 @@ async function chromakeyComposite(
 
   let filterComplex: string;
 
-  // Always: remove green then scale avatar to match bg exactly, overlay full cover
-  console.log(`[chromakey] scale to bg size, overlay full`);
-  filterComplex = [
-    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-    `[1:v]${chromaFilter}[fg_key]`,
-    `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
-    `[bg2][fg]overlay=0:0:format=auto[out]`,
-  ].join(";");
+  if (layout) {
+    // วางเลเยอร์ avatar ตามตำแหน่ง/ขนาดที่ผู้ใช้ตั้ง (สูตรเดียวกับ preview ใน editor)
+    const { w, h, x, y } = layoutGeometry(layout);
+    console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY}) → ${w}x${h} at (${x},${y})`);
+    filterComplex = [
+      `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+      `[1:v]${chromaFilter}[fg_key]`,
+      `[fg_key]scale=${w}:${h}:flags=lanczos[fg]`,
+      `[bg][fg]overlay=${x}:${y}:format=auto[out]`,
+    ].join(";");
+  } else {
+    // Default: remove green then scale avatar to match bg exactly, overlay full cover
+    console.log(`[chromakey] scale to bg size, overlay full`);
+    filterComplex = [
+      `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+      `[1:v]${chromaFilter}[fg_key]`,
+      `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
+      `[bg2][fg]overlay=0:0:format=auto[out]`,
+    ].join(";");
+  }
 
   // Count avatar frames to estimate time
   const { execFileSync } = require("child_process");
@@ -299,6 +338,7 @@ async function applyBookendBothSplit(
   blend: number,
   chromaColor: string,
   mode: string,
+  layout: AvatarLayout | null = null,
 ): Promise<void> {
   const rendersDir = path.dirname(outPath);
   const ts = Date.now();
@@ -352,14 +392,26 @@ async function applyBookendBothSplit(
         "-pix_fmt", "yuv420p", outSeg,
       ]);
     } else {
+      // ใช้เลเยอร์ layout เดียวกับ composite หลัก เมื่อ client ส่งมา
+      const segFilter = layout
+        ? (() => {
+            const { w, h, x, y } = layoutGeometry(layout);
+            return [
+              `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+              `[1:v]${chromaFilter}[fg_key]`,
+              `[fg_key]scale=${w}:${h}:flags=lanczos[fg]`,
+              `[bg][fg]overlay=${x}:${y}:format=auto[out]`,
+            ].join(";");
+          })()
+        : [
+            `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+            `[1:v]${chromaFilter}[fg_key]`,
+            `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
+            `[bg2][fg]overlay=0:0:format=auto[out]`,
+          ].join(";");
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
-        "-filter_complex", [
-          `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-          `[1:v]${chromaFilter}[fg_key]`,
-          `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
-          `[bg2][fg]overlay=0:0:format=auto[out]`,
-        ].join(";"),
+        "-filter_complex", segFilter,
         "-map", "[out]", "-t", String(dur),
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-threads", "0", "-an", "-pix_fmt", "yuv420p", outSeg,
@@ -431,7 +483,10 @@ export async function POST(req: Request) {
     chromaColor = "0x12FF05",
     rembgModel = "u2net",
     audioFromAvatar = false,
+    avatarLayout = null,
   } = body ?? {};
+
+  const layout = parseAvatarLayout(avatarLayout);
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
@@ -476,6 +531,7 @@ export async function POST(req: Request) {
         avatarTmp, tailTmp, bgTmp, finalPath,
         avatarBookendSecs, avatarTailSecs,
         chromaSimilarity, chromaBlend, chromaColor, mode,
+        layout,
       );
 
       console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
@@ -488,7 +544,7 @@ export async function POST(req: Request) {
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {
-      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor, audioFromAvatar);
+      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor, audioFromAvatar, layout);
     }
 
     if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");

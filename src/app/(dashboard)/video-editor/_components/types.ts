@@ -128,6 +128,8 @@ export interface EditorDraft {
   avatarScale?: number;
   avatarOffsetX?: number;
   avatarOffsetY?: number;
+  // ระบบเลเยอร์ composite (scale 1 = เต็มเฟรม) — draft ที่ไม่มี flag นี้เก็บค่าหน่วยเก่า (HeyGen-zoom) ห้ามนำมาใช้
+  avatarLayoutV2?: boolean;
   avatarInputMode?: "generate" | "direct";
   avatarDirectUrl?: string;
   chromaSimilarity?: number;
