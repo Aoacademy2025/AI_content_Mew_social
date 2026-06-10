@@ -27,11 +27,15 @@ import type {
 import { DEFAULT_STEPS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
 import { StepIcon } from "./_components/StepIcon";
-import { renderSubEl } from "./_components/subtitle-renderer";
 import { ApiCallError } from "./_components/ApiCallError";
 import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
+import { TimeLabel } from "./_components/TimeLabel";
+import { PlayheadIndicator, PlaybackProgressStrip } from "./_components/PlayheadIndicator";
+import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
+import { playbackTime } from "./_lib/playback-time";
+import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
@@ -175,7 +179,12 @@ export default function VideoEditorPage() {
 
   // ── Playback ──────────────────────────────────────────────────────────
   const [playing, setPlaying] = useState(false);
+  // Coarse playback position — updated on play/pause/seek/end ONLY (design
+  // spec §5 PR-3). The 60fps position lives in the playbackTime store
+  // (_lib/playback-time.ts); leaf components subscribe there. Event handlers
+  // that need the live position read playbackTime.getMs().
   const [currentMs, setCurrentMs] = useState(0);
+  void currentMs; // write-mostly by design — kept so coarse logic can use state later
   const [durationMs, setDurationMs] = useState(0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
@@ -196,7 +205,6 @@ export default function VideoEditorPage() {
   const captionMsToVideoMs = useCallback((captionMs: number) => (
     durationMs > 0 && captionEndMs > 0 ? captionMs * (durationMs / captionEndMs) : captionMs
   ), [durationMs, captionEndMs]);
-  const playheadMs = videoMsToCaptionMs(currentMs);
 
   // ── TTS / Voice ───────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
@@ -512,7 +520,16 @@ export default function VideoEditorPage() {
     return () => clearTimeout(t);
   }, [avatarId, loadAvatarInfo]);
 
-  // ── Video sync — rAF loop for smooth subtitle tracking ────────────────
+  // playbackTime is a module-level singleton — it outlives this page across
+  // client-side navigations. Reset on mount so a remounted editor starts at
+  // 0:00 (the old currentMs state got this for free by being component state).
+  useEffect(() => { playbackTime.setMs(0); }, []);
+
+  // ── Video sync — rAF loop drives the external playbackTime store ──────
+  // Per frame: ONLY playbackTime.setMs() (leaf components subscribe to it)
+  // and a binary-search caption lookup. setCurrentMs (React state at the page
+  // root — re-renders the whole 4,000-line tree) now fires only on
+  // play/pause/seek/end; setActiveCaptionIdx only when the caption changes.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -523,8 +540,8 @@ export default function VideoEditorPage() {
       rafId = requestAnimationFrame(tick);
       const ms = v.currentTime * 1000;
       const captionMs = videoMsToCaptionMs(ms);
-      setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
+      playbackTime.setMs(ms);
+      const idx = findActiveCaptionIdx(captionsRef.current, captionMs);
       if (idx !== lastIdx) {
         lastIdx = idx;
         setActiveCaptionIdx(idx);
@@ -532,25 +549,29 @@ export default function VideoEditorPage() {
       }
     };
 
-    const onPlay    = () => { setPlaying(true);  rafId = requestAnimationFrame(tick); };
-    const onPause   = () => { setPlaying(false); cancelAnimationFrame(rafId); };
-    const onEnded   = () => { setPlaying(false); cancelAnimationFrame(rafId); };
-    const onMeta    = () => setDurationMs(v.duration * 1000);
-    // single timeupdate for when video is paused/seeking
-    const onTime    = () => {
+    // Coarse sync into React state — play/pause/seek/end only. Keeps existing
+    // non-60fps logic working unchanged.
+    const syncCoarse = () => {
       const ms = v.currentTime * 1000;
       const captionMs = videoMsToCaptionMs(ms);
+      playbackTime.setMs(ms);
       setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
+      const idx = findActiveCaptionIdx(captionsRef.current, captionMs);
+      lastIdx = idx;
       setActiveCaptionIdx(idx);
       if (idx >= 0) setActiveSegIdx(idx);
     };
+
+    const onPlay    = () => { setPlaying(true);  syncCoarse(); rafId = requestAnimationFrame(tick); };
+    const onPause   = () => { setPlaying(false); cancelAnimationFrame(rafId); syncCoarse(); };
+    const onEnded   = () => { setPlaying(false); cancelAnimationFrame(rafId); syncCoarse(); };
+    const onMeta    = () => setDurationMs(v.duration * 1000);
 
     v.addEventListener("play",        onPlay);
     v.addEventListener("pause",       onPause);
     v.addEventListener("ended",       onEnded);
     v.addEventListener("loadedmetadata", onMeta);
-    v.addEventListener("seeked",      onTime);
+    v.addEventListener("seeked",      syncCoarse);
 
     if (!v.paused) { rafId = requestAnimationFrame(tick); }
 
@@ -560,7 +581,7 @@ export default function VideoEditorPage() {
       v.removeEventListener("pause",       onPause);
       v.removeEventListener("ended",       onEnded);
       v.removeEventListener("loadedmetadata", onMeta);
-      v.removeEventListener("seeked",      onTime);
+      v.removeEventListener("seeked",      syncCoarse);
     };
   }, [captions, videoUrl, preRenderUrl, videoMsToCaptionMs]);  // re-run when video src changes so listeners attach to new element
 
@@ -602,6 +623,7 @@ export default function VideoEditorPage() {
     // Playback
     setPlaying(false);
     setCurrentMs(0);
+    playbackTime.setMs(0);
     setDurationMs(0);
 
     // Stock
@@ -3332,10 +3354,6 @@ export default function VideoEditorPage() {
                     onClick={playToggle}
                     style={{ cursor: "pointer" }}
                     onLoadedMetadata={e => setDurationMs((e.target as HTMLVideoElement).duration * 1000)}
-                    onTimeUpdate={e => {
-                      const ms = (e.target as HTMLVideoElement).currentTime * 1000;
-                      setCurrentMs(ms);
-                    }}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
                     onEnded={() => setPlaying(false)}
@@ -3349,88 +3367,36 @@ export default function VideoEditorPage() {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/40">
-                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }} />
+                  <PlaybackProgressStrip totalMs={totalMs} durationMs={durationMs} captionEndMs={captionEndMs} />
                 </div>
               </div>
 
-              {/* Subtitle overlay — draggable, clickable */}
-              {!previewUsesBurnedOutput && (() => {
-                // Show active caption when playing, or first caption when paused/before play
-                const cap = activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null);
-                if (!cap) return null;
-                const isDragging = !!subDragRef.current;
-                return (
-                  <div
-                    className="absolute z-20 group"
-                    style={{
-                      top: `${subPosition}%`,
-                      left: "4%",
-                      right: "4%",
-                      transform: "translateY(-50%)",
-                      cursor: isDragging ? "grabbing" : "grab",
-                    }}
-                    onPointerDown={onSubPointerDown}
-                    onPointerMove={onSubPointerMove}
-                    onPointerUp={onSubPointerUp}
-                    onPointerCancel={onSubPointerUp}
-                  >
-                    {/* Hover border */}
-                    <div className="absolute -inset-x-2 -inset-y-1 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{ border: "1px dashed rgba(124,58,237,0.55)" }} />
-
-                    {/* Quick actions — float ABOVE the subtitle text */}
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 pointer-events-auto whitespace-nowrap">
-                      <span className="text-[9px] text-violet-400 bg-black/70 rounded px-1.5 py-0.5">↕{subPosition}%</span>
-                      <button onClick={e => { e.stopPropagation(); setActiveRightTab("style"); }}
-                        className="px-1.5 py-0.5 bg-violet-600 rounded text-[9px] text-white font-bold hover:bg-violet-500">Style</button>
-                      <button onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}
-                        className="px-1.5 py-0.5 bg-[#1e1e28] border border-[#3a3a4a] rounded text-[9px] text-slate-300 hover:bg-[#2a2a36]">Font</button>
-                      <button onClick={e => { e.stopPropagation(); setSubPosition(82); }}
-                        className="px-1.5 py-0.5 bg-[#1e1e28] border border-[#3a3a4a] rounded text-[9px] text-slate-400 hover:bg-[#2a2a36]">↺</button>
-                    </div>
-
-                    {/* Subtitle text — matches Remotion render exactly.
-                        data-subtitle-text lets the :fullscreen CSS upscale the font
-                        when the phone-frame is fullscreened, so the subtitle stays
-                        legible at viewport-width sizes. */}
-                    <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
-                      {(() => {
-                        const PREVIEW_FPS = 30;
-                        const capDurMs = Math.max(1, cap.endMs - cap.startMs);
-                        const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
-                        const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
-                        // frame for the INNER text effects (glow-pulse/highlight/karaoke/
-                        // typewriter). -1 when paused = resting/fully-visible.
-                        const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
-
-                        // Container ENTRANCE animation — must MATCH AnimatedSubtitle
-                        // (ShortVideoComposition) so preview === burned MP4. We can't
-                        // call Remotion spring() here, so approximate it: same start/end
-                        // values and similar durations, with an ease that mimics the
-                        // spring's settle. Only animates while playing; when paused we
-                        // show the resting state (transform none, opacity 1).
-                        const f = playing ? Math.max(0, Math.round((elapsedMs / 1000) * PREVIEW_FPS)) : 9999;
-                        const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-                        const easeBack = (t: number) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
-                        const prog = (dur: number) => Math.min(1, f / dur);
-                        const fadeIn = Math.min(1, f / 5);
-                        let tf = "", op = 1;
-                        if (subEffect === "pop")        { const t = easeOut(prog(12)); tf = `translateY(${6*(1-t)}px) scale(${0.76+0.24*t})`; }
-                        else if (subEffect === "bounce"){ const t = easeBack(prog(18)); tf = `translateY(${14*(1-Math.min(1,t))}px) scale(${0.5+0.5*t})`; }
-                        else if (subEffect === "quick") { const t = easeOut(prog(6));  tf = `translateY(${8*(1-t)}px) scale(${0.6+0.4*t})`; }
-                        else if (subEffect === "fade")  { op = Math.min(1, f/8); }
-                        else if (subEffect === "slide") { const t = easeOut(prog(16)); tf = `translateY(${40*(1-t)}px)`; op = fadeIn; }
-                        else if (subEffect === "flip")  { const t = easeOut(prog(14)); tf = `perspective(600px) rotateX(${90*(1-t)}deg)`; op = Math.min(1, f/6); }
-                        return (
-                          <div style={{ transform: tf || undefined, opacity: op, transformOrigin: subEffect === "flip" ? "center top" : "center" }}>
-                            {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames)}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                );
-              })()}
+              {/* Subtitle overlay — draggable, clickable. Leaf component: the only
+                  60fps React subtree (subscribes to playbackTime internally). */}
+              {!previewUsesBurnedOutput && (
+                <ActiveCaptionOverlay
+                  cap={activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null)}
+                  playing={playing}
+                  subPosition={subPosition}
+                  subDragRef={subDragRef}
+                  onSubPointerDown={onSubPointerDown}
+                  onSubPointerMove={onSubPointerMove}
+                  onSubPointerUp={onSubPointerUp}
+                  onOpenStyleTab={() => setActiveRightTab("style")}
+                  onOpenFontTab={() => setActiveRightTab("font")}
+                  onResetPosition={() => setSubPosition(82)}
+                  durationMs={durationMs}
+                  captionEndMs={captionEndMs}
+                  subColor={subColor}
+                  subAccentColor={subAccentColor}
+                  subPreset={subPreset}
+                  subEffect={subEffect}
+                  subFontFamily={subFontFamily}
+                  subFontSize={subFontSize}
+                  subFontWeight={subFontWeight}
+                  previewScale={previewScale}
+                />
+              )}
 
               {/* Border overlay */}
               <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.07)" }} />
@@ -3466,12 +3432,11 @@ export default function VideoEditorPage() {
 
             <div className="w-px h-4 bg-[#2a2a36] mx-1 flex-shrink-0" />
 
-            {/* Time */}
-            <span className="text-[11px] text-slate-500 tabular-nums flex-shrink-0">{fmtMs(currentMs)}</span>
+            {/* Time — leaf, ticks at 60fps from the playbackTime store */}
+            <TimeLabel className="text-[11px] text-slate-500 tabular-nums flex-shrink-0" />
 
             {/* Scrubber — hover shows time preview, drag to seek */}
             <ScrubberBar
-              currentMs={currentMs}
               totalMs={totalMs}
               durationMs={durationMs}
               isScrubbing={isScrubbing}
@@ -3741,7 +3706,7 @@ export default function VideoEditorPage() {
 
         {/* Timeline toolbar */}
         <div className="h-10 bg-[#111115] border-b border-[#1e1e28] flex items-center gap-2 px-4 flex-shrink-0">
-          <span className="text-violet-400 font-bold tabular-nums text-[12px]">{fmtMs(playheadMs)}</span>
+          <TimeLabel className="text-violet-400 font-bold tabular-nums text-[12px]" durationMs={durationMs} captionEndMs={captionEndMs} />
           <span className="text-slate-700 text-[11px]">/ {fmtMs(totalMs)}</span>
 
           <div className="flex gap-0.5 ml-3">
@@ -3765,7 +3730,9 @@ export default function VideoEditorPage() {
             {/* Split at playhead */}
             <button
               onClick={() => {
-                const splitMs = playheadMs;
+                // Live position from the store (currentMs state is coarse now),
+                // mapped video-time → caption-time exactly like old playheadMs.
+                const splitMs = videoMsToCaptionMs(playbackTime.getMs());
                 if (splitMs <= 0 || activeSegIdx < 0 || activeSegIdx >= displayCaptions.length) return;
                 const cap = displayCaptions[activeSegIdx];
                 if (splitMs <= cap.startMs || splitMs >= cap.endMs) return;
@@ -3883,6 +3850,7 @@ export default function VideoEditorPage() {
                   const captionMs = pct * totalMs;
                   const videoMs = captionMsToVideoMs(captionMs);
                   videoRef.current.currentTime = videoMs / 1000;
+                  playbackTime.setMs(videoMs); // instant visual feedback while dragging
                   setCurrentMs(videoMs);
                 }}
                 onPointerMove={e => {
@@ -3893,6 +3861,7 @@ export default function VideoEditorPage() {
                   const captionMs = pct * totalMs;
                   const videoMs = captionMsToVideoMs(captionMs);
                   videoRef.current.currentTime = videoMs / 1000;
+                  playbackTime.setMs(videoMs); // instant visual feedback while dragging
                   setCurrentMs(videoMs);
                 }}
               >
@@ -3995,12 +3964,9 @@ export default function VideoEditorPage() {
                 </div>
               </div>
 
-              {/* Playhead — uses playheadMs (video-time mapped into caption-time) so it
-                  tracks the caption clips exactly, even when the video is longer. */}
-              <div className="absolute top-0 bottom-0 w-[1.5px] bg-violet-500 pointer-events-none z-10"
-                style={{ left: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }}>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.8)]" />
-              </div>
+              {/* Playhead — leaf, writes style.left via ref from the playbackTime
+                  store (video-time mapped into caption-time, as before). */}
+              <PlayheadIndicator totalMs={totalMs} durationMs={durationMs} captionEndMs={captionEndMs} />
             </div>
           </div>
         </div>

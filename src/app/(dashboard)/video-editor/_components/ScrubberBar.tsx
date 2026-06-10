@@ -2,9 +2,9 @@
 
 import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { playbackTime, usePlaybackMsDisplay } from "../_lib/playback-time";
 
 interface ScrubberBarProps {
-  currentMs: number;
   totalMs: number;
   durationMs: number;
   isScrubbing: boolean;
@@ -15,11 +15,15 @@ interface ScrubberBarProps {
 }
 
 export function ScrubberBar({
-  currentMs, totalMs, durationMs, isScrubbing,
+  totalMs, durationMs, isScrubbing,
   setIsScrubbing, videoRef, setCurrentMs, fmtMs,
 }: ScrubberBarProps) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hoverPct, setHoverPct] = useState<number | null>(null);
+  // 60fps position from the playbackTime store. This component is a small
+  // leaf, so re-rendering it per frame is cheap (it used to receive currentMs
+  // as a prop, which forced the whole page to re-render to move this bar).
+  const currentMs = usePlaybackMsDisplay();
 
   const seekToClientX = (clientX: number) => {
     const track = trackRef.current;
@@ -28,6 +32,7 @@ export function ScrubberBar({
     const pct = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
     const dur = videoRef.current.duration || (durationMs / 1000);
     videoRef.current.currentTime = pct * dur;
+    playbackTime.setMs(pct * dur * 1000); // instant visual feedback while dragging
     setCurrentMs(pct * dur * 1000);
   };
 
