@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
-import { limitsForPlan } from "@/lib/plan-limits";
+import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
 import path from "path";
@@ -266,9 +266,16 @@ export async function POST(req: Request) {
 
     const planLimits = limitsForPlan(dbUser.plan);
     if (requestedDurationSec && requestedDurationSec > planLimits.durationSec) {
-      const planName = dbUser.plan === "BUSINESS" ? "Business" : dbUser.plan === "PRO" ? "Pro" : "Free";
+      // Backstop only — the editor pre-flights this before TTS/HeyGen (see runAll).
+      // Structured shape so handlePlanError shows the right upgrade tier (Pro→Business).
+      const next = nextPlanFor(dbUser.plan);
+      const capMin = planLimits.durationSec / 60;
+      const message = `คลิปยาว ${(requestedDurationSec / 60).toFixed(1)} นาที เกินเพดานแผน ${PLAN_LABEL[dbUser.plan] ?? dbUser.plan} (${capMin} นาที/คลิป)`;
+      const userAction = next
+        ? `อัปเกรดเป็น ${PLAN_LABEL[next]} (รองรับสูงสุด ${limitsForPlan(next).durationSec / 60} นาที/คลิป) หรือตัดคลิปให้สั้นลง`
+        : "ตัดคลิปให้สั้นลง";
       return NextResponse.json(
-        { error: `${planName} plan จำกัดวิดีโอสูงสุด ${planLimits.durationSec / 60} นาที/คลิป` },
+        { error: { code: "duration_exceeded", message, userAction, plan: dbUser.plan, neededPlan: next } },
         { status: 403 }
       );
     }

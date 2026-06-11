@@ -34,6 +34,8 @@ import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
 import { trackEvent } from "@/lib/client-telemetry";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
+import { estimateScriptDurationSec } from "./_lib/estimate-duration";
+import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -317,7 +319,18 @@ export default function VideoEditorPage() {
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
-  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string }>({ open: false });
+  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string; title?: string; benefits?: string[]; hideCta?: boolean }>({ open: false });
+  // Plan + duration cap — loaded once so the duration limit can be pre-flighted
+  // BEFORE spending on TTS/HeyGen (editor is PRO-gated, so default to PRO).
+  const [userPlan, setUserPlan] = useState<string>("PRO");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/user/me")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
+      .catch(() => { /* keep PRO default — server still backstops at render */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
 
@@ -883,17 +896,68 @@ export default function VideoEditorPage() {
     if (!res.ok) throw new ApiCallError(prefix, data, res.status);
   }
 
+  // Compose a plan-aware UpgradeModal payload for a clip over the plan's duration
+  // cap. Pro over 6min → point to Business; Business (top tier) → just trim, no CTA.
+  function durationLimitModal(durationSec: number, plan: string) {
+    const cap = limitsForPlan(plan).durationSec;
+    const next = nextPlanFor(plan);
+    const mins = (durationSec / 60).toFixed(1);
+    const capMin = cap / 60;
+    if (next) {
+      const nextCapMin = limitsForPlan(next).durationSec / 60;
+      return {
+        open: true,
+        title: `อัปเกรดเป็น ${PLAN_LABEL[next]} — รองรับคลิปยาวขึ้น`,
+        message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานแผน ${PLAN_LABEL[plan] ?? plan} (${capMin} นาที/คลิป) — ${PLAN_LABEL[next]} รองรับสูงสุด ${nextCapMin} นาที/คลิป`,
+        benefits: next === "BUSINESS"
+          ? ["300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
+          : undefined,
+      };
+    }
+    return {
+      open: true,
+      hideCta: true,
+      title: "คลิปยาวเกินเพดาน",
+      message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานสูงสุด ${capMin} นาที/คลิป — กรุณาตัดสคริปต์/คลิปให้สั้นลง`,
+    };
+  }
+
+  // Pre-flight the plan duration cap. Returns false (and shows the modal) when the
+  // clip is over — call BEFORE paid steps (TTS, HeyGen) and before render so the
+  // user isn't charged then told "too long" at the end.
+  // `isEstimate` adds a 10% margin so the rough pre-TTS estimate never false-blocks
+  // a borderline clip (the exact post-TTS check then catches it precisely).
+  function checkDurationWithinPlan(durationSec: number, isEstimate: boolean): boolean {
+    if (!durationSec || durationSec <= 0) return true; // unknown — let later checks decide
+    const cap = limitsForPlan(userPlan).durationSec;
+    const threshold = isEstimate ? cap * 1.1 : cap;
+    if (durationSec <= threshold) return true;
+    setUpgradeModal(durationLimitModal(durationSec, userPlan));
+    return false;
+  }
+
   function handlePlanError(err: unknown): boolean {
     if (!(err instanceof ApiCallError)) return false;
     if ((err.data as any)._status !== 403) return false;
     // PR-1 structured shape: { error: { code: "quota_exceeded", message, userAction } }
     const rawErr = err.data.error;
     const structured = typeof rawErr === "object" && rawErr !== null
-      ? (rawErr as { code?: string; message?: string; userAction?: string })
+      ? (rawErr as { code?: string; message?: string; userAction?: string; neededPlan?: string | null })
       : null;
     const message = structured
       ? [structured.message, structured.userAction].filter(Boolean).join(" — ")
       : String(rawErr ?? "");
+    // Duration cap (server backstop): show the right upgrade tier, not the generic Pro modal.
+    if (structured?.code === "duration_exceeded") {
+      const neededPlan = structured.neededPlan ?? null;
+      setUpgradeModal({
+        open: true,
+        message,
+        title: neededPlan ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan] ?? neededPlan} — รองรับคลิปยาวขึ้น` : "คลิปยาวเกินเพดาน",
+        hideCta: !neededPlan,
+      });
+      return true;
+    }
     setUpgradeModal({ open: true, message });
     return true;
   }
@@ -1018,14 +1082,11 @@ export default function VideoEditorPage() {
       // Thai TTS speaks at ~2 Thai chars/sec for natural pace (slower than English).
       // We add 10% buffer to over-estimate slightly — better too many keywords than too few.
       const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
-      const thaiCharCount = (script.match(/[฀-๿]/g) ?? []).length;
-      const englishWordCount = script.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
-      // ~2 Thai chars/sec + ~3 English words/sec (TTS natural rate)
-      const scriptEstimate = thaiCharCount / 2 + englishWordCount / 3;
+      const scriptEstimate = estimateScriptDurationSec(script);  // ~2 Thai chars/sec + ~3 EN words/sec
       const estimatedDurSec = knownDurSec > 0
         ? knownDurSec
         : Math.ceil(scriptEstimate * 1.1);  // 10% buffer
-      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
+      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s`);
       const res = await fetch("/api/videos/extract-keywords", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
@@ -1894,6 +1955,10 @@ export default function VideoEditorPage() {
       if (!avatarId.trim()) { toast.error("กรอก HeyGen Avatar ID ก่อน"); return; }
       if (!pipe.current.voiceUrl) { toast.error("ต้องสร้างเสียง TTS ก่อน"); return; }
     }
+    // Defense in depth: render ran first so audioDurationMs is known — block before
+    // paying for HeyGen if the clip exceeds the plan cap (direct mode has no known
+    // duration, so it passes through and relies on the server backstop).
+    if (!isDirect && !checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
     if (runningRef.current) return;
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
@@ -1996,6 +2061,12 @@ export default function VideoEditorPage() {
   const runAll = useCallback(async () => {
     if (runningRef.current || !script.trim()) return;
 
+    // ── Gate 1 (pre-flight, before keys/TTS/HeyGen): block clearly-too-long scripts
+    // up front so the user isn't charged for TTS+avatar then told "too long" at the
+    // end. Estimate only (10% margin); the exact check after TTS is the real gate.
+    const directNow = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
+    if (!directNow && !checkDurationWithinPlan(estimateScriptDurationSec(script), true)) return;
+
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     try {
       const keysRes = await fetch("/api/user/api-keys");
@@ -2065,6 +2136,11 @@ export default function VideoEditorPage() {
       const caps = await runTranscribe(vUrl);
       if (abortRef.current) return;
 
+      // ── Gate 2 (post-TTS, exact): real audio length is known now — block before
+      // keywords/stock/render/HeyGen if it exceeds the plan cap. TTS is already
+      // spent, but this saves the (often pricier) HeyGen + render work.
+      if (!checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
+
       // ── Now extract keywords with accurate duration ──
       const kws  = await runKeywords();
       if (abortRef.current) return;
@@ -2095,7 +2171,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, userPlan]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -4041,6 +4117,9 @@ export default function VideoEditorPage() {
       <UpgradeModal
         open={upgradeModal.open}
         message={upgradeModal.message}
+        title={upgradeModal.title}
+        benefits={upgradeModal.benefits}
+        hideCta={upgradeModal.hideCta}
         onClose={() => setUpgradeModal({ open: false })}
       />
 
