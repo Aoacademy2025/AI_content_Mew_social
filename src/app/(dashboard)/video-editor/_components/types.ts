@@ -29,6 +29,9 @@ export interface Caption {
   tag?:    "hook" | "body" | "cta";
 }
 
+// "envato" = Premium tier — UI เลือกยังไม่ได้ (เร็วๆ นี้), backend ยังไม่รองรับ
+export type StockSource = "pexels" | "pixabay" | "both" | "envato";
+
 export interface StockVideo {
   keyword:   string;
   localUrl?: string;
@@ -110,7 +113,7 @@ export interface EditorDraft {
   config?: unknown;
 
   // Stock source
-  stockSource?: "pexels" | "pixabay" | "both";
+  stockSource?: StockSource;
 
   // BGM
   bgmEnabled?: boolean;

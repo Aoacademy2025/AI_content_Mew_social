@@ -22,7 +22,7 @@ import { UpgradeModal } from "@/components/ui/upgrade-modal";
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
-  SubPreset, SubTextEffect, EditorDraft,
+  SubPreset, SubTextEffect, EditorDraft, StockSource,
 } from "./_components/types";
 import { DEFAULT_STEPS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
@@ -169,10 +169,6 @@ export default function VideoEditorPage() {
   const [editingCapIdx, setEditingCapIdx] = useState<number | null>(null);
   const activeSegCardRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [activeCaptionIdx]);
-
   // ── Playback ──────────────────────────────────────────────────────────
   const [playing, setPlaying] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
@@ -198,13 +194,19 @@ export default function VideoEditorPage() {
   ), [durationMs, captionEndMs]);
   const playheadMs = videoMsToCaptionMs(currentMs);
 
+  // ตอนเล่น: เลื่อนการ์ดซับ active มากลาง panel ให้เห็นชัดว่าซับวิ่งถึงไหน
+  // ตอน pause/คลิกเอง: เลื่อนแค่พอเห็น (nearest) จะได้ไม่กระตุกตอนผู้ใช้ scroll หาเอง
+  useEffect(() => {
+    activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: playing ? "center" : "nearest" });
+  }, [activeCaptionIdx, playing]);
+
   // ── TTS / Voice ───────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [voiceId, setVoiceId] = useState("");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
 
   // ── Stock ─────────────────────────────────────────────────────────────
-  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  const [stockSource, setStockSource] = useState<StockSource>("both");
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);
   const targetClipCount = 0;
 
@@ -351,6 +353,8 @@ export default function VideoEditorPage() {
   // ── Search captions ────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  // ย่อแผง Process เพื่อให้ลิสต์ซับด้านบนสูงเต็ม panel ซ้าย
+  const [processOpen, setProcessOpen] = useState(true);
 
   // ── Timeline clip resize drag ──────────────────────────────────────────
   const clipResizeRef = useRef<{ capIdx: number; edge: "left" | "right" | "move"; startX: number; startMs: number; durMs?: number; moved?: boolean } | null>(null);
@@ -1027,7 +1031,7 @@ export default function VideoEditorPage() {
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
-    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : "Pexels+Pixabay";
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "envato" ? "Envato" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
     const sceneDurations: number[] = pipe.current.sceneDurations ?? [];
     const totalDurationSec = sceneDurations.length > 0
@@ -1979,12 +1983,17 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "heygen", retryStep: "runAll" });
           return;
         }
-        // Pexels/Pixabay key check
-        if ((stockSource === "pexels" || stockSource === "both") && !keysData.pexelsKey) {
+        // Pexels/Pixabay key check — Free tier (both) ขอแค่ key ใด key หนึ่ง
+        // (backend fallback ใช้ source ที่มี key อยู่แล้ว)
+        if (stockSource === "both" && !keysData.pexelsKey && !keysData.pixabayKey) {
           setMissingKey({ type: "pexels", retryStep: "runAll" });
           return;
         }
-        if ((stockSource === "pixabay" || stockSource === "both") && !keysData.pixabayKey) {
+        if (stockSource === "pexels" && !keysData.pexelsKey) {
+          setMissingKey({ type: "pexels", retryStep: "runAll" });
+          return;
+        }
+        if (stockSource === "pixabay" && !keysData.pixabayKey) {
           setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
         }
@@ -3041,8 +3050,15 @@ export default function VideoEditorPage() {
               return (
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
-                  className={cn("rounded-xl border transition-all group",
-                    isActive ? "bg-violet-500/10 border-violet-500/40" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
+                  className={cn("relative overflow-hidden rounded-xl border transition-all group",
+                    isActive ? "bg-violet-500/10 border-violet-500/50 ring-1 ring-violet-400/30" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
+
+                  {/* แถบ progress วิ่งตามเวลาในซับตัวนี้ — เห็นชัดว่าเล่นถึงไหน */}
+                  {isActive && playheadMs >= cap.startMs && playheadMs < cap.endMs && (
+                    <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-violet-500/15 pointer-events-none">
+                      <div className="h-full bg-violet-400" style={{ width: `${((playheadMs - cap.startMs) / Math.max(1, cap.endMs - cap.startMs)) * 100}%` }} />
+                    </div>
+                  )}
 
                   {/* Header row */}
                   <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1 cursor-pointer"
@@ -3137,10 +3153,24 @@ export default function VideoEditorPage() {
             </button>
           </div>
 
-          {/* Pipeline status */}
-          <div className="border-t border-[#1e1e28] p-3 overflow-y-auto flex-shrink-0 max-h-[55%]">
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Process</div>
-            <div className="flex flex-col gap-0.5">
+          {/* Pipeline status — ย่อได้ เพื่อคืนพื้นที่ให้ลิสต์ซับ */}
+          <div className={cn("border-t border-[#1e1e28] p-3 flex-shrink-0", processOpen && "overflow-y-auto max-h-[55%]")}>
+            <button onClick={() => setProcessOpen(v => !v)} className="w-full flex items-center gap-2 text-left group/proc">
+              <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider group-hover/proc:text-slate-400 transition-colors">Process</span>
+              {!processOpen && running && (
+                <span className="flex items-center gap-1 text-[9px] text-violet-400">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {renderActivity.phase !== "idle" && renderProgress > 0 && <span className="tabular-nums">{renderProgress}%</span>}
+                </span>
+              )}
+              {!processOpen && !running && (() => {
+                const done = Object.values(steps).filter(s => s === "done").length;
+                return done > 0 ? <span className="text-[9px] text-slate-700 tabular-nums">{done} done</span> : null;
+              })()}
+              <ChevronDown className={cn("w-3 h-3 text-slate-600 ml-auto transition-transform", !processOpen && "-rotate-90")} />
+            </button>
+            {processOpen && (<>
+            <div className="flex flex-col gap-0.5 mt-2">
               {/* Order matches runAll: TTS → Transcribe → Keywords → B-roll → Config → Render → (Avatar/Composite) → Burn */}
               {(() => {
               const visibleSteps = ([ ["tts","TTS Voice"], ["transcribe","Transcribe"], ["keywords","Keywords"], ["fetchStock","B-roll"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
@@ -3305,8 +3335,14 @@ export default function VideoEditorPage() {
               }
               return null;
             })()}
+            </>)}
           </div>
         </div>
+
+        {/* คอลัมน์ขวาของ Transcript: (preview + settings) ด้านบน, timeline ด้านล่าง
+            — panel ซ้ายเลยยืดสูงเต็มจนถึงล่างสุดของจอ */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
 
         {/* ── CENTER: PREVIEW ── */}
         <div ref={centerPanelRef} className="flex-1 flex flex-col bg-[#0c0c0f]/80 min-w-0">
@@ -3664,7 +3700,7 @@ export default function VideoEditorPage() {
             </div>
           </div>
         )}
-      </div>
+        </div>{/* /row: preview + settings */}
 
       {/* Floating detached panel */}
       {panelDetached && (
@@ -3935,7 +3971,7 @@ export default function VideoEditorPage() {
                         }
                       }}
                       className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
-                        i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
+                        i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/50 brightness-125` : tagClipBg(cap.tag))}
                       style={{ left: `${left}%`, width: `calc(${Math.max(0.4, width)}% - 2px)`, marginRight: "2px" }}>
                       <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10"
                         onPointerDown={e => startResize(e, "left")} />
@@ -3997,14 +4033,16 @@ export default function VideoEditorPage() {
 
               {/* Playhead — uses playheadMs (video-time mapped into caption-time) so it
                   tracks the caption clips exactly, even when the video is longer. */}
-              <div className="absolute top-0 bottom-0 w-[1.5px] bg-violet-500 pointer-events-none z-10"
+              <div className="absolute top-0 bottom-0 w-[2px] bg-violet-400 pointer-events-none z-10 shadow-[0_0_5px_rgba(167,139,250,0.8)]"
                 style={{ left: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }}>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.8)]" />
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.9)]" />
               </div>
             </div>
           </div>
         </div>
       </div>
+        </div>{/* /คอลัมน์ขวาของ Transcript */}
+      </div>{/* /MAIN BODY */}
 
       {/* Missing key modal */}
       {missingKey && (

@@ -399,6 +399,11 @@ export async function POST(req: Request) {
     visualDirection?: string;
   } = body ?? {};
 
+  // Premium (Envato) ยังไม่เปิดให้ใช้งาน — UI เลือกไม่ได้ แต่กันไว้เผื่อ client เก่า/ยิงตรง
+  if (stockSource === "envato") {
+    return NextResponse.json({ error: "Premium stock (Envato) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 400 });
+  }
+
   const usePexels = stockSource === "pexels" || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
 

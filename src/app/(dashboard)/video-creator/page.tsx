@@ -371,7 +371,8 @@ export default function ShortVideoPage() {
   // Auto clip count returned by the last fetch (so UI can show "Auto (12)")
   const [autoClipCount, setAutoClipCount] = useState(0);
   // Stock source selection (used for API fetch)
-  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  // "envato" = Premium tier (เร็วๆ นี้ — UI ยังเลือกไม่ได้)
+  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both" | "envato">("both");
   // Grid display filter (independent from fetch source — doesn't affect API calls)
   const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
   // Clips excluded by user (pexelsId set)
@@ -734,7 +735,7 @@ export default function ShortVideoPage() {
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
-    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : "Pexels+Pixabay";
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "envato" ? "Envato" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
 
     // Use scene durations from extract-keywords (more accurate than char-count estimate)
@@ -2418,27 +2419,41 @@ export default function ShortVideoPage() {
                     <h2 className="text-sm font-bold text-white">Stock Source</h2>
                   </div>
                   <span className="text-[9px] font-semibold uppercase tracking-wider text-white/25">
-                    {stockSource === "both" ? "Pexels + Pixabay" : stockSource === "pexels" ? "Pexels only" : "Pixabay only"}
+                    {stockSource === "envato" ? "Envato" : "Pexels + Pixabay"}
                   </span>
                 </div>
-                <div className="p-3">
-                  <div className="flex gap-1 p-1 rounded-xl" style={{ background: "var(--sv-input)" }}>
-                    {(["pexels","pixabay","both"] as const).map((v) => (
-                      <button
-                        key={v}
-                        onClick={() => setStockSource(v)}
-                        disabled={running}
-                        className="flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all disabled:opacity-40"
-                        style={
-                          stockSource === v
-                            ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
-                            : { color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }
-                        }
-                      >
-                        {v === "both" ? "Both" : v === "pexels" ? "Pexels" : "Pixabay"}
-                      </button>
-                    ))}
-                  </div>
+                <div className="p-3 space-y-1.5">
+                  {/* Free — Pexels + Pixabay */}
+                  <button
+                    onClick={() => setStockSource("both")}
+                    disabled={running}
+                    className="w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40"
+                    style={
+                      stockSource !== "envato"
+                        ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                        : { background: "var(--sv-input)", border: "1px solid transparent" }
+                    }
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-bold" style={{ color: stockSource !== "envato" ? "hsl(190 100% 70%)" : "rgba(255,255,255,0.5)" }}>Free</span>
+                      {stockSource !== "envato" && <span className="ml-auto text-[10px]" style={{ color: "hsl(190 100% 70%)" }}>✓</span>}
+                    </div>
+                    <div className="text-[10px] text-white/30 mt-0.5">Pexels + Pixabay</div>
+                  </button>
+                  {/* Premium — Envato (เร็วๆ นี้) */}
+                  <button
+                    disabled
+                    title="เร็วๆ นี้"
+                    className="w-full rounded-xl px-4 py-2.5 text-left opacity-70 cursor-not-allowed"
+                    style={{ background: "var(--sv-input)", border: "1px solid hsl(40 90% 55% / 0.2)" }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-bold" style={{ color: "hsl(40 90% 70% / 0.85)" }}>Premium</span>
+                      <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+                        style={{ color: "hsl(40 90% 65%)", background: "hsl(40 90% 55% / 0.1)", border: "1px solid hsl(40 90% 55% / 0.3)" }}>เร็วๆ นี้</span>
+                    </div>
+                    <div className="text-[10px] text-white/30 mt-0.5">Envato</div>
+                  </button>
                 </div>
               </div>
 

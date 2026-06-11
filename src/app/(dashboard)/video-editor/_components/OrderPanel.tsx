@@ -5,7 +5,7 @@ import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2 } fro
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import type { StepState } from "./types";
+import type { StepState, StockSource } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 
 export interface OrderPanelProps {
@@ -33,8 +33,8 @@ export interface OrderPanelProps {
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void; setAvatarOffsetY: (v: number) => void;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
   onPlanError?: (msg: string) => void;
-  stockSource: "pexels" | "pixabay" | "both";
-  setStockSource: (v: "pexels" | "pixabay" | "both") => void;
+  stockSource: StockSource;
+  setStockSource: (v: StockSource) => void;
 }
 
 export function OrderPanel(p: OrderPanelProps) {
@@ -64,17 +64,27 @@ export function OrderPanel(p: OrderPanelProps) {
       </div>
       {p.open && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-none">
-          {/* Stock Source */}
+          {/* Stock Source — Free (Pexels+Pixabay) / Premium (Envato, เร็วๆ นี้) */}
           <div>
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Stock Source</div>
-            <div className="flex gap-1.5">
-              {(["pexels", "pixabay", "both"] as const).map(src => (
-                <button key={src} onClick={() => p.setStockSource(src)}
-                  className={cn("flex-1 py-2 rounded-lg border text-[11px] font-bold transition-all",
-                    p.stockSource === src ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300")}>
-                  {src === "pexels" ? "Pexels" : src === "pixabay" ? "Pixabay" : "Both"}
-                </button>
-              ))}
+            <div className="space-y-1.5">
+              <button onClick={() => p.setStockSource("both")}
+                className={cn("w-full rounded-lg border px-3 py-2 text-left transition-all",
+                  p.stockSource !== "envato" ? "bg-violet-500/15 border-violet-500/45" : "bg-[#1a1a22] border-[#2a2a36] hover:border-[#3a3a4a]")}>
+                <div className="flex items-center gap-1.5">
+                  <span className={cn("text-[11px] font-bold", p.stockSource !== "envato" ? "text-violet-300" : "text-slate-400")}>Free</span>
+                  {p.stockSource !== "envato" && <span className="ml-auto text-[10px] text-violet-400">✓</span>}
+                </div>
+                <div className="text-[9px] text-slate-600 mt-0.5">Pexels + Pixabay</div>
+              </button>
+              <button disabled title="เร็วๆ นี้"
+                className="w-full rounded-lg border border-amber-500/15 bg-[#1a1a22] px-3 py-2 text-left opacity-70 cursor-not-allowed">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-bold text-amber-300/80">Premium</span>
+                  <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">เร็วๆ นี้</span>
+                </div>
+                <div className="text-[9px] text-slate-600 mt-0.5">Envato</div>
+              </button>
             </div>
           </div>
 
