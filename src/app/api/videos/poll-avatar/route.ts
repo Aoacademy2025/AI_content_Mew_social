@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { mapHeygenPollResponse } from "@/lib/heygen-poll";
+import { fetchWithBudget } from "@/lib/fetch-budget";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -39,13 +40,17 @@ export async function POST(req: Request) {
 
     const heygenKey = decrypt(user.heygenKey);
 
+    // HeyGen status budget: 15s/attempt, 1 retry (network/429/5xx only).
+    // returnHttpErrors keeps PR-1's res.status → terminal-state mapping working
+    // unchanged on 401/402/404 responses.
     let httpStatus = 0;
     let heygenBody: unknown = null;
     let retryAfterHeader: string | null = null;
     try {
-      const res = await fetch(
+      const res = await fetchWithBudget(
         `https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(videoId)}`,
-        { headers: { "X-Api-Key": heygenKey }, signal: AbortSignal.timeout(20000) }
+        { headers: { "X-Api-Key": heygenKey } },
+        { provider: "heygen", timeoutMs: 15_000, retries: 1, wallClockMs: 25_000, returnHttpErrors: true },
       );
       httpStatus = res.status;
       retryAfterHeader = res.headers.get("retry-after");
@@ -53,8 +58,14 @@ export async function POST(req: Request) {
       // PR-4 (ops guardrails) documents: set DEBUG_RENDER=1 to re-enable the
       // per-poll payload dump when debugging avatar issues. Opt-in — no log flood.
       if (process.env.DEBUG_RENDER === "1") console.log("[poll-avatar]", httpStatus, JSON.stringify(heygenBody));
-    } catch {
-      // network error / timeout — httpStatus คงเป็น 0 → mapper คืน "pending" ให้ poll ต่อ
+    } catch (e) {
+      // A caller abort is rethrown by fetchWithBudget untouched — propagate it.
+      if (e instanceof Error && e.name === "AbortError") throw e;
+      // Network error / timeout (transient ProviderError — the only other throw
+      // when returnHttpErrors is set): leave httpStatus = 0 so the mapper returns
+      // "pending" and the client keeps polling (PR-2's stale timeout bounds it).
+      // PR-1's contract: NO "unknown" status — the mapper is the single source of truth.
+      console.warn("[poll-avatar] transient HeyGen failure:", e instanceof Error ? e.message : e);
     }
 
     const payload = mapHeygenPollResponse({ httpStatus, body: heygenBody, retryAfterHeader });
