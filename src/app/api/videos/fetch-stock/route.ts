@@ -28,7 +28,9 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
 const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
-const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 120_000, 30_000, 600_000);
+// 300s default: long 4K source clips legitimately take minutes to re-encode;
+// a SIGKILL'd encode must not be the common case (override via env, max 600s).
+const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 300_000, 30_000, 600_000);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
 
 let activeNormalizations = 0;
@@ -102,8 +104,9 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
       return { status: "failed", durationMs: Date.now() - startedAt };
     }
   } catch (e) {
-    // If normalization fails, keep the original download rather than losing the clip
-    console.warn(`[fetch-stock] normalize failed for ${path.basename(filePath)}, keeping original:`, e);
+    // Normalization failed (timeout/SIGKILL or bad input). Callers DROP the
+    // clip — an un-normalized file crashes Remotion later ("Invalid data").
+    console.warn(`[fetch-stock] normalize failed for ${path.basename(filePath)}:`, e);
     safeUnlink(tmp);
     return { status: "failed", durationMs: Date.now() - startedAt };
   }
@@ -868,7 +871,17 @@ export async function POST(req: Request) {
         stockTelemetry.cacheHitCount++;
         // Older cached clips may predate normalization (or were left B-frame'd) —
         // normalizeForRemotion no-ops if already clean, re-encodes otherwise.
-        applyNormalizeTelemetry(await normalizeForRemotion(outPath));
+        const cachedNormalize = await normalizeForRemotion(outPath);
+        applyNormalizeTelemetry(cachedNormalize);
+        if (cachedNormalize.status === "failed") {
+          // Un-normalized clips crash Remotion later ("Invalid data"). Drop the
+          // broken file and skip this clip — the render timeline gap-fills with
+          // neighboring clips, and the next fetch re-downloads it fresh.
+          safeUnlink(outPath);
+          safeUnlink(normalizedMarkerPath(outPath));
+          console.warn(`[fetch-stock] dropped broken cached clip after normalize failure: ${outFile}`);
+          return;
+        }
         results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
         return;
       }
@@ -882,7 +895,18 @@ export async function POST(req: Request) {
         stockTelemetry.downloadedCount++;
         // Re-encode to Remotion-safe CFR/no-B-frame so the compositor can seek
         // every frame (fixes "No frame found at position X" render crashes).
-        applyNormalizeTelemetry(await normalizeForRemotion(outPath));
+        const freshNormalize = await normalizeForRemotion(outPath);
+        applyNormalizeTelemetry(freshNormalize);
+        if (freshNormalize.status === "failed") {
+          // Un-normalized clips crash Remotion later ("Invalid data"). Drop the
+          // broken file and skip this clip — the render timeline gap-fills with
+          // neighboring clips instead of rendering a corrupt one.
+          safeUnlink(outPath);
+          safeUnlink(normalizedMarkerPath(outPath));
+          stockTelemetry.downloadFailCount++;
+          console.warn(`[fetch-stock] dropped ${outFile} after normalize failure`);
+          return;
+        }
         if (!isValidMp4Path(outPath)) {
           stockTelemetry.downloadFailCount++;
           return;

@@ -11,6 +11,13 @@ if (process.platform === "win32") {
 }
 
 const nextConfig: NextConfig = {
+  // Build output dir. deploy/deploy.sh builds into .next-staging (via
+  // NEXT_DIST_DIR) and atomically swaps it into .next only on success, so a
+  // failed/OOM build can never delete the dist dir the running app serves
+  // from (the old in-place flow caused a 1,014-line ".next not found" crash
+  // loop). Runtime (pm2 `next start`) never sets NEXT_DIST_DIR, so it always
+  // reads the default .next.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   typescript: {
     ignoreBuildErrors: true,
   },

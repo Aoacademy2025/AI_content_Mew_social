@@ -60,30 +60,47 @@ npx prisma db push --skip-generate
 npx prisma generate
 
 echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEAP_MB}MB) ==="
+# Build into a staging dir and swap it into .next only after BUILD_ID exists.
+# The old in-place flow (rm -rf .next before building) left the running app
+# with NO dist dir for the whole multi-minute build; a failed/OOM build caused
+# a ".next not found" crash loop. Runtime (pm2 `next start`) never sets
+# NEXT_DIST_DIR, so it keeps serving the existing .next until the swap.
+STAGING_DIR="$APP_DIR/.next-staging"
+export NEXT_DIST_DIR=".next-staging"
 run_next_build() {
-  rm -rf "$APP_DIR/.next"
+  rm -rf "$STAGING_DIR"
   if ! npm run build; then
     return 1
   fi
-  test -f "$APP_DIR/.next/BUILD_ID"
+  test -f "$STAGING_DIR/BUILD_ID"
 }
 
 if ! run_next_build; then
-  echo "Build failed or missing .next/BUILD_ID. Retrying with lower memory profile: main=${BUILD_HEAP_MB_LOW}MB worker=${BUILD_WORKER_HEAP_MB_LOW}MB"
+  echo "Build failed or missing BUILD_ID. Retrying with lower memory profile: main=${BUILD_HEAP_MB_LOW}MB worker=${BUILD_WORKER_HEAP_MB_LOW}MB"
   export BUILD_HEAP_MB="$BUILD_HEAP_MB_LOW"
   export BUILD_WORKER_HEAP_MB="$BUILD_WORKER_HEAP_MB_LOW"
   export NODE_OPTIONS="--max-old-space-size=${BUILD_HEAP_MB} --max-semi-space-size=8"
   export NEXT_PRIVATE_WORKER_OPTIONS="--max-old-space-size=${BUILD_WORKER_HEAP_MB}"
   if ! run_next_build; then
-    echo "ERROR: build did not generate .next/BUILD_ID (most likely killed by OOM)"
+    echo "ERROR: build did not generate ${STAGING_DIR}/BUILD_ID (most likely killed by OOM). Old .next untouched — app keeps running."
     exit 1
   fi
 fi
 
-if [ ! -f "$APP_DIR/.next/BUILD_ID" ]; then
-  echo "ERROR: build did not generate .next/BUILD_ID (most likely killed by OOM)"
+if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
+  echo "ERROR: build did not generate ${STAGING_DIR}/BUILD_ID (most likely killed by OOM). Old .next untouched — app keeps running."
   exit 1
 fi
+
+echo "=== [5b/6] Atomic swap .next-staging -> .next ==="
+# .next.old is kept until the next deploy as a manual rollback
+# (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
+rm -rf "$APP_DIR/.next.old"
+if [ -d "$APP_DIR/.next" ]; then
+  mv "$APP_DIR/.next" "$APP_DIR/.next.old"
+fi
+mv "$STAGING_DIR" "$APP_DIR/.next"
+unset NEXT_DIST_DIR
 
 echo "=== [6/6] Restart PM2 ==="
 if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
