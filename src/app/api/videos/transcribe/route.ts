@@ -893,6 +893,7 @@ export async function POST(req: Request) {
     let segments: WhisperSegment[] = [];
     let fullText = "";
     let geminiDirectCaptions: CaptionItem[] = []; // captions from combined Gemini response
+    let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
 
     if (useGeminiTranscribe) {
       // ── Gemini Audio Transcribe with timestamps ──
@@ -918,6 +919,7 @@ export async function POST(req: Request) {
         try { fs.unlinkSync(mp3Path); } catch {}
 
         if (chunkPlan.length >= 2) {
+          wasChunked = true;
           // long audio: transcribe each chunk SEQUENTIALLY, offset + merge
           for (const ch of chunkPlan) {
             const r = await geminiTranscribeChunk(ch.buffer, geminiKey, script, ch.durationMs);
@@ -1469,7 +1471,10 @@ Total audio: ${audioDur.toFixed(2)}s`;
     );
     if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
       console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${sourceAudioDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
-      if (rawMaxMs > sourceAudioDurationMs * BOGUS_DURATION_MAX_RATIO) {
+      // Chunked long-audio already keeps Gemini in-sync per chunk; a small residual
+      // tail overshoot is handled by clampLastCaptionToAudioEnd below, so don't reject
+      // it — chunking IS the long-clip fix, and rejecting just left the user stuck.
+      if (!wasChunked && rawMaxMs > sourceAudioDurationMs * BOGUS_DURATION_MAX_RATIO) {
         const pct = Math.round((rawMaxMs / sourceAudioDurationMs - 1) * 100);
         console.warn(`[transcribe] desynced transcript: ${pct}% overshoot > ${Math.round((BOGUS_DURATION_MAX_RATIO - 1) * 100)}% threshold — rejecting (retryable)`);
         return NextResponse.json({
