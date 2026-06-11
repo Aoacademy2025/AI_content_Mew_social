@@ -2083,11 +2083,11 @@ export default function VideoEditorPage() {
   const runAll = useCallback(async () => {
     if (runningRef.current || !script.trim()) return;
 
-    // ── Gate 1 (pre-flight, before keys/TTS/HeyGen): block clearly-too-long scripts
-    // up front so the user isn't charged for TTS+avatar then told "too long" at the
-    // end. Estimate only (10% margin); the exact check after TTS is the real gate.
-    const directNow = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
-    if (!directNow && !checkDurationWithinPlan(estimateScriptDurationSec(script), true)) return;
+    // NOTE: a pre-TTS duration *estimate* gate was removed here — the script→duration
+    // estimate (rate tuned for keyword counting, ~2 Thai chars/sec) over-estimates the
+    // real spoken duration ~6x and false-blocked valid clips (showed "~30 min" for a
+    // ~6-min script). The cap is still enforced accurately by Gate 2 below (exact, on
+    // the real audioDurationMs after TTS) + the server render backstop.
 
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     try {
