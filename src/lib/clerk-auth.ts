@@ -17,6 +17,10 @@ export async function getCurrentUser(): Promise<User | null> {
   // Fast path: already linked
   let user = await prisma.user.findUnique({ where: { clerkId: userId } });
   if (user) {
+    // Row ที่ link ไว้ก่อนกติกา admin-domain จะค้าง role USER — upgrade ตรงนี้ด้วย
+    if (user.email.endsWith("@aoacademy.co") && user.role !== "ADMIN") {
+      user = await prisma.user.update({ where: { id: user.id }, data: { role: "ADMIN" } });
+    }
     const synced = await syncUserEntitlement(user.id);
     if (synced?.changed) {
       return prisma.user.findUnique({ where: { id: user.id } }) as Promise<User | null>;

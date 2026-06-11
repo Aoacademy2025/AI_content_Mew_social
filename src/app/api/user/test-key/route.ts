@@ -8,7 +8,7 @@ function decrypt(encrypted: string): string {
   return Buffer.from(encrypted, "base64").toString("utf-8");
 }
 
-type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "envato";
 
 // Test Gemini key against 3 capabilities our app uses:
 // 1. Auth + Generative Language API enabled (models endpoint)
@@ -120,6 +120,18 @@ async function testPixabay(key: string): Promise<{ ok: boolean; message: string 
   } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Pixabay ได้" }; }
 }
 
+// Envato personal token — ใช้ endpoint เบาๆ ที่ทุก token เรียกได้ (ไม่ต้องมี permission พิเศษ)
+async function testEnvato(token: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch("https://api.envato.com/v1/market/total-items.json", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) return { ok: true, message: "Envato token ใช้งานได้" };
+    if (res.status === 401 || res.status === 403) return { ok: false, message: "Token ไม่ถูกต้องหรือหมดอายุ — สร้างใหม่ที่ build.envato.com/my-apps" };
+    return { ok: false, message: `Error ${res.status}` };
+  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Envato ได้" }; }
+}
+
 export async function POST(req: Request) {
   try {
     const authUser = await getCurrentUser();
@@ -129,7 +141,7 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
+      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true, envatoKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -139,6 +151,7 @@ export async function POST(req: Request) {
       elevenlabs: user.elevenlabsKey,
       pexels:     user.pexelsKey,
       pixabay:    user.pixabayKey,
+      envato:     user.envatoKey,
     };
 
     const encrypted = encryptedMap[keyType];
@@ -153,6 +166,7 @@ export async function POST(req: Request) {
       case "elevenlabs": result = await testElevenLabs(key); break;
       case "pexels":     result = await testPexels(key);     break;
       case "pixabay":    result = await testPixabay(key);    break;
+      case "envato":     result = await testEnvato(key);     break;
       default: return NextResponse.json({ error: "Unknown key type" }, { status: 400 });
     }
 

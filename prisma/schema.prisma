@@ -26,6 +26,7 @@ model User {
   elevenlabsKey      String?
   pexelsKey          String?
   pixabayKey         String?
+  envatoKey          String?
   avatar             String?
   heygenAvatarId     String?
   elevenlabsVoiceId  String?

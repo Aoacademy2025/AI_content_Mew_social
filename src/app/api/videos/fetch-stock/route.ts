@@ -271,6 +271,54 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
   })).filter((v: { videoUrl: string }) => v.videoUrl);
 }
 
+// ── Envato (Premium, admin-only) ──────────────────────────────────────────
+// ใช้ Envato Market API (personal token) ค้นหา stock footage บน VideoHive.
+// หมายเหตุ: ไฟล์ที่ได้คือ "preview" ซึ่งมี watermark ของ Envato — เปิดเฉพาะ
+// admin เพื่อทดลอง pipeline ก่อน ยังไม่ปล่อยให้ user ทั่วไปใช้
+interface EnvatoSearchItem {
+  id: number;
+  name?: string;
+  previews?: {
+    icon_with_video_preview?: { video_url?: string };
+    video_preview?: { video_url?: string };
+  };
+  attributes?: { name?: string; value?: unknown }[];
+}
+
+// กันชน id กับ Pexels (raw) และ Pixabay (+9M) — Envato item id อยู่หลัก ~50M
+const ENVATO_ID_OFFSET = 1_000_000_000;
+
+// "1:23" / "0:07" / "1:02:03" → seconds
+function parseEnvatoLength(value: unknown): number {
+  if (typeof value !== "string") return 0;
+  const parts = value.split(":").map(p => parseInt(p, 10));
+  if (parts.some(isNaN) || parts.length === 0) return 0;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
+
+async function searchEnvato(query: string, token: string, perPage = 15): Promise<{ id: number; duration: number; videoUrl: string; title: string }[]> {
+  const params = new URLSearchParams({
+    term: query,
+    site: "videohive.net",
+    category: "stock-footage",
+    page_size: String(Math.min(50, perPage)),
+    sort_by: "relevance",
+  });
+  const res = await fetch(`https://api.envato.com/v1/discovery/search/search/item?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Envato search failed: ${res.status}`);
+  const data = await res.json();
+  return ((data.matches ?? []) as EnvatoSearchItem[])
+    .map(item => ({
+      id: item.id,
+      duration: parseEnvatoLength(item.attributes?.find(a => a.name === "length")?.value) || 8,
+      videoUrl: item.previews?.icon_with_video_preview?.video_url ?? item.previews?.video_preview?.video_url ?? "",
+      title: (item.name ?? "").slice(0, 80),
+    }))
+    .filter(v => v.videoUrl);
+}
+
 // LLM rank: given subtitle texts and candidate titles per keyword,
 // return the best-matching candidate index for each keyword.
 // Batched in chunks of RANK_BATCH_SIZE to handle long scripts reliably.
@@ -399,11 +447,7 @@ export async function POST(req: Request) {
     visualDirection?: string;
   } = body ?? {};
 
-  // Premium (Envato) ยังไม่เปิดให้ใช้งาน — UI เลือกไม่ได้ แต่กันไว้เผื่อ client เก่า/ยิงตรง
-  if (stockSource === "envato") {
-    return NextResponse.json({ error: "Premium stock (Envato) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 400 });
-  }
-
+  const useEnvato = stockSource === "envato";
   const usePexels = stockSource === "pexels" || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
 
@@ -411,15 +455,27 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { pixabayKey: true, pexelsKey: true, geminiKey: true, ttsProvider: true },
+    select: { pixabayKey: true, pexelsKey: true, envatoKey: true, geminiKey: true, ttsProvider: true, role: true },
   });
+
+  // Premium (Envato) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง (ไฟล์เป็น preview มี watermark)
+  if (useEnvato && user?.role !== "ADMIN") {
+    return NextResponse.json({ error: "Premium stock (Envato) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
+  }
+
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
+  const envatoKey = user?.envatoKey ? Buffer.from(user.envatoKey, "base64").toString("utf-8") : null;
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;
+  const canUseEnvato = useEnvato && !!envatoKey;
 
-  if (!canUsePexels && !canUsePixabay) {
+  if (useEnvato && !canUseEnvato) {
+    return NextResponse.json({ error: "Envato token ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "envato" }, { status: 400 });
+  }
+
+  if (!useEnvato && !canUsePexels && !canUsePixabay) {
     const needPexels = usePexels;
     const needPixabay = usePixabay;
     if (needPexels && needPixabay) {
@@ -487,6 +543,7 @@ export async function POST(req: Request) {
     searchQueries: 0,
     pexelsCandidates: 0,
     pixabayCandidates: 0,
+    envatoCandidates: 0,
     searchCandidatesTotal: 0,
     keywordsWithCandidates: 0,
     noCandidateKeywords: 0,
@@ -497,6 +554,7 @@ export async function POST(req: Request) {
     cappedCount: 0,
     selectedPexelsCount: 0,
     selectedPixabayCount: 0,
+    selectedEnvatoCount: 0,
     cacheHitCount: 0,
     downloadedCount: 0,
     downloadFailCount: 0,
@@ -514,7 +572,7 @@ export async function POST(req: Request) {
     if (result.status === "failed") stockTelemetry.normalizeFailedCount++;
   }
 
-  const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
+  const srcLabel = canUseEnvato ? "Envato" : canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
 
   async function recordFetchStockTelemetry(status: "done" | "error", extra: Record<string, unknown> = {}) {
     const normalizeAttempts = stockTelemetry.normalizeRanCount + stockTelemetry.normalizeFailedCount;
@@ -539,6 +597,7 @@ export async function POST(req: Request) {
         clipsPerKeyword,
         canUsePexels,
         canUsePixabay,
+        canUseEnvato,
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
@@ -624,19 +683,24 @@ export async function POST(req: Request) {
           console.log(`[fetch-stock] searching "${query}" (perPage=${basePerPage}) from ${srcLabel}`);
           stockTelemetry.searchQueries++;
 
-          const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
+          const [pexelsRaw, pixabayRaw, envatoRaw] = await Promise.allSettled([
             canUsePexels
               ? searchPexels(query, pexelsKey!, 3, basePerPage)
               : Promise.resolve([] as PexelsVideo[]),
             canUsePixabay
               ? searchPixabay(query, pixabayKey).catch(() => [] as { id: number; duration: number; videoUrl: string }[])
               : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+            canUseEnvato
+              ? searchEnvato(query, envatoKey!, basePerPage)
+              : Promise.resolve([] as { id: number; duration: number; videoUrl: string; title: string }[]),
           ]);
 
           const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
           const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+          const envatoVideos = envatoRaw.status === "fulfilled" ? envatoRaw.value : [];
           stockTelemetry.pexelsCandidates += pexelsVideos.length;
           stockTelemetry.pixabayCandidates += pixabayVideos.length;
+          stockTelemetry.envatoCandidates += envatoVideos.length;
 
           const candidates: CandidateVideo[] = [];
           for (const v of pexelsVideos) {
@@ -649,6 +713,9 @@ export async function POST(req: Request) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
             const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 4).map((t: string) => t.trim()).join(" ") : query;
             candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle });
+          }
+          for (const ev of envatoVideos) {
+            candidates.push({ keyword, id: ev.id + ENVATO_ID_OFFSET, duration: ev.duration, link: ev.videoUrl, title: ev.title || query });
           }
 
           if (candidates.length > 0) {
@@ -764,9 +831,10 @@ export async function POST(req: Request) {
         for (const fbQuery of broadFallbacks) {
           if (picked) break;
           try {
-            const [fbPexels, fbPixabay] = await Promise.all([
+            const [fbPexels, fbPixabay, fbEnvato] = await Promise.all([
               canUsePexels ? searchPexels(fbQuery, pexelsKey!, 3, 30) : Promise.resolve([] as PexelsVideo[]),
               canUsePixabay ? searchPixabay(fbQuery, pixabayKey!) : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+              canUseEnvato ? searchEnvato(fbQuery, envatoKey!, 30).catch(() => [] as { id: number; duration: number; videoUrl: string; title: string }[]) : Promise.resolve([] as { id: number; duration: number; videoUrl: string; title: string }[]),
             ]);
             // Try page 2 of Pexels for more variety if page 1 all used
             const fbPexels2 = canUsePexels && fbPexels.every(v => usedIds.has(v.id))
@@ -786,6 +854,15 @@ export async function POST(req: Request) {
                 if (usedIds.has(pv.id + 9_000_000)) continue;
                 usedIds.add(pv.id + 9_000_000);
                 found.push({ keyword: kw, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
+                picked = true;
+                break;
+              }
+            }
+            if (!picked) {
+              for (const ev of fbEnvato) {
+                if (usedIds.has(ev.id + ENVATO_ID_OFFSET)) continue;
+                usedIds.add(ev.id + ENVATO_ID_OFFSET);
+                found.push({ keyword: kw, id: ev.id + ENVATO_ID_OFFSET, duration: ev.duration, link: ev.videoUrl });
                 picked = true;
                 break;
               }
@@ -835,8 +912,9 @@ export async function POST(req: Request) {
   const clipsToDownload = capFoundClips(found, downloadClipLimit);
   stockTelemetry.foundCount = found.length;
   stockTelemetry.cappedCount = clipsToDownload.length;
+  stockTelemetry.selectedEnvatoCount = clipsToDownload.filter((clip) => clip.id >= ENVATO_ID_OFFSET).length;
   stockTelemetry.selectedPexelsCount = clipsToDownload.filter((clip) => clip.id < 9_000_000).length;
-  stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount;
+  stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount - stockTelemetry.selectedEnvatoCount;
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
   if (!clipsToDownload.length) {
     await recordFetchStockTelemetry("done", { emptyResult: true });

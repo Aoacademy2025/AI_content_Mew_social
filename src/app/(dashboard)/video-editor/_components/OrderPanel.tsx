@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2, Film, Crown, Check } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -35,6 +35,9 @@ export interface OrderPanelProps {
   onPlanError?: (msg: string) => void;
   stockSource: StockSource;
   setStockSource: (v: StockSource) => void;
+  envatoEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม Premium (Envato)
+  targetClipCount: number; // 0 = Auto (1 คลิป/ซับ), >0 = จำนวนคลิปใน 1 วิดีโอ
+  setTargetClipCount: (v: number) => void;
 }
 
 export function OrderPanel(p: OrderPanelProps) {
@@ -64,28 +67,116 @@ export function OrderPanel(p: OrderPanelProps) {
       </div>
       {p.open && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-none">
-          {/* Stock Source — Free (Pexels+Pixabay) / Premium (Envato, เร็วๆ นี้) */}
+          {/* Stock Source — Free (Pexels+Pixabay) / Premium (Envato) */}
           <div>
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Stock Source</div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
+              {/* Free */}
               <button onClick={() => p.setStockSource("both")}
-                className={cn("w-full rounded-lg border px-3 py-2 text-left transition-all",
-                  p.stockSource !== "envato" ? "bg-violet-500/15 border-violet-500/45" : "bg-[#1a1a22] border-[#2a2a36] hover:border-[#3a3a4a]")}>
-                <div className="flex items-center gap-1.5">
-                  <span className={cn("text-[11px] font-bold", p.stockSource !== "envato" ? "text-violet-300" : "text-slate-400")}>Free</span>
-                  {p.stockSource !== "envato" && <span className="ml-auto text-[10px] text-violet-400">✓</span>}
+                className={cn("relative w-full rounded-xl border px-3 py-2.5 text-left transition-all overflow-hidden",
+                  p.stockSource !== "envato" ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
+                style={p.stockSource !== "envato"
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.07) 55%, rgba(139,92,246,0.04))", boxShadow: "0 0 18px rgba(139,92,246,0.18), inset 0 1px 0 rgba(255,255,255,0.06)" }
+                  : { background: "#15151b" }}>
+                <div className="flex items-center gap-2.5">
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource !== "envato" ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
+                    <Film className={cn("w-3.5 h-3.5", p.stockSource !== "envato" ? "text-violet-300" : "text-slate-500")} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className={cn("text-[12px] font-bold leading-tight", p.stockSource !== "envato" ? "text-violet-200" : "text-slate-400")}>Free</div>
+                    <div className="text-[9px] text-slate-500 mt-0.5">Pexels + Pixabay</div>
+                  </div>
+                  {p.stockSource !== "envato" && (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(139,92,246,0.6)]">
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  )}
                 </div>
-                <div className="text-[9px] text-slate-600 mt-0.5">Pexels + Pixabay</div>
               </button>
-              <button disabled title="เร็วๆ นี้"
-                className="w-full rounded-lg border border-amber-500/15 bg-[#1a1a22] px-3 py-2 text-left opacity-70 cursor-not-allowed">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] font-bold text-amber-300/80">Premium</span>
-                  <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5">เร็วๆ นี้</span>
+
+              {/* Premium — gold luxe */}
+              <button
+                disabled={!p.envatoEnabled}
+                onClick={() => p.envatoEnabled && p.setStockSource("envato")}
+                title={p.envatoEnabled ? "Envato — admin beta (ไฟล์ preview มี watermark)" : "เร็วๆ นี้"}
+                className={cn("relative w-full rounded-xl text-left transition-all overflow-hidden px-3 py-2.5 border",
+                  p.stockSource === "envato" ? "border-amber-400/60"
+                  : p.envatoEnabled ? "border-amber-500/25 hover:border-amber-400/50"
+                  : "border-amber-500/15 cursor-not-allowed")}
+                style={p.stockSource === "envato"
+                  ? { background: "linear-gradient(135deg, rgba(245,158,11,0.18), rgba(180,83,9,0.08) 55%, rgba(245,158,11,0.04))", boxShadow: "0 0 18px rgba(245,158,11,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
+                  : { background: "linear-gradient(135deg, rgba(245,158,11,0.05), #15151b 60%)" }}>
+                {/* gold sheen line on top */}
+                <div aria-hidden className="absolute inset-x-0 top-0 h-px"
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(252,211,77,0.45), transparent)" }} />
+                <div className={cn("flex items-center gap-2.5", !p.envatoEnabled && "opacity-75")}>
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource === "envato" ? "border-amber-400/50" : "border-amber-500/25")}
+                    style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.3), rgba(120,53,15,0.25))" }}>
+                    <Crown className="w-3.5 h-3.5 text-amber-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-bold leading-tight"
+                      style={{ background: "linear-gradient(90deg, #fcd34d, #f59e0b, #fcd34d)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      Premium
+                    </div>
+                    <div className="text-[9px] text-amber-200/40 mt-0.5">Envato</div>
+                  </div>
+                  {p.stockSource === "envato" ? (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(245,158,11,0.6)]"
+                      style={{ background: "linear-gradient(135deg, #f59e0b, #b45309)" }}>
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-amber-300 rounded-full px-2 py-0.5 shrink-0"
+                      style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)", boxShadow: "0 0 10px rgba(245,158,11,0.12)" }}>
+                      {p.envatoEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                    </span>
+                  )}
                 </div>
-                <div className="text-[9px] text-slate-600 mt-0.5">Envato</div>
               </button>
             </div>
+          </div>
+
+          {/* B-roll clip count — กี่คลิปย่อยใน 1 วิดีโอ */}
+          <div>
+            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">B-roll Clips</div>
+            <div className="flex gap-1.5">
+              <button onClick={() => p.setTargetClipCount(0)}
+                className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
+                  p.targetClipCount === 0 ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300")}
+                style={p.targetClipCount === 0
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15)" }
+                  : undefined}>
+                Auto
+              </button>
+              {/* custom stepper − n + (แทน native spinner) */}
+              <div className={cn("flex items-center rounded-xl border overflow-hidden transition-all",
+                p.targetClipCount > 0 ? "border-violet-400/50" : "border-[#26262f] bg-[#15151b]")}
+                style={p.targetClipCount > 0
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15)" }
+                  : undefined}>
+                <button
+                  onClick={() => p.setTargetClipCount(Math.max(0, (p.targetClipCount || 1) - 1))}
+                  className="w-7 self-stretch flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-white/5 transition-colors text-[13px] font-bold">−</button>
+                <input
+                  type="text" inputMode="numeric" placeholder="—"
+                  value={p.targetClipCount || ""}
+                  onChange={e => {
+                    const n = parseInt(e.target.value, 10);
+                    p.setTargetClipCount(isNaN(n) ? 0 : Math.max(1, Math.min(60, n)));
+                  }}
+                  className={cn("w-9 bg-transparent text-center text-[12px] font-bold outline-none py-2",
+                    p.targetClipCount > 0 ? "text-violet-200" : "text-slate-500 placeholder:text-slate-700")} />
+                <button
+                  onClick={() => p.setTargetClipCount(Math.min(60, (p.targetClipCount || 0) + 1))}
+                  className="w-7 self-stretch flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-white/5 transition-colors text-[13px] font-bold">+</button>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-700 mt-1.5 leading-relaxed">
+              Auto = เปลี่ยนคลิปตามซับ (1 คลิป/ซับ) · กำหนดเอง = จำนวนคลิปย่อยใน 1 วิดีโอ แบ่งเวลาเท่าๆ กัน
+            </p>
           </div>
 
           {/* TTS — ซ่อนเมื่อ Direct URL */}

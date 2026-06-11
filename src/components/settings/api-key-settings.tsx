@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
@@ -11,19 +11,22 @@ interface ApiKeys {
   elevenlabsKey?: string;
   pexelsKey?: string;
   pixabayKey?: string;
+  envatoKey?: string;
 }
-type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "envato";
 type TestResult = { ok: boolean; message: string } | null;
 
-const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
+const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string; adminOnly?: boolean }[] = [
   { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza... หรือ AQ.",          description: "Google Gemini — ใช้สำหรับเสียง, ถอดซับ, keyword และ AI หลัก แนะนำผูกบัตร Google เพื่อเพิ่มโควต้า",   link: "https://aistudio.google.com/app/apikey" },
   { id: "heygenKey",     keyType: "heygen",     label: "HeyGen API Key",     placeholder: "Enter your HeyGen key",    description: "Avatar video creation",                      link: "https://app.heygen.com/settings?nav=API" },
   { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
   { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },
   { id: "pixabayKey",    keyType: "pixabay",    label: "Pixabay API Key",    placeholder: "12345678-abcdef...",        description: "Stock video fallback (Pixabay)",             link: "https://pixabay.com/api/docs/" },
+  // Premium stock — ทดลองภายใน admin เท่านั้น (ซ่อนจาก user ทั่วไป)
+  { id: "envatoKey",     keyType: "envato",     label: "Envato Personal Token", placeholder: "Enter your Envato token", description: "Premium stock (VideoHive) — admin only",   link: "https://build.envato.com/my-apps/", adminOnly: true },
 ];
 
-const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null };
+const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, envato: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);
@@ -33,8 +36,23 @@ export function ApiKeySettings() {
   const [testResults, setTestResults] = useState<Record<KeyType, TestResult>>({ ...EMPTY_RESULTS });
   const [dirty, setDirty] = useState(false);
   const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => { fetchApiKeys(); }, []);
+  useEffect(() => {
+    fetchApiKeys();
+    // ช่อง adminOnly (Envato) โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
+    fetch("/api/user/me").then(r => r.json()).then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
+  }, []);
+
+  // Sync ข้ามจุดที่ component นี้ถูกใช้ (popup ใน editor / หน้า Settings) —
+  // กลับมาโฟกัสเมื่อไหร่ refetch ใหม่ ถ้าไม่มีการแก้ค้างอยู่ จะได้ไม่ทับของที่พิมพ์
+  const dirtyRef = useRef(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+  useEffect(() => {
+    const onFocus = () => { if (!dirtyRef.current) fetchApiKeys(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   async function fetchApiKeys() {
     try {
@@ -152,7 +170,7 @@ export function ApiKeySettings() {
         )}
       </div>
 
-      {KEY_CONFIG.map((cfg) => {
+      {KEY_CONFIG.filter(cfg => !cfg.adminOnly || isAdmin).map((cfg) => {
         const result = testResults[cfg.keyType];
         const isTesting = testingKey === cfg.keyType;
         const set = isSet(cfg.id);

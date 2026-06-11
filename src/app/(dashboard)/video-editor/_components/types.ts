@@ -114,6 +114,8 @@ export interface EditorDraft {
 
   // Stock source
   stockSource?: StockSource;
+  // จำนวนคลิป B-roll (0/undefined = Auto)
+  targetClipCount?: number;
 
   // BGM
   bgmEnabled?: boolean;

@@ -14,9 +14,10 @@ import {
   Download, Scissors, Trash2,
   ChevronDown, ChevronLeft, ChevronRight, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
   Maximize2, Minimize2, Plus, Search, Loader2,
-  ZoomIn, User, X, Save, Pencil,
+  ZoomIn, User, X, Save, Pencil, KeyRound, ImagePlus,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
@@ -178,6 +179,8 @@ export default function VideoEditorPage() {
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isEditorExpanded, setIsEditorExpanded] = useState(false);
+  const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
+  const [savingToGallery, setSavingToGallery] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const centerPanelRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -207,8 +210,14 @@ export default function VideoEditorPage() {
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
+  // Premium (Envato) เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
+  const [envatoEnabled, setEnvatoEnabled] = useState(false);
+  useEffect(() => {
+    fetch("/api/user/me").then(r => r.json()).then(d => setEnvatoEnabled(d?.role === "ADMIN")).catch(() => {});
+  }, []);
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);
-  const targetClipCount = 0;
+  // จำนวนคลิป B-roll ใน 1 วิดีโอ: 0 = Auto (1 คลิปต่อ 1 ซับ) / >0 = กำหนดเอง (แบ่งเวลาเท่าๆ กัน)
+  const [targetClipCount, setTargetClipCount] = useState(0);
 
   // ── Preferred LLM ─────────────────────────────────────────────────────
   const preferredLLMRef = useRef<"gemini" | null>(null);
@@ -611,6 +620,7 @@ export default function VideoEditorPage() {
     // Stock
     setStockSource("both");
     setStockVideos([]);
+    setTargetClipCount(0);
 
     // BGM
     setBgmEnabled(false);
@@ -685,6 +695,7 @@ export default function VideoEditorPage() {
 
     // Stock source
     if (d.stockSource) setStockSource(d.stockSource);
+    if (d.targetClipCount !== undefined) setTargetClipCount(d.targetClipCount);
 
     // BGM
     if (d.bgmEnabled !== undefined) setBgmEnabled(d.bgmEnabled);
@@ -786,6 +797,7 @@ export default function VideoEditorPage() {
       config: pipe.current.config,
 
       stockSource,
+      targetClipCount,
       bgmEnabled, bgmFile, bgmVolume,
 
       useAvatar, avatarId, avatarName, avatarPreviewUrl,
@@ -1045,13 +1057,15 @@ export default function VideoEditorPage() {
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
         preferredLLM: preferredLLMRef.current,
-        ...(perSubtitleClipCount > 0
+        // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
+        ...(targetClipCount > 0
+          ? { overrideClipCount: targetClipCount }
+          : perSubtitleClipCount > 0
           ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
-          : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit }
-          : targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
+          : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
-        ...(perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
+        ...(targetClipCount === 0 && perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -1997,6 +2011,10 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
         }
+        if (stockSource === "envato" && !keysData.envatoKey) {
+          setMissingKey({ type: "envato", retryStep: "runAll" });
+          return;
+        }
       }
     } catch { /* ถ้าตรวจสอบ key ไม่ได้ ปล่อยผ่านและให้ pipeline จัดการ */ }
 
@@ -2066,7 +2084,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2807,9 +2825,42 @@ export default function VideoEditorPage() {
               </button>
             );
           })()}
+          {/* Save to Gallery — เซฟคลิปปัจจุบันลง Gallery ได้ทันทีหลัง render เสร็จ ไม่ต้องรอ Burn */}
+          {videoUrl && !running && (
+            <button
+              onClick={async () => {
+                if (savingToGallery) return;
+                setSavingToGallery(true);
+                try {
+                  // ใช้ตัว burn แล้วถ้ามีและ style ไม่ถูกแก้ ไม่งั้นใช้ preview ปัจจุบัน
+                  const best = (pipe.current.burnedVideoUrl && !styleIsDirty) ? pipe.current.burnedVideoUrl : videoUrl;
+                  await saveToGallery({
+                    videoUrl: best,
+                    videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+                    status: "COMPLETED",
+                  });
+                  saveDraftNow(); // ผูก galleryVideoId ไว้กับ draft ด้วย
+                  toast.success("บันทึกลง Gallery แล้ว");
+                } finally {
+                  setSavingToGallery(false);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 transition-colors disabled:opacity-50"
+              disabled={savingToGallery}
+              title="บันทึกคลิปปัจจุบันลง Gallery"
+            >
+              {savingToGallery ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImagePlus className="w-3 h-3" />}
+              {savingToGallery ? "กำลังบันทึก..." : "Save to Gallery"}
+            </button>
+          )}
           <button onClick={saveDraftNow}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-emerald-400 hover:border-emerald-500/40 transition-colors">
             <Save className="w-3 h-3" /> Save
+          </button>
+          <button onClick={() => setApiSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-500/10 border border-violet-500/40 text-violet-300 hover:bg-violet-500/20 hover:border-violet-400/70 hover:text-violet-200 transition-colors"
+            title="ตั้งค่า API keys โดยไม่ต้องออกจาก editor">
+            <KeyRound className="w-3.5 h-3.5" /> API Keys
           </button>
           <button
             onClick={() => setIsEditorExpanded(v => !v)}
@@ -3643,6 +3694,8 @@ export default function VideoEditorPage() {
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
+              envatoEnabled={envatoEnabled}
+              targetClipCount={targetClipCount} setTargetClipCount={setTargetClipCount}
             />
             <div className="flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full" style={{ width: rightPanelWidth }}>
               <RightSettingsPanel
@@ -4063,6 +4116,24 @@ export default function VideoEditorPage() {
         message={upgradeModal.message}
         onClose={() => setUpgradeModal({ open: false })}
       />
+
+      {/* API settings popup — ตั้งค่า key ได้โดยไม่ต้องออกจาก editor */}
+      {apiSettingsOpen && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setApiSettingsOpen(false)}>
+          <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl bg-[#101016] border border-[#2a2a36] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 bg-[#101016]/95 backdrop-blur border-b border-[#1e1e28]">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-violet-400" />
+                <h3 className="text-sm font-bold text-white">API Settings</h3>
+              </div>
+              <button onClick={() => setApiSettingsOpen(false)} className="text-slate-500 hover:text-slate-300 transition-colors"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-5">
+              <ApiKeySettings />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Render settings modal */}
       {renderSettingsOpen && (

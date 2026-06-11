@@ -371,8 +371,12 @@ export default function ShortVideoPage() {
   // Auto clip count returned by the last fetch (so UI can show "Auto (12)")
   const [autoClipCount, setAutoClipCount] = useState(0);
   // Stock source selection (used for API fetch)
-  // "envato" = Premium tier (เร็วๆ นี้ — UI ยังเลือกไม่ได้)
+  // "envato" = Premium tier — เปิดเฉพาะ ADMIN (user ทั่วไปเห็นปุ่มแต่กดไม่ได้)
   const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both" | "envato">("both");
+  const [envatoEnabled, setEnvatoEnabled] = useState(false);
+  useEffect(() => {
+    fetch("/api/user/me").then(r => r.json()).then(d => setEnvatoEnabled(d?.role === "ADMIN")).catch(() => {});
+  }, []);
   // Grid display filter (independent from fetch source — doesn't affect API calls)
   const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
   // Clips excluded by user (pexelsId set)
@@ -1571,11 +1575,15 @@ export default function ShortVideoPage() {
           return;
         }
         // Stock key check
+        if (stockSource === "envato" && !keys.envatoKey) {
+          setMissingKey({ type: "envato", retryStep: "runAll" });
+          return;
+        }
         const needPexels  = stockSource === "pexels" || stockSource === "both";
         const needPixabay = stockSource === "pixabay" || stockSource === "both";
         const canUsePexels = !needPexels || !!keys.pexelsKey;
         const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-        if (!canUsePexels && !canUsePixabay) {
+        if (stockSource !== "envato" && !canUsePexels && !canUsePixabay) {
           setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
           return;
         }
@@ -1977,11 +1985,15 @@ export default function ShortVideoPage() {
         const keysRes = await fetch("/api/user/api-keys");
         if (keysRes.ok) {
           const keys = await keysRes.json();
+          if (stockSource === "envato" && !keys.envatoKey) {
+            setMissingKey({ type: "envato", retryStep: step });
+            return;
+          }
           const needPexels  = stockSource === "pexels" || stockSource === "both";
           const needPixabay = stockSource === "pixabay" || stockSource === "both";
           const canUsePexels = !needPexels || !!keys.pexelsKey;
           const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-          if (!canUsePexels && !canUsePixabay) {
+          if (stockSource !== "envato" && !canUsePexels && !canUsePixabay) {
             setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: step });
             return;
           }
@@ -2440,20 +2452,74 @@ export default function ShortVideoPage() {
                     </div>
                     <div className="text-[10px] text-white/30 mt-0.5">Pexels + Pixabay</div>
                   </button>
-                  {/* Premium — Envato (เร็วๆ นี้) */}
+                  {/* Premium — Envato (ADMIN beta / user ทั่วไป: เร็วๆ นี้) */}
                   <button
-                    disabled
-                    title="เร็วๆ นี้"
-                    className="w-full rounded-xl px-4 py-2.5 text-left opacity-70 cursor-not-allowed"
-                    style={{ background: "var(--sv-input)", border: "1px solid hsl(40 90% 55% / 0.2)" }}
+                    disabled={!envatoEnabled || running}
+                    onClick={() => envatoEnabled && setStockSource("envato")}
+                    title={envatoEnabled ? "Envato — admin beta (ไฟล์ preview มี watermark)" : "เร็วๆ นี้"}
+                    className={cn("w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40",
+                      !envatoEnabled && "opacity-70 cursor-not-allowed")}
+                    style={
+                      stockSource === "envato"
+                        ? { background: "hsl(40 90% 55% / 0.12)", border: "1px solid hsl(40 90% 55% / 0.4)" }
+                        : { background: "var(--sv-input)", border: "1px solid hsl(40 90% 55% / 0.2)" }
+                    }
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-[12px] font-bold" style={{ color: "hsl(40 90% 70% / 0.85)" }}>Premium</span>
-                      <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
-                        style={{ color: "hsl(40 90% 65%)", background: "hsl(40 90% 55% / 0.1)", border: "1px solid hsl(40 90% 55% / 0.3)" }}>เร็วๆ นี้</span>
+                      <span className="text-[12px] font-bold" style={{ color: stockSource === "envato" ? "hsl(40 90% 70%)" : "hsl(40 90% 70% / 0.85)" }}>Premium</span>
+                      {stockSource === "envato" ? (
+                        <span className="ml-auto text-[10px]" style={{ color: "hsl(40 90% 65%)" }}>✓</span>
+                      ) : (
+                        <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+                          style={{ color: "hsl(40 90% 65%)", background: "hsl(40 90% 55% / 0.1)", border: "1px solid hsl(40 90% 55% / 0.3)" }}>
+                          {envatoEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10px] text-white/30 mt-0.5">Envato</div>
                   </button>
+
+                  {/* จำนวนคลิป B-roll — กี่คลิปย่อยใน 1 วิดีโอ */}
+                  <div className="pt-2.5 mt-1" style={{ borderTop: "1px solid var(--sv-border)" }}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] font-semibold text-white/50">จำนวนคลิป B-roll</span>
+                      {targetClipCount === 0 && autoClipCount > 0 && (
+                        <span className="text-[10px] text-white/30">Auto ล่าสุด: {autoClipCount} คลิป</span>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => setTargetClipCount(0)}
+                        disabled={running}
+                        className="flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all disabled:opacity-40"
+                        style={
+                          targetClipCount === 0
+                            ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                            : { background: "var(--sv-input)", color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }
+                        }
+                      >
+                        Auto
+                      </button>
+                      <input
+                        type="number" min={1} max={60} placeholder="เช่น 8"
+                        value={targetClipCount || ""}
+                        disabled={running}
+                        onChange={e => {
+                          const n = parseInt(e.target.value, 10);
+                          setTargetClipCount(isNaN(n) ? 0 : Math.max(1, Math.min(60, n)));
+                        }}
+                        className="w-24 rounded-lg px-2 py-1.5 text-[11px] text-center outline-none transition-all disabled:opacity-40 placeholder:text-white/20"
+                        style={
+                          targetClipCount > 0
+                            ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                            : { background: "var(--sv-input)", color: "rgba(255,255,255,0.5)", border: "1px solid transparent" }
+                        }
+                      />
+                    </div>
+                    <p className="text-[10px] text-white/25 mt-1.5 leading-relaxed">
+                      Auto = ระบบคำนวณจากความยาววิดีโอ · กำหนดเอง = จำนวนคลิปย่อยใน 1 วิดีโอ
+                    </p>
+                  </div>
                 </div>
               </div>
 
