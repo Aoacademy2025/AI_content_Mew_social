@@ -103,6 +103,19 @@ export async function reserveClipUsage(userId: string): Promise<UsageReservation
   return { ...usage, usageCount: usage.usageCount + 1, allowed: true };
 }
 
+/** Read-only quota peek — does NOT reserve. Use for fail-fast prechecks before heavy
+ *  work; reserveClipUsage above remains the single atomic source of truth. */
+export async function checkClipQuota(userId: string): Promise<UsageReservation | null> {
+  const usage = await syncUsageWindow(userId);
+  if (!usage) return null;
+
+  if (usage.usageCount >= usage.usageLimit) {
+    return { ...usage, allowed: false, message: quotaMessage(usage.plan, usage.usageLimit, usage.resetAt) };
+  }
+
+  return { ...usage, allowed: true };
+}
+
 export async function refundClipUsage(userId: string): Promise<void> {
   await prisma.user.updateMany({
     where: { id: userId, usageCount: { gt: 0 } },

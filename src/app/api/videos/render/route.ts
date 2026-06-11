@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
-import { refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
 import path from "path";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
@@ -183,6 +183,25 @@ function saveBundleCache() {
   } catch {}
 }
 
+// Design-doc §8 error contract: { code, provider, message, userAction, retryable }.
+// `detail` duplicates the Thai message as a plain string for legacy clients that
+// render data.error / data.detail directly (e.g. video-creator's ApiCallError message).
+function quotaExceededResponse(message: string) {
+  return NextResponse.json(
+    {
+      error: {
+        code: "quota_exceeded",
+        provider: "heroai",
+        message,
+        userAction: "อัปเกรดแพ็กเกจที่หน้า Pricing เพื่อสร้างคลิปต่อ",
+        retryable: false,
+      },
+      detail: message,
+    },
+    { status: 403 }
+  );
+}
+
 export async function POST(req: Request) {
   const requestStartedAt = Date.now();
   loadBundleCache();
@@ -206,6 +225,14 @@ export async function POST(req: Request) {
     try { fs.mkdirSync(renderTmpDir, { recursive: true }); } catch {}
 
     const userId = authUser.id;
+
+    // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง — ก่อน parse body, ก่อนยกเลิก job เดิม
+    // ของ user (ซึ่งต้อง await render เก่าจบ อาจกินเวลาหลายนาทีและทำลาย preview เดิม)
+    // และก่อน bundle/render ใดๆ. อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่าง
+    // ยังเป็นตัวจองจริง (atomic) ตัวเดียวเหมือนเดิม จึงไม่มีการจองซ้ำ
+    const quotaCheck = await checkClipQuota(userId);
+    if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
 
     const dbUser = await prisma.user.findUnique({
       where: { id: userId },
@@ -271,7 +298,8 @@ export async function POST(req: Request) {
 
     const quota = await reserveClipUsage(userId);
     if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
+    // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าคลิปสุดท้ายไประหว่าง precheck → reserve
+    if (!quota.allowed) return quotaExceededResponse(quota.message);
     quotaReserved = true;
     reservedUserId = userId;
 
