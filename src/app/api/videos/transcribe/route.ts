@@ -1308,6 +1308,13 @@ Total audio: ${audioDur.toFixed(2)}s`;
     // (incomplete transcription). Too long is clamped to ffprobe; too short is a
     // retryable error so we don't render a video that cuts audio/subtitles early.
     const TAIL_MS = 2000;
+    // When Gemini's whole reported timeline runs well PAST the real audio, it lost
+    // timestamp sync — every caption is mistimed (and big gaps drop captions), not
+    // just the tail. Clamping would silently ship drifted/gappy subs. So past a
+    // threshold, fail retryable (like the too-short case below): Gemini is
+    // non-deterministic so a retry often re-syncs, and a shorter clip always works.
+    // This is a safety net only — the real long-clip fix is audio chunking.
+    const BOGUS_DURATION_MAX_RATIO = 1.10; // >10% overshoot ⇒ unreliable, reject
     const rawMaxMs = Math.max(
       captions.at(-1)?.endMs ?? 0,
       rawSegments.at(-1)?.endMs ?? 0,
@@ -1316,6 +1323,18 @@ Total audio: ${audioDur.toFixed(2)}s`;
     );
     if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
       console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${sourceAudioDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
+      if (rawMaxMs > sourceAudioDurationMs * BOGUS_DURATION_MAX_RATIO) {
+        const pct = Math.round((rawMaxMs / sourceAudioDurationMs - 1) * 100);
+        console.warn(`[transcribe] desynced transcript: ${pct}% overshoot > ${Math.round((BOGUS_DURATION_MAX_RATIO - 1) * 100)}% threshold — rejecting (retryable)`);
+        return NextResponse.json({
+          error: `ถอดซับไม่ตรงจังหวะ (ระบบถอดเสียงคลาดเคลื่อน ~${pct}%) — มักเกิดกับคลิปยาว กรุณากด Transcribe อีกครั้ง หรือใช้คลิปสั้นลง`,
+          provider: "gemini",
+          reason: "transcribe_desynced",
+          retryable: true,
+          sourceAudioDurationMs,
+          reportedDurationMs: rawMaxMs,
+        }, { status: 422 });
+      }
     }
     if (sourceAudioDurationMs > 0) {
       const missingTailMs = sourceAudioDurationMs - rawMaxMs;
