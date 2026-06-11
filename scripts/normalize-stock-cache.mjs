@@ -18,6 +18,9 @@ const execFileAsync = promisify(execFile);
 
 const TARGET_FPS = 30;
 const CONCURRENCY = 3; // keep CPU usable; encodes are heavy
+// Match the route's default (STOCK_NORMALIZE_TIMEOUT_MS, 300s). Without a
+// timeout one pathological clip hangs the whole backfill forever.
+const TIMEOUT_MS = Number(process.env.STOCK_NORMALIZE_TIMEOUT_MS) || 300_000;
 const ffmpeg = path.join(
   process.cwd(), "node_modules", "@ffmpeg-installer",
   `${process.platform}-${process.arch}`,
@@ -37,17 +40,20 @@ async function normalize(filePath) {
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
       "-r", String(TARGET_FPS), "-g", String(TARGET_FPS), "-keyint_min", String(TARGET_FPS),
       "-bf", "0", "-vsync", "cfr", "-movflags", "+faststart", tmp,
-    ], { maxBuffer: 64 * 1024 * 1024 });
+    ], { maxBuffer: 64 * 1024 * 1024, timeout: TIMEOUT_MS, killSignal: "SIGKILL" });
     if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
       fs.renameSync(tmp, filePath);
       try { fs.writeFileSync(marker, ""); } catch {}
       return "ok";
     }
     safeUnlink(tmp);
+    safeUnlink(filePath); // un-normalizable clip would crash Remotion — drop it
     return "fail";
   } catch (e) {
     safeUnlink(tmp);
-    console.warn(`  ! ${path.basename(filePath)}: ${e.message?.slice(0, 120)}`);
+    // Un-normalizable clips crash Remotion later ("Invalid data") — drop them.
+    safeUnlink(filePath);
+    console.warn(`  ! ${path.basename(filePath)}: dropped (${e.message?.slice(0, 120)})`);
     return "fail";
   }
 }
