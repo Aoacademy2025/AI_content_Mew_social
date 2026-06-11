@@ -921,8 +921,19 @@ export async function POST(req: Request) {
         if (chunkPlan.length >= 2) {
           wasChunked = true;
           // long audio: transcribe each chunk SEQUENTIALLY, offset + merge
+          const fullScript = (script ?? "").trim();
+          const totalMsForScript = sourceAudioDurationMs || chunkPlan.reduce((a, c) => a + c.durationMs, 0) || 1;
           for (const ch of chunkPlan) {
-            const r = await geminiTranscribeChunk(ch.buffer, geminiKey, script, ch.durationMs);
+            // Give each chunk only its proportional slice of the script (±12% margin)
+            // as the spelling reference. Passing the FULL script made Gemini anchor to
+            // the script's opening and re-emit the clip's intro for every chunk (the
+            // chunk audio itself is sliced correctly — verified on the VPS ffmpeg).
+            const lo = Math.max(0, ch.startMs / totalMsForScript - 0.12);
+            const hi = Math.min(1, (ch.startMs + ch.durationMs) / totalMsForScript + 0.12);
+            const chunkScript = fullScript
+              ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
+              : "";
+            const r = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
             const offSec = ch.startMs / 1000;
             for (const w of r.words) words.push({ word: w.word, start: w.start + offSec, end: w.end + offSec });
             for (const s of r.segments) segments.push({ text: s.text, start: s.start + offSec, end: s.end + offSec });
