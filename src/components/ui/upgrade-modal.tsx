@@ -7,9 +7,24 @@ interface UpgradeModalProps {
   open: boolean;
   message?: string;
   onClose: () => void;
+  /** Override the heading. Defaults to the FREE→PRO feature-gate title. */
+  title?: string;
+  /** Override the benefit bullets (e.g. show Business benefits for a PRO user). */
+  benefits?: string[];
+  /** Override the CTA label. */
+  ctaLabel?: string;
+  /** Hide the upgrade CTA — for users already on the top tier (just trim the clip). */
+  hideCta?: boolean;
 }
 
-export function UpgradeModal({ open, message, onClose }: UpgradeModalProps) {
+const DEFAULT_BENEFITS = [
+  "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
+  "Avatar, ElevenLabs TTS, Background Removal",
+  "Music, Subtitle styles ทุกรูปแบบ",
+  "Video Editor ขั้นสูงครบฟีเจอร์",
+];
+
+export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta }: UpgradeModalProps) {
   const router = useRouter();
   if (!open) return null;
 
@@ -36,7 +51,7 @@ export function UpgradeModal({ open, message, onClose }: UpgradeModalProps) {
         </div>
 
         <h3 className="mb-2 text-center text-lg font-bold text-white">
-          ฟีเจอร์นี้ใช้ได้เฉพาะแผน Pro
+          {title ?? "ฟีเจอร์นี้ใช้ได้เฉพาะแผน Pro"}
         </h3>
 
         <p className="mb-5 text-center text-sm text-zinc-400 leading-relaxed">
@@ -45,12 +60,7 @@ export function UpgradeModal({ open, message, onClose }: UpgradeModalProps) {
 
         {/* Benefits */}
         <ul className="mb-5 space-y-2">
-          {[
-            "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
-            "Avatar, ElevenLabs TTS, Background Removal",
-            "Music, Subtitle styles ทุกรูปแบบ",
-            "Video Editor ขั้นสูงครบฟีเจอร์",
-          ].map((f) => (
+          {(benefits ?? DEFAULT_BENEFITS).map((f) => (
             <li key={f} className="flex items-center gap-2 text-xs text-zinc-300">
               <Zap className="h-3.5 w-3.5 shrink-0 text-violet-400" />
               {f}
@@ -59,19 +69,21 @@ export function UpgradeModal({ open, message, onClose }: UpgradeModalProps) {
         </ul>
 
         {/* Buttons */}
-        <button
-          onClick={() => { onClose(); router.push("/pricing"); }}
-          className="w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
-          style={{ background: "linear-gradient(135deg, #7c3aed, #2563eb)" }}
-        >
-          ดูแผนราคา — อัปเกรดเลย
-        </button>
+        {!hideCta && (
+          <button
+            onClick={() => { onClose(); router.push("/pricing"); }}
+            className="w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+            style={{ background: "linear-gradient(135deg, #7c3aed, #2563eb)" }}
+          >
+            {ctaLabel ?? "ดูแผนราคา — อัปเกรดเลย"}
+          </button>
+        )}
 
         <button
           onClick={onClose}
           className="mt-2 w-full rounded-xl py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
         >
-          ไว้ทีหลัง
+          {hideCta ? "ปิด" : "ไว้ทีหลัง"}
         </button>
       </div>
     </div>

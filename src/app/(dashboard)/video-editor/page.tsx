@@ -37,6 +37,9 @@ import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
+import { estimateScriptDurationSec } from "./_lib/estimate-duration";
+import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -324,7 +327,18 @@ export default function VideoEditorPage() {
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
-  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string }>({ open: false });
+  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string; title?: string; benefits?: string[]; hideCta?: boolean }>({ open: false });
+  // Plan + duration cap — loaded once so the duration limit can be pre-flighted
+  // BEFORE spending on TTS/HeyGen (editor is PRO-gated, so default to PRO).
+  const [userPlan, setUserPlan] = useState<string>("PRO");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/user/me")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
+      .catch(() => { /* keep PRO default — server still backstops at render */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
 
@@ -468,6 +482,26 @@ export default function VideoEditorPage() {
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Unmount cleanup ───────────────────────────────────────────────────
+  // SPA navigation away from /video-editor must stop every client-side loop —
+  // เดิม loop พวกนี้รั่วข้ามหน้า (poll ต่อแม้ออกจากหน้าไปแล้ว):
+  // - abortRef = true       → HeyGen 5s for-loops (runAvatar / runAvatarTail) หยุดที่ tick ถัดไป
+  // - abortControllerRef    → ยกเลิก fetch ที่ค้าง + pollJob loops (render/burn) ผ่าน abort chaining
+  // - stopRenderPollRef     → หยุด pollJob loop ที่ active โดยตรง (กันเหนียว)
+  // จงใจไม่ cancel งานฝั่ง server ที่นี่ — การเปลี่ยน semantics ของ
+  // mount-time auto-cancel / beforeunload sendBeacon เป็นงาน Phase 2 PR-9.
+  // (StrictMode dev double-mount ปลอดภัย: ทุก run ตั้ง abortRef = false ใหม่
+  // และ abortControllerRef ถูกสร้างใหม่ต่อ run)
+  useEffect(() => {
+    return () => {
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      stopRenderPollRef.current = null;
+      runningRef.current = false;
+    };
+  }, []);
 
   // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
   // the debounced auto-load effect and the manual "โหลด avatar" button.
@@ -884,20 +918,70 @@ export default function VideoEditorPage() {
     if (!res.ok) throw new ApiCallError(prefix, data, res.status);
   }
 
+  // Compose a plan-aware UpgradeModal payload for a clip over the plan's duration
+  // cap. Pro over 6min → point to Business; Business (top tier) → just trim, no CTA.
+  function durationLimitModal(durationSec: number, plan: string) {
+    const cap = limitsForPlan(plan).durationSec;
+    const next = nextPlanFor(plan);
+    const mins = (durationSec / 60).toFixed(1);
+    const capMin = cap / 60;
+    if (next) {
+      const nextCapMin = limitsForPlan(next).durationSec / 60;
+      return {
+        open: true,
+        title: `อัปเกรดเป็น ${PLAN_LABEL[next]} — รองรับคลิปยาวขึ้น`,
+        message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานแผน ${PLAN_LABEL[plan] ?? plan} (${capMin} นาที/คลิป) — ${PLAN_LABEL[next]} รองรับสูงสุด ${nextCapMin} นาที/คลิป`,
+        benefits: next === "BUSINESS"
+          ? ["300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
+          : undefined,
+      };
+    }
+    return {
+      open: true,
+      hideCta: true,
+      title: "คลิปยาวเกินเพดาน",
+      message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานสูงสุด ${capMin} นาที/คลิป — กรุณาตัดสคริปต์/คลิปให้สั้นลง`,
+    };
+  }
+
+  // Pre-flight the plan duration cap. Returns false (and shows the modal) when the
+  // clip is over — call BEFORE paid steps (TTS, HeyGen) and before render so the
+  // user isn't charged then told "too long" at the end.
+  // `isEstimate` adds a 10% margin so the rough pre-TTS estimate never false-blocks
+  // a borderline clip (the exact post-TTS check then catches it precisely).
+  function checkDurationWithinPlan(durationSec: number, isEstimate: boolean): boolean {
+    if (!durationSec || durationSec <= 0) return true; // unknown — let later checks decide
+    const cap = limitsForPlan(userPlan).durationSec;
+    const threshold = isEstimate ? cap * 1.1 : cap;
+    if (durationSec <= threshold) return true;
+    setUpgradeModal(durationLimitModal(durationSec, userPlan));
+    return false;
+  }
+
   function handlePlanError(err: unknown): boolean {
-    if (err instanceof ApiCallError && (err.data as any)._status === 403) {
-      setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
+    if (!(err instanceof ApiCallError)) return false;
+    if ((err.data as any)._status !== 403) return false;
+    // PR-1 structured shape: { error: { code: "quota_exceeded", message, userAction } }
+    const rawErr = err.data.error;
+    const structured = typeof rawErr === "object" && rawErr !== null
+      ? (rawErr as { code?: string; message?: string; userAction?: string; neededPlan?: string | null })
+      : null;
+    const message = structured
+      ? [structured.message, structured.userAction].filter(Boolean).join(" — ")
+      : String(rawErr ?? "");
+    // Duration cap (server backstop): show the right upgrade tier, not the generic Pro modal.
+    if (structured?.code === "duration_exceeded") {
+      const neededPlan = structured.neededPlan ?? null;
+      setUpgradeModal({
+        open: true,
+        message,
+        title: neededPlan ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan] ?? neededPlan} — รองรับคลิปยาวขึ้น` : "คลิปยาวเกินเพดาน",
+        hideCta: !neededPlan,
+      });
       return true;
     }
-    // check via message contains "403"
-    if (err instanceof ApiCallError) {
-      const status = (err.data as any)._status;
-      if (status === 403) {
-        setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
-        return true;
-      }
-    }
-    return false;
+    setUpgradeModal({ open: true, message });
+    return true;
   }
 
   function friendlyError(err: unknown): string {
@@ -907,7 +991,13 @@ export default function VideoEditorPage() {
     if (raw.includes("ENOSPC")) return "พื้นที่ดิสก์บน Server เต็ม";
     if (err instanceof ApiCallError) {
       const status = (err.data as any)._status as number | undefined;
-      const errMsg = String(err.data.error ?? "");
+      // PR-1 structured errors: { error: { code, message, userAction } } — เช่น quota_exceeded
+      const structuredErr = typeof err.data.error === "object" && err.data.error !== null
+        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        : null;
+      const errMsg = structuredErr
+        ? [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ")
+        : String(err.data.error ?? "");
       if (status === 429 && errMsg) return errMsg;
       // Key ตั้งไว้แล้วแต่ invalid — บอกรายละเอียดแทนการให้ใส่ซ้ำ
       if (status === 401) {
@@ -1014,14 +1104,11 @@ export default function VideoEditorPage() {
       // Thai TTS speaks at ~2 Thai chars/sec for natural pace (slower than English).
       // We add 10% buffer to over-estimate slightly — better too many keywords than too few.
       const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
-      const thaiCharCount = (script.match(/[฀-๿]/g) ?? []).length;
-      const englishWordCount = script.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
-      // ~2 Thai chars/sec + ~3 English words/sec (TTS natural rate)
-      const scriptEstimate = thaiCharCount / 2 + englishWordCount / 3;
+      const scriptEstimate = estimateScriptDurationSec(script);  // ~2 Thai chars/sec + ~3 EN words/sec
       const estimatedDurSec = knownDurSec > 0
         ? knownDurSec
         : Math.ceil(scriptEstimate * 1.1);  // 10% buffer
-      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
+      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s`);
       const res = await fetch("/api/videos/extract-keywords", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
@@ -1504,69 +1591,15 @@ export default function VideoEditorPage() {
       startedAt: renderActivityStartedAt,
     });
 
-    let renderPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let renderFailedMessage: string | null = null;
-    let resolveRenderUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-    let renderIsQueued = false;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
-    };
-    stopRenderPollRef.current = stopPoll;
-
-    renderPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          // progress file บอก done → resolve ทันที แล้วหยุด poll ทั้งคู่
-          if (resolveRenderUrl) { resolveRenderUrl(d.videoUrl); resolveRenderUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) { renderFailedMessage = d.error; setRenderProgressError(d.error); setStep("render", "error", d.error); stopPoll(); return; }
-        const p = Number(d.progress);
-        renderIsQueued = Boolean(d.queued || d.stage === "queued");
-        if (renderIsQueued) {
-          const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", queueText);
-          return;
-        }
-        if (d.stage === "preparing") {
-          setRenderActivity({
-            phase: "preparing",
-            label: "เตรียมไฟล์สำหรับเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", "Preparing render...");
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "rendering",
-            label: "กำลังเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", `Rendering... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 3s status interval. pollAbort stops it: chained to the shared
+    // AbortController (stopAll / beforeunload) and exposed via stopRenderPollRef.
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       // Always rebuild keywordPopups from current captions so render matches preview exactly
@@ -1609,7 +1642,6 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
         signal: abortControllerRef.current?.signal,
       });
-      if (renderFailedMessage) throw new Error(renderFailedMessage);
       const data = await res.json();
       assertOk("Render", res, data);
 
@@ -1623,49 +1655,78 @@ export default function VideoEditorPage() {
         setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return immediateUrl;
       }
       if (!jobId) throw new Error("Render server did not return jobId");
-      currentJobId = jobId; activeJobIdRef.current = jobId;
+      activeJobIdRef.current = jobId;
       // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
       try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 60 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 60 * 60 * 1000;
-      let lastProgressValue = -1;
-      let lastProgressChangedAt = Date.now();
-
       let statusNotFoundCount = 0;
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveRenderUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (renderFailedMessage) { clearInterval(si); reject(new Error(renderFailedMessage)); return; }
-          if (!resolveRenderUrl) { clearInterval(si); return; }
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-          // Stale check: progress ไม่เปลี่ยนนานเกิน 5 นาที → hang
-          const curProgress = renderProgressRef.current;
-          if (renderIsQueued) {
-            lastProgressChangedAt = Date.now();
-          } else if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
-          else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
-            clearInterval(si); resolveRenderUrl = null;
-            reject(new Error("Render หยุดค้างนานเกิน 60 นาที — กรุณาลองใหม่"));
-            return;
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — จับเคสที่ progress file หาย
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Render failed" };
+              if (sd.status === "not_found") {
+                statusNotFoundCount++;
+                if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+              }
+            } else if (sr.status === 404) {
+              statusNotFoundCount++;
+              if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+            }
           }
 
-          try {
-            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-            const sd = await sr.json();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (sd.status === "done" && sd.videoUrl) { clearInterval(si); resolveRenderUrl = null; resolve(sd.videoUrl as string); }
-            else if (sd.status === "error") { clearInterval(si); resolveRenderUrl = null; reject(new Error(sd.error ?? "Render failed")); }
-            else if (sd.status === "not_found" || sr.status === 404) {
-              statusNotFoundCount++;
-              if (statusNotFoundCount >= 3) {
-                clearInterval(si);
-                console.warn(`[render] render-status not_found ×${statusNotFoundCount} — falling back to progress-file polling`);
-              }
-            }
-          } catch (e) { if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveRenderUrl = null; reject(e); } }
-        }, 3000);
+          // 502/504 HTML หรือ network ล่ม → throw → pollJob ถือเป็น transient + backoff (ห้าม fail งาน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", queueText);
+            return { status: "pending", resetStale: true }; // รอคิว = งานยังไม่เริ่ม ไม่นับ stale
+          }
+          if (d.stage === "preparing") {
+            setRenderActivity({
+              phase: "preparing",
+              label: "เตรียมไฟล์สำหรับเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", "Preparing render...");
+            return { status: "pending", progress: null }; // preparing ค้างเกิน 10 นาที = stale (ตั้งใจ)
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "rendering",
+              label: "กำลังเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", `Rendering... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
@@ -1690,14 +1751,20 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
-      if (!renderFailedMessage && !(err instanceof Error && err.name === "AbortError")) {
-        const msg = friendlyError(err);
+      // stale/transient-limit: งานฝั่ง server อาจยังทำงานอยู่ — แนะนำให้เช็ค Gallery แล้วค่อยลองใหม่
+      const finalErr = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง")
+        : err;
+      if (!(finalErr instanceof Error && finalErr.name === "AbortError")) {
+        const msg = friendlyError(finalErr);
         setRenderProgressError(msg); setStep("render", "error", msg);
       }
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
-      throw err;
+      throw finalErr;
     } finally {
-      stopPoll(); stopRenderPollRef.current = null;
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
@@ -1706,6 +1773,24 @@ export default function VideoEditorPage() {
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
   const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+
+  // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
+  type AvatarPollData = {
+    status?: string;
+    videoUrl?: string | null;
+    errorMsg?: string | null;
+    error?: { code?: string; message?: string; userAction?: string } | null;
+    retryAfterSec?: number;
+  };
+
+  function avatarFailureMessage(pollData: AvatarPollData, fallbackPrefix: string): string {
+    if (pollData.error?.message) {
+      return pollData.error.userAction
+        ? `${pollData.error.message} — ${pollData.error.userAction}`
+        : pollData.error.message;
+    }
+    return `${fallbackPrefix}: ${pollData.errorMsg ?? "unknown"}`;
+  }
 
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
     // Direct URL mode — skip HeyGen, use URL directly
@@ -1758,7 +1843,7 @@ export default function VideoEditorPage() {
       if (abortRef.current) throw new Error("__SUPERSEDED__");
       // try ครอบเฉพาะ fetch/parse (ข้าม tick เมื่อ network พลาดชั่วคราว) — แต่สถานะ "failed" จาก HeyGen
       // ต้อง throw ออกไปถึง catch ของ pipeline ไม่งั้นจะ poll วิดีโอที่ตายแล้วต่ออีก 30 นาที (อาการ "ค้าง")
-      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
+      let pollData: AvatarPollData = {};
       try {
         const pollRes = await fetch("/api/videos/poll-avatar", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -1771,7 +1856,11 @@ export default function VideoEditorPage() {
         continue;
       }
       if (pollData.status === "completed" && pollData.videoUrl) { avatarVideoUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
+      // Terminal จาก server (key ผิด / ไม่พบวิดีโอ / เครดิตหมด / HeyGen fail) → ล้มทันที ไม่วนต่อ 30 นาที
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Avatar failed"));
+      // HeyGen ขอให้รอ (429) — เคารพ Retry-After ก่อน poll รอบถัดไป (ลูปนี้หน่วงเองอยู่แล้ว 5s)
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
       setStep("avatar", "running", `HeyGen: ${pollData.status} (${i + 1}) ~${Math.round((i + 1) * 5 / 60)}min`);
     }
     if (!avatarVideoUrl) throw new Error("Avatar: timeout หลัง 30 นาที");
@@ -1854,14 +1943,24 @@ export default function VideoEditorPage() {
     for (let i = 0; i < 360; i++) {
       await new Promise(r => setTimeout(r, 5000));
       if (abortRef.current) throw new Error("__SUPERSEDED__");
-      const pollRes = await fetch("/api/videos/poll-avatar", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: genData.videoId }),
-        signal: abortControllerRef.current?.signal,
-      });
-      const pollData = await pollRes.json();
+      // เหมือน loop หลักของ runAvatar: network พลาดชั่วคราว = ข้าม tick — ห้ามฆ่า pipeline ทั้งเส้น
+      let pollData: AvatarPollData = {};
+      try {
+        const pollRes = await fetch("/api/videos/poll-avatar", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: genData.videoId }),
+          signal: abortControllerRef.current?.signal,
+        });
+        pollData = await pollRes.json();
+      } catch (e) {
+        if (e instanceof Error && (e.name === "AbortError" || e.message === "__SUPERSEDED__")) throw e;
+        continue;
+      }
       if (pollData.status === "completed" && pollData.videoUrl) { tailUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Tail avatar failed: ${pollData.errorMsg}`);
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Tail avatar failed"));
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
+      setStep("avatarTail", "running", `HeyGen tail: ${pollData.status ?? "pending"} (${i + 1})`);
     }
     if (!tailUrl) throw new Error("Tail avatar: timeout");
     setAvatarTailGreenUrl(tailUrl);
@@ -1878,6 +1977,10 @@ export default function VideoEditorPage() {
       if (!avatarId.trim()) { toast.error("กรอก HeyGen Avatar ID ก่อน"); return; }
       if (!pipe.current.voiceUrl) { toast.error("ต้องสร้างเสียง TTS ก่อน"); return; }
     }
+    // Defense in depth: render ran first so audioDurationMs is known — block before
+    // paying for HeyGen if the clip exceeds the plan cap (direct mode has no known
+    // duration, so it passes through and relies on the server backstop).
+    if (!isDirect && !checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
     if (runningRef.current) return;
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
@@ -1980,6 +2083,12 @@ export default function VideoEditorPage() {
   const runAll = useCallback(async () => {
     if (runningRef.current || !script.trim()) return;
 
+    // ── Gate 1 (pre-flight, before keys/TTS/HeyGen): block clearly-too-long scripts
+    // up front so the user isn't charged for TTS+avatar then told "too long" at the
+    // end. Estimate only (10% margin); the exact check after TTS is the real gate.
+    const directNow = avatarInputMode === "direct" && !!avatarDirectUrl.trim();
+    if (!directNow && !checkDurationWithinPlan(estimateScriptDurationSec(script), true)) return;
+
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     try {
       const keysRes = await fetch("/api/user/api-keys");
@@ -2049,6 +2158,11 @@ export default function VideoEditorPage() {
       const caps = await runTranscribe(vUrl);
       if (abortRef.current) return;
 
+      // ── Gate 2 (post-TTS, exact): real audio length is known now — block before
+      // keywords/stock/render/HeyGen if it exceeds the plan cap. TTS is already
+      // spent, but this saves the (often pricier) HeyGen + render work.
+      if (!checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
+
       // ── Now extract keywords with accurate duration ──
       const kws  = await runKeywords();
       if (abortRef.current) return;
@@ -2079,7 +2193,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, userPlan]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2198,61 +2312,17 @@ export default function VideoEditorPage() {
       startedAt: burnActivityStartedAt,
     });
 
-    let burnPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let burnFailedMessage: string | null = null;
-    let resolveBurnUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (burnPollTimer) { clearInterval(burnPollTimer); burnPollTimer = null; }
-    };
-
-    burnPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          if (resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) {
-          burnFailedMessage = d.error;
-          setRenderProgressError(d.error);
-          setStep("burnSubtitles", "error", d.error);
-          stopPoll();
-          return;
-        }
-        const p = Number(d.progress);
-        if (d.queued || d.stage === "queued") {
-          const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", queueText);
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "burning",
-            label: "กำลังฝังซับ",
-            queuePosition: null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 2s checkOnce loop (2 GETs/tick). pollAbort stops it: chained to the
+    // shared AbortController (stopAll / beforeunload) and exposed via
+    // stopRenderPollRef — เดิม burn ไม่เคยลงทะเบียน stop hook เลย ทำให้กด Stop
+    // แล้ว loop ยังวิ่งต่อ; ตอนนี้หยุดได้จริง
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       const fps = 30;
@@ -2303,8 +2373,10 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ subtitleOverlayConfig }),
         signal: abortControllerRef.current?.signal,
       });
-      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Burn subtitles failed");
+      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
+      // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
+      // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
+      assertOk("Burn", res, data as Record<string, unknown>);
 
       const finalizeBurn = (url: string) => {
         // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
@@ -2337,58 +2409,80 @@ export default function VideoEditorPage() {
 
       const jobId = data.jobId;
       if (!jobId) throw new Error("Burn subtitles: no jobId returned");
-      currentJobId = jobId;
       activeJobIdRef.current = jobId;
 
-      // Check immediately in case server already finished (fast burn or bundle was cached)
-      const checkOnce = async (): Promise<string | null> => {
-        try {
-          // Try progress file first (more reliable, written before in-memory job map)
-          const pr = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          if (pr.ok) {
-            const pd = await pr.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
-            if (pd.videoUrl) return pd.videoUrl;
-            if (pd.error) throw new Error(pd.error);
-          }
-          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
-          if (sd.status === "done" && sd.videoUrl) return sd.videoUrl;
-          if (sd.status === "error") throw new Error(sd.error ?? "Burn subtitles failed");
-        } catch (e) {
-          if (e instanceof Error && e.message && e.message !== "Failed to fetch") throw e;
-        }
-        return null;
-      };
+      // pollJob ยิง fetchOnce ครั้งแรกทันที (tick 0) — ครอบเคส burn เสร็จเร็ว/bundle cache แล้ว
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-      const immediate = await checkOnce();
-      if (immediate) { finalizeBurn(immediate); return; }
-
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveBurnUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (burnFailedMessage) { clearInterval(si); reject(new Error(burnFailedMessage)); return; }
-          try {
-            const found = await checkOnce();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (found) { clearInterval(si); resolveBurnUrl = null; resolve(found); }
-          } catch (e) {
-            if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveBurnUrl = null; reject(e); return; }
-            clearInterval(si); resolveBurnUrl = null; reject(e instanceof Error ? e : new Error(String(e)));
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — เดิม checkOnce ยิง 2 GET ทุก 2 วิ
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Burn subtitles failed" };
+            }
           }
-        }, 2000);
+
+          // 502/504 HTML หรือ network ล่ม → throw → transient + backoff
+          // (ห้าม fail งาน burn — เซิร์ฟเวอร์ยัง burn อยู่ ไม่งั้นผู้ใช้กดซ้ำจน burn ซ้อน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", queueText);
+            return { status: "pending", resetStale: true };
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "burning",
+              label: "กำลังฝังซับ",
+              queuePosition: null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       finalizeBurn(url);
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
+      // stale/transient-limit: เซิร์ฟเวอร์อาจ burn เสร็จแล้วแต่เราเช็คไม่ได้ — ให้เช็ค Gallery ก่อน
+      // retry = กดปุ่ม Burn & Download เดิมอีกครั้งได้เลย (ปุ่มยังอยู่เมื่อ step เป็น error)
+      const msg = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? "Burn ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจเสร็จแล้ว ลองเช็คใน Gallery ก่อน แล้วค่อยกด Burn & Download อีกครั้ง"
+        : friendlyError(err);
       setStep("burnSubtitles", "error", msg);
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+      // โควต้าคลิปหมด (403 quota_exceeded) → เปิด Upgrade modal พร้อมลิงก์หน้า Pricing แทน toast
+      if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
       throw err;
     } finally {
-      stopPoll();
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
@@ -3992,6 +4086,9 @@ export default function VideoEditorPage() {
       <UpgradeModal
         open={upgradeModal.open}
         message={upgradeModal.message}
+        title={upgradeModal.title}
+        benefits={upgradeModal.benefits}
+        hideCta={upgradeModal.hideCta}
         onClose={() => setUpgradeModal({ open: false })}
       />
 
