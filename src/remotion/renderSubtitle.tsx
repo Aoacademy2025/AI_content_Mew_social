@@ -15,6 +15,48 @@ import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
  * (glow-pulse / highlight / karaoke / typewriter); pass 0 / 1 from preview
  * for the "static" look that matches the resting frame.
  */
+
+// ── Intl.Segmenter singleton ────────────────────────────────────────────────
+// Constructing a Segmenter loads ICU word-break data and is expensive.
+// segmentWords runs on EVERY subtitle render — in the editor preview that is
+// 60×/sec during karaoke/highlight playback — so cache one instance per
+// locale+granularity at module level instead of constructing per call.
+const segmenterCache = new Map<string, Intl.Segmenter>();
+
+function getSegmenter(locale: string, granularity: "word" | "grapheme" | "sentence"): Intl.Segmenter | null {
+  const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (!Seg) return null;
+  const key = `${locale}|${granularity}`;
+  const cached = segmenterCache.get(key);
+  if (cached) return cached;
+  try {
+    const seg = new Seg(locale, { granularity });
+    segmenterCache.set(key, seg);
+    return seg;
+  } catch {
+    return null;
+  }
+}
+
+// Tokenize for per-word effects (highlight / karaoke).
+// Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
+// returns the whole line as one token → the entire caption highlights at once
+// (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
+// real words; it also handles spaced scripts (English) correctly. Falls back
+// to whitespace splitting where Segmenter is unavailable.
+function segmentWords(s: string): string[] {
+  const seg = getSegmenter("th", "word");
+  if (seg) {
+    const out: string[] = [];
+    for (const { segment, isWordLike } of seg.segment(s)) {
+      // Keep word-like tokens; skip pure whitespace/punctuation separators
+      if (isWordLike && segment.trim().length > 0) out.push(segment);
+    }
+    if (out.length > 0) return out;
+  }
+  return s.split(/\s+/).filter(w => w.length > 0);
+}
+
 export function renderSubtitle(
   text: string,
   color: string,
@@ -31,28 +73,6 @@ export function renderSubtitle(
   const charCount = text.length;
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
-
-  // Tokenize for per-word effects (highlight / karaoke).
-  // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
-  // returns the whole line as one token → the entire caption highlights at once
-  // (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
-  // real words; it also handles spaced scripts (English) correctly. Falls back
-  // to whitespace splitting where Segmenter is unavailable.
-  const segmentWords = (s: string): string[] => {
-    const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-    if (Seg) {
-      try {
-        const seg = new Seg("th", { granularity: "word" });
-        const out: string[] = [];
-        for (const { segment, isWordLike } of seg.segment(s)) {
-          // Keep word-like tokens; skip pure whitespace/punctuation separators
-          if (isWordLike && segment.trim().length > 0) out.push(segment);
-        }
-        if (out.length > 0) return out;
-      } catch { /* fall through */ }
-    }
-    return s.split(/\s+/).filter(w => w.length > 0);
-  };
 
   // NOTE: renderSubtitle renders the TEXT + per-character/word effects only
   // (glow-pulse / highlight / karaoke / typewriter). The container ENTRANCE
