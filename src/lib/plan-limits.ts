@@ -71,3 +71,22 @@ export function videoExpiryFor(plan: string, from: Date = new Date()): Date {
   const days = storageDaysForPlan(plan);
   return new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
 }
+
+/** Human-readable plan label for UI/messages */
+export const PLAN_LABEL: Record<string, string> = {
+  FREE: "Free",
+  PRO: "Pro",
+  BUSINESS: "Business",
+};
+
+/** The next tier up from `plan`, or null if already at the top (BUSINESS). */
+export function nextPlanFor(plan: string): "PRO" | "BUSINESS" | null {
+  if (plan === "FREE") return "PRO";
+  if (plan === "PRO") return "BUSINESS";
+  return null;
+}
+
+/** Max clip length (seconds) for a plan — single source for duration gating. */
+export function durationCapSecFor(plan: string): number {
+  return limitsForPlan(plan).durationSec;
+}
