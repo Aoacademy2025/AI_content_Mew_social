@@ -609,10 +609,16 @@ ${script.trim().slice(0, 2000)}` : ""}
         // accurate-timestamp baseline — keep it FIRST. Gen-3 is intentionally NOT used
         // for transcription here; its better text quality doesn't matter because we
         // take subtitle TEXT from the user's script, only TIMESTAMPS from the audio.
+        // Fallbacks are 2.5-family on purpose: gemini-2.5-flash can transiently 503
+        // (Google-side overload), and the old gemini-1.5-* fallbacks now hard-404
+        // (Google retired the 1.5 family on v1beta) — which turned a *recoverable* 503
+        // into a total transcribe failure (subtitles never generated). Same-family 2.5
+        // fallbacks keep timestamps accurate (no Gen-3 drift) while giving a real escape
+        // hatch when flash is overloaded: 2.5-pro sits in a separate capacity pool.
         const TRANSCRIBE_MODELS = [
-          "gemini-2.5-flash",   // accurate-timestamp baseline (Google ref) — primary
-          "gemini-1.5-pro",     // classic, accurate timing, almost always available
-          "gemini-1.5-flash",   // last-resort fallback for older keys/regions
+          "gemini-2.5-flash",       // accurate-timestamp baseline (Google ref) — primary
+          "gemini-2.5-pro",         // fallback when 2.5-flash is 503-overloaded — separate capacity, accurate timing
+          "gemini-2.5-flash-lite",  // lightweight last-resort fallback (further overload / restricted keys)
         ];
 
         let geminiRes: Response | null = null;
