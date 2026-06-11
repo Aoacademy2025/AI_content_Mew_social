@@ -9,6 +9,7 @@ import fs from "fs";
 import { execSync, spawn } from "child_process";
 import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   activeRenderCancel,
@@ -758,12 +759,14 @@ export async function POST(req: Request) {
             : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots))
             : Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots));
           const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-          // Scale down cache per job when running many renderMedia slots in parallel
+          // Scale down cache per job when running many renderMedia slots in
+          // parallel; hard-capped at 1.5GB inside the resolver (PR-4 guardrail).
           const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
-          const perJobCacheMb = Math.max(32, Math.floor(baseCacheMb / activeRenderSlots));
-          const offthreadVideoCacheSizeInBytes = Number.isFinite(requestedOffthreadCacheMb) && requestedOffthreadCacheMb >= 32
-            ? Math.round(requestedOffthreadCacheMb * 1024 * 1024)
-            : perJobCacheMb * 1024 * 1024;
+          const offthreadVideoCacheSizeInBytes = resolveOffthreadCacheBytes({
+            requestedMb: requestedOffthreadCacheMb,
+            baseCacheMb,
+            activeRenderSlots,
+          });
           const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
           const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
           const isWindows = process.platform === "win32";
