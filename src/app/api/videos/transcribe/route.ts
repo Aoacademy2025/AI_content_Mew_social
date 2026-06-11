@@ -481,10 +481,12 @@ function sliceAudio(
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const startSec = (startMs / 1000).toFixed(3);
-    const endSec = (endMs / 1000).toFixed(3);
+    const durSec = ((endMs - startMs) / 1000).toFixed(3);
     execFile(ffmpegPath, [
-      "-y", "-i", mp3Path,
-      "-ss", startSec, "-to", endSec,
+      // -ss/-t BEFORE -i = input seeking. With -c copy, output seeking (-ss AFTER
+      // -i) does NOT actually seek and copies from 0, so every chunk got the clip's
+      // opening — later chunks then showed the first chunk's subtitles.
+      "-y", "-ss", startSec, "-t", durSec, "-i", mp3Path,
       "-c", "copy", outPath,
     ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
       if (err) return reject(new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
