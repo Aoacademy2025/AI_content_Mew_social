@@ -5,7 +5,7 @@
 
 import fs from "fs";
 import { geminiGenerateText } from "../src/lib/gemini";
-import { mapCardTextsToRanges, type CardPiece } from "../src/lib/tts-timing";
+import { mapCardTextsToRanges, mapCardTextsToRangesTolerant, type CardPiece } from "../src/lib/tts-timing";
 
 const KEY_FILE = process.env.QA_KEY_FILE ?? "/tmp/qa-gemini-key";
 const API_KEY = fs.readFileSync(KEY_FILE, "utf-8").trim();
@@ -73,6 +73,14 @@ const SCRIPTS: Record<string, string> = {
   ).join("\n"),
 };
 
+// Optional: test an arbitrary script file (e.g. the real prod-rejected one):
+// QA_SCRIPT_FILE=/tmp/real-script.txt npx tsx scripts/qa-split-script-live.ts
+if (process.env.QA_SCRIPT_FILE) {
+  const custom = fs.readFileSync(process.env.QA_SCRIPT_FILE, "utf-8").trim();
+  for (const k of Object.keys(SCRIPTS)) delete SCRIPTS[k];
+  SCRIPTS["custom file"] = custom;
+}
+
 async function main() {
   let passes = 0;
   let total = 0;
@@ -87,6 +95,14 @@ async function main() {
       if (!pieces) {
         console.log(`✗ ${label}: unparseable output (${raw.length} chars)`);
         continue;
+      }
+      const tolerant = mapCardTextsToRangesTolerant(script, pieces, 28);
+      if (tolerant) {
+        const strictOk = mapCardTextsToRanges(script, pieces) !== null;
+        console.log(`  tolerant: ${tolerant.accepted} viral + ${tolerant.rejected} rejected → ${tolerant.cards.length} cards total (strict would ${strictOk ? "PASS" : "REJECT ALL"})`);
+        if (tolerant.firstMismatch) console.log(`  first mismatch: ${tolerant.firstMismatch}`);
+      } else {
+        console.log("  tolerant: NULL (no piece verbatim — full sentence fallback)");
       }
       const cards = mapCardTextsToRanges(script, pieces);
       if (!cards) {
