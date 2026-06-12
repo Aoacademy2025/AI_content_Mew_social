@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -358,11 +359,6 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   }
 
   return out;
-}
-
-function getFfmpegPath(): string {
-  if (process.platform !== "win32") return "/usr/bin/ffmpeg";
-  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
 }
 
 function getFfprobePath(): string {
