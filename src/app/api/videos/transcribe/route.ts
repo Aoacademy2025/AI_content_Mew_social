@@ -7,6 +7,7 @@ import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
+import { sanitizeChunkTimeline } from "@/lib/transcribe-timeline";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -923,6 +924,8 @@ export async function POST(req: Request) {
           // long audio: transcribe each chunk SEQUENTIALLY, offset + merge
           const fullScript = (script ?? "").trim();
           const totalMsForScript = sourceAudioDurationMs || chunkPlan.reduce((a, c) => a + c.durationMs, 0) || 1;
+          let anyDegenerateWords = false;
+          let chunkIdx = 0;
           for (const ch of chunkPlan) {
             // Give each chunk only its proportional slice of the script (±12% margin)
             // as the spelling reference. Passing the FULL script made Gemini anchor to
@@ -933,12 +936,33 @@ export async function POST(req: Request) {
             const chunkScript = fullScript
               ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
               : "";
-            const r = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+            const rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+            // Per-chunk timestamp guard: drop word timestamps hallucinated past the
+            // slice length, linear-rescale tail drift onto the real slice duration,
+            // and zero out degenerate words arrays (truncated responses — prod saw
+            // 108 words for 105 captions). Raw words otherwise reach the editor and
+            // break the word-based "แบ่งซับ N คำ" rebuild (411s timeline on a 285s clip).
+            const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
+            chunkIdx++;
+            anyDegenerateWords ||= r.stats.wordsDegenerate;
+            console.log(
+              `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: ${r.geminiDirectCaptions.length} captions, ` +
+              `${r.words.length}/${rawChunk.words.length} words` +
+              (r.stats.rescaleK !== 1 ? `, tail-rescale ×${r.stats.rescaleK.toFixed(3)}` : "") +
+              (r.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
+            );
             const offSec = ch.startMs / 1000;
             for (const w of r.words) words.push({ word: w.word, start: w.start + offSec, end: w.end + offSec });
             for (const s of r.segments) segments.push({ text: s.text, start: s.start + offSec, end: s.end + offSec });
             for (const c of r.geminiDirectCaptions) geminiDirectCaptions.push({ ...c, startMs: c.startMs + ch.startMs, endMs: c.endMs + ch.startMs, timestampMs: c.timestampMs + ch.startMs });
             fullText += (fullText ? " " : "") + r.fullText;
+          }
+          if (anyDegenerateWords && words.length > 0) {
+            // Partial word coverage is worse than none: the editor's word-based
+            // split would only rebuild captions where words exist. Drop them all
+            // so the segment-interpolation below regenerates full-coverage timing.
+            console.log(`[transcribe] word timing unusable in ≥1 chunk → dropping all ${words.length} words (segment interpolation rebuilds full coverage)`);
+            words = [];
           }
           console.log(`[transcribe] merged ${chunkPlan.length} chunks → ${geminiDirectCaptions.length} captions, ${words.length} words`);
         } else {
@@ -1513,6 +1537,17 @@ Total audio: ${audioDur.toFixed(2)}s`;
       }
     }
     const resolvedDurationMs = sourceAudioDurationMs > 0 ? sourceAudioDurationMs : rawMaxMs;
+    // Response-boundary bound: captions are sanitized below, but words/segments
+    // used to leave the server RAW — hallucinated timestamps past the real audio
+    // length then poisoned the editor's word-based caption rebuild ("แบ่งซับ N คำ"
+    // produced a 6:51 subtitle timeline on a 285s clip). Guards above still ran
+    // on the raw values, so the desync/incomplete detection keeps its signal.
+    const safeWords = wordTimestamps
+      .filter((w) => w.startMs >= 0 && w.startMs < resolvedDurationMs)
+      .map((w) => ({ ...w, endMs: Math.max(w.startMs + 1, Math.min(w.endMs, resolvedDurationMs)) }));
+    const safeSegments = rawSegments
+      .filter((s) => s.startMs >= 0 && s.startMs < resolvedDurationMs)
+      .map((s) => ({ ...s, endMs: Math.max(s.startMs + 1, Math.min(s.endMs, resolvedDurationMs)) }));
     // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = (isThai || words.length === 0) && segments.length >= 3;
     // Stretch small safe tails to the real ffprobe duration so config/render do not
@@ -1524,8 +1559,8 @@ Total audio: ${audioDur.toFixed(2)}s`;
 
     return NextResponse.json({
       captions: timelineFixedCaptions,
-      segments: rawSegments,
-      words: wordTimestamps,
+      segments: safeSegments,
+      words: safeWords,
       fullText: safeFullText,
       audioDurationMs: resolvedDurationMs,
     });
