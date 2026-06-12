@@ -7,7 +7,7 @@ import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
-import { sanitizeChunkTimeline } from "@/lib/transcribe-timeline";
+import { sanitizeChunkTimeline, chunkOvershootRatio, CHUNK_DESYNC_RETRY_RATIO } from "@/lib/transcribe-timeline";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -936,14 +936,31 @@ export async function POST(req: Request) {
             const chunkScript = fullScript
               ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
               : "";
-            const rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
-            // Per-chunk timestamp guard: drop word timestamps hallucinated past the
-            // slice length, linear-rescale tail drift onto the real slice duration,
-            // and zero out degenerate words arrays (truncated responses — prod saw
-            // 108 words for 105 captions). Raw words otherwise reach the editor and
-            // break the word-based "แบ่งซับ N คำ" rebuild (411s timeline on a 285s clip).
-            const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
             chunkIdx++;
+            let rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+            // Desynced chunk (transcript runs >10% past the real slice length) →
+            // RE-TRANSCRIBE it: flash is non-deterministic and a re-roll usually
+            // re-syncs. Blanket-rescaling a badly drifted chunk drags its correct
+            // early captions out of sync (prod 06-12 #2: chunk 1 ×1.264 → first
+            // 2:30 desynced + word gaps). Keep the best attempt as fallback.
+            const CHUNK_MAX_ATTEMPTS = 3;
+            let overshoot = chunkOvershootRatio(rawChunk.geminiDirectCaptions, ch.durationMs);
+            for (let attempt = 2; attempt <= CHUNK_MAX_ATTEMPTS && overshoot > CHUNK_DESYNC_RETRY_RATIO; attempt++) {
+              console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: desynced ×${overshoot.toFixed(3)} — re-transcribing (attempt ${attempt}/${CHUNK_MAX_ATTEMPTS})`);
+              const retry = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+              const retryOvershoot = chunkOvershootRatio(retry.geminiDirectCaptions, ch.durationMs);
+              if (retry.geminiDirectCaptions.length > 0 && retryOvershoot < overshoot) {
+                rawChunk = retry;
+                overshoot = retryOvershoot;
+              }
+            }
+            // Per-chunk timestamp guard: rescale residual tail drift onto the real
+            // slice duration, drop word timestamps hallucinated past the slice
+            // length, and zero out degenerate words arrays (truncated responses —
+            // prod saw 108 words for 105 captions). Raw words otherwise reach the
+            // editor and break the word-based "แบ่งซับ N คำ" rebuild (411s timeline
+            // on a 285s clip).
+            const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
             anyDegenerateWords ||= r.stats.wordsDegenerate;
             console.log(
               `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: ${r.geminiDirectCaptions.length} captions, ` +

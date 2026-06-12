@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   sanitizeChunkTimeline,
   boundWordsForSplit,
+  chunkOvershootRatio,
   type ChunkResult,
 } from "../src/lib/transcribe-timeline";
 
@@ -88,6 +89,11 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
     Math.abs(mid.endMs - r.geminiDirectCaptions[49].endMs * s.stats.rescaleK) <= 2);
   check("tail drift: still monotonic", s.geminiDirectCaptions.every((c, i, a) => i === 0 || c.startMs >= a[i - 1].startMs));
   check("tail drift: words scaled too", s.words.every(w => w.end <= (CHUNK_MS + 2000) / 1000));
+  // Rescale must happen BEFORE the bogus-word filter: with uniform drift the
+  // tail words map back INSIDE the chunk — dropping them first (prod 06-12 #2:
+  // 327/502 kept) left the last ~30s of the chunk with no words → "ซับหายเป็นช่วง"
+  // in word-split mode.
+  check("tail drift: tail words survive (rescaled before filtered)", s.words.length === 540);
 }
 
 // ── 5. mid-array hallucinated caption is clamped (text kept, time bounded) ──
@@ -105,6 +111,17 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
   const r = mkChunk(100, 540, CHUNK_MS + 1500);
   const s = sanitizeChunkTimeline(r, CHUNK_MS);
   check("small overshoot: no rescale", s.stats.rescaleK === 1);
+}
+
+// ── chunkOvershootRatio (per-chunk desync detection → retry the chunk) ──
+{
+  const healthy = mkChunk(100, 540, CHUNK_MS);
+  check("overshoot: healthy ≈ 1", Math.abs(chunkOvershootRatio(healthy.geminiDirectCaptions, CHUNK_MS) - 1) < 0.02);
+  const drifted = mkChunk(89, 502, 171_200); // prod 06-12 #2: chunk 1 overshot ×1.264
+  const ratio = chunkOvershootRatio(drifted.geminiDirectCaptions, CHUNK_MS);
+  check("overshoot: 26% drift detected (>1.10 retry threshold)", ratio > 1.10 && Math.abs(ratio - 171_200 / CHUNK_MS) < 0.02);
+  check("overshoot: no captions → neutral 1", chunkOvershootRatio([], CHUNK_MS) === 1);
+  check("overshoot: unknown duration → neutral 1", chunkOvershootRatio(healthy.geminiDirectCaptions, 0) === 1);
 }
 
 // ── boundWordsForSplit (client guard for the แบ่งซับ N คำ button) ──

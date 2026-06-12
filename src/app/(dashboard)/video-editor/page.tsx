@@ -176,8 +176,15 @@ export default function VideoEditorPage() {
   const [activeCaptionIdx, setActiveCaptionIdx] = useState(-1);
   const [editingCapIdx, setEditingCapIdx] = useState<number | null>(null);
   const activeSegCardRef = useRef<HTMLDivElement | null>(null);
+  // Last manual interaction with the subtitle list. Auto-follow pauses for a
+  // few seconds afterwards — with 1-word splits the active card changes several
+  // times per second and the smooth scrollIntoView otherwise fights the user's
+  // own scrolling (list เด้งไปเด้งมา เลื่อนขึ้นไม่ได้).
+  const segListUserScrollAtRef = useRef(0);
+  const markSegListUserScroll = useCallback(() => { segListUserScrollAtRef.current = Date.now(); }, []);
 
   useEffect(() => {
+    if (Date.now() - segListUserScrollAtRef.current < 4000) return;
     activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [activeCaptionIdx]);
 
@@ -3023,7 +3030,12 @@ export default function VideoEditorPage() {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1">
+          <div
+            className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1"
+            onWheel={markSegListUserScroll}
+            onTouchMove={markSegListUserScroll}
+            onPointerDown={markSegListUserScroll}
+          >
 
             {/* ── SCRIPT + PRE-LLM SETTINGS ── */}
             <div className="px-2 mb-1 space-y-2">
