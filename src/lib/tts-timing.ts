@@ -30,6 +30,10 @@ export interface TtsTiming {
   provider: "gemini" | "elevenlabs";
   segments: TtsSegment[];
   chars: TtsCharAlignment | null; // gemini has no char-level timing
+  // Real-pause midpoints (ms) from ffmpeg silencedetect over the final audio.
+  // Card boundaries snap to these on the Gemini line (PR-E); ElevenLabs char
+  // timing is already ground truth and never needs it.
+  silences?: number[] | null;
 }
 
 export interface TimedWord { word: string; startMs: number; endMs: number }
@@ -337,6 +341,73 @@ export function buildCaptionsFromCards(cards: ScriptCard[], timing: TtsTiming, f
 // rules as the TTS chunker, smaller targets. Cards cover all of fullText.
 export function splitSentenceCards(fullText: string, maxCardChars = 60): ScriptCard[] {
   return splitScriptForTts(fullText, maxCardChars).map((c) => ({ startChar: c.startChar, endChar: c.endChar }));
+}
+
+// ---------------------------------------------------------------------------
+// LLM card mapping + silence snapping (PR-E polish)
+// ---------------------------------------------------------------------------
+
+export interface CardPiece { text: string; tag?: CaptionTag }
+
+// Map LLM-cut card texts back onto fullText as exact char ranges.
+// Whitespace-insensitive on the pieces (LLMs reflow spaces/newlines freely)
+// but every visible char must match fullText in order — any edit, skip, or
+// invention → null, and the caller falls back to sentence cards. This is what
+// lets the LLM choose WHERE to cut without ever being able to change WHAT the
+// subtitles say.
+export function mapCardTextsToRanges(fullText: string, pieces: CardPiece[]): ScriptCard[] | null {
+  if (!Array.isArray(pieces) || pieces.length === 0) return null;
+  const cards: ScriptCard[] = [];
+  let pos = 0;
+  for (const piece of pieces) {
+    if (typeof piece?.text !== "string") return null;
+    const visible = Array.from(piece.text).filter((c) => !/\s/.test(c));
+    if (visible.length === 0) continue;
+    while (pos < fullText.length && /\s/.test(fullText[pos])) pos++;
+    const startChar = pos;
+    for (const ch of visible) {
+      while (pos < fullText.length && /\s/.test(fullText[pos])) pos++;
+      if (pos >= fullText.length || fullText[pos] !== ch) return null;
+      pos++;
+    }
+    const card: ScriptCard = { startChar, endChar: pos };
+    if (piece.tag === "hook" || piece.tag === "body" || piece.tag === "cta") card.tag = piece.tag;
+    cards.push(card);
+  }
+  // the pieces must cover every visible char of fullText (กฎ 6: ห้ามข้าม)
+  while (pos < fullText.length && /\s/.test(fullText[pos])) pos++;
+  if (pos !== fullText.length) return null;
+  return cards.length > 0 ? cards : null;
+}
+
+// Snap shared card boundaries into real pauses. Only boundaries BETWEEN cards
+// move (start of first / end of last stay put), each by at most maxSnapMs,
+// and never so far that a card drops below minCardMs.
+export function snapCaptionsToSilences<T extends { startMs: number; endMs: number }>(
+  captions: T[],
+  silenceMidpointsMs: number[],
+  maxSnapMs = 1500,
+  minCardMs = 240,
+): T[] {
+  if (captions.length < 2 || silenceMidpointsMs.length === 0) return captions;
+  const sil = [...silenceMidpointsMs].sort((a, b) => a - b);
+  for (let i = 0; i < captions.length - 1; i++) {
+    const a = captions[i];
+    const b = captions[i + 1];
+    const boundary = (a.endMs + b.startMs) / 2;
+    let best = -1;
+    let bestDist = Infinity;
+    for (const m of sil) {
+      const d = Math.abs(m - boundary);
+      if (d < bestDist) { bestDist = d; best = m; }
+    }
+    if (best < 0 || bestDist > maxSnapMs) continue;
+    if (best - a.startMs < minCardMs) continue; // would crush card i
+    if (b.endMs - best < minCardMs) continue;   // would crush card i+1
+    a.endMs = Math.round(best);
+    b.startMs = Math.round(best);
+  }
+  return captions;
 }
 
 // ---------------------------------------------------------------------------

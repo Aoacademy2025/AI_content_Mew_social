@@ -6,9 +6,11 @@ import {
   buildWordsFromTiming,
   buildCaptionsFromCards,
   splitSentenceCards,
+  snapCaptionsToSilences,
   TtsTimingMismatchError,
   type TtsTiming,
   type TimedWord,
+  type ScriptCard,
 } from "@/lib/tts-timing";
 import type { Caption } from "./types";
 
@@ -16,6 +18,19 @@ export interface TimingCaptionsResult {
   captions: Caption[];
   words: TimedWord[];
   audioDurationMs: number;
+}
+
+// LLM cards must be sane char ranges over fullText: ordered, non-overlapping,
+// in bounds. Anything off → null → sentence cards.
+function validCards(cards: ScriptCard[] | null | undefined, textLen: number): ScriptCard[] | null {
+  if (!Array.isArray(cards) || cards.length === 0) return null;
+  let prevEnd = 0;
+  for (const c of cards) {
+    if (!Number.isInteger(c?.startChar) || !Number.isInteger(c?.endChar)) return null;
+    if (c.startChar < prevEnd || c.endChar <= c.startChar || c.endChar > textLen) return null;
+    prevEnd = c.endChar;
+  }
+  return cards;
 }
 
 // Build editor captions + word timeline straight from a TTS response's
@@ -26,6 +41,7 @@ export function captionsFromTtsTiming(
   timing: TtsTiming | null | undefined,
   audioDurationMsHint: number,
   maxCardChars: number,
+  cardsOverride?: ScriptCard[] | null,
 ): TimingCaptionsResult | null {
   try {
     if (!timing || !Array.isArray(timing.segments) || timing.segments.length === 0) return null;
@@ -42,9 +58,19 @@ export function captionsFromTtsTiming(
     if (!fullText.trim()) return null;
 
     const words = buildWordsFromTiming(timing, fullText);
-    const cards = splitSentenceCards(fullText, Math.max(10, maxCardChars));
+    // Viral cards from /api/videos/split-script when they validate against
+    // fullText; deterministic sentence cards otherwise (PR-E §6 phase 2).
+    const cards = validCards(cardsOverride, fullText.length)
+      ?? splitSentenceCards(fullText, Math.max(10, maxCardChars));
     const caps = buildCaptionsFromCards(cards, timing, fullText);
     if (words.length === 0 || caps.length === 0) return null;
+
+    // Gemini's intra-segment times are char-proportional — snapping card
+    // boundaries into real pauses removes most of the residual error.
+    // ElevenLabs char timing is already exact; never snap it.
+    if (timing.provider === "gemini" && Array.isArray(timing.silences) && timing.silences.length > 0) {
+      snapCaptionsToSilences(caps, timing.silences.filter((s) => Number.isFinite(s)));
+    }
 
     const last = timing.segments[timing.segments.length - 1];
     const segTotalMs = Math.round(last.startMs + last.durationMs);

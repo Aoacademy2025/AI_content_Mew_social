@@ -43,6 +43,14 @@
 - **VPS ตัวเดียว ไม่มี GPU** = คอขวด render ตอน scale (GPU ไม่ช่วย Remotion → ใช้ CPU/Lambda)
 - **BYOK** = ผู้ใช้ต้องตั้ง key เอง → adoption friction → ต้องทำ onboarding ให้ดี
 
+## 🎯 ซับเป๊ะจาก TTS timing — LIVE บน prod (06-12, PRs #35-#39)
+- **สถาปัตยกรรมใหม่**: เวลาซับมาจากขั้นสร้าง TTS โดยตรง (ไม่ใช่ AI ฟังเสียงแล้วเดา — ต้นเหตุ saga ซับเพี้ยนคลิปยาว #27-#34) → ซับตรงเสียงเป๊ะระดับเลขคณิตทุกความยาวคลิป + pipeline เร็วขึ้น 1 step (ข้าม transcribe)
+- ชิ้นส่วน: `src/lib/tts-timing.ts` (pure lib) · `tts-gemini` segmented PCM + `timing` + silencedetect · `tts` (ElevenLabs) `/with-timestamps` + char-level merge · editor ใช้ timing เมื่อมี (`_components/tts-timing-captions.ts`) · `/api/videos/split-script` ตัดการ์ด viral แบบ text-only (LLM เลือกจุดตัดได้ แต่แก้ข้อความไม่ได้แม้ตัวเดียว — server validate)
+- **fail-open ทุกชั้น**: ท่อน TTS พัง→single call เดิม · timing เพี้ยน→transcribe เดิม · split-script พัง→การ์ดประโยค — ผู้ใช้ไม่มีทาง "ใช้ไม่ได้" จากฟีเจอร์นี้
+- transcribe เดิม = fallback ถาวรสำหรับเสียง avatar/อัปโหลด (guards #32-#34 คงอยู่ครบ)
+- เทส: `verify-tts-timing*.ts`, `verify-tts-gemini-segmented.ts`, `verify-split-snap.ts` + live QA 2 ชั้นทุก PR (บันทึกใน PR #36-#38 comments)
+- จุดเฝ้าระวัง: free-tier Gemini key บนคลิปยาว (จำนวน TTS call เพิ่มตามท่อน — มี adaptive chunk size คุม) + งบเวลา segmented 240s บนคลิป 6 นาที → ถ้า log เจอ `fail-open` บ่อยให้ขยับ `CHUNK_CHARS_LONG_SCRIPT` 350→450
+
 ## 🐞 Video editor bug status (06-08)
 - ✅ **Mew BGM/subtitle preview bug closed** — deployed `b6bf434` → `5e78754` → `f720314` → `014c6e2` → `e69f589`; final UX: Render preview first, edit subtitles live, Burn & Download only at the end
 - ✅ **Customer support bug batch closed (06-09)** — deployed `161e393` + deploy hardening `6ba829a`/`4430835`; closed all 7 open tickets from bunchar/sumawadee; `/updates` has published `v0.4.3`
