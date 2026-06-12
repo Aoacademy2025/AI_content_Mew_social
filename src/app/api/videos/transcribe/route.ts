@@ -7,7 +7,7 @@ import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
-import { sanitizeChunkTimeline, chunkOvershootRatio, CHUNK_DESYNC_RETRY_RATIO } from "@/lib/transcribe-timeline";
+import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -420,11 +420,17 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
 
 // ── Long-audio chunking ──
 // Gemini loses timestamp sync on long audio (returns a bogus duration that
-// overshoots reality), so we split long clips at silence into ~2.5-min chunks,
-// transcribe each on the accurate-timestamp 2.5-flash baseline, then offset+merge.
+// overshoots reality), so we split long clips at silence, transcribe each on
+// the accurate-timestamp 2.5-flash baseline, then offset+merge.
+// 06-12 #3: chunks shrank from ~2.5min to ~75s — flash timestamps wobble
+// NON-LINEARLY inside a chunk (late mid-chunk, early at the tail, different
+// every run) and the chunk start offsets are the only EXACT anchors we have
+// (ffmpeg slicing). Smaller chunks = exact anchors twice as often = drift can
+// never accumulate far. Costs ~2× Gemini calls per long clip (sequential,
+// well inside flash free-tier RPM).
 const CHUNK_THRESHOLD_MS = 240_000; // >4 min ⇒ chunk
-const CHUNK_TARGET_MS = 150_000;    // ~2.5 min target chunk
-const CHUNK_MAX_MS = 210_000;       // 3.5 min hard cap per chunk
+const CHUNK_TARGET_MS = 75_000;     // ~75s target chunk
+const CHUNK_MAX_MS = 110_000;       // 110s hard cap per chunk
 
 // Run silencedetect over the mp3 and return silence-end timestamps (ms), sorted.
 // These are used as candidate cut points (cut at the end of each silence).
@@ -938,21 +944,24 @@ export async function POST(req: Request) {
               : "";
             chunkIdx++;
             let rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
-            // Desynced chunk (transcript runs >10% past the real slice length) →
-            // RE-TRANSCRIBE it: flash is non-deterministic and a re-roll usually
-            // re-syncs. Blanket-rescaling a badly drifted chunk drags its correct
-            // early captions out of sync (prod 06-12 #2: chunk 1 ×1.264 → first
-            // 2:30 desynced + word gaps). Keep the best attempt as fallback.
+            // Desynced chunk → RE-TRANSCRIBE it: flash is non-deterministic and a
+            // re-roll usually re-syncs. Blanket-rescaling a badly drifted chunk
+            // drags its correct early captions out of sync (prod 06-12 #2: chunk 1
+            // ×1.264 → first 2:30 desynced). Desync is judged in BOTH directions —
+            // an undershooting transcript compresses captions ahead of the voice
+            // (prod 06-12 #3: subs ran early after 2:20) — and attempts are
+            // compared by |tail gap|, so a 0.7× roll never beats a 1.1× one.
             const CHUNK_MAX_ATTEMPTS = 3;
-            let overshoot = chunkOvershootRatio(rawChunk.geminiDirectCaptions, ch.durationMs);
-            for (let attempt = 2; attempt <= CHUNK_MAX_ATTEMPTS && overshoot > CHUNK_DESYNC_RETRY_RATIO; attempt++) {
-              console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: desynced ×${overshoot.toFixed(3)} — re-transcribing (attempt ${attempt}/${CHUNK_MAX_ATTEMPTS})`);
+            for (let attempt = 2; attempt <= CHUNK_MAX_ATTEMPTS && chunkNeedsRetry(rawChunk.geminiDirectCaptions, ch.durationMs); attempt++) {
+              const gapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
+              console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: tail ${gapSec >= 0 ? "+" : ""}${gapSec.toFixed(1)}s vs slice — re-transcribing (attempt ${attempt}/${CHUNK_MAX_ATTEMPTS})`);
               const retry = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
-              const retryOvershoot = chunkOvershootRatio(retry.geminiDirectCaptions, ch.durationMs);
-              if (retry.geminiDirectCaptions.length > 0 && retryOvershoot < overshoot) {
-                rawChunk = retry;
-                overshoot = retryOvershoot;
-              }
+              const retryBetter =
+                retry.geminiDirectCaptions.length > 0 &&
+                (rawChunk.geminiDirectCaptions.length === 0 ||
+                  Math.abs(chunkTailGapMs(retry.geminiDirectCaptions, ch.durationMs)) <
+                  Math.abs(chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs)));
+              if (retryBetter) rawChunk = retry;
             }
             // Per-chunk timestamp guard: rescale residual tail drift onto the real
             // slice duration, drop word timestamps hallucinated past the slice
@@ -962,9 +971,11 @@ export async function POST(req: Request) {
             // on a 285s clip).
             const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
             anyDegenerateWords ||= r.stats.wordsDegenerate;
+            const keptGapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
             console.log(
               `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: ${r.geminiDirectCaptions.length} captions, ` +
               `${r.words.length}/${rawChunk.words.length} words` +
+              (Math.abs(keptGapSec) > 2 ? `, tail ${keptGapSec >= 0 ? "+" : ""}${keptGapSec.toFixed(1)}s` : "") +
               (r.stats.rescaleK !== 1 ? `, tail-rescale ×${r.stats.rescaleK.toFixed(3)}` : "") +
               (r.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
             );

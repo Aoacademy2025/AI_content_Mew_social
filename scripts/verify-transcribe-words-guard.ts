@@ -9,6 +9,8 @@ import {
   sanitizeChunkTimeline,
   boundWordsForSplit,
   chunkOvershootRatio,
+  chunkTailGapMs,
+  chunkNeedsRetry,
   type ChunkResult,
 } from "../src/lib/transcribe-timeline";
 
@@ -122,6 +124,28 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
   check("overshoot: 26% drift detected (>1.10 retry threshold)", ratio > 1.10 && Math.abs(ratio - 171_200 / CHUNK_MS) < 0.02);
   check("overshoot: no captions → neutral 1", chunkOvershootRatio([], CHUNK_MS) === 1);
   check("overshoot: unknown duration → neutral 1", chunkOvershootRatio(healthy.geminiDirectCaptions, 0) === 1);
+}
+
+// ── chunkNeedsRetry / chunkTailGapMs (bidirectional desync detection) ──
+// Prod 06-12 #3: chunk 2 attempt 1 overshot ×1.408 → retried, but the kept
+// attempt UNDERSHOT and the one-sided check let it through → subs ran ahead
+// of the audio after 2:20. Retry must look both ways and judge by |gap|.
+{
+  const dur = 75_000;
+  const ok = mkCaptions(40, dur);
+  check("retry: in-sync chunk → no retry", !chunkNeedsRetry(ok, dur));
+  const over = mkCaptions(40, Math.round(dur * 1.408));
+  check("retry: ×1.408 overshoot → retry", chunkNeedsRetry(over, dur));
+  check("retry: overshoot gap is positive", chunkTailGapMs(over, dur) > 0);
+  const slightlyOver = mkCaptions(40, dur + 1500); // within codec/breath margin
+  check("retry: +1.5s tail → no retry", !chunkNeedsRetry(slightlyOver, dur));
+  const under = mkCaptions(40, dur - 30_000); // transcript covers only 45s of 75s
+  check("retry: −30s undershoot → retry", chunkNeedsRetry(under, dur));
+  check("retry: undershoot gap is negative", chunkTailGapMs(under, dur) < 0);
+  const tailSilence = mkCaptions(40, dur - 8_000); // chunk ends in real silence
+  check("retry: −8s tail (trailing silence) → no retry", !chunkNeedsRetry(tailSilence, dur));
+  check("retry: empty captions → retry", chunkNeedsRetry([], dur));
+  check("retry: unknown duration → no retry", !chunkNeedsRetry(ok, 0));
 }
 
 // ── boundWordsForSplit (client guard for the แบ่งซับ N คำ button) ──
