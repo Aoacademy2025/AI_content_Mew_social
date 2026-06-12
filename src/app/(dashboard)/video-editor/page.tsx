@@ -38,6 +38,8 @@ import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
+import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
+import type { TtsTiming } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
@@ -272,6 +274,9 @@ export default function VideoEditorPage() {
   const [showSplitMenu, setShowSplitMenu] = useState(false);
   // เก็บ captions ต้นฉบับจาก Transcribe เพื่อ reset "sentence" ได้
   const originalCaptionsRef = useRef<Caption[]>([]);
+  // Exact subtitle timing from the LAST TTS run (PR-C). Null when the voice
+  // didn't come from our TTS (avatar/upload/fail-open) → transcribe fallback.
+  const ttsTimingRef = useRef<TtsTiming | null>(null);
   // ref ที่ sync กับ captions state — ใช้ใน rAF loop เพื่อหลีกเลี่ยง stale closure
   const captionsRef = useRef<Caption[]>([]);
 
@@ -1199,7 +1204,17 @@ export default function VideoEditorPage() {
     return sv;
   }
 
+  // Capture the additive `timing` field from a TTS response (PR-B/PR-D).
+  // audioDurationMs lands in pipe.current immediately so Gate 2 sees the real
+  // length even when transcribe is skipped.
+  function captureTtsTiming(data: { timing?: TtsTiming; audioDurationMs?: number }) {
+    ttsTimingRef.current = data.timing && Array.isArray(data.timing.segments) ? data.timing : null;
+    const d = Number(data.audioDurationMs);
+    if (Number.isFinite(d) && d > 0) pipe.current.audioDurationMs = d;
+  }
+
   async function runTts(): Promise<string> {
+    ttsTimingRef.current = null; // stale timing must never outlive its audio
     if (ttsProvider === "gemini") {
       setStep("tts", "running", "Gemini TTS...");
       const res = await fetch("/api/videos/tts-gemini", {
@@ -1209,6 +1224,7 @@ export default function VideoEditorPage() {
       });
       const data = await res.json();
       assertOk("TTS", res, data);
+      captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
       setStep("tts", "done", url); return url;
@@ -1221,10 +1237,37 @@ export default function VideoEditorPage() {
       });
       const data = await res.json();
       assertOk("TTS", res, data);
+      captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
       setStep("tts", "done", url); return url;
     }
+  }
+
+  // PR-C: subtitles straight from TTS timing — exact by construction, no
+  // listen-and-guess. Returns null when the last TTS run carried no usable
+  // timing (avatar/upload voice, fail-open response) → caller runs the
+  // transcribe fallback, i.e. exactly the old behavior.
+  function applyTtsTiming(): Caption[] | null {
+    const AVG_CHAR_WIDTH_RATIO = 0.47; // same card-width math as runTranscribe
+    const VIDEO_WIDTH = 1080;
+    const SUBTITLE_PADDING = 160;
+    const maxCardChars = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
+
+    const res = captionsFromTtsTiming(ttsTimingRef.current, pipe.current.audioDurationMs ?? 0, maxCardChars);
+    if (!res) return null;
+
+    const sceneCaptions = normalizeCaptionsForTimeline(res.captions, res.audioDurationMs);
+    pipe.current.captions = sceneCaptions;
+    pipe.current.sceneCaptions = sceneCaptions;
+    pipe.current.audioDurationMs = res.audioDurationMs;
+    pipe.current.words = res.words;
+    originalCaptionsRef.current = sceneCaptions;
+    setCaptions(sceneCaptions);
+    setSplitMode("sentence");
+    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · เวลาจาก TTS เป๊ะ ✓`);
+    console.log(`[editor] subtitles from TTS timing: ${sceneCaptions.length} cards, ${res.words.length} words, ${res.audioDurationMs}ms — transcribe skipped`);
+    return sceneCaptions;
   }
 
   async function runTranscribe(voiceUrl: string): Promise<Caption[]> {
@@ -2157,13 +2200,14 @@ export default function VideoEditorPage() {
         setStep("tts", "skip", "ข้าม — ใช้เสียงจาก Direct URL");
         vUrl = avatarDirectUrl.trim();
         pipe.current.voiceUrl = vUrl;
+        ttsTimingRef.current = null; // external audio — timing from a previous TTS run doesn't apply
       } else {
         vUrl = await runTts();
         if (abortRef.current) return;
       }
 
-      // ── Transcribe to get audioDurationMs into pipe.current ──
-      const caps = await runTranscribe(vUrl);
+      // ── Subtitles: exact TTS timing when available, transcribe fallback otherwise ──
+      const caps = applyTtsTiming() ?? await runTranscribe(vUrl);
       if (abortRef.current) return;
 
       // ── Gate 2 (post-TTS, exact): real audio length is known now — block before
@@ -2231,6 +2275,7 @@ export default function VideoEditorPage() {
           setStep("tts", "skip", "ข้าม — ใช้เสียงจาก Direct URL");
           vUrl = avatarDirectUrl.trim();
           pipe.current.voiceUrl = vUrl;
+          ttsTimingRef.current = null; // external audio — timing from a previous TTS run doesn't apply
         } else {
           vUrl = await runTts();
           if (abortRef.current) return;
@@ -2239,7 +2284,9 @@ export default function VideoEditorPage() {
 
       let caps = pipe.current.captions ?? [];
       if (caps.length === 0 || startStep === "transcribe" || startStep === "tts") {
-        caps = await runTranscribe(vUrl);
+        // Explicit Transcribe button = the user wants a real re-transcription
+        // (e.g. re-rolling avatar audio) — never short-circuit that with timing.
+        caps = (startStep !== "transcribe" ? applyTtsTiming() : null) ?? await runTranscribe(vUrl);
         if (abortRef.current) return;
         checkCaptionAlignment(caps, script, (pipe.current.scenes ?? []).length, pipe.current.audioDurationMs ?? 0);
       }
