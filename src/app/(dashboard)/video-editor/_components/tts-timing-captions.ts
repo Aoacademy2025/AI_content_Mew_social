@@ -7,6 +7,7 @@ import {
   buildCaptionsFromCards,
   splitSentenceCards,
   snapCaptionsToSilences,
+  snapCardsToWordBoundaries,
   TtsTimingMismatchError,
   type TtsTiming,
   type TimedWord,
@@ -60,8 +61,11 @@ export function captionsFromTtsTiming(
     const words = buildWordsFromTiming(timing, fullText);
     // Viral cards from /api/videos/split-script when they validate against
     // fullText; deterministic sentence cards otherwise (PR-E §6 phase 2).
-    const cards = validCards(cardsOverride, fullText.length)
+    // Either way, card edges are then forced onto real word boundaries — no
+    // source is allowed to split a Thai word across two cards.
+    const rawCards = validCards(cardsOverride, fullText.length)
       ?? splitSentenceCards(fullText, Math.max(10, maxCardChars));
+    const cards = snapCardsToWordBoundaries(rawCards, fullText);
     const caps = buildCaptionsFromCards(cards, timing, fullText);
     if (words.length === 0 || caps.length === 0) return null;
 

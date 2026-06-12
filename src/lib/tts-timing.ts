@@ -88,11 +88,27 @@ function thaiWordSegmenter(): WordSegmenter | null {
   return I.Segmenter ? new I.Segmenter("th", { granularity: "word" }) : null;
 }
 
+// Word-boundary positions of the FULL text, from the same segmenter that
+// drives the word timeline — the single source of truth for where a cut is
+// allowed. Tokenizing a truncated window instead is how "โมเดลธุ|รกิจ" cuts
+// happened: Thai segmentation is context-dependent, so boundaries must come
+// from the whole string, never a slice.
+function wordBoundaries(fullText: string): number[] {
+  const seg = thaiWordSegmenter();
+  if (!seg) return [];
+  const out: number[] = [0];
+  for (const tok of seg.segment(fullText)) {
+    if (tok.index > 0) out.push(tok.index);
+  }
+  out.push(fullText.length);
+  return out;
+}
+
 // Best cut position in fullText within (from, hardMax]: prefer the last
-// newline, then the last whitespace run (cut after it), then a Segmenter word
-// boundary, then hardMax. minCut avoids degenerate tiny chunks when a newline
-// sits right at the start of the window.
-function findCut(fullText: string, from: number, hardMax: number, minCut: number): number {
+// newline, then the last whitespace run (cut after it), then the last
+// full-text word boundary in range, then hardMax. minCut avoids degenerate
+// tiny chunks when a newline sits right at the start of the window.
+function findCut(fullText: string, from: number, hardMax: number, minCut: number, boundaries: number[]): number {
   const window = fullText.slice(from, hardMax);
 
   const nl = window.lastIndexOf("\n");
@@ -104,16 +120,12 @@ function findCut(fullText: string, from: number, hardMax: number, minCut: number
   }
   if (ws >= 0 && from + ws + 1 >= minCut) return from + ws + 1;
 
-  const seg = thaiWordSegmenter();
-  if (seg) {
-    let best = -1;
-    for (const tok of seg.segment(window)) {
-      if (tok.index > 0 && from + tok.index >= minCut && from + tok.index <= hardMax) {
-        best = Math.max(best, from + tok.index);
-      }
-    }
-    if (best > from) return best;
+  let best = -1;
+  for (const b of boundaries) {
+    if (b > hardMax) break;
+    if (b > from && b >= minCut) best = b;
   }
+  if (best > from) return best;
   return hardMax;
 }
 
@@ -122,6 +134,7 @@ function findCut(fullText: string, from: number, hardMax: number, minCut: number
 // exactly fullText.
 export function splitScriptForTts(fullText: string, maxChars?: number): TtsScriptChunk[] {
   const limit = Math.max(1, maxChars ?? chooseChunkChars(fullText.length));
+  const bounds = fullText.length > limit ? wordBoundaries(fullText) : [];
   const chunks: TtsScriptChunk[] = [];
   let pos = 0;
   while (pos < fullText.length) {
@@ -130,7 +143,7 @@ export function splitScriptForTts(fullText: string, maxChars?: number): TtsScrip
       end = fullText.length;
     } else {
       const minCut = pos + Math.max(1, Math.floor(limit * 0.4));
-      end = findCut(fullText, pos, pos + limit, minCut);
+      end = findCut(fullText, pos, pos + limit, minCut, bounds);
       if (end <= pos) end = Math.min(pos + limit, fullText.length);
     }
     chunks.push({ text: fullText.slice(pos, end), startChar: pos, endChar: end });
@@ -378,6 +391,56 @@ export function mapCardTextsToRanges(fullText: string, pieces: CardPiece[]): Scr
   while (pos < fullText.length && /\s/.test(fullText[pos])) pos++;
   if (pos !== fullText.length) return null;
   return cards.length > 0 ? cards : null;
+}
+
+// Snap card edges to real word boundaries of fullText — the guarantee that no
+// card can ever split a Thai word ("ธุรกิจ" → "ธุ" | "รกิจ"), regardless of
+// where the cards came from (LLM viral cuts, sentence splitter, anything
+// future). Cards are normalized to contiguous coverage first (gaps between
+// validated cards are whitespace-only), then each interior edge moves to the
+// nearest allowed boundary; a card that collapses donates its range to its
+// neighbor, so total coverage — and the iron rule — are preserved exactly.
+export function snapCardsToWordBoundaries(cards: ScriptCard[], fullText: string): ScriptCard[] {
+  if (cards.length === 0) return cards;
+  const bounds = wordBoundaries(fullText);
+  if (bounds.length === 0) return cards;
+
+  const startPos = cards[0].startChar;
+  const endPos = cards[cards.length - 1].endChar;
+  const snap = (p: number): number => {
+    let best = p;
+    let bestDist = Infinity;
+    for (const b of bounds) {
+      const d = Math.abs(b - p);
+      if (d < bestDist) { bestDist = d; best = b; }
+      if (b > p && d > bestDist) break;
+    }
+    return best;
+  };
+
+  // interior shared edges (card i's end == card i+1's start after
+  // contiguous normalization), snapped then clamped monotonic
+  let prev = startPos;
+  const edges = cards.slice(0, -1).map((c) => {
+    const v = Math.min(Math.max(snap(c.endChar), prev), endPos);
+    prev = v;
+    return v;
+  });
+
+  const out: ScriptCard[] = [];
+  let s = startPos;
+  for (let i = 0; i < cards.length; i++) {
+    const e = i < edges.length ? edges[i] : endPos;
+    if (fullText.slice(s, e).trim().length > 0) {
+      const card: ScriptCard = { startChar: s, endChar: e };
+      if (cards[i].tag) card.tag = cards[i].tag;
+      out.push(card);
+    } else if (out.length > 0) {
+      out[out.length - 1].endChar = e; // collapsed card donates its range backwards
+    }
+    s = e;
+  }
+  return out.length > 0 ? out : cards;
 }
 
 // Snap shared card boundaries into real pauses. Only boundaries BETWEEN cards
