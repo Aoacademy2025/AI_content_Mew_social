@@ -133,3 +133,15 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
     technicalMessage: raw,
   };
 }
+
+// Google 429 bodies carry RetryInfo, e.g. {"retryDelay":"18s"} — honoring it
+// matters once a clip is many sequential TTS calls (free-tier RPM windows are
+// longer than naive exponential backoff). Capped so one bad hint can't stall
+// the whole request.
+export function parseRetryDelayMs(errBody: string, capMs = 30_000): number | null {
+  const m = errBody.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+  if (!m) return null;
+  const ms = Math.round(parseFloat(m[1]) * 1000);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  return Math.min(ms, capMs);
+}
