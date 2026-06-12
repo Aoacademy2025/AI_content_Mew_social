@@ -393,6 +393,123 @@ export function mapCardTextsToRanges(fullText: string, pieces: CardPiece[]): Scr
   return cards.length > 0 ? cards : null;
 }
 
+// Whitespace-insensitive match of one piece's visible chars at fullText[pos…].
+// Returns the end position (exclusive) on full match, or -1 with mismatch info.
+function matchPieceAt(
+  fullText: string,
+  pos: number,
+  pieceText: string,
+): { ok: true; end: number } | { ok: false; expected: string; got: string; at: number } {
+  let p = pos;
+  for (const ch of Array.from(pieceText).filter((c) => !/\s/.test(c))) {
+    while (p < fullText.length && /\s/.test(fullText[p])) p++;
+    if (p >= fullText.length || fullText[p] !== ch) {
+      return { ok: false, expected: fullText[p] ?? "<EOF>", got: ch, at: p };
+    }
+    p++;
+  }
+  return { ok: true, end: p };
+}
+
+export interface TolerantCardsResult {
+  cards: ScriptCard[];
+  accepted: number;
+  rejected: number;
+  firstMismatch: string | null;
+}
+
+// Partial-acceptance variant of mapCardTextsToRanges: pieces that reproduce
+// the script verbatim become viral cards; a piece that deviates (LLMs love to
+// normalize curly quotes, em dashes, list numbering, ๆ spacing) is dropped and
+// only ITS span falls back to sentence cards — instead of one bad card
+// rejecting the whole clip. The iron rule is unchanged: every accepted card is
+// still a verbatim slice, and gaps are covered so no text is ever lost.
+export function mapCardTextsToRangesTolerant(
+  fullText: string,
+  pieces: CardPiece[],
+  maxCardChars: number,
+): TolerantCardsResult | null {
+  if (!Array.isArray(pieces) || pieces.length === 0) return null;
+  const clean = pieces.filter((p) => typeof p?.text === "string" && Array.from(p.text).some((c) => !/\s/.test(c)));
+  if (clean.length === 0) return null;
+
+  const cards: ScriptCard[] = [];
+  let accepted = 0;
+  let rejected = 0;
+  let firstMismatch: string | null = null;
+
+  const skipWs = (p: number) => {
+    while (p < fullText.length && /\s/.test(fullText[p])) p++;
+    return p;
+  };
+
+  // Search ahead (bounded) for a position where this piece matches in full.
+  const findAhead = (fromPos: number, pieceText: string): number => {
+    const firstVisible = Array.from(pieceText).find((c) => !/\s/.test(c));
+    if (!firstVisible) return -1;
+    let scanned = 0;
+    for (let p = skipWs(fromPos); p < fullText.length && scanned < 800; p = skipWs(p + 1), scanned++) {
+      if (fullText[p] !== firstVisible) continue;
+      if (matchPieceAt(fullText, p, pieceText).ok) return p;
+    }
+    return -1;
+  };
+
+  const fillGapWithSentences = (from: number, to: number) => {
+    if (fullText.slice(from, to).trim().length === 0) return;
+    for (const c of splitSentenceCards(fullText.slice(from, to), maxCardChars)) {
+      cards.push({ startChar: c.startChar + from, endChar: c.endChar + from });
+    }
+  };
+
+  let pos = 0;
+  let i = 0;
+  while (i < clean.length) {
+    const start = skipWs(pos);
+    const m = matchPieceAt(fullText, start, clean[i].text);
+    if (m.ok) {
+      const card: ScriptCard = { startChar: start, endChar: m.end };
+      const tag = clean[i].tag;
+      if (tag === "hook" || tag === "body" || tag === "cta") card.tag = tag;
+      cards.push(card);
+      accepted++;
+      pos = m.end;
+      i++;
+      continue;
+    }
+
+    if (!firstMismatch) {
+      const ctx = fullText.slice(Math.max(0, m.at - 12), m.at + 12).replace(/\n/g, " ");
+      firstMismatch = `piece ${i + 1}/${clean.length} "${clean[i].text.slice(0, 30)}…" expected "${m.expected}" got "${m.got}" near "…${ctx}…"`;
+    }
+
+    // resync: find the next piece that matches somewhere ahead; everything
+    // between pos and that point becomes sentence cards
+    let resyncPiece = -1;
+    let resyncPos = -1;
+    for (let j = i + 1; j < Math.min(i + 5, clean.length); j++) {
+      const q = findAhead(start, clean[j].text);
+      if (q >= 0) { resyncPiece = j; resyncPos = q; break; }
+    }
+    if (resyncPiece === -1) {
+      rejected += clean.length - i;
+      fillGapWithSentences(start, fullText.length);
+      pos = fullText.length;
+      break;
+    }
+    rejected += resyncPiece - i;
+    fillGapWithSentences(start, resyncPos);
+    pos = resyncPos;
+    i = resyncPiece;
+  }
+
+  // leftover tail the pieces never covered (e.g. LLM stopped early)
+  if (skipWs(pos) < fullText.length) fillGapWithSentences(skipWs(pos), fullText.length);
+
+  if (accepted === 0) return null;
+  return { cards, accepted, rejected, firstMismatch };
+}
+
 // Snap card edges to real word boundaries of fullText — the guarantee that no
 // card can ever split a Thai word ("ธุรกิจ" → "ธุ" | "รกิจ"), regardless of
 // where the cards came from (LLM viral cuts, sentence splitter, anything
