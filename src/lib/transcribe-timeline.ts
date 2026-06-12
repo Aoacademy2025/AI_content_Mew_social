@@ -55,24 +55,31 @@ export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): 
   }
   const limitSec = (chunkDurationMs + BOGUS_MARGIN_MS) / 1000;
 
-  // 1) Drop hallucinated words (outside the physical chunk length).
-  const keptWords = r.words.filter(
-    (w) =>
-      Number.isFinite(w.start) &&
-      Number.isFinite(w.end) &&
-      w.start >= 0 &&
-      w.end > w.start &&
-      w.end <= limitSec,
-  );
-  const wordsDropped = r.words.length - keptWords.length;
-
-  // 2) Progressive tail drift: the LAST caption overshooting the chunk length
+  // 1) Progressive tail drift: the LAST caption overshooting the chunk length
   //    is the signature of Gemini losing sync over the chunk. Linear-rescale
   //    the whole chunk timeline onto the real duration instead of letting the
   //    downstream clamp squeeze everything into the tail.
+  //    (When the drift is big — > CHUNK_DESYNC_RETRY_RATIO — the caller should
+  //    have retried the chunk first; this rescale is the best-effort fallback.)
   const captions = r.geminiDirectCaptions;
   const lastEndMs = captions.length > 0 ? captions[captions.length - 1].endMs : 0;
   const rescaleK = lastEndMs > chunkDurationMs + BOGUS_MARGIN_MS ? chunkDurationMs / lastEndMs : 1;
+
+  // 2) Drop hallucinated words — AFTER applying the rescale, because with
+  //    uniform drift the tail words map back INSIDE the chunk. Filtering first
+  //    (prod 06-12: 327/502 kept) deleted the words for the last ~30s of real
+  //    audio → word-split subtitles vanished in stretches.
+  const keptWords = r.words
+    .map((w) => ({ ...w, start: w.start * rescaleK, end: w.end * rescaleK }))
+    .filter(
+      (w) =>
+        Number.isFinite(w.start) &&
+        Number.isFinite(w.end) &&
+        w.start >= 0 &&
+        w.end > w.start &&
+        w.end <= limitSec,
+    );
+  const wordsDropped = r.words.length - keptWords.length;
 
   const limitMs = chunkDurationMs + BOGUS_MARGIN_MS;
   const clampMs = (v: number) => Math.min(Math.max(0, Math.round(v * rescaleK)), limitMs);
@@ -86,10 +93,8 @@ export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): 
     const start = clampSec(s.start);
     return { ...s, start, end: Math.max(start + 0.001, clampSec(s.end)) };
   });
-  const scaledWords = keptWords.map((w) => {
-    const start = clampSec(w.start);
-    return { ...w, start, end: Math.max(start + 0.001, clampSec(w.end)) };
-  });
+  // keptWords are already rescaled+bounded above — no further transform.
+  const scaledWords = keptWords;
 
   // 3) Degenerate words → zero them out so the caller falls back to
   //    segment-based interpolation (full coverage, bounded timing).
@@ -103,6 +108,21 @@ export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): 
     fullText: r.fullText,
     stats: { wordsDropped, wordsDegenerate, rescaleK },
   };
+}
+
+// How far past its real slice length a chunk's transcript may run before the
+// chunk is considered desynced and worth RE-TRANSCRIBING (Gemini flash is
+// non-deterministic — a re-roll usually re-syncs; same spirit as the old
+// single-call desync guard). Prod 06-12 #2: chunk 1 overshot ×1.264 and the
+// blanket rescale dragged its correct early captions out of sync instead.
+export const CHUNK_DESYNC_RETRY_RATIO = 1.10;
+
+// Ratio of the chunk transcript's reported end vs the real slice length.
+// 1 = in sync (or nothing to measure). Caller retries when > CHUNK_DESYNC_RETRY_RATIO.
+export function chunkOvershootRatio(captions: ChunkCaption[], chunkDurationMs: number): number {
+  if (!(chunkDurationMs > 0) || captions.length === 0) return 1;
+  const lastEndMs = captions[captions.length - 1].endMs;
+  return lastEndMs > 0 ? lastEndMs / chunkDurationMs : 1;
 }
 
 // ── Client-side guard for the "แบ่งซับ N คำ" rebuild ──
