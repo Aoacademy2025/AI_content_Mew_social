@@ -37,6 +37,7 @@ import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
@@ -2669,13 +2670,18 @@ export default function VideoEditorPage() {
     if (captions.length === 0) { toast.error("ยังไม่มีซับ"); return; }
     if (n < 1) return;
 
-    const wordsData = pipe.current.words ?? [];
-    const hasWords = wordsData.length > 0;
+    // Word timing จาก transcribe คลิปยาว (chunked) อาจมี timestamp หลอนเกินความยาว
+    // เสียงจริง หรือครอบคลุมไม่ครบ timeline — rebuild จากข้อมูลแบบนั้นทำให้ซับยืด
+    // (คลิป 4:45 โชว์ 6:51) และวิ่งเร็วกว่าเสียงตั้งแต่ต้นคลิป จึงต้อง bound ก่อนใช้
+    // และถ้า coverage ไม่พอให้ตกไปใช้การแบ่งตามสัดส่วนใน captions ต้นฉบับแทน
+    const audioDurMs = pipe.current.audioDurationMs ?? 0;
+    const { words: boundedWords, coverageOk } = boundWordsForSplit(pipe.current.words ?? [], audioDurMs);
+    const hasWords = coverageOk && boundedWords.length > 0;
     const result: Caption[] = [];
 
     if (hasWords) {
       // Step 1: merge syllables ที่ Whisper แยกผิด (วง+การ → วงการ)
-      const merged = mergeWhisperSyllables(wordsData);
+      const merged = mergeWhisperSyllables(boundedWords);
 
       // Step 2: แบ่ง chunk ตาม N คำ แต่ตัดที่ silence ≥ 220ms ก่อนเสมอ (phrase boundary)
       const PHRASE_BREAK_MS = 220;
@@ -2730,8 +2736,8 @@ export default function VideoEditorPage() {
         });
       });
     } else {
-      // Fallback: ไม่มี word timing — แบ่งตาม text แล้ว interpolate เวลา
-      toast("⚠ ไม่มี word timing — ซับอาจไม่ตรงเสียง กด Transcribe ใหม่เพื่อให้แม่นขึ้น");
+      // Fallback: ไม่มี word timing (หรือ word timing ไม่ครอบคลุมพอ) — แบ่งตาม text แล้ว interpolate เวลา
+      toast("⚠ word timing ไม่ครบ/ไม่มี — ใช้การแบ่งตามสัดส่วนแทน (กด Transcribe ใหม่เพื่อให้แม่นขึ้น)");
       const src = originalCaptionsRef.current.length > 0 ? originalCaptionsRef.current : captions;
       src.forEach(cap => {
         // ใช้ Intl.Segmenter แบ่งคำภาษาไทยได้ถูกต้อง
@@ -2748,9 +2754,11 @@ export default function VideoEditorPage() {
     }
 
     if (result.length > 0) {
-      setCaptions(result);
+      // Clamp ผลลัพธ์เข้า timeline เสียงจริงเสมอ — กันซับชุดใหม่ยาวเกิน audio
+      const bounded = normalizeCaptionsForTimeline(result, audioDurMs);
+      setCaptions(bounded);
       const label = m === "custom" ? `${n} คำ` : `${m} คำ`;
-      toast.success(`แบ่งซับ ${label}/ช่วง → ${result.length} ช่วง`);
+      toast.success(`แบ่งซับ ${label}/ช่วง → ${bounded.length} ช่วง`);
     }
   }
 
