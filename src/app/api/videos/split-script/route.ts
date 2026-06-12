@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
-import { mapCardTextsToRanges, type CardPiece } from "@/lib/tts-timing";
+import { mapCardTextsToRangesTolerant, type CardPiece } from "@/lib/tts-timing";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
@@ -96,14 +96,20 @@ ${text}
       return NextResponse.json({ error: "LLM output unparseable" }, { status: 422 });
     }
 
-    const cards = mapCardTextsToRanges(text, pieces);
-    if (!cards) {
-      console.warn(`[split-script] LLM cards do not reproduce the script verbatim (${pieces.length} pieces) — client should fall back to sentence cards`);
+    // Partial acceptance: verbatim pieces become viral cards; deviating
+    // pieces fall back to sentence cards for THEIR span only. One normalized
+    // em-dash no longer costs the whole clip its viral cut.
+    const result = mapCardTextsToRangesTolerant(text, pieces, cardCap);
+    if (!result) {
+      console.warn(`[split-script] no LLM piece reproduces the script verbatim (${pieces.length} pieces) — client should fall back to sentence cards`);
       return NextResponse.json({ error: "cards mismatch script" }, { status: 422 });
     }
 
-    console.log(`[split-script] ${text.length} chars → ${cards.length} viral cards`);
-    return NextResponse.json({ cards });
+    if (result.rejected > 0) {
+      console.warn(`[split-script] ${result.rejected}/${result.accepted + result.rejected} pieces rejected → sentence-filled. First mismatch: ${result.firstMismatch}`);
+    }
+    console.log(`[split-script] ${text.length} chars → ${result.cards.length} cards (${result.accepted} viral, ${result.rejected} rejected)`);
+    return NextResponse.json({ cards: result.cards });
   } catch (error) {
     return apiError({ route: "POST /api/videos/split-script", error, notifyUser: false });
   }
