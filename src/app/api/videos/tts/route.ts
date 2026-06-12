@@ -87,9 +87,11 @@ async function callElevenLabs(
     lastErrBody = await res.text();
     console.error(`[tts] ${label} ${v.withTimestamps ? "with-timestamps" : "plain"}${v.lang ? "+lang" : ""} failed: ${res.status} ${lastErrBody.slice(0, 150)}`);
 
-    // Auth/quota errors won't be fixed by switching endpoint or dropping
-    // language_code — stop walking the chain and surface the real error.
-    if (res.status === 401 || res.status === 429 || lastErrBody.includes("quota_exceeded")) break;
+    // Auth/quota/voice-not-found errors won't be fixed by switching endpoint
+    // or dropping language_code — stop walking the chain and surface the real
+    // error. (400 keeps walking: it can be language_code-related, which the
+    // next variants address.)
+    if (res.status === 401 || res.status === 404 || res.status === 429 || lastErrBody.includes("quota_exceeded")) break;
   }
 
   return { ok: false, status: lastStatus, errBody: lastErrBody };
