@@ -125,6 +125,32 @@ export function chunkOvershootRatio(captions: ChunkCaption[], chunkDurationMs: n
   return lastEndMs > 0 ? lastEndMs / chunkDurationMs : 1;
 }
 
+// A transcript may also UNDERSHOOT its slice (end well before the real audio
+// does) — those captions are compressed and run ahead of the voice. Chunk cuts
+// land where speech resumes after a silence, so a chunk can legitimately end
+// with a few seconds of pause; only a shortfall a TTS voice would never produce
+// counts as desync. (Prod 06-12 #3: the kept retry undershot → subs ran early
+// after 2:20 — the one-sided overshoot check let it through.)
+export const CHUNK_UNDERSHOOT_RETRY_MS = 12_000;
+
+// Signed gap between the transcript's last caption end and the real slice
+// length: positive = overshoot, negative = undershoot, 0 = nothing to measure.
+export function chunkTailGapMs(captions: ChunkCaption[], chunkDurationMs: number): number {
+  if (!(chunkDurationMs > 0) || captions.length === 0) return 0;
+  return captions[captions.length - 1].endMs - chunkDurationMs;
+}
+
+// Should the caller re-transcribe this chunk? Judged on BOTH directions, and
+// attempts must be compared by |chunkTailGapMs| — a 0.7× undershoot is not
+// "better" than a 1.4× overshoot.
+export function chunkNeedsRetry(captions: ChunkCaption[], chunkDurationMs: number): boolean {
+  if (!(chunkDurationMs > 0)) return false;
+  if (captions.length === 0) return true; // empty transcript is always a bad roll
+  const gap = chunkTailGapMs(captions, chunkDurationMs);
+  if (gap > Math.max(chunkDurationMs * (CHUNK_DESYNC_RETRY_RATIO - 1), BOGUS_MARGIN_MS)) return true;
+  return gap < -CHUNK_UNDERSHOOT_RETRY_MS;
+}
+
 // ── Client-side guard for the "แบ่งซับ N คำ" rebuild ──
 // Drops words outside the real audio duration and reports whether what is left
 // still covers the timeline well enough to rebuild captions from. When it does
