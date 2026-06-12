@@ -38,6 +38,7 @@
 - **`main` = production.** The VPS deploys from `main`. Never push broken code to main.
 - **Two devs, vertical ownership:** **Mew** owns the Payment/pricing vertical (Stripe, checkout, coupons, pricing pages + their schema). The other engineer (git author **`wao1234`**) owns the video/AI render backend. Coordinate before touching shared files: `prisma/schema.prisma`, `package.json`, `next.config.ts`.
 - **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
+- **Subtitle timing (06-12, PRs #35-#39):** ซับของเสียง TTS (Gemini/ElevenLabs) มาจาก `timing` ใน TTS response — exact-by-arithmetic, **ข้าม transcribe** (`src/lib/tts-timing.ts` + `_components/tts-timing-captions.ts`); การ์ด viral มาจาก `/api/videos/split-script` (text-only LLM, server validate ห้ามแก้ข้อความ). transcribe = fallback สำหรับ avatar/อัปโหลด เท่านั้น. ทุกชั้นมี fail-open → ห้าม "ซ่อม" โดยเอา transcribe กลับมาเป็น path หลัก.
 - **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.
 - **BYOK:** paid features need the user's own API keys → onboarding must guide key setup.
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.

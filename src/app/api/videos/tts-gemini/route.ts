@@ -12,7 +12,9 @@ import {
 } from "@/lib/tts-timing";
 import path from "path";
 import fs from "fs";
+import { execFile } from "child_process";
 import { Agent } from "undici";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 
 // Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
 // for the Gemini TTS call ONLY, via a per-request dispatcher. (Previously this
@@ -222,12 +224,40 @@ function wavFromPcm(pcmBuffer: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([wavHeader, pcmBuffer]);
 }
 
-function saveWav(wavBuffer: Buffer): string {
+function saveWav(wavBuffer: Buffer): { voiceUrl: string; filePath: string } {
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
   const filename = `tts-${Date.now()}.wav`;
-  fs.writeFileSync(path.join(rendersDir, filename), wavBuffer);
-  return `/api/renders/${filename}`;
+  const filePath = path.join(rendersDir, filename);
+  fs.writeFileSync(filePath, wavBuffer);
+  return { voiceUrl: `/api/renders/${filename}`, filePath };
+}
+
+// Real-pause midpoints via ffmpeg silencedetect (same detector the transcribe
+// route uses for chunk planning). Card boundaries interpolated inside a
+// segment snap to these client-side (PR-E) — turning char-proportional guesses
+// into boundaries that sit in actual breathing pauses. Failure → [] (the snap
+// is a polish, never a dependency).
+function detectSilenceMidpoints(wavPath: string): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile(getFfmpegPath(), [
+      "-i", wavPath,
+      "-af", "silencedetect=noise=-30dB:d=0.25",
+      "-f", "null", "-",
+    ], { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (_err, _stdout, stderr) => {
+      const out: number[] = [];
+      const re = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stderr || "")) !== null) {
+        const start = parseFloat(m[1]);
+        const end = parseFloat(m[2]);
+        if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+          out.push(Math.round(((start + end) / 2) * 1000));
+        }
+      }
+      resolve(out.sort((a, b) => a - b));
+    });
+  });
 }
 
 // POST /api/videos/tts-gemini
@@ -324,7 +354,7 @@ export async function POST(req: Request) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
       const r = await callGeminiTts(apiKey, fullText, voiceName);
       if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
-      const voiceUrl = saveWav(wavFromPcm(r.pcm, r.sampleRate));
+      const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl,
         audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
@@ -332,14 +362,15 @@ export async function POST(req: Request) {
     }
 
     // ---- Success: concat PCM, write one WAV, return exact timing ----
-    const voiceUrl = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
+    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
-    console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total`);
+    const silences = await detectSilenceMidpoints(filePath).catch(() => [] as number[]);
+    console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${silences.length} silences`);
     return NextResponse.json({
       voiceUrl,
       audioDurationMs,
-      timing: { provider: "gemini" as const, segments, chars: null },
+      timing: { provider: "gemini" as const, segments, chars: null, silences },
     });
   } catch (error) {
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });

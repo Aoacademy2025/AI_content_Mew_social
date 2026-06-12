@@ -39,7 +39,7 @@ import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
-import type { TtsTiming } from "@/lib/tts-timing";
+import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
@@ -1248,13 +1248,40 @@ export default function VideoEditorPage() {
   // listen-and-guess. Returns null when the last TTS run carried no usable
   // timing (avatar/upload voice, fail-open response) → caller runs the
   // transcribe fallback, i.e. exactly the old behavior.
-  function applyTtsTiming(): Caption[] | null {
+  // PR-E: viral-style cuts come from /api/videos/split-script — a text-only
+  // LLM that picks cut points but can never alter a character (server
+  // validates verbatim coverage). Any failure silently degrades to sentence
+  // cards, so this call can only make cards prettier, never break timing.
+  async function applyTtsTiming(): Promise<Caption[] | null> {
+    if (!ttsTimingRef.current) return null;
     const AVG_CHAR_WIDTH_RATIO = 0.47; // same card-width math as runTranscribe
     const VIDEO_WIDTH = 1080;
     const SUBTITLE_PADDING = 160;
     const maxCardChars = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
 
-    const res = captionsFromTtsTiming(ttsTimingRef.current, pipe.current.audioDurationMs ?? 0, maxCardChars);
+    let viralCards: ScriptCard[] | null = null;
+    const fullText = ttsTimingRef.current.segments.map(s => s.text).join("");
+    if (fullText.length >= 120) { // tiny scripts: sentence cards are identical anyway
+      try {
+        setStep("transcribe", "running", "ตัดการ์ดสไตล์ viral...");
+        const res = await fetch("/api/videos/split-script", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: fullText, maxCardChars }),
+          signal: abortControllerRef.current?.signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          viralCards = Array.isArray(data.cards) ? data.cards : null;
+        } else {
+          console.warn(`[editor] split-script ${res.status} — using sentence cards`);
+        }
+      } catch (e) {
+        if (abortRef.current) return null;
+        console.warn("[editor] split-script failed — using sentence cards:", e);
+      }
+    }
+
+    const res = captionsFromTtsTiming(ttsTimingRef.current, pipe.current.audioDurationMs ?? 0, maxCardChars, viralCards);
     if (!res) return null;
 
     const sceneCaptions = normalizeCaptionsForTimeline(res.captions, res.audioDurationMs);
@@ -2207,7 +2234,7 @@ export default function VideoEditorPage() {
       }
 
       // ── Subtitles: exact TTS timing when available, transcribe fallback otherwise ──
-      const caps = applyTtsTiming() ?? await runTranscribe(vUrl);
+      const caps = (await applyTtsTiming()) ?? await runTranscribe(vUrl);
       if (abortRef.current) return;
 
       // ── Gate 2 (post-TTS, exact): real audio length is known now — block before
@@ -2286,7 +2313,7 @@ export default function VideoEditorPage() {
       if (caps.length === 0 || startStep === "transcribe" || startStep === "tts") {
         // Explicit Transcribe button = the user wants a real re-transcription
         // (e.g. re-rolling avatar audio) — never short-circuit that with timing.
-        caps = (startStep !== "transcribe" ? applyTtsTiming() : null) ?? await runTranscribe(vUrl);
+        caps = (startStep !== "transcribe" ? await applyTtsTiming() : null) ?? await runTranscribe(vUrl);
         if (abortRef.current) return;
         checkCaptionAlignment(caps, script, (pipe.current.scenes ?? []).length, pipe.current.audioDurationMs ?? 0);
       }
