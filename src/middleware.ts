@@ -26,7 +26,8 @@ const isPublicRoute = createRouteMatcher([
   "/api/music(.*)",
   "/api/telemetry(.*)",
   "/api/cron(.*)",  // protected by CRON_SECRET inside each route
-  "/api/mcp(.*)",   // MCP server — authed by PAT (Bearer) inside the route, no Clerk session
+  "/api/mcp(.*)",   // MCP server — authed by PAT/OAuth (Bearer) inside the route, no Clerk session
+  "/.well-known/(.*)", // OAuth discovery metadata for MCP (fetched unauthenticated by clients)
 ]);
 
 const isAdminRoute = createRouteMatcher([

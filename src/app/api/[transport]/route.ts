@@ -1,7 +1,9 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
-import { resolveMcpPrincipal, mcpAccessAllowed } from "@/lib/mcp/auth";
+import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
+import { auth } from "@clerk/nextjs/server";
+import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall } from "@/lib/mcp/audit";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
@@ -144,18 +146,41 @@ const handler = createMcpHandler(
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
 );
 
-// Bearer PAT → principal stored in authInfo.extra (consumed by runTool).
-const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
-  const principal = await resolveMcpPrincipal(bearerToken);
-  if (!principal) return undefined; // invalid/revoked/expired → 401
+function principalAuthInfo(bearerToken: string, principal: McpPrincipal): AuthInfo {
   return {
-    token: bearerToken!,
+    token: bearerToken,
     scopes: ["heroai:read"],
     clientId: principal.userId,
     extra: { userId: principal.userId, plan: principal.plan, effectivePlan: principal.effectivePlan, user: principal.user },
   };
+}
+
+// Accept EITHER a Personal Access Token (Claude Code / header-capable clients) OR a Clerk
+// OAuth access token (Claude desktop app via the OAuth connector). Both resolve to the same
+// McpPrincipal, so every tool + the runTool guard work unchanged regardless of how you authed.
+const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
+  // 1. Personal Access Token
+  const patPrincipal = await resolveMcpPrincipal(bearerToken);
+  if (patPrincipal) return principalAuthInfo(bearerToken!, patPrincipal);
+
+  // 2. Clerk OAuth access token (desktop app)
+  try {
+    const clerkAuth = await auth({ acceptsToken: "oauth_token" });
+    const verified = await verifyClerkToken(clerkAuth, bearerToken);
+    if (verified) {
+      const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
+      const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
+      if (principal) return principalAuthInfo(bearerToken!, principal);
+    }
+  } catch {
+    // not a valid Clerk OAuth token → fall through to 401
+  }
+  return undefined;
 };
 
-const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+const authHandler = withMcpAuth(handler, verifyToken, {
+  required: true,
+  resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",
+});
 
 export { authHandler as GET, authHandler as POST, authHandler as DELETE };
