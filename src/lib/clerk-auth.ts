@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import type { User } from "@prisma/client";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 import { syncUserEntitlement } from "@/lib/entitlements";
+import { resolveServiceActor } from "@/lib/mcp/service-actor";
 
 /**
  * Get the current authenticated user from Prisma (server-side, Clerk-based).
@@ -11,6 +12,11 @@ import { syncUserEntitlement } from "@/lib/entitlements";
  * - Auto-creates Prisma row for brand-new Clerk signups
  */
 export async function getCurrentUser(): Promise<User | null> {
+  // Additive: internal service calls (MCP orchestrator) act as a given user via a
+  // server-only secret header. Browsers can't set it → the Clerk path below is unchanged.
+  const serviceActor = await resolveServiceActor();
+  if (serviceActor) return serviceActor;
+
   const { userId } = await auth();
   if (!userId) return null;
 

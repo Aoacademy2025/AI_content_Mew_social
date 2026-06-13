@@ -7,7 +7,7 @@ import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { SupportModal } from "@/components/ui/support-modal";
 import {
   User, Key, ExternalLink, Ticket, Crown, Loader2, MessageCircle,
-  CreditCard, Check, Clock, ArrowRight, Sparkles, ShieldCheck, XCircle,
+  CreditCard, Check, Clock, ArrowRight, Sparkles, ShieldCheck, XCircle, Terminal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,7 @@ import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-pag
 import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
+import { McpAccessSettings } from "@/components/settings/mcp-access-settings";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
 
@@ -213,7 +214,7 @@ function BillingTab() {
 
 // ── Main page ────────────────────────────────────────────────────────────
 function SettingsContent() {
-  const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string } | null>(null);
+  const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string; effectivePlan?: string } | null>(null);
   const [tab, setTab] = useState("profile");
   const [paymentPopup, setPaymentPopup] = useState<"success" | "cancelled" | null>(null);
 
@@ -225,7 +226,7 @@ function SettingsContent() {
     const params = new URLSearchParams(window.location.search);
     const t = params.get("tab");
     const p = params.get("payment");
-    if (t === "api-keys" || t === "billing") setTab(t);
+    if (t === "api-keys" || t === "billing" || t === "mcp") setTab(t);
     if (p === "success" || p === "cancelled") {
       setPaymentPopup(p as "success" | "cancelled");
       window.history.replaceState({}, "", window.location.pathname + (t ? `?tab=${t}` : ""));
@@ -236,6 +237,7 @@ function SettingsContent() {
   const tabs = [
     { id: "profile",  label: "Profile",  icon: User },
     { id: "api-keys", label: "API Keys", icon: Key },
+    { id: "mcp",      label: "Agent / MCP", icon: Terminal },
     { id: "billing",  label: "Billing",  icon: CreditCard },
   ];
 
@@ -495,6 +497,23 @@ function SettingsContent() {
               </div>
             </div>
             <BillingTab />
+          </div>
+        )}
+
+        {/* Agent / MCP Tab */}
+        {tab === "mcp" && (
+          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
+            <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl"
+                style={{ background: "hsl(var(--accent-primary) / 0.1)", border: "1px solid hsl(var(--accent-primary) / 0.2)" }}>
+                <Terminal className="h-4 w-4" style={{ color: "hsl(var(--accent-primary))" }} strokeWidth={2.25} />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>Agent / MCP Access</h2>
+                <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>ต่อ Claude Code / agent ของคุณเข้ากับ HERO AI</p>
+              </div>
+            </div>
+            <McpAccessSettings allowed={(meUser?.effectivePlan ?? meUser?.plan) === "PRO" || (meUser?.effectivePlan ?? meUser?.plan) === "BUSINESS"} />
           </div>
         )}
 

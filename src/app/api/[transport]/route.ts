@@ -1,0 +1,161 @@
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import { z } from "zod";
+import { resolveMcpPrincipal, mcpAccessAllowed } from "@/lib/mcp/auth";
+import { recordToolCall } from "@/lib/mcp/audit";
+import {
+  getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
+} from "@/lib/mcp/tools";
+import type { User, VideoStatus } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { createVideoJob } from "@/lib/mcp/video-job";
+import { checkClipQuota } from "@/lib/usage-limits";
+
+export const runtime = "nodejs";
+
+const UPSELL =
+  "ฟีเจอร์ MCP ใช้ได้เฉพาะแผน PRO หรือ BUSINESS — แผนปัจจุบันยังเข้าถึงไม่ได้ อัปเกรดที่ studio.heroaiengine.com/pricing";
+
+function text(obj: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] };
+}
+
+type Extra = { authInfo?: AuthInfo };
+function principalFrom(extra: Extra) {
+  const e = (extra.authInfo?.extra ?? {}) as { userId?: string; effectivePlan?: string; user?: User };
+  return { userId: e.userId, effectivePlan: e.effectivePlan, user: e.user };
+}
+
+// Per-tool guard (PRO/BUSINESS) + audit wrapper.
+async function runTool(
+  toolName: string,
+  extra: Extra,
+  fn: (p: { userId: string; user: User }) => Promise<unknown>,
+  args?: unknown,
+) {
+  const started = Date.now();
+  const { userId, effectivePlan, user } = principalFrom(extra);
+  if (!userId || !user || !effectivePlan || !mcpAccessAllowed(effectivePlan)) {
+    await recordToolCall({ userId, toolName, status: "denied", durationMs: Date.now() - started, requestJson: args });
+    return text({ error: "plan_required", message: UPSELL });
+  }
+  try {
+    const result = await fn({ userId, user });
+    const inBandError = !!result && typeof result === "object" && "error" in result;
+    await recordToolCall({ userId, toolName, status: inBandError ? "error" : "ok", durationMs: Date.now() - started, requestJson: args });
+    return text(result);
+  } catch {
+    await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args });
+    return text({ error: "internal_error", message: "เกิดข้อผิดพลาดภายใน ลองใหม่อีกครั้ง" });
+  }
+}
+
+const handler = createMcpHandler(
+  (server) => {
+    server.registerTool(
+      "get_current_user",
+      { title: "Get current user", description: "บัญชี/แผน/โควตา/คีย์ที่ตั้งค่าไว้ของผู้ใช้ปัจจุบัน", inputSchema: {} },
+      async (_args, extra) => runTool("get_current_user", extra, async (p) => getCurrentUserTool(p.user)),
+    );
+
+    server.registerTool(
+      "list_my_videos",
+      {
+        title: "List my videos",
+        description: "รายการวิดีโอของผู้ใช้ (ใหม่สุดก่อน)",
+        inputSchema: {
+          limit: z.number().int().min(1).max(100).default(20),
+          status: z.enum(["PENDING", "PROCESSING", "COMPLETED", "FAILED"]).optional(),
+        },
+      },
+      async (args, extra) =>
+        runTool("list_my_videos", extra, async (p) => listMyVideosTool(p.userId, { limit: args.limit, status: args.status as VideoStatus | undefined }), args),
+    );
+
+    server.registerTool(
+      "get_video_status",
+      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video)", inputSchema: { id: z.string().min(1) } },
+      async (args, extra) =>
+        runTool("get_video_status", extra, async (p) => {
+          const job = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId } });
+          if (job) {
+            const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
+            return { kind: "job" as const, jobId: job.id, status: job.status, currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
+          }
+          const v = await getVideoStatusTool(p.userId, args.id);
+          if (!v.found) return { kind: "none" as const, found: false as const, id: args.id };
+          return { kind: "video" as const, ...v };
+        }, args),
+    );
+
+    server.registerTool(
+      "get_video",
+      { title: "Get video", description: "รายละเอียดวิดีโอ 1 รายการ", inputSchema: { videoId: z.string().min(1) } },
+      async (args, extra) => runTool("get_video", extra, async (p) => getVideoTool(p.userId, args.videoId), args),
+    );
+
+    server.registerTool(
+      "download_video",
+      { title: "Download video", description: "ลิงก์ดาวน์โหลดวิดีโอ (ถ้าเรนเดอร์เสร็จแล้ว)", inputSchema: { videoId: z.string().min(1) } },
+      async (args, extra) => runTool("download_video", extra, async (p) => downloadVideoTool(p.userId, args.videoId), args),
+    );
+
+    server.registerTool(
+      "create_video_job",
+      {
+        title: "Create video job",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status",
+        inputSchema: {
+          script: z.string().min(1).max(20000),
+          title: z.string().max(200).optional(),
+          voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
+          voiceId: z.string().optional(),
+          idempotencyKey: z.string().max(120).optional(),
+        },
+      },
+      async (args, extra) =>
+        runTool("create_video_job", extra, async (p) => {
+          const u = p.user;
+          const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
+          if (useEleven && !u.elevenlabsKey) return { error: "missing_key", message: "ต้องตั้งค่า ElevenLabs key ก่อน" };
+          if (!u.geminiKey) return { error: "missing_key", message: "ต้องตั้งค่า Gemini key ก่อน (ใช้กับ TTS/keywords/config)" };
+          if (!u.pexelsKey && !u.pixabayKey) return { error: "missing_key", message: "ต้องตั้งค่า Pexels หรือ Pixabay key ก่อน (สำหรับ b-roll)" };
+          const q = await checkClipQuota(p.userId);
+          if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
+          // queue (there is no global render queue). Adjustable.
+          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: ["queued", "processing"] } } });
+          if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
+          try {
+            const job = await createVideoJob(
+              p.userId,
+              { script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId },
+              args.idempotencyKey,
+            );
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว — เช็คด้วย get_video_status" };
+          } catch (e) {
+            if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            throw e; // real DB error → runTool catch audits "error" + returns internal_error
+          }
+        }, args),
+    );
+  },
+  { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} } },
+  { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
+);
+
+// Bearer PAT → principal stored in authInfo.extra (consumed by runTool).
+const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
+  const principal = await resolveMcpPrincipal(bearerToken);
+  if (!principal) return undefined; // invalid/revoked/expired → 401
+  return {
+    token: bearerToken!,
+    scopes: ["heroai:read"],
+    clientId: principal.userId,
+    extra: { userId: principal.userId, plan: principal.plan, effectivePlan: principal.effectivePlan, user: principal.user },
+  };
+};
+
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+
+export { authHandler as GET, authHandler as POST, authHandler as DELETE };
