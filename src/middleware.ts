@@ -42,6 +42,13 @@ export default clerkMiddleware(async (auth, req) => {
 
   if (isPublicRoute(req)) return NextResponse.next();
 
+  // Internal service calls (MCP orchestrator) carry a server-only secret header.
+  // Entitlement is enforced inside each route via getCurrentUser → no Clerk session needed.
+  const mcpSecret = process.env.MCP_SERVICE_SECRET;
+  if (mcpSecret && req.headers.get("x-heroai-service-secret") === mcpSecret && req.headers.get("x-heroai-act-as")) {
+    return NextResponse.next();
+  }
+
   if (!userId) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("redirect_url", req.nextUrl.pathname);
