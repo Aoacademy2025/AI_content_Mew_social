@@ -7,6 +7,9 @@ import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { createVideoJob } from "@/lib/mcp/video-job";
+import { checkClipQuota } from "@/lib/usage-limits";
 
 export const runtime = "nodejs";
 
@@ -70,8 +73,16 @@ const handler = createMcpHandler(
 
     server.registerTool(
       "get_video_status",
-      { title: "Get video status", description: "สถานะของวิดีโอ 1 รายการ", inputSchema: { videoId: z.string().min(1) } },
-      async (args, extra) => runTool("get_video_status", extra, async (p) => getVideoStatusTool(p.userId, args.videoId), args),
+      { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video)", inputSchema: { id: z.string().min(1) } },
+      async (args, extra) =>
+        runTool("get_video_status", extra, async (p) => {
+          const job = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId } });
+          if (job) {
+            const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
+            return { kind: "job" as const, jobId: job.id, status: job.status, currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
+          }
+          return { kind: "video" as const, ...(await getVideoStatusTool(p.userId, args.id)) };
+        }, args),
     );
 
     server.registerTool(
@@ -84,6 +95,41 @@ const handler = createMcpHandler(
       "download_video",
       { title: "Download video", description: "ลิงก์ดาวน์โหลดวิดีโอ (ถ้าเรนเดอร์เสร็จแล้ว)", inputSchema: { videoId: z.string().min(1) } },
       async (args, extra) => runTool("download_video", extra, async (p) => downloadVideoTool(p.userId, args.videoId), args),
+    );
+
+    server.registerTool(
+      "create_video_job",
+      {
+        title: "Create video job",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status",
+        inputSchema: {
+          script: z.string().min(1).max(20000),
+          title: z.string().max(200).optional(),
+          voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
+          voiceId: z.string().optional(),
+          idempotencyKey: z.string().max(120).optional(),
+        },
+      },
+      async (args, extra) =>
+        runTool("create_video_job", extra, async (p) => {
+          const u = p.user;
+          const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
+          if (useEleven && !u.elevenlabsKey) return { error: "missing_key", message: "ต้องตั้งค่า ElevenLabs key ก่อน" };
+          if (!u.geminiKey) return { error: "missing_key", message: "ต้องตั้งค่า Gemini key ก่อน (ใช้กับ TTS/keywords/config)" };
+          if (!u.pexelsKey && !u.pixabayKey) return { error: "missing_key", message: "ต้องตั้งค่า Pexels หรือ Pixabay key ก่อน (สำหรับ b-roll)" };
+          const q = await checkClipQuota(p.userId);
+          if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          try {
+            const job = await createVideoJob(
+              p.userId,
+              { script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId },
+              args.idempotencyKey,
+            );
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว — เช็คด้วย get_video_status" };
+          } catch {
+            return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+          }
+        }, args),
     );
   },
   { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} } },
