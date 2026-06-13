@@ -1,6 +1,15 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
+// Constant-time string compare — edge-runtime safe (no Node crypto), avoids
+// leaking the service secret via comparison timing.
+function timingSafeStrEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 const isPublicRoute = createRouteMatcher([
   "/",
   "/login(.*)",
@@ -45,7 +54,8 @@ export default clerkMiddleware(async (auth, req) => {
   // Internal service calls (MCP orchestrator) carry a server-only secret header.
   // Entitlement is enforced inside each route via getCurrentUser → no Clerk session needed.
   const mcpSecret = process.env.MCP_SERVICE_SECRET;
-  if (mcpSecret && req.headers.get("x-heroai-service-secret") === mcpSecret && req.headers.get("x-heroai-act-as")) {
+  const svcHeader = req.headers.get("x-heroai-service-secret");
+  if (mcpSecret && svcHeader && timingSafeStrEqual(svcHeader, mcpSecret) && req.headers.get("x-heroai-act-as")) {
     return NextResponse.next();
   }
 

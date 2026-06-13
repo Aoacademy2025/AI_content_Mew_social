@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import { headers } from "next/headers";
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -6,6 +7,14 @@ import { syncUserEntitlement } from "@/lib/entitlements";
 export const SERVICE_SECRET_HEADER = "x-heroai-service-secret";
 export const SERVICE_ACTAS_HEADER = "x-heroai-act-as";
 
+/** Constant-time string equality — never leak the secret via comparison timing. */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
 /** Pure: is this (envSecret, headerSecret, actAsUserId) a valid internal service credential? */
 export function isValidServiceCredential(
   envSecret: string | undefined,
@@ -13,7 +22,7 @@ export function isValidServiceCredential(
   actAsUserId: string | null,
 ): boolean {
   if (!envSecret) return false; // feature off unless env set
-  if (!headerSecret || headerSecret !== envSecret) return false;
+  if (!headerSecret || !safeEqual(headerSecret, envSecret)) return false;
   if (!actAsUserId) return false;
   return true;
 }
