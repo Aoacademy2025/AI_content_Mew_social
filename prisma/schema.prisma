@@ -52,6 +52,7 @@ model User {
   contents      Content[]
   videos        Video[]
   mcpTokens     McpToken[]
+  videoJobs     VideoJob[]
   images        GeneratedImage[]
   notifications   Notification[]
   supportTickets     SupportTicket[]
@@ -130,6 +131,29 @@ model McpToken {
   revokedAt  DateTime?
   createdAt  DateTime  @default(now())
 
+  @@index([userId])
+}
+
+model VideoJob {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId        String?
+  type           String    @default("create")
+  status         String    @default("queued") // queued|processing|done|failed|canceled
+  currentStep    String?
+  progress       Int       @default(0)
+  inputJson      String
+  outputJson     String?
+  errorMessage   String?
+  idempotencyKey String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  @@unique([userId, idempotencyKey])
+  @@index([status])
   @@index([userId])
 }
 
