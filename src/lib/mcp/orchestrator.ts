@@ -24,6 +24,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   try {
     const job = await prisma.videoJob.findUnique({ where: { id: jobId } });
     if (!job) return;
+    if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
