@@ -7,14 +7,14 @@ export const runtime = "nodejs";
 
 const baseHandler = protectedResourceHandlerClerk({ scopes_supported: ["email", "profile"] });
 
-// Behind Nginx, Next's `request.url` uses the internal bind host (localhost:3000), so the
-// Clerk helper would advertise the wrong `resource`. Rebuild the URL from the forwarded/Host
-// header (Nginx sets `Host`) so the resource is the real public origin.
+// Behind a reverse proxy, Next's `request.url` uses the internal bind host (localhost:3000),
+// so the Clerk helper would advertise the wrong `resource`. Use a TRUSTED server-side origin
+// (env MCP_PUBLIC_ORIGIN, e.g. https://studio.heroaiengine.com) — NOT the client-spoofable
+// Host / X-Forwarded-Host header. Falls back to the request origin for local dev (no proxy).
 export function GET(req: Request): Response {
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-  if (!host) return baseHandler(req);
-  const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(/:$/, "");
-  return baseHandler(new Request(`${proto}://${host}/.well-known/oauth-protected-resource/mcp`));
+  const publicOrigin = process.env.MCP_PUBLIC_ORIGIN?.replace(/\/$/, "");
+  if (!publicOrigin) return baseHandler(req);
+  return baseHandler(new Request(`${publicOrigin}/.well-known/oauth-protected-resource/mcp`));
 }
 
 export const OPTIONS = metadataCorsOptionsRequestHandler();
