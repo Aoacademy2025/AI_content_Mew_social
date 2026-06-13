@@ -51,6 +51,7 @@ model User {
   styles        Style[]
   contents      Content[]
   videos        Video[]
+  mcpTokens     McpToken[]
   images        GeneratedImage[]
   notifications   Notification[]
   supportTickets     SupportTicket[]
@@ -116,6 +117,36 @@ model Video {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
   expiresAt       DateTime?
+}
+
+model McpToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  name       String?
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model ToolCallAudit {
+  id           String   @id @default(cuid())
+  userId       String?
+  toolName     String
+  status       String   // ok | denied | error
+  durationMs   Int?
+  requestJson  String?
+  responseJson String?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([toolName, createdAt])
 }
 
 enum Role {
