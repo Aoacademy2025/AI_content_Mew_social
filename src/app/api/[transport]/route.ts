@@ -41,7 +41,8 @@ async function runTool(
   }
   try {
     const result = await fn({ userId, user });
-    await recordToolCall({ userId, toolName, status: "ok", durationMs: Date.now() - started, requestJson: args });
+    const inBandError = !!result && typeof result === "object" && "error" in result;
+    await recordToolCall({ userId, toolName, status: inBandError ? "error" : "ok", durationMs: Date.now() - started, requestJson: args });
     return text(result);
   } catch {
     await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args });
@@ -81,7 +82,9 @@ const handler = createMcpHandler(
             const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
             return { kind: "job" as const, jobId: job.id, status: job.status, currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
           }
-          return { kind: "video" as const, ...(await getVideoStatusTool(p.userId, args.id)) };
+          const v = await getVideoStatusTool(p.userId, args.id);
+          if (!v.found) return { kind: "none" as const, found: false as const, id: args.id };
+          return { kind: "video" as const, ...v };
         }, args),
     );
 
@@ -119,6 +122,10 @@ const handler = createMcpHandler(
           if (!u.pexelsKey && !u.pixabayKey) return { error: "missing_key", message: "ต้องตั้งค่า Pexels หรือ Pixabay key ก่อน (สำหรับ b-roll)" };
           const q = await checkClipQuota(p.userId);
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
+          // queue (there is no global render queue). Adjustable.
+          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: ["queued", "processing"] } } });
+          if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
           try {
             const job = await createVideoJob(
               p.userId,
@@ -126,8 +133,9 @@ const handler = createMcpHandler(
               args.idempotencyKey,
             );
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว — เช็คด้วย get_video_status" };
-          } catch {
-            return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+          } catch (e) {
+            if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
+            throw e; // real DB error → runTool catch audits "error" + returns internal_error
           }
         }, args),
     );

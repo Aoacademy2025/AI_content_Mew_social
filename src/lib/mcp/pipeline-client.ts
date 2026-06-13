@@ -39,13 +39,22 @@ export async function pollRender(
   const timeout = opts.timeoutMs ?? 15 * 60 * 1000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const start = Date.now();
+  let consecutiveErrors = 0;
   while (Date.now() - start < timeout) {
-    const p = await caller.get<{ progress: number; videoUrl: string | null; error: string | null; stage: string | null }>(
-      `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`,
-    );
-    onProgress?.(Number.isFinite(p.progress) ? p.progress : 0, p.stage);
-    if (p.stage === "done" && p.videoUrl) return p.videoUrl;
-    if (p.stage === "error" || (p.error && p.progress < 0)) throw new Error(`render failed: ${p.error ?? "unknown"}`);
+    try {
+      const p = await caller.get<{ progress: number; videoUrl: string | null; error: string | null; stage: string | null }>(
+        `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`,
+      );
+      consecutiveErrors = 0;
+      onProgress?.(Number.isFinite(p.progress) ? p.progress : 0, p.stage);
+      if (p.stage === "done" && p.videoUrl) return p.videoUrl;
+      if (p.stage === "error" || (p.error && p.progress < 0)) throw new Error(`render failed: ${p.error ?? "unknown"}`);
+    } catch (e) {
+      // A genuine "render failed" must propagate; transient poll blips (server restart, one
+      // 5xx) are tolerated for a few rounds so a 90%-done render isn't killed by a hiccup.
+      if (e instanceof Error && e.message.startsWith("render failed")) throw e;
+      if (++consecutiveErrors > 5) throw new Error(`render poll failed repeatedly: ${e instanceof Error ? e.message : "unknown"}`);
+    }
     await sleep(interval);
   }
   throw new Error("render timed out");

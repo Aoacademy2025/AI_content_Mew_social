@@ -71,6 +71,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       shortVideoConfig: { ...cfgRes.config, keywordPopups: [] }, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
+    // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
+    // reservation NOW so a finished video nets exactly 1 clip, and a burn-stage failure (the
+    // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
+    await refund(userId).catch(() => {});
 
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
@@ -79,11 +83,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       sceneCount: captions.length, renderConfig: cfgRes.config, status: "PROCESSING",
     });
 
-    // 8. Burn subtitles (2nd render) → refund 1 clip so 1 video = 1 clip
+    // 8. Burn subtitles (2nd render). Its reservation is the single clip this video keeps.
     await setJobStep(jobId, "burn", 88);
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(baseUrl, captions, durMs, RENDER_FPS) });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
-    await refund(userId).catch(() => {});
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
     await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
