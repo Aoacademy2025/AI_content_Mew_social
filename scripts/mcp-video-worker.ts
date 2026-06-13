@@ -24,6 +24,10 @@ async function main() {
     console.error("[mcp-worker] MCP_SERVICE_SECRET not set — refusing to start");
     process.exit(1);
   }
+  if (process.env.MCP_SERVICE_SECRET.length < 32) {
+    console.error("[mcp-worker] MCP_SERVICE_SECRET too short (need ≥32 chars) — refusing to start");
+    process.exit(1);
+  }
   if (!process.env.DATABASE_URL) {
     console.error("[mcp-worker] DATABASE_URL not set — refusing to start");
     process.exit(1);

@@ -5,7 +5,7 @@
 import { prisma } from "../src/lib/prisma";
 import {
   generateMcpToken, hashMcpToken, createMcpToken,
-  resolveMcpToken, revokeMcpToken, listMcpTokens,
+  resolveMcpToken, revokeMcpToken, listMcpTokens, countActiveMcpTokens,
 } from "../src/lib/mcp/token";
 import { resolveMcpPrincipal, mcpAccessAllowed } from "../src/lib/mcp/auth";
 
@@ -33,6 +33,7 @@ async function main() {
   const pro = await mkUser({ plan: "PRO" });
   const { token } = await createMcpToken(pro.id, "MacBook");
   assert((await resolveMcpToken(token))?.userId === pro.id, "resolveMcpToken maps a fresh token to its owner");
+  assert((await countActiveMcpTokens(pro.id)) === 1, "countActiveMcpTokens = 1 after first token");
   assert((await resolveMcpToken("heroai_pat_bogus")) === null, "unknown token → null");
   assert((await resolveMcpToken("not-a-pat")) === null, "non-prefixed token → null");
   assert((await resolveMcpToken(undefined)) === null, "undefined token → null");
@@ -56,6 +57,7 @@ async function main() {
   const proTokenId = (await listMcpTokens(pro.id))[0].id;
   assert((await revokeMcpToken(pro.id, proTokenId)) === true, "owner can revoke own token");
   assert((await resolveMcpToken(token)) === null, "revoked token no longer resolves");
+  assert((await countActiveMcpTokens(pro.id)) === 0, "countActiveMcpTokens = 0 after revoke");
   assert((await resolveMcpPrincipal(token)) === null, "revoked token → no principal");
 
   const other = await mkUser({ plan: "PRO" });

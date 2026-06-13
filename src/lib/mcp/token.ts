@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 
 const TOKEN_PREFIX = "heroai_pat_";
+const PAT_TTL_DAYS = 90; // tokens auto-expire after 90 days — bounds a leaked token's lifetime
 
 /** Generate a new opaque PAT (plaintext). Shown to the user exactly once. */
 export function generateMcpToken(): string {
@@ -19,9 +20,21 @@ export type ResolvedToken = { tokenId: string; userId: string };
 export async function createMcpToken(userId: string, name?: string): Promise<{ token: string; id: string }> {
   const token = generateMcpToken();
   const row = await prisma.mcpToken.create({
-    data: { userId, name: name?.trim() || null, tokenHash: hashMcpToken(token) },
+    data: {
+      userId,
+      name: name?.trim() || null,
+      tokenHash: hashMcpToken(token),
+      expiresAt: new Date(Date.now() + PAT_TTL_DAYS * 24 * 60 * 60 * 1000),
+    },
   });
   return { token, id: row.id };
+}
+
+/** Count a user's active (non-revoked, non-expired) tokens. */
+export async function countActiveMcpTokens(userId: string): Promise<number> {
+  return prisma.mcpToken.count({
+    where: { userId, revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+  });
 }
 
 /** Resolve a bearer token to its owner. null if unknown/revoked/expired. Touches lastUsedAt. */
@@ -39,7 +52,7 @@ export async function listMcpTokens(userId: string) {
   return prisma.mcpToken.findMany({
     where: { userId, revokedAt: null },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, lastUsedAt: true, createdAt: true },
+    select: { id: true, name: true, lastUsedAt: true, createdAt: true, expiresAt: true },
   });
 }
 

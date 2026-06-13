@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Plus, Copy, Trash2, Terminal, Check, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
-type TokenRow = { id: string; name: string | null; lastUsedAt: string | null; createdAt: string };
+type TokenRow = { id: string; name: string | null; lastUsedAt: string | null; createdAt: string; expiresAt: string | null };
 
 const MCP_URL = "https://studio.heroaiengine.com/api/mcp";
 const connectCommand = (token: string) =>
@@ -121,6 +121,7 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
                 <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>
                   สร้าง {new Date(t.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}
                   {t.lastUsedAt ? ` · ใช้ล่าสุด ${new Date(t.lastUsedAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" })}` : " · ยังไม่เคยใช้"}
+                  {t.expiresAt ? ` · หมดอายุ ${new Date(t.expiresAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" })}` : ""}
                 </p>
               </div>
               <button onClick={() => revoke(t.id)} disabled={revoking === t.id}

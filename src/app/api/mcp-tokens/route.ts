@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { isPaid } from "@/lib/plan-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { apiError } from "@/lib/api-error";
-import { createMcpToken, listMcpTokens } from "@/lib/mcp/token";
+import { createMcpToken, listMcpTokens, countActiveMcpTokens } from "@/lib/mcp/token";
 
 export async function GET() {
   try {
@@ -22,6 +22,9 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (!isPaid(classifyEntitlement(user).effectivePlan)) {
       return NextResponse.json({ error: "MCP token ใช้ได้เฉพาะแผน PRO/BUSINESS" }, { status: 403 });
+    }
+    if ((await countActiveMcpTokens(user.id)) >= 10) {
+      return NextResponse.json({ error: "มี token ครบ 10 ตัวแล้ว — เพิกถอนตัวเก่าก่อนสร้างใหม่" }, { status: 400 });
     }
     const { name } = (await req.json().catch(() => ({}))) as { name?: string };
     const { token, id } = await createMcpToken(user.id, name);

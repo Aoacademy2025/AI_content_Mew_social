@@ -214,7 +214,7 @@ function BillingTab() {
 
 // ── Main page ────────────────────────────────────────────────────────────
 function SettingsContent() {
-  const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string } | null>(null);
+  const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string; effectivePlan?: string } | null>(null);
   const [tab, setTab] = useState("profile");
   const [paymentPopup, setPaymentPopup] = useState<"success" | "cancelled" | null>(null);
 
@@ -513,7 +513,7 @@ function SettingsContent() {
                 <p className="text-xs mt-0.5" style={{ color: "var(--ui-text-muted)" }}>ต่อ Claude Code / agent ของคุณเข้ากับ HERO AI</p>
               </div>
             </div>
-            <McpAccessSettings allowed={meUser?.plan === "PRO" || meUser?.plan === "BUSINESS"} />
+            <McpAccessSettings allowed={(meUser?.effectivePlan ?? meUser?.plan) === "PRO" || (meUser?.effectivePlan ?? meUser?.plan) === "BUSINESS"} />
           </div>
         )}
 
