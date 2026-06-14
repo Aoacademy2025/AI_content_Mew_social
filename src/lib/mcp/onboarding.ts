@@ -70,7 +70,7 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
   return {
     pasteKeysAt: SETTINGS_URL,
     canCreateVideo: keys.gemini && (keys.pexels || keys.pixabay),
-    avatarViaChat: false, // avatar (HeyGen) ยังไม่รองรับผ่าน MCP — สั่งได้แค่ เสียง + b-roll + ซับไทย
+    avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
       { key: "gemini", required: true, configured: keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
       { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: PROVIDERS.pexels.whatFor, getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
@@ -82,8 +82,8 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
 /** Standing briefing the MCP client (Claude) reads every session — turns it into setup support. */
 export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปลี่ยน "สคริปต์" เป็นวิดีโอสั้นอัตโนมัติ: เสียงพากย์ + b-roll เปลี่ยนทุก 3–5 วิ + ซับไทยตรงเสียง. ใช้ได้เฉพาะแผน PRO/BUSINESS.
 
-ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย), เช็คสถานะ, ดาวน์โหลด.
-ยังไม่รองรับผ่านแชท: avatar (พิธีกร AI / HeyGen) — ถ้าผู้ใช้อยากได้ avatar ให้แนะนำไปทำบนหน้าเว็บ video-creator.
+ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
+avatar (HeyGen): ใส่ avatarMode = full / bookend (หัวอย่างเดียว) / bookend-both (หัว+ท้าย) ตอนเรียก create_video_job — ต้องมี HeyGen key + avatarId (ดึงจาก Settings โดยอัตโนมัติ หรือส่ง avatarId มาเอง). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
 BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".

@@ -13,6 +13,7 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createVideoJob } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
+import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 
 export const runtime = "nodejs";
 
@@ -106,12 +107,16 @@ const handler = createMcpHandler(
       "create_video_job",
       {
         title: "Create video job",
-        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status",
+        description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
         inputSchema: {
           script: z.string().min(1).max(20000),
           title: z.string().max(200).optional(),
           voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
           voiceId: z.string().optional(),
+          avatarMode: z.enum(["none", "full", "bookend", "bookend-both"]).optional(),
+          avatarId: z.string().optional(),
+          avatarIntroSecs: z.number().int().min(1).max(30).optional(),
+          avatarTailSecs: z.number().int().min(1).max(30).optional(),
           idempotencyKey: z.string().max(120).optional(),
         },
       },
@@ -123,6 +128,11 @@ const handler = createMcpHandler(
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
           if (!u.geminiKey) return missingKeyError("gemini");
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          const avatar = resolveAvatarRequest(
+            { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs },
+            u,
+          );
+          if (avatar.kind === "error") return avatar.payload;
           const q = await checkClipQuota(p.userId);
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
@@ -132,7 +142,12 @@ const handler = createMcpHandler(
           try {
             const job = await createVideoJob(
               p.userId,
-              { script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId },
+              {
+                script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
+                ...(avatar.kind === "ok"
+                  ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs }
+                  : {}),
+              },
               args.idempotencyKey,
             );
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว — เช็คด้วย get_video_status" };
