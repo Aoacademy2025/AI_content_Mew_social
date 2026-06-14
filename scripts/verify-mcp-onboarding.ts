@@ -60,5 +60,10 @@ assert(noav.error === "missing_avatar" && noav.message.includes("avatarId"),
 
 assert(SERVER_INSTRUCTIONS.includes("get_video_options"), "instructions reference get_video_options (wizard)");
 assert(SERVER_INSTRUCTIONS.includes("ห้ามสัญญาว่าจะแจ้งเตือน"), "instructions forbid promising auto-notify");
+// batch3: avatar pricing/seconds + easy terms, BGM must-ask, ElevenLabs voices-list note
+assert(SERVER_INSTRUCTIONS.includes("คิดเงินตามจำนวนวินาที") && SERVER_INSTRUCTIONS.includes("เปิดอย่างเดียว"), "avatar step: HeyGen per-second pricing + easy terms");
+assert(SERVER_INSTRUCTIONS.includes("ใช้ avatar กี่วินาที") && SERVER_INSTRUCTIONS.includes("default 5"), "avatar step: must ask seconds, default 5");
+assert(SERVER_INSTRUCTIONS.includes("ต้องถามจริงทุกครั้งว่า") && SERVER_INSTRUCTIONS.includes("ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile"), "BGM step: must ask + must actually send bgmFile");
+assert(SERVER_INSTRUCTIONS.includes("อย่าสรุปว่า key เสีย"), "elevenlabs: voices-list failure ≠ key broken");
 
 console.log(`\n${passed} assertions passed ✅`);

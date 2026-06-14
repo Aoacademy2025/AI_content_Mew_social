@@ -37,7 +37,7 @@ async function main() {
 
   // section failure degrades gracefully
   const o3 = await getVideoOptions(mock({ failVoices: true }), u);
-  assert((o3.voices.elevenlabs as any).error, "failing section → {error}, whole tool still returns");
+  assert((o3.voices.elevenlabs as any).error && (o3.voices.elevenlabs as any).note?.includes("voiceId"), "failing voices → {error,note} (saved voiceId still usable), whole tool still returns");
 
   console.log(`\n${passed} assertions passed ✅`);
 }
