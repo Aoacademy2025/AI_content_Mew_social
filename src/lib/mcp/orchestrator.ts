@@ -19,6 +19,7 @@ export interface OrchestratorDeps {
 interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
+  bgmFile?: string; bgmVolume?: number;
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
@@ -71,8 +72,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await setJobStep(jobId, "render", 75);
+    const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.28 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
-      shortVideoConfig: { ...cfgRes.config, keywordPopups: [] }, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+      shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
     // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
@@ -104,7 +106,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const created = await caller.post<{ id: string }>("/api/videos", {
       videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
       avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
-      sceneCount: captions.length, renderConfig: cfgRes.config, status: "PROCESSING",
+      sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.

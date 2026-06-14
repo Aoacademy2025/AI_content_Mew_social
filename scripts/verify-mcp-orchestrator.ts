@@ -137,6 +137,58 @@ async function main() {
   const jobAvDone = await prisma.videoJob.findUnique({ where: { id: jobAv.id } });
   assert(jobAvDone?.status === "done" && jobAvDone?.videoId === "vid_av", "avatar case: job → done with videoId vid_av");
 
+  // -------------------------------------------------------------------------
+  // BGM case: bgmFile + bgmVolume injected into base render config
+  // -------------------------------------------------------------------------
+  const jobBgm = await prisma.videoJob.create({
+    data: {
+      userId: u.id, status: "processing",
+      inputJson: JSON.stringify({ script: "สวัสดีโลก", voiceProvider: "gemini", bgmFile: "/music/x.mp3", bgmVolume: 0.3 }),
+    },
+  });
+
+  const bgmPostBodies: Record<string, unknown[]> = {};
+  let bgmRenderCount = 0;
+  const bgmCaller = {
+    post: async (path: string, body?: unknown) => {
+      const key = path.split("?")[0];
+      bgmPostBodies[key] = [...(bgmPostBodies[key] ?? []), body];
+      if (key === "/api/videos/render") {
+        bgmRenderCount++;
+        return { jobId: `bgm-render-${bgmRenderCount}` } as never;
+      }
+      const responses: Record<string, unknown> = {
+        "/api/videos/tts-gemini": { voiceUrl: "/api/renders/bgm.wav", audioDurationMs: 2000, timing: { provider: "gemini", segments: [{ text: "สวัสดีโลก", startMs: 0, durationMs: 2000 }], chars: null } },
+        "/api/videos/extract-keywords": { keywords: ["a"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+        "/api/videos/fetch-stock": { results: [{ src: "clip.mp4" }] },
+        "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/bgm.wav", bgVideos: [] } },
+        "/api/videos": { id: "vid_bgm" },
+      };
+      return (responses[key] ?? {}) as never;
+    },
+    patch: async () => ({} as never),
+    get: async (path: string) => {
+      const key = path.split("?")[0];
+      if (key === "/api/videos/render-progress") return { progress: 100, stage: "done", videoUrl: "/api/renders/bgm-out.mp4", error: null } as never;
+      return {} as never;
+    },
+  };
+
+  await runOrchestrator(jobBgm.id, u.id, {
+    caller: bgmCaller as never,
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+
+  const bgmRenderBodies = bgmPostBodies["/api/videos/render"] ?? [];
+  assert(bgmRenderBodies.length >= 1, `bgm case: at least one render call (got ${bgmRenderBodies.length})`);
+  const bgmBaseBody = bgmRenderBodies[0] as Record<string, unknown> | undefined;
+  const bgmShortCfg = bgmBaseBody?.shortVideoConfig as Record<string, unknown> | undefined;
+  assert(bgmShortCfg?.bgmFile === "/music/x.mp3" && bgmShortCfg?.bgmVolume === 0.3, "bgmFile/Volume injected into base render config");
+
+  const jobBgmDone = await prisma.videoJob.findUnique({ where: { id: jobBgm.id } });
+  assert(jobBgmDone?.status === "done" && jobBgmDone?.videoId === "vid_bgm", "bgm case: job → done with videoId vid_bgm");
+
   await prisma.videoJob.deleteMany();
   await prisma.user.deleteMany();
   await prisma.$disconnect();
