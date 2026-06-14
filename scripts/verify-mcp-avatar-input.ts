@@ -35,4 +35,9 @@ assert(def.kind === "ok" && def.introSecs === 5 && def.tailSecs === 5, "intro/ta
 
 assert(clampSecs(undefined, 5) === 5 && clampSecs(0, 5) === 1 && clampSecs(100, 5) === 30 && clampSecs(7, 5) === 7, "clampSecs behaves");
 
+const lay = resolveAvatarRequest({ avatarMode: "full" }, withKey);
+assert(lay.kind === "ok" && lay.scale === 1 && lay.offsetX === 0 && lay.offsetY === 0, "default composite layer = scale 1 / 0 / 0");
+const lay2 = resolveAvatarRequest({ avatarMode: "full", avatarScale: 1.4, avatarOffsetY: 0.2, avatarOffsetX: 9 }, withKey);
+assert(lay2.kind === "ok" && lay2.scale === 1.4 && lay2.offsetY === 0.2 && lay2.offsetX === 2, "scale/offset accepted + clamped (offsetX 9→2)");
+
 console.log(`\n${passed} assertions passed ✅`);
