@@ -9,4 +9,9 @@ assert(c2[2].text === "e" && c2[2].endMs === 500, "last card = remainder");
 const c1 = cardsByWordCount(words, 1);
 assert(c1.length === 5 && c1[0].text === "a", "1 word per card = 5 cards");
 assert(POSITION_TOP_PERCENT.top < POSITION_TOP_PERCENT.middle && POSITION_TOP_PERCENT.middle < POSITION_TOP_PERCENT.bottom, "position map ordered top<middle<bottom");
+// Thai is written without inter-word spaces → no space between Thai tokens; space only around Latin
+const thai = [ {word:"ดู",startMs:0,endMs:100},{word:"ราย",startMs:100,endMs:200},{word:"ละเอียด",startMs:200,endMs:300} ];
+assert(cardsByWordCount(thai, 3)[0].text === "ดูรายละเอียด", "Thai words glue WITHOUT spaces (no weird spacing)");
+const mixed = [ {word:"พิมพ์",startMs:0,endMs:100},{word:"HERO",startMs:100,endMs:200},{word:"ไว้",startMs:200,endMs:300} ];
+assert(cardsByWordCount(mixed, 3)[0].text === "พิมพ์ HERO ไว้", "space only around Latin token (พิมพ์ HERO ไว้)");
 console.log(`\n${passed} assertions passed ✅`);
