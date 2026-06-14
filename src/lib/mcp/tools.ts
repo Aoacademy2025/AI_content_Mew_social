@@ -1,6 +1,7 @@
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
+import { buildSetupGuide } from "@/lib/mcp/onboarding";
 
 function deriveTitle(v: { content: { headline: string | null } | null; script: string | null }): string {
   const h = v.content?.headline?.trim();
@@ -11,19 +12,22 @@ function deriveTitle(v: { content: { headline: string | null } | null; script: s
 }
 
 export async function getCurrentUserTool(user: User) {
+  const keysConfigured = {
+    gemini: !!user.geminiKey,
+    heygen: !!user.heygenKey,
+    elevenlabs: !!user.elevenlabsKey,
+    pexels: !!user.pexelsKey,
+    pixabay: !!user.pixabayKey,
+  };
   return {
     email: user.email,
     plan: user.plan,
     effectivePlan: classifyEntitlement(user).effectivePlan,
     usageCount: user.usageCount,
     usageLimit: user.usageLimit,
-    keysConfigured: {
-      gemini: !!user.geminiKey,
-      heygen: !!user.heygenKey,
-      elevenlabs: !!user.elevenlabsKey,
-      pexels: !!user.pexelsKey,
-      pixabay: !!user.pixabayKey,
-    },
+    keysConfigured,
+    // Onboarding hints so the assistant can guide a BYOK user through setup (links + where to paste).
+    setup: buildSetupGuide(keysConfigured),
   };
 }
 
