@@ -7,7 +7,7 @@ export const SETTINGS_URL = "https://studio.heroaiengine.com/settings"; // → t
 
 type ProviderHelp = { label: string; whatFor: string; getKeyUrl: string };
 
-export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs", ProviderHelp> = {
+export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs" | "heygen", ProviderHelp> = {
   gemini: {
     label: "Gemini (Google AI Studio)",
     whatFor: "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
@@ -20,6 +20,11 @@ export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs", P
     whatFor: "เสียงโคลนคุณภาพสูง (ไม่บังคับ — ถ้าไม่ใส่ ใช้เสียง Gemini ได้)",
     getKeyUrl: "https://elevenlabs.io/app/settings/api-keys",
   },
+  heygen: {
+    label: "HeyGen",
+    whatFor: "avatar พิธีกร AI (ต้องมีตอนสั่งวิดีโอแบบมี avatar)",
+    getKeyUrl: "https://app.heygen.com/settings?nav=API",
+  },
 };
 
 export const ELEVENLABS_VOICEID_HELP =
@@ -30,13 +35,14 @@ function howTo(p: ProviderHelp): string {
 }
 
 /** Actionable missing-key error returned by create_video_job (key=value tells runTool it's an error). */
-export function missingKeyError(which: "gemini" | "broll" | "elevenlabs") {
+export function missingKeyError(which: "gemini" | "broll" | "elevenlabs" | "heygen") {
   if (which === "gemini") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
   if (which === "elevenlabs")
     return {
       error: "missing_key",
       message: `เลือกใช้เสียง ElevenLabs แต่ยังไม่ได้ตั้งค่า ElevenLabs key — ${howTo(PROVIDERS.elevenlabs)} (หรือเปลี่ยนไปใช้ voiceProvider="gemini")`,
     };
+  if (which === "heygen") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า HeyGen key — ${howTo(PROVIDERS.heygen)}` };
   return {
     error: "missing_key",
     message: `ยังไม่มี key สำหรับ b-roll — ต้องมี Pexels หรือ Pixabay อย่างน้อย 1 ตัว. Pexels: ${PROVIDERS.pexels.getKeyUrl} · Pixabay: ${PROVIDERS.pixabay.getKeyUrl} แล้วนำไปวางที่ ${SETTINGS_URL} (แท็บ API Keys)`,
@@ -48,6 +54,14 @@ export function missingVoiceIdError() {
   return {
     error: "missing_voice_id",
     message: `ใช้เสียง ElevenLabs ต้องระบุ voiceId ด้วย. ${ELEVENLABS_VOICEID_HELP}. ส่ง voiceId มากับ create_video_job หรือบันทึกเสียงเริ่มต้นไว้ที่ ${SETTINGS_URL}`,
+  };
+}
+
+/** Using avatar but no avatarId resolvable — guide the user to set one. */
+export function missingAvatarError() {
+  return {
+    error: "missing_avatar",
+    message: `ยังไม่ได้ตั้ง Avatar — ตั้งค่า Avatar (heygenAvatarId) ที่ ${SETTINGS_URL} หรือส่ง avatarId มากับคำสั่ง create_video_job`,
   };
 }
 
