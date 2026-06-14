@@ -20,6 +20,7 @@ export interface OrchestratorDeps {
 interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
+  avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
   subtitlePosition?: "top" | "middle" | "bottom";
@@ -101,6 +102,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const av = await runAvatarComposite(caller, {
         baseUrl, ttsAudioUrl: tts.voiceUrl, avatarMode: input.avatarMode, avatarId: input.avatarId,
         introSecs: input.avatarIntroSecs ?? 5, tailSecs: input.avatarTailSecs ?? 5, sleep,
+        layout: { scale: input.avatarScale ?? 1, offsetX: input.avatarOffsetX ?? 0, offsetY: input.avatarOffsetY ?? 0 },
         onStep: (label) => { void setJobStep(jobId, label, 84).catch(() => {}); },
       });
       finalBase = av.compositeUrl;

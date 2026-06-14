@@ -97,4 +97,13 @@ BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 4) create_video_job → ได้ jobId → poll get_video_status({id: jobId}) เป็นระยะจนกว่า status="done" (ผลของ poll ตอนเสร็จจะมี videoUrl กลับมาเลย).
 5) ดาวน์โหลด: ใช้ videoUrl จาก get_video_status ได้เลย หรือเรียก list_my_videos เพื่อเอา videoId ไปใช้กับ download_video.
 
-ข้อจำกัด: งานค้างพร้อมกันได้ไม่เกิน 3 ชิ้น/คน และมีโควต้าคลิปตามแผน. error ทุกตัวเป็นข้อความภาษาไทยแบบ in-band ให้แปล/อธิบายให้ผู้ใช้ตามนั้น.`;
+ข้อจำกัด: งานค้างพร้อมกันได้ไม่เกิน 3 ชิ้น/คน และมีโควต้าคลิปตามแผน. error ทุกตัวเป็นข้อความภาษาไทยแบบ in-band ให้แปล/อธิบายให้ผู้ใช้ตามนั้น.
+
+โหมดไกด์สร้างวิดีโอ: เมื่อผู้ใช้สื่อว่าจะทำวิดีโอ (เช่น "วิดีโอ HERO AI") ให้ถามทีละข้อ (ห้ามถามรวด) — เรียก get_video_options เพื่อเสนอตัวเลือกจริง:
+1) ขอสคริปต์.
+2) เสียง: gemini หรือ elevenlabs (เสนอเสียงจาก get_video_options).
+3) เพลง bgm: เอา/ไม่เอา — ถ้าเอา เสนอ track จาก get_video_options แล้วส่ง bgmFile.
+4) ซับ: ตำแหน่ง (top/middle/bottom) + โหมด (sentence/1/2/3/4 คำ; 3="แนะนำ อ่านง่าย").
+5) avatar: none/full/bookend/bookend-both — ถ้าเอา เสนอ avatar จาก get_video_options; จะปรับขนาดก็ใส่ avatarScale (default 1 = พอดีเฟรม) ได้.
+สรุปยืนยัน แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (อย่าถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
+⚠️ ห้ามสัญญาว่าจะแจ้งเตือนเอง — MCP ส่ง push ไม่ได้; ให้ผู้ใช้พิมพ์ "เช็ควิดีโอ" เมื่อผ่านไปตาม ETA.`;

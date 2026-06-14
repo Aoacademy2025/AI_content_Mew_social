@@ -71,7 +71,7 @@ async function main() {
   const jobAv = await prisma.videoJob.create({
     data: {
       userId: u.id, status: "processing",
-      inputJson: JSON.stringify({ script: "สวัสดีโลก", voiceProvider: "gemini", avatarMode: "full", avatarId: "av1" }),
+      inputJson: JSON.stringify({ script: "สวัสดีโลก", voiceProvider: "gemini", avatarMode: "full", avatarId: "av1", avatarScale: 1.3 }),
     },
   });
 
@@ -133,6 +133,10 @@ async function main() {
   const subCfg = burnBody?.subtitleOverlayConfig as Record<string, unknown> | undefined;
   const subSrc = subCfg?.videoUrl ?? subCfg?.src ?? JSON.stringify(subCfg);
   assert(String(subSrc).includes("COMPOSITE"), `avatar case: burn subtitleOverlayConfig references COMPOSITE (got ${String(subSrc)})`);
+
+  const compositeBody = (avPostBodies["/api/heygen/composite"] ?? [])[0] as Record<string, unknown> | undefined;
+  assert(compositeBody != null, "avatar case: POST /api/heygen/composite was called");
+  assert((compositeBody?.avatarLayout as Record<string, unknown> | undefined)?.scale === 1.3, "orchestrator forwards avatarScale to composite layout");
 
   const jobAvDone = await prisma.videoJob.findUnique({ where: { id: jobAv.id } });
   assert(jobAvDone?.status === "done" && jobAvDone?.videoId === "vid_av", "avatar case: job → done with videoId vid_av");
