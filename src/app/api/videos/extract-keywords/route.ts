@@ -4,6 +4,12 @@ import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import {
+  contentProfilePromptBlock,
+  detectContentProfile,
+  fallbackQueriesForProfile,
+  type ContentProfile,
+} from "@/lib/broll-profile";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -50,19 +56,18 @@ function isTooSimilar(candidate: string, usedSet: Set<string>, threshold = 0.6):
 const NOISE_RE = /^(scene|scenes|keywords?|clip|clips?|shot|shots|video|videos)\s*[:\-]?\s*\d*$/i;
 
 const GENERIC_FALLBACK_QUERIES = [
-  "creative workspace",
+  "hands using smartphone",
+  "person reading document",
+  "people walking city",
+  "office desk close up",
+  "person thinking window",
+  "team meeting room",
   "hands typing keyboard",
-  "business meeting",
-  "city street night",
-  "smartphone close up",
-  "office presentation",
-  "data center servers",
-  "team working laptop",
-  "urban lifestyle",
-  "sunrise nature landscape",
+  "notebook pen close up",
 ];
 
 const TEXT_HINT_FALLBACKS: Array<{ pattern: RegExp; queries: string[] }> = [
+  { pattern: /ข่าว|ดราม่า|คดี|อาชญากรรม|ตำรวจ|ศาล|จับ|สารภาพ|หลักฐาน|ผู้ต้องหา|เหยื่อ|โกง|ขโมย|ปล้น|ลอตเตอรี่|หวย|รางวัล|โรงพัก|crime|police|court|evidence|scam|theft|lottery|arrest/i, queries: ["police station exterior", "official document close up", "hands counting cash"] },
   { pattern: /ai|เอไอ|ปัญญาประดิษฐ์|เทคโนโลยี|ระบบ|ข้อมูล|ดิจิทัล|software|technology/i, queries: ["artificial intelligence", "data center servers", "software developer"] },
   { pattern: /เงิน|รายได้|ธุรกิจ|ขาย|ลูกค้า|ลงทุน|ตลาด|กำไร|business|money|sales|market/i, queries: ["business meeting", "hands counting money", "office presentation"] },
   { pattern: /สุขภาพ|หมอ|โรงพยาบาล|ยา|ออกกำลัง|health|doctor|medical|fitness/i, queries: ["doctor consultation", "healthy lifestyle", "fitness training"] },
@@ -115,13 +120,20 @@ function englishTextCandidates(text: string): string[] {
   return candidates;
 }
 
-function fallbackQueriesForText(text: string, index: number, count: number, visualDirection = ""): string[] {
+function fallbackQueriesForText(
+  text: string,
+  index: number,
+  count: number,
+  visualDirection = "",
+  contentProfile: ContentProfile = "general",
+): string[] {
   const candidates: string[] = [];
   for (const hint of TEXT_HINT_FALLBACKS) {
     if (hint.pattern.test(text)) candidates.push(...hint.queries);
   }
   candidates.push(...visualDirectionCandidates(visualDirection));
   candidates.push(...englishTextCandidates(text));
+  candidates.push(...fallbackQueriesForProfile(contentProfile));
 
   for (let i = 0; i < GENERIC_FALLBACK_QUERIES.length; i++) {
     candidates.push(GENERIC_FALLBACK_QUERIES[(index + i) % GENERIC_FALLBACK_QUERIES.length]);
@@ -134,7 +146,7 @@ function fallbackQueriesForText(text: string, index: number, count: number, visu
     if (deduped.length >= count) break;
   }
 
-  return deduped.length > 0 ? deduped : ["creative workspace"];
+  return deduped.length > 0 ? deduped : [fallbackQueriesForProfile(contentProfile)[0] ?? "hands using smartphone"];
 }
 
 function parseKeywordAlternatives(raw: string): string[][] {
@@ -256,6 +268,8 @@ export async function POST(req: Request) {
     const fullScript = preprocessScript(
       typeof script === "string" && script.trim() ? script : subtitleList.join(" ")
     );
+    const contentProfile = detectContentProfile(fullScript);
+    console.log(`[extract-keywords] contentProfile: ${contentProfile}`);
 
     let useHeuristicFallback = false;
     let heuristicFallbackReason: string | null = null;
@@ -300,8 +314,8 @@ Output ONLY the one-sentence visual direction, nothing else.`;
       if (b > 0) await new Promise(r => setTimeout(r, 5000));
 
       const directionBlock = visualDirection
-        ? `\n═══ VISUAL DIRECTION (apply to ALL queries) ═══\n${visualDirection}\n═══ END DIRECTION ═══\n`
-        : "";
+        ? `\n═══ VISUAL DIRECTION (apply to ALL queries) ═══\n${visualDirection}\n${contentProfilePromptBlock(contentProfile)}\n═══ END DIRECTION ═══\n`
+        : `\n═══ CONTENT PROFILE (apply to ALL queries) ═══\n${contentProfilePromptBlock(contentProfile)}\n═══ END CONTENT PROFILE ═══\n`;
 
       const prompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
 
@@ -314,7 +328,7 @@ For each subtitle phrase below, write exactly 3 Pexels stock video search querie
 
 Query 1 — Most specific to the phrase's exact visual moment (must match visual direction tone)
 Query 2 — Broader visual that fits the script theme and visual direction
-Query 3 — Generic scene fallback (1-2 words max, e.g. "technology", "city night")
+Query 3 — Safe fallback inside the content profile (2-6 words, never random nature/tech/animals unless the profile says so)
 
 CRITICAL RULES:
 ▸ NO real person names (Dario Amodei, Elon Musk, Sam Altman…) — Pexels has none
@@ -328,6 +342,7 @@ CRITICAL RULES:
 ▸ Vary shot styles across the batch: aerial, close-up, wide shot, slow-motion, time-lapse
 ▸ Ground abstract concepts in concrete objects: "hope" → "child sunrise field", "growth" → "plant sprouting soil close-up"
 ▸ Keep the visual MOOD consistent with the VISUAL DIRECTION above
+▸ Generic fallbacks must stay inside the CONTENT PROFILE above
 
 OUTPUT — JSON only, zero explanation:
 {"keywords":[["q1","q2","q3"],["q1","q2","q3"],...]}
@@ -341,7 +356,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       let lastBatchError: unknown = null;
 
       if (useHeuristicFallback) {
-        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
       } else {
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -356,7 +371,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
             if (reason) {
               heuristicFallbackReason = heuristicFallbackReason ?? reason;
               useHeuristicFallback = true;
-              rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+              rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
               break;
             }
             console.error(`[extract-keywords] b${b} attempt${attempt} error:`, e);
@@ -369,14 +384,14 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
         if (reason) {
           heuristicFallbackReason = heuristicFallbackReason ?? reason;
           useHeuristicFallback = true;
-          rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+          rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
         } else {
           return geminiErrorResponse(lastBatchError);
         }
       }
 
       if (rawAlts.length === 0 && useHeuristicFallback) {
-        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection));
+        rawAlts = batch.map((text, i) => fallbackQueriesForText(text, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
       }
 
       // Pad missing entries with empty arrays (will get generic fallback below)
@@ -387,7 +402,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
       for (let i = 0; i < batch.length; i++) {
         const alts = rawAlts[i] ?? [];
-        const fallbackAlts = fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection);
+        const fallbackAlts = fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile);
 
         // Pick first valid keyword — in perSubtitle mode allow similar keywords
         // because adjacent subtitles can legitimately share visual themes
@@ -430,6 +445,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       sceneDurations: subtitleList.map(() => 3),
       keywordsPerScene: 1,
       visualDirection,
+      contentProfile,
       fallback: useHeuristicFallback ? "heuristic" : undefined,
       fallbackReason: useHeuristicFallback ? heuristicFallbackReason : undefined,
     });
@@ -439,6 +455,8 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   const rawScript = Array.isArray(scenes) && scenes.length > 0 ? scenes.join(" ") : (script ?? "");
   const cleanScript = preprocessScript(rawScript);
   if (!cleanScript) return NextResponse.json({ error: "script or scenes required" }, { status: 400 });
+  const contentProfile = detectContentProfile(cleanScript);
+  console.log(`[extract-keywords] contentProfile: ${contentProfile}`);
 
   const sceneList: string[] = Array.isArray(scenes) && scenes.length > 0
     ? scenes : cleanScript.split(/\n+/).filter(Boolean);
@@ -481,7 +499,9 @@ Output ONLY the one-sentence visual direction, nothing else.`;
     useHeuristicFallback = Boolean(heuristicFallbackReason);
   }
 
-  const directionBlock = visualDirection ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n═══ END DIRECTION ═══\n` : "";
+  const directionBlock = visualDirection
+    ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n${contentProfilePromptBlock(contentProfile)}\n═══ END DIRECTION ═══\n`
+    : `\n═══ CONTENT PROFILE ═══\n${contentProfilePromptBlock(contentProfile)}\n═══ END CONTENT PROFILE ═══\n`;
 
   // ถ้าต้องการมากกว่า 1 keyword/scene → ส่ง prompt แบบ multi-kw/scene
   const multiKwMode = kwPerScene > 1;
@@ -505,6 +525,7 @@ RULES:
   • English only, 2–6 words per query
   • Make queries VISUALLY DISTINCT from each other — no two similar shots
   • Ground abstract concepts in concrete filmable objects
+  • Generic fallbacks must stay inside the CONTENT PROFILE above
 
 OUTPUT (JSON only, no explanation):
 {"keywords":[["q1a","q1b",...],["q2a","q2b",...],...]}
@@ -522,7 +543,7 @@ STEP 1 — Understand the script's core message, tone, and main visual theme.
 STEP 2 — For each scene below, write exactly 3 Pexels stock video search queries:
   Query 1 — Most specific to the scene's exact visual moment (match visual direction tone)
   Query 2 — Broader visual that fits the script theme
-  Query 3 — Generic 1-2 word fallback (e.g. "technology", "city night", "business meeting")
+  Query 3 — Safe fallback inside the content profile (2–6 words, never random nature/tech/animals unless the profile says so)
 
 RULES:
   • NEVER use real person names or brand names (Pexels has none)
@@ -532,6 +553,7 @@ RULES:
   • English only, 2–6 words per query
   • Vary shot styles: aerial, close-up, wide, slow-motion, time-lapse
   • Ground abstract concepts in concrete filmable objects
+  • Generic fallbacks must stay inside the CONTENT PROFILE above
 
 OUTPUT (JSON only, no explanation):
 {"keywords":[["q1","q2","q3"],["q1","q2","q3"],...]}
@@ -545,7 +567,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const allKeywords: string[] = [];
 
     for (let i = 0; i < numScenes; i++) {
-      const sceneAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection);
+      const sceneAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
       for (let j = 0; j < kwPerScene; j++) {
         const picked = sceneAlts[j % sceneAlts.length];
         allKeywords.push(picked);
@@ -567,6 +589,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneClipCounts,
       sceneDurations,
       visualDirection,
+      contentProfile,
       fallback: "heuristic",
       fallbackReason: reason,
     });
@@ -594,7 +617,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       // แต่ละ scene → kwPerScene keywords แยกกัน
       for (let i = 0; i < numScenes; i++) {
         const sceneAlts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection);
+        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
         // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
         let fallbackIndex = 0;
         while (sceneAlts.length < kwPerScene) {
@@ -618,7 +641,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     } else {
       for (let i = 0; i < numScenes; i++) {
         const alts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection);
+        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile);
 
         let picked = "";
         for (const alt of alts) {
@@ -653,6 +676,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneClipCounts,
       sceneDurations,
       visualDirection,
+      contentProfile,
     });
   } catch (e) {
     const reason = useHeuristicKeywordFallback(e, "normal", numScenes);

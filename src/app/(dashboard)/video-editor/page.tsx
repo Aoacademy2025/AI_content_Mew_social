@@ -205,6 +205,8 @@ export default function VideoEditorPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isEditorExpanded, setIsEditorExpanded] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(0);
+  const timelineCanvasWidthPct = 100 + timelineZoom * 4;
   const centerPanelRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -326,6 +328,7 @@ export default function VideoEditorPage() {
     fontFamily: string; fontSize: number; fontWeight: number;
     color: string; accentColor: string; preset: SubPreset;
     effect: SubTextEffect; position: number;
+    shadow: boolean; outline: boolean; outlineSize: number;
     captions: Caption[];
   }
   const lastRenderedStyleRef = useRef<RenderedStyle | null>(null);
@@ -794,6 +797,7 @@ export default function VideoEditorPage() {
     pipe.current.sceneDurations = d.sceneDurations ?? [];
     pipe.current.scenes = d.scenes ?? [];
     pipe.current.visualDirection = d.visualDirection ?? "";
+    pipe.current.contentProfile = d.contentProfile ?? "";
     pipe.current.stockVideos = d.stockVideos ?? [];
     pipe.current.captions = caps;
     pipe.current.config = d.config ?? null;
@@ -847,6 +851,7 @@ export default function VideoEditorPage() {
       sceneDurations: pipe.current.sceneDurations,
       scenes: pipe.current.scenes,
       visualDirection: pipe.current.visualDirection,
+      contentProfile: pipe.current.contentProfile,
       stockVideos: pipe.current.stockVideos,
       config: pipe.current.config,
 
@@ -1139,6 +1144,7 @@ export default function VideoEditorPage() {
       pipe.current.sceneClipCounts = data.sceneClipCounts ?? [];
       pipe.current.sceneDurations = data.sceneDurations ?? [];
       pipe.current.visualDirection = data.visualDirection ?? "";
+      pipe.current.contentProfile = data.contentProfile ?? "";
       const totalClips = (data.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
       setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
       return kws;
@@ -1162,12 +1168,14 @@ export default function VideoEditorPage() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
+        fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
         ...(perSubtitleClipCount > 0
           ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
           : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit }
           : targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+        ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
         ...(perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
       }),
@@ -1579,6 +1587,7 @@ export default function VideoEditorPage() {
         fontFamily: subFontFamily, subtitlePosition: subPosition, subtitleSize: subFontSize,
         subtitleColor: subColor, subtitleAccentColor: subAccentColor,
         subtitleStylePreset: subPreset, subtitleTextEffect: subEffect, subtitleFontWeight: subFontWeight,
+        subtitleShadow: subShadow, subtitleOutline: subOutline, subtitleOutlineSize: subOutlineSize,
         scenes: pipe.current.scenes ?? [], keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: sceneClipCountsForConfig, sceneDurations: pipe.current.sceneDurations ?? [],
         preferredLLM: preferredLLMRef.current,
@@ -1703,6 +1712,9 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
+        subtitleShadow: subShadow,
+        subtitleOutline: subOutline,
+        subtitleOutlineSize: subOutlineSize,
         fontFamily: subFontFamily,
         keywordPopups: [],
         // Always sync BGM from current UI state, not the cached config. The
@@ -1822,6 +1834,7 @@ export default function VideoEditorPage() {
         fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
         color: subColor, accentColor: subAccentColor, preset: subPreset,
         effect: subEffect, position: subPosition,
+        shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
         captions: captionsRef.current.map(c => ({ ...c })),
       };
       setStyleIsDirty(false);
@@ -2167,6 +2180,11 @@ export default function VideoEditorPage() {
     // ~6-min script). The cap is still enforced accurately by Gate 2 below (exact, on
     // the real audioDurationMs after TTS) + the server render backstop.
 
+    if (useAvatar && avatarInputMode === "generate" && !avatarId.trim()) {
+      toast.error("กรอก HeyGen Avatar ID ก่อน");
+      return;
+    }
+
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     try {
       const keysRes = await fetch("/api/user/api-keys");
@@ -2256,10 +2274,15 @@ export default function VideoEditorPage() {
       const renderedUrl = await runRender(cfg);
       if (abortRef.current) return;
 
-      if (isDirectMode) {
+      if (useAvatar) {
         const avUrl = await runAvatar(vUrl);
         if (abortRef.current) return;
-        await runComposite(renderedUrl, avUrl);
+        let tailUrl: string | undefined;
+        if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+          tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
+          if (abortRef.current) return;
+        }
+        await runComposite(renderedUrl, avUrl, tailUrl);
         if (abortRef.current) return;
       }
 
@@ -2272,7 +2295,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, userPlan]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2448,6 +2471,9 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
+        subtitleShadow: subShadow,
+        subtitleOutline: subOutline,
+        subtitleOutlineSize: subOutlineSize,
       };
 
       const res = await fetch("/api/videos/render", {
@@ -2468,6 +2494,7 @@ export default function VideoEditorPage() {
         lastRenderedStyleRef.current = {
           fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
           color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
           captions: captionsRef.current.map(c => ({ ...c })),
         };
         setStyleIsDirty(false);
@@ -2591,13 +2618,15 @@ export default function VideoEditorPage() {
       snap.fontWeight !== subFontWeight || snap.color !== subColor ||
       snap.accentColor !== subAccentColor || snap.preset !== subPreset ||
       snap.effect !== subEffect || snap.position !== subPosition ||
+      snap.shadow !== subShadow || snap.outline !== subOutline ||
+      snap.outlineSize !== subOutlineSize ||
       snap.captions.length !== captionsRef.current.length ||
       snap.captions.some((c, i) => {
         const cur = captionsRef.current[i];
         return !cur || c.text !== cur.text || c.startMs !== cur.startMs || c.endMs !== cur.endMs;
       });
     setStyleIsDirty(changed);
-  }, [subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, captions]);
+  }, [subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, captions]);
 
   function stopAll() {
     abortRef.current = true;
@@ -2946,6 +2975,9 @@ export default function VideoEditorPage() {
                 setSubPreset(snap.preset);
                 setSubEffect(snap.effect);
                 setSubPosition(snap.position);
+                setSubShadow(snap.shadow);
+                setSubOutline(snap.outline);
+                setSubOutlineSize(snap.outlineSize);
                 setCaptions(snap.captions.map(c => ({ ...c })));
                 setStyleIsDirty(false);
                 toast("รีเซ็ตกลับ style และซับที่ Render ล่าสุด");
@@ -3585,6 +3617,9 @@ export default function VideoEditorPage() {
                   subFontFamily={subFontFamily}
                   subFontSize={subFontSize}
                   subFontWeight={subFontWeight}
+                  subShadow={subShadow}
+                  subOutline={subOutline}
+                  subOutlineSize={subOutlineSize}
                   previewScale={previewScale}
                 />
               )}
@@ -3812,7 +3847,7 @@ export default function VideoEditorPage() {
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
                 projectName={projectName} onSaveTemplate={() => {
                   const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
+                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
                 onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
@@ -3877,7 +3912,7 @@ export default function VideoEditorPage() {
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
             projectName={projectName} onSaveTemplate={() => {
               const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
+              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
             onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
@@ -3951,20 +3986,18 @@ export default function VideoEditorPage() {
 
           <div className="ml-auto flex items-center gap-2">
             <ZoomIn className="w-3 h-3 text-slate-600" />
-            {/* Timeline stays at max 100% so playhead/caption positions remain easy to scan. */}
-            <div
-              className="relative w-20 h-5 flex items-center touch-none select-none outline-none"
-              tabIndex={-1}
-            >
-              <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: "100%" }} />
-                <div
-                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: "100%" }}
-                />
-              </div>
-            </div>
-            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">100%</span>
+            <input
+              aria-label="Timeline zoom"
+              title="0% = ภาพรวม, 100% = รายละเอียด"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={timelineZoom}
+              onChange={(e) => setTimelineZoom(Number(e.target.value))}
+              className="w-24 h-1 accent-violet-500 cursor-pointer"
+            />
+            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">{timelineZoom}%</span>
           </div>
         </div>
 
@@ -4028,7 +4061,7 @@ export default function VideoEditorPage() {
               }
             }}
           >
-            <div className="relative" style={{ width: "100%", minWidth: "100%" }}>
+            <div className="relative" style={{ width: `${timelineCanvasWidthPct}%`, minWidth: "100%" }}>
 
               {/* Ruler — click/drag to seek */}
               <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"

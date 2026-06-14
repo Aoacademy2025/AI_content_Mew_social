@@ -91,7 +91,18 @@ function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
 }
 
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
-type StockVideo = { keyword: string; localUrl?: string; videoUrl: string; duration: number };
+type StockVideo = {
+  keyword: string;
+  localUrl?: string;
+  videoUrl: string;
+  duration: number;
+  title?: string;
+  query?: string;
+  provider?: "pexels" | "pixabay";
+  contentProfile?: string;
+  selectionReason?: string;
+  relevanceScore?: number;
+};
 
 function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameMs: number): Cap[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
@@ -203,6 +214,9 @@ export async function POST(req: Request) {
     subtitleStylePreset,
     subtitleTextEffect,
     subtitleFontWeight = 900,
+    subtitleShadow = false,
+    subtitleOutline = false,
+    subtitleOutlineSize = 2,
     scenes = [],
     keywordsPerScene = 5,
     sceneClipCounts = [] as number[],
@@ -221,6 +235,9 @@ export async function POST(req: Request) {
     subtitleStylePreset?: SubtitleStylePreset;
     subtitleTextEffect?: SubtitleTextEffect;
     subtitleFontWeight?: number;
+    subtitleShadow?: boolean;
+    subtitleOutline?: boolean;
+    subtitleOutlineSize?: number;
     scenes?: string[];
     keywordsPerScene?: number;
     sceneClipCounts?: number[];
@@ -312,6 +329,19 @@ export async function POST(req: Request) {
 
   const validStocks = stockVideos.filter(sv => sv.localUrl || sv.videoUrl);
   let bgVideos: BrollVideo[] = [];
+  const brollMetadataBySrc = new Map<string, Partial<BrollVideo>>();
+  for (const sv of validStocks) {
+    const src = sv.localUrl ?? sv.videoUrl;
+    brollMetadataBySrc.set(src, {
+      keyword: sv.keyword,
+      title: sv.title,
+      query: sv.query,
+      provider: sv.provider,
+      contentProfile: sv.contentProfile,
+      selectionReason: sv.selectionReason,
+      relevanceScore: sv.relevanceScore,
+    });
+  }
 
   if (validStocks.length > 0) {
     const n = validStocks.length;
@@ -698,6 +728,11 @@ export async function POST(req: Request) {
     bgVideos[bgVideos.length - 1].end = audioDurationSec;
   }
 
+  bgVideos = bgVideos.map((seg) => ({
+    ...seg,
+    ...(brollMetadataBySrc.get(seg.src) ?? {}),
+  }));
+
   console.log(`[config] final bgVideos (${bgVideos.length}):`);
   bgVideos.forEach((v, i) => console.log(`  [${i}] ${v.start.toFixed(2)}s–${v.end.toFixed(2)}s dur=${( v.end-v.start).toFixed(2)}s src=${v.src.split("/").pop()}`));
 
@@ -712,6 +747,9 @@ export async function POST(req: Request) {
     subtitleStylePreset,
     subtitleTextEffect,
     subtitleAccentColor,
+    subtitleShadow,
+    subtitleOutline,
+    subtitleOutlineSize,
   };
 
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);

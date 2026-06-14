@@ -120,7 +120,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
           if (!cap) return <span className="text-[10px] text-slate-700">Type script to preview</span>;
           return (
             <div className="text-center leading-none">
-              {renderSubEl(cap.text, p.subColor, p.subAccentColor, cap.tag === "hook", p.subPreset, p.subFontFamily, p.subFontSize, p.subFontWeight, 220 / 1080)}
+              {renderSubEl(cap.text, p.subColor, p.subAccentColor, cap.tag === "hook", p.subPreset, p.subFontFamily, p.subFontSize, p.subFontWeight, 220 / 1080, "pop", -1, 1, p.subShadow, p.subOutline, p.subOutlineSize)}
             </div>
           );
         })()}
@@ -170,7 +170,7 @@ export function RightSettingsPanel(p: RightPanelProps) {
                             whiteSpace:normal + break-all (correct for real subtitles)
                             which would otherwise wrap "ตัวอย่าง" inside the small card. */}
                         <div style={{ lineHeight: 1, transform: "scale(0.82)" }}>
-                          {renderSubEl("ตัวอย่าง", dSubColor, dSubAccentColor, false, pr.value, dSubFontFamily, 15, dSubFontWeight, 1)}
+                          {renderSubEl("ตัวอย่าง", dSubColor, dSubAccentColor, false, pr.value, dSubFontFamily, 15, dSubFontWeight, 1, "pop", -1, 1, p.subShadow, p.subOutline, p.subOutlineSize)}
                         </div>
                       </div>
                       <span className="text-[9px] font-medium leading-tight text-center"
@@ -693,4 +693,3 @@ export function RightSettingsPanel(p: RightPanelProps) {
     </div>
   );
 }
-

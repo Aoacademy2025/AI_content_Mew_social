@@ -20,6 +20,9 @@ export function SubtitleOverlayComposition({
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
   subtitleAccentColor = "#FFE500",
+  subtitleShadow = false,
+  subtitleOutline = false,
+  subtitleOutlineSize = 2,
   bgmFile,
   bgmVolume = 0.12,
 }: SubtitleOverlayConfig) {
@@ -58,6 +61,9 @@ export function SubtitleOverlayComposition({
               captionDurFrames={dur}
               textEffect={textEffect}
               accentColor={accentColor}
+              shadow={subtitleShadow}
+              outline={subtitleOutline}
+              outlineSize={subtitleOutlineSize}
             />
           </Sequence>
         );

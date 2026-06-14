@@ -26,6 +26,9 @@ export interface ActiveCaptionOverlayProps {
   subFontFamily: string;
   subFontSize: number;
   subFontWeight: number;
+  subShadow: boolean;
+  subOutline: boolean;
+  subOutlineSize: number;
   previewScale: number;
 }
 
@@ -44,7 +47,7 @@ export const ActiveCaptionOverlay = memo(function ActiveCaptionOverlay({
   onOpenStyleTab, onOpenFontTab, onResetPosition,
   durationMs, captionEndMs,
   subColor, subAccentColor, subPreset, subEffect,
-  subFontFamily, subFontSize, subFontWeight, previewScale,
+  subFontFamily, subFontSize, subFontWeight, subShadow, subOutline, subOutlineSize, previewScale,
 }: ActiveCaptionOverlayProps) {
   const videoMs = usePlaybackMsDisplay();
 
@@ -116,7 +119,7 @@ export const ActiveCaptionOverlay = memo(function ActiveCaptionOverlay({
           legible at viewport-width sizes. */}
       <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); onOpenFontTab(); }}>
         <div style={{ transform: tf || undefined, opacity: op, transformOrigin: subEffect === "flip" ? "center top" : "center" }}>
-          {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames)}
+          {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames, subShadow, subOutline, subOutlineSize)}
         </div>
       </div>
     </div>
