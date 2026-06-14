@@ -67,5 +67,7 @@ assert(SERVER_INSTRUCTIONS.includes("ต้องถามจริงทุก�
 assert(SERVER_INSTRUCTIONS.includes("อย่าสรุปว่า key เสีย"), "elevenlabs: voices-list failure ≠ key broken");
 // batch4: forbid silently defaulting — must really ask the 3 mandatory questions
 assert(SERVER_INSTRUCTIONS.includes("ห้ามตั้งค่า default เองเงียบ") && SERVER_INSTRUCTIONS.includes("3 ข้อบังคับ"), "wizard: forbid silent defaults, 3 mandatory questions");
+// batch5: BGM independent of avatar — never bundle "no-avatar + music" as one option
+assert(SERVER_INSTRUCTIONS.includes("BGM เป็นคำถามแยกอิสระจาก avatar") && SERVER_INSTRUCTIONS.includes("ห้ามมัด"), "wizard: BGM decoupled from avatar (ask always)");
 
 console.log(`\n${passed} assertions passed ✅`);
