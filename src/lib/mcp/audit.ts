@@ -1,5 +1,18 @@
 import { prisma } from "@/lib/prisma";
 
+// Does a tool result represent a real in-band error?
+// A success payload may legitimately carry an `error` KEY whose value is null
+// (e.g. get_video_status's job branch returns `error: job.errorMessage ?? null`).
+// We must classify by VALUE (non-null), not by key presence — otherwise every
+// successful job-status poll is mislabeled "error" in the audit log.
+export function isInBandError(result: unknown): boolean {
+  return (
+    !!result &&
+    typeof result === "object" &&
+    (result as { error?: unknown }).error != null
+  );
+}
+
 // Redact bulky/sensitive fields before persisting. The user's full script is private
 // content (PII / draft IP) — store only its length, never the body.
 function redactRequest(v: unknown): unknown {

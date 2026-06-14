@@ -4,7 +4,8 @@ import { z } from "zod";
 import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
 import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
-import { recordToolCall } from "@/lib/mcp/audit";
+import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
+import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -43,8 +44,7 @@ async function runTool(
   }
   try {
     const result = await fn({ userId, user });
-    const inBandError = !!result && typeof result === "object" && "error" in result;
-    await recordToolCall({ userId, toolName, status: inBandError ? "error" : "ok", durationMs: Date.now() - started, requestJson: args });
+    await recordToolCall({ userId, toolName, status: isInBandError(result) ? "error" : "ok", durationMs: Date.now() - started, requestJson: args });
     return text(result);
   } catch {
     await recordToolCall({ userId, toolName, status: "error", durationMs: Date.now() - started, requestJson: args });
@@ -119,9 +119,10 @@ const handler = createMcpHandler(
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
-          if (useEleven && !u.elevenlabsKey) return { error: "missing_key", message: "ต้องตั้งค่า ElevenLabs key ก่อน" };
-          if (!u.geminiKey) return { error: "missing_key", message: "ต้องตั้งค่า Gemini key ก่อน (ใช้กับ TTS/keywords/config)" };
-          if (!u.pexelsKey && !u.pixabayKey) return { error: "missing_key", message: "ต้องตั้งค่า Pexels หรือ Pixabay key ก่อน (สำหรับ b-roll)" };
+          if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
+          if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
+          if (!u.geminiKey) return missingKeyError("gemini");
+          if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
           const q = await checkClipQuota(p.userId);
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
@@ -142,7 +143,7 @@ const handler = createMcpHandler(
         }, args),
     );
   },
-  { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} } },
+  { serverInfo: { name: "heroai", version: "0.1.0" }, capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   { basePath: "/api", maxDuration: 60, verboseLogs: process.env.NODE_ENV === "development" },
 );
 
