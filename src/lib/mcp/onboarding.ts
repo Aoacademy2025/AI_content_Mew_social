@@ -83,7 +83,7 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
 export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปลี่ยน "สคริปต์" เป็นวิดีโอสั้นอัตโนมัติ: เสียงพากย์ + b-roll เปลี่ยนทุก 3–5 วิ + ซับไทยตรงเสียง. ใช้ได้เฉพาะแผน PRO/BUSINESS.
 
 ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
-avatar (HeyGen): ใส่ avatarMode = full / bookend (หัวอย่างเดียว) / bookend-both (หัว+ท้าย) ตอนเรียก create_video_job — ต้องมี HeyGen key + avatarId (ดึงจาก Settings โดยอัตโนมัติ หรือส่ง avatarId มาเอง). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
+avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด), full แพง. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
 BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
@@ -101,9 +101,14 @@ BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 
 โหมดไกด์สร้างวิดีโอ: เมื่อผู้ใช้สื่อว่าจะทำวิดีโอ (เช่น "วิดีโอ HERO AI") ให้ถามทีละข้อ (ห้ามถามรวด) — เรียก get_video_options เพื่อเสนอตัวเลือกจริง:
 1) ขอสคริปต์.
-2) เสียง: gemini หรือ elevenlabs (เสนอเสียงจาก get_video_options).
-3) เพลง bgm: เอา/ไม่เอา — ถ้าเอา เสนอ track จาก get_video_options แล้วส่ง bgmFile.
+2) เสียง: gemini หรือ elevenlabs (เสนอเสียงจาก get_video_options). ⚠️ ถ้า get_video_options ดึงรายชื่อเสียง ElevenLabs ไม่ได้ (voices มี error — key อาจมีสิทธิ์แค่ TTS ไม่มีสิทธิ์ list) อย่าสรุปว่า key เสีย/ใช้ไม่ได้ — voiceId ที่เซฟไว้หรือผู้ใช้ใส่เองยังใช้สร้างเสียงได้ ลองสร้างเลย.
+3) เพลงประกอบ (BGM): ⚠️ ต้องถามจริงทุกครั้งว่า "ใส่เพลงประกอบไหม?" ถ้าเอา เสนอ track จาก get_video_options ให้เลือก แล้วส่ง bgmFile จริงตอน create_video_job. ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile.
 4) ซับ: ตำแหน่ง (top/middle/bottom) + โหมด (sentence/1/2/3/4 คำ; 3="แนะนำ อ่านง่าย").
-5) avatar: none/full/bookend/bookend-both — ถ้าเอา เสนอ avatar จาก get_video_options; จะปรับขนาดก็ใส่ avatarScale (default 1 = พอดีเฟรม) ได้.
-สรุปยืนยัน แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (อย่าถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
+5) avatar (พิธีกร AI): ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO — แพลนครอบแค่ render ปกติ) ต้องอธิบายให้ผู้ใช้เข้าใจก่อนเลือก แล้วเสนอ:
+   - "เปิดอย่างเดียว" (avatar โผล่ช่วงต้นคลิป) = avatarMode "bookend" — ✅ แนะนำ ประหยัด
+   - "เปิด-ปิด" (avatar ต้น+ท้าย) = avatarMode "bookend-both" — ✅ แนะนำ ประหยัด
+   - "Full" (avatar ทั้งคลิป) = avatarMode "full" — ได้ แต่แพง (จ่ายตามความยาวคลิปเต็ม)
+   - ไม่เอา = ไม่ใส่ avatarMode
+   ถ้าเอา avatar เสนอตัว avatar จาก get_video_options. ⚠️ ถ้าเลือก "เปิดอย่างเดียว"/"เปิด-ปิด" ต้องถามเสมอว่า "ใช้ avatar กี่วินาที?" → ใส่ avatarIntroSecs (และ avatarTailSecs ถ้าเปิด-ปิด); ถ้าผู้ใช้ไม่ระบุ ใช้ default 5 วินาที. ("Full" ไม่ต้องถามวินาที — ตามทั้งคลิป). จะปรับขนาดก็ใส่ avatarScale (default 1 = พอดีเฟรม).
+สรุปยืนยัน (บอกชัดว่าจะส่งอะไรจริง: เสียง/เพลง/ซับ/avatar+วินาที) แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (อย่าถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
 ⚠️ ห้ามสัญญาว่าจะแจ้งเตือนเอง — MCP ส่ง push ไม่ได้; ให้ผู้ใช้พิมพ์ "เช็ควิดีโอ" เมื่อผ่านไปตาม ETA.`;
