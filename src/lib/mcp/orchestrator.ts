@@ -7,6 +7,7 @@ import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipel
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
+  cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
 import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
 
@@ -20,6 +21,8 @@ interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   bgmFile?: string; bgmVolume?: number;
+  subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
+  subtitlePosition?: "top" | "middle" | "bottom";
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
@@ -46,7 +49,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor());
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
-    const captions = capRes.captions as OrchCaption[];
+    const baseCaptions = capRes.captions as OrchCaption[];
+    const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
+      ? cardsByWordCount(capRes.words as { word: string; startMs: number; endMs: number }[], parseInt(input.subtitleMode))
+      : baseCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
 
     // 3. Keywords
@@ -111,7 +117,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await setJobStep(jobId, "burn", 88);
-    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS) });
+    const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
+    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop) });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
