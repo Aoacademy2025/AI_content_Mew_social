@@ -19,6 +19,7 @@ export interface TimingCaptionsResult {
   captions: Caption[];
   words: TimedWord[];
   audioDurationMs: number;
+  fullText: string; // the exact TTS-spoken text (timing.segments joined) — for slicing cards with original spacing
 }
 
 // LLM cards must be sane char ranges over fullText: ordered, non-overlapping,
@@ -85,6 +86,7 @@ export function captionsFromTtsTiming(
       captions: caps.map((c) => ({ text: c.text, startMs: c.startMs, endMs: c.endMs, tag: c.tag })),
       words,
       audioDurationMs,
+      fullText,
     };
   } catch (e) {
     if (e instanceof TtsTimingMismatchError) {
