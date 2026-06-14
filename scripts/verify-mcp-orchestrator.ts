@@ -65,6 +65,78 @@ async function main() {
   const failed = await prisma.videoJob.findUnique({ where: { id: job2.id } });
   assert(failed?.status === "failed" && (failed?.errorMessage ?? "").includes("render"), "render error → job failed");
 
+  // -------------------------------------------------------------------------
+  // Avatar case: avatarMode:"full" + avatarId:"av1"
+  // -------------------------------------------------------------------------
+  const jobAv = await prisma.videoJob.create({
+    data: {
+      userId: u.id, status: "processing",
+      inputJson: JSON.stringify({ script: "สวัสดีโลก", voiceProvider: "gemini", avatarMode: "full", avatarId: "av1" }),
+    },
+  });
+
+  // Capture POST bodies keyed by path so we can assert them later.
+  const avPostBodies: Record<string, unknown[]> = {};
+  const avCalls: { method: string; path: string; body?: unknown }[] = [];
+  let avRenderCount = 0;
+  const avCaller = {
+    post: async (path: string, body?: unknown) => {
+      const key = path.split("?")[0];
+      avPostBodies[key] = [...(avPostBodies[key] ?? []), body];
+      avCalls.push({ method: "POST", path: key, body });
+      // Render calls: first → base render job, second → burn render job
+      if (key === "/api/videos/render") {
+        avRenderCount++;
+        return { jobId: `av-render-${avRenderCount}` } as never;
+      }
+      const responses: Record<string, unknown> = {
+        "/api/videos/tts-gemini": { voiceUrl: "/api/renders/av.wav", audioDurationMs: 2000, timing: { provider: "gemini", segments: [{ text: "สวัสดีโลก", startMs: 0, durationMs: 2000 }], chars: null } },
+        "/api/videos/extract-keywords": { keywords: ["a"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+        "/api/videos/fetch-stock": { results: [{ src: "clip.mp4" }] },
+        "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/av.wav", bgVideos: [] } },
+        "/api/videos/trim-audio": { audioUrl: "trim" },
+        "/api/heygen/generate-with-bg": { videoId: "hg1" },
+        "/api/videos/poll-avatar": { status: "completed", videoUrl: "AVATAR", thumbnailUrl: null, errorMsg: null },
+        "/api/heygen/composite": { videoUrl: "COMPOSITE", usedMode: "chromakey" },
+        "/api/videos": { id: "vid_av" },
+      };
+      return (responses[key] ?? {}) as never;
+    },
+    patch: async (path: string, body?: unknown) => {
+      avCalls.push({ method: "PATCH", path: path.split("?")[0], body });
+      return {} as never;
+    },
+    get: async (path: string) => {
+      const key = path.split("?")[0];
+      avCalls.push({ method: "GET", path: key });
+      // render-progress always returns done
+      if (key === "/api/videos/render-progress") return { progress: 100, stage: "done", videoUrl: "/api/renders/av-out.mp4", error: null } as never;
+      return {} as never;
+    },
+  };
+
+  await runOrchestrator(jobAv.id, u.id, {
+    caller: avCaller as never,
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+
+  // Assert POST /api/videos body has avatarModel === "av1" (not "none")
+  const createVideoBody = (avPostBodies["/api/videos"] ?? [])[0] as Record<string, unknown> | undefined;
+  assert(createVideoBody != null, "avatar case: POST /api/videos was called");
+  assert(createVideoBody?.avatarModel === "av1", `avatar case: avatarModel is "av1" (got ${String(createVideoBody?.avatarModel)})`);
+
+  // Assert the burn render's subtitleOverlayConfig references "COMPOSITE" (not the base URL)
+  const renderBodies = avPostBodies["/api/videos/render"] ?? [];
+  assert(renderBodies.length === 2, `avatar case: two render calls (got ${renderBodies.length})`);
+  const burnBody = renderBodies[1] as Record<string, unknown> | undefined;
+  const subCfg = burnBody?.subtitleOverlayConfig as Record<string, unknown> | undefined;
+  const subSrc = subCfg?.videoUrl ?? subCfg?.src ?? JSON.stringify(subCfg);
+  assert(String(subSrc).includes("COMPOSITE"), `avatar case: burn subtitleOverlayConfig references COMPOSITE (got ${String(subSrc)})`);
+
+  const jobAvDone = await prisma.videoJob.findUnique({ where: { id: jobAv.id } });
+  assert(jobAvDone?.status === "done" && jobAvDone?.videoId === "vid_av", "avatar case: job → done with videoId vid_av");
+
   await prisma.videoJob.deleteMany();
   await prisma.user.deleteMany();
   await prisma.$disconnect();

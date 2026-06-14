@@ -8,6 +8,7 @@ import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
 } from "@/lib/mcp/orchestrator-steps";
+import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
@@ -15,7 +16,10 @@ export interface OrchestratorDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-interface CreateInput { script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string }
+interface CreateInput {
+  script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
+  avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
+}
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
   const caller = deps.caller ?? pipelineCaller(userId);
@@ -76,16 +80,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
     await refund(userId).catch(() => {});
 
+    // 6b. Avatar (optional) — generate + composite onto the base render.
+    let finalBase = baseUrl;
+    let avatarModel = "none";
+    let avatarVideoUrl: string | null = null;
+    if (input.avatarMode) {
+      // Defense-in-depth: the route only ever persists avatarMode together with a
+      // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
+      // malformed job rather than generating with avatarModel=undefined.
+      if (!input.avatarId) throw new Error("avatar job missing avatarId");
+      await setJobStep(jobId, "avatar", 80);
+      const av = await runAvatarComposite(caller, {
+        baseUrl, ttsAudioUrl: tts.voiceUrl, avatarMode: input.avatarMode, avatarId: input.avatarId,
+        introSecs: input.avatarIntroSecs ?? 5, tailSecs: input.avatarTailSecs ?? 5, sleep,
+        onStep: (label) => { void setJobStep(jobId, label, 84).catch(() => {}); },
+      });
+      finalBase = av.compositeUrl;
+      avatarModel = input.avatarId;
+      avatarVideoUrl = av.avatarUrl;
+    }
+
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
-      videoUrl: baseUrl, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel: "none", voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
+      videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
+      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
       sceneCount: captions.length, renderConfig: cfgRes.config, status: "PROCESSING",
     });
 
-    // 8. Burn subtitles (2nd render). Its reservation is the single clip this video keeps.
+    // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await setJobStep(jobId, "burn", 88);
-    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(baseUrl, captions, durMs, RENDER_FPS) });
+    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS) });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
