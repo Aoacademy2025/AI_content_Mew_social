@@ -4,6 +4,7 @@
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-mcp-onboarding.ts
 import {
   SETTINGS_URL, SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError, buildSetupGuide,
+  missingAvatarError,
 } from "../src/lib/mcp/onboarding";
 import { isInBandError } from "../src/lib/mcp/audit";
 
@@ -39,14 +40,22 @@ assert(buildSetupGuide({ gemini: true, pexels: false, pixabay: false, elevenlabs
 assert(buildSetupGuide({ gemini: false, pexels: true, pixabay: true, elevenlabs: false }).canCreateVideo === false,
   "b-roll but no Gemini → not ready");
 const guide = none;
-assert(guide.avatarViaChat === false, "setup guide flags avatar as NOT available via chat");
+assert(guide.avatarViaChat === true, "setup guide flags avatar as available via chat");
 assert(guide.steps.find((s) => s.key === "gemini")!.required === true, "gemini step is required");
 assert(guide.steps.find((s) => s.key === "elevenlabs")!.required === false, "elevenlabs step is optional");
 
 // --- server instructions carry the guardrails the assistant must honor ---
 assert(SERVER_INSTRUCTIONS.includes(SETTINGS_URL), "instructions tell where to set keys");
 assert(SERVER_INSTRUCTIONS.includes("ห้าม"), "instructions forbid pasting keys into chat (security)");
-assert(SERVER_INSTRUCTIONS.includes("avatar"), "instructions state avatar is not supported via chat");
+assert(SERVER_INSTRUCTIONS.includes("avatarMode"), "instructions describe how to use avatar (avatarMode)");
 assert(SERVER_INSTRUCTIONS.includes("get_current_user"), "instructions tell the assistant to check setup first");
+
+// --- HeyGen key + missing avatar (avatar feature) ---
+const hg = missingKeyError("heygen");
+assert(hg.error === "missing_key" && hg.message.includes("heygen.com") && hg.message.includes(SETTINGS_URL),
+  "heygen missing-key links the HeyGen API page and Settings");
+const noav = missingAvatarError();
+assert(noav.error === "missing_avatar" && noav.message.includes("avatarId"),
+  "missing_avatar explains how to set/pass an avatarId");
 
 console.log(`\n${passed} assertions passed ✅`);

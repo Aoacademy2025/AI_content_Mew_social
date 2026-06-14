@@ -7,7 +7,7 @@ export const SETTINGS_URL = "https://studio.heroaiengine.com/settings"; // → t
 
 type ProviderHelp = { label: string; whatFor: string; getKeyUrl: string };
 
-export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs", ProviderHelp> = {
+export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs" | "heygen", ProviderHelp> = {
   gemini: {
     label: "Gemini (Google AI Studio)",
     whatFor: "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
@@ -20,6 +20,11 @@ export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs", P
     whatFor: "เสียงโคลนคุณภาพสูง (ไม่บังคับ — ถ้าไม่ใส่ ใช้เสียง Gemini ได้)",
     getKeyUrl: "https://elevenlabs.io/app/settings/api-keys",
   },
+  heygen: {
+    label: "HeyGen",
+    whatFor: "avatar พิธีกร AI (ต้องมีตอนสั่งวิดีโอแบบมี avatar)",
+    getKeyUrl: "https://app.heygen.com/settings?nav=API",
+  },
 };
 
 export const ELEVENLABS_VOICEID_HELP =
@@ -30,13 +35,14 @@ function howTo(p: ProviderHelp): string {
 }
 
 /** Actionable missing-key error returned by create_video_job (key=value tells runTool it's an error). */
-export function missingKeyError(which: "gemini" | "broll" | "elevenlabs") {
+export function missingKeyError(which: "gemini" | "broll" | "elevenlabs" | "heygen") {
   if (which === "gemini") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
   if (which === "elevenlabs")
     return {
       error: "missing_key",
       message: `เลือกใช้เสียง ElevenLabs แต่ยังไม่ได้ตั้งค่า ElevenLabs key — ${howTo(PROVIDERS.elevenlabs)} (หรือเปลี่ยนไปใช้ voiceProvider="gemini")`,
     };
+  if (which === "heygen") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า HeyGen key — ${howTo(PROVIDERS.heygen)}` };
   return {
     error: "missing_key",
     message: `ยังไม่มี key สำหรับ b-roll — ต้องมี Pexels หรือ Pixabay อย่างน้อย 1 ตัว. Pexels: ${PROVIDERS.pexels.getKeyUrl} · Pixabay: ${PROVIDERS.pixabay.getKeyUrl} แล้วนำไปวางที่ ${SETTINGS_URL} (แท็บ API Keys)`,
@@ -51,12 +57,20 @@ export function missingVoiceIdError() {
   };
 }
 
+/** Using avatar but no avatarId resolvable — guide the user to set one. */
+export function missingAvatarError() {
+  return {
+    error: "missing_avatar",
+    message: `ยังไม่ได้ตั้ง Avatar — ตั้งค่า Avatar (heygenAvatarId) ที่ ${SETTINGS_URL} หรือส่ง avatarId มากับคำสั่ง create_video_job`,
+  };
+}
+
 /** Per-user setup checklist embedded in get_current_user so the assistant can onboard step-by-step. */
 export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixabay: boolean; elevenlabs: boolean }) {
   return {
     pasteKeysAt: SETTINGS_URL,
     canCreateVideo: keys.gemini && (keys.pexels || keys.pixabay),
-    avatarViaChat: false, // avatar (HeyGen) ยังไม่รองรับผ่าน MCP — สั่งได้แค่ เสียง + b-roll + ซับไทย
+    avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
       { key: "gemini", required: true, configured: keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
       { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: PROVIDERS.pexels.whatFor, getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
@@ -68,8 +82,8 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
 /** Standing briefing the MCP client (Claude) reads every session — turns it into setup support. */
 export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปลี่ยน "สคริปต์" เป็นวิดีโอสั้นอัตโนมัติ: เสียงพากย์ + b-roll เปลี่ยนทุก 3–5 วิ + ซับไทยตรงเสียง. ใช้ได้เฉพาะแผน PRO/BUSINESS.
 
-ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย), เช็คสถานะ, ดาวน์โหลด.
-ยังไม่รองรับผ่านแชท: avatar (พิธีกร AI / HeyGen) — ถ้าผู้ใช้อยากได้ avatar ให้แนะนำไปทำบนหน้าเว็บ video-creator.
+ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
+avatar (HeyGen): ใส่ avatarMode = full / bookend (หัวอย่างเดียว) / bookend-both (หัว+ท้าย) ตอนเรียก create_video_job — ต้องมี HeyGen key + avatarId (ดึงจาก Settings โดยอัตโนมัติ หรือส่ง avatarId มาเอง). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
 BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
