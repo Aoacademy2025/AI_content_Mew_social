@@ -14,6 +14,8 @@ import { prisma } from "@/lib/prisma";
 import { createVideoJob } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
+import { pipelineCaller } from "@/lib/mcp/pipeline-client";
+import { getVideoOptions } from "@/lib/mcp/video-options";
 
 export const runtime = "nodejs";
 
@@ -101,6 +103,12 @@ const handler = createMcpHandler(
       "download_video",
       { title: "Download video", description: "ลิงก์ดาวน์โหลดวิดีโอ (ถ้าเรนเดอร์เสร็จแล้ว)", inputSchema: { videoId: z.string().min(1) } },
       async (args, extra) => runTool("download_video", extra, async (p) => downloadVideoTool(p.userId, args.videoId), args),
+    );
+
+    server.registerTool(
+      "get_video_options",
+      { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
+      async (_args, extra) => runTool("get_video_options", extra, async (p) => getVideoOptions(pipelineCaller(p.userId), p.user)),
     );
 
     server.registerTool(
