@@ -52,7 +52,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
     const baseCaptions = capRes.captions as OrchCaption[];
     const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
-      ? cardsByWordCount(capRes.words as { word: string; startMs: number; endMs: number }[], parseInt(input.subtitleMode))
+      ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
       : baseCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
 

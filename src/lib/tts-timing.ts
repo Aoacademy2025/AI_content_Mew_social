@@ -36,7 +36,7 @@ export interface TtsTiming {
   silences?: number[] | null;
 }
 
-export interface TimedWord { word: string; startMs: number; endMs: number }
+export interface TimedWord { word: string; startMs: number; endMs: number; startChar: number; endChar: number }
 
 export interface TimedCaption {
   text: string;
@@ -352,6 +352,8 @@ export function buildWordsFromTiming(timing: TtsTiming, fullText: string): Timed
     word: t.word,
     startMs: clock.startOf(t.startChar),
     endMs: clock.endOf(t.endChar - 1),
+    startChar: t.startChar,
+    endChar: t.endChar,
   }));
   return enforceMonotonic(words, clock.totalMs);
 }

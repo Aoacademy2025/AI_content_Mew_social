@@ -85,25 +85,22 @@ export function buildConfigPayload(
 
 export const POSITION_TOP_PERCENT = { top: 12, middle: 45, bottom: 78 } as const;
 
-// Join word tokens into a card. Thai is written WITHOUT inter-word spaces, so a plain
-// join(" ") inserts ugly spaces between every Thai word ("คำ คำ คำ"). Glue Thai tokens
-// directly; only put a space where a Latin/numeric token meets its neighbour (e.g. "พิมพ์ HERO ไว้").
-function joinCardWords(tokens: string[]): string {
-  let s = "";
-  for (let i = 0; i < tokens.length; i++) {
-    if (i > 0 && (/[A-Za-z0-9]$/.test(tokens[i - 1]) || /^[A-Za-z0-9]/.test(tokens[i]))) s += " ";
-    s += tokens[i];
-  }
-  return s;
-}
+type CharWord = { word: string; startMs: number; endMs: number; startChar: number; endChar: number };
 
-/** Regroup word-timed tokens into cards of exactly N words (last card = remainder). */
-export function cardsByWordCount(words: { word: string; startMs: number; endMs: number }[], n: number): OrchCaption[] {
+/**
+ * Regroup word-timed tokens into cards of exactly N words (last card = remainder).
+ * Card text is SLICED from the original `fullText` (preserving exact spacing — Thai has no
+ * inter-word spaces, "ๆ"/script spaces stay as written) instead of re-joining tokens, which
+ * would either lose or fabricate spaces. Timing (startMs/endMs) is untouched, so subtitle↔audio
+ * sync is unchanged. `fullText` is the exact TTS-spoken text the word offsets index into.
+ */
+export function cardsByWordCount(words: CharWord[], n: number, fullText: string): OrchCaption[] {
   const out: OrchCaption[] = [];
   for (let i = 0; i < words.length; i += n) {
     const grp = words.slice(i, i + n);
     if (!grp.length) continue;
-    out.push({ text: joinCardWords(grp.map((w) => w.word)), startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs } as OrchCaption);
+    const text = fullText.slice(grp[0].startChar, grp[grp.length - 1].endChar).trim();
+    out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs } as OrchCaption);
   }
   return out;
 }
