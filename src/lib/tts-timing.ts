@@ -88,17 +88,48 @@ function thaiWordSegmenter(): WordSegmenter | null {
   return I.Segmenter ? new I.Segmenter("th", { granularity: "word" }) : null;
 }
 
+// Thai combining marks that bind to the consonant on their LEFT (sara
+// am/u/i/etc above-below vowels, tone marks, and thanthakhat ◌์). A word can
+// never START with one of these — they're always glued to a preceding base
+// char. Ranges: U+0E31 (mai han-akat), U+0E33 (sara am), U+0E34–U+0E3A
+// (above/below vowels + phinthu), U+0E47–U+0E4E (tone marks, thanthakhat,
+// nikhahit, yamakkan). U+0E4C is thanthakhat (◌์) specifically.
+const THAI_GARAN = "์"; // ◌์ thanthakhat — silences the preceding consonant, always word-final
+function isThaiLeftBindingMark(ch: string): boolean {
+  const c = ch.charCodeAt(0);
+  return c === 0x0e31 || (c >= 0x0e33 && c <= 0x0e3a) || (c >= 0x0e47 && c <= 0x0e4e);
+}
+
+// Reject a segmenter boundary that lands somewhere a Thai word can't begin.
+// Intl.Segmenter("th", {granularity:"word"}) mis-splits loanwords: it breaks
+// "คอมเมนต์" (comment) into "คอม | เมน | ต์", emitting a boundary right before
+// the garan cluster "ต์" (ต + ◌์). Cutting there orphans "ต์" — a silent,
+// always-word-final cluster — onto the next card. We drop any boundary that
+//   (a) starts on a left-binding combining mark (incl. ◌์), or
+//   (b) starts on a consonant immediately followed by ◌์ — a garan cluster.
+// Dropping (b)'s boundary keeps the cluster attached to the prior token (the
+// segmenter still has a real boundary before it, e.g. before "เมน"), so the
+// loanword stays whole. Sentinels (start 0, end == length) are never filtered.
+function isValidThaiWordStart(fullText: string, index: number): boolean {
+  if (index <= 0 || index >= fullText.length) return true;
+  const ch = fullText[index];
+  if (isThaiLeftBindingMark(ch)) return false; // (a)
+  if (fullText[index + 1] === THAI_GARAN) return false; // (b) consonant + ◌์ garan cluster
+  return true;
+}
+
 // Word-boundary positions of the FULL text, from the same segmenter that
 // drives the word timeline — the single source of truth for where a cut is
 // allowed. Tokenizing a truncated window instead is how "โมเดลธุ|รกิจ" cuts
 // happened: Thai segmentation is context-dependent, so boundaries must come
-// from the whole string, never a slice.
+// from the whole string, never a slice. Boundaries the segmenter places inside
+// a Thai garan/combining cluster are dropped (see isValidThaiWordStart).
 function wordBoundaries(fullText: string): number[] {
   const seg = thaiWordSegmenter();
   if (!seg) return [];
   const out: number[] = [0];
   for (const tok of seg.segment(fullText)) {
-    if (tok.index > 0) out.push(tok.index);
+    if (tok.index > 0 && isValidThaiWordStart(fullText, tok.index)) out.push(tok.index);
   }
   out.push(fullText.length);
   return out;

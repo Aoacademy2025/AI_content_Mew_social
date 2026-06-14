@@ -65,5 +65,7 @@ assert(SERVER_INSTRUCTIONS.includes("คิดเงินตามจำนว�
 assert(SERVER_INSTRUCTIONS.includes("ใช้ avatar กี่วินาที") && SERVER_INSTRUCTIONS.includes("default 5"), "avatar step: must ask seconds, default 5");
 assert(SERVER_INSTRUCTIONS.includes("ต้องถามจริงทุกครั้งว่า") && SERVER_INSTRUCTIONS.includes("ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile"), "BGM step: must ask + must actually send bgmFile");
 assert(SERVER_INSTRUCTIONS.includes("อย่าสรุปว่า key เสีย"), "elevenlabs: voices-list failure ≠ key broken");
+// batch4: forbid silently defaulting — must really ask the 3 mandatory questions
+assert(SERVER_INSTRUCTIONS.includes("ห้ามตั้งค่า default เองเงียบ") && SERVER_INSTRUCTIONS.includes("3 ข้อบังคับ"), "wizard: forbid silent defaults, 3 mandatory questions");
 
 console.log(`\n${passed} assertions passed ✅`);
