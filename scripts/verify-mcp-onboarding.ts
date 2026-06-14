@@ -58,4 +58,7 @@ const noav = missingAvatarError();
 assert(noav.error === "missing_avatar" && noav.message.includes("avatarId"),
   "missing_avatar explains how to set/pass an avatarId");
 
+assert(SERVER_INSTRUCTIONS.includes("get_video_options"), "instructions reference get_video_options (wizard)");
+assert(SERVER_INSTRUCTIONS.includes("ห้ามสัญญาว่าจะแจ้งเตือน"), "instructions forbid promising auto-notify");
+
 console.log(`\n${passed} assertions passed ✅`);

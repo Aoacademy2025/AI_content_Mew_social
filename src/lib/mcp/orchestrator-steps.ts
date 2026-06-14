@@ -83,9 +83,23 @@ export function buildConfigPayload(
   };
 }
 
-export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], audioDurationMs: number, fps: number = RENDER_FPS) {
+export const POSITION_TOP_PERCENT = { top: 12, middle: 45, bottom: 78 } as const;
+
+/** Regroup word-timed tokens into cards of exactly N words (last card = remainder). */
+export function cardsByWordCount(words: { word: string; startMs: number; endMs: number }[], n: number): OrchCaption[] {
+  const out: OrchCaption[] = [];
+  for (let i = 0; i < words.length; i += n) {
+    const grp = words.slice(i, i + n);
+    if (!grp.length) continue;
+    out.push({ text: grp.map((w) => w.word).join(" "), startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs } as OrchCaption);
+  }
+  return out;
+}
+
+export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], audioDurationMs: number, fps: number = RENDER_FPS, topPercent?: number) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd);
+  const resolvedTop = topPercent ?? DEFAULT_STYLE.subtitlePosition;
   const keywordPopups = captions.map((c) => ({
     text: c.text,
     start: Math.round((c.startMs / 1000) * fps),
@@ -95,7 +109,7 @@ export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], a
     color: c.tag === "hook" ? DEFAULT_STYLE.subtitleAccentColor : DEFAULT_STYLE.subtitleColor,
     accentColor: DEFAULT_STYLE.subtitleAccentColor,
     fontWeight: DEFAULT_STYLE.subtitleFontWeight,
-    topPercent: DEFAULT_STYLE.subtitlePosition,
+    topPercent: resolvedTop,
     size: DEFAULT_STYLE.subtitleSize,
     stylePreset: DEFAULT_STYLE.subtitleStylePreset,
   }));

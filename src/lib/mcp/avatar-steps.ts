@@ -2,7 +2,19 @@ import { missingKeyError, missingAvatarError } from "@/lib/mcp/onboarding";
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
-export const AVATAR_LAYOUT = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+// HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
+export const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+// Composite layer default (how the avatar overlays the bg frame). scale 1 = fill frame.
+export const DEFAULT_AVATAR_LAYER = { scale: 1, offsetX: 0, offsetY: 0 } as const;
+
+function clampLayer(scale: unknown, ox: unknown, oy: unknown) {
+  const s = Number(scale), x = Number(ox), y = Number(oy);
+  return {
+    scale: Number.isFinite(s) ? Math.min(2.5, Math.max(0.1, s)) : 1,
+    offsetX: Number.isFinite(x) ? Math.min(2, Math.max(-2, x)) : 0,
+    offsetY: Number.isFinite(y) ? Math.min(2, Math.max(-2, y)) : 0,
+  };
+}
 
 export function clampSecs(v: unknown, fallback: number): number {
   const n = Math.round(Number(v));
@@ -10,14 +22,14 @@ export function clampSecs(v: unknown, fallback: number): number {
   return Math.min(30, Math.max(1, n));
 }
 
-type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number };
+type AvatarArgs = { avatarMode?: string; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number; avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number };
 type AvatarUser = { heygenKey: string | null; heygenAvatarId: string | null };
 type ErrPayload = { error: string; message: string };
 
 export type AvatarResolution =
   | { kind: "none" }
   | { kind: "error"; payload: ErrPayload }
-  | { kind: "ok"; avatarMode: "full" | "bookend" | "bookend-both"; avatarId: string; introSecs: number; tailSecs: number };
+  | { kind: "ok"; avatarMode: "full" | "bookend" | "bookend-both"; avatarId: string; introSecs: number; tailSecs: number; scale: number; offsetX: number; offsetY: number };
 
 export function resolveAvatarRequest(args: AvatarArgs, user: AvatarUser): AvatarResolution {
   const mode = args.avatarMode ?? "none";
@@ -27,7 +39,8 @@ export function resolveAvatarRequest(args: AvatarArgs, user: AvatarUser): Avatar
   if (!user.heygenKey) return { kind: "error", payload: missingKeyError("heygen") };
   const avatarId = args.avatarId ?? user.heygenAvatarId ?? "";
   if (!avatarId) return { kind: "error", payload: missingAvatarError() };
-  return { kind: "ok", avatarMode: mode, avatarId, introSecs: clampSecs(args.avatarIntroSecs, 5), tailSecs: clampSecs(args.avatarTailSecs, 5) };
+  const { scale, offsetX, offsetY } = clampLayer(args.avatarScale ?? 1, args.avatarOffsetX ?? 0, args.avatarOffsetY ?? 0);
+  return { kind: "ok", avatarMode: mode, avatarId, introSecs: clampSecs(args.avatarIntroSecs, 5), tailSecs: clampSecs(args.avatarTailSecs, 5), scale, offsetX, offsetY };
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +70,7 @@ export async function pollAvatar(
 async function generateAvatar(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<string> {
   const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
     audioUrl, avatarId, greenScreen: true,
-    scale: AVATAR_LAYOUT.scale, offsetX: AVATAR_LAYOUT.offsetX, offsetY: AVATAR_LAYOUT.offsetY,
+    scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
   });
   return g.videoId;
 }
@@ -69,6 +82,7 @@ export interface AvatarComposeOpts {
   avatarId: string;
   introSecs: number;
   tailSecs: number;
+  layout?: { scale: number; offsetX: number; offsetY: number };
   sleep?: (ms: number) => Promise<void>;
   onStep?: (label: string) => void;
 }
@@ -105,7 +119,7 @@ export async function runAvatarComposite(
     avatarTiming: o.avatarMode,
     avatarBookendSecs: o.introSecs,
     avatarTailSecs: o.tailSecs,
-    avatarLayout: AVATAR_LAYOUT,
+    avatarLayout: o.layout ?? DEFAULT_AVATAR_LAYER,
   });
   return { compositeUrl: c.videoUrl, avatarUrl: introUrl, tailAvatarUrl };
 }

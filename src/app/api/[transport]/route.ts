@@ -14,6 +14,8 @@ import { prisma } from "@/lib/prisma";
 import { createVideoJob } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
+import { pipelineCaller } from "@/lib/mcp/pipeline-client";
+import { getVideoOptions } from "@/lib/mcp/video-options";
 
 export const runtime = "nodejs";
 
@@ -104,6 +106,12 @@ const handler = createMcpHandler(
     );
 
     server.registerTool(
+      "get_video_options",
+      { title: "Get video options", description: "ตัวเลือกจริงสำหรับสร้างวิดีโอ: เพลง/avatar/เสียง/โหมดซับ — ใช้ตอนไกด์ผู้ใช้", inputSchema: {} },
+      async (_args, extra) => runTool("get_video_options", extra, async (p) => getVideoOptions(pipelineCaller(p.userId), p.user)),
+    );
+
+    server.registerTool(
       "create_video_job",
       {
         title: "Create video job",
@@ -117,6 +125,13 @@ const handler = createMcpHandler(
           avatarId: z.string().optional(),
           avatarIntroSecs: z.number().int().min(1).max(30).optional(),
           avatarTailSecs: z.number().int().min(1).max(30).optional(),
+          avatarScale: z.number().min(0.1).max(2.5).optional(),
+          avatarOffsetX: z.number().min(-2).max(2).optional(),
+          avatarOffsetY: z.number().min(-2).max(2).optional(),
+          bgmFile: z.string().optional(),
+          bgmVolume: z.number().min(0).max(1).optional(),
+          subtitleMode: z.enum(["sentence","1","2","3","4"]).optional(),
+          subtitlePosition: z.enum(["top","middle","bottom"]).optional(),
           idempotencyKey: z.string().max(120).optional(),
         },
       },
@@ -129,7 +144,8 @@ const handler = createMcpHandler(
           if (!u.geminiKey) return missingKeyError("gemini");
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
           const avatar = resolveAvatarRequest(
-            { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs },
+            { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,
+              avatarScale: args.avatarScale, avatarOffsetX: args.avatarOffsetX, avatarOffsetY: args.avatarOffsetY },
             u,
           );
           if (avatar.kind === "error") return avatar.payload;
@@ -145,12 +161,17 @@ const handler = createMcpHandler(
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
                 ...(avatar.kind === "ok"
-                  ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs }
+                  ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
+                      avatarScale: avatar.scale, avatarOffsetX: avatar.offsetX, avatarOffsetY: avatar.offsetY }
                   : {}),
+                ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
+                ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
+                ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
               },
               args.idempotencyKey,
             );
-            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว — เช็คด้วย get_video_status" };
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
+              nextStep: avatar.kind === "ok" ? "avatar ใช้เวลา ~10–20 นาที — เช็คด้วย get_video_status เป็นระยะ (อย่าถี่กว่าทุก ~1–2 นาที)" : "วิดีโอปกติ ~2–4 นาที — เช็คด้วย get_video_status เป็นระยะ" };
           } catch (e) {
             if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
             throw e; // real DB error → runTool catch audits "error" + returns internal_error
