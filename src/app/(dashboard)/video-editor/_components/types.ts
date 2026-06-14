@@ -35,6 +35,12 @@ export interface StockVideo {
   videoUrl:  string;
   duration:  number;
   pexelsId:  number;
+  title?: string;
+  query?: string;
+  provider?: "pexels" | "pixabay";
+  contentProfile?: string;
+  selectionReason?: string;
+  relevanceScore?: number;
 }
 
 export interface PipelineData {
@@ -45,6 +51,7 @@ export interface PipelineData {
   sceneClipCounts:        number[];
   sceneDurations:         number[];
   visualDirection:        string;
+  contentProfile:         string;
   stockVideos:            StockVideo[];
   voiceUrl:               string;
   captions:               Caption[];
@@ -106,6 +113,7 @@ export interface EditorDraft {
   sceneDurations?: number[];
   scenes?: string[];
   visualDirection?: string;
+  contentProfile?: string;
   stockVideos?: StockVideo[];
   config?: unknown;
 

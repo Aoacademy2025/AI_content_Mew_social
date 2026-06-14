@@ -6,6 +6,15 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
+import {
+  contentProfilePromptBlock,
+  detectContentProfile,
+  fallbackQueriesForProfile,
+  normalizeContentProfile,
+  positiveTermsForProfile,
+  rejectTermsForProfile,
+  type ContentProfile,
+} from "@/lib/broll-profile";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -32,6 +41,36 @@ const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 
 // a SIGKILL'd encode must not be the common case (override via env, max 600s).
 const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 300_000, 30_000, 600_000);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
+
+type StockProvider = "pexels" | "pixabay";
+
+type FoundVideo = {
+  keyword: string;
+  id: number;
+  duration: number;
+  link: string;
+  title?: string;
+  query?: string;
+  provider?: StockProvider;
+  contentProfile?: ContentProfile;
+  selectionReason?: string;
+  relevanceScore?: number;
+};
+
+type CandidateVideo = FoundVideo & {
+  title: string;
+  query: string;
+  provider: StockProvider;
+};
+
+type PixabayVideo = { id: number; duration: number; videoUrl: string; tags?: string };
+
+type CandidateFit = {
+  index: number;
+  score: number;
+  rejectReason?: string;
+  isRelevant: boolean;
+};
 
 let activeNormalizations = 0;
 const normalizeWaiters: (() => void)[] = [];
@@ -257,7 +296,7 @@ async function downloadAndCrop(url: string, outPath: string): Promise<void> {
 }
 
 // Search Pixabay for portrait videos
-async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<{ id: number; duration: number; videoUrl: string; tags: string }[]> {
+async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<PixabayVideo[]> {
   const params = new URLSearchParams({
     key: pixabayKey,
     q: query,
@@ -274,7 +313,106 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
     duration: h.duration,
     videoUrl: h.videos?.large?.url ?? h.videos?.medium?.url ?? "",
     tags: (h.tags ?? "").slice(0, 60),
-  })).filter((v: { videoUrl: string }) => v.videoUrl);
+  })).filter((v: PixabayVideo) => v.videoUrl);
+}
+
+const TOKEN_STOPWORDS = new Set([
+  "with", "from", "this", "that", "into", "over", "under", "close", "shot", "video",
+  "person", "people", "woman", "man", "young", "old", "new", "dark", "light", "slow",
+  "motion", "view", "scene", "background",
+]);
+
+function tokenizeForRelevance(text: string): string[] {
+  return (text ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2 && !TOKEN_STOPWORDS.has(token));
+}
+
+function includesTerm(text: string, term: string): boolean {
+  const cleanTerm = term.trim().toLowerCase();
+  if (!cleanTerm) return false;
+  return new RegExp(`(^|[^a-z0-9])${cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(text);
+}
+
+function scoreCandidate(
+  candidate: CandidateVideo,
+  keyword: string,
+  subtitleText: string,
+  contentProfile: ContentProfile,
+): CandidateFit {
+  const titleText = `${candidate.title} ${candidate.query}`.toLowerCase();
+  const contextText = `${keyword} ${subtitleText}`.toLowerCase();
+  const titleTokens = new Set(tokenizeForRelevance(titleText));
+  const contextTokens = new Set(tokenizeForRelevance(`${keyword} ${subtitleText}`));
+
+  let score = 0;
+  for (const token of contextTokens) {
+    if (titleTokens.has(token)) score += 2;
+  }
+
+  for (const term of positiveTermsForProfile(contentProfile)) {
+    if (includesTerm(titleText, term)) score += 1;
+  }
+
+  let rejectReason: string | undefined;
+  for (const term of rejectTermsForProfile(contentProfile)) {
+    if (includesTerm(titleText, term) && !includesTerm(contextText, term)) {
+      rejectReason = term;
+      score -= 6;
+      break;
+    }
+  }
+
+  const isRelevant = !rejectReason && (
+    contentProfile === "general" ||
+    score > 0 ||
+    contextTokens.size > 0 && [...contextTokens].some((token) => titleTokens.has(token))
+  );
+
+  return {
+    index: -1,
+    score,
+    rejectReason,
+    isRelevant,
+  };
+}
+
+function orderCandidateIndices(
+  candidates: CandidateVideo[],
+  preferredIndex: number,
+  keyword: string,
+  subtitleText: string,
+  contentProfile: ContentProfile,
+  allowNeutral = false,
+): CandidateFit[] {
+  const fits = candidates.map((candidate, index) => ({
+    ...scoreCandidate(candidate, keyword, subtitleText, contentProfile),
+    index,
+  }));
+
+  const relevant = fits
+    .filter((fit) => fit.isRelevant || (allowNeutral && !fit.rejectReason))
+    .sort((a, b) => {
+      if (a.index === preferredIndex) return -1;
+      if (b.index === preferredIndex) return 1;
+      const scoreDiff = b.score - a.score;
+      if (scoreDiff !== 0) return scoreDiff;
+      return (candidates[b.index]?.duration ?? 0) - (candidates[a.index]?.duration ?? 0);
+    });
+
+  return relevant;
+}
+
+function bestRelevantCandidateIndex(
+  candidates: CandidateVideo[],
+  keyword: string,
+  subtitleText: string,
+  contentProfile: ContentProfile,
+): number {
+  return orderCandidateIndices(candidates, -1, keyword, subtitleText, contentProfile, false)[0]?.index ?? -1;
 }
 
 // LLM rank: given subtitle texts and candidate titles per keyword,
@@ -288,6 +426,7 @@ async function llmRankBatch(
   candidateTitles: string[][],
   llmKey: string,
   visualDirection?: string,
+  contentProfile: ContentProfile = "general",
 ): Promise<number[]> {
   const lines = keywords.map((kw, ki) => {
     const sub = subtitleTexts[ki] ?? kw;
@@ -298,26 +437,28 @@ async function llmRankBatch(
   const directionLine = visualDirection
     ? `\nVIDEO DIRECTION: ${visualDirection}\nPrioritize candidates that match this overall visual tone/theme.\n`
     : "";
+  const profileLine = `\n${contentProfilePromptBlock(contentProfile)}\nReject candidates outside this profile.\n`;
 
-  const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content AND the overall video direction.
+  const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content, content profile, and overall video direction.
 ${directionLine}
+${profileLine}
 RULES:
 - Output ONLY a JSON array of integers, one per subtitle, same order
 - Pick the index whose title most literally matches what is described in the subtitle
+- Return -1 if none of the candidate titles reasonably match the subtitle and content profile
 - Prefer candidates that fit the VIDEO DIRECTION tone (mood, setting, energy)
 - Prefer concrete, specific matches over generic ones
-- If no candidate fits well, pick index 0
 
 ${lines.join("\n")}
 
-OUTPUT (JSON array of ${keywords.length} integers):`;
+OUTPUT (JSON array of ${keywords.length} integers; values may be -1):`;
 
   // max_tokens: each integer + comma is ~3 tokens; 10 tokens overhead
   const maxTokens = Math.max(128, keywords.length * 4 + 20);
   const text = await geminiGenerateText(llmKey, prompt, maxTokens, 0);
 
   let parsed: unknown[] = [];
-  const arrMatch = text.match(/\[[\d,\s]+\]/);
+  const arrMatch = text.match(/\[[\d,\s-]+\]/);
   if (arrMatch) {
     parsed = JSON.parse(arrMatch[0]);
   } else {
@@ -330,14 +471,15 @@ OUTPUT (JSON array of ${keywords.length} integers):`;
   }
 
   if (parsed.length !== keywords.length) {
-    console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using longest-duration fallback`);
-    return keywords.map(() => 0);
+    console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using profile fallback`);
+    return keywords.map(() => -1);
   }
 
   return parsed.map((v, i) => {
     const n = typeof v === "number" ? v : parseInt(String(v), 10);
     const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
-    return isNaN(n) ? 0 : Math.max(0, Math.min(n, maxIdx));
+    if (isNaN(n) || n < 0) return -1;
+    return Math.min(n, maxIdx);
   });
 }
 
@@ -347,13 +489,14 @@ async function llmRankCandidates(
   candidateTitles: string[][],
   llmKey: string,
   visualDirection?: string,
+  contentProfile: ContentProfile = "general",
 ): Promise<number[]> {
   if (keywords.length <= RANK_BATCH_SIZE) {
-    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection);
+    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, contentProfile);
   }
 
   // Split into chunks and call sequentially to avoid LLM output-length limits
-  const results: number[] = new Array(keywords.length).fill(0);
+  const results: number[] = new Array(keywords.length).fill(-1);
   for (let start = 0; start < keywords.length; start += RANK_BATCH_SIZE) {
     const end = Math.min(start + RANK_BATCH_SIZE, keywords.length);
     const chunkKws = keywords.slice(start, end);
@@ -361,13 +504,13 @@ async function llmRankCandidates(
     const chunkTitles = candidateTitles.slice(start, end);
     console.log(`[fetch-stock] LLM ranking chunk ${start}-${end - 1} of ${keywords.length}`);
     try {
-      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection);
+      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, contentProfile);
       for (let i = 0; i < chunkResult.length; i++) {
         results[start + i] = chunkResult[i];
       }
     } catch (e) {
       console.warn(`[fetch-stock] LLM chunk ${start}-${end - 1} failed:`, e);
-      // Keep default 0 for this chunk
+      // Keep default -1 for this chunk so selection uses profile fallback.
     }
   }
   return results;
@@ -392,6 +535,7 @@ export async function POST(req: Request) {
     perSubtitleMode: perSubtitleFlag = false,
     fullScript,
     visualDirection,
+    contentProfile,
   }: {
     keywords: string[];
     keywordAlternatives?: string[][];
@@ -403,7 +547,15 @@ export async function POST(req: Request) {
     perSubtitleMode?: boolean;
     fullScript?: string;
     visualDirection?: string;
+    contentProfile?: string;
   } = body ?? {};
+  const resolvedContentProfile = normalizeContentProfile(
+    contentProfile || detectContentProfile([
+      fullScript,
+      ...(Array.isArray(subtitleTexts) ? subtitleTexts : []),
+      ...(Array.isArray(keywords) ? keywords : []),
+    ].filter(Boolean).join(" "))
+  );
 
   const usePexels = stockSource === "pexels" || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
@@ -494,6 +646,10 @@ export async function POST(req: Request) {
     page2CandidateHits: 0,
     llmRankingUsed: false,
     llmRankingFailed: false,
+    llmRejectedCount: 0,
+    candidateRejectedCount: 0,
+    profileFallbackUsedCount: 0,
+    forcedFallbackCount: 0,
     foundCount: 0,
     cappedCount: 0,
     selectedPexelsCount: 0,
@@ -529,6 +685,7 @@ export async function POST(req: Request) {
       properties: {
         stockSource,
         resolvedSource: srcLabel,
+        contentProfile: resolvedContentProfile,
         download,
         keywordCount: keywords.length,
         subtitleCount,
@@ -572,11 +729,123 @@ export async function POST(req: Request) {
     videoUrl: string;
     localPath?: string;
     localUrl?: string;
+    title?: string;
+    query?: string;
+    provider?: StockProvider;
+    contentProfile?: ContentProfile;
+    selectionReason?: string;
+    relevanceScore?: number;
   }[] = [];
 
   const usedIds = new Set<number>();
   // eslint-disable-next-line prefer-const
   let stockProviderError = null as ProviderError | null; // จับ invalid_key ไว้รายงานตอนท้าย — เดิมถูกกลืนเงียบ
+
+  async function searchCandidatesForQuery(query: string, keyword: string, perPage = 30): Promise<CandidateVideo[]> {
+    stockTelemetry.searchQueries++;
+    const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
+      canUsePexels
+        ? searchPexels(query, pexelsKey!, 3, perPage)
+        : Promise.resolve([] as PexelsVideo[]),
+      canUsePixabay
+        ? searchPixabay(query, pixabayKey!)
+        : Promise.resolve([] as PixabayVideo[]),
+    ]);
+
+    for (const settled of [pexelsRaw, pixabayRaw]) {
+      if (settled.status === "rejected" && isProviderError(settled.reason) && !stockProviderError) {
+        stockProviderError = settled.reason;
+      }
+    }
+
+    const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
+    const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+    stockTelemetry.pexelsCandidates += pexelsVideos.length;
+    stockTelemetry.pixabayCandidates += pixabayVideos.length;
+
+    const candidates: CandidateVideo[] = [];
+    for (const v of pexelsVideos) {
+      const file = pickBestFile(v);
+      if (!file) continue;
+      candidates.push({
+        keyword,
+        id: v.id,
+        duration: v.duration,
+        link: file.link,
+        title: slugToTitle(v.url ?? ""),
+        query,
+        provider: "pexels",
+      });
+    }
+    for (const pv of pixabayVideos) {
+      const title = pv.tags ? pv.tags.split(",").slice(0, 4).map((t) => t.trim()).join(" ") : query;
+      candidates.push({
+        keyword,
+        id: pv.id + 9_000_000,
+        duration: pv.duration,
+        link: pv.videoUrl,
+        title,
+        query,
+        provider: "pixabay",
+      });
+    }
+
+    stockTelemetry.searchCandidatesTotal += candidates.length;
+    return candidates;
+  }
+
+  function addFoundClip(candidate: CandidateVideo, selectionReason: string, relevanceScore = 0): FoundVideo {
+    usedIds.add(candidate.id);
+    return {
+      keyword: candidate.keyword,
+      id: candidate.id,
+      duration: candidate.duration,
+      link: candidate.link,
+      title: candidate.title,
+      query: candidate.query,
+      provider: candidate.provider,
+      contentProfile: resolvedContentProfile,
+      selectionReason,
+      relevanceScore,
+    };
+  }
+
+  async function findProfileFallbackClip(keyword: string, keywordIndex: number, reason: string): Promise<FoundVideo | null> {
+    const subtitleText = Array.isArray(subtitleTexts) ? subtitleTexts[keywordIndex] ?? "" : "";
+    const words = keyword.split(/\s+/).filter(Boolean);
+    const queries = [
+      ...fallbackQueriesForProfile(resolvedContentProfile),
+      words.slice(0, 2).join(" "),
+      words[0],
+      words[words.length - 1],
+    ].filter((query, index, arr) => query && query !== keyword && arr.indexOf(query) === index);
+
+    for (const query of queries) {
+      try {
+        const fallbackCandidates = await searchCandidatesForQuery(query, keyword, 30);
+        if (!fallbackCandidates.length) continue;
+        const ordered = orderCandidateIndices(
+          fallbackCandidates,
+          -1,
+          keyword,
+          subtitleText,
+          resolvedContentProfile,
+          true,
+        );
+        stockTelemetry.candidateRejectedCount += fallbackCandidates.length - ordered.length;
+        for (const fit of ordered) {
+          const candidate = fallbackCandidates[fit.index];
+          if (!candidate || usedIds.has(candidate.id)) continue;
+          stockTelemetry.profileFallbackUsedCount++;
+          return addFoundClip(candidate, `${reason}:profile-fallback:${query}`, fit.score);
+        }
+      } catch {
+        // Ignore failed fallback query and try the next profile-safe option.
+      }
+    }
+
+    return null;
+  }
 
   async function withConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
     const queue = [...items];
@@ -598,10 +867,6 @@ export async function POST(req: Request) {
     await Promise.all(workers);
     return results;
   }
-
-  type FoundVideo = { keyword: string; id: number; duration: number; link: string };
-  // Extended candidate that keeps Pexels URL slug for LLM ranking
-  type CandidateVideo = FoundVideo & { title: string };
 
   console.log(`[fetch-stock] source=${srcLabel}`);
 
@@ -633,7 +898,7 @@ export async function POST(req: Request) {
               : Promise.resolve([] as PexelsVideo[]),
             canUsePixabay
               ? searchPixabay(query, pixabayKey!)
-              : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
+              : Promise.resolve([] as PixabayVideo[]),
           ]);
 
           for (const settled of [pexelsRaw, pixabayRaw]) {
@@ -651,12 +916,12 @@ export async function POST(req: Request) {
             const file = pickBestFile(v);
             if (!file) continue;
             const title = slugToTitle(v.url ?? "");
-            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title });
+            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title, query, provider: "pexels" });
           }
-          for (const pv of pixabayVideos as { id: number; duration: number; videoUrl: string; tags?: string }[]) {
+          for (const pv of pixabayVideos) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
             const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 4).map((t: string) => t.trim()).join(" ") : query;
-            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle });
+            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle, query, provider: "pixabay" });
           }
 
           if (candidates.length > 0) {
@@ -677,7 +942,7 @@ export async function POST(req: Request) {
             for (const v of page2) {
               const file = pickBestFile(v);
               if (!file) continue;
-              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title: slugToTitle(v.url ?? "") });
+              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
             }
             if (candidates.length > 0) {
               stockTelemetry.searchCandidatesTotal += candidates.length;
@@ -700,7 +965,7 @@ export async function POST(req: Request) {
   );
 
   // ── LLM ranking phase (per-subtitle mode only, 1 batched call) ──
-  let bestIdxByKeyword: number[] = keywords.map(() => 0);
+  let bestIdxByKeyword: number[] = keywords.map(() => -1);
 
   if (isPerSubtitleMode && llmKey && subtitleTexts?.length === keywords.length) {
     const candidateTitles = candidatesByKeyword.map(cs => cs.map(c => c.title));
@@ -709,108 +974,153 @@ export async function POST(req: Request) {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, resolvedContentProfile);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
+        stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
       } catch (e) {
         stockTelemetry.llmRankingFailed = true;
-        console.error(`[fetch-stock] LLM ranking failed, falling back to best-duration pick:`, e);
-        // Fallback: pick candidate with longest duration (more content = better match than index 0)
-        bestIdxByKeyword = candidatesByKeyword.map(cs => {
-          let best = 0;
-          for (let i = 1; i < cs.length; i++) { if (cs[i].duration > cs[best].duration) best = i; }
-          return best;
-        });
+        console.error(`[fetch-stock] LLM ranking failed, falling back to profile relevance pick:`, e);
+        bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
+          bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts[i] ?? "", resolvedContentProfile)
+        );
+        stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
       }
     }
   } else if (isPerSubtitleMode) {
-    // No LLM key or subtitle texts mismatch — pick longest-duration candidate instead of index 0
-    bestIdxByKeyword = candidatesByKeyword.map(cs => {
-      let best = 0;
-      for (let i = 1; i < cs.length; i++) { if (cs[i].duration > cs[best].duration) best = i; }
-      return best;
-    });
-    if (!llmKey) console.warn(`[fetch-stock] no LLM key — using longest-duration fallback`);
+    // No LLM key or subtitle texts mismatch — pick best profile-relevant candidate instead of index 0.
+    bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
+      bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts?.[i] ?? "", resolvedContentProfile)
+    );
+    stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
+    if (!llmKey) console.warn(`[fetch-stock] no LLM key — using profile relevance fallback`);
   }
 
   // ── Pick phase — apply LLM choice first, then fill remaining slots, dedup globally ──
   const found: FoundVideo[] = [];
 
   for (let ki = 0; ki < keywords.length; ki++) {
-    const candidates = candidatesByKeyword[ki];
-    if (!candidates.length) continue;
+    const candidates = candidatesByKeyword[ki] ?? [];
+    const keyword = keywords[ki] ?? "";
+    const subtitleText = Array.isArray(subtitleTexts) ? subtitleTexts[ki] ?? "" : "";
 
     if (isPerSubtitleMode) {
-      // Per-subtitle: pick LLM-chosen index first, skip if already used, then try others
-      const rawPreferred = bestIdxByKeyword[ki] ?? 0;
-      const preferred = Math.max(0, Math.min(rawPreferred, candidates.length - 1));
-      const ordered = [
-        preferred,
-        ...candidates.map((_, i) => i).filter(i => i !== preferred),
-      ];
       let picked = false;
-      for (const idx of ordered) {
-        const c = candidates[idx];
-        if (!c || usedIds.has(c.id)) continue;
-        usedIds.add(c.id);
-        found.push({ keyword: c.keyword, id: c.id, duration: c.duration, link: c.link });
-        picked = true;
-        break; // 1 clip per subtitle
-      }
-      if (!picked) {
-        const kw = keywords[ki];
-        // Build progressively broader fallback queries
-        const words = kw.split(" ");
-        const broadFallbacks = [
-          words.slice(0, 2).join(" "),          // first 2 words
-          words[0],                              // first word only
-          words[words.length - 1],              // last word (often the noun)
-          "people city street",                 // generic human activity
-          "nature landscape aerial",            // generic nature
-          "technology abstract dark",           // generic tech
-        ].filter((q, i, a) => q && q !== kw && a.indexOf(q) === i);
 
-        for (const fbQuery of broadFallbacks) {
-          if (picked) break;
-          try {
-            const [fbPexels, fbPixabay] = await Promise.all([
-              canUsePexels ? searchPexels(fbQuery, pexelsKey!, 3, 30) : Promise.resolve([] as PexelsVideo[]),
-              canUsePixabay ? searchPixabay(fbQuery, pixabayKey!) : Promise.resolve([] as { id: number; duration: number; videoUrl: string }[]),
-            ]);
-            // Try page 2 of Pexels for more variety if page 1 all used
-            const fbPexels2 = canUsePexels && fbPexels.every(v => usedIds.has(v.id))
-              ? await searchPexels(fbQuery, pexelsKey!, 3, 30).catch(() => [] as PexelsVideo[])
-              : [];
-            const allPexels = [...fbPexels, ...fbPexels2];
-            for (const v of allPexels) {
-              const file = pickBestFile(v);
-              if (!file || usedIds.has(v.id)) continue;
-              usedIds.add(v.id);
-              found.push({ keyword: kw, id: v.id, duration: v.duration, link: file.link });
-              picked = true;
-              break;
-            }
-            if (!picked) {
-              for (const pv of fbPixabay) {
-                if (usedIds.has(pv.id + 9_000_000)) continue;
-                usedIds.add(pv.id + 9_000_000);
-                found.push({ keyword: kw, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl });
-                picked = true;
-                break;
-              }
-            }
-          } catch { /* ignore, try next fallback */ }
+      if (candidates.length) {
+        const rawPreferred = bestIdxByKeyword[ki] ?? -1;
+        const preferred = rawPreferred >= 0 && rawPreferred < candidates.length ? rawPreferred : -1;
+        const strictOrder = orderCandidateIndices(
+          candidates,
+          preferred,
+          keyword,
+          subtitleText,
+          resolvedContentProfile,
+          false,
+        );
+        const neutralOrder = orderCandidateIndices(
+          candidates,
+          preferred,
+          keyword,
+          subtitleText,
+          resolvedContentProfile,
+          true,
+        );
+        stockTelemetry.candidateRejectedCount += Math.max(0, candidates.length - neutralOrder.length);
+
+        for (const fit of strictOrder) {
+          const c = candidates[fit.index];
+          if (!c || usedIds.has(c.id)) continue;
+          found.push(addFoundClip(c, fit.index === preferred ? "llm-profile-match" : "profile-match", fit.score));
+          picked = true;
+          break; // 1 clip per subtitle
         }
-        if (!picked) console.warn(`[fetch-stock] "${kw}": no unique clip found after all fallbacks`);
+
+        if (!picked) {
+          const fallback = await findProfileFallbackClip(
+            keyword,
+            ki,
+            preferred < 0 ? "llm-reject" : "candidate-reject",
+          );
+          if (fallback) {
+            found.push(fallback);
+            picked = true;
+          }
+        }
+
+        if (!picked) {
+          for (const fit of neutralOrder) {
+            const c = candidates[fit.index];
+            if (!c || usedIds.has(c.id)) continue;
+            found.push(addFoundClip(c, "neutral-after-profile-fallback", fit.score));
+            picked = true;
+            break;
+          }
+        }
+
+        if (!picked) {
+          const remaining = [...candidates]
+            .filter((candidate) => !usedIds.has(candidate.id))
+            .sort((a, b) => b.duration - a.duration);
+          const forced = remaining[0];
+          if (forced) {
+            stockTelemetry.forcedFallbackCount++;
+            found.push(addFoundClip(forced, "forced-original-after-profile-fallback", 0));
+            picked = true;
+          }
+        }
+      } else {
+        const fallback = await findProfileFallbackClip(keyword, ki, "no-candidates");
+        if (fallback) {
+          found.push(fallback);
+          picked = true;
+        }
       }
+
+      if (!picked) console.warn(`[fetch-stock] "${keyword}": no unique clip found after profile-safe fallbacks`);
     } else {
       // Normal mode: pick up to clipsPerKeyword, interleave Pexels+Pixabay
       let picked = 0;
-      for (const c of candidates) {
+      const ordered = orderCandidateIndices(
+        candidates,
+        -1,
+        keyword,
+        subtitleText,
+        resolvedContentProfile,
+        true,
+      );
+      stockTelemetry.candidateRejectedCount += Math.max(0, candidates.length - ordered.length);
+
+      for (const fit of ordered) {
         if (picked >= clipsPerKeyword) break;
+        const c = candidates[fit.index];
+        if (!c) continue;
         if (usedIds.has(c.id)) continue;
-        usedIds.add(c.id);
-        found.push({ keyword: c.keyword, id: c.id, duration: c.duration, link: c.link });
+        found.push(addFoundClip(c, "normal-profile-match", fit.score));
         picked++;
+      }
+
+      if (picked < clipsPerKeyword) {
+        const fallback = await findProfileFallbackClip(
+          keyword,
+          ki,
+          candidates.length ? "normal-candidate-reject" : "normal-no-candidates",
+        );
+        if (fallback) {
+          found.push(fallback);
+          picked++;
+        }
+      }
+
+      if (picked < clipsPerKeyword) {
+        const remaining = [...candidates]
+          .filter((candidate) => !usedIds.has(candidate.id))
+          .sort((a, b) => b.duration - a.duration);
+        for (const c of remaining) {
+          if (picked >= clipsPerKeyword) break;
+          stockTelemetry.forcedFallbackCount++;
+          found.push(addFoundClip(c, "normal-forced-after-profile-filter", 0));
+          picked++;
+        }
       }
     }
   }
@@ -845,6 +1155,14 @@ export async function POST(req: Request) {
   stockTelemetry.cappedCount = clipsToDownload.length;
   stockTelemetry.selectedPexelsCount = clipsToDownload.filter((clip) => clip.id < 9_000_000).length;
   stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount;
+  const selectionDebugSample = clipsToDownload.slice(0, 10).map((clip) => ({
+    keyword: clip.keyword,
+    title: clip.title,
+    query: clip.query,
+    provider: clip.provider,
+    selectionReason: clip.selectionReason,
+    relevanceScore: clip.relevanceScore,
+  }));
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
   if (!clipsToDownload.length) {
     // หาคลิปไม่ได้เลยและสาเหตุคือ key ใช้ไม่ได้ — บอกผู้ใช้ตรง ๆ แทน results ว่าง
@@ -857,12 +1175,21 @@ export async function POST(req: Request) {
       const { body: errBody, status } = toErrorResponse(capturedStockErr);
       return NextResponse.json(errBody, { status });
     }
-    await recordFetchStockTelemetry("done", { emptyResult: true });
+    await recordFetchStockTelemetry("done", { emptyResult: true, selectionDebugSample });
     return NextResponse.json({ results: [] });
   }
 
   // ── Download phase ──
-  await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async ({ keyword, id, duration, link }) => {
+  await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async (clip) => {
+    const { keyword, id, duration, link } = clip;
+    const resultMeta = {
+      title: clip.title,
+      query: clip.query,
+      provider: clip.provider,
+      contentProfile: clip.contentProfile,
+      selectionReason: clip.selectionReason,
+      relevanceScore: clip.relevanceScore,
+    };
     if (download) {
       const outFile = `${userPrefix}${id}.mp4`;
       const outPath = path.join(rendersDir, outFile);
@@ -882,7 +1209,7 @@ export async function POST(req: Request) {
           console.warn(`[fetch-stock] dropped broken cached clip after normalize failure: ${outFile}`);
           return;
         }
-        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
+        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
         return;
       }
       console.log(`[fetch-stock] downloading: ${outFile}`);
@@ -911,18 +1238,18 @@ export async function POST(req: Request) {
           stockTelemetry.downloadFailCount++;
           return;
         }
-        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}` });
+        results.push({ keyword, pexelsId: id, duration, videoUrl: link, localPath: outPath, localUrl: `/api/stocks/${outFile}`, ...resultMeta });
       } catch (e) {
         stockTelemetry.downloadFailCount++;
         console.error(`[fetch-stock] failed to download ${outFile}:`, e);
       }
     } else {
-      results.push({ keyword, pexelsId: id, duration, videoUrl: link });
+      results.push({ keyword, pexelsId: id, duration, videoUrl: link, ...resultMeta });
     }
   });
 
   stockTelemetry.servedClipCount = results.length;
-  await recordFetchStockTelemetry("done");
+  await recordFetchStockTelemetry("done", { selectionDebugSample });
   console.log(`[fetch-stock] downloaded ${results.length} clips`);
   return NextResponse.json({ results });
 }

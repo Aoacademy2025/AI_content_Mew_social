@@ -648,7 +648,7 @@ function VideoOnlyDoc() {
           <li><b className="text-white">ดับเบิ้ลคลิก</b> → แก้ข้อความ</li>
           <li><b className="text-white">✂️ Split</b> (toolbar) → ตัด clip ที่ตำแหน่ง playhead</li>
           <li><b className="text-white">🗑️ Delete</b> (toolbar) → ลบ clip ที่ select</li>
-          <li><b className="text-white">🔍 Zoom slider</b> → ย่อ/ขยาย timeline 50-200% (200% = ละเอียดสุด)</li>
+          <li><b className="text-white">🔍 Zoom slider</b> → ย่อ/ขยาย timeline 0-100% (0% = ภาพรวม, 100% = ละเอียดสุด)</li>
         </ul>
 
         <InfoBox>เมื่อแก้ซับ → กด <b className="text-white">▶ Render</b> ใหม่ → ระบบจะ re-render เฉพาะ step Render (ประหยัด TTS/B-roll ที่ทำไว้แล้ว)</InfoBox>

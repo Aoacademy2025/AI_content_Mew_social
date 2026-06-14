@@ -38,6 +38,13 @@ export interface BrollVideo {
   end: number;         // timeline position: seconds from video start
   clipOffset?: number; // where inside the source clip to start playing (seconds, default 0)
   clipDuration?: number; // actual source clip duration in seconds (for Loop)
+  keyword?: string;
+  title?: string;
+  query?: string;
+  provider?: "pexels" | "pixabay";
+  contentProfile?: string;
+  selectionReason?: string;
+  relevanceScore?: number;
 }
 
 export type SubtitleStylePreset =
@@ -100,6 +107,9 @@ export interface SubtitleOverlayConfig {
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
   subtitleAccentColor?: string;
+  subtitleShadow?: boolean;
+  subtitleOutline?: boolean;
+  subtitleOutlineSize?: number;
   bgmFile?: string;
   bgmVolume?: number;
 }
@@ -117,6 +127,9 @@ export interface ShortVideoConfig {
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
   subtitleAccentColor?: string;
+  subtitleShadow?: boolean;
+  subtitleOutline?: boolean;
+  subtitleOutlineSize?: number;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */
