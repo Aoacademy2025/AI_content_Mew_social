@@ -38,6 +38,7 @@ export function buildStockPayload(
   captions: OrchCaption[],
   visualDirection?: string,
   keywordAlternatives?: string[][],
+  relevanceSpec?: unknown,
 ) {
   const perSubtitle = captions.length > 0 && captions.length === keywords.length;
   return {
@@ -49,6 +50,7 @@ export function buildStockPayload(
     ...(perSubtitle ? { perSubtitleMode: true, overrideClipCount: captions.length, subtitleTexts: captions.map((c) => c.text) } : {}),
     ...(visualDirection ? { visualDirection } : {}),
     ...(keywordAlternatives && keywordAlternatives.length ? { keywordAlternatives } : {}),
+    ...(relevanceSpec ? { relevanceSpec } : {}),
   };
 }
 
