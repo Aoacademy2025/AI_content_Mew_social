@@ -1156,6 +1156,7 @@ export default function VideoEditorPage() {
       pipe.current.sceneClipCounts = data.sceneClipCounts ?? [];
       pipe.current.sceneDurations = data.sceneDurations ?? [];
       pipe.current.visualDirection = data.visualDirection ?? "";
+      pipe.current.relevanceSpec = data.relevanceSpec ?? null;
       pipe.current.contentProfile = data.contentProfile ?? "";
       const totalClips = (data.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
       setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
@@ -1187,6 +1188,7 @@ export default function VideoEditorPage() {
           : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit }
           : targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+        ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
         ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
         ...(perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
