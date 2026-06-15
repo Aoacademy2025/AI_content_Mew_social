@@ -19,7 +19,7 @@ export async function GET(req: Request) {
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-  let res: Response;
+  let res: Response | undefined;
   let lastError: Error | null = null;
 
   // Retry logic: HeyGen can be slow/flaky
@@ -44,6 +44,13 @@ export async function GET(req: Request) {
         note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
       });
     }
+  }
+  if (!res) {
+    console.error("[avatar-info] No response after retries:", lastError?.message);
+    return NextResponse.json({
+      previewImageUrl: "", name: "", unverified: true,
+      note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
+    });
   }
   console.log(`[avatar-info] Got response status: ${res.status}`);
   if (res.status === 401 || res.status === 403) {

@@ -393,6 +393,9 @@ export function AnimatedSubtitle({
   captionDurFrames,
   textEffect = "pop",
   accentColor = "#FFE500",
+  shadow = false,
+  outline = false,
+  outlineSize = 2,
 }: {
   popup: NonNullable<ShortVideoConfig["keywordPopups"]>[number];
   preset: SubtitleStylePreset;
@@ -400,6 +403,9 @@ export function AnimatedSubtitle({
   captionDurFrames: number;
   textEffect?: SubtitleTextEffect;
   accentColor?: string;
+  shadow?: boolean;
+  outline?: boolean;
+  outlineSize?: number;
 }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -489,7 +495,11 @@ export function AnimatedSubtitle({
             side, leaving only 60% usable → captions that fit on one line in the
             preview wrapped to two lines in the burned MP4. */}
         <div style={{ width: "92%", textAlign: "center", display: "flex", justifyContent: "center", alignItems: "center" }}>
-          {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900, frame, captionDurFrames, textEffect, popup.accentColor ?? accentColor)}
+          {renderSubtitle(popup.text, popup.color, popup.size, popup.isHighlight, preset, resolvedFont, popup.fontWeight ?? 900, frame, captionDurFrames, textEffect, popup.accentColor ?? accentColor, {
+            shadow,
+            outline,
+            outlineSize,
+          })}
         </div>
       </div>
     </AbsoluteFill>
@@ -522,6 +532,9 @@ export function ShortVideoComposition({
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
   subtitleAccentColor = "#FFE500",
+  subtitleShadow = false,
+  subtitleOutline = false,
+  subtitleOutlineSize = 2,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -607,7 +620,17 @@ export function ShortVideoComposition({
         const capPreset = p.stylePreset ?? preset;
         return (
           <Sequence key={`sub-${p.start}-${p.end}`} from={p.start} durationInFrames={dur} layout="none">
-            <AnimatedSubtitle popup={p} preset={capPreset} resolvedFont={resolvedFont} captionDurFrames={dur} textEffect={textEffect} accentColor={accentColor} />
+            <AnimatedSubtitle
+              popup={p}
+              preset={capPreset}
+              resolvedFont={resolvedFont}
+              captionDurFrames={dur}
+              textEffect={textEffect}
+              accentColor={accentColor}
+              shadow={subtitleShadow}
+              outline={subtitleOutline}
+              outlineSize={subtitleOutlineSize}
+            />
           </Sequence>
         );
       })}

@@ -62,6 +62,18 @@ module.exports = {
       },
     },
     {
+      name: "mine-loanwords",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/cron-mine-loanwords.ts",
+      cron_restart: "10 4 * * *", // daily 4:10 AM — mine new Thai loanwords ICU mis-splits from prod scripts
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
+    {
       name: "renewal-reminders",
       cwd: "/var/www/ai-content",
       script: "scripts/renewal-reminders.js",
@@ -111,6 +123,19 @@ module.exports = {
         NODE_ENV: "production",
         NEXT_PUBLIC_APP_URL: "http://localhost:3000",
         CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
+      name: "mcp-video-worker",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/mcp-video-worker.ts",
+      autorestart: true, // long-running worker (not a cron) — claims queued VideoJobs
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
+        MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
       },
     },
   ],

@@ -15,6 +15,61 @@ import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
  * (glow-pulse / highlight / karaoke / typewriter); pass 0 / 1 from preview
  * for the "static" look that matches the resting frame.
  */
+
+// ── Intl.Segmenter singleton ────────────────────────────────────────────────
+// Constructing a Segmenter loads ICU word-break data and is expensive.
+// segmentWords runs on EVERY subtitle render — in the editor preview that is
+// 60×/sec during karaoke/highlight playback — so cache one instance per
+// locale+granularity at module level instead of constructing per call.
+const segmenterCache = new Map<string, Intl.Segmenter>();
+
+function getSegmenter(locale: string, granularity: "word" | "grapheme" | "sentence"): Intl.Segmenter | null {
+  const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (!Seg) return null;
+  const key = `${locale}|${granularity}`;
+  const cached = segmenterCache.get(key);
+  if (cached) return cached;
+  try {
+    const seg = new Seg(locale, { granularity });
+    segmenterCache.set(key, seg);
+    return seg;
+  } catch {
+    return null;
+  }
+}
+
+// Tokenize for per-word effects (highlight / karaoke).
+// Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
+// returns the whole line as one token → the entire caption highlights at once
+// (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
+// real words; it also handles spaced scripts (English) correctly. Falls back
+// to whitespace splitting where Segmenter is unavailable.
+function segmentWords(s: string): string[] {
+  const seg = getSegmenter("th", "word");
+  if (seg) {
+    const out: string[] = [];
+    for (const { segment, isWordLike } of seg.segment(s)) {
+      // Keep word-like tokens; skip pure whitespace/punctuation separators
+      if (isWordLike && segment.trim().length > 0) out.push(segment);
+    }
+    if (out.length > 0) return out;
+  }
+  return s.split(/\s+/).filter(w => w.length > 0);
+}
+
+export interface SubtitleDecorationOptions {
+  shadow?: boolean;
+  outline?: boolean;
+  outlineSize?: number;
+}
+
+function mergeTextShadow(...parts: Array<React.CSSProperties["textShadow"] | undefined>): string | undefined {
+  const values = parts
+    .map((part) => typeof part === "string" ? part.trim() : "")
+    .filter((part) => part.length > 0 && part !== "none");
+  return values.length > 0 ? values.join(", ") : undefined;
+}
+
 export function renderSubtitle(
   text: string,
   color: string,
@@ -27,31 +82,27 @@ export function renderSubtitle(
   captionDurFrames = 1,
   textEffect: SubtitleTextEffect = "pop",
   accentColor = "#FFE500",
+  decorations: SubtitleDecorationOptions = {},
 ) {
   const charCount = text.length;
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
+  const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
+  const manualShadow = decorations.shadow
+    ? "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)"
+    : undefined;
 
-  // Tokenize for per-word effects (highlight / karaoke).
-  // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
-  // returns the whole line as one token → the entire caption highlights at once
-  // (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
-  // real words; it also handles spaced scripts (English) correctly. Falls back
-  // to whitespace splitting where Segmenter is unavailable.
-  const segmentWords = (s: string): string[] => {
-    const Seg = (Intl as unknown as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-    if (Seg) {
-      try {
-        const seg = new Seg("th", { granularity: "word" });
-        const out: string[] = [];
-        for (const { segment, isWordLike } of seg.segment(s)) {
-          // Keep word-like tokens; skip pure whitespace/punctuation separators
-          if (isWordLike && segment.trim().length > 0) out.push(segment);
-        }
-        if (out.length > 0) return out;
-      } catch { /* fall through */ }
+  const withDecorations = (style: React.CSSProperties): React.CSSProperties => {
+    if (!decorations.shadow && !decorations.outline) return style;
+    const next: React.CSSProperties = { ...style };
+    if (decorations.outline) {
+      next.WebkitTextStroke = `${outlineSize}px #000`;
+      next.paintOrder = "stroke fill";
     }
-    return s.split(/\s+/).filter(w => w.length > 0);
+    if (manualShadow) {
+      next.textShadow = mergeTextShadow(next.textShadow, manualShadow);
+    }
+    return next;
   };
 
   // NOTE: renderSubtitle renders the TEXT + per-character/word effects only
@@ -89,10 +140,10 @@ export function renderSubtitle(
       const b = parseInt(color.slice(5, 7), 16);
       const pulse = 0.6 + 0.4 * Math.sin((frame / captionDurFrames) * Math.PI * 4);
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base,
           textShadow: `0 0 ${20 + pulse * 20}px rgba(${r},${g},${b},${0.7 + pulse * 0.3}), 0 0 ${40 + pulse * 30}px rgba(${r},${g},${b},0.5), 0 2px 4px rgba(0,0,0,0.8)`,
-        }}>{text}</span>
+        })}>{text}</span>
       );
     }
 
@@ -112,12 +163,12 @@ export function renderSubtitle(
       // small text into an unreadable blob. The active word reads dark-on-yellow,
       // so it needs no stroke; inactive words keep a light outline for contrast.
       return (
-        <span style={{ ...base, display: "inline" }}>
+        <span style={withDecorations({ ...base, display: "inline" })}>
           {tokens.map((word, i) => {
             const isActive = i === active;
             return (
               <React.Fragment key={i}>
-                <span style={{
+                <span style={withDecorations({
                   background: isActive ? accentColor : "transparent",
                   color: isActive ? "#000" : color,
                   borderRadius: "0.12em",
@@ -127,7 +178,7 @@ export function renderSubtitle(
                   paintOrder: "stroke fill",
                   boxDecorationBreak: "clone",
                   WebkitBoxDecorationBreak: "clone",
-                } as React.CSSProperties}>{word}</span>
+                } as React.CSSProperties)}>{word}</span>
                 {hasSpaces && i < tokens.length - 1 ? " " : null}
               </React.Fragment>
             );
@@ -148,7 +199,7 @@ export function renderSubtitle(
       const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const inner = (
-        <span style={{ ...base, display: "inline", textShadow: stroke }}>
+        <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
           {tokens.map((word, i) => (
             <React.Fragment key={i}>
               <span style={{
@@ -174,7 +225,7 @@ export function renderSubtitle(
         : Math.max(0, Math.min(totalChars, Math.floor((frame / Math.max(1, captionDurFrames)) * totalChars) + 1));
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const inner = (
-        <span style={{ ...base, display: "inline", textShadow: stroke }}>
+        <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
           <span style={{ color }}>{text.slice(0, charsToShow)}</span>
           <span style={{ color: "transparent" }}>{text.slice(charsToShow)}</span>
         </span>
@@ -190,19 +241,19 @@ export function renderSubtitle(
 
   switch (preset) {
     case "plain":
-      return <span style={{ ...base }}>{text}</span>;
+      return <span style={withDecorations({ ...base })}>{text}</span>;
     case "shadow":
-      return <span style={{ ...base, textShadow: "0 4px 16px rgba(0,0,0,1), 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, textShadow: "0 4px 16px rgba(0,0,0,1), 0 2px 4px rgba(0,0,0,0.9)" })}>{text}</span>;
     case "box":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>
-          <span style={{ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.9)" }}>{text}</span>
+          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.9)" })}>{text}</span>
         </div>
       );
     case "box-rounded":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>
-          <span style={{ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.8)" }}>{text}</span>
+          <span style={withDecorations({ ...base, textShadow: "0 2px 8px rgba(0,0,0,0.8)" })}>{text}</span>
         </div>
       );
     case "glow": {
@@ -210,122 +261,122 @@ export function renderSubtitle(
       const g = parseInt(color.slice(3, 5), 16);
       const b = parseInt(color.slice(5, 7), 16);
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base,
           textShadow: `0 0 20px rgba(${r},${g},${b},0.9), 0 0 40px rgba(${r},${g},${b},0.6), 0 2px 4px rgba(0,0,0,0.8)`,
-        }}>{text}</span>
+        })}>{text}</span>
       );
     }
     case "outline-only":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base,
           color: "#fff",
           WebkitTextStroke: `3px ${color}`,
           paintOrder: "stroke fill",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
 
     case "neon-green":
-      return <span style={{ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#00ff88", textShadow: "0 0 8px #00ff88, 0 0 20px #00ff88, 0 0 40px #00cc66" })}>{text}</span>;
 
     case "neon-red":
-      return <span style={{ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#ff3344", textShadow: "0 0 8px #ff3344, 0 0 20px #ff1133, 0 0 40px #cc0022" })}>{text}</span>;
 
     case "neon-blue":
-      return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" })}>{text}</span>;
 
     case "bold-shadow":
-      return <span style={{ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
 
     case "karaoke-box":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>
-          <span style={{ ...base }}>{text}</span>
+          <span style={withDecorations({ ...base })}>{text}</span>
         </div>
       );
 
     case "pop-outline": {
       const cInv = color === "#ffffff" || color === "#fff" ? "#000000" : "#ffffff";
-      return <span style={{ ...base, WebkitTextStroke: `2px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties}>{text}</span>;
+      return <span style={withDecorations({ ...base, WebkitTextStroke: `2px ${cInv}`, paintOrder: "stroke fill" } as React.CSSProperties)}>{text}</span>;
     }
 
     case "pastel":
-      return <span style={{ ...base, color: "#ffb3d9", textShadow: "0 2px 8px rgba(255,100,180,0.5), 0 1px 0 rgba(0,0,0,0.5)" }}>{text}</span>;
+      return <span style={withDecorations({ ...base, color: "#ffb3d9", textShadow: "0 2px 8px rgba(255,100,180,0.5), 0 1px 0 rgba(0,0,0,0.5)" })}>{text}</span>;
 
     case "classic-yellow":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base, color: "#FFE500",
           textShadow: "-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 4px 12px rgba(0,0,0,0.9)",
           WebkitTextStroke: "1.5px #000", paintOrder: "stroke fill",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
 
     case "hormozi":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base, color: "#ff2244", fontStyle: "italic", fontWeight: Math.max(fontWeight, 800),
           textShadow: "-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff, 0 4px 16px rgba(200,0,30,0.6)",
           WebkitTextStroke: "1px #fff", paintOrder: "stroke fill",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
 
     case "beast":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base, color: "#ffffff",
           textShadow: "-2px -2px 0 #ff8800, 2px -2px 0 #ff8800, -2px 2px 0 #ff8800, 2px 2px 0 #ff8800, 0 0 20px rgba(255,140,0,0.5)",
           WebkitTextStroke: "2px #ff8800", paintOrder: "stroke fill",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
 
     case "box-white":
       return (
         <div style={{ display: "inline-block", background: "#ffffff", padding: "6px 20px 8px", borderRadius: 4 }}>
-          <span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{text}</span>
         </div>
       );
 
     case "box-yellow":
       return (
         <div style={{ display: "inline-block", background: "#FFE500", padding: "6px 20px 8px", borderRadius: 6 }}>
-          <span style={{ ...base, color: "#111111", textShadow: "none" }}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#111111", textShadow: "none" })}>{text}</span>
         </div>
       );
 
     case "retro":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base, color: "#ff6600",
           textShadow: "2px 2px 0 #cc3300, 4px 4px 0 rgba(150,0,0,0.5), 0 6px 16px rgba(200,50,0,0.4)",
-        }}>{text}</span>
+        })}>{text}</span>
       );
 
     case "sharp-outline":
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base, color: "#ffffff",
           WebkitTextStroke: `3px ${color}`, paintOrder: "stroke fill",
           textShadow: "0 3px 10px rgba(0,0,0,0.8)",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
 
     case "news":
       return (
         <div style={{ display: "inline-block", background: "rgba(0,0,0,0.88)", padding: "5px 18px 7px" }}>
-          <span style={{ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" }}>{text}</span>
+          <span style={withDecorations({ ...base, color: "#ffffff", textShadow: "none", letterSpacing: "0.05em" })}>{text}</span>
         </div>
       );
 
     case "stroke":
     default:
       return (
-        <span style={{
+        <span style={withDecorations({
           ...base,
           WebkitTextStroke: "2px #000",
           paintOrder: "stroke fill",
-        } as React.CSSProperties}>{text}</span>
+        } as React.CSSProperties)}>{text}</span>
       );
   }
 }

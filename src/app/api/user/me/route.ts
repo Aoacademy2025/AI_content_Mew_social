@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { syncUsageWindow } from "@/lib/usage-limits";
+import { classifyEntitlement } from "@/lib/entitlements";
 
 export async function GET() {
   try {
@@ -39,6 +40,7 @@ export async function GET() {
     const usage = await syncUsageWindow(authUser.id);
     return NextResponse.json({
       ...user,
+      effectivePlan: classifyEntitlement(authUser).effectivePlan,
       usageCount: usage?.usageCount ?? user.usageCount,
       usageLimit: usage?.usageLimit ?? limits.clips,
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,

@@ -5,6 +5,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { getFoundingCoupon } from "@/lib/founding";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
+import { YouTubeLite } from "@/components/marketing/youtube-lite";
 
 export const metadata = {
   title: "HERO AI — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
@@ -81,6 +82,22 @@ const FAQS = [
   { q: "ไม่พอใจได้เงินคืนไหม?", a: "คืนเงินภายใน 7 วัน" },
 ];
 
+// Overall product demo (hero) — landscape
+const OVERVIEW_VIDEO = { id: "bnLnNHBAwBo", title: "HERO AI Creator Studio — ดูระบบทำงานจริง" };
+
+// Per-system explainers — landscape, mapped to the headline features
+const SYSTEM_VIDEOS = [
+  { id: "7_HqwzV9sgI", label: "ระบบ Avatar", desc: "พิธีกร AI พูด/ตัดต่อให้อัตโนมัติ" },
+  { id: "COFaBjzgFuk", label: "ระบบซับไทย", desc: "ซับตรงเสียง ไม่ต้องพิมพ์เอง" },
+  { id: "Jd84cTVpd8M", label: "ระบบ B-roll", desc: "ภาพประกอบเปลี่ยนตามเนื้อหา" },
+];
+
+// Real output samples — vertical Shorts (with vs. without avatar)
+const SAMPLE_VIDEOS = [
+  { id: "jAo8kE3NQsA", label: "มี Avatar" },
+  { id: "mgscenGpyuw", label: "ไม่มี Avatar" },
+];
+
 export default async function Home() {
   const [plan, founding] = await Promise.all([getPlanPrices(), getFounding()]);
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
@@ -151,6 +168,9 @@ export default async function Home() {
               เข้าสู่ระบบ
             </Link>
           </div>
+          <div className="mx-auto mt-12 max-w-[880px]">
+            <YouTubeLite id={OVERVIEW_VIDEO.id} title={OVERVIEW_VIDEO.title} />
+          </div>
         </div>
       </header>
 
@@ -191,6 +211,23 @@ export default async function Home() {
         </div>
       </section>
 
+      {/* see each system in action */}
+      <section className="relative px-5 py-16">
+        <div className="mx-auto max-w-[1140px]">
+          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ดูระบบจริง</p>
+          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>เห็นแต่ละระบบทำงานจริง</h2>
+          <div className="mt-9 grid gap-5 md:grid-cols-3">
+            {SYSTEM_VIDEOS.map(({ id, label, desc }) => (
+              <div key={id}>
+                <YouTubeLite id={id} title={label} overlayTitle={false} />
+                <h3 className="mt-3.5 text-lg font-semibold" style={HEAD}>{label}</h3>
+                <p className="mt-0.5 text-sm text-[#a7adcc]">{desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* how it works */}
       <section className="relative px-5 py-16">
         <div className="mx-auto max-w-[920px]">
@@ -202,6 +239,23 @@ export default async function Home() {
                 <div className="bg-gradient-to-r from-violet-300 to-cyan-300 bg-clip-text text-[40px] font-bold leading-none text-transparent" style={HEAD}>{n}</div>
                 <h3 className="mt-2.5 text-lg font-semibold" style={HEAD}>{title}</h3>
                 <p className="mt-1 text-sm text-[#a7adcc]">{desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* real output samples (vertical shorts) */}
+      <section className="relative px-5 py-16">
+        <div className="mx-auto max-w-[1140px]">
+          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ตัวอย่างผลงาน</p>
+          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
+          <p className="mx-auto mt-3 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
+          <div className="mx-auto mt-9 grid max-w-[620px] grid-cols-2 gap-4 sm:gap-6">
+            {SAMPLE_VIDEOS.map(({ id, label }) => (
+              <div key={id}>
+                <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
+                <p className="mt-3 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
               </div>
             ))}
           </div>

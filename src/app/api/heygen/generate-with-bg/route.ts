@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { fetchWithBudget } from "@/lib/fetch-budget";
+import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
 
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";
@@ -53,14 +55,17 @@ async function uploadAsset(localUrl: string, heygenKey: string, contentType?: st
   const ct = contentType ?? detectVideoType(buffer);
   console.log("[generate-with-bg] uploading:", localUrl, "content-type:", ct, "size:", buffer.length);
 
-  const res = await fetch("https://upload.heygen.com/v1/asset", {
+  // HeyGen asset-upload budget: 120s/attempt, 1 retry (network/429/5xx only —
+  // a duplicated upload only creates an unused asset, no user-visible harm).
+  // Non-ok statuses throw ProviderError → surfaced by the route-level catch.
+  const res = await fetchWithBudget("https://upload.heygen.com/v1/asset", {
     method: "POST",
     headers: { "X-API-KEY": heygenKey, "Content-Type": ct, Accept: "application/json" },
     body: buffer as unknown as BodyInit,
-  });
+  }, { provider: "heygen", timeoutMs: 120_000, retries: 1, wallClockMs: 300_000 });
   const data = await res.json();
   console.log("[generate-with-bg] upload result:", res.status, JSON.stringify(data));
-  if (!res.ok || !data.data?.id) throw new Error(`Upload failed: ${data.message ?? res.status}`);
+  if (!data.data?.id) throw new Error(`Upload failed: ${data.message ?? res.status}`);
   return { id: data.data.id as string, url: (data.data.url as string) ?? null };
 }
 
@@ -69,6 +74,23 @@ async function uploadAsset(localUrl: string, heygenKey: string, contentType?: st
 // Mode B (green screen): { text|audioUrl, avatarId, greenScreen: true, scale?, offsetX?, offsetY? }
 // Returns: { videoId }
 export async function POST(req: Request) {
+  try {
+    return await handleGenerateWithBg(req);
+  } catch (error) {
+    if (isProviderError(error)) {
+      console.error(`[generate-with-bg] ${error.provider}/${error.code}:`, error.message);
+      const { body: errBody, status } = toErrorResponse(error);
+      return NextResponse.json(errBody, { status });
+    }
+    console.error("[generate-with-bg] unexpected error:", error);
+    return NextResponse.json(
+      { error: "ระบบ Avatar ทำงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง", retryable: false },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleGenerateWithBg(req: Request) {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -155,11 +177,13 @@ export async function POST(req: Request) {
     // Upload the MP3 file directly (bypass uploadAsset which reads from /public path)
     const buffer = fs.readFileSync(uploadPath);
     console.log("[generate-with-bg] uploading audio as audio/mpeg, size:", buffer.length);
-    const uploadRes = await fetch("https://upload.heygen.com/v1/asset", {
+    // Audio upload budget: 120s/attempt, 1 retry. returnHttpErrors keeps the
+    // carefully-worded Thai 401-vs-other handling below working unchanged.
+    const uploadRes = await fetchWithBudget("https://upload.heygen.com/v1/asset", {
       method: "POST",
       headers: { "X-API-KEY": heygenKey, "Content-Type": "audio/mpeg", Accept: "application/json" },
       body: buffer as unknown as BodyInit,
-    });
+    }, { provider: "heygen", timeoutMs: 120_000, retries: 1, wallClockMs: 300_000, returnHttpErrors: true });
     const uploadData = await uploadRes.json();
     console.log("[generate-with-bg] audio upload result:", uploadRes.status, JSON.stringify(uploadData));
     if (tmpMp3) try { fs.unlinkSync(tmpMp3); } catch {}
@@ -172,7 +196,10 @@ export async function POST(req: Request) {
         ? "HeyGen API key ไม่ถูกต้องหรือถูกปฏิเสธ — กรุณาตรวจสอบ HeyGen key ใน Settings"
         : `HeyGen audio upload ล้มเหลว: ${uploadData.message ?? uploadRes.status}`;
       console.error(`[generate-with-bg] audio upload failed (${uploadRes.status}): ${JSON.stringify(uploadData).slice(0, 300)}`);
-      return NextResponse.json({ error: msg, retryable: false }, { status: keyRejected ? 401 : 500 });
+      return NextResponse.json(
+        { error: msg, retryable: false, code: keyRejected ? "invalid_key" : "fatal", provider: "heygen" },
+        { status: keyRejected ? 401 : 500 }
+      );
     }
 
     const audioAssetId = uploadData.data.id as string;
@@ -200,37 +227,31 @@ export async function POST(req: Request) {
   };
 
   console.log("[generate-with-bg] generate payload:", JSON.stringify(payload));
+  // HeyGen generate budget: 60s, NO retries — a duplicated generate would
+  // spend the user's HeyGen credits twice. returnHttpErrors → map status below.
+  const genRes = await fetchWithBudget("https://api.heygen.com/v2/video/generate", {
+    method: "POST",
+    headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }, { provider: "heygen", timeoutMs: 60_000, retries: 0, wallClockMs: 65_000, returnHttpErrors: true });
+  const genData = await genRes.json();
+  console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
 
-  // Retry generate on transient failures (timeout, 5xx)
-  let genRes: Response | null = null;
-  let genData: any = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      genRes = await fetch("https://api.heygen.com/v2/video/generate", {
-        method: "POST",
-        headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(30000),
-      });
-      genData = await genRes.json();
-      console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
-      break; // Success, exit retry loop
-    } catch (err) {
-      if (attempt < 3) {
-        console.warn(`[generate-with-bg] generate attempt ${attempt} failed:`, err);
-        await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * 1000));
-        continue;
-      }
-      return NextResponse.json(
-        { error: `HeyGen generate timeout after retries: ${err instanceof Error ? err.message : String(err)}`, retryable: true },
-        { status: 503 }
+  if (!genRes.ok || !genData.data?.video_id) {
+    if (!genRes.ok) {
+      // §8 mapping: 401→invalid_key(401)+missingKey (key modal ถูกต้องเมื่อ key
+      // ถูกปฏิเสธจริง), 402/403→quota(402) เช่น credit หมด — ไม่เปิด modal ใส่ key,
+      // 429→rate_limit(429), 5xx→transient(503)
+      const pErr = providerError(
+        classifyHttpStatus(genRes.status),
+        "heygen",
+        `HeyGen generate failed (${genRes.status}): ${JSON.stringify(genData.error ?? genData).slice(0, 300)}`,
+        { status: genRes.status },
       );
+      const { body: errBody, status } = toErrorResponse(pErr);
+      return NextResponse.json(errBody, { status });
     }
-  }
-
-  if (!genRes || !genRes.ok || !genData.data?.video_id) {
-    // retryable:false — generate ล้มเหลว (เช่น credit หมด, พารามิเตอร์ไม่ผ่าน) ไม่ใช่ key หาย
-    // ไม่งั้น client เปิด modal ใส่ key ซ้ำ ทำให้ผู้ใช้เข้าใจผิดว่า key มีปัญหา
+    // 200 แต่ไม่มี video_id — response ผิดรูป ไม่ใช่ปัญหา key (อย่าเปิด modal ใส่ key ซ้ำ)
     return NextResponse.json(
       { error: `HeyGen generate failed: ${JSON.stringify(genData?.error ?? genData)}`, retryable: false },
       { status: 500 }

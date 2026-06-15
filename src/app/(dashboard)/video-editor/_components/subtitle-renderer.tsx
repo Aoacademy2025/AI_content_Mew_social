@@ -29,6 +29,9 @@ export function renderSubEl(
   // so static callers (style/font cards) never render the text at opacity 0.
   frame = -1,
   captionDurFrames = 1,
+  shadow = false,
+  outline = false,
+  outlineSize = 2,
 ): React.ReactNode {
   // The Remotion renderer expects the final pixel size; scale it here so the
   // preview overlay (e.g. 260/1080 phone frame) matches what gets rendered at 1080.
@@ -46,5 +49,6 @@ export function renderSubEl(
     captionDurFrames,
     textEffect,
     accentColor,
+    { shadow, outline, outlineSize },
   );
 }

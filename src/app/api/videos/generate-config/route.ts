@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
+import { evenSplitBgVideos, cyclePoolIndices } from "@/lib/broll-even-split";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -91,7 +92,18 @@ function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
 }
 
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
-type StockVideo = { keyword: string; localUrl?: string; videoUrl: string; duration: number };
+type StockVideo = {
+  keyword: string;
+  localUrl?: string;
+  videoUrl: string;
+  duration: number;
+  title?: string;
+  query?: string;
+  provider?: "pexels" | "pixabay";
+  contentProfile?: string;
+  selectionReason?: string;
+  relevanceScore?: number;
+};
 
 function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameMs: number): Cap[] {
   if (!Array.isArray(raw) || raw.length === 0) return [];
@@ -203,6 +215,9 @@ export async function POST(req: Request) {
     subtitleStylePreset,
     subtitleTextEffect,
     subtitleFontWeight = 900,
+    subtitleShadow = false,
+    subtitleOutline = false,
+    subtitleOutlineSize = 2,
     scenes = [],
     keywordsPerScene = 5,
     sceneClipCounts = [] as number[],
@@ -221,6 +236,9 @@ export async function POST(req: Request) {
     subtitleStylePreset?: SubtitleStylePreset;
     subtitleTextEffect?: SubtitleTextEffect;
     subtitleFontWeight?: number;
+    subtitleShadow?: boolean;
+    subtitleOutline?: boolean;
+    subtitleOutlineSize?: number;
     scenes?: string[];
     keywordsPerScene?: number;
     sceneClipCounts?: number[];
@@ -312,6 +330,19 @@ export async function POST(req: Request) {
 
   const validStocks = stockVideos.filter(sv => sv.localUrl || sv.videoUrl);
   let bgVideos: BrollVideo[] = [];
+  const brollMetadataBySrc = new Map<string, Partial<BrollVideo>>();
+  for (const sv of validStocks) {
+    const src = sv.localUrl ?? sv.videoUrl;
+    brollMetadataBySrc.set(src, {
+      keyword: sv.keyword,
+      title: sv.title,
+      query: sv.query,
+      provider: sv.provider,
+      contentProfile: sv.contentProfile,
+      selectionReason: sv.selectionReason,
+      relevanceScore: sv.relevanceScore,
+    });
+  }
 
   if (validStocks.length > 0) {
     const n = validStocks.length;
@@ -340,67 +371,15 @@ export async function POST(req: Request) {
     const useEvenSplit = !isPerSubtitleTop && clipCountHint <= numScenes * 4; // few clips â†’ guaranteed equal airtime
 
     if (isPerSubtitleTop) {
-      // Per-subtitle mode: merge short subtitles into whichever neighbour shares the most keyword overlap.
-      // Short = duration < SHORT_THRESHOLD_SEC. Subtitles are never split — only clip assignment changes.
+      // Per-subtitle mode: each caption gets a clip, cycling through the pool so the
+      // background changes on EVERY caption and every clip is used. (The old "merge short
+      // subtitles into a neighbour" scheme collapsed dense word-modes: 80+ captions all
+      // under the 1.5s threshold chained back to pool[0] = one frozen clip — prod logs
+      // showed `per-subtitle-top: 1 clips for 81 captions (ratio=1%)`. Cycling can't collapse.)
       const pool = validStocks.slice(0, n);
-      const SHORT_THRESHOLD_SEC = 1.5;
+      const assignedPool = cyclePoolIndices(gapFilled.length, pool.length);
 
-      // Build keyword list parallel to gapFilled (pool[i].keyword matches gapFilled[i])
-      const kwFor = (ci: number): string => (pool[ci]?.keyword ?? "").toLowerCase();
-
-      // Word-overlap score between two keyword strings
-      function kwOverlap(a: string, b: string): number {
-        const wa = new Set(a.split(/\s+/).filter(w => w.length > 2));
-        const wb = b.split(/\s+/).filter(w => w.length > 2);
-        return wb.filter(w => wa.has(w)).length;
-      }
-
-      // Pre-pass: decide which pool index each subtitle uses.
-      // mergeInto[ci] = index of subtitle whose clip ci should share (-1 = own clip)
-      const mergeInto: number[] = gapFilled.map(() => -1);
-
-      for (let ci = 0; ci < gapFilled.length; ci++) {
-        const cap = gapFilled[ci];
-        const dur = (cap.endMs - cap.startMs) / 1000;
-        if (dur >= SHORT_THRESHOLD_SEC) continue; // long enough — own clip
-
-        // Already assigned to merge into something else
-        if (mergeInto[ci] !== -1) continue;
-
-        // Compare keyword overlap with prev and next (that are not already short-merging)
-        const prevCi = ci - 1 >= 0 ? ci - 1 : -1;
-        const nextCi = ci + 1 < gapFilled.length ? ci + 1 : -1;
-
-        const prevScore = prevCi >= 0 ? kwOverlap(kwFor(ci), kwFor(prevCi)) : -1;
-        const nextScore = nextCi >= 0 ? kwOverlap(kwFor(ci), kwFor(nextCi)) : -1;
-
-        // Merge into the neighbour with higher overlap (prefer prev on tie)
-        const target = prevScore >= nextScore && prevCi >= 0 ? prevCi : nextCi >= 0 ? nextCi : -1;
-        if (target >= 0) mergeInto[ci] = target;
-      }
-
-      // Build clip assignments: subtitle ci uses pool[assignedPool[ci]]
-      const assignedPool: number[] = [];
-      let nextPoolIdx = 0;
-      // First pass: assign pool indices skipping merged subtitles
-      const ownPoolIdx: number[] = gapFilled.map(() => -1);
-      for (let ci = 0; ci < gapFilled.length; ci++) {
-        if (mergeInto[ci] === -1) {
-          ownPoolIdx[ci] = nextPoolIdx < pool.length ? nextPoolIdx++ : pool.length - 1;
-        }
-      }
-      // Second pass: merged subtitles inherit their target's pool index
-      for (let ci = 0; ci < gapFilled.length; ci++) {
-        if (mergeInto[ci] !== -1) {
-          const target = mergeInto[ci];
-          // target might also be merged — resolve chain (max 2 levels)
-          assignedPool[ci] = ownPoolIdx[target] >= 0 ? ownPoolIdx[target] : ownPoolIdx[mergeInto[target] ?? target] ?? 0;
-        } else {
-          assignedPool[ci] = ownPoolIdx[ci];
-        }
-      }
-
-      console.log(`[config] per-subtitle-top: ${pool.length} clips, ${gapFilled.length} captions, ${gapFilled.filter((_,i)=>mergeInto[i]>=0).length} merged (short)`);
+      console.log(`[config] per-subtitle-top: cycling ${pool.length} clips across ${gapFilled.length} captions`);
 
       const clipOffsetMap = new Map<string, number>();
       for (let ci = 0; ci < gapFilled.length; ci++) {
@@ -670,14 +649,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "à¹„à¸¡à¹ˆà¸¡à¸µ stock video â€” à¸à¸£à¸¸à¸“à¸² fetch stock à¸à¹ˆà¸­à¸™ generate config", retryable: false }, { status: 400 });
   }
   if (!bgVideos.length && validStocks.length > 0) {
-    const first = validStocks[0];
-    bgVideos.push({
-      src: first.localUrl ?? first.videoUrl,
-      start: 0,
-      end: audioDurationSec,
-      clipOffset: 0,
-      clipDuration: first.duration > 0 ? first.duration : 10,
-    });
+    // Safety net: the scene / per-subtitle mapping produced ZERO segments (e.g. caption
+    // timing collapsed for dense subtitle modes). The old fallback froze ONE clip over the
+    // whole video — which looks like "b-roll never loaded". Even-split ALL fetched clips so
+    // the background still changes and every clip is used, instead of a single frozen frame.
+    console.warn(`[config] main mapping produced 0 bgVideos — even-split fallback across ${validStocks.length} clips`);
+    bgVideos.push(...evenSplitBgVideos(validStocks, audioDurationSec));
   }
 
   bgVideos = fillBgGaps(bgVideos, audioDurationSec);
@@ -698,6 +675,11 @@ export async function POST(req: Request) {
     bgVideos[bgVideos.length - 1].end = audioDurationSec;
   }
 
+  bgVideos = bgVideos.map((seg) => ({
+    ...seg,
+    ...(brollMetadataBySrc.get(seg.src) ?? {}),
+  }));
+
   console.log(`[config] final bgVideos (${bgVideos.length}):`);
   bgVideos.forEach((v, i) => console.log(`  [${i}] ${v.start.toFixed(2)}s–${v.end.toFixed(2)}s dur=${( v.end-v.start).toFixed(2)}s src=${v.src.split("/").pop()}`));
 
@@ -712,6 +694,9 @@ export async function POST(req: Request) {
     subtitleStylePreset,
     subtitleTextEffect,
     subtitleAccentColor,
+    subtitleShadow,
+    subtitleOutline,
+    subtitleOutlineSize,
   };
 
   console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);

@@ -1,0 +1,73 @@
+// Proof of the MCP onboarding copy/contracts: missing-key errors are actionable
+// (what + where-to-get link + where-to-paste), the per-user setup guide computes
+// readiness correctly, and the server instructions carry the key guardrails.
+//   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-mcp-onboarding.ts
+import {
+  SETTINGS_URL, SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError, buildSetupGuide,
+  missingAvatarError,
+} from "../src/lib/mcp/onboarding";
+import { isInBandError } from "../src/lib/mcp/audit";
+
+let passed = 0;
+function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
+
+// --- missing-key errors: actionable + still classify as in-band errors ---
+const gem = missingKeyError("gemini");
+assert(gem.error === "missing_key" && gem.message.includes("aistudio.google.com") && gem.message.includes(SETTINGS_URL),
+  "gemini missing-key tells where to get the key AND where to paste it");
+const broll = missingKeyError("broll");
+assert(broll.message.includes("pexels.com") && broll.message.includes("pixabay"),
+  "b-roll missing-key offers BOTH Pexels and Pixabay");
+const el = missingKeyError("elevenlabs");
+assert(el.message.includes("elevenlabs.io") && el.message.includes('voiceProvider="gemini"'),
+  "elevenlabs missing-key links the key page AND offers the gemini fallback");
+const vid = missingVoiceIdError();
+assert(vid.error === "missing_voice_id" && vid.message.toLowerCase().includes("voiceid") && vid.message.includes("Voices"),
+  "missing voiceId explains how to copy a Voice ID");
+for (const e of [gem, broll, el, vid]) {
+  assert(isInBandError(e) === true, `${e.error} is classified as an error by the audit fix`);
+}
+
+// --- setup guide: readiness = Gemini AND (Pexels OR Pixabay) ---
+const none = buildSetupGuide({ gemini: false, pexels: false, pixabay: false, elevenlabs: false });
+assert(none.canCreateVideo === false && none.pasteKeysAt === SETTINGS_URL, "no keys → cannot create, points to Settings");
+assert(buildSetupGuide({ gemini: true, pexels: true, pixabay: false, elevenlabs: false }).canCreateVideo === true,
+  "Gemini + Pexels → ready");
+assert(buildSetupGuide({ gemini: true, pexels: false, pixabay: true, elevenlabs: false }).canCreateVideo === true,
+  "Gemini + Pixabay (no Pexels) → ready");
+assert(buildSetupGuide({ gemini: true, pexels: false, pixabay: false, elevenlabs: false }).canCreateVideo === false,
+  "Gemini but no b-roll key → not ready");
+assert(buildSetupGuide({ gemini: false, pexels: true, pixabay: true, elevenlabs: false }).canCreateVideo === false,
+  "b-roll but no Gemini → not ready");
+const guide = none;
+assert(guide.avatarViaChat === true, "setup guide flags avatar as available via chat");
+assert(guide.steps.find((s) => s.key === "gemini")!.required === true, "gemini step is required");
+assert(guide.steps.find((s) => s.key === "elevenlabs")!.required === false, "elevenlabs step is optional");
+
+// --- server instructions carry the guardrails the assistant must honor ---
+assert(SERVER_INSTRUCTIONS.includes(SETTINGS_URL), "instructions tell where to set keys");
+assert(SERVER_INSTRUCTIONS.includes("ห้าม"), "instructions forbid pasting keys into chat (security)");
+assert(SERVER_INSTRUCTIONS.includes("avatarMode"), "instructions describe how to use avatar (avatarMode)");
+assert(SERVER_INSTRUCTIONS.includes("get_current_user"), "instructions tell the assistant to check setup first");
+
+// --- HeyGen key + missing avatar (avatar feature) ---
+const hg = missingKeyError("heygen");
+assert(hg.error === "missing_key" && hg.message.includes("heygen.com") && hg.message.includes(SETTINGS_URL),
+  "heygen missing-key links the HeyGen API page and Settings");
+const noav = missingAvatarError();
+assert(noav.error === "missing_avatar" && noav.message.includes("avatarId"),
+  "missing_avatar explains how to set/pass an avatarId");
+
+assert(SERVER_INSTRUCTIONS.includes("get_video_options"), "instructions reference get_video_options (wizard)");
+assert(SERVER_INSTRUCTIONS.includes("ห้ามสัญญาว่าจะแจ้งเตือน"), "instructions forbid promising auto-notify");
+// batch3: avatar pricing/seconds + easy terms, BGM must-ask, ElevenLabs voices-list note
+assert(SERVER_INSTRUCTIONS.includes("คิดเงินตามจำนวนวินาที") && SERVER_INSTRUCTIONS.includes("เปิดอย่างเดียว"), "avatar step: HeyGen per-second pricing + easy terms");
+assert(SERVER_INSTRUCTIONS.includes("ใช้ avatar กี่วินาที") && SERVER_INSTRUCTIONS.includes("default 5"), "avatar step: must ask seconds, default 5");
+assert(SERVER_INSTRUCTIONS.includes("ต้องถามจริงทุกครั้งว่า") && SERVER_INSTRUCTIONS.includes("ห้ามบอกว่าใส่เพลงถ้าไม่ได้ส่ง bgmFile"), "BGM step: must ask + must actually send bgmFile");
+assert(SERVER_INSTRUCTIONS.includes("อย่าสรุปว่า key เสีย"), "elevenlabs: voices-list failure ≠ key broken");
+// batch4: forbid silently defaulting — must really ask the 3 mandatory questions
+assert(SERVER_INSTRUCTIONS.includes("ห้ามตั้งค่า default เองเงียบ") && SERVER_INSTRUCTIONS.includes("3 ข้อบังคับ"), "wizard: forbid silent defaults, 3 mandatory questions");
+// batch5: BGM independent of avatar — never bundle "no-avatar + music" as one option
+assert(SERVER_INSTRUCTIONS.includes("BGM เป็นคำถามแยกอิสระจาก avatar") && SERVER_INSTRUCTIONS.includes("ห้ามมัด"), "wizard: BGM decoupled from avatar (ask always)");
+
+console.log(`\n${passed} assertions passed ✅`);

@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
+import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -359,11 +361,6 @@ function sanitizeCaptionsTimeline(raw: SubtitleItem[], audioDurationMs: number, 
   return out;
 }
 
-function getFfmpegPath(): string {
-  if (process.platform !== "win32") return "/usr/bin/ffmpeg";
-  return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
-}
-
 function getFfprobePath(): string {
   const ext = process.platform === "win32" ? ".exe" : "";
   const ffmpegDir = path.join(
@@ -415,6 +412,413 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
       resolve(Math.max(1, ms));
     });
   });
+}
+
+// ── Long-audio chunking ──
+// Gemini loses timestamp sync on long audio (returns a bogus duration that
+// overshoots reality), so we split long clips at silence, transcribe each on
+// the accurate-timestamp 2.5-flash baseline, then offset+merge.
+// 06-12 #3: chunks shrank from ~2.5min to ~75s — flash timestamps wobble
+// NON-LINEARLY inside a chunk (late mid-chunk, early at the tail, different
+// every run) and the chunk start offsets are the only EXACT anchors we have
+// (ffmpeg slicing). Smaller chunks = exact anchors twice as often = drift can
+// never accumulate far. Costs ~2× Gemini calls per long clip (sequential,
+// well inside flash free-tier RPM).
+const CHUNK_THRESHOLD_MS = 240_000; // >4 min ⇒ chunk
+const CHUNK_TARGET_MS = 75_000;     // ~75s target chunk
+const CHUNK_MAX_MS = 110_000;       // 110s hard cap per chunk
+
+// Run silencedetect over the mp3 and return silence-end timestamps (ms), sorted.
+// These are used as candidate cut points (cut at the end of each silence).
+function detectSilences(ffmpegPath: string, mp3Path: string): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile(ffmpegPath, [
+      "-i", mp3Path,
+      "-af", "silencedetect=noise=-30dB:d=0.3",
+      "-f", "null", "-",
+    ], { maxBuffer: 20 * 1024 * 1024 }, (_err, _stdout, stderr) => {
+      const out: number[] = [];
+      const re = /silence_end:\s*([\d.]+)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stderr || "")) !== null) {
+        const sec = parseFloat(m[1]);
+        if (Number.isFinite(sec)) out.push(Math.round(sec * 1000));
+      }
+      out.sort((a, b) => a - b);
+      resolve(out);
+    });
+  });
+}
+
+// Pick internal cut points so each chunk lands near CHUNK_TARGET_MS, preferring a
+// real silence within [lastCut+60s, lastCut+CHUNK_MAX_MS]; hard-cut if none in range.
+// Returns the internal cut points only (excludes 0 and totalMs).
+function planChunkBoundaries(totalMs: number, silences: number[]): number[] {
+  const cuts: number[] = [];
+  let lastCut = 0;
+  while (totalMs - lastCut > CHUNK_MAX_MS) {
+    const target = lastCut + CHUNK_TARGET_MS;
+    const lo = lastCut + 60_000;
+    const hi = lastCut + CHUNK_MAX_MS;
+    let best = -1;
+    let bestDist = Infinity;
+    for (const s of silences) {
+      if (s < lo || s > hi) continue;
+      const dist = Math.abs(s - target);
+      if (dist < bestDist) { bestDist = dist; best = s; }
+    }
+    const cut = best >= 0 ? best : hi; // hard-cut when no silence in range
+    cuts.push(cut);
+    lastCut = cut;
+  }
+  return cuts;
+}
+
+// Slice [startMs,endMs) out of the mp3 (stream copy), return its bytes, unlink the slice.
+function sliceAudio(
+  ffmpegPath: string,
+  mp3Path: string,
+  startMs: number,
+  endMs: number,
+  outPath: string,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const startSec = (startMs / 1000).toFixed(3);
+    const durSec = ((endMs - startMs) / 1000).toFixed(3);
+    execFile(ffmpegPath, [
+      // -ss/-t BEFORE -i = input seeking. With -c copy, output seeking (-ss AFTER
+      // -i) does NOT actually seek and copies from 0, so every chunk got the clip's
+      // opening — later chunks then showed the first chunk's subtitles.
+      "-y", "-ss", startSec, "-t", durSec, "-i", mp3Path,
+      "-c", "copy", outPath,
+    ], { maxBuffer: 10 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      if (err) return reject(new Error(`ffmpeg slice failed: ${err.message}\n${stderr?.slice(-300)}`));
+      try {
+        const buf = fs.readFileSync(outPath);
+        try { fs.unlinkSync(outPath); } catch {}
+        resolve(buf);
+      } catch (readErr) {
+        reject(readErr instanceof Error ? readErr : new Error(String(readErr)));
+      }
+    });
+  });
+}
+
+// Transcribe ONE audio buffer through Gemini and return raw words/segments/captions
+// (timestamps are relative to the START of this buffer — caller offsets them).
+// This is the verbatim body of the former inline Gemini block; the caller handles
+// the mp3 file lifecycle and (for long audio) offset+merge of the results.
+async function geminiTranscribeChunk(
+  audioBuffer: Buffer,
+  geminiKey: string,
+  script: string,
+  chunkDurationMs: number,
+): Promise<{
+  words: { word: string; start: number; end: number }[];
+  segments: { text: string; start: number; end: number }[];
+  geminiDirectCaptions: { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" }[];
+  fullText: string;
+}> {
+  type WhisperWord = { word: string; start: number; end: number };
+  type WhisperSegment = { text: string; start: number; end: number };
+  type CaptionItem = { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" };
+  let words: WhisperWord[] = [];
+  let segments: WhisperSegment[] = [];
+  let fullText = "";
+  let geminiDirectCaptions: CaptionItem[] = [];
+
+  const audioBytes = audioBuffer.length;
+
+  // Upload audio to Gemini File API — avoids sending large base64 inline which causes
+  // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
+  console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
+  const uploadRes = await fetch(
+    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(geminiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "audio/mp3",
+        "x-goog-api-key": geminiKey,
+        "X-Goog-Upload-Protocol": "raw",
+        "X-Goog-Upload-Command": "upload, finalize",
+        "X-Goog-Upload-Header-Content-Length": String(audioBytes),
+        "X-Goog-Upload-Header-Content-Type": "audio/mp3",
+      },
+      signal: AbortSignal.timeout(120_000),
+      // new Uint8Array view (byte-identical) — the helper's `audioBuffer: Buffer`
+      // param widens to Buffer<ArrayBufferLike>, which isn't directly a BodyInit;
+      // a Uint8Array always is. (Inline readFileSync was Buffer<ArrayBuffer>.)
+      body: new Uint8Array(audioBuffer),
+    }
+  );
+  if (!uploadRes.ok) {
+    const errBody = await uploadRes.text().catch(() => "");
+    throw new Error(`Gemini File API upload failed: ${uploadRes.status} — ${errBody.slice(0, 200)}`);
+  }
+  const uploadData = await uploadRes.json() as { file?: { uri?: string; name?: string } };
+  const fileUri = uploadData?.file?.uri;
+  const fileName = uploadData?.file?.name;
+  if (!fileUri) throw new Error("Gemini File API did not return file URI");
+  console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
+
+  const audioLenSec = chunkDurationMs > 0 ? (chunkDurationMs / 1000).toFixed(1) : null;
+  const timestampPrompt = `คุณคือผู้ตัดซับไตเติ้ลภาษาไทยสำหรับ TikTok/Reels มืออาชีพ
+
+ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง${audioLenSec ? `
+
+⚠️ audio นี้ยาว ${audioLenSec} วินาที — ต้องถอดเสียงให้ครบจนถึงวินาทีสุดท้าย
+caption สุดท้าย endMs ต้องอยู่ใกล้ ${audioLenSec}s (ห่างได้ไม่เกิน 3s)
+ถ้าถอดไม่ถึงท้าย = ผิด ต้องฟังต่อจนจบไฟล์` : ""}
+
+━━━ กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี ━━━
+ตัดหลังจุลภาค จุด หรือช่วงหยุดเสียง ≥ 0.25s
+ห้ามตัดกลางประโยคที่ความหมายยังค้างอยู่
+✗ ผิด: "มึงเคยคิดปะ ว่า" | "ความรู้ที่เรียนมา"
+✓ ถูก: "มึงเคยคิดปะ..." | "ว่าความรู้ที่เรียนมา"
+
+━━━ กฎ 2 — 1 ซับ = 1 ความคิด ━━━
+ถ้าประโยคมี 2 ไอเดีย ให้แยกเป็น 2 ซับ แม้จะสั้น
+✗ ผิด: "อิเล็กตรอนหนีออก ทิ้งหลุมว่าง เรียกว่าโฮล จับคู่กลายเป็นเอ็กซิตอน"
+✓ ถูก: "อิเล็กตรอนหนี" | "ทิ้งหลุมว่าง โฮล" | "จับคู่กัน" | "กลายเป็นเอ็กซิตอน"
+
+━━━ กฎ 3 — ซับช็อก ให้สั้นพิเศษ ━━━
+twist / punchline / คำเด็ด → 3-8 คำ การ์ดเดี่ยว เช่น "แม่งแหกทุกกฎที่เคยมีมา"
+
+━━━ กฎ 4 — ห้ามซับค้างนานเกิน 5 วินาที ━━━
+ถ้า segment ยาว ให้แบ่งซับเพิ่มตามจังหวะพูด
+
+━━━ กฎ 5 — gap ระหว่างซับ ━━━
+endMs ของซับ[i] ต้องน้อยกว่า startMs ของซับ[i+1] เสมอ (≥ 40ms)
+
+━━━ กฎ 6 — ต้องครอบคลุมเสียงพูดทั้งหมด ห้ามข้าม ━━━
+ถอดเสียงให้ครบตั้งแต่วินาทีแรกจนวินาทีสุดท้ายของ audio
+ห้ามข้ามช่วงใดช่วงหนึ่งที่มีคนพูด — แม้พูดเร็วหรือเสียงเบา
+ถ้ามีคนพูดต่อเนื่อง ซับต้องต่อเนื่อง ห้ามเว้นช่องว่าง > 2 วินาที ระหว่างซับที่มีเสียงพูดคั่น
+ตรวจสอบ: caption สุดท้ายต้องจบใกล้ความยาว audio จริง
+
+━━━ กฎ timestamp ━━━
+- startMs = เวลาเริ่มพูดคำแรก × 1000 (ms) — ฟังจาก audio เท่านั้น อย่าเดา
+- endMs = เวลาจบคำสุดท้าย × 1000 — ห้าม pad
+- ห้าม overlap
+
+━━━ tags ━━━
+"hook"=การ์ดแรก (ดึงดูด), "cta"=กดติดตาม/ไลค์/แชร์ (max 2), "body"=ทั้งหมดที่เหลือ${script ? `
+
+━━━ SCRIPT (spelling reference — timestamps ต้องมาจาก audio) ━━━
+${script.trim().slice(0, 2000)}` : ""}
+
+━━━ OUTPUT — JSON เท่านั้น ไม่มี markdown ━━━
+{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},...],"words":[{"word":"...","start":0.0,"end":0.35},...], "fullText":"..."}
+
+ใส่ words array ด้วยเพื่อให้ระบบ verify timestamps`;
+
+  const transcribeBody = JSON.stringify({
+    contents: [{
+      parts: [
+        { text: timestampPrompt },
+        { fileData: { mimeType: "audio/mp3", fileUri } },
+      ],
+    }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 131072,
+      // Small thinking budget (not 0): lets the model sanity-check its own
+      // timestamps — e.g. that captions stay in order and the last one ends
+      // near the real audio length — which improves "ซับตรงเสียง". The JSON
+      // parser below already extracts the {...} object from any surrounding
+      // text, so a thought preamble doesn't break output.
+      thinkingConfig: { thinkingBudget: 2048 },
+    },
+  });
+
+  // Model order is chosen for TIMESTAMP accuracy, not text quality.
+  // Gen-3 models (gemini-3.x-flash / 3.1-pro) have a confirmed progressive
+  // timestamp-drift bug in audio transcription (Google AI Dev forum, May 2026):
+  // a ~12-min clip drifts up to -157s by the end, so subtitles end well before
+  // the audio does ("ซับไม่จบพร้อมเสียง"). gemini-2.5-flash is Google's own
+  // accurate-timestamp baseline — keep it FIRST. Gen-3 is intentionally NOT used
+  // for transcription here; its better text quality doesn't matter because we
+  // take subtitle TEXT from the user's script, only TIMESTAMPS from the audio.
+  // Fallbacks are 2.5-family on purpose: gemini-2.5-flash can transiently 503
+  // (Google-side overload), and the old gemini-1.5-* fallbacks now hard-404
+  // (Google retired the 1.5 family on v1beta) — which turned a *recoverable* 503
+  // into a total transcribe failure (subtitles never generated). Same-family 2.5
+  // fallbacks keep timestamps accurate (no Gen-3 drift) while giving a real escape
+  // hatch when flash is overloaded: 2.5-pro sits in a separate capacity pool.
+  const TRANSCRIBE_MODELS = [
+    "gemini-2.5-flash",       // accurate-timestamp baseline (Google ref) — primary
+    "gemini-2.5-pro",         // fallback when 2.5-flash is 503-overloaded — separate capacity, accurate timing
+    "gemini-2.5-flash-lite",  // lightweight last-resort fallback (further overload / restricted keys)
+  ];
+
+  let geminiRes: Response | null = null;
+  let lastTranscribeErr = "";
+  let usedTranscribeModel = "";
+  const MAX_PER_MODEL = 3;  // 3 retries per model × 3 models = 9 total attempts
+
+  outerTranscribe:
+  for (const model of TRANSCRIBE_MODELS) {
+    for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
+      geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": geminiKey,
+          },
+          signal: AbortSignal.timeout(600_000),
+          body: transcribeBody,
+        }
+      );
+      if (geminiRes.ok) {
+        usedTranscribeModel = model;
+        console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
+        break outerTranscribe;
+      }
+      lastTranscribeErr = await geminiRes.text().catch(() => "");
+
+      // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
+      if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
+        console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
+        break;
+      }
+
+      // Retryable transient — exponential backoff within same model
+      if (attempt < MAX_PER_MODEL) {
+        const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
+        console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
+        await new Promise(r => setTimeout(r, delayMs));
+      } else {
+        console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
+      }
+    }
+  }
+
+  // Clean up uploaded file from Gemini (best-effort)
+  if (fileName) {
+    fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${encodeURIComponent(geminiKey)}`, {
+      method: "DELETE",
+      headers: { "x-goog-api-key": geminiKey },
+    }).catch(() => {});
+  }
+
+  if (!geminiRes || !geminiRes.ok) {
+    const status = geminiRes?.status ?? 503;
+    console.error("[transcribe] all models failed; last error body:", lastTranscribeErr.slice(0, 500));
+    if (status === 401 || status === 403) {
+      throw { status, body: lastTranscribeErr };
+    }
+    throw new Error(`Gemini transcribe failed across all ${TRANSCRIBE_MODELS.length} models: ${status} — ${lastTranscribeErr.slice(0, 200)}`);
+  }
+  void usedTranscribeModel; // for future telemetry
+  const geminiData = await geminiRes.json() as Record<string, unknown>;
+  const candidates = geminiData?.candidates as Array<{content:{parts:Array<{text:string}>}}> | undefined;
+  const rawGeminiText = candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  console.log(`[transcribe] Gemini raw: ${rawGeminiText.slice(0, 300)}`);
+
+  // Try to parse structured JSON response with timestamps
+  try {
+    // Strip markdown fences and find outermost JSON object
+    const stripped = rawGeminiText
+      .replace(/```json\s*/gi, "")
+      .replace(/```\s*/g, "")
+      .trim();
+
+    // Try longest JSON match first (greedy), then fallback to first match
+    const allMatches = [...stripped.matchAll(/\{[\s\S]*?\}/g)];
+    const match = stripped.match(/\{[\s\S]*\}/) ?? (allMatches.length > 0 ? allMatches[allMatches.length - 1] : null);
+
+    if (match) {
+      type GeminiWord = { word?: string; start?: number; end?: number };
+      type GeminiCap = { text?: string; startMs?: number; endMs?: number; tag?: string };
+      type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
+      let parsed: { fullText?: string; captions?: GeminiCap[]; segments?: GeminiSeg[]; words?: GeminiWord[] } | null = null;
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch {
+        // Step 1: close incomplete last object in array, then close arrays/object
+        let repaired = match[0]
+          .replace(/,\s*\{[^}]*$/, "")   // drop incomplete trailing object
+          .replace(/,\s*$/, "")            // drop trailing comma
+          .trimEnd();
+        // Step 2: count unclosed brackets and close them
+        let open = 0;
+        for (const ch of repaired) { if (ch === "[" || ch === "{") open++; else if (ch === "]" || ch === "}") open--; }
+        // close with matching brackets (best-effort order: arrays before objects)
+        const closing = repaired.endsWith("}") ? "" : (repaired.includes('"captions"') ? "]}" : "}");
+        repaired = repaired + closing;
+        try { parsed = JSON.parse(repaired); } catch { /* give up */ }
+      }
+
+      if (parsed) {
+        // Extract word timestamps (top-level or nested in segments)
+        const geminiWords: typeof words = [];
+        if (Array.isArray(parsed.words)) {
+          for (const w of parsed.words) {
+            if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
+              geminiWords.push({ word: w.word, start: w.start, end: w.end });
+          }
+        }
+        if (geminiWords.length === 0 && Array.isArray(parsed.segments)) {
+          for (const s of parsed.segments) {
+            for (const w of (s.words ?? [])) {
+              if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
+                geminiWords.push({ word: w.word, start: w.start, end: w.end });
+            }
+          }
+        }
+        if (geminiWords.length > 0) words = geminiWords;
+
+        // Try new combined captions format first
+        if (Array.isArray(parsed.captions) && parsed.captions.length > 0) {
+          const validCaps = parsed.captions.filter(c =>
+            typeof c.text === "string" && typeof c.startMs === "number" && typeof c.endMs === "number"
+          );
+          if (validCaps.length > 0) {
+            geminiDirectCaptions = validCaps.map((c, i) => ({
+              text: sanitizePhraseText(c.text!),
+              startMs: c.startMs!,
+              endMs: c.endMs!,
+              timestampMs: c.startMs!,
+              confidence: 1 as number,
+              tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
+            })).filter(c => c.text.length > 0);
+            fullText = parsed.fullText?.trim() || geminiDirectCaptions.map(c => c.text).join(" ");
+            segments = geminiDirectCaptions.map(c => ({ text: c.text, start: c.startMs / 1000, end: c.endMs / 1000 }));
+            console.log(`[transcribe] Gemini OK (combined) — ${geminiDirectCaptions.length} captions, ${words.length} words`);
+          }
+        }
+
+        // Fallback: old segments-only format
+        if (geminiDirectCaptions.length === 0 && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+          segments = parsed.segments
+            .filter(s => typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number")
+            .map(s => ({ text: (s.text as string).trim(), start: s.start as number, end: s.end as number }));
+          fullText = parsed.fullText?.trim() || segments.map(s => s.text).join(" ").trim();
+          console.log(`[transcribe] Gemini OK (segments) — ${segments.length} segments, ${words.length} words`);
+        }
+
+        if (geminiDirectCaptions.length === 0 && segments.length === 0) {
+          console.warn("[transcribe] Gemini returned no captions/segments");
+          fullText = parsed.fullText?.trim() || stripped;
+        }
+      } else {
+        console.warn("[transcribe] Gemini JSON repair failed, raw:", rawGeminiText.slice(0, 200));
+        fullText = stripped;
+      }
+    } else {
+      // No JSON object found — Gemini returned plain text
+      console.warn("[transcribe] Gemini no JSON found, raw:", rawGeminiText.slice(0, 200));
+      fullText = stripped;
+    }
+  } catch {
+    // JSON parse failed → log raw for debugging
+    console.warn("[transcribe] Gemini JSON parse failed, raw:", rawGeminiText.slice(0, 300));
+    fullText = rawGeminiText;
+  }
+
+  return { words, segments, geminiDirectCaptions, fullText };
 }
 
 export async function POST(req: Request) {
@@ -492,6 +896,7 @@ export async function POST(req: Request) {
     let segments: WhisperSegment[] = [];
     let fullText = "";
     let geminiDirectCaptions: CaptionItem[] = []; // captions from combined Gemini response
+    let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
 
     if (useGeminiTranscribe) {
       // ── Gemini Audio Transcribe with timestamps ──
@@ -499,287 +904,95 @@ export async function POST(req: Request) {
       try {
         const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
         const audioBuffer = fs.readFileSync(mp3Path);
+        const ffmpeg = getFfmpegPath();
+        let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
+        if (sourceAudioDurationMs > CHUNK_THRESHOLD_MS) {
+          const silences = await detectSilences(ffmpeg, mp3Path).catch(() => []);
+          const cuts = planChunkBoundaries(sourceAudioDurationMs, silences);
+          if (cuts.length >= 1) {
+            const bounds = [0, ...cuts, sourceAudioDurationMs];
+            for (let i = 0; i < bounds.length - 1; i++) {
+              const startMs = bounds[i], endMs = bounds[i + 1];
+              const buf = await sliceAudio(ffmpeg, mp3Path, startMs, endMs, `${mp3Path}.chunk${i}.mp3`);
+              chunkPlan.push({ buffer: buf, startMs, durationMs: endMs - startMs });
+            }
+            console.log(`[transcribe] chunked ${(sourceAudioDurationMs/1000).toFixed(1)}s audio into ${chunkPlan.length} chunks at silence`);
+          }
+        }
         try { fs.unlinkSync(mp3Path); } catch {}
-        const audioBytes = audioBuffer.length;
 
-        // Upload audio to Gemini File API — avoids sending large base64 inline which causes
-        // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
-        console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
-        const uploadRes = await fetch(
-          `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(geminiKey)}`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "audio/mp3",
-              "x-goog-api-key": geminiKey,
-              "X-Goog-Upload-Protocol": "raw",
-              "X-Goog-Upload-Command": "upload, finalize",
-              "X-Goog-Upload-Header-Content-Length": String(audioBytes),
-              "X-Goog-Upload-Header-Content-Type": "audio/mp3",
-            },
-            signal: AbortSignal.timeout(120_000),
-            body: audioBuffer,
-          }
-        );
-        if (!uploadRes.ok) {
-          const errBody = await uploadRes.text().catch(() => "");
-          throw new Error(`Gemini File API upload failed: ${uploadRes.status} — ${errBody.slice(0, 200)}`);
-        }
-        const uploadData = await uploadRes.json() as { file?: { uri?: string; name?: string } };
-        const fileUri = uploadData?.file?.uri;
-        const fileName = uploadData?.file?.name;
-        if (!fileUri) throw new Error("Gemini File API did not return file URI");
-        console.log(`[transcribe] uploaded to Gemini File API: ${fileName}`);
-
-        const audioLenSec = sourceAudioDurationMs > 0 ? (sourceAudioDurationMs / 1000).toFixed(1) : null;
-        const timestampPrompt = `คุณคือผู้ตัดซับไตเติ้ลภาษาไทยสำหรับ TikTok/Reels มืออาชีพ
-
-ฟัง audio แล้วแบ่งเป็นซับการ์ดสั้นๆ พร้อม timestamp จาก audio โดยตรง${audioLenSec ? `
-
-⚠️ audio นี้ยาว ${audioLenSec} วินาที — ต้องถอดเสียงให้ครบจนถึงวินาทีสุดท้าย
-caption สุดท้าย endMs ต้องอยู่ใกล้ ${audioLenSec}s (ห่างได้ไม่เกิน 3s)
-ถ้าถอดไม่ถึงท้าย = ผิด ต้องฟังต่อจนจบไฟล์` : ""}
-
-━━━ กฎ 1 — ตัดที่จุดหายใจ ไม่ตัดกลางวลี ━━━
-ตัดหลังจุลภาค จุด หรือช่วงหยุดเสียง ≥ 0.25s
-ห้ามตัดกลางประโยคที่ความหมายยังค้างอยู่
-✗ ผิด: "มึงเคยคิดปะ ว่า" | "ความรู้ที่เรียนมา"
-✓ ถูก: "มึงเคยคิดปะ..." | "ว่าความรู้ที่เรียนมา"
-
-━━━ กฎ 2 — 1 ซับ = 1 ความคิด ━━━
-ถ้าประโยคมี 2 ไอเดีย ให้แยกเป็น 2 ซับ แม้จะสั้น
-✗ ผิด: "อิเล็กตรอนหนีออก ทิ้งหลุมว่าง เรียกว่าโฮล จับคู่กลายเป็นเอ็กซิตอน"
-✓ ถูก: "อิเล็กตรอนหนี" | "ทิ้งหลุมว่าง โฮล" | "จับคู่กัน" | "กลายเป็นเอ็กซิตอน"
-
-━━━ กฎ 3 — ซับช็อก ให้สั้นพิเศษ ━━━
-twist / punchline / คำเด็ด → 3-8 คำ การ์ดเดี่ยว เช่น "แม่งแหกทุกกฎที่เคยมีมา"
-
-━━━ กฎ 4 — ห้ามซับค้างนานเกิน 5 วินาที ━━━
-ถ้า segment ยาว ให้แบ่งซับเพิ่มตามจังหวะพูด
-
-━━━ กฎ 5 — gap ระหว่างซับ ━━━
-endMs ของซับ[i] ต้องน้อยกว่า startMs ของซับ[i+1] เสมอ (≥ 40ms)
-
-━━━ กฎ 6 — ต้องครอบคลุมเสียงพูดทั้งหมด ห้ามข้าม ━━━
-ถอดเสียงให้ครบตั้งแต่วินาทีแรกจนวินาทีสุดท้ายของ audio
-ห้ามข้ามช่วงใดช่วงหนึ่งที่มีคนพูด — แม้พูดเร็วหรือเสียงเบา
-ถ้ามีคนพูดต่อเนื่อง ซับต้องต่อเนื่อง ห้ามเว้นช่องว่าง > 2 วินาที ระหว่างซับที่มีเสียงพูดคั่น
-ตรวจสอบ: caption สุดท้ายต้องจบใกล้ความยาว audio จริง
-
-━━━ กฎ timestamp ━━━
-- startMs = เวลาเริ่มพูดคำแรก × 1000 (ms) — ฟังจาก audio เท่านั้น อย่าเดา
-- endMs = เวลาจบคำสุดท้าย × 1000 — ห้าม pad
-- ห้าม overlap
-
-━━━ tags ━━━
-"hook"=การ์ดแรก (ดึงดูด), "cta"=กดติดตาม/ไลค์/แชร์ (max 2), "body"=ทั้งหมดที่เหลือ${script ? `
-
-━━━ SCRIPT (spelling reference — timestamps ต้องมาจาก audio) ━━━
-${script.trim().slice(0, 2000)}` : ""}
-
-━━━ OUTPUT — JSON เท่านั้น ไม่มี markdown ━━━
-{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},...],"words":[{"word":"...","start":0.0,"end":0.35},...], "fullText":"..."}
-
-ใส่ words array ด้วยเพื่อให้ระบบ verify timestamps`;
-
-        const transcribeBody = JSON.stringify({
-          contents: [{
-            parts: [
-              { text: timestampPrompt },
-              { fileData: { mimeType: "audio/mp3", fileUri } },
-            ],
-          }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 131072,
-            // Small thinking budget (not 0): lets the model sanity-check its own
-            // timestamps — e.g. that captions stay in order and the last one ends
-            // near the real audio length — which improves "ซับตรงเสียง". The JSON
-            // parser below already extracts the {...} object from any surrounding
-            // text, so a thought preamble doesn't break output.
-            thinkingConfig: { thinkingBudget: 2048 },
-          },
-        });
-
-        // Model order is chosen for TIMESTAMP accuracy, not text quality.
-        // Gen-3 models (gemini-3.x-flash / 3.1-pro) have a confirmed progressive
-        // timestamp-drift bug in audio transcription (Google AI Dev forum, May 2026):
-        // a ~12-min clip drifts up to -157s by the end, so subtitles end well before
-        // the audio does ("ซับไม่จบพร้อมเสียง"). gemini-2.5-flash is Google's own
-        // accurate-timestamp baseline — keep it FIRST. Gen-3 is intentionally NOT used
-        // for transcription here; its better text quality doesn't matter because we
-        // take subtitle TEXT from the user's script, only TIMESTAMPS from the audio.
-        const TRANSCRIBE_MODELS = [
-          "gemini-2.5-flash",   // accurate-timestamp baseline (Google ref) — primary
-          "gemini-1.5-pro",     // classic, accurate timing, almost always available
-          "gemini-1.5-flash",   // last-resort fallback for older keys/regions
-        ];
-
-        let geminiRes: Response | null = null;
-        let lastTranscribeErr = "";
-        let usedTranscribeModel = "";
-        const MAX_PER_MODEL = 3;  // 3 retries per model × 3 models = 9 total attempts
-
-        outerTranscribe:
-        for (const model of TRANSCRIBE_MODELS) {
-          for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
-            geminiRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "x-goog-api-key": geminiKey,
-                },
-                signal: AbortSignal.timeout(600_000),
-                body: transcribeBody,
-              }
+        if (chunkPlan.length >= 2) {
+          wasChunked = true;
+          // long audio: transcribe each chunk SEQUENTIALLY, offset + merge
+          const fullScript = (script ?? "").trim();
+          const totalMsForScript = sourceAudioDurationMs || chunkPlan.reduce((a, c) => a + c.durationMs, 0) || 1;
+          let anyDegenerateWords = false;
+          let chunkIdx = 0;
+          for (const ch of chunkPlan) {
+            // Give each chunk only its proportional slice of the script (±12% margin)
+            // as the spelling reference. Passing the FULL script made Gemini anchor to
+            // the script's opening and re-emit the clip's intro for every chunk (the
+            // chunk audio itself is sliced correctly — verified on the VPS ffmpeg).
+            const lo = Math.max(0, ch.startMs / totalMsForScript - 0.12);
+            const hi = Math.min(1, (ch.startMs + ch.durationMs) / totalMsForScript + 0.12);
+            const chunkScript = fullScript
+              ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
+              : "";
+            chunkIdx++;
+            let rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+            // Desynced chunk → RE-TRANSCRIBE it: flash is non-deterministic and a
+            // re-roll usually re-syncs. Blanket-rescaling a badly drifted chunk
+            // drags its correct early captions out of sync (prod 06-12 #2: chunk 1
+            // ×1.264 → first 2:30 desynced). Desync is judged in BOTH directions —
+            // an undershooting transcript compresses captions ahead of the voice
+            // (prod 06-12 #3: subs ran early after 2:20) — and attempts are
+            // compared by |tail gap|, so a 0.7× roll never beats a 1.1× one.
+            const CHUNK_MAX_ATTEMPTS = 3;
+            for (let attempt = 2; attempt <= CHUNK_MAX_ATTEMPTS && chunkNeedsRetry(rawChunk.geminiDirectCaptions, ch.durationMs); attempt++) {
+              const gapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
+              console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: tail ${gapSec >= 0 ? "+" : ""}${gapSec.toFixed(1)}s vs slice — re-transcribing (attempt ${attempt}/${CHUNK_MAX_ATTEMPTS})`);
+              const retry = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
+              const retryBetter =
+                retry.geminiDirectCaptions.length > 0 &&
+                (rawChunk.geminiDirectCaptions.length === 0 ||
+                  Math.abs(chunkTailGapMs(retry.geminiDirectCaptions, ch.durationMs)) <
+                  Math.abs(chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs)));
+              if (retryBetter) rawChunk = retry;
+            }
+            // Per-chunk timestamp guard: rescale residual tail drift onto the real
+            // slice duration, drop word timestamps hallucinated past the slice
+            // length, and zero out degenerate words arrays (truncated responses —
+            // prod saw 108 words for 105 captions). Raw words otherwise reach the
+            // editor and break the word-based "แบ่งซับ N คำ" rebuild (411s timeline
+            // on a 285s clip).
+            const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
+            anyDegenerateWords ||= r.stats.wordsDegenerate;
+            const keptGapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
+            console.log(
+              `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: ${r.geminiDirectCaptions.length} captions, ` +
+              `${r.words.length}/${rawChunk.words.length} words` +
+              (Math.abs(keptGapSec) > 2 ? `, tail ${keptGapSec >= 0 ? "+" : ""}${keptGapSec.toFixed(1)}s` : "") +
+              (r.stats.rescaleK !== 1 ? `, tail-rescale ×${r.stats.rescaleK.toFixed(3)}` : "") +
+              (r.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
             );
-            if (geminiRes.ok) {
-              usedTranscribeModel = model;
-              console.log(`[transcribe] ok with ${model} (attempt ${attempt})`);
-              break outerTranscribe;
-            }
-            lastTranscribeErr = await geminiRes.text().catch(() => "");
-
-            // Auth / bad request — don't retry, but DO try next model (404 means model doesn't exist for this key)
-            if (geminiRes.status === 401 || geminiRes.status === 403 || geminiRes.status === 404 || geminiRes.status === 400) {
-              console.warn(`[transcribe] ${model} returned ${geminiRes.status} — trying next model`);
-              break;
-            }
-
-            // Retryable transient — exponential backoff within same model
-            if (attempt < MAX_PER_MODEL) {
-              const delayMs = 2000 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 1000); // 2s, 4s
-              console.warn(`[transcribe] ${model} ${geminiRes.status} on attempt ${attempt}/${MAX_PER_MODEL}, retrying in ${delayMs}ms`);
-              await new Promise(r => setTimeout(r, delayMs));
-            } else {
-              console.warn(`[transcribe] ${model} exhausted retries — trying next model`);
-            }
+            const offSec = ch.startMs / 1000;
+            for (const w of r.words) words.push({ word: w.word, start: w.start + offSec, end: w.end + offSec });
+            for (const s of r.segments) segments.push({ text: s.text, start: s.start + offSec, end: s.end + offSec });
+            for (const c of r.geminiDirectCaptions) geminiDirectCaptions.push({ ...c, startMs: c.startMs + ch.startMs, endMs: c.endMs + ch.startMs, timestampMs: c.timestampMs + ch.startMs });
+            fullText += (fullText ? " " : "") + r.fullText;
           }
-        }
-
-        // Clean up uploaded file from Gemini (best-effort)
-        if (fileName) {
-          fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${encodeURIComponent(geminiKey)}`, {
-            method: "DELETE",
-            headers: { "x-goog-api-key": geminiKey },
-          }).catch(() => {});
-        }
-
-        if (!geminiRes || !geminiRes.ok) {
-          const status = geminiRes?.status ?? 503;
-          console.error("[transcribe] all models failed; last error body:", lastTranscribeErr.slice(0, 500));
-          if (status === 401 || status === 403) {
-            throw { status, body: lastTranscribeErr };
+          if (anyDegenerateWords && words.length > 0) {
+            // Partial word coverage is worse than none: the editor's word-based
+            // split would only rebuild captions where words exist. Drop them all
+            // so the segment-interpolation below regenerates full-coverage timing.
+            console.log(`[transcribe] word timing unusable in ≥1 chunk → dropping all ${words.length} words (segment interpolation rebuilds full coverage)`);
+            words = [];
           }
-          throw new Error(`Gemini transcribe failed across all ${TRANSCRIBE_MODELS.length} models: ${status} — ${lastTranscribeErr.slice(0, 200)}`);
-        }
-        void usedTranscribeModel; // for future telemetry
-        const geminiData = await geminiRes.json() as Record<string, unknown>;
-        const candidates = geminiData?.candidates as Array<{content:{parts:Array<{text:string}>}}> | undefined;
-        const rawGeminiText = candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-        console.log(`[transcribe] Gemini raw: ${rawGeminiText.slice(0, 300)}`);
-
-        // Try to parse structured JSON response with timestamps
-        try {
-          // Strip markdown fences and find outermost JSON object
-          const stripped = rawGeminiText
-            .replace(/```json\s*/gi, "")
-            .replace(/```\s*/g, "")
-            .trim();
-
-          // Try longest JSON match first (greedy), then fallback to first match
-          const allMatches = [...stripped.matchAll(/\{[\s\S]*?\}/g)];
-          const match = stripped.match(/\{[\s\S]*\}/) ?? (allMatches.length > 0 ? allMatches[allMatches.length - 1] : null);
-
-          if (match) {
-            type GeminiWord = { word?: string; start?: number; end?: number };
-            type GeminiCap = { text?: string; startMs?: number; endMs?: number; tag?: string };
-            type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
-            let parsed: { fullText?: string; captions?: GeminiCap[]; segments?: GeminiSeg[]; words?: GeminiWord[] } | null = null;
-            try {
-              parsed = JSON.parse(match[0]);
-            } catch {
-              // Step 1: close incomplete last object in array, then close arrays/object
-              let repaired = match[0]
-                .replace(/,\s*\{[^}]*$/, "")   // drop incomplete trailing object
-                .replace(/,\s*$/, "")            // drop trailing comma
-                .trimEnd();
-              // Step 2: count unclosed brackets and close them
-              let open = 0;
-              for (const ch of repaired) { if (ch === "[" || ch === "{") open++; else if (ch === "]" || ch === "}") open--; }
-              // close with matching brackets (best-effort order: arrays before objects)
-              const closing = repaired.endsWith("}") ? "" : (repaired.includes('"captions"') ? "]}" : "}");
-              repaired = repaired + closing;
-              try { parsed = JSON.parse(repaired); } catch { /* give up */ }
-            }
-
-            if (parsed) {
-              // Extract word timestamps (top-level or nested in segments)
-              const geminiWords: typeof words = [];
-              if (Array.isArray(parsed.words)) {
-                for (const w of parsed.words) {
-                  if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
-                    geminiWords.push({ word: w.word, start: w.start, end: w.end });
-                }
-              }
-              if (geminiWords.length === 0 && Array.isArray(parsed.segments)) {
-                for (const s of parsed.segments) {
-                  for (const w of (s.words ?? [])) {
-                    if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
-                      geminiWords.push({ word: w.word, start: w.start, end: w.end });
-                  }
-                }
-              }
-              if (geminiWords.length > 0) words = geminiWords;
-
-              // Try new combined captions format first
-              if (Array.isArray(parsed.captions) && parsed.captions.length > 0) {
-                const validCaps = parsed.captions.filter(c =>
-                  typeof c.text === "string" && typeof c.startMs === "number" && typeof c.endMs === "number"
-                );
-                if (validCaps.length > 0) {
-                  geminiDirectCaptions = validCaps.map((c, i) => ({
-                    text: sanitizePhraseText(c.text!),
-                    startMs: c.startMs!,
-                    endMs: c.endMs!,
-                    timestampMs: c.startMs!,
-                    confidence: 1 as number,
-                    tag: (c.tag === "hook" || c.tag === "cta" ? c.tag : i === 0 ? "hook" : "body") as "hook" | "body" | "cta",
-                  })).filter(c => c.text.length > 0);
-                  fullText = parsed.fullText?.trim() || geminiDirectCaptions.map(c => c.text).join(" ");
-                  segments = geminiDirectCaptions.map(c => ({ text: c.text, start: c.startMs / 1000, end: c.endMs / 1000 }));
-                  console.log(`[transcribe] Gemini OK (combined) — ${geminiDirectCaptions.length} captions, ${words.length} words`);
-                }
-              }
-
-              // Fallback: old segments-only format
-              if (geminiDirectCaptions.length === 0 && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
-                segments = parsed.segments
-                  .filter(s => typeof s.text === "string" && typeof s.start === "number" && typeof s.end === "number")
-                  .map(s => ({ text: (s.text as string).trim(), start: s.start as number, end: s.end as number }));
-                fullText = parsed.fullText?.trim() || segments.map(s => s.text).join(" ").trim();
-                console.log(`[transcribe] Gemini OK (segments) — ${segments.length} segments, ${words.length} words`);
-              }
-
-              if (geminiDirectCaptions.length === 0 && segments.length === 0) {
-                console.warn("[transcribe] Gemini returned no captions/segments");
-                fullText = parsed.fullText?.trim() || stripped;
-              }
-            } else {
-              console.warn("[transcribe] Gemini JSON repair failed, raw:", rawGeminiText.slice(0, 200));
-              fullText = stripped;
-            }
-          } else {
-            // No JSON object found — Gemini returned plain text
-            console.warn("[transcribe] Gemini no JSON found, raw:", rawGeminiText.slice(0, 200));
-            fullText = stripped;
-          }
-        } catch {
-          // JSON parse failed → log raw for debugging
-          console.warn("[transcribe] Gemini JSON parse failed, raw:", rawGeminiText.slice(0, 300));
-          fullText = rawGeminiText;
+          console.log(`[transcribe] merged ${chunkPlan.length} chunks → ${geminiDirectCaptions.length} captions, ${words.length} words`);
+        } else {
+          // short audio (or no usable silence split): single call = unchanged behavior
+          const r = await geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs);
+          words = r.words; segments = r.segments; geminiDirectCaptions = r.geminiDirectCaptions; fullText = r.fullText;
         }
       } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
@@ -1302,6 +1515,13 @@ Total audio: ${audioDur.toFixed(2)}s`;
     // (incomplete transcription). Too long is clamped to ffprobe; too short is a
     // retryable error so we don't render a video that cuts audio/subtitles early.
     const TAIL_MS = 2000;
+    // When Gemini's whole reported timeline runs well PAST the real audio, it lost
+    // timestamp sync — every caption is mistimed (and big gaps drop captions), not
+    // just the tail. Clamping would silently ship drifted/gappy subs. So past a
+    // threshold, fail retryable (like the too-short case below): Gemini is
+    // non-deterministic so a retry often re-syncs, and a shorter clip always works.
+    // This is a safety net only — the real long-clip fix is audio chunking.
+    const BOGUS_DURATION_MAX_RATIO = 1.10; // >10% overshoot ⇒ unreliable, reject
     const rawMaxMs = Math.max(
       captions.at(-1)?.endMs ?? 0,
       rawSegments.at(-1)?.endMs ?? 0,
@@ -1310,6 +1530,21 @@ Total audio: ${audioDur.toFixed(2)}s`;
     );
     if (sourceAudioDurationMs > 0 && rawMaxMs > sourceAudioDurationMs + TAIL_MS) {
       console.warn(`[transcribe] clamped bogus duration ${rawMaxMs}ms → ${sourceAudioDurationMs}ms (ffprobe audio=${sourceAudioDurationMs}ms)`);
+      // Chunked long-audio already keeps Gemini in-sync per chunk; a small residual
+      // tail overshoot is handled by clampLastCaptionToAudioEnd below, so don't reject
+      // it — chunking IS the long-clip fix, and rejecting just left the user stuck.
+      if (!wasChunked && rawMaxMs > sourceAudioDurationMs * BOGUS_DURATION_MAX_RATIO) {
+        const pct = Math.round((rawMaxMs / sourceAudioDurationMs - 1) * 100);
+        console.warn(`[transcribe] desynced transcript: ${pct}% overshoot > ${Math.round((BOGUS_DURATION_MAX_RATIO - 1) * 100)}% threshold — rejecting (retryable)`);
+        return NextResponse.json({
+          error: `ถอดซับไม่ตรงจังหวะ (ระบบถอดเสียงคลาดเคลื่อน ~${pct}%) — มักเกิดกับคลิปยาว กรุณากด Transcribe อีกครั้ง หรือใช้คลิปสั้นลง`,
+          provider: "gemini",
+          reason: "transcribe_desynced",
+          retryable: true,
+          sourceAudioDurationMs,
+          reportedDurationMs: rawMaxMs,
+        }, { status: 422 });
+      }
     }
     if (sourceAudioDurationMs > 0) {
       const missingTailMs = sourceAudioDurationMs - rawMaxMs;
@@ -1326,6 +1561,17 @@ Total audio: ${audioDur.toFixed(2)}s`;
       }
     }
     const resolvedDurationMs = sourceAudioDurationMs > 0 ? sourceAudioDurationMs : rawMaxMs;
+    // Response-boundary bound: captions are sanitized below, but words/segments
+    // used to leave the server RAW — hallucinated timestamps past the real audio
+    // length then poisoned the editor's word-based caption rebuild ("แบ่งซับ N คำ"
+    // produced a 6:51 subtitle timeline on a 285s clip). Guards above still ran
+    // on the raw values, so the desync/incomplete detection keeps its signal.
+    const safeWords = wordTimestamps
+      .filter((w) => w.startMs >= 0 && w.startMs < resolvedDurationMs)
+      .map((w) => ({ ...w, endMs: Math.max(w.startMs + 1, Math.min(w.endMs, resolvedDurationMs)) }));
+    const safeSegments = rawSegments
+      .filter((s) => s.startMs >= 0 && s.startMs < resolvedDurationMs)
+      .map((s) => ({ ...s, endMs: Math.max(s.startMs + 1, Math.min(s.endMs, resolvedDurationMs)) }));
     // LLM-aligned captions already have segment-anchored timestamps — skip cursor-push.
     const isSegmentDirect = (isThai || words.length === 0) && segments.length >= 3;
     // Stretch small safe tails to the real ffprobe duration so config/render do not
@@ -1337,8 +1583,8 @@ Total audio: ${audioDur.toFixed(2)}s`;
 
     return NextResponse.json({
       captions: timelineFixedCaptions,
-      segments: rawSegments,
-      words: wordTimestamps,
+      segments: safeSegments,
+      words: safeWords,
       fullText: safeFullText,
       audioDurationMs: resolvedDurationMs,
     });

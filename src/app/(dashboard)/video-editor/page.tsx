@@ -28,12 +28,23 @@ import type {
 import { DEFAULT_STEPS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
 import { StepIcon } from "./_components/StepIcon";
-import { renderSubEl } from "./_components/subtitle-renderer";
 import { ApiCallError } from "./_components/ApiCallError";
 import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
+import { TimeLabel } from "./_components/TimeLabel";
+import { PlayheadIndicator, PlaybackProgressStrip, SegmentProgressBar } from "./_components/PlayheadIndicator";
+import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
+import { playbackTime } from "./_lib/playback-time";
+import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { boundWordsForSplit } from "@/lib/transcribe-timeline";
+import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
+import { setDynamicLoanwords } from "@/lib/thai-loanwords";
+import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
+import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
+import { estimateScriptDurationSec } from "./_lib/estimate-duration";
+import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -169,10 +180,26 @@ export default function VideoEditorPage() {
   const [activeCaptionIdx, setActiveCaptionIdx] = useState(-1);
   const [editingCapIdx, setEditingCapIdx] = useState<number | null>(null);
   const activeSegCardRef = useRef<HTMLDivElement | null>(null);
+  // Last manual interaction with the subtitle list. Auto-follow pauses for a
+  // few seconds afterwards — with 1-word splits the active card changes several
+  // times per second and the smooth scrollIntoView otherwise fights the user's
+  // own scrolling (list เด้งไปเด้งมา เลื่อนขึ้นไม่ได้).
+  const segListUserScrollAtRef = useRef(0);
+  const markSegListUserScroll = useCallback(() => { segListUserScrollAtRef.current = Date.now(); }, []);
+
+  useEffect(() => {
+    if (Date.now() - segListUserScrollAtRef.current < 4000) return;
+    activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [activeCaptionIdx]);
 
   // ── Playback ──────────────────────────────────────────────────────────
   const [playing, setPlaying] = useState(false);
+  // Coarse playback position — updated on play/pause/seek/end ONLY (design
+  // spec §5 PR-3). The 60fps position lives in the playbackTime store
+  // (_lib/playback-time.ts); leaf components subscribe there. Event handlers
+  // that need the live position read playbackTime.getMs().
   const [currentMs, setCurrentMs] = useState(0);
+  void currentMs; // write-mostly by design — kept so coarse logic can use state later
   const [durationMs, setDurationMs] = useState(0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
@@ -182,6 +209,8 @@ export default function VideoEditorPage() {
   const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
   const [savingToGallery, setSavingToGallery] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(0);
+  const timelineCanvasWidthPct = 100 + timelineZoom * 4;
   const centerPanelRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -195,7 +224,6 @@ export default function VideoEditorPage() {
   const captionMsToVideoMs = useCallback((captionMs: number) => (
     durationMs > 0 && captionEndMs > 0 ? captionMs * (durationMs / captionEndMs) : captionMs
   ), [durationMs, captionEndMs]);
-  const playheadMs = videoMsToCaptionMs(currentMs);
 
   // ตอนเล่น: เลื่อนการ์ดซับ active มากลาง panel ให้เห็นชัดว่าซับวิ่งถึงไหน
   // ตอน pause/คลิกเอง: เลื่อนแค่พอเห็น (nearest) จะได้ไม่กระตุกตอนผู้ใช้ scroll หาเอง
@@ -270,6 +298,9 @@ export default function VideoEditorPage() {
   const [showSplitMenu, setShowSplitMenu] = useState(false);
   // เก็บ captions ต้นฉบับจาก Transcribe เพื่อ reset "sentence" ได้
   const originalCaptionsRef = useRef<Caption[]>([]);
+  // Exact subtitle timing from the LAST TTS run (PR-C). Null when the voice
+  // didn't come from our TTS (avatar/upload/fail-open) → transcribe fallback.
+  const ttsTimingRef = useRef<TtsTiming | null>(null);
   // ref ที่ sync กับ captions state — ใช้ใน rAF loop เพื่อหลีกเลี่ยง stale closure
   const captionsRef = useRef<Caption[]>([]);
 
@@ -319,6 +350,7 @@ export default function VideoEditorPage() {
     fontFamily: string; fontSize: number; fontWeight: number;
     color: string; accentColor: string; preset: SubPreset;
     effect: SubTextEffect; position: number;
+    shadow: boolean; outline: boolean; outlineSize: number;
     captions: Caption[];
   }
   const lastRenderedStyleRef = useRef<RenderedStyle | null>(null);
@@ -333,7 +365,29 @@ export default function VideoEditorPage() {
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
-  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string }>({ open: false });
+  const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string; title?: string; benefits?: string[]; hideCta?: boolean }>({ open: false });
+  // Plan + duration cap — loaded once so the duration limit can be pre-flighted
+  // BEFORE spending on TTS/HeyGen (editor is PRO-gated, so default to PRO).
+  const [userPlan, setUserPlan] = useState<string>("PRO");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/user/me")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
+      .catch(() => { /* keep PRO default — server still backstops at render */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load auto-mined loanwords so client-side word-mode splitting keeps them whole.
+  // Fail-open: on any error the static list (already bundled) is used.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/thai-loanwords")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d && Array.isArray(d.words)) setDynamicLoanwords(d.words, Array.isArray(d.denylist) ? d.denylist : []); })
+      .catch(() => { /* fail-open: static list only */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
 
@@ -480,6 +534,26 @@ export default function VideoEditorPage() {
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Unmount cleanup ───────────────────────────────────────────────────
+  // SPA navigation away from /video-editor must stop every client-side loop —
+  // เดิม loop พวกนี้รั่วข้ามหน้า (poll ต่อแม้ออกจากหน้าไปแล้ว):
+  // - abortRef = true       → HeyGen 5s for-loops (runAvatar / runAvatarTail) หยุดที่ tick ถัดไป
+  // - abortControllerRef    → ยกเลิก fetch ที่ค้าง + pollJob loops (render/burn) ผ่าน abort chaining
+  // - stopRenderPollRef     → หยุด pollJob loop ที่ active โดยตรง (กันเหนียว)
+  // จงใจไม่ cancel งานฝั่ง server ที่นี่ — การเปลี่ยน semantics ของ
+  // mount-time auto-cancel / beforeunload sendBeacon เป็นงาน Phase 2 PR-9.
+  // (StrictMode dev double-mount ปลอดภัย: ทุก run ตั้ง abortRef = false ใหม่
+  // และ abortControllerRef ถูกสร้างใหม่ต่อ run)
+  useEffect(() => {
+    return () => {
+      abortRef.current = true;
+      abortControllerRef.current?.abort();
+      stopRenderPollRef.current?.();
+      stopRenderPollRef.current = null;
+      runningRef.current = false;
+    };
+  }, []);
+
   // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
   // the debounced auto-load effect and the manual "โหลด avatar" button.
   const loadAvatarInfo = useCallback(async (id: string) => {
@@ -531,7 +605,16 @@ export default function VideoEditorPage() {
     return () => clearTimeout(t);
   }, [avatarId, loadAvatarInfo]);
 
-  // ── Video sync — rAF loop for smooth subtitle tracking ────────────────
+  // playbackTime is a module-level singleton — it outlives this page across
+  // client-side navigations. Reset on mount so a remounted editor starts at
+  // 0:00 (the old currentMs state got this for free by being component state).
+  useEffect(() => { playbackTime.setMs(0); }, []);
+
+  // ── Video sync — rAF loop drives the external playbackTime store ──────
+  // Per frame: ONLY playbackTime.setMs() (leaf components subscribe to it)
+  // and a binary-search caption lookup. setCurrentMs (React state at the page
+  // root — re-renders the whole 4,000-line tree) now fires only on
+  // play/pause/seek/end; setActiveCaptionIdx only when the caption changes.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -542,8 +625,8 @@ export default function VideoEditorPage() {
       rafId = requestAnimationFrame(tick);
       const ms = v.currentTime * 1000;
       const captionMs = videoMsToCaptionMs(ms);
-      setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
+      playbackTime.setMs(ms);
+      const idx = findActiveCaptionIdx(captionsRef.current, captionMs);
       if (idx !== lastIdx) {
         lastIdx = idx;
         setActiveCaptionIdx(idx);
@@ -551,25 +634,29 @@ export default function VideoEditorPage() {
       }
     };
 
-    const onPlay    = () => { setPlaying(true);  rafId = requestAnimationFrame(tick); };
-    const onPause   = () => { setPlaying(false); cancelAnimationFrame(rafId); };
-    const onEnded   = () => { setPlaying(false); cancelAnimationFrame(rafId); };
-    const onMeta    = () => setDurationMs(v.duration * 1000);
-    // single timeupdate for when video is paused/seeking
-    const onTime    = () => {
+    // Coarse sync into React state — play/pause/seek/end only. Keeps existing
+    // non-60fps logic working unchanged.
+    const syncCoarse = () => {
       const ms = v.currentTime * 1000;
       const captionMs = videoMsToCaptionMs(ms);
+      playbackTime.setMs(ms);
       setCurrentMs(ms);
-      const idx = captionsRef.current.findIndex(c => captionMs >= c.startMs && captionMs < c.endMs);
+      const idx = findActiveCaptionIdx(captionsRef.current, captionMs);
+      lastIdx = idx;
       setActiveCaptionIdx(idx);
       if (idx >= 0) setActiveSegIdx(idx);
     };
+
+    const onPlay    = () => { setPlaying(true);  syncCoarse(); rafId = requestAnimationFrame(tick); };
+    const onPause   = () => { setPlaying(false); cancelAnimationFrame(rafId); syncCoarse(); };
+    const onEnded   = () => { setPlaying(false); cancelAnimationFrame(rafId); syncCoarse(); };
+    const onMeta    = () => setDurationMs(v.duration * 1000);
 
     v.addEventListener("play",        onPlay);
     v.addEventListener("pause",       onPause);
     v.addEventListener("ended",       onEnded);
     v.addEventListener("loadedmetadata", onMeta);
-    v.addEventListener("seeked",      onTime);
+    v.addEventListener("seeked",      syncCoarse);
 
     if (!v.paused) { rafId = requestAnimationFrame(tick); }
 
@@ -579,7 +666,7 @@ export default function VideoEditorPage() {
       v.removeEventListener("pause",       onPause);
       v.removeEventListener("ended",       onEnded);
       v.removeEventListener("loadedmetadata", onMeta);
-      v.removeEventListener("seeked",      onTime);
+      v.removeEventListener("seeked",      syncCoarse);
     };
   }, [captions, videoUrl, preRenderUrl, videoMsToCaptionMs]);  // re-run when video src changes so listeners attach to new element
 
@@ -621,6 +708,7 @@ export default function VideoEditorPage() {
     // Playback
     setPlaying(false);
     setCurrentMs(0);
+    playbackTime.setMs(0);
     setDurationMs(0);
 
     // Stock
@@ -747,6 +835,7 @@ export default function VideoEditorPage() {
     pipe.current.sceneDurations = d.sceneDurations ?? [];
     pipe.current.scenes = d.scenes ?? [];
     pipe.current.visualDirection = d.visualDirection ?? "";
+    pipe.current.contentProfile = d.contentProfile ?? "";
     pipe.current.stockVideos = d.stockVideos ?? [];
     pipe.current.captions = caps;
     pipe.current.config = d.config ?? null;
@@ -800,6 +889,7 @@ export default function VideoEditorPage() {
       sceneDurations: pipe.current.sceneDurations,
       scenes: pipe.current.scenes,
       visualDirection: pipe.current.visualDirection,
+      contentProfile: pipe.current.contentProfile,
       stockVideos: pipe.current.stockVideos,
       config: pipe.current.config,
 
@@ -886,20 +976,70 @@ export default function VideoEditorPage() {
     if (!res.ok) throw new ApiCallError(prefix, data, res.status);
   }
 
+  // Compose a plan-aware UpgradeModal payload for a clip over the plan's duration
+  // cap. Pro over 6min → point to Business; Business (top tier) → just trim, no CTA.
+  function durationLimitModal(durationSec: number, plan: string) {
+    const cap = limitsForPlan(plan).durationSec;
+    const next = nextPlanFor(plan);
+    const mins = (durationSec / 60).toFixed(1);
+    const capMin = cap / 60;
+    if (next) {
+      const nextCapMin = limitsForPlan(next).durationSec / 60;
+      return {
+        open: true,
+        title: `อัปเกรดเป็น ${PLAN_LABEL[next]} — รองรับคลิปยาวขึ้น`,
+        message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานแผน ${PLAN_LABEL[plan] ?? plan} (${capMin} นาที/คลิป) — ${PLAN_LABEL[next]} รองรับสูงสุด ${nextCapMin} นาที/คลิป`,
+        benefits: next === "BUSINESS"
+          ? ["300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
+          : undefined,
+      };
+    }
+    return {
+      open: true,
+      hideCta: true,
+      title: "คลิปยาวเกินเพดาน",
+      message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานสูงสุด ${capMin} นาที/คลิป — กรุณาตัดสคริปต์/คลิปให้สั้นลง`,
+    };
+  }
+
+  // Pre-flight the plan duration cap. Returns false (and shows the modal) when the
+  // clip is over — call BEFORE paid steps (TTS, HeyGen) and before render so the
+  // user isn't charged then told "too long" at the end.
+  // `isEstimate` adds a 10% margin so the rough pre-TTS estimate never false-blocks
+  // a borderline clip (the exact post-TTS check then catches it precisely).
+  function checkDurationWithinPlan(durationSec: number, isEstimate: boolean): boolean {
+    if (!durationSec || durationSec <= 0) return true; // unknown — let later checks decide
+    const cap = limitsForPlan(userPlan).durationSec;
+    const threshold = isEstimate ? cap * 1.1 : cap;
+    if (durationSec <= threshold) return true;
+    setUpgradeModal(durationLimitModal(durationSec, userPlan));
+    return false;
+  }
+
   function handlePlanError(err: unknown): boolean {
-    if (err instanceof ApiCallError && (err.data as any)._status === 403) {
-      setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
+    if (!(err instanceof ApiCallError)) return false;
+    if ((err.data as any)._status !== 403) return false;
+    // PR-1 structured shape: { error: { code: "quota_exceeded", message, userAction } }
+    const rawErr = err.data.error;
+    const structured = typeof rawErr === "object" && rawErr !== null
+      ? (rawErr as { code?: string; message?: string; userAction?: string; neededPlan?: string | null })
+      : null;
+    const message = structured
+      ? [structured.message, structured.userAction].filter(Boolean).join(" — ")
+      : String(rawErr ?? "");
+    // Duration cap (server backstop): show the right upgrade tier, not the generic Pro modal.
+    if (structured?.code === "duration_exceeded") {
+      const neededPlan = structured.neededPlan ?? null;
+      setUpgradeModal({
+        open: true,
+        message,
+        title: neededPlan ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan] ?? neededPlan} — รองรับคลิปยาวขึ้น` : "คลิปยาวเกินเพดาน",
+        hideCta: !neededPlan,
+      });
       return true;
     }
-    // check via message contains "403"
-    if (err instanceof ApiCallError) {
-      const status = (err.data as any)._status;
-      if (status === 403) {
-        setUpgradeModal({ open: true, message: String(err.data.error ?? "") });
-        return true;
-      }
-    }
-    return false;
+    setUpgradeModal({ open: true, message });
+    return true;
   }
 
   function friendlyError(err: unknown): string {
@@ -909,7 +1049,13 @@ export default function VideoEditorPage() {
     if (raw.includes("ENOSPC")) return "พื้นที่ดิสก์บน Server เต็ม";
     if (err instanceof ApiCallError) {
       const status = (err.data as any)._status as number | undefined;
-      const errMsg = String(err.data.error ?? "");
+      // PR-1 structured errors: { error: { code, message, userAction } } — เช่น quota_exceeded
+      const structuredErr = typeof err.data.error === "object" && err.data.error !== null
+        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        : null;
+      const errMsg = structuredErr
+        ? [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ")
+        : String(err.data.error ?? "");
       if (status === 429 && errMsg) return errMsg;
       // Key ตั้งไว้แล้วแต่ invalid — บอกรายละเอียดแทนการให้ใส่ซ้ำ
       if (status === 401) {
@@ -1016,14 +1162,11 @@ export default function VideoEditorPage() {
       // Thai TTS speaks at ~2 Thai chars/sec for natural pace (slower than English).
       // We add 10% buffer to over-estimate slightly — better too many keywords than too few.
       const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
-      const thaiCharCount = (script.match(/[฀-๿]/g) ?? []).length;
-      const englishWordCount = script.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
-      // ~2 Thai chars/sec + ~3 English words/sec (TTS natural rate)
-      const scriptEstimate = thaiCharCount / 2 + englishWordCount / 3;
+      const scriptEstimate = estimateScriptDurationSec(script);  // ~2 Thai chars/sec + ~3 EN words/sec
       const estimatedDurSec = knownDurSec > 0
         ? knownDurSec
         : Math.ceil(scriptEstimate * 1.1);  // 10% buffer
-      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s (thaiChars=${thaiCharCount}, enWords=${englishWordCount})`);
+      console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s`);
       const res = await fetch("/api/videos/extract-keywords", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
@@ -1041,6 +1184,7 @@ export default function VideoEditorPage() {
       pipe.current.sceneClipCounts = data.sceneClipCounts ?? [];
       pipe.current.sceneDurations = data.sceneDurations ?? [];
       pipe.current.visualDirection = data.visualDirection ?? "";
+      pipe.current.contentProfile = data.contentProfile ?? "";
       const totalClips = (data.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
       setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
       return kws;
@@ -1065,6 +1209,7 @@ export default function VideoEditorPage() {
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
         ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
+        fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
         // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
         ...(targetClipCount > 0
@@ -1073,6 +1218,7 @@ export default function VideoEditorPage() {
           ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
           : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+        ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
         ...(targetClipCount === 0 && perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
       }),
@@ -1109,7 +1255,17 @@ export default function VideoEditorPage() {
     return sv;
   }
 
+  // Capture the additive `timing` field from a TTS response (PR-B/PR-D).
+  // audioDurationMs lands in pipe.current immediately so Gate 2 sees the real
+  // length even when transcribe is skipped.
+  function captureTtsTiming(data: { timing?: TtsTiming; audioDurationMs?: number }) {
+    ttsTimingRef.current = data.timing && Array.isArray(data.timing.segments) ? data.timing : null;
+    const d = Number(data.audioDurationMs);
+    if (Number.isFinite(d) && d > 0) pipe.current.audioDurationMs = d;
+  }
+
   async function runTts(): Promise<string> {
+    ttsTimingRef.current = null; // stale timing must never outlive its audio
     if (ttsProvider === "gemini") {
       setStep("tts", "running", "Gemini TTS...");
       const res = await fetch("/api/videos/tts-gemini", {
@@ -1119,6 +1275,7 @@ export default function VideoEditorPage() {
       });
       const data = await res.json();
       assertOk("TTS", res, data);
+      captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
       setStep("tts", "done", url); return url;
@@ -1131,10 +1288,64 @@ export default function VideoEditorPage() {
       });
       const data = await res.json();
       assertOk("TTS", res, data);
+      captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
       setStep("tts", "done", url); return url;
     }
+  }
+
+  // PR-C: subtitles straight from TTS timing — exact by construction, no
+  // listen-and-guess. Returns null when the last TTS run carried no usable
+  // timing (avatar/upload voice, fail-open response) → caller runs the
+  // transcribe fallback, i.e. exactly the old behavior.
+  // PR-E: viral-style cuts come from /api/videos/split-script — a text-only
+  // LLM that picks cut points but can never alter a character (server
+  // validates verbatim coverage). Any failure silently degrades to sentence
+  // cards, so this call can only make cards prettier, never break timing.
+  async function applyTtsTiming(): Promise<Caption[] | null> {
+    if (!ttsTimingRef.current) return null;
+    const AVG_CHAR_WIDTH_RATIO = 0.47; // same card-width math as runTranscribe
+    const VIDEO_WIDTH = 1080;
+    const SUBTITLE_PADDING = 160;
+    const maxCardChars = Math.max(10, Math.floor((VIDEO_WIDTH - SUBTITLE_PADDING) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
+
+    let viralCards: ScriptCard[] | null = null;
+    const fullText = ttsTimingRef.current.segments.map(s => s.text).join("");
+    if (fullText.length >= 120) { // tiny scripts: sentence cards are identical anyway
+      try {
+        setStep("transcribe", "running", "ตัดการ์ดสไตล์ viral...");
+        const res = await fetch("/api/videos/split-script", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: fullText, maxCardChars }),
+          signal: abortControllerRef.current?.signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          viralCards = Array.isArray(data.cards) ? data.cards : null;
+        } else {
+          console.warn(`[editor] split-script ${res.status} — using sentence cards`);
+        }
+      } catch (e) {
+        if (abortRef.current) return null;
+        console.warn("[editor] split-script failed — using sentence cards:", e);
+      }
+    }
+
+    const res = captionsFromTtsTiming(ttsTimingRef.current, pipe.current.audioDurationMs ?? 0, maxCardChars, viralCards);
+    if (!res) return null;
+
+    const sceneCaptions = normalizeCaptionsForTimeline(res.captions, res.audioDurationMs);
+    pipe.current.captions = sceneCaptions;
+    pipe.current.sceneCaptions = sceneCaptions;
+    pipe.current.audioDurationMs = res.audioDurationMs;
+    pipe.current.words = res.words;
+    originalCaptionsRef.current = sceneCaptions;
+    setCaptions(sceneCaptions);
+    setSplitMode("sentence");
+    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · เวลาจาก TTS เป๊ะ ✓`);
+    console.log(`[editor] subtitles from TTS timing: ${sceneCaptions.length} cards, ${res.words.length} words, ${res.audioDurationMs}ms — transcribe skipped`);
+    return sceneCaptions;
   }
 
   async function runTranscribe(voiceUrl: string): Promise<Caption[]> {
@@ -1419,6 +1630,7 @@ export default function VideoEditorPage() {
         fontFamily: subFontFamily, subtitlePosition: subPosition, subtitleSize: subFontSize,
         subtitleColor: subColor, subtitleAccentColor: subAccentColor,
         subtitleStylePreset: subPreset, subtitleTextEffect: subEffect, subtitleFontWeight: subFontWeight,
+        subtitleShadow: subShadow, subtitleOutline: subOutline, subtitleOutlineSize: subOutlineSize,
         scenes: pipe.current.scenes ?? [], keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: sceneClipCountsForConfig, sceneDurations: pipe.current.sceneDurations ?? [],
         preferredLLM: preferredLLMRef.current,
@@ -1509,69 +1721,15 @@ export default function VideoEditorPage() {
       startedAt: renderActivityStartedAt,
     });
 
-    let renderPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let renderFailedMessage: string | null = null;
-    let resolveRenderUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-    let renderIsQueued = false;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (renderPollTimer) { clearInterval(renderPollTimer); renderPollTimer = null; }
-    };
-    stopRenderPollRef.current = stopPoll;
-
-    renderPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          // progress file บอก done → resolve ทันที แล้วหยุด poll ทั้งคู่
-          if (resolveRenderUrl) { resolveRenderUrl(d.videoUrl); resolveRenderUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) { renderFailedMessage = d.error; setRenderProgressError(d.error); setStep("render", "error", d.error); stopPoll(); return; }
-        const p = Number(d.progress);
-        renderIsQueued = Boolean(d.queued || d.stage === "queued");
-        if (renderIsQueued) {
-          const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", queueText);
-          return;
-        }
-        if (d.stage === "preparing") {
-          setRenderActivity({
-            phase: "preparing",
-            label: "เตรียมไฟล์สำหรับเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", "Preparing render...");
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "rendering",
-            label: "กำลังเรนเดอร์",
-            queuePosition: null,
-            startedAt: renderActivityStartedAt,
-          });
-          setStep("render", "running", `Rendering... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 3s status interval. pollAbort stops it: chained to the shared
+    // AbortController (stopAll / beforeunload) and exposed via stopRenderPollRef.
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       // Always rebuild keywordPopups from current captions so render matches preview exactly
@@ -1597,6 +1755,9 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
+        subtitleShadow: subShadow,
+        subtitleOutline: subOutline,
+        subtitleOutlineSize: subOutlineSize,
         fontFamily: subFontFamily,
         keywordPopups: [],
         // Always sync BGM from current UI state, not the cached config. The
@@ -1614,7 +1775,6 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
         signal: abortControllerRef.current?.signal,
       });
-      if (renderFailedMessage) throw new Error(renderFailedMessage);
       const data = await res.json();
       assertOk("Render", res, data);
 
@@ -1628,49 +1788,78 @@ export default function VideoEditorPage() {
         setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return immediateUrl;
       }
       if (!jobId) throw new Error("Render server did not return jobId");
-      currentJobId = jobId; activeJobIdRef.current = jobId;
+      activeJobIdRef.current = jobId;
       // บันทึก jobId ลงใน URL เพื่อให้ resume ได้หลัง refresh
       try { const u = new URL(window.location.href); u.searchParams.set("jobId", jobId); window.history.replaceState({}, "", u.toString()); } catch {}
 
-      // Stale detection: ถ้า progress ไม่เปลี่ยนนาน 60 นาที → ถือว่า hang → error
-      const STALE_TIMEOUT_MS = 60 * 60 * 1000;
-      let lastProgressValue = -1;
-      let lastProgressChangedAt = Date.now();
-
       let statusNotFoundCount = 0;
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveRenderUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (renderFailedMessage) { clearInterval(si); reject(new Error(renderFailedMessage)); return; }
-          if (!resolveRenderUrl) { clearInterval(si); return; }
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-          // Stale check: progress ไม่เปลี่ยนนานเกิน 5 นาที → hang
-          const curProgress = renderProgressRef.current;
-          if (renderIsQueued) {
-            lastProgressChangedAt = Date.now();
-          } else if (curProgress !== lastProgressValue) { lastProgressValue = curProgress; lastProgressChangedAt = Date.now(); }
-          else if (Date.now() - lastProgressChangedAt > STALE_TIMEOUT_MS) {
-            clearInterval(si); resolveRenderUrl = null;
-            reject(new Error("Render หยุดค้างนานเกิน 60 นาที — กรุณาลองใหม่"));
-            return;
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — จับเคสที่ progress file หาย
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Render failed" };
+              if (sd.status === "not_found") {
+                statusNotFoundCount++;
+                if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+              }
+            } else if (sr.status === 404) {
+              statusNotFoundCount++;
+              if (statusNotFoundCount === 3) console.warn("[render] render-status not_found ×3 — relying on progress-file polling");
+            }
           }
 
-          try {
-            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-            const sd = await sr.json();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (sd.status === "done" && sd.videoUrl) { clearInterval(si); resolveRenderUrl = null; resolve(sd.videoUrl as string); }
-            else if (sd.status === "error") { clearInterval(si); resolveRenderUrl = null; reject(new Error(sd.error ?? "Render failed")); }
-            else if (sd.status === "not_found" || sr.status === 404) {
-              statusNotFoundCount++;
-              if (statusNotFoundCount >= 3) {
-                clearInterval(si);
-                console.warn(`[render] render-status not_found ×${statusNotFoundCount} — falling back to progress-file polling`);
-              }
-            }
-          } catch (e) { if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveRenderUrl = null; reject(e); } }
-        }, 3000);
+          // 502/504 HTML หรือ network ล่ม → throw → pollJob ถือเป็น transient + backoff (ห้าม fail งาน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิวเรนเดอร์ #${d.queuePosition}` : "รอคิวเรนเดอร์";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", queueText);
+            return { status: "pending", resetStale: true }; // รอคิว = งานยังไม่เริ่ม ไม่นับ stale
+          }
+          if (d.stage === "preparing") {
+            setRenderActivity({
+              phase: "preparing",
+              label: "เตรียมไฟล์สำหรับเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", "Preparing render...");
+            return { status: "pending", progress: null }; // preparing ค้างเกิน 10 นาที = stale (ตั้งใจ)
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "rendering",
+              label: "กำลังเรนเดอร์",
+              queuePosition: null,
+              startedAt: renderActivityStartedAt,
+            });
+            setStep("render", "running", `Rendering... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       if (activeJobIdRef.current !== jobId) throw new Error("__SUPERSEDED__");
@@ -1688,6 +1877,7 @@ export default function VideoEditorPage() {
         fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
         color: subColor, accentColor: subAccentColor, preset: subPreset,
         effect: subEffect, position: subPosition,
+        shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
         captions: captionsRef.current.map(c => ({ ...c })),
       };
       setStyleIsDirty(false);
@@ -1695,14 +1885,20 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
-      if (!renderFailedMessage && !(err instanceof Error && err.name === "AbortError")) {
-        const msg = friendlyError(err);
+      // stale/transient-limit: งานฝั่ง server อาจยังทำงานอยู่ — แนะนำให้เช็ค Gallery แล้วค่อยลองใหม่
+      const finalErr = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง")
+        : err;
+      if (!(finalErr instanceof Error && finalErr.name === "AbortError")) {
+        const msg = friendlyError(finalErr);
         setRenderProgressError(msg); setStep("render", "error", msg);
       }
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
-      throw err;
+      throw finalErr;
     } finally {
-      stopPoll(); stopRenderPollRef.current = null;
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
@@ -1711,6 +1907,24 @@ export default function VideoEditorPage() {
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
   const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+
+  // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
+  type AvatarPollData = {
+    status?: string;
+    videoUrl?: string | null;
+    errorMsg?: string | null;
+    error?: { code?: string; message?: string; userAction?: string } | null;
+    retryAfterSec?: number;
+  };
+
+  function avatarFailureMessage(pollData: AvatarPollData, fallbackPrefix: string): string {
+    if (pollData.error?.message) {
+      return pollData.error.userAction
+        ? `${pollData.error.message} — ${pollData.error.userAction}`
+        : pollData.error.message;
+    }
+    return `${fallbackPrefix}: ${pollData.errorMsg ?? "unknown"}`;
+  }
 
   async function runAvatar(audioUrl: string, trimSecs?: number): Promise<string> {
     // Direct URL mode — skip HeyGen, use URL directly
@@ -1763,7 +1977,7 @@ export default function VideoEditorPage() {
       if (abortRef.current) throw new Error("__SUPERSEDED__");
       // try ครอบเฉพาะ fetch/parse (ข้าม tick เมื่อ network พลาดชั่วคราว) — แต่สถานะ "failed" จาก HeyGen
       // ต้อง throw ออกไปถึง catch ของ pipeline ไม่งั้นจะ poll วิดีโอที่ตายแล้วต่ออีก 30 นาที (อาการ "ค้าง")
-      let pollData: { status?: string; videoUrl?: string | null; errorMsg?: string | null } = {};
+      let pollData: AvatarPollData = {};
       try {
         const pollRes = await fetch("/api/videos/poll-avatar", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -1776,7 +1990,11 @@ export default function VideoEditorPage() {
         continue;
       }
       if (pollData.status === "completed" && pollData.videoUrl) { avatarVideoUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Avatar failed: ${pollData.errorMsg ?? "unknown"}`);
+      // Terminal จาก server (key ผิด / ไม่พบวิดีโอ / เครดิตหมด / HeyGen fail) → ล้มทันที ไม่วนต่อ 30 นาที
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Avatar failed"));
+      // HeyGen ขอให้รอ (429) — เคารพ Retry-After ก่อน poll รอบถัดไป (ลูปนี้หน่วงเองอยู่แล้ว 5s)
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
       setStep("avatar", "running", `HeyGen: ${pollData.status} (${i + 1}) ~${Math.round((i + 1) * 5 / 60)}min`);
     }
     if (!avatarVideoUrl) throw new Error("Avatar: timeout หลัง 30 นาที");
@@ -1859,14 +2077,24 @@ export default function VideoEditorPage() {
     for (let i = 0; i < 360; i++) {
       await new Promise(r => setTimeout(r, 5000));
       if (abortRef.current) throw new Error("__SUPERSEDED__");
-      const pollRes = await fetch("/api/videos/poll-avatar", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: genData.videoId }),
-        signal: abortControllerRef.current?.signal,
-      });
-      const pollData = await pollRes.json();
+      // เหมือน loop หลักของ runAvatar: network พลาดชั่วคราว = ข้าม tick — ห้ามฆ่า pipeline ทั้งเส้น
+      let pollData: AvatarPollData = {};
+      try {
+        const pollRes = await fetch("/api/videos/poll-avatar", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: genData.videoId }),
+          signal: abortControllerRef.current?.signal,
+        });
+        pollData = await pollRes.json();
+      } catch (e) {
+        if (e instanceof Error && (e.name === "AbortError" || e.message === "__SUPERSEDED__")) throw e;
+        continue;
+      }
       if (pollData.status === "completed" && pollData.videoUrl) { tailUrl = pollData.videoUrl; break; }
-      if (pollData.status === "failed") throw new Error(`Tail avatar failed: ${pollData.errorMsg}`);
+      if (pollData.status === "failed") throw new Error(avatarFailureMessage(pollData, "Tail avatar failed"));
+      const retrySec = pollData.retryAfterSec;
+      if (retrySec && retrySec > 5) await new Promise(r => setTimeout(r, (retrySec - 5) * 1000));
+      setStep("avatarTail", "running", `HeyGen tail: ${pollData.status ?? "pending"} (${i + 1})`);
     }
     if (!tailUrl) throw new Error("Tail avatar: timeout");
     setAvatarTailGreenUrl(tailUrl);
@@ -1883,6 +2111,10 @@ export default function VideoEditorPage() {
       if (!avatarId.trim()) { toast.error("กรอก HeyGen Avatar ID ก่อน"); return; }
       if (!pipe.current.voiceUrl) { toast.error("ต้องสร้างเสียง TTS ก่อน"); return; }
     }
+    // Defense in depth: render ran first so audioDurationMs is known — block before
+    // paying for HeyGen if the clip exceeds the plan cap (direct mode has no known
+    // duration, so it passes through and relies on the server backstop).
+    if (!isDirect && !checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
     if (runningRef.current) return;
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
@@ -1985,6 +2217,17 @@ export default function VideoEditorPage() {
   const runAll = useCallback(async () => {
     if (runningRef.current || !script.trim()) return;
 
+    // NOTE: a pre-TTS duration *estimate* gate was removed here — the script→duration
+    // estimate (rate tuned for keyword counting, ~2 Thai chars/sec) over-estimates the
+    // real spoken duration ~6x and false-blocked valid clips (showed "~30 min" for a
+    // ~6-min script). The cap is still enforced accurately by Gate 2 below (exact, on
+    // the real audioDurationMs after TTS) + the server render backstop.
+
+    if (useAvatar && avatarInputMode === "generate" && !avatarId.trim()) {
+      toast.error("กรอก HeyGen Avatar ID ก่อน");
+      return;
+    }
+
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     try {
       const keysRes = await fetch("/api/user/api-keys");
@@ -2059,14 +2302,20 @@ export default function VideoEditorPage() {
         setStep("tts", "skip", "ข้าม — ใช้เสียงจาก Direct URL");
         vUrl = avatarDirectUrl.trim();
         pipe.current.voiceUrl = vUrl;
+        ttsTimingRef.current = null; // external audio — timing from a previous TTS run doesn't apply
       } else {
         vUrl = await runTts();
         if (abortRef.current) return;
       }
 
-      // ── Transcribe to get audioDurationMs into pipe.current ──
-      const caps = await runTranscribe(vUrl);
+      // ── Subtitles: exact TTS timing when available, transcribe fallback otherwise ──
+      const caps = (await applyTtsTiming()) ?? await runTranscribe(vUrl);
       if (abortRef.current) return;
+
+      // ── Gate 2 (post-TTS, exact): real audio length is known now — block before
+      // keywords/stock/render/HeyGen if it exceeds the plan cap. TTS is already
+      // spent, but this saves the (often pricier) HeyGen + render work.
+      if (!checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
 
       // ── Now extract keywords with accurate duration ──
       const kws  = await runKeywords();
@@ -2082,10 +2331,15 @@ export default function VideoEditorPage() {
       const renderedUrl = await runRender(cfg);
       if (abortRef.current) return;
 
-      if (isDirectMode) {
+      if (useAvatar) {
         const avUrl = await runAvatar(vUrl);
         if (abortRef.current) return;
-        await runComposite(renderedUrl, avUrl);
+        let tailUrl: string | undefined;
+        if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+          tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
+          if (abortRef.current) return;
+        }
+        await runComposite(renderedUrl, avUrl, tailUrl);
         if (abortRef.current) return;
       }
 
@@ -2098,7 +2352,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2128,6 +2382,7 @@ export default function VideoEditorPage() {
           setStep("tts", "skip", "ข้าม — ใช้เสียงจาก Direct URL");
           vUrl = avatarDirectUrl.trim();
           pipe.current.voiceUrl = vUrl;
+          ttsTimingRef.current = null; // external audio — timing from a previous TTS run doesn't apply
         } else {
           vUrl = await runTts();
           if (abortRef.current) return;
@@ -2136,7 +2391,9 @@ export default function VideoEditorPage() {
 
       let caps = pipe.current.captions ?? [];
       if (caps.length === 0 || startStep === "transcribe" || startStep === "tts") {
-        caps = await runTranscribe(vUrl);
+        // Explicit Transcribe button = the user wants a real re-transcription
+        // (e.g. re-rolling avatar audio) — never short-circuit that with timing.
+        caps = (startStep !== "transcribe" ? await applyTtsTiming() : null) ?? await runTranscribe(vUrl);
         if (abortRef.current) return;
         checkCaptionAlignment(caps, script, (pipe.current.scenes ?? []).length, pipe.current.audioDurationMs ?? 0);
       }
@@ -2217,61 +2474,17 @@ export default function VideoEditorPage() {
       startedAt: burnActivityStartedAt,
     });
 
-    let burnPollTimer: ReturnType<typeof setInterval> | null = null;
-    let pollStopped = false;
-    let burnFailedMessage: string | null = null;
-    let resolveBurnUrl: ((url: string) => void) | null = null;
-    let currentJobId: string | null = null;
-
-    const stopPoll = () => {
-      pollStopped = true;
-      if (burnPollTimer) { clearInterval(burnPollTimer); burnPollTimer = null; }
-    };
-
-    burnPollTimer = setInterval(async () => {
-      if (pollStopped || !currentJobId) return;
-      try {
-        const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(currentJobId)}`, { cache: "no-store", signal: abortControllerRef.current?.signal });
-        if (!r.ok) return;
-        const d = await r.json() as RenderProgressPayload;
-        if (d.videoUrl) {
-          if (resolveBurnUrl) { resolveBurnUrl(d.videoUrl); resolveBurnUrl = null; }
-          stopPoll();
-          return;
-        }
-        if (d.error) {
-          burnFailedMessage = d.error;
-          setRenderProgressError(d.error);
-          setStep("burnSubtitles", "error", d.error);
-          stopPoll();
-          return;
-        }
-        const p = Number(d.progress);
-        if (d.queued || d.stage === "queued") {
-          const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
-          setRenderProgress(0);
-          setRenderActivity({
-            phase: "queued",
-            label: queueText,
-            queuePosition: d.queuePosition ?? null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", queueText);
-          return;
-        }
-        if (Number.isFinite(p)) {
-          const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
-          setRenderProgress(safeProgress);
-          setRenderActivity({
-            phase: "burning",
-            label: "กำลังฝังซับ",
-            queuePosition: null,
-            startedAt: burnActivityStartedAt,
-          });
-          setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
-        }
-      } catch {}
-    }, 600);
+    // One sequential pollJob loop replaces the old 600ms progress interval +
+    // 2s checkOnce loop (2 GETs/tick). pollAbort stops it: chained to the
+    // shared AbortController (stopAll / beforeunload) and exposed via
+    // stopRenderPollRef — เดิม burn ไม่เคยลงทะเบียน stop hook เลย ทำให้กด Stop
+    // แล้ว loop ยังวิ่งต่อ; ตอนนี้หยุดได้จริง
+    const pollAbort = new AbortController();
+    const sharedSignal = abortControllerRef.current?.signal;
+    const onSharedAbort = () => pollAbort.abort();
+    if (sharedSignal?.aborted) pollAbort.abort();
+    else sharedSignal?.addEventListener("abort", onSharedAbort);
+    stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
       const fps = 30;
@@ -2315,6 +2528,9 @@ export default function VideoEditorPage() {
         subtitleStylePreset: subPreset,
         subtitleTextEffect: subEffect,
         subtitleAccentColor: subAccentColor,
+        subtitleShadow: subShadow,
+        subtitleOutline: subOutline,
+        subtitleOutlineSize: subOutlineSize,
       };
 
       const res = await fetch("/api/videos/render", {
@@ -2322,8 +2538,10 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ subtitleOverlayConfig }),
         signal: abortControllerRef.current?.signal,
       });
-      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Burn subtitles failed");
+      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
+      // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
+      // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
+      assertOk("Burn", res, data as Record<string, unknown>);
 
       const finalizeBurn = (url: string) => {
         // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
@@ -2333,6 +2551,7 @@ export default function VideoEditorPage() {
         lastRenderedStyleRef.current = {
           fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
           color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
           captions: captionsRef.current.map(c => ({ ...c })),
         };
         setStyleIsDirty(false);
@@ -2356,58 +2575,80 @@ export default function VideoEditorPage() {
 
       const jobId = data.jobId;
       if (!jobId) throw new Error("Burn subtitles: no jobId returned");
-      currentJobId = jobId;
       activeJobIdRef.current = jobId;
 
-      // Check immediately in case server already finished (fast burn or bundle was cached)
-      const checkOnce = async (): Promise<string | null> => {
-        try {
-          // Try progress file first (more reliable, written before in-memory job map)
-          const pr = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          if (pr.ok) {
-            const pd = await pr.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
-            if (pd.videoUrl) return pd.videoUrl;
-            if (pd.error) throw new Error(pd.error);
-          }
-          const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
-          if (sd.status === "done" && sd.videoUrl) return sd.videoUrl;
-          if (sd.status === "error") throw new Error(sd.error ?? "Burn subtitles failed");
-        } catch (e) {
-          if (e instanceof Error && e.message && e.message !== "Failed to fetch") throw e;
-        }
-        return null;
-      };
+      // pollJob ยิง fetchOnce ครั้งแรกทันที (tick 0) — ครอบเคส burn เสร็จเร็ว/bundle cache แล้ว
+      const url = await pollJob<string>({
+        intervalMs: 2000,
+        staleTimeoutMs: 600_000, // 10 นาที — ทนช่วง bundle stall 2–5 นาทีหลัง deploy ได้
+        signal: pollAbort.signal,
+        fetchOnce: async ({ tick }) => {
+          if (activeJobIdRef.current !== jobId) return { status: "failed", error: "__SUPERSEDED__" };
 
-      const immediate = await checkOnce();
-      if (immediate) { finalizeBurn(immediate); return; }
-
-      const url = await new Promise<string>((resolve, reject) => {
-        resolveBurnUrl = resolve;
-        const si = setInterval(async () => {
-          if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (burnFailedMessage) { clearInterval(si); reject(new Error(burnFailedMessage)); return; }
-          try {
-            const found = await checkOnce();
-            if (activeJobIdRef.current !== jobId) { clearInterval(si); resolveBurnUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (found) { clearInterval(si); resolveBurnUrl = null; resolve(found); }
-          } catch (e) {
-            if (e instanceof Error && e.name === "AbortError") { clearInterval(si); resolveBurnUrl = null; reject(e); return; }
-            clearInterval(si); resolveBurnUrl = null; reject(e instanceof Error ? e : new Error(String(e)));
+          // render-status fallback ทุก tick ที่ 5 (~10 วินาที) — เดิม checkOnce ยิง 2 GET ทุก 2 วิ
+          if (tick > 0 && tick % 5 === 0) {
+            const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+            if (sr.ok) {
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
+              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              if (sd.status === "error") return { status: "failed", error: sd.error ?? "Burn subtitles failed" };
+            }
           }
-        }, 2000);
+
+          // 502/504 HTML หรือ network ล่ม → throw → transient + backoff
+          // (ห้าม fail งาน burn — เซิร์ฟเวอร์ยัง burn อยู่ ไม่งั้นผู้ใช้กดซ้ำจน burn ซ้อน)
+          const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
+          if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
+          const d = await r.json() as RenderProgressPayload;
+          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.error) return { status: "failed", error: d.error };
+          const p = Number(d.progress);
+          if (d.queued || d.stage === "queued") {
+            const queueText = d.queuePosition ? `รอคิว Burn #${d.queuePosition}` : "รอคิว Burn";
+            setRenderProgress(0);
+            setRenderActivity({
+              phase: "queued",
+              label: queueText,
+              queuePosition: d.queuePosition ?? null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", queueText);
+            return { status: "pending", resetStale: true };
+          }
+          if (Number.isFinite(p)) {
+            const safeProgress = Math.min(100, Math.max(0, Math.round(p)));
+            setRenderProgress(safeProgress);
+            setRenderActivity({
+              phase: "burning",
+              label: "กำลังฝังซับ",
+              queuePosition: null,
+              startedAt: burnActivityStartedAt,
+            });
+            setStep("burnSubtitles", "running", `Burning... ${safeProgress}%`);
+            return { status: "pending", progress: safeProgress };
+          }
+          return { status: "pending", progress: null };
+        },
       });
 
       finalizeBurn(url);
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
+      // stale/transient-limit: เซิร์ฟเวอร์อาจ burn เสร็จแล้วแต่เราเช็คไม่ได้ — ให้เช็ค Gallery ก่อน
+      // retry = กดปุ่ม Burn & Download เดิมอีกครั้งได้เลย (ปุ่มยังอยู่เมื่อ step เป็น error)
+      const msg = err instanceof PollStaleError || err instanceof PollTransientLimitError
+        ? "Burn ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจเสร็จแล้ว ลองเช็คใน Gallery ก่อน แล้วค่อยกด Burn & Download อีกครั้ง"
+        : friendlyError(err);
       setStep("burnSubtitles", "error", msg);
       setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+      // โควต้าคลิปหมด (403 quota_exceeded) → เปิด Upgrade modal พร้อมลิงก์หน้า Pricing แทน toast
+      if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
       throw err;
     } finally {
-      stopPoll();
+      pollAbort.abort();
+      sharedSignal?.removeEventListener("abort", onSharedAbort);
+      stopRenderPollRef.current = null;
     }
   }
 
@@ -2434,13 +2675,15 @@ export default function VideoEditorPage() {
       snap.fontWeight !== subFontWeight || snap.color !== subColor ||
       snap.accentColor !== subAccentColor || snap.preset !== subPreset ||
       snap.effect !== subEffect || snap.position !== subPosition ||
+      snap.shadow !== subShadow || snap.outline !== subOutline ||
+      snap.outlineSize !== subOutlineSize ||
       snap.captions.length !== captionsRef.current.length ||
       snap.captions.some((c, i) => {
         const cur = captionsRef.current[i];
         return !cur || c.text !== cur.text || c.startMs !== cur.startMs || c.endMs !== cur.endMs;
       });
     setStyleIsDirty(changed);
-  }, [subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, captions]);
+  }, [subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, captions]);
 
   function stopAll() {
     abortRef.current = true;
@@ -2594,13 +2837,18 @@ export default function VideoEditorPage() {
     if (captions.length === 0) { toast.error("ยังไม่มีซับ"); return; }
     if (n < 1) return;
 
-    const wordsData = pipe.current.words ?? [];
-    const hasWords = wordsData.length > 0;
+    // Word timing จาก transcribe คลิปยาว (chunked) อาจมี timestamp หลอนเกินความยาว
+    // เสียงจริง หรือครอบคลุมไม่ครบ timeline — rebuild จากข้อมูลแบบนั้นทำให้ซับยืด
+    // (คลิป 4:45 โชว์ 6:51) และวิ่งเร็วกว่าเสียงตั้งแต่ต้นคลิป จึงต้อง bound ก่อนใช้
+    // และถ้า coverage ไม่พอให้ตกไปใช้การแบ่งตามสัดส่วนใน captions ต้นฉบับแทน
+    const audioDurMs = pipe.current.audioDurationMs ?? 0;
+    const { words: boundedWords, coverageOk } = boundWordsForSplit(pipe.current.words ?? [], audioDurMs);
+    const hasWords = coverageOk && boundedWords.length > 0;
     const result: Caption[] = [];
 
     if (hasWords) {
       // Step 1: merge syllables ที่ Whisper แยกผิด (วง+การ → วงการ)
-      const merged = mergeWhisperSyllables(wordsData);
+      const merged = mergeWhisperSyllables(boundedWords);
 
       // Step 2: แบ่ง chunk ตาม N คำ แต่ตัดที่ silence ≥ 220ms ก่อนเสมอ (phrase boundary)
       const PHRASE_BREAK_MS = 220;
@@ -2655,8 +2903,8 @@ export default function VideoEditorPage() {
         });
       });
     } else {
-      // Fallback: ไม่มี word timing — แบ่งตาม text แล้ว interpolate เวลา
-      toast("⚠ ไม่มี word timing — ซับอาจไม่ตรงเสียง กด Transcribe ใหม่เพื่อให้แม่นขึ้น");
+      // Fallback: ไม่มี word timing (หรือ word timing ไม่ครอบคลุมพอ) — แบ่งตาม text แล้ว interpolate เวลา
+      toast("⚠ word timing ไม่ครบ/ไม่มี — ใช้การแบ่งตามสัดส่วนแทน (กด Transcribe ใหม่เพื่อให้แม่นขึ้น)");
       const src = originalCaptionsRef.current.length > 0 ? originalCaptionsRef.current : captions;
       src.forEach(cap => {
         // ใช้ Intl.Segmenter แบ่งคำภาษาไทยได้ถูกต้อง
@@ -2673,9 +2921,11 @@ export default function VideoEditorPage() {
     }
 
     if (result.length > 0) {
-      setCaptions(result);
+      // Clamp ผลลัพธ์เข้า timeline เสียงจริงเสมอ — กันซับชุดใหม่ยาวเกิน audio
+      const bounded = normalizeCaptionsForTimeline(result, audioDurMs);
+      setCaptions(bounded);
       const label = m === "custom" ? `${n} คำ` : `${m} คำ`;
-      toast.success(`แบ่งซับ ${label}/ช่วง → ${result.length} ช่วง`);
+      toast.success(`แบ่งซับ ${label}/ช่วง → ${bounded.length} ช่วง`);
     }
   }
 
@@ -2782,6 +3032,9 @@ export default function VideoEditorPage() {
                 setSubPreset(snap.preset);
                 setSubEffect(snap.effect);
                 setSubPosition(snap.position);
+                setSubShadow(snap.shadow);
+                setSubOutline(snap.outline);
+                setSubOutlineSize(snap.outlineSize);
                 setCaptions(snap.captions.map(c => ({ ...c })));
                 setStyleIsDirty(false);
                 toast("รีเซ็ตกลับ style และซับที่ Render ล่าสุด");
@@ -2973,7 +3226,12 @@ export default function VideoEditorPage() {
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1">
+          <div
+            className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-1"
+            onWheel={markSegListUserScroll}
+            onTouchMove={markSegListUserScroll}
+            onPointerDown={markSegListUserScroll}
+          >
 
             {/* ── SCRIPT + PRE-LLM SETTINGS ── */}
             <div className="px-2 mb-1 space-y-2">
@@ -3118,14 +3376,15 @@ export default function VideoEditorPage() {
               return (
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
+                  // Offscreen rows skip layout/paint; size hint ≈ row height so the
+                  // panel scrollbar stays stable. scrollIntoView still works.
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}
                   className={cn("relative overflow-hidden rounded-xl border transition-all group",
                     isActive ? "bg-gradient-to-b from-violet-500/15 to-violet-500/[0.04] border-violet-500/50 ring-1 ring-violet-400/30 shadow-[0_2px_12px_rgba(139,92,246,0.15)]" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
 
                   {/* แถบ progress วิ่งตามเวลาในซับตัวนี้ — เห็นชัดว่าเล่นถึงไหน */}
-                  {isActive && playheadMs >= cap.startMs && playheadMs < cap.endMs && (
-                    <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-violet-500/15 pointer-events-none">
-                      <div className="h-full bg-gradient-to-r from-violet-400 to-violet-300" style={{ width: `${((playheadMs - cap.startMs) / Math.max(1, cap.endMs - cap.startMs)) * 100}%` }} />
-                    </div>
+                  {isActive && (
+                    <SegmentProgressBar startMs={cap.startMs} endMs={cap.endMs} durationMs={durationMs} captionEndMs={captionEndMs} />
                   )}
 
                   {/* Header row */}
@@ -3436,10 +3695,6 @@ export default function VideoEditorPage() {
                     onClick={playToggle}
                     style={{ cursor: "pointer" }}
                     onLoadedMetadata={e => setDurationMs((e.target as HTMLVideoElement).duration * 1000)}
-                    onTimeUpdate={e => {
-                      const ms = (e.target as HTMLVideoElement).currentTime * 1000;
-                      setCurrentMs(ms);
-                    }}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
                     onEnded={() => setPlaying(false)}
@@ -3453,88 +3708,39 @@ export default function VideoEditorPage() {
                   </div>
                 )}
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/40">
-                  <div className="h-full bg-violet-500 transition-none" style={{ width: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }} />
+                  <PlaybackProgressStrip totalMs={totalMs} durationMs={durationMs} captionEndMs={captionEndMs} />
                 </div>
               </div>
 
-              {/* Subtitle overlay — draggable, clickable */}
-              {!previewUsesBurnedOutput && (() => {
-                // Show active caption when playing, or first caption when paused/before play
-                const cap = activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null);
-                if (!cap) return null;
-                const isDragging = !!subDragRef.current;
-                return (
-                  <div
-                    className="absolute z-20 group"
-                    style={{
-                      top: `${subPosition}%`,
-                      left: "4%",
-                      right: "4%",
-                      transform: "translateY(-50%)",
-                      cursor: isDragging ? "grabbing" : "grab",
-                    }}
-                    onPointerDown={onSubPointerDown}
-                    onPointerMove={onSubPointerMove}
-                    onPointerUp={onSubPointerUp}
-                    onPointerCancel={onSubPointerUp}
-                  >
-                    {/* Hover border */}
-                    <div className="absolute -inset-x-2 -inset-y-1 rounded pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
-                      style={{ border: "1px dashed rgba(124,58,237,0.55)" }} />
-
-                    {/* Quick actions — float ABOVE the subtitle text */}
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 pointer-events-auto whitespace-nowrap">
-                      <span className="text-[9px] text-violet-400 bg-black/70 rounded px-1.5 py-0.5">↕{subPosition}%</span>
-                      <button onClick={e => { e.stopPropagation(); setActiveRightTab("style"); }}
-                        className="px-1.5 py-0.5 bg-violet-600 rounded text-[9px] text-white font-bold hover:bg-violet-500">Style</button>
-                      <button onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}
-                        className="px-1.5 py-0.5 bg-[#1e1e28] border border-[#3a3a4a] rounded text-[9px] text-slate-300 hover:bg-[#2a2a36]">Font</button>
-                      <button onClick={e => { e.stopPropagation(); setSubPosition(82); }}
-                        className="px-1.5 py-0.5 bg-[#1e1e28] border border-[#3a3a4a] rounded text-[9px] text-slate-400 hover:bg-[#2a2a36]">↺</button>
-                    </div>
-
-                    {/* Subtitle text — matches Remotion render exactly.
-                        data-subtitle-text lets the :fullscreen CSS upscale the font
-                        when the phone-frame is fullscreened, so the subtitle stays
-                        legible at viewport-width sizes. */}
-                    <div data-subtitle-text style={{ width: "100%", textAlign: "center" }} onClick={e => { e.stopPropagation(); setActiveRightTab("font"); }}>
-                      {(() => {
-                        const PREVIEW_FPS = 30;
-                        const capDurMs = Math.max(1, cap.endMs - cap.startMs);
-                        const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
-                        const elapsedMs = Math.max(0, Math.min(capDurMs, playheadMs - cap.startMs));
-                        // frame for the INNER text effects (glow-pulse/highlight/karaoke/
-                        // typewriter). -1 when paused = resting/fully-visible.
-                        const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
-
-                        // Container ENTRANCE animation — must MATCH AnimatedSubtitle
-                        // (ShortVideoComposition) so preview === burned MP4. We can't
-                        // call Remotion spring() here, so approximate it: same start/end
-                        // values and similar durations, with an ease that mimics the
-                        // spring's settle. Only animates while playing; when paused we
-                        // show the resting state (transform none, opacity 1).
-                        const f = playing ? Math.max(0, Math.round((elapsedMs / 1000) * PREVIEW_FPS)) : 9999;
-                        const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
-                        const easeBack = (t: number) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
-                        const prog = (dur: number) => Math.min(1, f / dur);
-                        const fadeIn = Math.min(1, f / 5);
-                        let tf = "", op = 1;
-                        if (subEffect === "pop")        { const t = easeOut(prog(12)); tf = `translateY(${6*(1-t)}px) scale(${0.76+0.24*t})`; }
-                        else if (subEffect === "bounce"){ const t = easeBack(prog(18)); tf = `translateY(${14*(1-Math.min(1,t))}px) scale(${0.5+0.5*t})`; }
-                        else if (subEffect === "quick") { const t = easeOut(prog(6));  tf = `translateY(${8*(1-t)}px) scale(${0.6+0.4*t})`; }
-                        else if (subEffect === "fade")  { op = Math.min(1, f/8); }
-                        else if (subEffect === "slide") { const t = easeOut(prog(16)); tf = `translateY(${40*(1-t)}px)`; op = fadeIn; }
-                        else if (subEffect === "flip")  { const t = easeOut(prog(14)); tf = `perspective(600px) rotateX(${90*(1-t)}deg)`; op = Math.min(1, f/6); }
-                        return (
-                          <div style={{ transform: tf || undefined, opacity: op, transformOrigin: subEffect === "flip" ? "center top" : "center" }}>
-                            {renderSubEl(cap.text, subColor, subAccentColor, cap.tag === "hook", subPreset, subFontFamily, subFontSize, subFontWeight, previewScale, subEffect, frame, capDurFrames)}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                );
-              })()}
+              {/* Subtitle overlay — draggable, clickable. Leaf component: the only
+                  60fps React subtree (subscribes to playbackTime internally). */}
+              {!previewUsesBurnedOutput && (
+                <ActiveCaptionOverlay
+                  cap={activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null)}
+                  playing={playing}
+                  subPosition={subPosition}
+                  subDragRef={subDragRef}
+                  onSubPointerDown={onSubPointerDown}
+                  onSubPointerMove={onSubPointerMove}
+                  onSubPointerUp={onSubPointerUp}
+                  onOpenStyleTab={() => setActiveRightTab("style")}
+                  onOpenFontTab={() => setActiveRightTab("font")}
+                  onResetPosition={() => setSubPosition(82)}
+                  durationMs={durationMs}
+                  captionEndMs={captionEndMs}
+                  subColor={subColor}
+                  subAccentColor={subAccentColor}
+                  subPreset={subPreset}
+                  subEffect={subEffect}
+                  subFontFamily={subFontFamily}
+                  subFontSize={subFontSize}
+                  subFontWeight={subFontWeight}
+                  subShadow={subShadow}
+                  subOutline={subOutline}
+                  subOutlineSize={subOutlineSize}
+                  previewScale={previewScale}
+                />
+              )}
 
               {/* Border overlay */}
               <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.07)" }} />
@@ -3570,12 +3776,11 @@ export default function VideoEditorPage() {
 
             <div className="w-px h-4 bg-[#2a2a36] mx-1 flex-shrink-0" />
 
-            {/* Time */}
-            <span className="text-[11px] text-slate-500 tabular-nums flex-shrink-0">{fmtMs(currentMs)}</span>
+            {/* Time — leaf, ticks at 60fps from the playbackTime store */}
+            <TimeLabel className="text-[11px] text-slate-500 tabular-nums flex-shrink-0" />
 
             {/* Scrubber — hover shows time preview, drag to seek */}
             <ScrubberBar
-              currentMs={currentMs}
               totalMs={totalMs}
               durationMs={durationMs}
               isScrubbing={isScrubbing}
@@ -3764,7 +3969,7 @@ export default function VideoEditorPage() {
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
                 projectName={projectName} onSaveTemplate={() => {
                   const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
+                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
                 onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
@@ -3829,7 +4034,7 @@ export default function VideoEditorPage() {
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
             projectName={projectName} onSaveTemplate={() => {
               const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition } }, ...templates].slice(0, 20)));
+              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
             onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
@@ -3849,7 +4054,7 @@ export default function VideoEditorPage() {
 
         {/* Timeline toolbar */}
         <div className="h-10 bg-[#111115] border-b border-[#1e1e28] flex items-center gap-2 px-4 flex-shrink-0">
-          <span className="text-violet-400 font-bold tabular-nums text-[12px]">{fmtMs(playheadMs)}</span>
+          <TimeLabel className="text-violet-400 font-bold tabular-nums text-[12px]" durationMs={durationMs} captionEndMs={captionEndMs} />
           <span className="text-slate-700 text-[11px]">/ {fmtMs(totalMs)}</span>
 
           <div className="flex gap-0.5 ml-3">
@@ -3873,7 +4078,9 @@ export default function VideoEditorPage() {
             {/* Split at playhead */}
             <button
               onClick={() => {
-                const splitMs = playheadMs;
+                // Live position from the store (currentMs state is coarse now),
+                // mapped video-time → caption-time exactly like old playheadMs.
+                const splitMs = videoMsToCaptionMs(playbackTime.getMs());
                 if (splitMs <= 0 || activeSegIdx < 0 || activeSegIdx >= displayCaptions.length) return;
                 const cap = displayCaptions[activeSegIdx];
                 if (splitMs <= cap.startMs || splitMs >= cap.endMs) return;
@@ -3901,20 +4108,18 @@ export default function VideoEditorPage() {
 
           <div className="ml-auto flex items-center gap-2">
             <ZoomIn className="w-3 h-3 text-slate-600" />
-            {/* Timeline stays at max 100% so playhead/caption positions remain easy to scan. */}
-            <div
-              className="relative w-20 h-5 flex items-center touch-none select-none outline-none"
-              tabIndex={-1}
-            >
-              <div className="relative w-full h-1 rounded-full bg-[#2a2a36] pointer-events-none">
-                <div className="absolute left-0 top-0 h-full bg-violet-500 rounded-full" style={{ width: "100%" }} />
-                <div
-                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-white border-2 border-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.5)]"
-                  style={{ left: "100%" }}
-                />
-              </div>
-            </div>
-            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">100%</span>
+            <input
+              aria-label="Timeline zoom"
+              title="0% = ภาพรวม, 100% = รายละเอียด"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={timelineZoom}
+              onChange={(e) => setTimelineZoom(Number(e.target.value))}
+              className="w-24 h-1 accent-violet-500 cursor-pointer"
+            />
+            <span className="text-[11px] text-slate-600 tabular-nums min-w-[32px] text-right">{timelineZoom}%</span>
           </div>
         </div>
 
@@ -3978,7 +4183,7 @@ export default function VideoEditorPage() {
               }
             }}
           >
-            <div className="relative" style={{ width: "100%", minWidth: "100%" }}>
+            <div className="relative" style={{ width: `${timelineCanvasWidthPct}%`, minWidth: "100%" }}>
 
               {/* Ruler — click/drag to seek */}
               <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
@@ -3991,6 +4196,7 @@ export default function VideoEditorPage() {
                   const captionMs = pct * totalMs;
                   const videoMs = captionMsToVideoMs(captionMs);
                   videoRef.current.currentTime = videoMs / 1000;
+                  playbackTime.setMs(videoMs); // instant visual feedback while dragging
                   setCurrentMs(videoMs);
                 }}
                 onPointerMove={e => {
@@ -4001,6 +4207,7 @@ export default function VideoEditorPage() {
                   const captionMs = pct * totalMs;
                   const videoMs = captionMsToVideoMs(captionMs);
                   videoRef.current.currentTime = videoMs / 1000;
+                  playbackTime.setMs(videoMs); // instant visual feedback while dragging
                   setCurrentMs(videoMs);
                 }}
               >
@@ -4103,12 +4310,9 @@ export default function VideoEditorPage() {
                 </div>
               </div>
 
-              {/* Playhead — uses playheadMs (video-time mapped into caption-time) so it
-                  tracks the caption clips exactly, even when the video is longer. */}
-              <div className="absolute top-0 bottom-0 w-[2px] bg-violet-400 pointer-events-none z-10 shadow-[0_0_5px_rgba(167,139,250,0.8)]"
-                style={{ left: totalMs > 0 ? `${(playheadMs / totalMs) * 100}%` : "0%" }}>
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-violet-400 shadow-[0_0_6px_rgba(167,139,250,0.9)]" />
-              </div>
+              {/* Playhead — leaf, writes style.left via ref from the playbackTime
+                  store (video-time mapped into caption-time, as before). */}
+              <PlayheadIndicator totalMs={totalMs} durationMs={durationMs} captionEndMs={captionEndMs} />
             </div>
           </div>
         </div>
@@ -4133,6 +4337,9 @@ export default function VideoEditorPage() {
       <UpgradeModal
         open={upgradeModal.open}
         message={upgradeModal.message}
+        title={upgradeModal.title}
+        benefits={upgradeModal.benefits}
+        hideCta={upgradeModal.hideCta}
         onClose={() => setUpgradeModal({ open: false })}
       />
 
