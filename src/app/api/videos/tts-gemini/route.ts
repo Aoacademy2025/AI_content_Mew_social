@@ -13,7 +13,7 @@ import {
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
-import { Agent } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 
 // Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
@@ -81,19 +81,24 @@ async function callGeminiTts(
       if (deadline && Date.now() >= deadline) {
         return { ok: false, status: 408, errBody: "segmented time budget exhausted" };
       }
-      const res = await fetch(url, {
+      // Agent + fetch come from the SAME undici import so the dispatcher is actually honored.
+      // Handing a node_modules Agent to Node's built-in global fetch is NOT reliable — it
+      // silently fell back to undici's ~300s default, so the 600s above never took effect and
+      // long (5-6 min) TTS calls died with HeadersTimeoutError. (Same fix as pipeline-client.ts.)
+      const res = await undiciFetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-goog-api-key": apiKey,
         },
         body: requestBody,
-        // undici-specific fetch option — not part of the standard RequestInit type
         dispatcher: geminiTtsDispatcher,
-      } as RequestInit & { dispatcher: Agent });
+      });
 
       if (res.ok) {
-        const data = await res.json();
+        const data = (await res.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
+        };
         const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
         const audioB64: string | undefined = part?.data;
         if (!audioB64) return { ok: false, status: 500, errBody: NO_AUDIO };
