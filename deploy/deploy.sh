@@ -108,6 +108,18 @@ if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
 else
   pm2 start ecosystem.config.js --only "$APP_NAME"
 fi
+
+# The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
+# a SEPARATE process. A deploy that ships new pipeline code to ai-content would
+# otherwise leave the worker on stale code (version skew → silently-failing MCP
+# jobs), so restart it in lockstep right after ai-content. --update-env picks up
+# any ecosystem env changes; falls back to start if it isn't running yet.
+WORKER_NAME="mcp-video-worker"
+if pm2 describe "$WORKER_NAME" > /dev/null 2>&1; then
+  pm2 restart "$WORKER_NAME" --update-env
+else
+  pm2 start ecosystem.config.js --only "$WORKER_NAME"
+fi
 pm2 save
 pm2 startup
 
