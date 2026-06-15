@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
+import { evenSplitBgVideos } from "@/lib/broll-even-split";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -700,14 +701,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "à¹„à¸¡à¹ˆà¸¡à¸µ stock video â€” à¸à¸£à¸¸à¸“à¸² fetch stock à¸à¹ˆà¸­à¸™ generate config", retryable: false }, { status: 400 });
   }
   if (!bgVideos.length && validStocks.length > 0) {
-    const first = validStocks[0];
-    bgVideos.push({
-      src: first.localUrl ?? first.videoUrl,
-      start: 0,
-      end: audioDurationSec,
-      clipOffset: 0,
-      clipDuration: first.duration > 0 ? first.duration : 10,
-    });
+    // Safety net: the scene / per-subtitle mapping produced ZERO segments (e.g. caption
+    // timing collapsed for dense subtitle modes). The old fallback froze ONE clip over the
+    // whole video — which looks like "b-roll never loaded". Even-split ALL fetched clips so
+    // the background still changes and every clip is used, instead of a single frozen frame.
+    console.warn(`[config] main mapping produced 0 bgVideos — even-split fallback across ${validStocks.length} clips`);
+    bgVideos.push(...evenSplitBgVideos(validStocks, audioDurationSec));
   }
 
   bgVideos = fillBgGaps(bgVideos, audioDurationSec);
