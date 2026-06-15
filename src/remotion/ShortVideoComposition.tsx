@@ -35,6 +35,7 @@ function VideoClip({
   headFrames,
   clipDurFrames,
   clipIndex,
+  kenBurns = false,
 }: {
   src: string;
   startFrom: number;
@@ -43,11 +44,21 @@ function VideoClip({
   headFrames: number;
   clipDurFrames: number | null;
   clipIndex: number;
+  kenBurns?: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
   const totalFrames = segDurFrames + tailFrames;
+  // Ken Burns: subtle continuous zoom so b-roll reads as intentional motion, not a
+  // static slideshow. Alternate zoom-in / zoom-out by clipIndex for variety. We only
+  // ever scale ≥1.0 and objectFit:cover already fills the frame, so no edge gap is
+  // ever exposed. Pure CSS transform on an already-decoded frame → ~free on render.
+  const kbScale = kenBurns
+    ? clipIndex % 2 === 0
+      ? interpolate(frame, [0, totalFrames], [1.0, 1.08], { extrapolateRight: "clamp" })
+      : interpolate(frame, [0, totalFrames], [1.08, 1.0], { extrapolateRight: "clamp" })
+    : 1;
   // Clamp startFrom and endAt so we never request frames past the clip's
   // actual duration — prevents "No frame found at position X" errors.
   // If startFrom is already near the end, loop back to frame 0.
@@ -78,6 +89,7 @@ function VideoClip({
           height,
           objectFit: "cover",
           filter: GRADE_FILTER,
+          ...(kenBurns ? { transform: `scale(${kbScale})`, transformOrigin: "center center" } : {}),
         }}
         muted
       />
@@ -535,6 +547,7 @@ export function ShortVideoComposition({
   subtitleShadow = false,
   subtitleOutline = false,
   subtitleOutlineSize = 2,
+  kenBurns = false,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -598,6 +611,7 @@ export function ShortVideoComposition({
                 headFrames={headFrames}
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
+                kenBurns={kenBurns}
               />
             </Sequence>
           );

@@ -717,8 +717,11 @@ export async function POST(req: Request) {
     subtitleShadow,
     subtitleOutline,
     subtitleOutlineSize,
+    // Ken Burns motion on b-roll — env-gated (STOCK_KEN_BURNS=1, default off). Set in
+    // the config so the render AND the editor preview (both read ShortVideoConfig) match.
+    kenBurns: process.env.STOCK_KEN_BURNS === "1",
   };
 
-  console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);
+  console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups, kenBurns=${config.kenBurns}`);
   return NextResponse.json({ config });
 }
