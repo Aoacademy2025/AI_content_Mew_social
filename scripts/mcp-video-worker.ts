@@ -4,6 +4,7 @@ import "dotenv/config"; // load .env BEFORE prisma init — tsx (unlike Next) do
 import { prisma } from "../src/lib/prisma";
 import { claimNextQueuedJob } from "../src/lib/mcp/video-job";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
+import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
 
 const POLL_MS = Number(process.env.MCP_WORKER_POLL_MS ?? 4000);
 let running = true;
@@ -39,6 +40,7 @@ async function main() {
     data: { status: "failed", errorMessage: "worker restarted — job did not finish", finishedAt: new Date() },
   });
   if (orphaned.count > 0) console.log(`[mcp-worker] reaped ${orphaned.count} orphaned processing job(s)`);
+  startLoanwordRefresh(); // load auto-mined loanwords now + refresh every 10 min (unref'd)
   console.log("[mcp-worker] started");
   while (running) {
     try {
