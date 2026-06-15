@@ -16,6 +16,12 @@ export const THAI_LOANWORDS: string[] = [
   "อัปเดต", "อัปโหลด", "ดาวน์โหลด", "สมาร์ตโฟน", "โน้ตบุ๊ก", "ซอฟต์แวร์", "ฮาร์ดแวร์",
   // business / marketing
   "แคมเปญ", "มาร์เก็ตติ้ง", "อีคอมเมิร์ซ", "โมเดลธุรกิจ", "โมเดล", "แบรนด์", "บิสิเนส",
+  // mined from real prod scripts 2026-06-15 (all businesses, via dict-oracle diff vs
+  // Intl.Segmenter — see scripts/mine-thai-loanwords.ts). Each was ICU-split mid-word.
+  "ไอเดีย", "ครีเอเตอร์", "ซีรีส์", "สเตตัส", "แคสต์", "โปรเจกต์", "พรีเซนเตอร์",
+  "ไวรัล", "ช้อปปิ้ง", "ไตเติ้ล", "เรนเดอร์", "คลาวด์", "สึนามิ",
+  // surfaced by QA across content/tech/e-commerce scripts
+  "สตรีม", "ฟีดแบ็ก", "ออร์แกนิก",
 ];
 
 export interface LoanwordSpan { start: number; end: number; }
