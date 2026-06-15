@@ -5,6 +5,8 @@
 // fullText sent to TTS. Chunks are contiguous slices of it (concat(chunks) ===
 // fullText, no trim/re-join), so subtitle text can never drift from the audio.
 
+import { loanwordSpans } from "@/lib/thai-loanwords";
+
 export type CaptionTag = "hook" | "body" | "cta";
 
 export interface TtsScriptChunk {
@@ -127,12 +129,19 @@ function isValidThaiWordStart(fullText: string, index: number): boolean {
 function wordBoundaries(fullText: string): number[] {
   const seg = thaiWordSegmenter();
   if (!seg) return [];
-  const out: number[] = [0];
+  // Loanwords ICU mis-splits (แอดมิน, แชตบอต, คอมเมนต์, …): drop any boundary that
+  // lands INSIDE one and force boundaries at its edges, so the whole loanword
+  // stays a single token. This feeds BOTH card-edge snapping (sentence/viral) and
+  // the word timeline (tokenizeWords → MCP word-count + web split modes), closing
+  // the gap where isValidThaiWordStart only re-glued garan clusters, not loanwords.
+  const spans = loanwordSpans(fullText);
+  const insideLoanword = (i: number) => spans.some((s) => i > s.start && i < s.end);
+  const set = new Set<number>([0, fullText.length]);
   for (const tok of seg.segment(fullText)) {
-    if (tok.index > 0 && isValidThaiWordStart(fullText, tok.index)) out.push(tok.index);
+    if (tok.index > 0 && isValidThaiWordStart(fullText, tok.index) && !insideLoanword(tok.index)) set.add(tok.index);
   }
-  out.push(fullText.length);
-  return out;
+  for (const s of spans) { if (s.start > 0) set.add(s.start); if (s.end < fullText.length) set.add(s.end); }
+  return [...set].sort((a, b) => a - b);
 }
 
 // Best cut position in fullText within (from, hardMax]: prefer the last
@@ -328,13 +337,23 @@ function enforceMonotonic<T extends { startMs: number; endMs: number }>(items: T
 
 // Word tokens with char ranges on fullText (Thai-aware; falls back to
 // whitespace splitting when Intl.Segmenter is unavailable).
-function tokenizeWords(fullText: string): { word: string; startChar: number; endChar: number }[] {
-  const seg = thaiWordSegmenter();
+export function tokenizeWords(fullText: string): { word: string; startChar: number; endChar: number }[] {
   const out: { word: string; startChar: number; endChar: number }[] = [];
-  if (seg) {
-    for (const tok of seg.segment(fullText)) {
-      if (tok.isWordLike === false || tok.segment.trim().length === 0) continue;
-      out.push({ word: tok.segment, startChar: tok.index, endChar: tok.index + tok.segment.length });
+  // Derive word tokens from the loanword-aware boundary set (single source of
+  // truth) instead of raw Intl.Segmenter tokens — so loanwords ICU mis-splits
+  // stay whole here too, not just at card edges. Each segment is whitespace-
+  // trimmed (offsets kept exact) and punctuation-only segments are dropped.
+  const bounds = wordBoundaries(fullText); // [] when Intl.Segmenter is unavailable
+  if (bounds.length >= 2) {
+    for (let i = 0; i < bounds.length - 1; i++) {
+      let s = bounds[i];
+      let e = bounds[i + 1];
+      while (s < e && /\s/.test(fullText[s])) s++;
+      while (e > s && /\s/.test(fullText[e - 1])) e--;
+      if (e <= s) continue;
+      const word = fullText.slice(s, e);
+      if (!/[\p{L}\p{N}]/u.test(word)) continue; // skip punctuation/whitespace-only segments
+      out.push({ word, startChar: s, endChar: e });
     }
     if (out.length > 0) return out;
   }
