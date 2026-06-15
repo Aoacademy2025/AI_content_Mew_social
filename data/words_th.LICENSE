@@ -1,0 +1,4 @@
+Thai word list (data/words_th.txt) derived from PyThaiNLP corpus `words_th.txt`.
+Source: https://github.com/PyThaiNLP/pythainlp
+License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+Filtered to Thai-only tokens (^[ก-๙]{2,24}$) for the loanword-mining oracle.
