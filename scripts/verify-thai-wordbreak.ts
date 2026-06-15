@@ -11,7 +11,9 @@ let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
 
 // ── T1: each loanword ICU mis-splits must survive as ONE token, in context ──
-const LOANWORDS = ["แอดมิน", "แชตบอต", "คอมเมนต์", "คอนเทนต์", "แพลตฟอร์ม", "ฟอลโลว์", "อัลกอริทึม"];
+const LOANWORDS = ["แอดมิน", "แชตบอต", "คอมเมนต์", "คอนเทนต์", "แพลตฟอร์ม", "ฟอลโลว์", "อัลกอริทึม",
+  // prod-mined batch (2026-06-15)
+  "ไอเดีย", "ครีเอเตอร์", "ซีรีส์", "โปรเจกต์", "ไวรัล", "เรนเดอร์", "สตรีม", "ออร์แกนิก"];
 for (const w of LOANWORDS) {
   const text = `วันนี้เขาเป็น${w}ของเรานะ`;
   const toks = tokenizeWords(text).map((t) => t.word);
