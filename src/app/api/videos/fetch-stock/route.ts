@@ -123,7 +123,16 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
     await withNormalizeSlot(() => execFileAsync(ffmpeg, [
       "-y", "-i", filePath,
       "-an",                              // B-roll is muted in render anyway
+      // Downscale oversized sources (e.g. Pixabay 4K) to fit a 1080×1920 box
+      // BEFORE the libx264 re-encode. A full 4096×2160 normalize on the GPU-less
+      // VPS can blow past NORMALIZE_TIMEOUT_MS → SIGKILL → ~5 min of CPU burned on
+      // a clip that gets dropped anyway (and the render output is only 1080×1920,
+      // so extra resolution is wasted). decrease = never upscale; the trailing
+      // trunc pair forces even dimensions (yuv420p requires it) and is compatible
+      // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
+      "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
       "-pix_fmt", "yuv420p",
       "-r", String(TARGET_FPS),           // force constant frame rate
       "-g", String(TARGET_FPS),           // keyframe interval = 1s
@@ -315,7 +324,10 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
   return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string }; large?: { url: string } }; tags?: string }) => ({
     id: h.id,
     duration: h.duration,
-    videoUrl: h.videos?.large?.url ?? h.videos?.medium?.url ?? "",
+    // Prefer medium (~1920px) over large (can be 4K). large 4K clips are just
+    // downscaled in normalizeForRemotion anyway, so picking medium first avoids
+    // downloading the heavy file at all (saves bandwidth + disk + the heavy encode).
+    videoUrl: h.videos?.medium?.url ?? h.videos?.large?.url ?? "",
     tags: (h.tags ?? "").slice(0, 60),
   })).filter((v: PixabayVideo) => v.videoUrl);
 }
