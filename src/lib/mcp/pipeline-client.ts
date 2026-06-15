@@ -1,6 +1,25 @@
 import { SERVICE_SECRET_HEADER, SERVICE_ACTAS_HEADER } from "@/lib/mcp/service-actor";
+import { Agent, fetch as undiciFetch } from "undici";
 
 const BASE = process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000";
+
+// Pipeline endpoints can legitimately run for minutes — /api/videos/fetch-stock caps at
+// maxDuration=600s (tts/avatar can be slow too). undici's DEFAULT headersTimeout is 300s,
+// SHORTER than the server's own cap: a slow-but-alive request was aborted as a transport
+// error, and withRetry then fired a DUPLICATE concurrent run (re-searching + re-normalizing
+// the same b-roll) — thrashing the shared host and making it even slower. Use one dispatcher
+// whose timeouts sit ABOVE the server cap so we WAIT instead of duplicating.
+// (Agent + fetch come from the SAME undici import so the dispatcher is actually honored —
+// handing a node_modules Agent to Node's built-in global fetch is not reliable.)
+const PIPELINE_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.MCP_PIPELINE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1000 ? Math.floor(raw) : 12 * 60 * 1000; // default 12 min
+})();
+const pipelineDispatcher = new Agent({
+  headersTimeout: PIPELINE_TIMEOUT_MS,
+  bodyTimeout: PIPELINE_TIMEOUT_MS,
+  connectTimeout: 30_000,
+});
 
 export interface PipelineCaller {
   post<T>(path: string, body: unknown): Promise<T>;
@@ -36,7 +55,7 @@ export function pipelineCaller(userId: string): PipelineCaller {
   };
   async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown): Promise<T> {
     return withRetry(async () => {
-      const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+      const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
       const text = await res.text();
       if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
       return (text ? JSON.parse(text) : {}) as T;
