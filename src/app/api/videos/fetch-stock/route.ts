@@ -309,13 +309,15 @@ async function downloadAndCrop(url: string, outPath: string): Promise<void> {
 }
 
 // Search Pixabay for portrait videos
-async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<PixabayVideo[]> {
+async function searchPixabay(query: string, pixabayKey: string, minDuration = 5, perPage = 15): Promise<PixabayVideo[]> {
   const params = new URLSearchParams({
     key: pixabayKey,
     q: query,
     video_type: "film",
     orientation: "vertical",
-    per_page: "15",
+    // Honor the caller's perPage (was hardcoded 15) so per-subtitle search gets a
+    // deeper pool to rank — better/less-repetitive picks. Pixabay allows 3–200.
+    per_page: String(Math.max(3, Math.min(200, perPage))),
     min_duration: String(minDuration),
   });
   const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
@@ -328,7 +330,7 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
     // downscaled in normalizeForRemotion anyway, so picking medium first avoids
     // downloading the heavy file at all (saves bandwidth + disk + the heavy encode).
     videoUrl: h.videos?.medium?.url ?? h.videos?.large?.url ?? "",
-    tags: (h.tags ?? "").slice(0, 60),
+    tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
   })).filter((v: PixabayVideo) => v.videoUrl);
 }
 
@@ -722,7 +724,7 @@ export async function POST(req: Request) {
         ? searchPexels(query, pexelsKey!, 3, perPage)
         : Promise.resolve([] as PexelsVideo[]),
       canUsePixabay
-        ? searchPixabay(query, pixabayKey!)
+        ? searchPixabay(query, pixabayKey!, 5, perPage)
         : Promise.resolve([] as PixabayVideo[]),
     ]);
 
@@ -752,7 +754,7 @@ export async function POST(req: Request) {
       });
     }
     for (const pv of pixabayVideos) {
-      const title = pv.tags ? pv.tags.split(",").slice(0, 4).map((t) => t.trim()).join(" ") : query;
+      const title = pv.tags ? pv.tags.split(",").slice(0, 6).map((t) => t.trim()).join(" ") : query;
       candidates.push({
         keyword,
         id: pv.id + 9_000_000,
@@ -845,7 +847,7 @@ export async function POST(req: Request) {
   console.log(`[fetch-stock] source=${srcLabel}`);
 
   // Pexels supports up to 80 per page — use that headroom for long videos
-  const basePerPage = isPerSubtitleMode ? 15 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
+  const basePerPage = isPerSubtitleMode ? 25 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
 
   // ── Search phase — try keyword alternatives in order until candidates found ──
   const candidatesByKeyword: CandidateVideo[][] = await mapWithConcurrency(
@@ -871,7 +873,7 @@ export async function POST(req: Request) {
               ? searchPexels(query, pexelsKey!, 3, basePerPage)
               : Promise.resolve([] as PexelsVideo[]),
             canUsePixabay
-              ? searchPixabay(query, pixabayKey!)
+              ? searchPixabay(query, pixabayKey!, 5, basePerPage)
               : Promise.resolve([] as PixabayVideo[]),
           ]);
 
@@ -894,7 +896,7 @@ export async function POST(req: Request) {
           }
           for (const pv of pixabayVideos) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
-            const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 4).map((t: string) => t.trim()).join(" ") : query;
+            const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 6).map((t: string) => t.trim()).join(" ") : query;
             candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle, query, provider: "pixabay" });
           }
 
