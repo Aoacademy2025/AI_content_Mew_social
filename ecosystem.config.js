@@ -62,6 +62,18 @@ module.exports = {
       },
     },
     {
+      name: "mine-loanwords",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/cron-mine-loanwords.ts",
+      cron_restart: "10 4 * * *", // daily 4:10 AM — mine new Thai loanwords ICU mis-splits from prod scripts
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
+    {
       name: "renewal-reminders",
       cwd: "/var/www/ai-content",
       script: "scripts/renewal-reminders.js",
