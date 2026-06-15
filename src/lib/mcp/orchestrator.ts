@@ -38,15 +38,32 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
 
+    // ── per-step timing (so an audit sees where wall-time goes per job, in the
+    // mcp-video-worker log, without reconstructing it from telemetry). step()
+    // logs the phase that just ended, then advances. Render/burn progress
+    // callbacks keep calling setJobStep directly so they don't spam this.
+    const jobStartedAt = Date.now();
+    let phaseName = "startup";
+    let phaseStartedAt = jobStartedAt;
+    const timings: Array<[string, number]> = [];
+    async function step(name: string, progress: number) {
+      const now = Date.now();
+      timings.push([phaseName, now - phaseStartedAt]);
+      console.log(`[mcp-worker] job ${jobId} step=${phaseName} ${((now - phaseStartedAt) / 1000).toFixed(1)}s`);
+      phaseName = name;
+      phaseStartedAt = now;
+      await setJobStep(jobId, name, progress);
+    }
+
     // 1. TTS
-    await setJobStep(jobId, "tts", 10);
+    await step("tts", 10);
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
       : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: user.geminiVoiceName ?? "Aoede" });
     const audioDurationMs = tts.audioDurationMs ?? 0;
 
     // 2. Captions (in-process, reuse the pure editor helper)
-    await setJobStep(jobId, "captions", 25);
+    await step("captions", 25);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor());
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
@@ -57,20 +74,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const durMs = capRes.audioDurationMs || audioDurationMs;
 
     // 3. Keywords
-    await setJobStep(jobId, "keywords", 40);
+    await step("keywords", 40);
     const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][] }>(
       "/api/videos/extract-keywords", buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs),
     );
 
     // 4. Stock
-    await setJobStep(jobId, "stock", 55);
+    await step("stock", 55);
     const totalDur = (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     const stock = await caller.post<{ results: unknown[] }>(
       "/api/videos/fetch-stock", buildStockPayload(kw.keywords ?? [], totalDur, DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives),
     );
 
     // 5. Config
-    await setJobStep(jobId, "config", 65);
+    await step("config", 65);
     const sceneClipCounts = captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []);
     const cfgRes = await caller.post<{ config: Record<string, unknown> }>(
       "/api/videos/generate-config",
@@ -78,7 +95,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     );
 
     // 6. Base render (no burned subs) → poll
-    await setJobStep(jobId, "render", 75);
+    await step("render", 75);
     const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.28 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
@@ -98,7 +115,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
       // malformed job rather than generating with avatarModel=undefined.
       if (!input.avatarId) throw new Error("avatar job missing avatarId");
-      await setJobStep(jobId, "avatar", 80);
+      await step("avatar", 80);
       const av = await runAvatarComposite(caller, {
         baseUrl, ttsAudioUrl: tts.voiceUrl, avatarMode: input.avatarMode, avatarId: input.avatarId,
         introSecs: input.avatarIntroSecs ?? 5, tailSecs: input.avatarTailSecs ?? 5, sleep,
@@ -118,13 +135,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     });
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
-    await setJobStep(jobId, "burn", 88);
+    await step("burn", 88);
     const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop) });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
     await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
+
+    // flush final phase + emit one-line breakdown for audits
+    timings.push([phaseName, Date.now() - phaseStartedAt]);
+    const totalS = (Date.now() - jobStartedAt) / 1000;
+    console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
 
     await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
   } catch (e) {
