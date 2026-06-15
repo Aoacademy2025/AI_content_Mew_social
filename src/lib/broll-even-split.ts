@@ -45,3 +45,20 @@ export function evenSplitBgVideos(stocks: EvenSplitStock[], audioDurationSec: nu
     relevanceScore: sv.relevanceScore,
   }));
 }
+
+/**
+ * Assign a pool-clip index to each caption by CYCLING through the pool
+ * (0,1,…,poolSize-1,0,1,…) so per-subtitle b-roll changes on every caption and
+ * every clip is used.
+ *
+ * Replaces an older "merge short captions into a neighbour" scheme that collapsed
+ * dense subtitle modes (1-2 word cards): when 80+ captions were all shorter than the
+ * 1.5s merge threshold, every caption chained back to pool[0] → a single frozen clip
+ * (prod logs showed `ratio=1%`). Cycling cannot collapse — adjacent captions always
+ * get different indices unless the pool holds a single clip.
+ */
+export function cyclePoolIndices(captionCount: number, poolSize: number): number[] {
+  if (captionCount <= 0) return [];
+  if (poolSize <= 0) return new Array(captionCount).fill(0);
+  return Array.from({ length: captionCount }, (_, i) => i % poolSize);
+}
