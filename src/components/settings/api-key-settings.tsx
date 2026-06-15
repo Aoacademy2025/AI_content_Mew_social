@@ -11,9 +11,11 @@ interface ApiKeys {
   elevenlabsKey?: string;
   pexelsKey?: string;
   pixabayKey?: string;
-  envatoKey?: string;
+  kieKey?: string;
+  unsplashKey?: string;
+  flickrKey?: string;
 }
-type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "envato";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 type TestResult = { ok: boolean; message: string } | null;
 
 const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string; adminOnly?: boolean }[] = [
@@ -22,11 +24,14 @@ const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placehol
   { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
   { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },
   { id: "pixabayKey",    keyType: "pixabay",    label: "Pixabay API Key",    placeholder: "12345678-abcdef...",        description: "Stock video fallback (Pixabay)",             link: "https://pixabay.com/api/docs/" },
-  // Premium stock — ทดลองภายใน admin เท่านั้น (ซ่อนจาก user ทั่วไป)
-  { id: "envatoKey",     keyType: "envato",     label: "Envato Personal Token", placeholder: "Enter your Envato token", description: "Premium stock (VideoHive) — admin only",   link: "https://build.envato.com/my-apps/", adminOnly: true },
+  // AI Image-to-Video (kie.ai) — ทดลองภายใน admin เท่านั้น (ซ่อนจาก user ทั่วไป)
+  { id: "kieKey",        keyType: "kie",        label: "kie.ai API Key",        placeholder: "Enter your kie.ai key",   description: "AI Image-to-Video (GPT Image + Kling) — admin only", link: "https://kie.ai/api-key", adminOnly: true },
+  // Auto Mix fallback image source — ทดลองภายใน admin เท่านั้น (ซ่อนจาก user ทั่วไป)
+  { id: "unsplashKey",   keyType: "unsplash",   label: "Unsplash Access Key",   placeholder: "Enter your Unsplash Access Key", description: "Auto Mix fallback photo source (Ken Burns) — admin only", link: "https://unsplash.com/oauth/applications", adminOnly: true },
+  { id: "flickrKey",     keyType: "flickr",     label: "Flickr API Key",        placeholder: "Enter your Flickr API key", description: "Auto Mix fallback photo source — Creative Commons (Ken Burns) — admin only", link: "https://www.flickr.com/services/apps/create/apply/", adminOnly: true },
 ];
 
-const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, envato: null };
+const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, kie: null, unsplash: null, flickr: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);
@@ -40,7 +45,7 @@ export function ApiKeySettings() {
 
   useEffect(() => {
     fetchApiKeys();
-    // ช่อง adminOnly (Envato) โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
+    // ช่อง adminOnly โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
     fetch("/api/user/me").then(r => r.json()).then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
   }, []);
 

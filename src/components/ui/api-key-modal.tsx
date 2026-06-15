@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Loader2, Key, ExternalLink, Eye, EyeOff, CheckCircle2, X } from "lucide-react";
 import { toast } from "sonner";
 
-export type RequiredKeyType = "gemini" | "elevenlabs" | "heygen" | "pexels" | "pixabay" | "envato";
+export type RequiredKeyType = "gemini" | "elevenlabs" | "heygen" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
 const KEY_META: Record<RequiredKeyType, {
   label: string;
@@ -18,7 +18,9 @@ const KEY_META: Record<RequiredKeyType, {
   heygen:     { label: "HeyGen API Key",     field: "heygenKey",     placeholder: "Enter your HeyGen key",     link: "https://app.heygen.com/settings?nav=API",         hint: "ใช้สำหรับสร้าง Avatar video" },
   pexels:     { label: "Pexels API Key",     field: "pexelsKey",     placeholder: "Enter your Pexels key",     link: "https://www.pexels.com/api/",                     hint: "ใช้สำหรับดาวน์โหลด Stock video" },
   pixabay:    { label: "Pixabay API Key",    field: "pixabayKey",    placeholder: "12345678-abcdef...",         link: "https://pixabay.com/api/docs/",                   hint: "ใช้สำหรับดาวน์โหลด Stock video (fallback)" },
-  envato:     { label: "Envato Personal Token", field: "envatoKey",  placeholder: "Enter your Envato token",   link: "https://build.envato.com/my-apps/",               hint: "ใช้สำหรับ Premium stock (VideoHive) — admin เท่านั้น" },
+  kie:        { label: "kie.ai API Key",        field: "kieKey",     placeholder: "Enter your kie.ai key",     link: "https://kie.ai/api-key",                          hint: "ใช้สำหรับ AI Image-to-Video — admin เท่านั้น" },
+  unsplash:   { label: "Unsplash Access Key",   field: "unsplashKey", placeholder: "Enter your Unsplash Access Key", link: "https://unsplash.com/oauth/applications",    hint: "ใช้สำหรับ Auto Mix fallback photo (Ken Burns) — admin เท่านั้น" },
+  flickr:     { label: "Flickr API Key",        field: "flickrKey",   placeholder: "Enter your Flickr API key", link: "https://www.flickr.com/services/apps/create/apply/", hint: "ใช้สำหรับ Auto Mix fallback photo — Creative Commons (Ken Burns) — admin เท่านั้น" },
 };
 
 interface ApiKeyModalProps {
@@ -125,7 +127,7 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
   );
 }
 
-const VALID_KEYS = new Set<RequiredKeyType>(["gemini","elevenlabs","heygen","pexels","pixabay","envato"]);
+const VALID_KEYS = new Set<RequiredKeyType>(["gemini","elevenlabs","heygen","pexels","pixabay","kie","unsplash","flickr"]);
 
 /**
  * ตรวจสอบ API response data หรือ error message แล้ว return keyType ที่ต้องการ
@@ -153,6 +155,8 @@ function detectFromString(msg: string): RequiredKeyType | null {
   if (msg.includes("heygen"))     return "heygen";
   if (msg.includes("pexels"))     return "pexels";
   if (msg.includes("pixabay"))    return "pixabay";
-  if (msg.includes("envato"))     return "envato";
+  if (msg.includes("kie.ai") || msg.includes("kie"))     return "kie";
+  if (msg.includes("unsplash"))   return "unsplash";
+  if (msg.includes("flickr"))     return "flickr";
   return null;
 }

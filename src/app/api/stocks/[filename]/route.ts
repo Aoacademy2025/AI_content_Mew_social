@@ -50,6 +50,10 @@ export async function GET(
     return NextResponse.json({ error: "Failed to read stock file" }, { status: 500 });
   }
 
+  // kie.ai Ken Burns pipeline ก็เก็บภาพ source (.jpg/.png) ไว้ใน stocks/ ด้วย
+  const ext = path.extname(filename).toLowerCase();
+  const contentType = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "video/mp4";
+
   const rangeHeader = req.headers.get("range");
 
   // Support Range requests — required for Remotion/Chromium to seek into videos
@@ -71,7 +75,7 @@ export async function GET(
       return new NextResponse(body, {
         status: 206,
         headers: {
-          "Content-Type": "video/mp4",
+          "Content-Type": contentType,
           "Content-Range": `bytes ${start}-${end}/${total}`,
           "Content-Length": String(body.length),
           "Accept-Ranges": "bytes",
@@ -96,7 +100,7 @@ export async function GET(
     return new NextResponse(fileBuffer, {
       status: 200,
       headers: {
-        "Content-Type": "video/mp4",
+        "Content-Type": contentType,
         "Content-Length": String(total),
         "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=86400",

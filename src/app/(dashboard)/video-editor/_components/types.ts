@@ -29,8 +29,26 @@ export interface Caption {
   tag?:    "hook" | "body" | "cta";
 }
 
-// "envato" = Premium tier — UI เลือกยังไม่ได้ (เร็วๆ นี้), backend ยังไม่รองรับ
-export type StockSource = "pexels" | "pixabay" | "both" | "envato";
+// "kie-image" = สร้างภาพด้วย AI แล้วแปลงเป็นวิดีโอผ่าน kie.ai — admin-only
+// "auto-mix" = วิดีโอ Pexels/Pixabay เป็นหลัก ถ้า keyword ไหนหา clip ดีไม่ได้ fallback เป็นภาพ
+//   (Unsplash -> kie.ai AI image) แล้วทำ Ken Burns — admin-only (ทดลอง)
+export type StockSource = "pexels" | "pixabay" | "both" | "kie-image" | "auto-mix";
+
+// โมเดล text-to-image ของ kie.ai ที่เลือกได้ — ขนาดภาพ fix ที่ 9:16 เสมอ
+export type KieImageModel =
+  | "nano-banana-pro" | "nano-banana-2" | "gpt-image-2-text-to-image"
+  | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
+  | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
+export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "nano-banana-pro", label: "Nano Banana Pro" },
+  { value: "nano-banana-2", label: "Nano Banana 2" },
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
+  { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
+  { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
+  { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },
+  { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
+  { value: "qwen2/text-to-image", label: "Qwen2" },
+];
 
 export interface StockVideo {
   keyword:   string;
@@ -38,6 +56,18 @@ export interface StockVideo {
   videoUrl:  string;
   duration:  number;
   pexelsId:  number;
+  // ภาพต้นทาง (kie.ai AI Image + Ken Burns) — ใช้แสดง preview ระหว่าง generate
+  imageUrl?:      string;
+  imageLocalUrl?: string;
+  // Metadata สำหรับ license/attribution ของ asset (auto-mix: pexels/pixabay/unsplash/kie-ai/wikimedia/flickr/nasa/met)
+  assetMeta?: {
+    provider: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "wikimedia" | "flickr" | "nasa" | "met";
+    assetId: string;
+    downloadUrl?: string;
+    creator?: string;
+    license?: string;
+    sourcePage?: string;
+  };
 }
 
 export interface PipelineData {
@@ -114,6 +144,8 @@ export interface EditorDraft {
 
   // Stock source
   stockSource?: StockSource;
+  // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image")
+  kieModel?: KieImageModel;
   // จำนวนคลิป B-roll (0/undefined = Auto)
   targetClipCount?: number;
 

@@ -23,7 +23,7 @@ import { UpgradeModal } from "@/components/ui/upgrade-modal";
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
-  SubPreset, SubTextEffect, EditorDraft, StockSource,
+  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel,
 } from "./_components/types";
 import { DEFAULT_STEPS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
@@ -210,10 +210,16 @@ export default function VideoEditorPage() {
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
-  // Premium (Envato) เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
-  const [envatoEnabled, setEnvatoEnabled] = useState(false);
+  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  // AI Image-to-Video (kie.ai) และ Auto Mix เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
+  const [kieImageEnabled, setKieImageEnabled] = useState(false);
+  const [autoMixEnabled, setAutoMixEnabled] = useState(false);
   useEffect(() => {
-    fetch("/api/user/me").then(r => r.json()).then(d => setEnvatoEnabled(d?.role === "ADMIN")).catch(() => {});
+    fetch("/api/user/me").then(r => r.json()).then(d => {
+      const isAdmin = d?.role === "ADMIN";
+      setKieImageEnabled(isAdmin);
+      setAutoMixEnabled(isAdmin);
+    }).catch(() => {});
   }, []);
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);
   // จำนวนคลิป B-roll ใน 1 วิดีโอ: 0 = Auto (1 คลิปต่อ 1 ซับ) / >0 = กำหนดเอง (แบ่งเวลาเท่าๆ กัน)
@@ -695,6 +701,7 @@ export default function VideoEditorPage() {
 
     // Stock source
     if (d.stockSource) setStockSource(d.stockSource);
+    if (d.kieModel) setKieModel(d.kieModel);
     if (d.targetClipCount !== undefined) setTargetClipCount(d.targetClipCount);
 
     // BGM
@@ -797,6 +804,7 @@ export default function VideoEditorPage() {
       config: pipe.current.config,
 
       stockSource,
+      kieModel,
       targetClipCount,
       bgmEnabled, bgmFile, bgmVolume,
 
@@ -1043,7 +1051,7 @@ export default function VideoEditorPage() {
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
-    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "envato" ? "Envato" : "Pexels+Pixabay";
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "kie-image" ? "AI Image (kie.ai)" : stockSource === "auto-mix" ? "Auto Mix" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
     const sceneDurations: number[] = pipe.current.sceneDurations ?? [];
     const totalDurationSec = sceneDurations.length > 0
@@ -1056,6 +1064,7 @@ export default function VideoEditorPage() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
+        ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
         preferredLLM: preferredLLMRef.current,
         // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
         ...(targetClipCount > 0
@@ -2011,8 +2020,13 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
         }
-        if (stockSource === "envato" && !keysData.envatoKey) {
-          setMissingKey({ type: "envato", retryStep: "runAll" });
+        if (stockSource === "kie-image" && !keysData.kieKey) {
+          setMissingKey({ type: "kie", retryStep: "runAll" });
+          return;
+        }
+        // Auto Mix: ใช้ Pexels/Pixabay เป็นหลัก (เหมือน "both") — Unsplash/kie.ai เป็น fallback เสริม ไม่บังคับ
+        if (stockSource === "auto-mix" && !keysData.pexelsKey && !keysData.pixabayKey) {
+          setMissingKey({ type: "pexels", retryStep: "runAll" });
           return;
         }
       }
@@ -2084,7 +2098,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2933,14 +2947,14 @@ export default function VideoEditorPage() {
           >
             <div className="absolute right-0 top-0 bottom-0 w-px bg-[#1e1e28] group-hover:bg-violet-500/60 group-active:bg-violet-500 transition-colors" />
           </div>
-          <div className="px-4 py-3 border-b border-[#1e1e28] flex items-start justify-between gap-2">
+          <div className="px-4 py-3 border-b border-[#1e1e28] flex items-start justify-between gap-2 bg-gradient-to-b from-violet-500/[0.06] to-transparent">
             <div className="min-w-0">
-              <div className="font-bold text-[13px] tracking-tight">Transcript</div>
-              <div className="text-[10px] text-slate-600 mt-0.5">{displayCaptions.length} segments · {fmtMs(totalMs)}</div>
+              <div className="font-bold text-[13px] tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Transcript</div>
+              <div className="text-[10px] text-slate-600 mt-0.5 tabular-nums">{displayCaptions.length} segments · {fmtMs(totalMs)}</div>
             </div>
             <div className="flex items-center gap-1 flex-shrink-0">
               <button onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(""); }}
-                className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors", searchOpen ? "bg-violet-500/20 text-violet-300" : "text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300")}>
+                className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-all", searchOpen ? "bg-violet-500/20 text-violet-300 shadow-[0_0_0_1px_rgba(167,139,250,0.25)]" : "text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300")}>
                 <Search className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -3029,14 +3043,17 @@ export default function VideoEditorPage() {
 
               {/* ── แบ่งซับ ── */}
               {(captions.length > 0 || originalCaptionsRef.current.length > 0) && (
-                <div className="rounded-xl border border-[#2a2a36] bg-[#111118] overflow-hidden">
+                <div className="rounded-xl border border-[#2a2a36] bg-gradient-to-b from-[#15151e] to-[#0f0f15] overflow-hidden shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
                   <div className="px-3 py-2.5 flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex-1">✂️ Split Subtitles</span>
-                    <span className="text-[9px] text-slate-600">{captions.length} ช่วง</span>
+                    <div className="w-5 h-5 rounded-md bg-violet-500/15 border border-violet-500/25 flex items-center justify-center flex-shrink-0">
+                      <Scissors className="w-3 h-3 text-violet-400" />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex-1">Split Subtitles</span>
+                    <span className="text-[9px] text-slate-500 bg-[#1a1a22] border border-[#2a2a36] rounded-full px-2 py-0.5 tabular-nums">{captions.length} ช่วง</span>
                   </div>
-                  <div className="border-t border-[#2a2a36] px-3 py-2.5 space-y-2">
+                  <div className="border-t border-[#2a2a36]/70 px-3 py-2.5 space-y-2">
                     {/* Mode buttons */}
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {([
                         { mode: "sentence", label: "ประโยค" },
                         { mode: "1",        label: "1 คำ" },
@@ -3052,10 +3069,10 @@ export default function VideoEditorPage() {
                             if (mode !== "custom") splitCaptionsByMode(mode);
                           }}
                           className={cn(
-                            "py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
+                            "py-1.5 rounded-lg text-[10px] font-bold transition-all border",
                             splitMode === mode
-                              ? "bg-violet-600 border-violet-500 text-white"
-                              : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300 hover:border-[#3a3a4a]"
+                              ? "bg-gradient-to-b from-violet-500 to-violet-600 border-violet-400/60 text-white shadow-[0_2px_8px_rgba(139,92,246,0.35)]"
+                              : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300 hover:border-[#3a3a4a] hover:bg-[#1e1e28]"
                           )}
                         >{label}</button>
                       ))}
@@ -3071,12 +3088,12 @@ export default function VideoEditorPage() {
                         />
                         <button
                           onClick={() => splitCaptionsByMode("custom", splitCustomN)}
-                          className="flex-1 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold transition-colors"
+                          className="flex-1 py-1 rounded-lg bg-gradient-to-b from-violet-500 to-violet-600 hover:from-violet-400 hover:to-violet-500 text-white text-[10px] font-bold transition-all shadow-[0_2px_8px_rgba(139,92,246,0.35)]"
                         >แบ่งเลย</button>
                       </div>
                     )}
                     {splitMode !== "custom" && splitMode !== "sentence" && (
-                      <div className="text-[9px] text-slate-700 text-center">
+                      <div className="text-[9px] text-slate-600 text-center">
                         {splitMode === "1" && "เน้นทีละคำ — แรงมาก"}
                         {splitMode === "2" && "เร็ว พลิ้ว — นิยมใน TikTok"}
                         {splitMode === "3" && "แนะนำ — อ่านง่าย"}
@@ -3084,7 +3101,7 @@ export default function VideoEditorPage() {
                       </div>
                     )}
                     {splitMode === "sentence" && (
-                      <div className="text-[9px] text-slate-700 text-center">คืนค่าซับต้นฉบับจาก Transcribe</div>
+                      <div className="text-[9px] text-slate-600 text-center">คืนค่าซับต้นฉบับจาก Transcribe</div>
                     )}
                   </div>
                 </div>
@@ -3102,12 +3119,12 @@ export default function VideoEditorPage() {
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
                   className={cn("relative overflow-hidden rounded-xl border transition-all group",
-                    isActive ? "bg-violet-500/10 border-violet-500/50 ring-1 ring-violet-400/30" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
+                    isActive ? "bg-gradient-to-b from-violet-500/15 to-violet-500/[0.04] border-violet-500/50 ring-1 ring-violet-400/30 shadow-[0_2px_12px_rgba(139,92,246,0.15)]" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
 
                   {/* แถบ progress วิ่งตามเวลาในซับตัวนี้ — เห็นชัดว่าเล่นถึงไหน */}
                   {isActive && playheadMs >= cap.startMs && playheadMs < cap.endMs && (
                     <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-violet-500/15 pointer-events-none">
-                      <div className="h-full bg-violet-400" style={{ width: `${((playheadMs - cap.startMs) / Math.max(1, cap.endMs - cap.startMs)) * 100}%` }} />
+                      <div className="h-full bg-gradient-to-r from-violet-400 to-violet-300" style={{ width: `${((playheadMs - cap.startMs) / Math.max(1, cap.endMs - cap.startMs)) * 100}%` }} />
                     </div>
                   )}
 
@@ -3143,7 +3160,7 @@ export default function VideoEditorPage() {
                           setEditingCapIdx(null);
                         }}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } if (e.key === "Escape") setEditingCapIdx(null); }}
-                        className="w-full bg-[#111115] border border-violet-500/50 rounded px-2 py-1 text-[12px] text-slate-100 resize-none outline-none leading-relaxed"
+                        className="w-full bg-[#0c0c11] border border-violet-500/50 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-100 resize-none outline-none leading-relaxed shadow-[0_0_0_3px_rgba(139,92,246,0.12)] transition-shadow"
                         rows={2}
                         onClick={e => e.stopPropagation()}
                       />
@@ -3159,7 +3176,7 @@ export default function VideoEditorPage() {
                   </div>
 
                   {/* Actions row */}
-                  <div className="flex items-center gap-1 px-3 pb-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                     <span className="text-[9px] text-slate-600 tabular-nums mr-auto">{((cap.endMs - cap.startMs) / 1000).toFixed(1)}s</span>
                     {/* Tag cycle */}
                     <button
@@ -3169,10 +3186,10 @@ export default function VideoEditorPage() {
                         const next = tags[(tags.indexOf(cap.tag ?? "body") + 1) % 3];
                         setCaptions(captions.map((c, j) => j === i ? { ...c, tag: next } : c));
                       }}
-                      className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors", tagBg(cap.tag))}
+                      className={cn("px-2 py-0.5 rounded-full text-[9px] font-bold border transition-colors", tagBg(cap.tag))}
                     >{cap.tag ?? "body"}</button>
                     {/* Edit */}
-                    <button onClick={e => { e.stopPropagation(); setEditingCapIdx(i); }} className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-slate-300 hover:bg-white/10">
+                    <button onClick={e => { e.stopPropagation(); setEditingCapIdx(i); }} className="w-6 h-6 rounded-lg flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-violet-500/10 transition-colors">
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
                     {/* Delete */}
@@ -3183,7 +3200,7 @@ export default function VideoEditorPage() {
                         setCaptions(updated);
                         if (activeSegIdx >= updated.length) setActiveSegIdx(Math.max(0, updated.length - 1));
                       }}
-                      className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-red-400 hover:bg-red-500/10"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                     ><Trash2 className="w-3 h-3" /></button>
                   </div>
                 </div>
@@ -3198,7 +3215,7 @@ export default function VideoEditorPage() {
                 setCaptions([...captions, newCap]);
                 setTimeout(() => setEditingCapIdx(captions.length), 50);
               }}
-              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-slate-600 hover:bg-[#1a1a22] hover:text-slate-400 text-[12px] transition-colors mt-1"
+              className="flex items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-dashed border-[#2a2a36] text-slate-600 hover:border-violet-500/40 hover:bg-violet-500/[0.06] hover:text-violet-300 text-[12px] font-medium transition-all mt-1"
             >
               <Plus className="w-3.5 h-3.5" /> Add Segment
             </button>
@@ -3694,7 +3711,9 @@ export default function VideoEditorPage() {
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
-              envatoEnabled={envatoEnabled}
+              kieModel={kieModel} setKieModel={setKieModel}
+              stockVideos={stockVideos}
+              kieImageEnabled={kieImageEnabled} autoMixEnabled={autoMixEnabled}
               targetClipCount={targetClipCount} setTargetClipCount={setTargetClipCount}
             />
             <div className="flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full" style={{ width: rightPanelWidth }}>

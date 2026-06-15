@@ -200,19 +200,39 @@ export async function POST(req: Request) {
   };
 
   console.log("[generate-with-bg] generate payload:", JSON.stringify(payload));
-  const genRes = await fetch("https://api.heygen.com/v2/video/generate", {
-    method: "POST",
-    headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const genData = await genRes.json();
-  console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
 
-  if (!genRes.ok || !genData.data?.video_id) {
+  // Retry generate on transient failures (timeout, 5xx)
+  let genRes: Response | null = null;
+  let genData: any = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      genRes = await fetch("https://api.heygen.com/v2/video/generate", {
+        method: "POST",
+        headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30000),
+      });
+      genData = await genRes.json();
+      console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
+      break; // Success, exit retry loop
+    } catch (err) {
+      if (attempt < 3) {
+        console.warn(`[generate-with-bg] generate attempt ${attempt} failed:`, err);
+        await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * 1000));
+        continue;
+      }
+      return NextResponse.json(
+        { error: `HeyGen generate timeout after retries: ${err instanceof Error ? err.message : String(err)}`, retryable: true },
+        { status: 503 }
+      );
+    }
+  }
+
+  if (!genRes || !genRes.ok || !genData.data?.video_id) {
     // retryable:false — generate ล้มเหลว (เช่น credit หมด, พารามิเตอร์ไม่ผ่าน) ไม่ใช่ key หาย
     // ไม่งั้น client เปิด modal ใส่ key ซ้ำ ทำให้ผู้ใช้เข้าใจผิดว่า key มีปัญหา
     return NextResponse.json(
-      { error: `HeyGen generate failed: ${JSON.stringify(genData.error ?? genData)}`, retryable: false },
+      { error: `HeyGen generate failed: ${JSON.stringify(genData?.error ?? genData)}`, retryable: false },
       { status: 500 }
     );
   }

@@ -1,11 +1,12 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2, Film, Crown, Check } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2, Film, Check, Sparkles, Shuffle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import type { StepState, StockSource } from "./types";
+import type { StepState, StockSource, KieImageModel, StockVideo } from "./types";
+import { KIE_IMAGE_MODEL_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 
 export interface OrderPanelProps {
@@ -35,7 +36,10 @@ export interface OrderPanelProps {
   onPlanError?: (msg: string) => void;
   stockSource: StockSource;
   setStockSource: (v: StockSource) => void;
-  envatoEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม Premium (Envato)
+  kieImageEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม AI Image-to-Video (kie.ai)
+  autoMixEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม Auto Mix (video + image fallback)
+  kieModel?: KieImageModel; setKieModel?: (v: KieImageModel) => void;
+  stockVideos?: StockVideo[]; // ใช้แสดง preview ภาพที่ generate ระหว่าง/หลัง B-roll step (AI Image)
   targetClipCount: number; // 0 = Auto (1 คลิป/ซับ), >0 = จำนวนคลิปใน 1 วิดีโอ
   setTargetClipCount: (v: number) => void;
 }
@@ -67,27 +71,27 @@ export function OrderPanel(p: OrderPanelProps) {
       </div>
       {p.open && (
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-none">
-          {/* Stock Source — Free (Pexels+Pixabay) / Premium (Envato) */}
+          {/* Stock Source */}
           <div>
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Stock Source</div>
             <div className="space-y-2">
               {/* Free */}
               <button onClick={() => p.setStockSource("both")}
                 className={cn("relative w-full rounded-xl border px-3 py-2.5 text-left transition-all overflow-hidden",
-                  p.stockSource !== "envato" ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
-                style={p.stockSource !== "envato"
+                  p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
+                style={p.stockSource !== "kie-image" && p.stockSource !== "auto-mix"
                   ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.07) 55%, rgba(139,92,246,0.04))", boxShadow: "0 0 18px rgba(139,92,246,0.18), inset 0 1px 0 rgba(255,255,255,0.06)" }
                   : { background: "#15151b" }}>
                 <div className="flex items-center gap-2.5">
                   <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
-                    p.stockSource !== "envato" ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
-                    <Film className={cn("w-3.5 h-3.5", p.stockSource !== "envato" ? "text-violet-300" : "text-slate-500")} />
+                    p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
+                    <Film className={cn("w-3.5 h-3.5", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-300" : "text-slate-500")} />
                   </div>
                   <div className="min-w-0">
-                    <div className={cn("text-[12px] font-bold leading-tight", p.stockSource !== "envato" ? "text-violet-200" : "text-slate-400")}>Free</div>
+                    <div className={cn("text-[12px] font-bold leading-tight", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-200" : "text-slate-400")}>Free</div>
                     <div className="text-[9px] text-slate-500 mt-0.5">Pexels + Pixabay</div>
                   </div>
-                  {p.stockSource !== "envato" && (
+                  {p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" && (
                     <span className="ml-auto w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(139,92,246,0.6)]">
                       <Check className="w-3 h-3 text-white" strokeWidth={3} />
                     </span>
@@ -95,47 +99,130 @@ export function OrderPanel(p: OrderPanelProps) {
                 </div>
               </button>
 
-              {/* Premium — gold luxe */}
+              {/* AI Image-to-Video — kie.ai, gold-cyan luxe */}
               <button
-                disabled={!p.envatoEnabled}
-                onClick={() => p.envatoEnabled && p.setStockSource("envato")}
-                title={p.envatoEnabled ? "Envato — admin beta (ไฟล์ preview มี watermark)" : "เร็วๆ นี้"}
+                disabled={!p.kieImageEnabled}
+                onClick={() => p.kieImageEnabled && p.setStockSource("kie-image")}
+                title={p.kieImageEnabled ? "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — admin beta" : "เร็วๆ นี้"}
                 className={cn("relative w-full rounded-xl text-left transition-all overflow-hidden px-3 py-2.5 border",
-                  p.stockSource === "envato" ? "border-amber-400/60"
-                  : p.envatoEnabled ? "border-amber-500/25 hover:border-amber-400/50"
-                  : "border-amber-500/15 cursor-not-allowed")}
-                style={p.stockSource === "envato"
-                  ? { background: "linear-gradient(135deg, rgba(245,158,11,0.18), rgba(180,83,9,0.08) 55%, rgba(245,158,11,0.04))", boxShadow: "0 0 18px rgba(245,158,11,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
-                  : { background: "linear-gradient(135deg, rgba(245,158,11,0.05), #15151b 60%)" }}>
-                {/* gold sheen line on top */}
+                  p.stockSource === "kie-image" ? "border-cyan-400/60"
+                  : p.kieImageEnabled ? "border-cyan-500/25 hover:border-cyan-400/50"
+                  : "border-cyan-500/15 cursor-not-allowed")}
+                style={p.stockSource === "kie-image"
+                  ? { background: "linear-gradient(135deg, rgba(34,211,238,0.18), rgba(13,148,136,0.08) 55%, rgba(34,211,238,0.04))", boxShadow: "0 0 18px rgba(34,211,238,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
+                  : { background: "linear-gradient(135deg, rgba(34,211,238,0.05), #15151b 60%)" }}>
+                {/* cyan sheen line on top */}
                 <div aria-hidden className="absolute inset-x-0 top-0 h-px"
-                  style={{ background: "linear-gradient(90deg, transparent, rgba(252,211,77,0.45), transparent)" }} />
-                <div className={cn("flex items-center gap-2.5", !p.envatoEnabled && "opacity-75")}>
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(103,232,249,0.45), transparent)" }} />
+                <div className={cn("flex items-center gap-2.5", !p.kieImageEnabled && "opacity-75")}>
                   <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
-                    p.stockSource === "envato" ? "border-amber-400/50" : "border-amber-500/25")}
-                    style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.3), rgba(120,53,15,0.25))" }}>
-                    <Crown className="w-3.5 h-3.5 text-amber-300" />
+                    p.stockSource === "kie-image" ? "border-cyan-400/50" : "border-cyan-500/25")}
+                    style={{ background: "linear-gradient(135deg, rgba(34,211,238,0.3), rgba(8,51,68,0.25))" }}>
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
                   </div>
                   <div className="min-w-0">
                     <div className="text-[12px] font-bold leading-tight"
-                      style={{ background: "linear-gradient(90deg, #fcd34d, #f59e0b, #fcd34d)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-                      Premium
+                      style={{ background: "linear-gradient(90deg, #67e8f9, #06b6d4, #67e8f9)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      AI Image
                     </div>
-                    <div className="text-[9px] text-amber-200/40 mt-0.5">Envato</div>
+                    <div className="text-[9px] text-cyan-200/40 mt-0.5">kie.ai</div>
                   </div>
-                  {p.stockSource === "envato" ? (
-                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(245,158,11,0.6)]"
-                      style={{ background: "linear-gradient(135deg, #f59e0b, #b45309)" }}>
+                  {p.stockSource === "kie-image" ? (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
+                      style={{ background: "linear-gradient(135deg, #22d3ee, #0e7490)" }}>
                       <Check className="w-3 h-3 text-white" strokeWidth={3} />
                     </span>
                   ) : (
-                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-amber-300 rounded-full px-2 py-0.5 shrink-0"
-                      style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)", boxShadow: "0 0 10px rgba(245,158,11,0.12)" }}>
-                      {p.envatoEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-cyan-300 rounded-full px-2 py-0.5 shrink-0"
+                      style={{ background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.35)", boxShadow: "0 0 10px rgba(34,211,238,0.12)" }}>
+                      {p.kieImageEnabled ? "Admin Beta" : "เร็วๆ นี้"}
                     </span>
                   )}
                 </div>
               </button>
+
+              {/* Auto Mix — วิดีโอ Pexels/Pixabay เป็นหลัก, fallback เป็นภาพ (Unsplash/AI) ถ้าหา clip ไม่เจอ */}
+              <button
+                disabled={!p.autoMixEnabled}
+                onClick={() => p.autoMixEnabled && p.setStockSource("auto-mix")}
+                title={p.autoMixEnabled ? "วิดีโอเป็นหลัก + fallback เป็นภาพ Ken Burns ถ้าหา clip ไม่เจอ — admin beta" : "เร็วๆ นี้"}
+                className={cn("relative w-full rounded-xl text-left transition-all overflow-hidden px-3 py-2.5 border",
+                  p.stockSource === "auto-mix" ? "border-emerald-400/60"
+                  : p.autoMixEnabled ? "border-emerald-500/25 hover:border-emerald-400/50"
+                  : "border-emerald-500/15 cursor-not-allowed")}
+                style={p.stockSource === "auto-mix"
+                  ? { background: "linear-gradient(135deg, rgba(16,185,129,0.18), rgba(5,150,105,0.08) 55%, rgba(16,185,129,0.04))", boxShadow: "0 0 18px rgba(16,185,129,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
+                  : { background: "linear-gradient(135deg, rgba(16,185,129,0.05), #15151b 60%)" }}>
+                <div aria-hidden className="absolute inset-x-0 top-0 h-px"
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(110,231,183,0.45), transparent)" }} />
+                <div className={cn("flex items-center gap-2.5", !p.autoMixEnabled && "opacity-75")}>
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource === "auto-mix" ? "border-emerald-400/50" : "border-emerald-500/25")}
+                    style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.3), rgba(6,78,59,0.25))" }}>
+                    <Shuffle className="w-3.5 h-3.5 text-emerald-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-bold leading-tight"
+                      style={{ background: "linear-gradient(90deg, #6ee7b7, #10b981, #6ee7b7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      Auto Mix
+                    </div>
+                    <div className="text-[9px] text-emerald-200/40 mt-0.5">วิดีโอ + ภาพ fallback</div>
+                  </div>
+                  {p.stockSource === "auto-mix" ? (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
+                      style={{ background: "linear-gradient(135deg, #10b981, #047857)" }}>
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-emerald-300 rounded-full px-2 py-0.5 shrink-0"
+                      style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.35)", boxShadow: "0 0 10px rgba(16,185,129,0.12)" }}>
+                      {p.autoMixEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              {/* เลือกโมเดล text-to-image ของ kie.ai — แสดงเมื่อเลือก AI Image (ขนาดภาพ fix 9:16) — ใช้ร่วมกับ Auto Mix สำหรับ fallback ด้วย */}
+              {(p.stockSource === "kie-image" && p.kieImageEnabled) || (p.stockSource === "auto-mix" && p.autoMixEnabled) ? (
+                <div className="px-1">
+                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 block">
+                    Image Model (9:16)
+                  </label>
+                  <select
+                    value={p.kieModel ?? "nano-banana-pro"}
+                    onChange={(e) => p.setKieModel?.(e.target.value as KieImageModel)}
+                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400/40"
+                    style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}
+                  >
+                    {KIE_IMAGE_MODEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {/* Preview ภาพที่ AI generate แล้ว — โชว์ระหว่าง/หลัง step B-roll (Ken Burns ใช้ภาพนี้ทำวิดีโอ) — รวม Auto Mix fallback */}
+              {(p.stockSource === "kie-image" && p.kieImageEnabled || p.stockSource === "auto-mix" && p.autoMixEnabled) && !!p.stockVideos?.some(sv => sv.imageLocalUrl || sv.imageUrl) && (
+                <div className="px-1">
+                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                    {p.steps.fetchStock === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                    Generated Images ({p.stockVideos!.length})
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {p.stockVideos!.map((sv, i) => {
+                      const src = sv.imageLocalUrl || sv.imageUrl;
+                      if (!src) return null;
+                      return (
+                        <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border border-cyan-500/20 bg-[#0a0a0f]">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={src} alt={sv.keyword || `clip ${i + 1}`} className="w-full h-full object-cover" />
+                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/50 truncate">{sv.keyword}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

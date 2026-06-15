@@ -202,14 +202,20 @@ export async function POST(req: Request) {
     const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
 
     // Save to file
-    const rendersDir = path.join(process.cwd(), "public", "renders");
-    fs.mkdirSync(rendersDir, { recursive: true });
-    const filename = `tts-${Date.now()}.wav`;
-    const outPath = path.join(rendersDir, filename);
-    fs.writeFileSync(outPath, wavBuffer);
-
-    return NextResponse.json({ voiceUrl: `/api/renders/${filename}` });
+    try {
+      const rendersDir = path.join(process.cwd(), "public", "renders");
+      fs.mkdirSync(rendersDir, { recursive: true });
+      const filename = `tts-${Date.now()}.wav`;
+      const outPath = path.join(rendersDir, filename);
+      fs.writeFileSync(outPath, wavBuffer);
+      console.log("[tts-gemini] saved audio to", filename);
+      return NextResponse.json({ voiceUrl: `/api/renders/${filename}` });
+    } catch (writeErr) {
+      console.error("[tts-gemini] file write error:", writeErr);
+      return apiError({ route: "POST /api/videos/tts-gemini (file write)", error: writeErr, notifyUser: true });
+    }
   } catch (error) {
+    console.error("[tts-gemini] top-level error:", error);
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });
   }
 }

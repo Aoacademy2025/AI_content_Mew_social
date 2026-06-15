@@ -15,7 +15,7 @@ export async function GET() {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true, envatoKey: true },
+      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true, kieKey: true, unsplashKey: true, flickrKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -25,7 +25,9 @@ export async function GET() {
       elevenlabsKey: user.elevenlabsKey ? decrypt(user.elevenlabsKey) : "",
       pexelsKey:     user.pexelsKey     ? decrypt(user.pexelsKey)     : "",
       pixabayKey:    user.pixabayKey    ? decrypt(user.pixabayKey)    : "",
-      envatoKey:     user.envatoKey     ? decrypt(user.envatoKey)     : "",
+      kieKey:        user.kieKey        ? decrypt(user.kieKey)        : "",
+      unsplashKey:   user.unsplashKey   ? decrypt(user.unsplashKey)   : "",
+      flickrKey:     user.flickrKey     ? decrypt(user.flickrKey)     : "",
     });
   } catch (error) {
     return apiError({ route: "user/api-keys", error });
@@ -37,7 +39,7 @@ export async function PUT(req: Request) {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey, envatoKey } = await req.json();
+    const { geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey, kieKey, unsplashKey, flickrKey } = await req.json();
 
     const updateData: Record<string, string | null> = {};
     if (geminiKey     !== undefined) updateData.geminiKey     = geminiKey     ? encrypt(geminiKey)     : null;
@@ -45,7 +47,9 @@ export async function PUT(req: Request) {
     if (elevenlabsKey !== undefined) updateData.elevenlabsKey = elevenlabsKey ? encrypt(elevenlabsKey) : null;
     if (pexelsKey     !== undefined) updateData.pexelsKey     = pexelsKey     ? encrypt(pexelsKey)     : null;
     if (pixabayKey    !== undefined) updateData.pixabayKey    = pixabayKey    ? encrypt(pixabayKey)    : null;
-    if (envatoKey     !== undefined) updateData.envatoKey     = envatoKey     ? encrypt(envatoKey)     : null;
+    if (kieKey        !== undefined) updateData.kieKey        = kieKey        ? encrypt(kieKey)        : null;
+    if (unsplashKey   !== undefined) updateData.unsplashKey   = unsplashKey   ? encrypt(unsplashKey)   : null;
+    if (flickrKey     !== undefined) updateData.flickrKey     = flickrKey     ? encrypt(flickrKey)     : null;
 
     await prisma.user.update({ where: { id: authUser.id }, data: updateData });
     return NextResponse.json({ message: "API keys updated successfully" });
