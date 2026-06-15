@@ -51,6 +51,7 @@ export interface PipelineData {
   sceneClipCounts:        number[];
   sceneDurations:         number[];
   visualDirection:        string;
+  relevanceSpec?:         unknown;     // per-script LLM relevance spec → forwarded to fetch-stock for accurate b-roll
   contentProfile:         string;
   stockVideos:            StockVideo[];
   voiceUrl:               string;

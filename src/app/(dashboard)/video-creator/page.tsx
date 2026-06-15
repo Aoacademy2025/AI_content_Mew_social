@@ -51,6 +51,7 @@ interface PipelineData {
   sceneClipCounts: number[];  // how many clips each scene needs
   sceneDurations: number[];   // estimated duration per scene (seconds)
   visualDirection: string;    // LLM-analyzed visual tone/theme for consistent B-roll
+  relevanceSpec?: unknown;    // per-script LLM relevance spec → forwarded to fetch-stock
   stockVideos: StockVideo[];
   voiceUrl: string;
   captions: Caption[];
@@ -734,6 +735,7 @@ export default function ShortVideoPage() {
     pipe.current.sceneClipCounts = kwData.sceneClipCounts ?? [];
     pipe.current.sceneDurations = kwData.sceneDurations ?? [];
     pipe.current.visualDirection = kwData.visualDirection ?? "";
+    pipe.current.relevanceSpec = kwData.relevanceSpec ?? null;
     setKeywords(kws);
     const totalClips = (kwData.sceneClipCounts ?? []).reduce((a: number, b: number) => a + b, kws.length);
     setStep("keywords", "done", `${sc.length} ฉาก → ${kws.length} keywords (${totalClips} คลิปที่ต้องการ)`);
@@ -763,6 +765,7 @@ export default function ShortVideoPage() {
         preferredLLM: preferredLLMRef.current,
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+        ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -1664,6 +1667,7 @@ export default function ShortVideoPage() {
             const got: string[] = kwData.keywords ?? [];
             const gotAlts: string[][] = kwData.keywordAlternatives ?? [];
             if (kwData.visualDirection) pipe.current.visualDirection = kwData.visualDirection;
+            if (kwData.relevanceSpec) pipe.current.relevanceSpec = kwData.relevanceSpec;
             if (got.length >= N) { perSubKws = got; perSubAlts = gotAlts; break; }
             if (got.length > perSubKws.length) { perSubKws = got; perSubAlts = gotAlts; }
           } catch (e) { perSubKeywordError = e; continue; }
@@ -1726,6 +1730,7 @@ export default function ShortVideoPage() {
                   perSubtitleMode: true,
                   preferredLLM: preferredLLMRef.current,
                   ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
+                  ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
                 }),
               });
               if (!stockRes.ok) {

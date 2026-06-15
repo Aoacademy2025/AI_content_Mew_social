@@ -130,6 +130,9 @@ export interface ShortVideoConfig {
   subtitleShadow?: boolean;
   subtitleOutline?: boolean;
   subtitleOutlineSize?: number;
+  /** Subtle Ken Burns motion (slow zoom) on b-roll so it isn't a static slideshow.
+   *  Set by generate-config from env STOCK_KEN_BURNS; default off. */
+  kenBurns?: boolean;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */
