@@ -10,6 +10,7 @@ import {
   fallbackQueriesForProfile,
   type ContentProfile,
 } from "@/lib/broll-profile";
+import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -274,21 +275,27 @@ export async function POST(req: Request) {
     let useHeuristicFallback = false;
     let heuristicFallbackReason: string | null = null;
 
-    // Step 0: Analyze script once to get visual direction for consistent B-roll tone
+    // Step 0: Analyze script once → visual direction (tone) + per-script relevance spec
     let visualDirection = "";
+    let relevanceSpec: RelevanceSpec | null = null;
     try {
-      const analysisPrompt = `Analyze this video script and describe its visual direction in ONE concise English sentence (max 20 words).
-Focus on: mood/tone, setting/environment, color palette, energy level, target emotion.
-Examples:
-- "Dark dramatic tech documentary — neon-lit servers, urgent energy, high-contrast monochrome city"
-- "Warm motivational lifestyle — golden hour outdoors, slow motion, bright optimistic energy"
-- "Educational calm explainer — clean office, moderate pace, neutral professional tone"
+      const analysisPrompt = `Analyze this video script. Return ONLY a JSON object (no prose, no markdown fences):
+{
+  "visualDirection": "<one concise English sentence, max 20 words: mood/tone, setting, color, energy>",
+  "visualDomain": "<2-6 word English label of the literal subject, e.g. 'consumer drones and RC aircraft', 'home cooking', 'crypto trading'>",
+  "positiveConcepts": ["<8-15 lowercase English nouns a camera can film that SHOULD appear for this exact topic>"],
+  "avoidConcepts": ["<3-8 lowercase English nouns that are OFF-topic for THIS script and should be down-ranked>"],
+  "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
+}
+Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
 
-Script: ${fullScript.slice(0, 1500)}
-
-Output ONLY the one-sentence visual direction, nothing else.`;
-      visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
-      console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
+Script: ${fullScript.slice(0, 1500)}`;
+      const raw = (await callLLM(analysisPrompt, 400, false)).trim();
+      relevanceSpec = parseRelevanceSpec(raw);
+      visualDirection = relevanceSpec?.visualDomain
+        ? raw.match(/"visualDirection"\s*:\s*"([^"]{1,200})"/)?.[1]?.trim() ?? relevanceSpec.visualDomain
+        : raw.replace(/^["']|["']$/g, "").slice(0, 200);
+      console.log(`[extract-keywords] visualDirection: ${visualDirection} | spec: ${relevanceSpec ? relevanceSpec.visualDomain : "none"}`);
     } catch (e) {
       heuristicFallbackReason = useHeuristicKeywordFallback(e, "perSubtitle", subtitleList.length);
       useHeuristicFallback = Boolean(heuristicFallbackReason);
@@ -446,6 +453,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       keywordsPerScene: 1,
       visualDirection,
       contentProfile,
+      relevanceSpec,
       fallback: useHeuristicFallback ? "heuristic" : undefined,
       fallbackReason: useHeuristicFallback ? heuristicFallbackReason : undefined,
     });
@@ -485,15 +493,27 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   let useHeuristicFallback = false;
   let heuristicFallbackReason: string | null = null;
 
-  // Analyze script visual direction first
+  // Analyze script → visual direction (tone) + per-script relevance spec
   let visualDirection = "";
+  let relevanceSpec: RelevanceSpec | null = null;
   try {
-    const analysisPrompt = `Analyze this video script and describe its visual direction in ONE concise English sentence (max 20 words).
-Focus on: mood/tone, setting/environment, color palette, energy level, target emotion.
-Script: ${cleanScript.slice(0, 1500)}
-Output ONLY the one-sentence visual direction, nothing else.`;
-    visualDirection = (await callLLM(analysisPrompt, 80, false)).trim().replace(/^["']|["']$/g, "");
-    console.log(`[extract-keywords] visualDirection: ${visualDirection}`);
+    const analysisPrompt = `Analyze this video script. Return ONLY a JSON object (no prose, no markdown fences):
+{
+  "visualDirection": "<one concise English sentence, max 20 words: mood/tone, setting, color, energy>",
+  "visualDomain": "<2-6 word English label of the literal subject, e.g. 'consumer drones and RC aircraft', 'home cooking', 'crypto trading'>",
+  "positiveConcepts": ["<8-15 lowercase English nouns a camera can film that SHOULD appear for this exact topic>"],
+  "avoidConcepts": ["<3-8 lowercase English nouns that are OFF-topic for THIS script and should be down-ranked>"],
+  "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
+}
+Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
+
+Script: ${cleanScript.slice(0, 1500)}`;
+    const raw = (await callLLM(analysisPrompt, 400, false)).trim();
+    relevanceSpec = parseRelevanceSpec(raw);
+    visualDirection = relevanceSpec?.visualDomain
+      ? raw.match(/"visualDirection"\s*:\s*"([^"]{1,200})"/)?.[1]?.trim() ?? relevanceSpec.visualDomain
+      : raw.replace(/^["']|["']$/g, "").slice(0, 200);
+    console.log(`[extract-keywords] visualDirection: ${visualDirection} | spec: ${relevanceSpec ? relevanceSpec.visualDomain : "none"}`);
   } catch (e) {
     heuristicFallbackReason = useHeuristicKeywordFallback(e, "normal", numScenes);
     useHeuristicFallback = Boolean(heuristicFallbackReason);
@@ -590,6 +610,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneDurations,
       visualDirection,
       contentProfile,
+      relevanceSpec: null,
       fallback: "heuristic",
       fallbackReason: reason,
     });
@@ -677,6 +698,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneDurations,
       visualDirection,
       contentProfile,
+      relevanceSpec,
     });
   } catch (e) {
     const reason = useHeuristicKeywordFallback(e, "normal", numScenes);

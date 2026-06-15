@@ -7,14 +7,18 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
 import {
-  contentProfilePromptBlock,
   detectContentProfile,
-  fallbackQueriesForProfile,
   normalizeContentProfile,
-  positiveTermsForProfile,
-  rejectTermsForProfile,
   type ContentProfile,
 } from "@/lib/broll-profile";
+import {
+  specToTerms,
+  profileToTerms,
+  scoreCandidateSoft,
+  shouldDistrustRanker,
+  type RelevanceSpec,
+  type RelevanceTerms,
+} from "@/lib/relevance-spec";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -316,68 +320,18 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5)
   })).filter((v: PixabayVideo) => v.videoUrl);
 }
 
-const TOKEN_STOPWORDS = new Set([
-  "with", "from", "this", "that", "into", "over", "under", "close", "shot", "video",
-  "person", "people", "woman", "man", "young", "old", "new", "dark", "light", "slow",
-  "motion", "view", "scene", "background",
-]);
-
-function tokenizeForRelevance(text: string): string[] {
-  return (text ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, " ")
-    .split(/\s+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length > 2 && !TOKEN_STOPWORDS.has(token));
-}
-
-function includesTerm(text: string, term: string): boolean {
-  const cleanTerm = term.trim().toLowerCase();
-  if (!cleanTerm) return false;
-  return new RegExp(`(^|[^a-z0-9])${cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(text);
-}
 
 function scoreCandidate(
   candidate: CandidateVideo,
   keyword: string,
   subtitleText: string,
-  contentProfile: ContentProfile,
+  terms: RelevanceTerms,
 ): CandidateFit {
-  const titleText = `${candidate.title} ${candidate.query}`.toLowerCase();
-  const contextText = `${keyword} ${subtitleText}`.toLowerCase();
-  const titleTokens = new Set(tokenizeForRelevance(titleText));
-  const contextTokens = new Set(tokenizeForRelevance(`${keyword} ${subtitleText}`));
-
-  let score = 0;
-  for (const token of contextTokens) {
-    if (titleTokens.has(token)) score += 2;
-  }
-
-  for (const term of positiveTermsForProfile(contentProfile)) {
-    if (includesTerm(titleText, term)) score += 1;
-  }
-
-  let rejectReason: string | undefined;
-  for (const term of rejectTermsForProfile(contentProfile)) {
-    if (includesTerm(titleText, term) && !includesTerm(contextText, term)) {
-      rejectReason = term;
-      score -= 6;
-      break;
-    }
-  }
-
-  const isRelevant = !rejectReason && (
-    contentProfile === "general" ||
-    score > 0 ||
-    contextTokens.size > 0 && [...contextTokens].some((token) => titleTokens.has(token))
-  );
-
-  return {
-    index: -1,
-    score,
-    rejectReason,
-    isRelevant,
-  };
+  const titleText = `${candidate.title} ${candidate.query}`;
+  const contextText = `${keyword} ${subtitleText}`;
+  const score = scoreCandidateSoft(titleText, contextText, terms);
+  // Soft mode: never eliminate. Everything is "relevant"; ranking by score decides the pick.
+  return { index: -1, score, rejectReason: undefined, isRelevant: true };
 }
 
 function orderCandidateIndices(
@@ -385,11 +339,11 @@ function orderCandidateIndices(
   preferredIndex: number,
   keyword: string,
   subtitleText: string,
-  contentProfile: ContentProfile,
+  terms: RelevanceTerms,
   allowNeutral = false,
 ): CandidateFit[] {
   const fits = candidates.map((candidate, index) => ({
-    ...scoreCandidate(candidate, keyword, subtitleText, contentProfile),
+    ...scoreCandidate(candidate, keyword, subtitleText, terms),
     index,
   }));
 
@@ -410,9 +364,9 @@ function bestRelevantCandidateIndex(
   candidates: CandidateVideo[],
   keyword: string,
   subtitleText: string,
-  contentProfile: ContentProfile,
+  terms: RelevanceTerms,
 ): number {
-  return orderCandidateIndices(candidates, -1, keyword, subtitleText, contentProfile, false)[0]?.index ?? -1;
+  return orderCandidateIndices(candidates, -1, keyword, subtitleText, terms, false)[0]?.index ?? -1;
 }
 
 // LLM rank: given subtitle texts and candidate titles per keyword,
@@ -426,7 +380,7 @@ async function llmRankBatch(
   candidateTitles: string[][],
   llmKey: string,
   visualDirection?: string,
-  contentProfile: ContentProfile = "general",
+  terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
 ): Promise<number[]> {
   const lines = keywords.map((kw, ki) => {
     const sub = subtitleTexts[ki] ?? kw;
@@ -437,7 +391,7 @@ async function llmRankBatch(
   const directionLine = visualDirection
     ? `\nVIDEO DIRECTION: ${visualDirection}\nPrioritize candidates that match this overall visual tone/theme.\n`
     : "";
-  const profileLine = `\n${contentProfilePromptBlock(contentProfile)}\nReject candidates outside this profile.\n`;
+  const profileLine = `\nVISUAL DOMAIN: ${terms.domainLabel}\nPrefer footage of: ${terms.positive.slice(0, 12).join(", ") || "the subject described"}.\nDown-rank (do NOT hard-reject) footage of: ${terms.avoid.slice(0, 8).join(", ") || "obviously unrelated subjects"}.\n`;
 
   const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content, content profile, and overall video direction.
 ${directionLine}
@@ -445,7 +399,7 @@ ${profileLine}
 RULES:
 - Output ONLY a JSON array of integers, one per subtitle, same order
 - Pick the index whose title most literally matches what is described in the subtitle
-- Return -1 if none of the candidate titles reasonably match the subtitle and content profile
+- Return the BEST available index even if imperfect. Use -1 ONLY for a candidate that is truly unusable. NEVER return -1 for every subtitle.
 - Prefer candidates that fit the VIDEO DIRECTION tone (mood, setting, energy)
 - Prefer concrete, specific matches over generic ones
 
@@ -489,10 +443,10 @@ async function llmRankCandidates(
   candidateTitles: string[][],
   llmKey: string,
   visualDirection?: string,
-  contentProfile: ContentProfile = "general",
+  terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
 ): Promise<number[]> {
   if (keywords.length <= RANK_BATCH_SIZE) {
-    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, contentProfile);
+    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, terms);
   }
 
   // Split into chunks and call sequentially to avoid LLM output-length limits
@@ -504,13 +458,13 @@ async function llmRankCandidates(
     const chunkTitles = candidateTitles.slice(start, end);
     console.log(`[fetch-stock] LLM ranking chunk ${start}-${end - 1} of ${keywords.length}`);
     try {
-      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, contentProfile);
+      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, terms);
       for (let i = 0; i < chunkResult.length; i++) {
         results[start + i] = chunkResult[i];
       }
     } catch (e) {
       console.warn(`[fetch-stock] LLM chunk ${start}-${end - 1} failed:`, e);
-      // Keep default -1 for this chunk so selection uses profile fallback.
+      // Keep default -1 for this chunk so selection uses soft-score fallback.
     }
   }
   return results;
@@ -536,6 +490,7 @@ export async function POST(req: Request) {
     fullScript,
     visualDirection,
     contentProfile,
+    relevanceSpec,
   }: {
     keywords: string[];
     keywordAlternatives?: string[][];
@@ -548,6 +503,7 @@ export async function POST(req: Request) {
     fullScript?: string;
     visualDirection?: string;
     contentProfile?: string;
+    relevanceSpec?: RelevanceSpec | null;
   } = body ?? {};
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
@@ -556,6 +512,11 @@ export async function POST(req: Request) {
       ...(Array.isArray(keywords) ? keywords : []),
     ].filter(Boolean).join(" "))
   );
+
+  const RANK_DISTRUST_PCT = readIntEnv("MCP_RANK_DISTRUST_PCT", 80, 50, 100);
+  const relSpec: RelevanceSpec | null = relevanceSpec ?? null;
+  const relTerms: RelevanceTerms = relSpec ? specToTerms(relSpec) : profileToTerms(resolvedContentProfile);
+  console.log(`[fetch-stock] relevance source=${relSpec ? "spec" : "profile"} domain="${relTerms.domainLabel}" +${relTerms.positive.length}/-${relTerms.avoid.length}`);
 
   const usePexels = stockSource === "pexels" || stockSource === "both";
   const usePixabay = stockSource === "pixabay" || stockSource === "both";
@@ -686,6 +647,7 @@ export async function POST(req: Request) {
         stockSource,
         resolvedSource: srcLabel,
         contentProfile: resolvedContentProfile,
+        relevanceSource: relSpec ? "spec" : "profile",
         download,
         keywordCount: keywords.length,
         subtitleCount,
@@ -814,7 +776,7 @@ export async function POST(req: Request) {
     const subtitleText = Array.isArray(subtitleTexts) ? subtitleTexts[keywordIndex] ?? "" : "";
     const words = keyword.split(/\s+/).filter(Boolean);
     const queries = [
-      ...fallbackQueriesForProfile(resolvedContentProfile),
+      ...relTerms.fallbackQueries,
       words.slice(0, 2).join(" "),
       words[0],
       words[words.length - 1],
@@ -829,7 +791,7 @@ export async function POST(req: Request) {
           -1,
           keyword,
           subtitleText,
-          resolvedContentProfile,
+          relTerms,
           true,
         );
         stockTelemetry.candidateRejectedCount += fallbackCandidates.length - ordered.length;
@@ -974,25 +936,33 @@ export async function POST(req: Request) {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, resolvedContentProfile);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, relTerms);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
+        if (shouldDistrustRanker(bestIdxByKeyword, RANK_DISTRUST_PCT)) {
+          console.warn(`[fetch-stock] LLM ranker rejected >=${RANK_DISTRUST_PCT}% — using deterministic relevance ranking instead`);
+          bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
+            bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts[i] ?? "", relTerms),
+          );
+          stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
+          stockTelemetry.llmRankingFailed = true;
+        }
       } catch (e) {
         stockTelemetry.llmRankingFailed = true;
-        console.error(`[fetch-stock] LLM ranking failed, falling back to profile relevance pick:`, e);
+        console.error(`[fetch-stock] LLM ranking failed, falling back to soft relevance pick:`, e);
         bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
-          bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts[i] ?? "", resolvedContentProfile)
+          bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts[i] ?? "", relTerms)
         );
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
       }
     }
   } else if (isPerSubtitleMode) {
-    // No LLM key or subtitle texts mismatch — pick best profile-relevant candidate instead of index 0.
+    // No LLM key or subtitle texts mismatch — pick best soft-relevant candidate instead of index 0.
     bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
-      bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts?.[i] ?? "", resolvedContentProfile)
+      bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts?.[i] ?? "", relTerms)
     );
     stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
-    if (!llmKey) console.warn(`[fetch-stock] no LLM key — using profile relevance fallback`);
+    if (!llmKey) console.warn(`[fetch-stock] no LLM key — using soft relevance fallback`);
   }
 
   // ── Pick phase — apply LLM choice first, then fill remaining slots, dedup globally ──
@@ -1014,7 +984,7 @@ export async function POST(req: Request) {
           preferred,
           keyword,
           subtitleText,
-          resolvedContentProfile,
+          relTerms,
           false,
         );
         const neutralOrder = orderCandidateIndices(
@@ -1022,7 +992,7 @@ export async function POST(req: Request) {
           preferred,
           keyword,
           subtitleText,
-          resolvedContentProfile,
+          relTerms,
           true,
         );
         stockTelemetry.candidateRejectedCount += Math.max(0, candidates.length - neutralOrder.length);
@@ -1085,7 +1055,7 @@ export async function POST(req: Request) {
         -1,
         keyword,
         subtitleText,
-        resolvedContentProfile,
+        relTerms,
         true,
       );
       stockTelemetry.candidateRejectedCount += Math.max(0, candidates.length - ordered.length);

@@ -34,4 +34,13 @@ const p0 = burn.keywordPopups[0];
 assert(p0.start === 0 && p0.end === 30 && p0.isHighlight === true && p0.tag === "hook", "popup frame timing + hook highlight");
 assert(p0.size === DEFAULT_STYLE.subtitleSize && p0.topPercent === DEFAULT_STYLE.subtitlePosition, "popup uses default style");
 
+// relevanceSpec is forwarded into the stock payload when present
+{
+  const spec = { visualDomain: "drones", positiveConcepts: ["drone"], avoidConcepts: ["medical"], safeFallbackQueries: ["drone sky"] };
+  const payload = buildStockPayload(["drone"], 30, "both", [{ text: "x", startMs: 0, endMs: 1000, tag: "hook" as const }], "dark", [["drone"]], spec) as Record<string, unknown>;
+  assert(JSON.stringify(payload.relevanceSpec) === JSON.stringify(spec), "stock payload forwards relevanceSpec when provided");
+  const payloadNoSpec = buildStockPayload(["drone"], 30, "both", []) as Record<string, unknown>;
+  assert(!("relevanceSpec" in payloadNoSpec), "stock payload omits relevanceSpec when not provided");
+}
+
 console.log(`\n✅ ALL ${passed} ORCHESTRATOR-STEP CHECKS PASSED`);
