@@ -171,7 +171,9 @@ const handler = createMcpHandler(
               args.idempotencyKey,
             );
             return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
-              nextStep: avatar.kind === "ok" ? "avatar ใช้เวลา ~10–20 นาที — เช็คด้วย get_video_status เป็นระยะ (อย่าถี่กว่าทุก ~1–2 นาที)" : "วิดีโอปกติ ~2–4 นาที — เช็คด้วย get_video_status เป็นระยะ" };
+              nextStep: avatar.kind === "ok"
+                ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
+                : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };
           } catch (e) {
             if ((e as { code?: string })?.code === "P2002") return { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" };
             throw e; // real DB error → runTool catch audits "error" + returns internal_error
