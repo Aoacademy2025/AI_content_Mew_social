@@ -39,6 +39,7 @@ import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
+import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
@@ -353,6 +354,17 @@ export default function VideoEditorPage() {
       .then(r => (r.ok ? r.json() : null))
       .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
       .catch(() => { /* keep PRO default — server still backstops at render */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load auto-mined loanwords so client-side word-mode splitting keeps them whole.
+  // Fail-open: on any error the static list (already bundled) is used.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/thai-loanwords")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d && Array.isArray(d.words)) setDynamicLoanwords(d.words, Array.isArray(d.denylist) ? d.denylist : []); })
+      .catch(() => { /* fail-open: static list only */ });
     return () => { cancelled = true; };
   }, []);
 
