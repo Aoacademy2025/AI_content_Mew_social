@@ -22,18 +22,24 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, {
       headers: { "x-goog-api-key": key },
     });
-    if (res.status === 401) {
-      return { ok: false, message: "❌ Key ไม่ถูกต้อง — สร้างใหม่ที่ aistudio.google.com/apikey" };
-    }
-    if (res.status === 403) {
+    if (!res.ok) {
       const body = await res.text().catch(() => "");
-      const isApiDisabled = body.includes("SERVICE_DISABLED") || body.includes("has not been used") || body.includes("PERMISSION_DENIED");
-      if (isApiDisabled) {
+      const lc = body.toLowerCase();
+      // Google returns HTTP 400 (not 401) with API_KEY_INVALID for a bad/incomplete key —
+      // match on the body so the friendly message shows instead of a raw "Auth check failed: 400".
+      if (res.status === 401 || lc.includes("api_key_invalid") || lc.includes("api key not valid") || lc.includes("key not valid")) {
+        return { ok: false, message: "❌ Key ไม่ถูกต้อง — สร้างใหม่ที่ aistudio.google.com/apikey" };
+      }
+      if (lc.includes("service_disabled") || lc.includes("has not been used")) {
         return { ok: false, message: "❌ Generative Language API ยังไม่ได้เปิด — เข้า console.cloud.google.com → APIs & Services → Enable 'Generative Language API'" };
       }
-      return { ok: false, message: "❌ Key ไม่มีสิทธิ์ — ลองสร้าง key ใหม่ที่ aistudio.google.com/apikey" };
+      if (res.status === 403 || lc.includes("permission_denied")) {
+        return { ok: false, message: "❌ Key ไม่มีสิทธิ์ — ลองสร้าง key ใหม่ที่ aistudio.google.com/apikey" };
+      }
+      // Anything else (location-restricted, 5xx overload, etc.) → shared Gemini mapping for a friendly message
+      const info = getGeminiErrorInfo(body, res.status);
+      return { ok: false, message: `❌ ${info.userMessage}` };
     }
-    if (!res.ok) return { ok: false, message: `❌ Auth check failed: ${res.status}` };
   } catch { return { ok: false, message: "❌ ติดต่อ Gemini server ไม่ได้" }; }
 
   // Step 2 — text generation
