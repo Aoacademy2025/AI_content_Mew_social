@@ -6,7 +6,7 @@
 // The fix even-splits ALL fetched clips instead. This proves it.
 //
 // Run: npx tsx scripts/verify-broll-even-split-fallback.ts
-import { evenSplitBgVideos } from "../src/lib/broll-even-split";
+import { evenSplitBgVideos, cyclePoolIndices } from "../src/lib/broll-even-split";
 
 function main() {
   let failures = 0;
@@ -41,6 +41,20 @@ function main() {
   // ── carries selection metadata through (so debugging/overlay still works) ──
   const withMeta = evenSplitBgVideos([{ localUrl: "/a.mp4", duration: 8, keyword: "drone", provider: "pixabay" }], 12);
   check("preserves keyword/provider metadata", withMeta[0].keyword === "drone" && withMeta[0].provider === "pixabay");
+
+  // ── cyclePoolIndices: the dense-mode collapse fix (per-subtitle clip assignment) ──
+  // The regression case: 81 short captions, 34 clips. The OLD merge scheme collapsed every
+  // caption to pool[0] (1 clip, ratio=1%). Cycling must use ALL clips and never collapse.
+  const idx = cyclePoolIndices(81, 34);
+  check("cycle: one index per caption", idx.length === 81);
+  check("cycle: uses ALL 34 clips (no collapse to a single frozen clip)", new Set(idx).size === 34, `distinct=${new Set(idx).size}`);
+  check("cycle: adjacent captions get DIFFERENT clips (b-roll changes)", idx.every((v, i) => i === 0 || v !== idx[i - 1]));
+  check("cycle: first 34 are 0..33 in order (on-topic 1:1 match preserved)", idx.slice(0, 34).every((v, i) => v === i));
+  check("cycle: wraps after the pool (caption 34 → clip 0)", idx[34] === 0);
+  // edge cases
+  check("cycle: poolSize 1 → all 0 (only one clip available — can't change)", cyclePoolIndices(5, 1).every((v) => v === 0));
+  check("cycle: 0 captions → []", cyclePoolIndices(0, 34).length === 0);
+  check("cycle: poolSize 0 → all 0 (defensive, no divide-by-zero)", cyclePoolIndices(3, 0).join(",") === "0,0,0");
 
   console.log(failures === 0 ? "\n✅ ALL EVEN-SPLIT FALLBACK CHECKS PASSED" : `\n❌ ${failures} CHECK(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
