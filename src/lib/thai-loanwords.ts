@@ -24,6 +24,26 @@ export const THAI_LOANWORDS: string[] = [
   "สตรีม", "ฟีดแบ็ก", "ออร์แกนิก",
 ];
 
+// Dynamic loanwords (auto-mined daily, stored in SiteConfig) merged on top of the
+// static seed at runtime. setDynamicLoanwords is called by the server loader and the
+// web editor; getActiveLoanwords is the single list everything else consumes. Cached:
+// recomputed only when setDynamicLoanwords runs (loanwordSpans reads it per call).
+let _active: string[] = [...THAI_LOANWORDS];
+export function setDynamicLoanwords(words: string[], denylist: string[] = []): void {
+  const deny = new Set(Array.isArray(denylist) ? denylist : []);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const w of [...THAI_LOANWORDS, ...(Array.isArray(words) ? words : [])]) {
+    if (typeof w !== "string" || w.length === 0 || deny.has(w) || seen.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+  }
+  _active = out;
+}
+export function getActiveLoanwords(): string[] {
+  return _active;
+}
+
 export interface LoanwordSpan { start: number; end: number; }
 
 // All non-overlapping occurrences of any loanword in `text`. When a shorter
@@ -31,7 +51,7 @@ export interface LoanwordSpan { start: number; end: number; }
 // the longer one wins so we never force a cut INSIDE the longer loanword.
 export function loanwordSpans(text: string): LoanwordSpan[] {
   const raw: LoanwordSpan[] = [];
-  for (const w of THAI_LOANWORDS) {
+  for (const w of getActiveLoanwords()) {
     let from = 0;
     let idx: number;
     while ((idx = text.indexOf(w, from)) !== -1) {
