@@ -69,6 +69,16 @@ STAGING_DIR="$APP_DIR/.next-staging"
 export NEXT_DIST_DIR=".next-staging"
 run_next_build() {
   rm -rf "$STAGING_DIR"
+  mkdir -p "$STAGING_DIR"
+  # Preserve the webpack/SWC build cache from the LIVE .next so the compile is
+  # INCREMENTAL, not from-scratch every deploy. The staging-dir flow otherwise
+  # starts each build with an empty cache (log: "No build cache found") → the
+  # full ~40min compile every time. Reusing the prior cache cuts unchanged-code
+  # deploys from ~40min to a few minutes. Safe: Next re-validates the cache and
+  # rebuilds anything stale; a bad cache only costs a slower build, never wrong output.
+  if [ -d "$APP_DIR/.next/cache" ]; then
+    cp -a "$APP_DIR/.next/cache" "$STAGING_DIR/cache" 2>/dev/null || true
+  fi
   if ! npm run build; then
     return 1
   fi
