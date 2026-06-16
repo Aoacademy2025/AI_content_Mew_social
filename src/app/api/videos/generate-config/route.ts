@@ -708,7 +708,7 @@ export async function POST(req: Request) {
     keywordPopups,
     voiceFile,
     voiceVolume: 1.0,
-    bgmVolume: 0.28,
+    bgmVolume: 0.12, // match the web video-editor default (was 0.28 = too loud); web overrides with its own state anyway
     durationInFrames,
     fontFamily,
     subtitleStylePreset,
