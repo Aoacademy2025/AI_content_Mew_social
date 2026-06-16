@@ -39,6 +39,20 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
   return Math.max(min, Math.min(max, Math.floor(raw)));
 }
 
+// x264 speed preset for the Remotion-safe re-encode. `ultrafast` cuts encode CPU
+// ~2-3× vs `veryfast` (the dominant cost of the b-roll step, which serializes through
+// NORMALIZE_CONCURRENCY=1 — so a faster encode drains the queue faster for everyone
+// when multiple users generate at once). Output stays CFR/no-B-frame/yuv420p (still
+// Remotion-seekable); only the file is a bit larger. Env-tunable so it can be dialed
+// back without a redeploy. Only known-good presets are accepted (no shell injection).
+const X264_PRESETS = new Set([
+  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
+]);
+function readPresetEnv(name: string, fallback: string): string {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
+  return X264_PRESETS.has(raw) ? raw : fallback;
+}
+
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
 const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
@@ -46,6 +60,7 @@ const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 
 // a SIGKILL'd encode must not be the common case (override via env, max 600s).
 const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 300_000, 30_000, 600_000);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
+const NORMALIZE_PRESET = readPresetEnv("STOCK_NORMALIZE_PRESET", "ultrafast");
 
 type StockProvider = "pexels" | "pixabay";
 
@@ -134,7 +149,7 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
       // trunc pair forces even dimensions (yuv420p requires it) and is compatible
       // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
       "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-c:v", "libx264", "-preset", NORMALIZE_PRESET, "-crf", "20",
       "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
       "-pix_fmt", "yuv420p",
       "-r", String(TARGET_FPS),           // force constant frame rate
@@ -689,6 +704,7 @@ export async function POST(req: Request) {
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
+        normalizePreset: NORMALIZE_PRESET,
         normalizeTimeoutMs: NORMALIZE_TIMEOUT_MS,
         perSubtitleDownloadLimit: PER_SUBTITLE_DOWNLOAD_LIMIT,
         staleTempDeleted,
