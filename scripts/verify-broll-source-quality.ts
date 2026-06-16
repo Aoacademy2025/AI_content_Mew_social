@@ -22,26 +22,36 @@ check("clamp: ≥FullHD ranks equal (no provider bias)",
   `${clampedLongSide(3840, 2160)} === ${clampedLongSide(1920, 1080)}`);
 check("clamp: sharper sub-HD beats softer", clampedLongSide(1280, 720) > clampedLongSide(854, 480));
 
-// ── pickPixabayVariant (#8) ──
+// ── pickPixabayVariant (#8, RETUNED 2026-06-16 for normalize cost; cap fall-up ≤1280, only if medium <480) ──
 {
-  // normal: medium is fine (long side ≥720) → keep medium, never download large/4K
+  // healthy medium (≥480 long) → keep medium, never download large/4K
   const r = pickPixabayVariant({ url: "med", width: 1280, height: 720 }, { url: "lg", width: 3840, height: 2160 });
   check("pick: healthy medium kept (avoids 4K)", r.url === "med" && r.width === 1280);
 }
 {
-  // soft medium (long side <720) + large ≤1920 → upgrade to large
+  // COMMON case: medium 360×640 (sub-720 but ≥480) → KEEP medium now (speed: no 1920p decode tax)
   const r = pickPixabayVariant({ url: "med", width: 360, height: 640 }, { url: "lg", width: 1080, height: 1920 });
-  check("pick: sub-720 medium → upgrade to ≤1920 large", r.url === "lg" && r.height === 1920);
+  check("pick: 480–720 medium kept (no large fall-up = pre-#8 speed)", r.url === "med" && r.height === 640);
 }
 {
-  // soft medium + large is 4K (>1920) → MUST keep medium (respect #63, don't pull 4K)
-  const r = pickPixabayVariant({ url: "med", width: 360, height: 640 }, { url: "lg", width: 2160, height: 3840 });
-  check("pick: #63-respect — sub-720 medium but large is 4K → keep medium (no 4K download)", r.url === "med");
+  // genuinely tiny medium (<480) + modest large (≤1280) → upgrade to large
+  const r = pickPixabayVariant({ url: "med", width: 240, height: 360 }, { url: "lg", width: 720, height: 1280 });
+  check("pick: <480 medium + ≤1280 large → upgrade", r.url === "lg" && r.height === 1280);
 }
 {
-  // medium missing, large ≤1920 → use large
+  // tiny medium but large >1280 → keep medium (cap decode cost)
+  const r = pickPixabayVariant({ url: "med", width: 240, height: 360 }, { url: "lg", width: 1080, height: 1920 });
+  check("pick: <480 medium but large >1280 → keep medium (cost cap)", r.url === "med");
+}
+{
+  // tiny medium + large is 4K → MUST keep medium (respect #63, don't pull 4K)
+  const r = pickPixabayVariant({ url: "med", width: 240, height: 360 }, { url: "lg", width: 2160, height: 3840 });
+  check("pick: #63-respect — tiny medium but 4K large → keep medium (no 4K)", r.url === "med");
+}
+{
+  // medium missing → fall back to large (legacy medium ?? large)
   const r = pickPixabayVariant(undefined, { url: "lg", width: 1080, height: 1920 });
-  check("pick: no medium → use ≤1920 large", r.url === "lg");
+  check("pick: no medium → use large (fallback)", r.url === "lg");
 }
 {
   // dimensions unknown → behaves like legacy medium ?? large
