@@ -36,7 +36,8 @@
 
 ## Gotchas (important)
 - **`main` = production.** The VPS deploys from `main`. Never push broken code to main.
-- **Two devs, vertical ownership:** **Mew** owns the Payment/pricing vertical (Stripe, checkout, coupons, pricing pages + their schema). The other engineer (git author **`wao1234`**) owns the video/AI render backend. Coordinate before touching shared files: `prisma/schema.prisma`, `package.json`, `next.config.ts`.
+- **Two devs; Mew = MAIN DEPLOYER (rule set 06-16):** wao works on feature branches; **Mew rebases + merges to `main` + deploys herself** — don't gate merges on wao. Vertical origin: Mew = Payment/pricing (Stripe, coupons, pricing+schema); wao = video/AI render backend. Coordinate on INTENT for shared files (`prisma/schema.prisma`, `package.json`, `next.config.js`, `ecosystem.config.js`, `deploy.sh`) + build-verify render-backend changes before merging — but Mew makes the final merge/deploy call.
+- **Config shadowing (cost hours — beware):** `next.config.js` SHADOWS `next.config.ts` (Next 15 resolves .js first, on EVERY machine incl. local) → everything in `next.config.ts` (serverExternalPackages, OOM `cpus:1`, webpack externals, `/renders` rewrite, `ignoreBuildErrors`) is **INACTIVE**; effective config lives in `next.config.js`. Likewise `ecosystem.config.js` `env:` block shadows `.env` for `RENDER_*`/cache, and a plain `pm2 restart` keeps the OLD env → use `pm2 restart <app> --update-env`.
 - **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
 - **Subtitle timing (06-12, PRs #35-#39):** ซับของเสียง TTS (Gemini/ElevenLabs) มาจาก `timing` ใน TTS response — exact-by-arithmetic, **ข้าม transcribe** (`src/lib/tts-timing.ts` + `_components/tts-timing-captions.ts`); การ์ด viral มาจาก `/api/videos/split-script` (text-only LLM, server validate ห้ามแก้ข้อความ). transcribe = fallback สำหรับ avatar/อัปโหลด เท่านั้น. ทุกชั้นมี fail-open → ห้าม "ซ่อม" โดยเอา transcribe กลับมาเป็น path หลัก.
 - **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.
@@ -44,5 +45,5 @@
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.
 
 ## Working conventions
-- Work on feature branches (`mew/...`), open a PR into `main` — avoid committing straight to main.
-- Follow existing code style. Coordinate deploy timing with the other dev.
+- Work on feature branches (`mew/...`), open a PR into `main` — avoid committing straight to main. **Mew rebases + merges + deploys** (including wao's branches).
+- Follow existing code style. Build-verify render-backend changes before merging.
