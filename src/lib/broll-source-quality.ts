@@ -21,11 +21,18 @@ export function clampedLongSide(width?: number, height?: number): number {
 export type StockVariant = { url?: string; width?: number; height?: number } | undefined;
 
 /**
- * #8 soft resolution floor for Pixabay. Prefer `medium` (the variable mid-res variant —
- * avoids Pixabay's up-to-4K `large`, respecting the #63 downscale cap). But some sources'
- * medium is only 540/720p, which upscales to a soft 1080×1920 — the #1 "looks cheap" tell.
- * So if medium's long side is below 720, fall UP to `large` — but ONLY when large stays
- * ≤1920 long side, so we never reintroduce the 4K download #63 removed.
+ * #8 soft resolution floor for Pixabay — RETUNED for normalize cost.
+ * The render output is 1080×1920 and every clip is downscaled to fit it in
+ * normalizeForRemotion, so decoding a source much larger than that is wasted CPU.
+ * A/B on prod (2026-06-16): re-encoding a 1440p source took 156s vs 69s for the
+ * same clip at 540p (~2.3× slower) — and the original #8 fell up to `large` (≤1920)
+ * for the COMMON case (Pixabay medium is ~540p), which roughly doubled b-roll
+ * normalize time per clip and stacked to ~35min/video over ~36 serial clips.
+ *
+ * So strongly prefer the smaller `medium` (restores pre-#8 speed). Only fall up to
+ * `large` when medium is genuinely tiny (<480 long side) AND large stays modest
+ * (≤1280) — keeps the anti-"soft/upscaled" intent for the worst cases without
+ * paying the 1920p decode tax on every clip.
  *
  * When dimensions are unknown (0), behaves like the old `medium ?? large` fallback.
  */
@@ -35,7 +42,7 @@ export function pickPixabayVariant(
 ): { url: string; width?: number; height?: number } {
   const medLong = Math.max(medium?.width ?? 0, medium?.height ?? 0);
   const lgLong = Math.max(large?.width ?? 0, large?.height ?? 0);
-  const useLarge = (!medium?.url || medLong < 720) && !!large?.url && lgLong > 0 && lgLong <= 1920;
+  const useLarge = (!medium?.url || medLong < 480) && !!large?.url && lgLong > 0 && lgLong <= 1280;
   const chosen = useLarge ? large : (medium ?? large);
   return { url: chosen?.url ?? "", width: chosen?.width, height: chosen?.height };
 }
