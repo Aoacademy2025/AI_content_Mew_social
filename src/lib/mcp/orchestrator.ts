@@ -96,7 +96,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 6. Base render (no burned subs) → poll
     await step("render", 75);
-    const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.28 } : {}) };
+    const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
     });
