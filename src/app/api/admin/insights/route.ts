@@ -205,6 +205,50 @@ function durationValues(rows: TelemetryRow[]) {
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
+function telemetryIssueLabel(row: TelemetryRow) {
+  const props = parseProps(row);
+  return String(props.message ?? props.reason ?? row.status ?? row.name).slice(0, 160);
+}
+
+function benignTelemetryReason(row: TelemetryRow): string | null {
+  const props = parseProps(row);
+  const text = [
+    row.name,
+    row.status,
+    props.message,
+    props.reason,
+    props.errorName,
+  ].filter(Boolean).join(" ");
+
+  if (/play\(\) request was interrupted by a call to pause/i.test(text)) return "browser play/pause race";
+  if (/__SUPERSEDED__|(^|\s)superseded(\s|$)/i.test(text)) return "superseded job";
+  if (/AbortError|aborted|cancelled|canceled|got cancelled|Request closed|cancelSignal/i.test(text)) return "intentional cancel";
+  if (row.name === "frontend_error" && /^Script error\.?$/i.test(String(props.message ?? "").trim())) return "opaque script error";
+  return null;
+}
+
+function summarizeIssueGroups(rows: TelemetryRow[], reasonFn?: (row: TelemetryRow) => string | null) {
+  const groups = new Map<string, { count: number; label: string; step: string | null; lastSeen: Date; reason?: string }>();
+  for (const row of rows) {
+    const label = telemetryIssueLabel(row);
+    const reason = reasonFn?.(row) ?? undefined;
+    const key = `${row.step ?? "ทั่วไป"}:${reason ?? ""}:${label}`;
+    const entry = groups.get(key) ?? { count: 0, label, step: row.step, lastSeen: row.createdAt, reason };
+    entry.count++;
+    if (row.createdAt > entry.lastSeen) entry.lastSeen = row.createdAt;
+    groups.set(key, entry);
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+    .map((entry) => ({
+      ...entry,
+      stepLabel: entry.step ? STEP_LABELS[entry.step] ?? entry.step : "ทั่วไป",
+      lastSeen: entry.lastSeen.toISOString(),
+    }));
+}
+
 function pipelineRunKey(row: TelemetryRow) {
   return stringProp(row, "pipelineRunId");
 }
@@ -358,7 +402,9 @@ function summarize(
   const editorOpens = eventCount(rows, (row) => row.name === "editor_opened");
   const pipelineStarts = eventCount(rows, (row) => row.name === "editor_script_ready");
   const pipelineJobs = videoJobs.total;
-  const errorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
+  const rawErrorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
+  const noiseRows = rawErrorRows.filter((row) => benignTelemetryReason(row));
+  const errorRows = rawErrorRows.filter((row) => !benignTelemetryReason(row));
   const frontendErrorRows = errorRows.filter((row) => row.name === "frontend_error" || row.source === "client");
   const serverErrorRows = errorRows.filter((row) => row.source === "server");
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
@@ -378,7 +424,7 @@ function summarize(
     const entry = stepMap.get(row.step) ?? { durations: [], started: 0, done: 0, error: 0, skipped: 0 };
     if (row.name === "pipeline_step_started") entry.started++;
     if (row.name === "pipeline_step_done") entry.done++;
-    if (row.name === "pipeline_step_error") entry.error++;
+    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row)) entry.error++;
     if (row.name === "pipeline_step_skipped") entry.skipped++;
     if (row.durationMs != null && row.durationMs >= 0) entry.durations.push(row.durationMs);
     stepMap.set(row.step, entry);
@@ -401,25 +447,8 @@ function summarize(
     };
   }).sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0));
 
-  const errorGroups = new Map<string, { count: number; label: string; step: string | null; lastSeen: Date }>();
-  for (const row of errorRows) {
-    const props = parseProps(row);
-    const label = String(props.message ?? props.reason ?? row.name).slice(0, 160);
-    const key = `${row.step ?? "ทั่วไป"}:${label}`;
-    const entry = errorGroups.get(key) ?? { count: 0, label, step: row.step, lastSeen: row.createdAt };
-    entry.count++;
-    if (row.createdAt > entry.lastSeen) entry.lastSeen = row.createdAt;
-    errorGroups.set(key, entry);
-  }
-
-  const errors = Array.from(errorGroups.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8)
-    .map((entry) => ({
-      ...entry,
-      stepLabel: entry.step ? STEP_LABELS[entry.step] ?? entry.step : "ทั่วไป",
-      lastSeen: entry.lastSeen.toISOString(),
-    }));
+  const errors = summarizeIssueGroups(errorRows);
+  const noise = summarizeIssueGroups(noiseRows, benignTelemetryReason);
 
   const vitals = ["LCP", "INP", "CLS"].map((metric) => {
     const values = rows
@@ -512,6 +541,8 @@ function summarize(
       pipelineStarts,
       events: rows.length,
       errors: errorRows.length,
+      rawErrors: rawErrorRows.length,
+      noiseEvents: noiseRows.length,
       frontendErrors: frontendErrorRows.length,
       serverErrors: serverErrorRows.length,
       renderSuccessPct: pct(renderDoneJobs, renderStartedJobs),
@@ -525,6 +556,7 @@ function summarize(
     funnel,
     steps,
     errors,
+    noise,
     vitals,
     resource: {
       renderCount: serverRenderRows.length,

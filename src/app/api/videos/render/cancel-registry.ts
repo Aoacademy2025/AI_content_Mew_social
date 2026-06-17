@@ -31,6 +31,10 @@ declare global {
   var __activeRenderSlots: number | undefined;
   // eslint-disable-next-line no-var
   var __renderSlotWaiters: (() => void)[] | undefined;
+  // Active Remotion webpack bundle refs by directory basename.
+  // Cleanup jobs use this to avoid deleting a bundle while renderMedia still uses it.
+  // eslint-disable-next-line no-var
+  var __activeRemotionBundleRefs: Map<string, number> | undefined;
 }
 
 export const cancelByJobId: Map<string, () => void> =
@@ -113,4 +117,22 @@ export function setRenderJob(jobId: string, job: RenderJob) {
       JSON.stringify(job)
     );
   } catch {}
+}
+
+export function retainRemotionBundle(bundleLocation: string): () => void {
+  const name = path.basename(bundleLocation);
+  global.__activeRemotionBundleRefs ??= new Map();
+  global.__activeRemotionBundleRefs.set(name, (global.__activeRemotionBundleRefs.get(name) ?? 0) + 1);
+
+  return () => {
+    const refs = global.__activeRemotionBundleRefs;
+    if (!refs) return;
+    const next = (refs.get(name) ?? 1) - 1;
+    if (next <= 0) refs.delete(name);
+    else refs.set(name, next);
+  };
+}
+
+export function activeRemotionBundleNames(): string[] {
+  return Array.from((global.__activeRemotionBundleRefs ?? new Map()).keys());
 }

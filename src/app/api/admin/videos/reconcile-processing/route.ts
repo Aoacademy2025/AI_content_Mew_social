@@ -36,15 +36,16 @@ export async function POST(req: Request) {
     if (auth.error) return auth.error;
 
     const body = await req.json().catch(() => ({}));
+    const failMissingOutput = body.failMissingOutput === true;
     const plan = await getProcessingReconcilePlan({
       staleAfterMinutes: body.staleAfterMinutes,
       failAfterHours: body.failAfterHours,
       limit: body.limit,
     });
     const dryRun = body.dryRun !== false;
-    const applied = dryRun ? null : await applyProcessingReconcile(plan);
+    const applied = dryRun ? null : await applyProcessingReconcile(plan, { failMissingOutput });
 
-    return NextResponse.json({ dryRun, applied, ...plan });
+    return NextResponse.json({ dryRun, applied, options: { ...plan.options, failMissingOutput }, summary: plan.summary, items: plan.items });
   } catch (error) {
     return apiError({ route: "POST /api/admin/videos/reconcile-processing", error });
   }
