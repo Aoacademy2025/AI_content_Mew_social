@@ -82,8 +82,7 @@ export function trackEvent(name: string, options: TelemetryOptions = {}) {
     const body = JSON.stringify(payload);
     if (navigator.sendBeacon) {
       const blob = new Blob([body], { type: "application/json" });
-      navigator.sendBeacon("/api/telemetry", blob);
-      return;
+      if (navigator.sendBeacon("/api/telemetry", blob)) return;
     }
 
     void fetch("/api/telemetry", {
