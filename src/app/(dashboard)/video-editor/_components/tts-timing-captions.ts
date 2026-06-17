@@ -7,13 +7,27 @@ import {
   buildCaptionsFromCards,
   splitSentenceCards,
   snapCaptionsToSilences,
+  mergeShortCaptions,
   snapCardsToWordBoundaries,
   TtsTimingMismatchError,
   type TtsTiming,
   type TimedWord,
   type ScriptCard,
+  type SilenceInterval,
 } from "@/lib/tts-timing";
 import type { Caption } from "./types";
+
+// Sentence/viral caption-track pause handling (2026-06-17 fix). Word-count modes
+// use a separate path (cardsByWordCount) and are NOT touched by either knob.
+//   SNAP_TARGET "onset"  → next caption appears when its speech resumes (was
+//                          "midpoint", which showed it ~0.15–0.5s early).
+//   MIN_CARD_MS          → merge captions shown shorter than this into the
+//                          previous one so fast/over-split phrases don't flash
+//                          (0 disables merge). Flip these to roll back — the web
+//                          caption build runs client-side, so they're build-time
+//                          constants (kept consistent web↔MCP), not runtime env.
+const SNAP_TARGET: "onset" | "midpoint" = "onset";
+const MIN_CARD_MS = 600;
 
 export interface TimingCaptionsResult {
   captions: Caption[];
@@ -67,14 +81,23 @@ export function captionsFromTtsTiming(
     const rawCards = validCards(cardsOverride, fullText.length)
       ?? splitSentenceCards(fullText, Math.max(10, maxCardChars));
     const cards = snapCardsToWordBoundaries(rawCards, fullText);
-    const caps = buildCaptionsFromCards(cards, timing, fullText);
+    let caps = buildCaptionsFromCards(cards, timing, fullText);
     if (words.length === 0 || caps.length === 0) return null;
 
     // Gemini's intra-segment times are char-proportional — snapping card
-    // boundaries into real pauses removes most of the residual error.
-    // ElevenLabs char timing is already exact; never snap it.
-    if (timing.provider === "gemini" && Array.isArray(timing.silences) && timing.silences.length > 0) {
-      snapCaptionsToSilences(caps, timing.silences.filter((s) => Number.isFinite(s)));
+    // boundaries into real pauses (at the speech ONSET) removes most of the
+    // residual error and the "next card appears before its speech" flicker;
+    // merging too-short cards kills the leftover "ขึ้นแว้บ–หายก่อนพูดจบ" on fast
+    // runs. ElevenLabs char timing is already exact; never snap/merge it.
+    if (timing.provider === "gemini") {
+      const intervals: SilenceInterval[] =
+        Array.isArray(timing.silenceIntervals) && timing.silenceIntervals.length > 0
+          ? timing.silenceIntervals.filter((s) => Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs))
+          : Array.isArray(timing.silences)
+            ? timing.silences.filter((s) => Number.isFinite(s)).map((m) => ({ startMs: m, endMs: m }))
+            : [];
+      if (intervals.length > 0) snapCaptionsToSilences(caps, intervals, { target: SNAP_TARGET });
+      caps = mergeShortCaptions(caps, MIN_CARD_MS);
     }
 
     const last = timing.segments[timing.segments.length - 1];
