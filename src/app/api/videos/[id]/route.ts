@@ -2,6 +2,18 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { enqueueLowResPreview } from "@/lib/low-res-preview";
+import { existingLowResPreviewUrlForVideoUrl } from "@/lib/low-res-preview-paths";
+
+function withPreviewUrl<T extends { videoUrl: string | null; avatarVideoUrl: string | null }>(video: T) {
+  const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
+  const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+  return {
+    ...video,
+    previewVideoUrl,
+    previewStatus: previewVideoUrl ? "ready" : "unavailable",
+  };
+}
 
 // GET /api/videos/[id] - Get single video
 export async function GET(
@@ -30,7 +42,7 @@ export async function GET(
       return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
 
-    return NextResponse.json(video);
+    return NextResponse.json(withPreviewUrl(video));
   } catch (error) {
     return apiError({ route: "videos/[id]", error });
   }
@@ -76,6 +88,18 @@ export async function PATCH(
     if (updated.count === 0) return NextResponse.json({ error: "Video not found" }, { status: 404 });
 
     const video = await prisma.video.findUnique({ where: { id } });
+    if (video) {
+      const previewQueue = enqueueLowResPreview(video.videoUrl || video.avatarVideoUrl, {
+        userId: authUser.id,
+        videoId: video.id,
+        reason: "video_updated",
+      });
+      const response = withPreviewUrl(video);
+      return NextResponse.json({
+        ...response,
+        previewStatus: response.previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
+      });
+    }
     return NextResponse.json(video);
   } catch (error) {
     return apiError({ route: "PATCH videos/[id]", error });
@@ -119,6 +143,19 @@ export async function PUT(
     const video = await prisma.video.findUnique({
       where: { id },
     });
+
+    if (video) {
+      const previewQueue = enqueueLowResPreview(video.videoUrl || video.avatarVideoUrl, {
+        userId: authUser.id,
+        videoId: video.id,
+        reason: "video_put",
+      });
+      const response = withPreviewUrl(video);
+      return NextResponse.json({
+        ...response,
+        previewStatus: response.previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
+      });
+    }
 
     return NextResponse.json(video);
   } catch (error) {

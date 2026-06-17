@@ -3,6 +3,11 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { enqueueLowResPreview } from "@/lib/low-res-preview";
+import {
+  deleteLowResPreviewForVideoUrl,
+  existingLowResPreviewUrlForVideoUrl,
+} from "@/lib/low-res-preview-paths";
 import fs from "fs";
 import path from "path";
 
@@ -36,6 +41,7 @@ export async function GET() {
     function deleteFileIfLocal(url: string | null) {
       if (!url || url.startsWith("http://") || url.startsWith("https://")) return;
       try {
+        deleteLowResPreviewForVideoUrl(url);
         const filePath = url.startsWith("/api/renders/")
           ? path.join(publicDir, "renders", url.slice("/api/renders/".length))
           : path.join(publicDir, url);
@@ -46,7 +52,10 @@ export async function GET() {
     // ── Lazy cleanup: delete expired records + their files on read ────────
     const expiredIds: string[] = [];
     const brokenIds: string[] = [];
-    const valid: typeof videos = [];
+    const valid: Array<(typeof videos)[number] & {
+      previewVideoUrl: string | null;
+      previewStatus: "ready" | "queued" | "unavailable";
+    }> = [];
 
     for (const v of videos) {
       // Expired by retention?
@@ -64,7 +73,19 @@ export async function GET() {
         brokenIds.push(v.id);
         continue;
       }
-      valid.push(v);
+
+      const primaryVideoUrl = v.videoUrl || v.avatarVideoUrl;
+      const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+      let previewStatus: "ready" | "queued" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
+      if (!previewVideoUrl && v.status === "COMPLETED") {
+        const queued = enqueueLowResPreview(primaryVideoUrl, {
+          userId: authUser.id,
+          videoId: v.id,
+          reason: "gallery_fetch",
+        });
+        previewStatus = queued.status === "queued" ? "queued" : "unavailable";
+      }
+      valid.push({ ...v, previewVideoUrl, previewStatus });
     }
 
     const toDelete = [...expiredIds, ...brokenIds];
@@ -129,7 +150,19 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json(video, { status: 201 });
+    const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
+    const previewQueue = enqueueLowResPreview(primaryVideoUrl, {
+      userId: authUser.id,
+      videoId: video.id,
+      reason: "video_created",
+    });
+
+    const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+    return NextResponse.json({
+      ...video,
+      previewVideoUrl,
+      previewStatus: previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
+    }, { status: 201 });
   } catch (error) {
     return apiError({ route: "videos", error });
   }

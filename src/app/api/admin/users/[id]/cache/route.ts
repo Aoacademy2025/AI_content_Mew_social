@@ -2,10 +2,22 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import {
+  lowResPreviewFilenameForRender,
+  renderFilenameFromVideoUrl,
+} from "@/lib/low-res-preview-paths";
 import fs from "fs";
 import path from "path";
 
 export const runtime = "nodejs";
+
+function protectRenderName(set: Set<string>, url: string | null) {
+  if (!url) return;
+  const filename = renderFilenameFromVideoUrl(url) ?? path.basename(url);
+  set.add(filename);
+  const previewFilename = lowResPreviewFilenameForRender(filename);
+  if (previewFilename) set.add(previewFilename);
+}
 
 function scanUserFiles(userId: string) {
   const stocksDir = path.join(process.cwd(), "stocks");
@@ -66,8 +78,8 @@ export async function GET(
     const galleryVideos = await prisma.video.findMany({ where: { userId }, select: { videoUrl: true, audioUrl: true } });
     const protectedNames = new Set<string>();
     for (const v of galleryVideos) {
-      if (v.videoUrl) protectedNames.add(path.basename(v.videoUrl));
-      if (v.audioUrl) protectedNames.add(path.basename(v.audioUrl));
+      protectRenderName(protectedNames, v.videoUrl);
+      protectRenderName(protectedNames, v.audioUrl);
     }
 
     // Render files (not user-prefixed — show all non-gallery renders for global cleanup context)
@@ -136,8 +148,8 @@ export async function DELETE(
       const galleryVideos = await prisma.video.findMany({ where: { userId }, select: { videoUrl: true, audioUrl: true } });
       const protectedNames = new Set<string>();
       for (const v of galleryVideos) {
-        if (v.videoUrl) protectedNames.add(path.basename(v.videoUrl));
-        if (v.audioUrl) protectedNames.add(path.basename(v.audioUrl));
+        protectRenderName(protectedNames, v.videoUrl);
+        protectRenderName(protectedNames, v.audioUrl);
       }
       for (const f of fs.readdirSync(rendersDir)) {
         if (protectedNames.has(f)) continue;
