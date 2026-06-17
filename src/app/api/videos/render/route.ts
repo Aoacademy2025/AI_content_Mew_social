@@ -136,8 +136,18 @@ function readPersistedJob(jobId: string): RenderJob | undefined {
 // In-memory cache so same process doesn't re-read file on every poll
 const renderJobs = new Map<string, RenderJob>();
 
-// Track the latest jobId per user — older jobs are superseded and must not write results
-const latestJobPerUser = new Map<string, string>();
+// Track the latest jobId per render scope. The scope is user + draft/session, so
+// one account can queue multiple clips without those clips cancelling each other.
+const latestJobPerRenderScope = new Map<string, string>();
+
+function normalizeRenderScopeId(value: unknown): string {
+  if (typeof value !== "string") return "default";
+  const cleaned = value
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 96);
+  return cleaned || "default";
+}
 
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
@@ -248,7 +258,7 @@ export async function POST(req: Request) {
     });
     if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -257,6 +267,8 @@ export async function POST(req: Request) {
     const isAvatarMode = !!avatarVideoUrl;
     const isShortVideo = !!shortVideoConfig;
     const isSubtitleOverlay = !!subtitleOverlayConfig;
+    const renderScopeId = normalizeRenderScopeId(jobScopeId);
+    const renderOwnerKey = `${userId}:${renderScopeId}`;
 
     if (!isSubtitleOverlay && !isShortVideo && !isAvatarMode && (!Array.isArray(scenes) || scenes.length === 0)) {
       return NextResponse.json({ error: "scenes, avatarVideoUrl, shortVideoConfig, or subtitleOverlayConfig is required" }, { status: 400 });
@@ -288,27 +300,27 @@ export async function POST(req: Request) {
       );
     }
 
-    const jobId = `${userId}-${Date.now()}`;
-    // Register this as the latest job for this user before cancelling the old one, so its
+    const jobId = `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Register this as the latest job for this render scope before cancelling the old one, so its
     // background catch can identify itself as superseded and refund the reserved usage.
-    latestJobPerUser.set(userId, jobId);
+    latestJobPerRenderScope.set(renderOwnerKey, jobId);
 
-    const prevCancel = activeRenderCancel.get(userId);
+    const prevCancel = activeRenderCancel.get(renderOwnerKey);
     if (prevCancel) {
-      console.log(`[Render] cancelling previous job for user ${userId}`);
+      console.log(`[Render] cancelling previous job for scope ${renderOwnerKey}`);
       prevCancel();
       // Wait only when the previous job is already inside renderMedia and has a
-      // real cancel handle. Queued/bundling jobs are superseded by latestJobPerUser
+      // real cancel handle. Queued/bundling jobs are superseded by latestJobPerRenderScope
       // and will self-cancel before entering renderMedia; waiting for them here
       // makes the next request inherit the old queue delay.
-      const prevDone = renderJobDoneByUser.get(userId);
+      const prevDone = renderJobDoneByUser.get(renderOwnerKey);
       if (prevDone) {
         console.log(`[Render] waiting for previous active render to finish before starting ${jobId}`);
         await prevDone;
         console.log(`[Render] previous active render finished — starting ${jobId}`);
       }
-    } else if (renderJobDoneByUser.has(userId)) {
-      console.log(`[Render] superseding queued/pre-render job for user ${userId} without waiting`);
+    } else if (renderJobDoneByUser.has(renderOwnerKey)) {
+      console.log(`[Render] superseding queued/pre-render job for scope ${renderOwnerKey} without waiting`);
     }
 
     const quota = await reserveClipUsage(userId);
@@ -628,13 +640,20 @@ export async function POST(req: Request) {
     // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
     let resolveDone!: () => void;
     const donePromise = new Promise<void>(resolve => { resolveDone = resolve; });
-    renderJobDoneByUser.set(userId, donePromise);
+    renderJobDoneByUser.set(renderOwnerKey, donePromise);
 
     (async () => {
       let lastProgress = -1;
       let renderStartedAt = Date.now();
       let jobFinalized = false;
       let quotaRefunded = false;
+      let renderCancelFn: (() => void) | null = null;
+      const clearCancelHandles = () => {
+        if (renderCancelFn && activeRenderCancel.get(renderOwnerKey) === renderCancelFn) {
+          activeRenderCancel.delete(renderOwnerKey);
+        }
+        cancelByJobId.delete(jobId);
+      };
       const finishJob = () => {
         if (jobFinalized) return;
         jobFinalized = true;
@@ -647,11 +666,10 @@ export async function POST(req: Request) {
         await refundClipUsage(userId).catch(() => {});
       };
       const stopSupersededJob = async (stage: string) => {
-        if (latestJobPerUser.get(userId) === jobId) return false;
+        if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
 
         console.log(`[Render] job=${jobId} superseded at ${stage} — skipping`);
-        activeRenderCancel.delete(userId);
-        cancelByJobId.delete(jobId);
+        clearCancelHandles();
         const existing = getRenderJob(jobId);
         setRenderJob(jobId, {
           status: "error",
@@ -756,7 +774,7 @@ export async function POST(req: Request) {
           if (customHeight) composition.height = customHeight;
         }
 
-        const filename = `render-${Date.now()}.mp4`;
+        const filename = `render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
         const outputLocation = path.join(rendersDir, filename);
 
         const renderSlotLimit = getRenderJobConcurrencyLimit();
@@ -839,7 +857,8 @@ export async function POST(req: Request) {
           }).catch(() => {});
 
           const { cancel, cancelSignal } = makeCancelSignal();
-          activeRenderCancel.set(userId, cancel);
+          renderCancelFn = cancel;
+          activeRenderCancel.set(renderOwnerKey, cancel);
           cancelByJobId.set(jobId, cancel);
 
           await renderMedia({
@@ -872,12 +891,10 @@ export async function POST(req: Request) {
             },
           });
 
-          // Cleanup abort controller for this user if it's still ours
-          activeRenderCancel.delete(userId);
-          cancelByJobId.delete(jobId);
+          clearCancelHandles();
           finishJob();
 
-          // If a newer job was started for this user, discard this result silently
+          // If a newer job was started for this render scope, discard this result silently
           if (await stopSupersededJob("render_complete")) return;
 
           const videoUrl = `/api/renders/${filename}`;
@@ -914,8 +931,7 @@ export async function POST(req: Request) {
           }).catch(() => {});
         }
       } catch (error) {
-        activeRenderCancel.delete(userId);
-        cancelByJobId.delete(jobId);
+        clearCancelHandles();
         finishJob();
 
         // Intentional cancel (page refresh / new render) — not a real failure.

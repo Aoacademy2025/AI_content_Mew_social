@@ -1753,7 +1753,12 @@ export default function VideoEditorPage() {
 
       const res = await fetch("/api/videos/render", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
+        body: JSON.stringify({
+          shortVideoConfig: patchedConfig,
+          fps: renderFps,
+          jpegQuality: renderQualityToJpeg[renderQuality],
+          jobScopeId: `video-editor-${draftId}`,
+        }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -2535,7 +2540,7 @@ export default function VideoEditorPage() {
 
       const res = await fetch("/api/videos/render", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subtitleOverlayConfig }),
+        body: JSON.stringify({ subtitleOverlayConfig, jobScopeId: `video-editor-${draftId}` }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
