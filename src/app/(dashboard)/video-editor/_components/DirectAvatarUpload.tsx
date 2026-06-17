@@ -37,9 +37,13 @@ export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string
               (err as any)._planMessage = data.error;
               reject(err);
             } catch { reject(new Error("Plan required")); }
+          } else if (xhr.status === 401) {
+            reject(new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง"));
           } else {
-            try { reject(new Error(JSON.parse(xhr.responseText).error ?? "Upload failed")); }
-            catch { reject(new Error("Upload failed")); }
+            // Non-JSON body (e.g. an HTML error page from the proxy) → give an
+            // actionable message instead of an opaque "Upload failed".
+            try { reject(new Error(JSON.parse(xhr.responseText).error ?? "อัปโหลดไม่สำเร็จ")); }
+            catch { reject(new Error(`อัปโหลดไม่สำเร็จ (HTTP ${xhr.status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`)); }
           }
         };
         xhr.onerror = () => reject(new Error("Network error"));

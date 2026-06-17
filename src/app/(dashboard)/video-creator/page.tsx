@@ -2975,9 +2975,17 @@ export default function ShortVideoPage() {
                             if (!f) return;
                             const fd = new FormData();
                             fd.append("file", f);
-                            const res = await fetch("/api/videos/upload-avatar", { method: "POST", body: fd });
-                            const data = await res.json();
-                            if (data.url) { setAvatarDirectUrl(data.url); setDirectCompositeUrl(""); setDirectCompositeUrl(""); }
+                            try {
+                              const res = await fetch("/api/videos/upload-avatar", { method: "POST", body: fd });
+                              if (res.status === 401) { toast.error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง"); return; }
+                              const data = await res.json().catch(() => ({}));
+                              if (res.ok && data.url) { setAvatarDirectUrl(data.url); setDirectCompositeUrl(""); }
+                              else toast.error(data.error ?? `อัปโหลดไม่สำเร็จ (HTTP ${res.status})`);
+                            } catch {
+                              toast.error("อัปโหลดไม่สำเร็จ — ลองอีกครั้ง");
+                            } finally {
+                              e.target.value = "";
+                            }
                           }} />
                         <span className="text-[10px] text-white/35">อัปโหลดไฟล์วิดีโอ (mp4/mov)</span>
                       </label>
