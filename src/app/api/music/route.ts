@@ -8,12 +8,19 @@ export async function GET() {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const tracks = await prisma.music.findMany({
-      orderBy: { createdAt: "desc" },
-      select: { id: true, title: true, filename: true, duration: true, createdAt: true },
-    });
-    return NextResponse.json({ tracks });
+    const [tracks, userTracks] = await Promise.all([
+      prisma.music.findMany({
+        orderBy: { createdAt: "desc" },
+        select: { id: true, title: true, filename: true, duration: true, createdAt: true },
+      }),
+      prisma.userMusic.findMany({
+        where: { userId: authUser.id },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, title: true, filename: true, sizeBytes: true, duration: true, createdAt: true },
+      }),
+    ]);
+    return NextResponse.json({ tracks, userTracks });
   } catch {
-    return NextResponse.json({ tracks: [] });
+    return NextResponse.json({ tracks: [], userTracks: [] });
   }
 }
