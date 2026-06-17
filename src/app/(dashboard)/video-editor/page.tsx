@@ -133,6 +133,10 @@ function captionsTimelineEqual(a: Caption[], b: Caption[]) {
   ));
 }
 
+function hasBurnableCaptions(captions: Caption[]) {
+  return captions.some((cap) => typeof cap.text === "string" && cap.text.trim().length > 0);
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2419,14 +2423,14 @@ export default function VideoEditorPage() {
   }: { toastOnSuccess?: boolean; toastOnError?: boolean } = {}) {
     const baseVideo = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
     if (!baseVideo) throw new Error("ต้อง Render วิดีโอก่อน แล้วค่อย Burn Subtitles");
-    if (!captionsRef.current.length) throw new Error("ไม่มีซับให้ Burn — กรุณา Transcribe ก่อน");
-    setStep("burnSubtitles", "running", "Burning subtitles...");
+    const hasSubtitlesToBurn = hasBurnableCaptions(captionsRef.current);
+    setStep("burnSubtitles", "running", hasSubtitlesToBurn ? "Burning subtitles..." : "Exporting without subtitles...");
     setRenderProgressError(null);
     renderProgressRef.current = 0;
     const burnActivityStartedAt = Date.now();
     setRenderActivity({
       phase: "burning",
-      label: "เตรียมฝังซับ",
+      label: hasSubtitlesToBurn ? "เตรียมฝังซับ" : "เตรียม Export",
       queuePosition: null,
       startedAt: burnActivityStartedAt,
     });
@@ -2444,6 +2448,39 @@ export default function VideoEditorPage() {
     stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
+      const finalizeBurn = (url: string) => {
+        // Burn/export output is the final user-facing clip. Keep renderedVideoNoSubUrl
+        // as the editable base, but show/download/save the final version.
+        pipe.current.burnedVideoUrl = url;
+        setVideoUrl(url);
+        lastRenderedStyleRef.current = {
+          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
+          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
+          captions: captionsRef.current.map(c => ({ ...c })),
+        };
+        setStyleIsDirty(false);
+        setStep("burnSubtitles", "done", url);
+        setRenderProgress(100);
+        setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        saveToGallery({
+          videoUrl: url,
+          videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+          avatarVideoUrl: pipe.current.compositeUrl ? avatarGreenUrl || undefined : undefined,
+          status: "COMPLETED",
+        });
+        if (toastOnSuccess) {
+          toast.success(hasSubtitlesToBurn
+            ? "Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download"
+            : "Export วิดีโอไม่มีซับเสร็จแล้ว พร้อม Download");
+        }
+      };
+
+      if (!hasSubtitlesToBurn) {
+        finalizeBurn(baseVideo);
+        return;
+      }
+
       const fps = 30;
       const audioDurMs = pipe.current.audioDurationMs ?? 0;
       const rawLastCapMs = captionsRef.current.length > 0 ? Math.max(...captionsRef.current.map(c => c.endMs)) : 0;
@@ -2499,31 +2536,6 @@ export default function VideoEditorPage() {
       // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
       // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
       assertOk("Burn", res, data as Record<string, unknown>);
-
-      const finalizeBurn = (url: string) => {
-        // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
-        // the editable base, but show/download/save the burned version.
-        pipe.current.burnedVideoUrl = url;
-        setVideoUrl(url);
-        lastRenderedStyleRef.current = {
-          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
-          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
-          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
-          captions: captionsRef.current.map(c => ({ ...c })),
-        };
-        setStyleIsDirty(false);
-        setStep("burnSubtitles", "done", url);
-        setRenderProgress(100);
-        setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
-        // Update Gallery: replace videoUrl with the burned-in version (final result)
-        saveToGallery({
-          videoUrl: url,
-          videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
-          avatarVideoUrl: pipe.current.compositeUrl ? avatarGreenUrl || undefined : undefined,
-          status: "COMPLETED",
-        });
-        if (toastOnSuccess) toast.success("Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download");
-      };
 
       if (data.videoUrl) {
         finalizeBurn(data.videoUrl);
@@ -3006,6 +3018,7 @@ export default function VideoEditorPage() {
             const burnedClean = pipe.current.burnedVideoUrl && !styleIsDirty;
             const needsBurn = !burnedClean;
             const dlUrl = burnedClean ? pipe.current.burnedVideoUrl! : null;
+            const hasSubtitlesToBurn = hasBurnableCaptions(captions);
             return (
               <button
                 onClick={async () => {
@@ -3025,14 +3038,16 @@ export default function VideoEditorPage() {
                     // Need either composite (render+avatar) or plain render before we can burn
                     const baseAvailable = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
                     if (!baseAvailable) { toast.error("ต้อง Render วิดีโอก่อน"); return; }
-                    toast("กำลัง Burn Subtitles...", { duration: 3000 });
+                    toast(hasSubtitlesToBurn ? "กำลัง Burn Subtitles..." : "กำลัง Export วิดีโอไม่มีซับ...", { duration: 3000 });
                     await runBurnSubtitles();
                     const burned = pipe.current.burnedVideoUrl;
                     if (burned) {
                       // runBurnSubtitles → finalizeBurn → saveToGallery is already called
                       // inside, so we don't double-save here. Just download.
                       const a = document.createElement("a"); a.href = burned; a.download = ""; a.click();
-                      toast.success("Burn + Download + บันทึกลง Gallery แล้ว");
+                      toast.success(hasSubtitlesToBurn
+                        ? "Burn + Download + บันทึกลง Gallery แล้ว"
+                        : "Export + Download + บันทึกลง Gallery แล้ว");
                     }
                   }
                 }}
@@ -3042,10 +3057,12 @@ export default function VideoEditorPage() {
                     ? "bg-amber-600 hover:bg-amber-500"
                     : "bg-emerald-600 hover:bg-emerald-500"
                 )}
-                title={needsBurn ? "Burn ซับใหม่แล้ว Download" : "Download วิดีโอที่มีซับล่าสุด"}
+                title={needsBurn
+                  ? hasSubtitlesToBurn ? "Burn ซับใหม่แล้ว Download" : "Export วิดีโอไม่มีซับแล้ว Download"
+                  : "Download วิดีโอล่าสุด"}
               >
                 <Download className="w-3 h-3" />
-                {needsBurn ? "Burn & Download" : "Download"}
+                {needsBurn ? hasSubtitlesToBurn ? "Burn & Download" : "Export & Download" : "Download"}
               </button>
             );
           })()}
@@ -3414,7 +3431,9 @@ export default function VideoEditorPage() {
               const nextActionIdx = visibleSteps.findIndex(([k], i) =>
                 steps[k] === "idle" && (i === 0 || steps[visibleSteps[i - 1][0]] === "done")
               );
+              const hasSubtitlesToBurn = hasBurnableCaptions(captions);
               return visibleSteps.map(([k, label], stepIdx) => {
+                const stepLabel = k === "burnSubtitles" && !hasSubtitlesToBurn ? "Export Final" : label;
                 const isDone = steps[k] === "done";
                 const isError = steps[k] === "error";
                 const isIdle = steps[k] === "idle";
@@ -3442,7 +3461,7 @@ export default function VideoEditorPage() {
                 // Burn needs either composite (avatar) or no-sub render as base
                 const burnHasBase = !!(pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl);
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
-                  k !== "burnSubtitles" || (burnHasBase && captions.length > 0 && !running)
+                  k !== "burnSubtitles" || (burnHasBase && !running)
                 ) && (
                   k !== "avatar" && k !== "avatarTail" && k !== "composite" || (useAvatar && !isDirectAvatar)
                 );
@@ -3475,7 +3494,7 @@ export default function VideoEditorPage() {
                   >
                     <StepIcon status={steps[k]} />
                     <span className={cn("text-[11px] flex-1 min-w-0", labelColor)}>
-                      {label}
+                      {stepLabel}
                     </span>
                     {isDone && (
                       <span className="text-[9px] text-slate-700 truncate max-w-[60px] group-hover:text-slate-500 transition-colors">
@@ -3501,7 +3520,7 @@ export default function VideoEditorPage() {
                             ? "px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-500 shadow-sm shadow-emerald-500/30"
                             : "px-2 py-0.5 text-[9px] bg-violet-700/70 hover:bg-violet-600"
                         )}
-                      >{k === "burnSubtitles" ? "▶ Burn ซับ" : "▶ Run"}</button>
+                      >{k === "burnSubtitles" ? hasSubtitlesToBurn ? "▶ Burn ซับ" : "▶ Export" : "▶ Run"}</button>
                     )}
                     {showRerunBtn && (
                       <button
