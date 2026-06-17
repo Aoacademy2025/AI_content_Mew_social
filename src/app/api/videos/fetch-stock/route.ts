@@ -533,6 +533,8 @@ export async function POST(req: Request) {
     visualDirection,
     contentProfile,
     relevanceSpec,
+    pipelineRunId,
+    draftId,
   }: {
     keywords: string[];
     keywordAlternatives?: string[][];
@@ -546,7 +548,15 @@ export async function POST(req: Request) {
     visualDirection?: string;
     contentProfile?: string;
     relevanceSpec?: RelevanceSpec | null;
+    pipelineRunId?: string;
+    draftId?: string;
   } = body ?? {};
+  const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
+    ? pipelineRunId.trim().slice(0, 120)
+    : null;
+  const telemetryDraftId = typeof draftId === "string" && draftId.trim()
+    ? draftId.trim().slice(0, 120)
+    : null;
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
       fullScript,
@@ -665,6 +675,10 @@ export async function POST(req: Request) {
     normalizeSkippedCount: 0,
     normalizeFailedCount: 0,
     normalizeMsTotal: 0,
+    searchPhaseMs: 0,
+    rankingPhaseMs: 0,
+    selectionPhaseMs: 0,
+    downloadPhaseMs: 0,
   };
 
   function applyNormalizeTelemetry(result: NormalizeResult) {
@@ -688,6 +702,8 @@ export async function POST(req: Request) {
       properties: {
         stockSource,
         resolvedSource: srcLabel,
+        pipelineRunId: telemetryPipelineRunId,
+        draftId: telemetryDraftId,
         contentProfile: resolvedContentProfile,
         relevanceSource: relSpec ? "spec" : "profile",
         download,
@@ -883,6 +899,7 @@ export async function POST(req: Request) {
   const basePerPage = isPerSubtitleMode ? 25 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
 
   // ── Search phase — try keyword alternatives in order until candidates found ──
+  const searchPhaseStartedAt = Date.now();
   const candidatesByKeyword: CandidateVideo[][] = await mapWithConcurrency(
     keywords,
     SEARCH_CONCURRENCY,
@@ -972,8 +989,10 @@ export async function POST(req: Request) {
       }
     }
   );
+  stockTelemetry.searchPhaseMs = Date.now() - searchPhaseStartedAt;
 
   // ── LLM ranking phase (per-subtitle mode only, 1 batched call) ──
+  const rankingPhaseStartedAt = Date.now();
   let bestIdxByKeyword: number[] = keywords.map(() => -1);
 
   if (isPerSubtitleMode && llmKey && subtitleTexts?.length === keywords.length) {
@@ -1011,8 +1030,10 @@ export async function POST(req: Request) {
     stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
     if (!llmKey) console.warn(`[fetch-stock] no LLM key — using soft relevance fallback`);
   }
+  stockTelemetry.rankingPhaseMs = Date.now() - rankingPhaseStartedAt;
 
   // ── Pick phase — apply LLM choice first, then fill remaining slots, dedup globally ──
+  const selectionPhaseStartedAt = Date.now();
   const found: FoundVideo[] = [];
 
   for (let ki = 0; ki < keywords.length; ki++) {
@@ -1180,6 +1201,7 @@ export async function POST(req: Request) {
     selectionReason: clip.selectionReason,
     relevanceScore: clip.relevanceScore,
   }));
+  stockTelemetry.selectionPhaseMs = Date.now() - selectionPhaseStartedAt;
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
   if (!clipsToDownload.length) {
     // หาคลิปไม่ได้เลยและสาเหตุคือ key ใช้ไม่ได้ — บอกผู้ใช้ตรง ๆ แทน results ว่าง
@@ -1197,6 +1219,7 @@ export async function POST(req: Request) {
   }
 
   // ── Download phase ──
+  const downloadPhaseStartedAt = Date.now();
   await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async (clip) => {
     const { keyword, id, duration, link } = clip;
     const resultMeta = {
@@ -1264,6 +1287,7 @@ export async function POST(req: Request) {
       results.push({ keyword, pexelsId: id, duration, videoUrl: link, ...resultMeta });
     }
   });
+  stockTelemetry.downloadPhaseMs = Date.now() - downloadPhaseStartedAt;
 
   stockTelemetry.servedClipCount = results.length;
   await recordFetchStockTelemetry("done", { selectionDebugSample });

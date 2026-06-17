@@ -75,6 +75,16 @@ function stringProp(row: TelemetryRow, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function numberProp(row: TelemetryRow, key: string): number | null {
+  const value = parseProps(row)[key];
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function booleanProp(row: TelemetryRow, key: string): boolean {
+  return parseProps(row)[key] === true;
+}
+
 function eventKey(row: TelemetryRow) {
   return `${row.name}:${row.step ?? ""}:${row.createdAt.getTime()}`;
 }
@@ -179,6 +189,116 @@ function countByProp(rows: TelemetryRow[], key: string, fallback = "unknown") {
     .slice(0, 6);
 }
 
+function sumProp(rows: TelemetryRow[], key: string) {
+  return rows.reduce((sum, row) => sum + (numberProp(row, key) ?? 0), 0);
+}
+
+function propValues(rows: TelemetryRow[], key: string) {
+  return rows
+    .map((row) => numberProp(row, key))
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
+function durationValues(rows: TelemetryRow[]) {
+  return rows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+function pipelineRunKey(row: TelemetryRow) {
+  return stringProp(row, "pipelineRunId");
+}
+
+function matchesFunnelStep(row: TelemetryRow, step: FunnelStep, includeServerFetchStock = false) {
+  if (step.event) return row.name === step.event;
+  if (step.step === "fetchStock") {
+    return (row.name === "pipeline_step_done" && row.step === step.step) || (includeServerFetchStock && row.name === "fetch_stock_server_done");
+  }
+  return row.name === "pipeline_step_done" && row.step === step.step;
+}
+
+function summarizeEditorFunnel(rows: TelemetryRow[]) {
+  const runRows = rows.filter((row) => pipelineRunKey(row));
+  const runIds = new Set(runRows.map(pipelineRunKey).filter((value): value is string => Boolean(value)));
+  const hasRunLevelData = runIds.size > 0;
+
+  const funnel = EDITOR_FUNNEL.map((step, index) => {
+    const count = hasRunLevelData && index > 0
+      ? uniqueCount(rows, (row) => Boolean(pipelineRunKey(row)) && matchesFunnelStep(row, step, true), (row) => pipelineRunKey(row) ?? eventKey(row))
+      : eventCount(rows, (row) => matchesFunnelStep(row, step));
+    const prev = index === 0 ? count : 0;
+    return { ...step, count, conversionPct: 0, dropOffPct: 0, previousCount: prev };
+  }).map((step, index, all) => {
+    const previousCount = index === 0 ? step.count : all[index - 1].count;
+    return {
+      ...step,
+      previousCount,
+      conversionPct: index === 0 ? 100 : pct(step.count, previousCount),
+      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - pct(step.count, previousCount)),
+    };
+  });
+
+  return {
+    funnel,
+    funnelMode: hasRunLevelData ? "run" : "event",
+    funnelRuns: runIds.size,
+  };
+}
+
+function summarizeBroll(rows: TelemetryRow[]) {
+  const doneRows = rows.filter((row) => row.name === "fetch_stock_server_done");
+  const errorRows = rows.filter((row) => row.name === "fetch_stock_server_error");
+  const durations = durationValues(doneRows);
+  const normalizeTotals = propValues(doneRows, "normalizeMsTotal");
+  const servedClips = propValues(doneRows, "servedClipCount");
+  const searchQueries = propValues(doneRows, "searchQueries");
+  const totalRequests = doneRows.length + errorRows.length;
+  const cacheHitCount = sumProp(doneRows, "cacheHitCount");
+  const downloadedCount = sumProp(doneRows, "downloadedCount");
+  const downloadFailCount = sumProp(doneRows, "downloadFailCount");
+  const selectedPexelsCount = sumProp(doneRows, "selectedPexelsCount");
+  const selectedPixabayCount = sumProp(doneRows, "selectedPixabayCount");
+
+  return {
+    requests: totalRequests,
+    runs: doneRows.length,
+    errors: errorRows.length,
+    successPct: pct(doneRows.length, totalRequests),
+    p50Ms: percentile(durations, 50),
+    p95Ms: percentile(durations, 95),
+    searchP95Ms: percentile(propValues(doneRows, "searchPhaseMs"), 95),
+    rankingP95Ms: percentile(propValues(doneRows, "rankingPhaseMs"), 95),
+    selectionP95Ms: percentile(propValues(doneRows, "selectionPhaseMs"), 95),
+    downloadP95Ms: percentile(propValues(doneRows, "downloadPhaseMs"), 95),
+    normalizeP95Ms: percentile(normalizeTotals, 95),
+    cacheHitCount,
+    downloadedCount,
+    downloadFailCount,
+    cacheHitPct: pct(cacheHitCount, cacheHitCount + downloadedCount),
+    downloadFailPct: pct(downloadFailCount, downloadedCount + downloadFailCount),
+    servedClipTotal: sumProp(doneRows, "servedClipCount"),
+    servedClipAvg: average(servedClips),
+    searchQueriesAvg: average(searchQueries),
+    noCandidateKeywords: sumProp(doneRows, "noCandidateKeywords"),
+    forcedFallbackCount: sumProp(doneRows, "forcedFallbackCount"),
+    profileFallbackUsedCount: sumProp(doneRows, "profileFallbackUsedCount"),
+    llmRankingUsedCount: doneRows.filter((row) => booleanProp(row, "llmRankingUsed")).length,
+    llmRankingFailedCount: doneRows.filter((row) => booleanProp(row, "llmRankingFailed")).length,
+    emptyResultCount: doneRows.filter((row) => booleanProp(row, "emptyResult")).length,
+    normalizeRanCount: sumProp(doneRows, "normalizeRanCount"),
+    normalizeSkippedCount: sumProp(doneRows, "normalizeSkippedCount"),
+    normalizeFailedCount: sumProp(doneRows, "normalizeFailedCount"),
+    selectedPexelsCount,
+    selectedPixabayCount,
+    providerMix: [
+      { label: "Pexels", count: selectedPexelsCount },
+      { label: "Pixabay", count: selectedPixabayCount },
+    ].filter((item) => item.count > 0),
+    resolvedSources: countByProp(doneRows, "resolvedSource"),
+    contentProfiles: countByProp(doneRows, "contentProfile"),
+  };
+}
+
 function summarizePlayback(rows: TelemetryRow[]) {
   const playbackRows = rows.filter((row) => row.name.startsWith("video_playback_"));
   const startedRows = playbackRows.filter((row) => row.name === "video_playback_session_started");
@@ -244,27 +364,13 @@ function summarize(
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
   const serverStartRows = rows.filter((row) => row.name === "render_server_started");
   const playback = summarizePlayback(rows);
+  const broll = summarizeBroll(rows);
   const mainRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const mainRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const burnRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
   const burnRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
 
-  const funnel = EDITOR_FUNNEL.map((step, index) => {
-    const count = eventCount(rows, (row) => {
-      if (step.event) return row.name === step.event;
-      return row.name === "pipeline_step_done" && row.step === step.step;
-    });
-    const prev = index === 0 ? count : 0;
-    return { ...step, count, conversionPct: 0, dropOffPct: 0, previousCount: prev };
-  }).map((step, index, all) => {
-    const previousCount = index === 0 ? step.count : all[index - 1].count;
-    return {
-      ...step,
-      previousCount,
-      conversionPct: index === 0 ? 100 : pct(step.count, previousCount),
-      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - pct(step.count, previousCount)),
-    };
-  });
+  const { funnel, funnelMode, funnelRuns } = summarizeEditorFunnel(rows);
 
   const stepMap = new Map<string, { durations: number[]; started: number; done: number; error: number; skipped: number }>();
   for (const row of rows) {
@@ -385,6 +491,15 @@ function summarize(
     playback.bufferingSessionPct > 20
       ? `มี playback sessions ที่ buffering ${playback.bufferingSessionPct}% ควรแยกดู source route และ bitrate ของไฟล์ที่มีปัญหา`
       : null,
+    broll.runs > 0 && (broll.p95Ms ?? 0) > 5 * 60_000
+      ? `B-roll ช้า p95 ${Math.round((broll.p95Ms ?? 0) / 1000)} วินาที ควรดู phase search/download/normalize และ cache hit ก่อนเพิ่ม concurrency`
+      : null,
+    broll.runs > 0 && broll.cacheHitPct < 20 && broll.downloadedCount > 20
+      ? `B-roll cache hit ต่ำ (${broll.cacheHitPct}%) ทำให้ต้องโหลด stock ใหม่บ่อย ควรดู reuse/cache policy ก่อนเพิ่มโหลด provider`
+      : null,
+    broll.runs > 0 && broll.downloadFailPct > 10
+      ? `B-roll download fail ${broll.downloadFailPct}% ควรแยก provider/source และ network timeout ก่อนสรุปว่าเป็นปัญหา UI`
+      : null,
   ].filter(Boolean);
 
   return {
@@ -404,6 +519,8 @@ function summarize(
       renderTaskSuccessPct,
       healthScore,
       videoJobs,
+      funnelMode,
+      funnelRuns,
     },
     funnel,
     steps,
@@ -426,6 +543,7 @@ function summarize(
       minFreeMemGb: freeMemValues.length ? Math.min(...freeMemValues) : null,
       lowMemoryStarts: freeMemValues.filter((value) => value < 1).length,
     },
+    broll,
     playback,
     staleProcessing: processingSummary,
     recommendations,
