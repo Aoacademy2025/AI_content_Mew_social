@@ -6,7 +6,6 @@ import {
   buildWordsFromTiming,
   buildCaptionsFromCards,
   splitSentenceCards,
-  splitCardsAtSilences,
   snapCaptionsToSilences,
   mergeShortCaptions,
   snapCardsToWordBoundaries,
@@ -81,16 +80,20 @@ export function captionsFromTtsTiming(
     // source is allowed to split a Thai word across two cards.
     const rawCards = validCards(cardsOverride, fullText.length)
       ?? splitSentenceCards(fullText, Math.max(10, maxCardChars));
-    let cards = snapCardsToWordBoundaries(rawCards, fullText);
+    const cards = snapCardsToWordBoundaries(rawCards, fullText);
 
-    // Gemini's intra-segment times are char-proportional, so card edges must be
-    // anchored to the REAL pauses (ffmpeg silencedetect). Two steps before timing:
-    //   • drop the LEADING/TRAILING silence (quiet before the first / after the
-    //     last word) — otherwise the opening card snaps onto the pre-speech gap
-    //     and gets crushed to a flash.
-    //   • split any card that STRADDLES a real pause at that pause, so every
-    //     pause becomes a card edge (a card can't drift across a gap it spans).
-    // ElevenLabs char timing already sits on the real pauses → leave it alone.
+    // Gemini's intra-segment times are char-proportional, so card edges are
+    // anchored to the REAL pauses (ffmpeg silencedetect). Drop the LEADING/
+    // TRAILING silence (the quiet before the first / after the last word) so the
+    // opening card never snaps onto the pre-speech gap and gets crushed to a
+    // flash. ElevenLabs char timing already sits on the real pauses → leave alone.
+    //
+    // NOTE: splitting a straddling card at a pause (former splitCardsAtSilences,
+    // #81) was REVERTED — it located the split via the char clock, which on a
+    // pause-heavy/drifting clip is itself off, so it cut at the wrong word, over-
+    // split (35→57 cards), and orphaned punctuation into their own cards, making
+    // EVERY Gemini clip worse. Pause-accurate splitting needs real word timing
+    // (ElevenLabs), not a guess from the drifted clock.
     let intervals: SilenceInterval[] = [];
     if (timing.provider === "gemini") {
       const segTotal = timing.segments.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0);
@@ -101,7 +104,6 @@ export function captionsFromTtsTiming(
             ? timing.silences.filter((s) => Number.isFinite(s)).map((m) => ({ startMs: m, endMs: m }))
             : [];
       intervals = raw.filter((s) => s.startMs > 150 && s.endMs < segTotal - 150);
-      cards = splitCardsAtSilences(cards, words, intervals);
     }
 
     let caps = buildCaptionsFromCards(cards, timing, fullText);
