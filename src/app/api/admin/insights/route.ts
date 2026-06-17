@@ -159,6 +159,67 @@ function summarizeVideoJobs(videos: VideoRow[]) {
   };
 }
 
+function playbackGroupKey(row: TelemetryRow) {
+  return [
+    row.sessionId ?? eventKey(row),
+    stringProp(row, "videoId") ?? "no-video-id",
+    stringProp(row, "sourcePath") ?? "no-source-path",
+  ].join(":");
+}
+
+function countByProp(rows: TelemetryRow[], key: string, fallback = "unknown") {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const label = stringProp(row, key) ?? fallback;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+}
+
+function summarizePlayback(rows: TelemetryRow[]) {
+  const playbackRows = rows.filter((row) => row.name.startsWith("video_playback_"));
+  const startedRows = playbackRows.filter((row) => row.name === "video_playback_session_started");
+  const firstFrameRows = playbackRows.filter((row) => row.name === "video_playback_first_frame");
+  const canPlayRows = playbackRows.filter((row) => row.name === "video_playback_canplay");
+  const waitingRows = playbackRows.filter((row) => row.name === "video_playback_waiting");
+  const stalledRows = playbackRows.filter((row) => row.name === "video_playback_stalled");
+  const errorRows = playbackRows.filter((row) => row.name === "video_playback_error");
+
+  const startedKeys = new Set(startedRows.map(playbackGroupKey));
+  const bufferingKeys = new Set([...waitingRows, ...stalledRows].map(playbackGroupKey));
+  const firstFrameDurations = firstFrameRows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const canPlayDurations = canPlayRows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const startupFromLoadValues = firstFrameRows
+    .map((row) => Number(parseProps(row).startupFromLoadMs))
+    .filter((value) => Number.isFinite(value));
+
+  return {
+    sessions: startedRows.length,
+    uniqueSessions: startedKeys.size,
+    firstFrames: firstFrameRows.length,
+    canPlay: canPlayRows.length,
+    waitingEvents: waitingRows.length,
+    stalledEvents: stalledRows.length,
+    errors: errorRows.length,
+    bufferingSessions: bufferingKeys.size,
+    bufferingSessionPct: pct(bufferingKeys.size, startedKeys.size || startedRows.length),
+    errorPct: pct(errorRows.length, startedRows.length),
+    firstFrameP50Ms: percentile(firstFrameDurations, 50),
+    firstFrameP95Ms: percentile(firstFrameDurations, 95),
+    canPlayP95Ms: percentile(canPlayDurations, 95),
+    startupFromLoadP95Ms: percentile(startupFromLoadValues, 95),
+    pages: countByProp(startedRows, "page"),
+    routes: countByProp(startedRows, "sourceRoute"),
+  };
+}
+
 function parseRangeDays(value: string | null) {
   const days = Number(value ?? 1);
   if (!Number.isFinite(days)) return 1;
@@ -182,6 +243,7 @@ function summarize(
   const serverErrorRows = errorRows.filter((row) => row.source === "server");
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
   const serverStartRows = rows.filter((row) => row.name === "render_server_started");
+  const playback = summarizePlayback(rows);
   const mainRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const mainRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const burnRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
@@ -317,6 +379,12 @@ function summarize(
     processingSummary.total > 0
       ? `ตรวจพบ status PROCESSING ค้าง ${processingSummary.total} งาน: complete ได้ ${processingSummary.completeCandidates}, fail ได้ ${processingSummary.failCandidates}`
       : null,
+    playback.firstFrameP95Ms != null && playback.firstFrameP95Ms > 3_000
+      ? `Playback เริ่มเห็นภาพช้า p95 ${Math.round(playback.firstFrameP95Ms / 1000)} วินาที ควรพิจารณา preview proxy 540p/720p หรือ CDN`
+      : null,
+    playback.bufferingSessionPct > 20
+      ? `มี playback sessions ที่ buffering ${playback.bufferingSessionPct}% ควรแยกดู source route และ bitrate ของไฟล์ที่มีปัญหา`
+      : null,
   ].filter(Boolean);
 
   return {
@@ -358,6 +426,7 @@ function summarize(
       minFreeMemGb: freeMemValues.length ? Math.min(...freeMemValues) : null,
       lowMemoryStarts: freeMemValues.filter((value) => value < 1).length,
     },
+    playback,
     staleProcessing: processingSummary,
     recommendations,
   };
