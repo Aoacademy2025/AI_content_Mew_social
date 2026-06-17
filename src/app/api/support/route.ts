@@ -23,7 +23,11 @@ function imageMimeFromName(name: string) {
 
 function isAllowedImage(file: File) {
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return ALLOWED_IMAGE_TYPES.has(file.type) || ALLOWED_IMAGE_EXTS.has(ext);
+  // Require a real image EXTENSION (the part we control when serving), and if the
+  // client declared a content-type it must also be an allowed image type. The
+  // previous `type OR ext` let an HTML payload through as e.g. "evil.png" with
+  // type text/html, which was then served back and ran as script (stored XSS).
+  return ALLOWED_IMAGE_EXTS.has(ext) && (file.type === "" || ALLOWED_IMAGE_TYPES.has(file.type));
 }
 
 // POST /api/support — submit support ticket
@@ -65,7 +69,10 @@ export async function POST(req: Request) {
       imageBuffer = Buffer.from(buf);
       imageBase64 = imageBuffer.toString("base64");
       imageName = imageFile.name;
-      imageContentType = imageFile.type || imageMimeFromName(imageFile.name) || "image/jpeg";
+      // Store the MIME derived from the (allowlisted) extension only — never the
+      // uploader-controlled file.type, which could be text/html and become stored
+      // XSS when the admin views it.
+      imageContentType = imageMimeFromName(imageFile.name) ?? "image/jpeg";
     }
 
     // Save ticket to database

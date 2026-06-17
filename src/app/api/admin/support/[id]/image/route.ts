@@ -10,6 +10,17 @@ function attachmentName(name: string | null) {
   return name.replace(/[\r\n"]/g, "").slice(0, 120) || "support-attachment";
 }
 
+// Derive the Content-Type from the file EXTENSION, never from the stored MIME
+// (which originated from the uploader's user-controlled file.type). Returns null
+// for anything that isn't a known image extension.
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
+};
+function imageMimeFromName(name: string | null): string | null {
+  const ext = name?.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_MIME_BY_EXT[ext] ?? null;
+}
+
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const authUser = await getCurrentUser();
@@ -25,13 +36,23 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     if (!ticket?.imageBase64) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const body = Buffer.from(ticket.imageBase64, "base64");
-    const contentType = ticket.imageMimeType ?? "image/jpeg";
+    // SECURITY: ignore the stored MIME (came from the uploader's file.type) and
+    // recompute strictly from the extension allowlist, so a "support image" can
+    // never be served as text/html and execute script in the admin origin
+    // (stored XSS). Unknown extension → octet-stream + attachment so the browser
+    // downloads rather than renders it. nosniff stops MIME sniffing; the CSP
+    // sandbox neutralises any script even if a wrong type slipped through.
+    const safeMime = imageMimeFromName(ticket.imageName);
+    const contentType = safeMime ?? "application/octet-stream";
+    const disposition = safeMime ? "inline" : "attachment";
     return new NextResponse(body, {
       status: 200,
       headers: {
         "Content-Type": contentType,
         "Content-Length": String(body.length),
-        "Content-Disposition": `inline; filename="${attachmentName(ticket.imageName)}"`,
+        "Content-Disposition": `${disposition}; filename="${attachmentName(ticket.imageName)}"`,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
         "Cache-Control": "private, max-age=60",
       },
     });
