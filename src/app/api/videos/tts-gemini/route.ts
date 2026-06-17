@@ -238,29 +238,33 @@ function saveWav(wavBuffer: Buffer): { voiceUrl: string; filePath: string } {
   return { voiceUrl: `/api/renders/${filename}`, filePath };
 }
 
-// Real-pause midpoints via ffmpeg silencedetect (same detector the transcribe
-// route uses for chunk planning). Card boundaries interpolated inside a
-// segment snap to these client-side (PR-E) — turning char-proportional guesses
-// into boundaries that sit in actual breathing pauses. Failure → [] (the snap
-// is a polish, never a dependency).
-function detectSilenceMidpoints(wavPath: string): Promise<number[]> {
+// Real pauses via ffmpeg silencedetect (same detector the transcribe route uses
+// for chunk planning). Returns both the midpoints (legacy) and the full
+// intervals (start/end ms); card boundaries snap to the pause END (speech onset)
+// so a caption appears exactly when its words are spoken. Failure → empty (the
+// snap is a polish, never a dependency).
+function detectSilences(wavPath: string): Promise<{ midpoints: number[]; intervals: { startMs: number; endMs: number }[] }> {
   return new Promise((resolve) => {
     execFile(getFfmpegPath(), [
       "-i", wavPath,
       "-af", "silencedetect=noise=-30dB:d=0.25",
       "-f", "null", "-",
     ], { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (_err, _stdout, stderr) => {
-      const out: number[] = [];
+      const midpoints: number[] = [];
+      const intervals: { startMs: number; endMs: number }[] = [];
       const re = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(stderr || "")) !== null) {
         const start = parseFloat(m[1]);
         const end = parseFloat(m[2]);
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          out.push(Math.round(((start + end) / 2) * 1000));
+          midpoints.push(Math.round(((start + end) / 2) * 1000));
+          intervals.push({ startMs: Math.round(start * 1000), endMs: Math.round(end * 1000) });
         }
       }
-      resolve(out.sort((a, b) => a - b));
+      midpoints.sort((a, b) => a - b);
+      intervals.sort((a, b) => a.startMs - b.startMs);
+      resolve({ midpoints, intervals });
     });
   });
 }
@@ -370,12 +374,12 @@ export async function POST(req: Request) {
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
-    const silences = await detectSilenceMidpoints(filePath).catch(() => [] as number[]);
-    console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${silences.length} silences`);
+    const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
+    console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
     return NextResponse.json({
       voiceUrl,
       audioDurationMs,
-      timing: { provider: "gemini" as const, segments, chars: null, silences },
+      timing: { provider: "gemini" as const, segments, chars: null, silences: sil.midpoints, silenceIntervals: sil.intervals },
     });
   } catch (error) {
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });
