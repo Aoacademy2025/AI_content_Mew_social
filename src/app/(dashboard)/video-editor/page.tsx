@@ -901,6 +901,12 @@ export default function VideoEditorPage() {
         config: cfg,
       };
       loadDraftInto(draft);
+      // The clip is already rendered, so keywords + b-roll are by definition done.
+      // The Video record carries no keyword/stock arrays, so loadDraftInto leaves
+      // those steps "idle" → the UI shows a "Run" button as if we'd re-generate
+      // them. Mark them done so only Burn remains as the next action.
+      setSteps((s) => ({ ...s, keywords: "done", fetchStock: "done" }));
+      stepsRef.current = { ...stepsRef.current, keywords: "done", fetchStock: "done" };
       toast.success("โหลดงานเดิมมาทำต่อแล้ว — กด Burn เพื่อฝังซับ");
     } catch {
       toast.error("เปิดงานเดิมไม่สำเร็จ");
