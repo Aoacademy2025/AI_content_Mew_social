@@ -61,6 +61,14 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   if (!userId) {
+    // API routes: return 401 JSON so fetch/XHR callers get a clean, parseable
+    // error. A 307 redirect to /login is auto-followed by the browser → it
+    // re-POSTs to /login (a page-only route, no POST handler) → 500 HTML →
+    // callers that do JSON.parse(responseText) fail and surface an opaque
+    // "Upload failed". Pages still redirect to the sign-in screen as before.
+    if (req.nextUrl.pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("redirect_url", req.nextUrl.pathname);
     return NextResponse.redirect(loginUrl);
