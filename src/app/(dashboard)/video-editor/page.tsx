@@ -303,7 +303,9 @@ export default function VideoEditorPage() {
   const [bgmVolume, setBgmVolume] = useState(0.12);
   const [bgmUploading, setBgmUploading] = useState(false);
   interface SystemTrack { id: string; title: string; filename: string; }
+  interface UserMusicTrack { id: string; title: string; filename: string; sizeBytes?: number | null; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
+  const [userTracks, setUserTracks] = useState<UserMusicTrack[]>([]);
 
   // ── Render progress ───────────────────────────────────────────────────
   const renderProgressRef = useRef(0);
@@ -491,7 +493,10 @@ export default function VideoEditorPage() {
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
-    fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
+    fetch("/api/music").then(r => r.json()).then(d => {
+      if (d.tracks) setSystemTracks(d.tracks);
+      if (d.userTracks) setUserTracks(d.userTracks);
+    }).catch(() => {});
 
     // If jobId is in URL from a previous render session, cancel that job and clear the URL.
     // Refresh = stop render immediately — no auto-resume.
@@ -3815,6 +3820,7 @@ export default function VideoEditorPage() {
               bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
               setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
               bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
+              userTracks={userTracks} setUserTracks={setUserTracks}
               useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
               avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
               avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}

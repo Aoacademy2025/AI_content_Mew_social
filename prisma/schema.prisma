@@ -60,6 +60,7 @@ model User {
   payments           Payment[]
   telemetryEvents    TelemetryEvent[]
   productUpdateReads ProductUpdateRead[]
+  userMusic          UserMusic[]
 }
 
 model Style {
@@ -399,6 +400,21 @@ model Music {
   filename    String   // file stored in public/music/
   duration    Float?   // seconds
   createdAt   DateTime @default(now())
+}
+
+model UserMusic {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  filename  String   @unique // file stored in public/music/
+  sizeBytes Int      @default(0)
+  mimeType  String?
+  duration  Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
 }
 
 model GeneratedImage {

@@ -8,6 +8,8 @@ import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import type { StepState } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 
+type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
+
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
   ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
@@ -17,6 +19,8 @@ export interface OrderPanelProps {
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void; setBgmVolume: (v: number) => void;
   bgmUploading: boolean; setBgmUploading: (v: boolean) => void;
   systemTracks: { id: string; title: string; filename: string }[];
+  userTracks: UserMusicTrack[];
+  setUserTracks: (tracks: UserMusicTrack[]) => void;
   useAvatar: boolean; avatarId: string; avatarTiming: "full" | "bookend" | "bookend-both";
   avatarBookendSecs: number; avatarTailSecs: number;
   avatarScale: number; avatarOffsetX: number; avatarOffsetY: number;
@@ -51,6 +55,22 @@ export function OrderPanel(p: OrderPanelProps) {
     const ny = ((clientY - rect.top) / rect.height - 0.5) * 2;
     p.setAvatarOffsetX(Math.max(-200, Math.min(200, Math.round(nx * 200))));
     p.setAvatarOffsetY(Math.max(-200, Math.min(200, Math.round(ny * 200))));
+  }
+
+  async function deleteUserTrack(track: UserMusicTrack) {
+    try {
+      const res = await fetch(`/api/music/user/${encodeURIComponent(track.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? "ลบเพลงไม่สำเร็จ");
+        return;
+      }
+      if (p.bgmFile === `/api/music/${track.filename}`) p.setBgmFile("");
+      p.setUserTracks(p.userTracks.filter((t) => t.id !== track.id));
+      toast.success("ลบเพลงแล้ว");
+    } catch {
+      toast.error("ลบเพลงไม่สำเร็จ");
+    }
   }
 
   return (
@@ -160,6 +180,34 @@ export function OrderPanel(p: OrderPanelProps) {
                     </div>
                   </div>
                 )}
+                {p.userTracks.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">My Uploads</div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {p.userTracks.map(t => {
+                        const url = `/api/music/${t.filename}`;
+                        return (
+                          <div key={t.id}
+                            className={cn("w-full flex items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[11px] transition-all border",
+                              p.bgmFile === url ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
+                            <button type="button" onClick={() => p.setBgmFile(p.bgmFile === url ? "" : url)}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                              <Music className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{t.title}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { void deleteUserTrack(t); }}
+                              className="rounded p-0.5 text-slate-600 hover:bg-red-500/10 hover:text-red-300"
+                              title="ลบเพลง">
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">Upload Music</div>
                   <label className={cn("flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer border border-dashed border-[#3a3a4a] bg-[#1a1a22]", p.bgmUploading && "opacity-50 pointer-events-none")}>
@@ -172,7 +220,11 @@ export function OrderPanel(p: OrderPanelProps) {
                           const res = await fetch("/api/music/upload", { method: "POST", body: fd });
                           const data = await res.json();
                           if (res.status === 403) { p.onPlanError?.(data.error ?? "ฟีเจอร์นี้ใช้ได้เฉพาะแผน Pro"); }
-                          else if (data.url) { p.setBgmFile(data.url); toast.success("อัปโหลดสำเร็จ"); }
+                          else if (data.url) {
+                            if (data.track) p.setUserTracks([data.track, ...p.userTracks]);
+                            p.setBgmFile(data.url);
+                            toast.success("อัปโหลดสำเร็จ");
+                          }
                           else toast.error(data.error ?? "อัปโหลดไม่สำเร็จ");
                         } catch { toast.error("อัปโหลดไม่สำเร็จ"); }
                         finally { p.setBgmUploading(false); e.target.value = ""; }
@@ -181,7 +233,10 @@ export function OrderPanel(p: OrderPanelProps) {
                       ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" /><span className="text-[10px] text-slate-600">กำลังอัปโหลด...</span></>
                       : <><Upload className="h-3.5 w-3.5 text-slate-600" /><span className="text-[10px] text-slate-600">เลือกไฟล์เสียง</span></>}
                   </label>
-                  {p.bgmFile && !p.systemTracks.some(t => `/music/${t.filename}` === p.bgmFile) && (
+                  {p.bgmFile
+                    && !p.systemTracks.some(t => `/music/${t.filename}` === p.bgmFile)
+                    && !p.userTracks.some(t => `/api/music/${t.filename}` === p.bgmFile)
+                    && (
                     <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/25">
                       <Music className="h-3 w-3 text-violet-400/60 shrink-0" />
                       <span className="text-[10px] text-violet-300 truncate flex-1">{p.bgmFile.split("/").pop()}</span>
