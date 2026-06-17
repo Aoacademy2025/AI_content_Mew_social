@@ -45,6 +45,10 @@ type ErrorRow = {
   lastSeen: string;
 };
 
+type NoiseRow = ErrorRow & {
+  reason?: string;
+};
+
 type VitalRow = {
   metric: "LCP" | "INP" | "CLS" | string;
   p75: number | null;
@@ -66,6 +70,8 @@ type InsightSummary = {
     pipelineStarts: number;
     events: number;
     errors: number;
+    rawErrors: number;
+    noiseEvents: number;
     frontendErrors: number;
     serverErrors: number;
     renderSuccessPct: number;
@@ -90,6 +96,7 @@ type InsightSummary = {
   funnel: FunnelRow[];
   steps: StepRow[];
   errors: ErrorRow[];
+  noise: NoiseRow[];
   vitals: VitalRow[];
   resource: {
     renderCount: number;
@@ -181,6 +188,15 @@ type InsightsResponse = {
   processingReconcile?: { dryRun: boolean };
 };
 
+type ReconcileApplyResponse = {
+  error?: string;
+  applied?: {
+    completed?: number;
+    failed?: number;
+    skipped?: number;
+  } | null;
+};
+
 const metricHelp: Record<string, string> = {
   "Health Score": "คะแนนรวมจาก video completion, error, render latency และ status stuck ยิ่งใกล้ 100 ยิ่งดี",
   "Drop-off": "เปอร์เซ็นต์ event ที่ไปไม่ถึงขั้นถัดไป ใช้ดูแนวโน้มเท่านั้นจนกว่าจะมี pipelineRunId ต่อหนึ่งงาน",
@@ -194,7 +210,7 @@ const metricHelp: Record<string, string> = {
   "Render Queue": "เวลาที่งานรอคิวก่อนเข้า renderMedia ใช้ดูว่ามีการชนกันหลายงานพร้อมกันหรือไม่",
   "Free RAM": "RAM ที่เหลือบน server ตอนเริ่ม render ถ้าต่ำกว่า 1 GB เสี่ยงค้างหรือ fail",
   "Video completed": "เปอร์เซ็นต์งานจากตาราง Video ที่ status เป็น COMPLETED ในช่วงเวลาที่เลือก",
-  "Telemetry errors": "error ที่ถูกส่งผ่าน telemetry แยกจาก production log โดยตรง",
+  "Telemetry errors": "error จริงหลังแยก noise ออกแล้ว เช่น play/pause race, cancelled, superseded จะไม่หัก Health Score",
   "First frame": "เวลาจากการกด play จนวิดีโอเริ่มแสดงภาพจริง ถ้าสูง ผู้ใช้จะรู้สึกว่าคลิปเปิดช้า",
   "Buffering sessions": "เปอร์เซ็นต์ session ที่มี waiting หรือ stalled ระหว่างดู ใช้วัดอาการกระตุกจริง",
   "B-roll p95": "เวลาฝั่ง server ของ fetch-stock ทั้งก้อน ใช้ดูว่าขั้นหา B-roll ช้าจริงแค่ไหน",
@@ -306,6 +322,9 @@ export default function AdminInsightsPage() {
   const [data, setData] = useState<InsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -329,7 +348,7 @@ export default function AdminInsightsPage() {
       });
 
     return () => { cancelled = true; };
-  }, [days]);
+  }, [days, refreshNonce]);
 
   const current = data?.current;
   const previous = data?.previous;
@@ -338,6 +357,34 @@ export default function AdminInsightsPage() {
     if (!current) return null;
     return current.funnel.slice(1).sort((a, b) => b.dropOffPct - a.dropOffPct)[0] ?? null;
   }, [current]);
+
+  async function applyProcessingReconcile() {
+    setReconcileBusy(true);
+    setReconcileMessage(null);
+    try {
+      const res = await fetch("/api/admin/videos/reconcile-processing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dryRun: false,
+          staleAfterMinutes: 20,
+          failAfterHours: 24,
+          failMissingOutput: false,
+          limit: 100,
+        }),
+      });
+      const body = await res.json().catch(() => ({})) as ReconcileApplyResponse;
+      if (!res.ok) throw new Error(body.error ?? "reconcile ไม่สำเร็จ");
+      const completed = body.applied?.completed ?? 0;
+      const skipped = body.applied?.skipped ?? 0;
+      setReconcileMessage(`แก้สถานะแล้ว ${formatNumber(completed)} งาน · ข้าม ${formatNumber(skipped)} งาน`);
+      setRefreshNonce((value) => value + 1);
+    } catch (err) {
+      setReconcileMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReconcileBusy(false);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-[#080b12] px-4 py-5 text-slate-100 sm:px-6 lg:px-8">
@@ -416,7 +463,7 @@ export default function AdminInsightsPage() {
               <MetricTile
                 label="Telemetry errors"
                 value={formatNumber(current.totals.errors)}
-                helper={`frontend ${formatNumber(current.totals.frontendErrors)} · server ${formatNumber(current.totals.serverErrors)} · events ${formatNumber(current.totals.events)}`}
+                helper={`real ${formatNumber(current.totals.errors)}/${formatNumber(current.totals.rawErrors)} · noise ${formatNumber(current.totals.noiseEvents)} · events ${formatNumber(current.totals.events)}`}
                 icon={AlertTriangle}
                 tone="border-rose-400/20 bg-rose-500/12 text-rose-300"
               />
@@ -500,6 +547,18 @@ export default function AdminInsightsPage() {
                   <p className="mt-3 text-xs leading-relaxed text-slate-500">
                     งานเก่าสุด {current.staleProcessing.oldestAgeMinutes == null ? "-" : `${formatNumber(current.staleProcessing.oldestAgeMinutes / 60, 1)} ชม.`} · complete ได้ {formatNumber(current.staleProcessing.completeCandidates)} · fail ได้ {formatNumber(current.staleProcessing.failCandidates)}
                   </p>
+                  <button
+                    type="button"
+                    onClick={applyProcessingReconcile}
+                    disabled={reconcileBusy || current.staleProcessing.completeCandidates <= 0}
+                    className="mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {reconcileBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                    แก้สถานะงานที่มี output
+                  </button>
+                  {reconcileMessage && (
+                    <p className="mt-2 text-xs leading-relaxed text-slate-400">{reconcileMessage}</p>
+                  )}
                 </div>
 
                 <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
@@ -724,6 +783,23 @@ export default function AdminInsightsPage() {
                   </div>
                 ))}
               </div>
+              {current.noise.length > 0 && (
+                <div className="mt-5 rounded-md border border-white/10 bg-black/20 p-3">
+                  <div className="text-sm font-semibold text-slate-200">Noise ที่แยกออก</div>
+                  <div className="mt-2 divide-y divide-white/10">
+                    {current.noise.map((item) => (
+                      <div key={`${item.reason}:${item.stepLabel}:${item.label}`} className="grid gap-2 py-2 text-sm sm:grid-cols-[140px_1fr_64px] sm:items-center">
+                        <div className="text-xs font-semibold text-amber-300">{item.reason ?? "noise"}</div>
+                        <div className="min-w-0 text-slate-400">
+                          <div className="truncate">{item.label}</div>
+                          <div className="mt-0.5 text-xs text-slate-600">{item.stepLabel} · ล่าสุด {new Date(item.lastSeen).toLocaleString("th-TH")}</div>
+                        </div>
+                        <div className="text-right font-semibold text-slate-200">{formatNumber(item.count)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
           </>
         )}

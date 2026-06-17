@@ -23,6 +23,8 @@ import {
   getActiveRenderSlots,
   getRenderSlotQueueLength,
   withRenderSlot,
+  retainRemotionBundle,
+  activeRemotionBundleNames,
 } from "./cancel-registry";
 
 function getRenderTmpDir(): string {
@@ -46,21 +48,31 @@ function getRemotionBundlePublicDir(): string {
   return base;
 }
 
-function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, excludeName?: string) {
+function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, excludeNames?: Iterable<string>) {
   if (process.platform === "win32") return;
   try {
     // execFile (no shell) — avoids any command-injection surface from interpolated names.
     // Never delete the bundle that's currently cached/in use: a concurrent render may be
     // between its existsSync check and selectComposition (TOCTOU), and removing it under
     // that job's feet causes "index.html could not be found" 404s.
+    const excludes = Array.from(excludeNames ?? []).filter(Boolean);
     const args = [
       baseDir, "-maxdepth", "1", "-name", pattern,
-      ...(excludeName ? ["!", "-name", excludeName] : []),
+      ...excludes.flatMap((name) => ["!", "-name", name]),
       "-mmin", `+${minMinutes}`,
       "-exec", "rm", "-rf", "{}", "+",
     ];
     execFileSync("find", args, { stdio: "ignore" });
   } catch {}
+}
+
+function remotionBundleMissingReason(error: unknown): string | null {
+  const text = error instanceof Error
+    ? `${error.name} ${error.message} ${error.stack ?? ""}`
+    : String(error);
+  const mentionsBundle = /remotion-webpack-bundle|index\.html|getStaticCompositions|serveUrl|Remotion project/i.test(text);
+  const looksMissing = /does not exist|could not be found|not found|404|ENOENT|verify that it is a Remotion project/i.test(text);
+  return mentionsBundle && looksMissing ? text.slice(0, 220) : null;
 }
 
 /** Download external image URL to local public/renders and return a full absolute URL
@@ -358,9 +370,10 @@ export async function POST(req: Request) {
         // Clean assets older than 30 min and webpack bundles older than 60 min.
         // Exclude the active cached bundle so an aging-but-in-use bundle isn't deleted
         // out from under a concurrent render.
-        const activeBundleName = cachedBundleLocation ? path.basename(cachedBundleLocation) : undefined;
+        const activeBundleNames = new Set(activeRemotionBundleNames());
+        if (cachedBundleLocation) activeBundleNames.add(path.basename(cachedBundleLocation));
         runTmpCleanup(renderTmpDir, "remotion-*assets*", 30);
-        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60, activeBundleName);
+        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60, activeBundleNames);
         runTmpCleanup(renderTmpDir, "react-motion-render*", 60);
       }
     } catch {}
@@ -648,6 +661,7 @@ export async function POST(req: Request) {
       let jobFinalized = false;
       let quotaRefunded = false;
       let renderCancelFn: (() => void) | null = null;
+      let releaseBundleRef: (() => void) | null = null;
       const clearCancelHandles = () => {
         if (renderCancelFn && activeRenderCancel.get(renderOwnerKey) === renderCancelFn) {
           activeRenderCancel.delete(renderOwnerKey);
@@ -657,6 +671,8 @@ export async function POST(req: Request) {
       const finishJob = () => {
         if (jobFinalized) return;
         jobFinalized = true;
+        releaseBundleRef?.();
+        releaseBundleRef = null;
         decrementActiveRenderCount();
         resolveDone();
       };
@@ -690,6 +706,23 @@ export async function POST(req: Request) {
         finishJob();
         return true;
       };
+      let bundleLocation = "";
+      const useBundleLocation = (nextLocation: string) => {
+        releaseBundleRef?.();
+        bundleLocation = nextLocation;
+        releaseBundleRef = retainRemotionBundle(nextLocation);
+      };
+      const recordBundleRetry = async (stage: string, reason: string) => {
+        await recordTelemetryEvent(userId, {
+          name: "render_bundle_rebuilt",
+          category: "performance",
+          source: "server",
+          step: "render",
+          status: "retry",
+          durationMs: Date.now() - renderStartedAt,
+          properties: { jobId, stage, reason },
+        }).catch(() => {});
+      };
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
         // Bundle (may be cached) — runs in background after jobId is returned
@@ -703,8 +736,14 @@ export async function POST(req: Request) {
         // Reuse the shared cached bundle when its fingerprint matches and index.html
         // is present, otherwise build once under a global lock (concurrent jobs await
         // the same build, not a 2nd one that would OOM the VPS).
-        const ensureBundle = async (): Promise<string> => {
+        const ensureBundle = async (forceRebuild = false): Promise<string> => {
+          if (forceRebuild) {
+            cachedBundleLocation = null;
+            cachedBundleMtime = "";
+            saveBundleCache();
+          }
           if (
+            !forceRebuild &&
             cachedBundleLocation &&
             remotionFingerprint === cachedBundleMtime &&
             fs.existsSync(path.join(cachedBundleLocation, "index.html"))
@@ -736,15 +775,15 @@ export async function POST(req: Request) {
           return inFlight!; // non-null after the branch above (assigned or already in-flight)
         };
 
-        let bundleLocation = await ensureBundle();
+        useBundleLocation(await ensureBundle());
         // TOCTOU guard: a concurrent render's tmp-cleanup (or the media-cleanup cron)
         // can delete the shared bundle between ensureBundle() and selectComposition()
         // below → "index.html could not be found" 404. If it vanished, drop the cache
         // and rebuild once.
         if (!fs.existsSync(path.join(bundleLocation, "index.html"))) {
           console.log(`[Render] cached bundle ${bundleLocation} vanished before composition — rebuilding`);
-          if (cachedBundleLocation === bundleLocation) { cachedBundleLocation = null; cachedBundleMtime = ""; }
-          bundleLocation = await ensureBundle();
+          await recordBundleRetry("pre_composition", "bundle index.html missing before selectComposition");
+          useBundleLocation(await ensureBundle(true));
         }
         if (await stopSupersededJob("bundle")) return;
 
@@ -757,21 +796,35 @@ export async function POST(req: Request) {
           ? { avatarVideoUrl, captions: captionsData, captionStyleId: captionStyleId ?? "tiktok", customCaptionStyle: customCaptionStyle ?? null, positionY: positionY ?? 85, fontSizeOverride: fontSizeOverride ?? 0, fontWeightOverride: fontWeightOverride ?? 0 }
           : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
 
-        const composition = await selectComposition({
+        const selectCurrentComposition = () => selectComposition({
           serveUrl: bundleLocation,
           id: compositionId,
           inputProps,
           timeoutInMilliseconds: 120000,
         });
+        const applyCompositionOverrides = (target: Awaited<ReturnType<typeof selectComposition>>) => {
+          if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
+            target.durationInFrames = resolvedSubtitleConfig.durationInFrames;
+          } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
+            target.durationInFrames = resolvedShortConfig.durationInFrames;
+          } else if (!isAvatarMode && !isSubtitleOverlay) {
+            target.durationInFrames = durationInFrames;
+            if (customWidth) target.width = customWidth;
+            if (customHeight) target.height = customHeight;
+          }
+          return target;
+        };
 
-        if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
-          composition.durationInFrames = resolvedSubtitleConfig.durationInFrames;
-        } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
-          composition.durationInFrames = resolvedShortConfig.durationInFrames;
-        } else if (!isAvatarMode && !isSubtitleOverlay) {
-          composition.durationInFrames = durationInFrames;
-          if (customWidth) composition.width = customWidth;
-          if (customHeight) composition.height = customHeight;
+        let composition: Awaited<ReturnType<typeof selectComposition>>;
+        try {
+          composition = applyCompositionOverrides(await selectCurrentComposition());
+        } catch (error) {
+          const reason = remotionBundleMissingReason(error);
+          if (!reason) throw error;
+          console.log(`[Render] bundle missing at selectComposition for job=${jobId} — rebuilding once`);
+          await recordBundleRetry("select_composition", reason);
+          useBundleLocation(await ensureBundle(true));
+          composition = applyCompositionOverrides(await selectCurrentComposition());
         }
 
         const filename = `render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
@@ -861,35 +914,52 @@ export async function POST(req: Request) {
           activeRenderCancel.set(renderOwnerKey, cancel);
           cancelByJobId.set(jobId, cancel);
 
-          await renderMedia({
-            composition,
-            serveUrl: bundleLocation,
-            codec: "h264",
-            outputLocation,
-            inputProps,
-            timeoutInMilliseconds: 7200000,
-            concurrency: renderConcurrency,
-            cancelSignal,
-            x264Preset: isLowResourceHost ? "faster" : "medium",
-            jpegQuality,
-            offthreadVideoCacheSizeInBytes,
-            chromiumOptions: {
-              disableWebSecurity: true,
-              ignoreCertificateErrors: true,
-              gl: "swiftshader",
-              args: chromiumArgs,
-            },
-            onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
-              const p = Math.round(progress * 100);
-              if (p !== lastProgress) {
-                lastProgress = p;
-                writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
-              }
-              if (p % 5 === 0) {
-                console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
-              }
-            },
-          });
+          let renderMediaRetriedForBundle = false;
+          while (true) {
+            try {
+              await renderMedia({
+                composition,
+                serveUrl: bundleLocation,
+                codec: "h264",
+                outputLocation,
+                inputProps,
+                timeoutInMilliseconds: 7200000,
+                concurrency: renderConcurrency,
+                cancelSignal,
+                x264Preset: isLowResourceHost ? "faster" : "medium",
+                jpegQuality,
+                offthreadVideoCacheSizeInBytes,
+                chromiumOptions: {
+                  disableWebSecurity: true,
+                  ignoreCertificateErrors: true,
+                  gl: "swiftshader",
+                  args: chromiumArgs,
+                },
+                onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
+                  const p = Math.round(progress * 100);
+                  if (p !== lastProgress) {
+                    lastProgress = p;
+                    writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
+                  }
+                  if (p % 5 === 0) {
+                    console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
+                  }
+                },
+              });
+              break;
+            } catch (error) {
+              const reason = remotionBundleMissingReason(error);
+              if (renderMediaRetriedForBundle || !reason) throw error;
+              renderMediaRetriedForBundle = true;
+              console.log(`[Render] bundle missing during renderMedia for job=${jobId} — rebuilding once`);
+              await recordBundleRetry("render_media", reason);
+              try { if (fs.existsSync(outputLocation)) fs.rmSync(outputLocation, { force: true }); } catch {}
+              useBundleLocation(await ensureBundle(true));
+              composition = applyCompositionOverrides(await selectCurrentComposition());
+              lastProgress = -1;
+              if (await stopSupersededJob("render_bundle_retry")) return;
+            }
+          }
 
           clearCancelHandles();
           finishJob();
