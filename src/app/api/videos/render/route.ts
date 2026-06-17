@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
 import path from "path";
 import fs from "fs";
-import { execSync, spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
@@ -46,12 +46,20 @@ function getRemotionBundlePublicDir(): string {
   return base;
 }
 
-function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number) {
+function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, excludeName?: string) {
   if (process.platform === "win32") return;
   try {
-    const escaped = pattern.replace(/'/g, "'\\''");
-    const cmd = `find '${baseDir}' -maxdepth 1 -name '${escaped}' -mmin +${minMinutes} -exec rm -rf {} + 2>/dev/null`;
-    execSync(cmd);
+    // execFile (no shell) — avoids any command-injection surface from interpolated names.
+    // Never delete the bundle that's currently cached/in use: a concurrent render may be
+    // between its existsSync check and selectComposition (TOCTOU), and removing it under
+    // that job's feet causes "index.html could not be found" 404s.
+    const args = [
+      baseDir, "-maxdepth", "1", "-name", pattern,
+      ...(excludeName ? ["!", "-name", excludeName] : []),
+      "-mmin", `+${minMinutes}`,
+      "-exec", "rm", "-rf", "{}", "+",
+    ];
+    execFileSync("find", args, { stdio: "ignore" });
   } catch {}
 }
 
@@ -335,9 +343,12 @@ export async function POST(req: Request) {
     // Clean up stale Remotion bundles from render temp dir to prevent disk full
     try {
       if (process.platform !== "win32") {
-        // Clean assets older than 30 min and webpack bundles older than 60 min
+        // Clean assets older than 30 min and webpack bundles older than 60 min.
+        // Exclude the active cached bundle so an aging-but-in-use bundle isn't deleted
+        // out from under a concurrent render.
+        const activeBundleName = cachedBundleLocation ? path.basename(cachedBundleLocation) : undefined;
         runTmpCleanup(renderTmpDir, "remotion-*assets*", 30);
-        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60);
+        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60, activeBundleName);
         runTmpCleanup(renderTmpDir, "react-motion-render*", 60);
       }
     } catch {}
@@ -671,15 +682,18 @@ export async function POST(req: Request) {
           .sort()
           .map(f => { const s = fs.statSync(path.join(remotionSrcDir, f)); return `${f}:${s.mtimeMs}:${s.size}`; })
           .join("|");
-        if (
-          cachedBundleLocation &&
-          remotionFingerprint === cachedBundleMtime &&
-          fs.existsSync(path.join(cachedBundleLocation, "index.html"))
-        ) {
-          console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
-        } else {
-          // Global bundle lock — if another job is already bundling, reuse that promise
-          // instead of spawning a second webpack build (which would OOM the VPS).
+        // Reuse the shared cached bundle when its fingerprint matches and index.html
+        // is present, otherwise build once under a global lock (concurrent jobs await
+        // the same build, not a 2nd one that would OOM the VPS).
+        const ensureBundle = async (): Promise<string> => {
+          if (
+            cachedBundleLocation &&
+            remotionFingerprint === cachedBundleMtime &&
+            fs.existsSync(path.join(cachedBundleLocation, "index.html"))
+          ) {
+            console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
+            return cachedBundleLocation;
+          }
           let inFlight = getBundleInProgress();
           if (!inFlight) {
             console.log("[Render] building new webpack bundle...");
@@ -701,9 +715,19 @@ export async function POST(req: Request) {
           } else {
             console.log("[Render] waiting for concurrent bundle to finish...");
           }
-          await inFlight;
+          return inFlight!; // non-null after the branch above (assigned or already in-flight)
+        };
+
+        let bundleLocation = await ensureBundle();
+        // TOCTOU guard: a concurrent render's tmp-cleanup (or the media-cleanup cron)
+        // can delete the shared bundle between ensureBundle() and selectComposition()
+        // below → "index.html could not be found" 404. If it vanished, drop the cache
+        // and rebuild once.
+        if (!fs.existsSync(path.join(bundleLocation, "index.html"))) {
+          console.log(`[Render] cached bundle ${bundleLocation} vanished before composition — rebuilding`);
+          if (cachedBundleLocation === bundleLocation) { cachedBundleLocation = null; cachedBundleMtime = ""; }
+          bundleLocation = await ensureBundle();
         }
-        const bundleLocation = cachedBundleLocation!;
         if (await stopSupersededJob("bundle")) return;
 
         const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
