@@ -19,6 +19,8 @@ interface VideoItem {
   voiceModel: string;
   sceneCount: number;
   videoUrl: string | null;
+  previewVideoUrl?: string | null;
+  previewStatus?: "ready" | "queued" | "unavailable";
   avatarVideoUrl: string | null;
   audioUrl: string | null;
   script: string | null;
@@ -59,6 +61,12 @@ export default function VideosGalleryPage() {
   }, []);
 
   useEffect(() => { fetchVideos(); }, [fetchVideos]);
+  useEffect(() => {
+    if (!videos.some(video => video.previewStatus === "queued")) return;
+    const timer = window.setTimeout(fetchVideos, 12_000);
+    return () => window.clearTimeout(timer);
+  }, [fetchVideos, videos]);
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -166,7 +174,8 @@ export default function VideosGalleryPage() {
                 video={video}
                 daysLeft={daysLeft(video.expiresAt)}
                 onPreview={() => {
-                  const url = video.videoUrl || video.avatarVideoUrl;
+                  // #87: prefer the low-res preview URL; #86: track which video for playback telemetry
+                  const url = video.previewVideoUrl || video.videoUrl || video.avatarVideoUrl;
                   if (url) {
                     setPreviewVideoId(video.id);
                     setPreviewUrl(url);
@@ -272,7 +281,7 @@ function VideoCard({
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
   const isFailed = video.status === "FAILED";
   const title = video.content?.headline || (video.script ? video.script.slice(0, 40) + "..." : "Untitled");
-  const previewSrc = video.videoUrl || video.avatarVideoUrl;
+  const previewSrc = video.previewVideoUrl || video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
   const posterHue = posterHueFor(video.id);
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
+import { deleteLowResPreviewForVideoUrl } from "@/lib/low-res-preview-paths";
 import fs from "fs";
 import path from "path";
 
@@ -112,6 +113,7 @@ export async function GET(req: Request) {
     const publicDir = path.join(process.cwd(), "public");
     for (const video of expired) {
       for (const url of [video.videoUrl, video.avatarVideoUrl, video.audioUrl, video.thumbnail]) {
+        deleteLowResPreviewForVideoUrl(url);
         const filePath = localFilePath(publicDir, url);
         if (!filePath) continue;
         try {
