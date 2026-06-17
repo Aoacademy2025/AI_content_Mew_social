@@ -280,11 +280,20 @@ model SupportTicket {
   message     String
   imageBase64 String?
   imageName   String?
+  imageMimeType String?
   status      SupportTicketStatus @default(OPEN)
   adminReply  String?
+  category    String?
+  severity    String?
+  recommendedAction String?
+  auditNote   String?
+  impactNote  String?
+  auditedAt   DateTime?
   repliedAt   DateTime?
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
+
+  @@index([status, createdAt])
 }
 
 enum SupportTicketStatus {

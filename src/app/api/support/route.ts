@@ -6,18 +6,47 @@ import { apiError } from "@/lib/api-error";
 
 export const maxDuration = 30;
 
+const MAX_MESSAGE_CHARS = 1000;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_FORM_OVERHEAD_BYTES = 256 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const ALLOWED_IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+
+function imageMimeFromName(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return null;
+}
+
+function isAllowedImage(file: File) {
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return ALLOWED_IMAGE_TYPES.has(file.type) || ALLOWED_IMAGE_EXTS.has(ext);
+}
+
 // POST /api/support — submit support ticket
 export async function POST(req: Request) {
   try {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+    const contentLength = Number(req.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES + MAX_FORM_OVERHEAD_BYTES) {
+      return NextResponse.json({ error: "รูปภาพต้องไม่เกิน 5 MB" }, { status: 413 });
+    }
+
     const body = await req.formData();
     const message = body.get("message") as string | null;
     const imageFile = body.get("image") as File | null;
+    const cleanMessage = message?.trim() ?? "";
 
-    if (!message?.trim()) {
+    if (!cleanMessage) {
       return NextResponse.json({ error: "กรุณาระบุปัญหา" }, { status: 400 });
+    }
+    if (cleanMessage.length > MAX_MESSAGE_CHARS) {
+      return NextResponse.json({ error: `ข้อความต้องไม่เกิน ${MAX_MESSAGE_CHARS} ตัวอักษร` }, { status: 400 });
     }
 
     // Read image as base64 if provided
@@ -26,20 +55,27 @@ export async function POST(req: Request) {
     let imageBuffer: Buffer | null = null;
     let imageContentType: string | null = null;
     if (imageFile && imageFile.size > 0) {
+      if (!isAllowedImage(imageFile)) {
+        return NextResponse.json({ error: "รองรับเฉพาะรูป jpg, png, webp หรือ gif" }, { status: 400 });
+      }
+      if (imageFile.size > MAX_IMAGE_BYTES) {
+        return NextResponse.json({ error: "รูปภาพต้องไม่เกิน 5 MB" }, { status: 413 });
+      }
       const buf = await imageFile.arrayBuffer();
       imageBuffer = Buffer.from(buf);
       imageBase64 = imageBuffer.toString("base64");
       imageName = imageFile.name;
-      imageContentType = imageFile.type || "application/octet-stream";
+      imageContentType = imageFile.type || imageMimeFromName(imageFile.name) || "image/jpeg";
     }
 
     // Save ticket to database
     const ticket = await prisma.supportTicket.create({
       data: {
         userId: authUser.id,
-        message: message.trim(),
+        message: cleanMessage,
         imageBase64,
         imageName,
+        imageMimeType: imageContentType,
       },
     });
 
@@ -56,7 +92,7 @@ export async function POST(req: Request) {
         `👤 ${user?.name ?? "?"} (${user?.email ?? "?"}) · ${user?.plan ?? "?"}`,
         `🆔 ${authUser.id}`,
         ``,
-        message.trim(),
+        cleanMessage,
         imageName ? `📎 ${imageName}` : "",
       ].filter(Boolean).join("\n"),
     });
@@ -88,7 +124,7 @@ export async function POST(req: Request) {
             plan: user?.plan ?? "FREE",
             isPaid: user?.plan === "PRO" || user?.plan === "BUSINESS",
           },
-          message: message.trim(),
+          message: cleanMessage,
           // Support inboxes the platform notifies — n8n can CC/route to these
           supportEmails: adminEmails,
           attachment: imageName

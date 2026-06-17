@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +8,7 @@ import {
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
   Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
   CreditCard, Key, Eye, EyeOff, Tag, Plus, GripVertical, Zap, Building2,
+  Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -56,11 +57,65 @@ interface SupportTicket {
   id: string;
   message: string;
   imageName: string | null;
-  imageBase64: string | null;
+  imageBase64?: string | null;
+  imageMimeType: string | null;
   status: "OPEN" | "CLOSED";
   adminReply: string | null;
+  category: SupportTicketCategory | null;
+  severity: SupportTicketSeverity | null;
+  recommendedAction: SupportRecommendation | null;
+  auditNote: string | null;
+  impactNote: string | null;
+  auditedAt: string | null;
   createdAt: string;
   user: { name: string; email: string; plan: string };
+}
+
+type SupportTicketCategory = "BUG_CONFIRMED" | "FEATURE_REQUEST" | "USER_CONFUSION" | "NEED_MORE_INFO" | "NOT_A_BUG";
+type SupportTicketSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+type SupportRecommendation = "FIX" | "ADD_FEATURE" | "NEED_MORE_INFO" | "WONT_FIX" | "MONITOR";
+
+type TriageDraft = {
+  category: SupportTicketCategory | "";
+  severity: SupportTicketSeverity | "";
+  recommendedAction: SupportRecommendation | "";
+  auditNote: string;
+  impactNote: string;
+};
+
+const CATEGORY_OPTIONS: Array<{ value: SupportTicketCategory; label: string; icon: ReactNode }> = [
+  { value: "BUG_CONFIRMED", label: "Bug จริง", icon: <Bug className="h-3 w-3" /> },
+  { value: "FEATURE_REQUEST", label: "Feature request", icon: <Lightbulb className="h-3 w-3" /> },
+  { value: "USER_CONFUSION", label: "User เข้าใจผิด", icon: <SearchCheck className="h-3 w-3" /> },
+  { value: "NEED_MORE_INFO", label: "ต้องถามเพิ่ม", icon: <Clock className="h-3 w-3" /> },
+  { value: "NOT_A_BUG", label: "ไม่ใช่บัค", icon: <CheckCircle2 className="h-3 w-3" /> },
+];
+
+const SEVERITY_OPTIONS: Array<{ value: SupportTicketSeverity; label: string; className: string }> = [
+  { value: "LOW", label: "Low", className: "text-zinc-400 border-zinc-500/25 bg-zinc-500/10" },
+  { value: "MEDIUM", label: "Medium", className: "text-cyan-300 border-cyan-500/25 bg-cyan-500/10" },
+  { value: "HIGH", label: "High", className: "text-orange-300 border-orange-500/25 bg-orange-500/10" },
+  { value: "CRITICAL", label: "Critical", className: "text-red-300 border-red-500/30 bg-red-500/10" },
+];
+
+const RECOMMENDATION_OPTIONS: Array<{ value: SupportRecommendation; label: string }> = [
+  { value: "FIX", label: "เสนอแก้บัค" },
+  { value: "ADD_FEATURE", label: "เสนอเพิ่มฟีเจอร์" },
+  { value: "NEED_MORE_INFO", label: "ขอข้อมูลเพิ่ม" },
+  { value: "WONT_FIX", label: "ไม่ควรทำ" },
+  { value: "MONITOR", label: "เฝ้าดูต่อ" },
+];
+
+function categoryLabel(value: SupportTicketCategory | null) {
+  return CATEGORY_OPTIONS.find(o => o.value === value)?.label ?? null;
+}
+
+function severityMeta(value: SupportTicketSeverity | null) {
+  return SEVERITY_OPTIONS.find(o => o.value === value) ?? null;
+}
+
+function recommendationLabel(value: SupportRecommendation | null) {
+  return RECOMMENDATION_OPTIONS.find(o => o.value === value)?.label ?? null;
 }
 
 // ── PlanEditor: visual feature list editor ────────────────────────────────
@@ -211,6 +266,9 @@ export default function AdminDashboardPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState<Record<string, string>>({});
   const [replying, setReplying] = useState<string | null>(null);
+  const [triageDrafts, setTriageDrafts] = useState<Record<string, TriageDraft>>({});
+  const [savingTriage, setSavingTriage] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ src: string; name: string | null } | null>(null);
 
   // Settings state
   const [supportEmail, setSupportEmail] = useState("");
@@ -450,6 +508,62 @@ export default function AdminDashboardPage() {
     return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
   }, [fetchTickets]);
 
+  function draftFromTicket(ticket: SupportTicket): TriageDraft {
+    return {
+      category: ticket.category ?? "",
+      severity: ticket.severity ?? "",
+      recommendedAction: ticket.recommendedAction ?? "",
+      auditNote: ticket.auditNote ?? "",
+      impactNote: ticket.impactNote ?? "",
+    };
+  }
+
+  function triageDraft(ticket: SupportTicket) {
+    return triageDrafts[ticket.id] ?? draftFromTicket(ticket);
+  }
+
+  function updateTriageDraft(ticket: SupportTicket, patch: Partial<TriageDraft>) {
+    setTriageDrafts(prev => ({
+      ...prev,
+      [ticket.id]: { ...draftFromTicket(ticket), ...prev[ticket.id], ...patch },
+    }));
+  }
+
+  async function saveTriage(ticket: SupportTicket) {
+    const draft = triageDraft(ticket);
+    setSavingTriage(ticket.id);
+    try {
+      const res = await fetch("/api/admin/support", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketId: ticket.id,
+          category: draft.category || null,
+          severity: draft.severity || null,
+          recommendedAction: draft.recommendedAction || null,
+          auditNote: draft.auditNote,
+          impactNote: draft.impactNote,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? "บันทึก audit ไม่สำเร็จ");
+        return;
+      }
+      setTickets(prev => prev.map(t => t.id === ticket.id ? { ...t, ...data.ticket } : t));
+      setTriageDrafts(prev => {
+        const next = { ...prev };
+        delete next[ticket.id];
+        return next;
+      });
+      toast.success("บันทึก audit แล้ว");
+    } catch {
+      toast.error("บันทึก audit ไม่สำเร็จ");
+    } finally {
+      setSavingTriage(null);
+    }
+  }
+
   async function handleReply(ticketId: string, close: boolean) {
     const reply = replyText[ticketId]?.trim();
     if (!reply && !close) return;
@@ -527,6 +641,24 @@ export default function AdminDashboardPage() {
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
       <PremiumBackdrop />
+      {imagePreview && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4" onClick={() => setImagePreview(null)}>
+          <div className="relative max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/15 bg-zinc-950" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
+              <span className="truncate text-xs text-zinc-400">{imagePreview.name ?? "attachment"}</span>
+              <button
+                onClick={() => setImagePreview(null)}
+                className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/10 hover:text-white"
+                aria-label="ปิดรูป"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={imagePreview.src} alt={imagePreview.name ?? "attachment"} className="max-h-[84vh] w-full object-contain bg-black" />
+          </div>
+        </div>
+      )}
       <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-8">
         {/* Header */}
         <div className="pp-fade-up relative overflow-hidden rounded-2xl border border-white/10 bg-linear-to-br from-red-900/40 via-orange-900/20 to-yellow-900/30 p-8 backdrop-blur-xl">
@@ -602,6 +734,15 @@ export default function AdminDashboardPage() {
             <div className="space-y-3">
               {tickets.map(ticket => {
                 const expanded = expandedId === ticket.id;
+                const imageSrc = ticket.imageBase64
+                  ? `data:${ticket.imageMimeType ?? "image/jpeg"};base64,${ticket.imageBase64}`
+                  : ticket.imageName
+                    ? `/api/admin/support/${encodeURIComponent(ticket.id)}/image`
+                    : null;
+                const draft = triageDraft(ticket);
+                const catLabel = categoryLabel(ticket.category);
+                const severity = severityMeta(ticket.severity);
+                const recoLabel = recommendationLabel(ticket.recommendedAction);
                 return (
                   <div key={ticket.id} className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
                     {/* Ticket header */}
@@ -623,6 +764,25 @@ export default function AdminDashboardPage() {
                             <CheckCircle2 className="h-3 w-3" /> ตอบแล้ว
                           </p>
                         )}
+                        {(catLabel || severity || recoLabel) && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {catLabel && (
+                              <span className="inline-flex items-center gap-1 rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-200">
+                                <ClipboardCheck className="h-3 w-3" /> {catLabel}
+                              </span>
+                            )}
+                            {severity && (
+                              <span className={`inline-flex rounded border px-1.5 py-0.5 text-[10px] font-medium ${severity.className}`}>
+                                {severity.label}
+                              </span>
+                            )}
+                            {recoLabel && (
+                              <span className="inline-flex rounded border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-200">
+                                {recoLabel}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       {expanded ? <ChevronUp className="h-4 w-4 text-zinc-500 shrink-0" /> : <ChevronDown className="h-4 w-4 text-zinc-500 shrink-0" />}
                     </button>
@@ -637,17 +797,110 @@ export default function AdminDashboardPage() {
                         </div>
 
                         {/* Image attachment */}
-                        {ticket.imageBase64 && (
-                          <div className="rounded-xl overflow-hidden border border-white/10">
+                        {imageSrc && (
+                          <div className="overflow-hidden rounded-xl border border-white/10">
+                            <button
+                              type="button"
+                              onClick={() => setImagePreview({ src: imageSrc, name: ticket.imageName })}
+                              className="group relative block w-full bg-black/30"
+                            >
+                              <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-lg border border-white/10 bg-black/60 px-2 py-1 text-[10px] font-medium text-zinc-300 opacity-0 transition-opacity group-hover:opacity-100">
+                                <Maximize2 className="h-3 w-3" /> ดูเต็ม
+                              </span>
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
-                              src={`data:image/jpeg;base64,${ticket.imageBase64}`}
+                              src={imageSrc}
                               alt={ticket.imageName ?? "attachment"}
                               className="w-full max-h-64 object-contain bg-black/30"
                             />
+                            </button>
                             {ticket.imageName && <p className="px-3 py-1 text-[10px] text-zinc-500">{ticket.imageName}</p>}
                           </div>
                         )}
+
+                        {/* Audit */}
+                        <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 p-3">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <ClipboardCheck className="h-4 w-4 text-amber-300" />
+                              <div>
+                                <p className="text-xs font-semibold uppercase tracking-wider text-amber-200">Ticket Audit</p>
+                                <p className="text-[10px] text-zinc-500">
+                                  {ticket.auditedAt
+                                    ? `อัปเดต ${new Date(ticket.auditedAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`
+                                    : "ยังไม่ได้ audit"}
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => saveTriage(ticket)}
+                              disabled={savingTriage === ticket.id}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 transition-colors hover:bg-amber-500/15 disabled:opacity-45"
+                            >
+                              {savingTriage === ticket.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                              บันทึก audit
+                            </button>
+                          </div>
+
+                          <div className="grid gap-2 md:grid-cols-3">
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ประเภท</span>
+                              <select
+                                value={draft.category}
+                                onChange={e => updateTriageDraft(ticket, { category: e.target.value as SupportTicketCategory | "" })}
+                                className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-amber-400/50"
+                              >
+                                <option value="">ยังไม่จัดประเภท</option>
+                                {CATEGORY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              </select>
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ความรุนแรง</span>
+                              <select
+                                value={draft.severity}
+                                onChange={e => updateTriageDraft(ticket, { severity: e.target.value as SupportTicketSeverity | "" })}
+                                className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-amber-400/50"
+                              >
+                                <option value="">ยังไม่ประเมิน</option>
+                                {SEVERITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              </select>
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ข้อเสนอ</span>
+                              <select
+                                value={draft.recommendedAction}
+                                onChange={e => updateTriageDraft(ticket, { recommendedAction: e.target.value as SupportRecommendation | "" })}
+                                className="w-full rounded-lg border border-white/10 bg-zinc-950/70 px-2 py-2 text-xs text-zinc-200 outline-none focus:border-amber-400/50"
+                              >
+                                <option value="">ยังไม่เสนอ</option>
+                                {RECOMMENDATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              </select>
+                            </label>
+                          </div>
+
+                          <div className="mt-2 grid gap-2 md:grid-cols-2">
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">หลักฐาน / วิเคราะห์</span>
+                              <textarea
+                                value={draft.auditNote}
+                                onChange={e => updateTriageDraft(ticket, { auditNote: e.target.value.slice(0, 1200) })}
+                                placeholder="เช่น reproduce ได้ไหม, จากรูปเห็น error อะไร, เป็น bug จริงหรือ user เข้าใจผิด"
+                                rows={4}
+                                className="w-full resize-none rounded-lg border border-white/10 bg-zinc-950/70 px-2 py-2 text-xs text-zinc-200 placeholder:text-zinc-700 outline-none focus:border-amber-400/50"
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ผลกระทบ / server spec</span>
+                              <textarea
+                                value={draft.impactNote}
+                                onChange={e => updateTriageDraft(ticket, { impactNote: e.target.value.slice(0, 800) })}
+                                placeholder="เช่น กระทบ render, DB, disk, API cost, memory/CPU หรือเสี่ยงกับงานเก่าไหม"
+                                rows={4}
+                                className="w-full resize-none rounded-lg border border-white/10 bg-zinc-950/70 px-2 py-2 text-xs text-zinc-200 placeholder:text-zinc-700 outline-none focus:border-amber-400/50"
+                              />
+                            </label>
+                          </div>
+                        </div>
 
                         {/* Existing reply */}
                         {ticket.adminReply && (
