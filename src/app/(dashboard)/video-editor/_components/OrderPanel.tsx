@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import type { StepState } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
+import { VoicePreviewButton } from "./VoicePreviewButton";
 
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
@@ -120,6 +121,12 @@ export function OrderPanel(p: OrderPanelProps) {
                   className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-2 py-1.5 text-[11px] text-slate-300 outline-none" />
               </div>
             )}
+            <VoicePreviewButton
+              provider={p.ttsProvider}
+              geminiVoiceName={p.geminiVoiceName}
+              voiceId={p.voiceId}
+              onPlanError={p.onPlanError}
+            />
           </div>
           ) : (
           <div className="rounded-lg px-3 py-2.5 bg-[#1a1a22] border border-[#2a2a36]">

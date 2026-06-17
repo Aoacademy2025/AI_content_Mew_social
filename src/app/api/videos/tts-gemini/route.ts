@@ -15,6 +15,11 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { Agent, fetch as undiciFetch } from "undici";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import {
+  cachedVoicePreview,
+  getVoicePreviewCachePath,
+  normalizeVoicePreviewText,
+} from "@/lib/voice-preview-cache";
 
 // Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
 // for the Gemini TTS call ONLY, via a per-request dispatcher. (Previously this
@@ -282,8 +287,9 @@ export async function POST(req: Request) {
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json().catch(() => null);
-    const { text, voiceName = "Aoede" } = body ?? {};
+    const { text, voiceName = "Aoede", preview = false } = body ?? {};
     if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
+    const selectedVoice = GEMINI_VOICES.some((v) => v.id === voiceName) ? voiceName : "Aoede";
 
     // Get user's Gemini key
     const user = await prisma.user.findUnique({
@@ -294,6 +300,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Gemini API key not set", missingKey: "gemini" }, { status: 400 });
     }
     const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+
+    if (preview === true) {
+      const previewText = normalizeVoicePreviewText(text);
+      const cache = getVoicePreviewCachePath({
+        provider: "gemini",
+        userId: authUser.id,
+        voiceKey: selectedVoice,
+        text: previewText,
+        ext: "wav",
+      });
+      const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
+      if (cached) return NextResponse.json({ ...cached, preview: true });
+
+      const r = await callGeminiTts(apiKey, previewText, selectedVoice);
+      if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
+      fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
+      return NextResponse.json({
+        voiceUrl: cache.voiceUrl,
+        audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
+        preview: true,
+        cached: false,
+      });
+    }
 
     // IRON RULE: fullText is the one string both TTS and subtitles see.
     // Chunks are exact contiguous slices of it (concat === fullText).
@@ -310,7 +339,7 @@ export async function POST(req: Request) {
     let failOpen = "";
 
     for (let i = 0; i < chunks.length; i++) {
-      const r = await callGeminiTts(apiKey, chunks[i].text, voiceName, modelLock, chunks.length > 1 ? deadline : undefined);
+      const r = await callGeminiTts(apiKey, chunks[i].text, selectedVoice, modelLock, chunks.length > 1 ? deadline : undefined);
       if (!r.ok) {
         // A 1-chunk clip has no fallback that differs from what just failed —
         // surface the mapped error exactly like the old single-call route.
@@ -346,7 +375,7 @@ export async function POST(req: Request) {
         }
         console.warn(`[tts-gemini] guard round ${round}: segments off cps median: [${outliers.join(", ")}] — retrying those`);
         for (const idx of outliers) {
-          const r = await callGeminiTts(apiKey, chunks[idx].text, voiceName, modelLock, deadline);
+          const r = await callGeminiTts(apiKey, chunks[idx].text, selectedVoice, modelLock, deadline);
           if (r.ok && r.sampleRate === sampleRate) {
             pcms[idx] = r.pcm;
             durations[idx] = Math.round(pcmDurationMs(r.pcm.length, sampleRate));
@@ -361,7 +390,7 @@ export async function POST(req: Request) {
     // exactly the pre-PR-B behavior. Users never lose TTS to this feature. ----
     if (!pcms) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
-      const r = await callGeminiTts(apiKey, fullText, voiceName);
+      const r = await callGeminiTts(apiKey, fullText, selectedVoice);
       if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
