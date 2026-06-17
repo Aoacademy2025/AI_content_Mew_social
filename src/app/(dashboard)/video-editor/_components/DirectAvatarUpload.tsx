@@ -5,6 +5,37 @@ import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
+const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
+
+type UploadResponse = {
+  url?: string;
+  error?: string;
+  code?: string;
+};
+
+class PlanRequiredError extends Error {
+  constructor(public readonly planMessage: string) {
+    super(planMessage || "Plan required");
+  }
+}
+
+function parseUploadResponse(text: string): UploadResponse {
+  try {
+    const data = JSON.parse(text) as unknown;
+    return data && typeof data === "object" ? data as UploadResponse : {};
+  } catch {
+    return {};
+  }
+}
+
+function uploadErrorMessage(status: number, data: UploadResponse) {
+  if (data.error) return data.error;
+  if (status === 401) return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
+  if (status === 413) return "ไฟล์ใหญ่เกิน 2 GB";
+  if (status === 507) return "พื้นที่จัดเก็บบนเซิร์ฟเวอร์ไม่พอสำหรับอัปโหลดไฟล์นี้";
+  return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
+}
+
 export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string) => void; onPlanError?: (msg: string) => void }) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -12,6 +43,10 @@ export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string
   async function handleFile(file: File) {
     if (!["mp4", "mov", "webm"].includes(file.name.split(".").pop()?.toLowerCase() ?? "")) {
       toast.error("รองรับเฉพาะ mp4 / mov / webm");
+      return;
+    }
+    if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
+      toast.error("ไฟล์ใหญ่เกิน 2 GB");
       return;
     }
     setUploading(true);
@@ -25,34 +60,26 @@ export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string
         xhr.open("POST", "/api/videos/upload-avatar");
         xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100)); };
         xhr.onload = () => {
+          const data = parseUploadResponse(xhr.responseText);
           if (xhr.status === 200) {
-            const data = JSON.parse(xhr.responseText);
             if (data.url) { onUrl(data.url); resolve(); }
-            else reject(new Error(data.error ?? "Upload failed"));
-          } else if (xhr.status === 403) {
-            try {
-              const data = JSON.parse(xhr.responseText);
-              const err = new Error(data.error ?? "Plan required");
-              (err as any)._isPlanError = true;
-              (err as any)._planMessage = data.error;
-              reject(err);
-            } catch { reject(new Error("Plan required")); }
-          } else if (xhr.status === 401) {
-            reject(new Error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง"));
+            else reject(new Error(data.error ?? "อัปโหลดไม่สำเร็จ"));
+          } else if (xhr.status === 403 || data.code === "plan_required") {
+            reject(new PlanRequiredError(data.error ?? "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป"));
           } else {
             // Non-JSON body (e.g. an HTML error page from the proxy) → give an
             // actionable message instead of an opaque "Upload failed".
-            try { reject(new Error(JSON.parse(xhr.responseText).error ?? "อัปโหลดไม่สำเร็จ")); }
-            catch { reject(new Error(`อัปโหลดไม่สำเร็จ (HTTP ${xhr.status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`)); }
+            reject(new Error(uploadErrorMessage(xhr.status, data)));
           }
         };
-        xhr.onerror = () => reject(new Error("Network error"));
+        xhr.onerror = () => reject(new Error("Network error — เช็กอินเทอร์เน็ตแล้วลองอีกครั้ง"));
+        xhr.onabort = () => reject(new Error("ยกเลิกการอัปโหลดแล้ว"));
         xhr.send(fd);
       });
       toast.success("อัปโหลดสำเร็จ");
     } catch (e) {
-      if (e instanceof Error && (e as any)._isPlanError) {
-        onPlanError?.(((e as any)._planMessage) ?? "");
+      if (e instanceof PlanRequiredError) {
+        onPlanError?.(e.planMessage);
       } else {
         toast.error(e instanceof Error ? e.message : "อัปโหลดไม่สำเร็จ");
       }
