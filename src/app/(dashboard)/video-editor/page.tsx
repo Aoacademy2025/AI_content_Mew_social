@@ -509,6 +509,7 @@ export default function VideoEditorPage() {
 
     // Stop all polling and cancel active render job when tab closes/refreshes
     const onUnload = () => {
+      autosaveRef.current();  // final best-effort autosave before the tab goes away
       abortControllerRef.current?.abort();
       stopRenderPollRef.current?.();
       const jobId = activeJobIdRef.current;
@@ -844,8 +845,10 @@ export default function VideoEditorPage() {
     toast.success(`โหลด "${d.name}" แล้ว`);
   }
 
-  function saveDraftNow() {
-    if (!script.trim()) { toast.error("ยังไม่มี script ที่จะบันทึก"); return; }
+  // silent=true → autosave (no toast, no error). Returns false when nothing was saved.
+  function saveDraftNow(opts?: { silent?: boolean }): boolean {
+    const silent = opts?.silent === true;
+    if (!script.trim()) { if (!silent) toast.error("ยังไม่มี script ที่จะบันทึก"); return false; }
     const draft: EditorDraft = {
       id: draftId, name: projectName, updatedAt: Date.now(), script,
       scriptOverride: scriptOverride || undefined,
@@ -892,8 +895,56 @@ export default function VideoEditorPage() {
     saveDrafts([draft, ...existing]);
     setDrafts([draft, ...existing]);
     setLastSaved(new Date());
-    toast.success("บันทึก draft แล้ว");
+    if (!silent) toast.success("บันทึก draft แล้ว");
+    return true;
   }
+
+  // ── Autosave (Tier-1 resume) ──────────────────────────────────────────────
+  // The draft already captures everything needed to resume (render URLs,
+  // captions, style, pipeline cache) — it was just never saved unless the user
+  // clicked "บันทึก draft". So accidentally leaving lost everything. Now we
+  // autosave a draft (silently) ~4s after any meaningful change, and once more
+  // on unload, so closing/refreshing/นเว็บหลุด no longer loses work — reopen the
+  // editor and load the draft to continue (e.g. Burn). Only saves once there is
+  // real progress, so we never spam empty drafts.
+  function hasResumableProgress() {
+    return (
+      script.trim().length > 0 &&
+      (!!videoUrl ||
+        !!pipe.current.voiceUrl ||
+        !!pipe.current.renderedVideoNoSubUrl ||
+        !!pipe.current.compositeUrl ||
+        captionsRef.current.length > 0)
+    );
+  }
+  useEffect(() => {
+    if (!hasResumableProgress()) return;
+    const t = setTimeout(() => { try { saveDraftNow({ silent: true }); } catch {} }, 4000);
+    return () => clearTimeout(t);
+    // Re-armed on any meaningful editor change. pipe.current (a ref) isn't a dep,
+    // but every stage transition calls setStep → `steps` changes → this re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
+      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize]);
+
+  // Latest-closure ref so the once-registered beforeunload handler can run the
+  // CURRENT autosave (a stale closure would persist mount-time empty state).
+  const autosaveRef = useRef<() => void>(() => {});
+  autosaveRef.current = () => { try { if (hasResumableProgress()) saveDraftNow({ silent: true }); } catch {} };
+
+  // Warn before leaving while a step is running or a render exists that hasn't
+  // been burned/exported yet (the state where Mew lost work). Re-evaluated on
+  // every step change. The draft is already autosaved, so this is just a guard
+  // against an accidental click — leaving is recoverable either way.
+  useEffect(() => {
+    const inProgress =
+      Object.values(steps).some((s) => s === "running") ||
+      (!!pipe.current.renderedVideoNoSubUrl && !pipe.current.burnedVideoUrl);
+    if (!inProgress) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [steps]);
 
   // ── Pipeline helpers (copied from video-creator) ───────────────────────
 
@@ -3091,7 +3142,7 @@ export default function VideoEditorPage() {
               </button>
             );
           })()}
-          <button onClick={saveDraftNow}
+          <button onClick={() => saveDraftNow()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-emerald-400 hover:border-emerald-500/40 transition-colors">
             <Save className="w-3 h-3" /> Save
           </button>
