@@ -269,8 +269,43 @@ interface CharClock {
   totalMs: number;
 }
 
+// Gemini has no per-char timing, so within a segment we spread the segment's
+// (exact) duration across its characters. A plain char-proportional split assumes
+// a uniform speech rate and therefore MIS-times pause-heavy scripts: an ellipsis
+// ("…" or "...") is only ~1-3 characters but the model actually pauses ~0.4-0.6s
+// there, so every following card lands a beat early until the segment end
+// re-anchors it ("off early, in sync by the end"). Give each ellipsis extra
+// weight so the clock advances over the pause. Scripts with no ellipsis are
+// byte-for-byte unchanged (all weights are 1), and ElevenLabs (real per-char
+// timing) never reaches this branch. Tunable via TTS_PAUSE_WEIGHT (0 = legacy).
+function ellipsisPauseWeight(): number {
+  const raw = Number(process.env.TTS_PAUSE_WEIGHT);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 5;
+}
+
+// Per-char weight within a segment: whitespace 0, normal char 1, plus a one-time
+// pause bonus on the last char of each ellipsis run ("…" or a run of 2+ ".").
+function segmentCharWeights(text: string, pauseWeight: number): Float64Array {
+  const w = new Float64Array(text.length);
+  for (let i = 0; i < text.length; i++) w[i] = /\s/.test(text[i]) ? 0 : 1;
+  if (pauseWeight > 0) {
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "…") {
+        w[i] += pauseWeight;
+      } else if (text[i] === "." && (i + 1 >= text.length || text[i + 1] !== ".")) {
+        // end of a "." run — runs of 2+ dots are an ellipsis pause
+        let n = 0;
+        for (let j = i; j >= 0 && text[j] === "."; j--) n++;
+        if (n >= 2) w[i] += pauseWeight;
+      }
+    }
+  }
+  return w;
+}
+
 // Spaces get zero duration: within a segment, time is distributed over
-// non-space chars only (same weighting the transcribe interpolator uses).
+// non-space chars only (same weighting the transcribe interpolator uses),
+// with extra weight at ellipsis pauses (see ellipsisPauseWeight).
 function buildCharClock(timing: TtsTiming, fullText: string): CharClock {
   if (timing.provider === "elevenlabs" && timing.chars) {
     const { characters, startSec, endSec } = timing.chars;
@@ -296,14 +331,17 @@ function buildCharClock(timing: TtsTiming, fullText: string): CharClock {
 
   // startMsAt[i] = time at the boundary BEFORE char i; length fullText.length+1
   const startMsAt = new Float64Array(fullText.length + 1);
+  const pauseWeight = ellipsisPauseWeight();
   let charBase = 0;
   let totalMs = 0;
   for (const seg of timing.segments) {
-    const spokenTotal = seg.text.replace(/\s+/g, "").length;
-    let spokenSeen = 0;
+    const w = segmentCharWeights(seg.text, pauseWeight);
+    let weightTotal = 0;
+    for (let i = 0; i < w.length; i++) weightTotal += w[i];
+    let weightSeen = 0;
     for (let i = 0; i < seg.text.length; i++) {
-      startMsAt[charBase + i] = seg.startMs + (spokenTotal > 0 ? (spokenSeen / spokenTotal) * seg.durationMs : 0);
-      if (!/\s/.test(seg.text[i])) spokenSeen++;
+      startMsAt[charBase + i] = seg.startMs + (weightTotal > 0 ? (weightSeen / weightTotal) * seg.durationMs : 0);
+      weightSeen += w[i];
     }
     charBase += seg.text.length;
     totalMs = Math.max(totalMs, seg.startMs + seg.durationMs);
