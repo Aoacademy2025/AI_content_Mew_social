@@ -9,6 +9,7 @@ import {
   Gauge,
   HelpCircle,
   Loader2,
+  Radio,
   TimerReset,
   Users,
 } from "lucide-react";
@@ -46,6 +47,11 @@ type ErrorRow = {
 type VitalRow = {
   metric: "LCP" | "INP" | "CLS" | string;
   p75: number | null;
+  count: number;
+};
+
+type CountRow = {
+  label: string;
   count: number;
 };
 
@@ -99,6 +105,24 @@ type InsightSummary = {
     minFreeMemGb: number | null;
     lowMemoryStarts: number;
   };
+  playback: {
+    sessions: number;
+    uniqueSessions: number;
+    firstFrames: number;
+    canPlay: number;
+    waitingEvents: number;
+    stalledEvents: number;
+    errors: number;
+    bufferingSessions: number;
+    bufferingSessionPct: number;
+    errorPct: number;
+    firstFrameP50Ms: number | null;
+    firstFrameP95Ms: number | null;
+    canPlayP95Ms: number | null;
+    startupFromLoadP95Ms: number | null;
+    pages: CountRow[];
+    routes: CountRow[];
+  };
   staleProcessing: {
     total: number;
     completeCandidates: number;
@@ -133,6 +157,8 @@ const metricHelp: Record<string, string> = {
   "Free RAM": "RAM ที่เหลือบน server ตอนเริ่ม render ถ้าต่ำกว่า 1 GB เสี่ยงค้างหรือ fail",
   "Video completed": "เปอร์เซ็นต์งานจากตาราง Video ที่ status เป็น COMPLETED ในช่วงเวลาที่เลือก",
   "Telemetry errors": "error ที่ถูกส่งผ่าน telemetry แยกจาก production log โดยตรง",
+  "First frame": "เวลาจากการกด play จนวิดีโอเริ่มแสดงภาพจริง ถ้าสูง ผู้ใช้จะรู้สึกว่าคลิปเปิดช้า",
+  "Buffering sessions": "เปอร์เซ็นต์ session ที่มี waiting หรือ stalled ระหว่างดู ใช้วัดอาการกระตุกจริง",
 };
 
 function InfoTip({ label }: { label: keyof typeof metricHelp | string }) {
@@ -437,6 +463,54 @@ export default function AdminInsightsPage() {
                   <h2 className="text-lg font-semibold text-white">Web Vitals</h2>
                   <div className="mt-4 grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
                     {current.vitals.map((vital) => <VitalPill key={vital.metric} vital={vital} />)}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                  <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+                    <Radio className="h-5 w-5 text-sky-300" />
+                    Playback Health
+                  </h2>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center gap-1 text-xs text-slate-500">First frame p95 <InfoTip label="First frame" /></div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.playback.firstFrameP95Ms)}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        p50 {formatMs(current.playback.firstFrameP50Ms)} · samples {formatNumber(current.playback.firstFrames)}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center gap-1 text-xs text-slate-500">Buffering sessions <InfoTip label="Buffering sessions" /></div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{current.playback.bufferingSessionPct}%</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        waiting {formatNumber(current.playback.waitingEvents)} · stalled {formatNumber(current.playback.stalledEvents)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                    Sessions: <span className="font-semibold text-sky-300">{formatNumber(current.playback.sessions)}</span>
+                    {" "}· errors: <span className="font-semibold text-rose-300">{formatNumber(current.playback.errors)}</span>
+                    {" "}· canplay p95: <span className="font-semibold text-white">{formatMs(current.playback.canPlayP95Ms)}</span>
+                  </div>
+                  <div className="mt-3 grid gap-3 text-xs text-slate-400 sm:grid-cols-2 xl:grid-cols-1">
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="mb-2 font-semibold text-slate-200">Pages</div>
+                      {(current.playback.pages.length ? current.playback.pages : [{ label: "-", count: 0 }]).map((item) => (
+                        <div key={item.label} className="flex items-center justify-between gap-3 py-1">
+                          <span className="truncate">{item.label}</span>
+                          <span className="font-semibold text-white">{formatNumber(item.count)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="mb-2 font-semibold text-slate-200">Routes</div>
+                      {(current.playback.routes.length ? current.playback.routes : [{ label: "-", count: 0 }]).map((item) => (
+                        <div key={item.label} className="flex items-center justify-between gap-3 py-1">
+                          <span className="truncate">{item.label}</span>
+                          <span className="font-semibold text-white">{formatNumber(item.count)}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>

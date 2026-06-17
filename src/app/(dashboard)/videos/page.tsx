@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { PremiumPage, PremiumCard, PremiumEyebrow } from "@/components/layout/premium-page";
+import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 
 interface VideoItem {
   id: string;
@@ -31,9 +32,23 @@ export default function VideosGalleryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
+
+  const closePreview = useCallback(() => {
+    setPreviewUrl(null);
+    setPreviewVideoId(null);
+  }, []);
+
+  useVideoPlaybackTelemetry(previewVideoRef, {
+    enabled: Boolean(previewUrl),
+    page: "gallery",
+    videoUrl: previewUrl,
+    videoId: previewVideoId,
+    sourceKind: "gallery_modal",
+  });
 
   const fetchVideos = useCallback(() => {
     setLoading(true);
@@ -47,7 +62,7 @@ export default function VideosGalleryPage() {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "Escape") setPreviewUrl(null);
+      if (e.key === "Escape") closePreview();
       if (e.key === " " && previewUrl) {
         const v = previewVideoRef.current;
         if (!v) return;
@@ -58,7 +73,7 @@ export default function VideosGalleryPage() {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [previewUrl]);
+  }, [closePreview, previewUrl]);
 
   async function handleDelete(id: string) {
     try {
@@ -152,7 +167,10 @@ export default function VideosGalleryPage() {
                 daysLeft={daysLeft(video.expiresAt)}
                 onPreview={() => {
                   const url = video.videoUrl || video.avatarVideoUrl;
-                  if (url) setPreviewUrl(url);
+                  if (url) {
+                    setPreviewVideoId(video.id);
+                    setPreviewUrl(url);
+                  }
                 }}
                 onDelete={() => setDeleteId(video.id)}
                 deleteConfirm={deleteId === video.id}
@@ -210,7 +228,7 @@ export default function VideosGalleryPage() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
           style={{ background: "var(--ui-overlay-bg)" }}
-          onClick={() => setPreviewUrl(null)}
+          onClick={closePreview}
         >
           <div
             className="relative overflow-hidden rounded-2xl shadow-2xl"
@@ -225,7 +243,7 @@ export default function VideosGalleryPage() {
               className="absolute inset-0 h-full w-full object-contain bg-black"
             />
             <button
-              onClick={() => setPreviewUrl(null)}
+              onClick={closePreview}
               className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white text-sm"
               style={{ background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)" }}
             >

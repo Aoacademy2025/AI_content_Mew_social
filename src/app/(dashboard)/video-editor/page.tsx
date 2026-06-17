@@ -37,6 +37,7 @@ import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
@@ -2697,6 +2698,25 @@ export default function VideoEditorPage() {
     ? burnedPreviewUrl
     : editablePreviewUrl || videoUrl || preRenderUrl;
   const previewUsesBurnedOutput = Boolean(burnedPreviewUrl && previewVideoUrl === burnedPreviewUrl);
+  const previewSourceKind = previewUsesBurnedOutput
+    ? "burned_output"
+    : pipe.current.compositeUrl
+      ? "composite_preview"
+      : pipe.current.renderedVideoNoSubUrl
+        ? "render_no_sub"
+        : preRenderUrl
+          ? "pre_render"
+          : videoUrl
+            ? "final_video"
+            : null;
+
+  useVideoPlaybackTelemetry(videoRef, {
+    enabled: Boolean(previewVideoUrl),
+    page: "video-editor",
+    videoUrl: previewVideoUrl || null,
+    videoId: draftId,
+    sourceKind: previewSourceKind,
+  });
 
   // activeSub: only show when video is ready AND a caption is active at current time.
   // Burned MP4s already contain subtitles. When the style becomes dirty we switch
