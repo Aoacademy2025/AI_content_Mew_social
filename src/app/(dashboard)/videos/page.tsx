@@ -256,6 +256,7 @@ function VideoCard({
   const title = video.content?.headline || (video.script ? video.script.slice(0, 40) + "..." : "Untitled");
   const previewSrc = video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
+  const posterHue = posterHueFor(video.id);
 
   return (
     <div
@@ -264,9 +265,28 @@ function VideoCard({
     >
       {/* Thumbnail / background */}
       {video.thumbnail ? (
-        <img src={video.thumbnail} alt={title} className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src={video.thumbnail}
+          alt={title}
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
       ) : previewSrc ? (
-        <video src={previewSrc} className="absolute inset-0 h-full w-full object-cover" muted playsInline />
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={{
+            background:
+              `linear-gradient(145deg, hsl(${posterHue} 74% 24% / 0.86), hsl(220 24% 8%) 58%, hsl(${posterHue + 34} 72% 16% / 0.72))`,
+          }}
+        >
+          <div
+            className="flex h-12 w-12 items-center justify-center rounded-xl"
+            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.14)" }}
+          >
+            <Film className="h-5 w-5 text-white/55" />
+          </div>
+        </div>
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           style={{ background: "var(--ui-card-bg-2)" }}>
@@ -366,4 +386,10 @@ function VideoCard({
       </div>
     </div>
   );
+}
+
+function posterHueFor(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) % 360;
+  return 170 + (hash % 90);
 }
