@@ -396,6 +396,14 @@ function VideoCard({
             )}
           </>
         )}
+        {isRendering && (
+          <Link href={`/video-editor?resume=${video.id}`}
+            className="flex items-center gap-1 rounded-full px-3 h-10 text-xs font-semibold text-white transition-all hover:scale-105"
+            style={{ background: "hsl(45 100% 50% / 0.25)", border: "1px solid hsl(45 100% 50% / 0.55)" }}
+            title="เปิดในเอดิเตอร์เพื่อทำต่อ (เช่น Burn ซับ)">
+            <RefreshCw className="h-3.5 w-3.5" /> ทำต่อ
+          </Link>
+        )}
         {deleteConfirm ? (
           <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
             style={{ background: "rgba(0,0,0,0.8)", border: "1px solid hsl(0 84% 60% / 0.4)" }}>
