@@ -432,6 +432,14 @@ export default function ShortVideoPage() {
   const runningRef = useRef(false);
   // Track the currently active render jobId — results from any other jobId are discarded
   const activeJobIdRef = useRef<string | null>(null);
+  const renderScopeIdRef = useRef<string | null>(null);
+
+  function getRenderScopeId() {
+    if (!renderScopeIdRef.current) {
+      renderScopeIdRef.current = `video-creator-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return renderScopeIdRef.current;
+  }
 
   useEffect(() => {
     // Load stock cache info
@@ -1128,7 +1136,7 @@ export default function ShortVideoPage() {
       const renderRes = await fetch("/api/videos/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: patchedConfig }),
+        body: JSON.stringify({ shortVideoConfig: patchedConfig, jobScopeId: getRenderScopeId() }),
         signal: abortControllerRef.current?.signal,
       });
       if (renderFailedMessage) throw new Error(renderFailedMessage);
