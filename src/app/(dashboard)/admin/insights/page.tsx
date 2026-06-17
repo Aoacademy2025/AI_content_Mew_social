@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
+  Database,
   Gauge,
   HelpCircle,
   Loader2,
@@ -71,6 +72,8 @@ type InsightSummary = {
     videoCompletionPct: number;
     renderTaskSuccessPct: number;
     healthScore: number;
+    funnelMode: "run" | "event";
+    funnelRuns: number;
     videoJobs: {
       total: number;
       completed: number;
@@ -104,6 +107,41 @@ type InsightSummary = {
     renderQueueP95Ms: number | null;
     minFreeMemGb: number | null;
     lowMemoryStarts: number;
+  };
+  broll: {
+    requests: number;
+    runs: number;
+    errors: number;
+    successPct: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+    searchP95Ms: number | null;
+    rankingP95Ms: number | null;
+    selectionP95Ms: number | null;
+    downloadP95Ms: number | null;
+    normalizeP95Ms: number | null;
+    cacheHitCount: number;
+    downloadedCount: number;
+    downloadFailCount: number;
+    cacheHitPct: number;
+    downloadFailPct: number;
+    servedClipTotal: number;
+    servedClipAvg: number | null;
+    searchQueriesAvg: number | null;
+    noCandidateKeywords: number;
+    forcedFallbackCount: number;
+    profileFallbackUsedCount: number;
+    llmRankingUsedCount: number;
+    llmRankingFailedCount: number;
+    emptyResultCount: number;
+    normalizeRanCount: number;
+    normalizeSkippedCount: number;
+    normalizeFailedCount: number;
+    selectedPexelsCount: number;
+    selectedPixabayCount: number;
+    providerMix: CountRow[];
+    resolvedSources: CountRow[];
+    contentProfiles: CountRow[];
   };
   playback: {
     sessions: number;
@@ -159,6 +197,10 @@ const metricHelp: Record<string, string> = {
   "Telemetry errors": "error ที่ถูกส่งผ่าน telemetry แยกจาก production log โดยตรง",
   "First frame": "เวลาจากการกด play จนวิดีโอเริ่มแสดงภาพจริง ถ้าสูง ผู้ใช้จะรู้สึกว่าคลิปเปิดช้า",
   "Buffering sessions": "เปอร์เซ็นต์ session ที่มี waiting หรือ stalled ระหว่างดู ใช้วัดอาการกระตุกจริง",
+  "B-roll p95": "เวลาฝั่ง server ของ fetch-stock ทั้งก้อน ใช้ดูว่าขั้นหา B-roll ช้าจริงแค่ไหน",
+  "B-roll phase": "เวลาย่อยของ search/rank/select/download จะมีข้อมูลละเอียดขึ้นกับ event ใหม่หลัง deploy",
+  "Cache hit": "สัดส่วนคลิปที่ใช้ไฟล์เดิมบน server ได้ ถ้าต่ำมาก server ต้องโหลด/normalize ใหม่บ่อย",
+  "Download fail": "สัดส่วนโหลด stock ล้มเหลว ถ้าสูงให้ดู provider, network timeout หรือไฟล์ต้นทาง",
 };
 
 function InfoTip({ label }: { label: keyof typeof metricHelp | string }) {
@@ -387,6 +429,7 @@ export default function AdminInsightsPage() {
                     <h2 className="text-lg font-semibold text-white">Funnel หน้า Video Editor</h2>
                     <p className="mt-1 text-xs text-slate-500">
                       จุดหลุดสูงสุด: {worstDrop ? `${worstDrop.label} (${worstDrop.dropOffPct}%)` : "-"}
+                      {" "}· {current.totals.funnelMode === "run" ? `นับต่อ run ${formatNumber(current.totals.funnelRuns)} งาน` : "event-count fallback"}
                     </p>
                   </div>
                   <BarChart3 className="h-5 w-5 text-sky-300" />
@@ -560,43 +603,107 @@ export default function AdminInsightsPage() {
                 </div>
               </div>
 
-              <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
-                <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
-                  <TimerReset className="h-5 w-5 text-amber-300" />
-                  Render Resource
-                </h2>
-                <div className="mt-4 grid gap-3">
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center gap-1 text-xs text-slate-500">p95 render <InfoTip label="p95" /></div>
-                    <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderP95Ms)}</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      render tasks {formatNumber(current.resource.renderCount)}/{formatNumber(current.resource.renderStartedCount)} · {current.resource.renderTaskSuccessPct}%
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center gap-1 text-xs text-slate-500">Queue p95 <InfoTip label="Render Queue" /></div>
-                    <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderQueueP95Ms)}</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-5">
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                  <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+                    <Database className="h-5 w-5 text-emerald-300" />
+                    B-roll Resource
+                  </h2>
+                  <div className="mt-4 grid gap-3">
                     <div className="rounded-md border border-white/10 bg-black/20 p-3">
-                      <div className="flex items-center gap-1 text-xs text-slate-500">Concurrency <InfoTip label="Concurrency" /></div>
-                      <div className="mt-2 text-xl font-semibold text-white">{formatNumber(current.resource.avgConcurrency, 1)}</div>
-                    </div>
-                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
-                      <div className="flex items-center gap-1 text-xs text-slate-500">Free RAM <InfoTip label="Free RAM" /></div>
-                      <div className="mt-2 text-xl font-semibold text-white">
-                        {current.resource.minFreeMemGb == null ? "-" : `${formatNumber(current.resource.minFreeMemGb, 2)} GB`}
+                      <div className="flex items-center gap-1 text-xs text-slate-500">B-roll p95 <InfoTip label="B-roll p95" /></div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.broll.p95Ms)}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        runs {formatNumber(current.broll.runs)}/{formatNumber(current.broll.requests)} · success {current.broll.successPct}%
                       </div>
                     </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Search p95 <InfoTip label="B-roll phase" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">{formatMs(current.broll.searchP95Ms)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Download p95 <InfoTip label="B-roll phase" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">{formatMs(current.broll.downloadP95Ms)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Rank p95 <InfoTip label="B-roll phase" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">{formatMs(current.broll.rankingP95Ms)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Normalize p95 <InfoTip label="B-roll phase" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">{formatMs(current.broll.normalizeP95Ms)}</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Cache hit <InfoTip label="Cache hit" /></div>
+                        <div className="mt-2 text-xl font-semibold text-emerald-300">{current.broll.cacheHitPct}%</div>
+                        <div className="mt-1 text-xs text-slate-500">{formatNumber(current.broll.cacheHitCount)} cached · {formatNumber(current.broll.downloadedCount)} new</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Download fail <InfoTip label="Download fail" /></div>
+                        <div className="mt-2 text-xl font-semibold text-rose-300">{current.broll.downloadFailPct}%</div>
+                        <div className="mt-1 text-xs text-slate-500">{formatNumber(current.broll.downloadFailCount)} fails</div>
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Served clips เฉลี่ย: <span className="font-semibold text-sky-300">{formatNumber(current.broll.servedClipAvg, 1)}</span>
+                      {" "}· search queries/run: <span className="font-semibold text-sky-300">{formatNumber(current.broll.searchQueriesAvg, 1)}</span>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Provider: <span className="font-semibold text-emerald-300">Pexels {formatNumber(current.broll.selectedPexelsCount)}</span>
+                      {" "}· <span className="font-semibold text-emerald-300">Pixabay {formatNumber(current.broll.selectedPixabayCount)}</span>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Normalize ran/skipped/failed: <span className="font-semibold text-white">{formatNumber(current.broll.normalizeRanCount)}/{formatNumber(current.broll.normalizeSkippedCount)}/{formatNumber(current.broll.normalizeFailedCount)}</span>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Fallback: profile <span className="font-semibold text-amber-300">{formatNumber(current.broll.profileFallbackUsedCount)}</span>
+                      {" "}· forced <span className="font-semibold text-amber-300">{formatNumber(current.broll.forcedFallbackCount)}</span>
+                      {" "}· no candidate <span className="font-semibold text-rose-300">{formatNumber(current.broll.noCandidateKeywords)}</span>
+                    </div>
                   </div>
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
-                    Active render slots เฉลี่ย: <span className="font-semibold text-sky-300">{formatNumber(current.resource.avgActiveRenderSlots, 1)}</span>
-                  </div>
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
-                    Main render: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.mainRenderCount)}/{formatNumber(current.resource.mainRenderStartedCount)}</span> · Burn subtitles: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.burnRenderCount)}/{formatNumber(current.resource.burnRenderStartedCount)}</span>
-                  </div>
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
-                    RAM ต่ำกว่า 1 GB ตอนเริ่ม render: <span className="font-semibold text-amber-300">{formatNumber(current.resource.lowMemoryStarts)}</span> ครั้ง
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                  <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+                    <TimerReset className="h-5 w-5 text-amber-300" />
+                    Render Resource
+                  </h2>
+                  <div className="mt-4 grid gap-3">
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center gap-1 text-xs text-slate-500">p95 render <InfoTip label="p95" /></div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderP95Ms)}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        render tasks {formatNumber(current.resource.renderCount)}/{formatNumber(current.resource.renderStartedCount)} · {current.resource.renderTaskSuccessPct}%
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center gap-1 text-xs text-slate-500">Queue p95 <InfoTip label="Render Queue" /></div>
+                      <div className="mt-2 text-2xl font-semibold text-white">{formatMs(current.resource.renderQueueP95Ms)}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Concurrency <InfoTip label="Concurrency" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">{formatNumber(current.resource.avgConcurrency, 1)}</div>
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Free RAM <InfoTip label="Free RAM" /></div>
+                        <div className="mt-2 text-xl font-semibold text-white">
+                          {current.resource.minFreeMemGb == null ? "-" : `${formatNumber(current.resource.minFreeMemGb, 2)} GB`}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Active render slots เฉลี่ย: <span className="font-semibold text-sky-300">{formatNumber(current.resource.avgActiveRenderSlots, 1)}</span>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      Main render: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.mainRenderCount)}/{formatNumber(current.resource.mainRenderStartedCount)}</span> · Burn subtitles: <span className="font-semibold text-emerald-300">{formatNumber(current.resource.burnRenderCount)}/{formatNumber(current.resource.burnRenderStartedCount)}</span>
+                    </div>
+                    <div className="rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+                      RAM ต่ำกว่า 1 GB ตอนเริ่ม render: <span className="font-semibold text-amber-300">{formatNumber(current.resource.lowMemoryStarts)}</span> ครั้ง
+                    </div>
                   </div>
                 </div>
               </div>

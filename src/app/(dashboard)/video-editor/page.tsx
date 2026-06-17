@@ -146,10 +146,15 @@ export default function VideoEditorPage() {
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
+  const draftIdRef = useRef(draftId);
   const [projectName, setProjectName] = useState("New Project");
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [showDraftList, setShowDraftList] = useState(false);
   const [drafts, setDrafts] = useState<EditorDraft[]>([]);
+
+  useEffect(() => {
+    draftIdRef.current = draftId;
+  }, [draftId]);
 
   // ── Script ────────────────────────────────────────────────────────────
   const [script, setScript] = useState("");
@@ -167,6 +172,7 @@ export default function VideoEditorPage() {
   const pipe = useRef<Partial<PipelineData>>({});
   const runningRef = useRef(false);
   const activeJobIdRef = useRef<string | null>(null);
+  const pipelineRunIdRef = useRef<string | null>(null);
 
   // ── Media state ───────────────────────────────────────────────────────
   const [videoUrl, setVideoUrl] = useState("");
@@ -1016,10 +1022,26 @@ export default function VideoEditorPage() {
 
   // ── Pipeline helpers (copied from video-creator) ───────────────────────
 
+  function startPipelineRun(reason: string) {
+    const randomPart =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID().slice(0, 8)
+        : Math.random().toString(36).slice(2, 10);
+    const nextId = `pipe_${Date.now()}_${randomPart}`;
+    pipelineRunIdRef.current = nextId;
+    return { pipelineRunId: nextId, draftId: draftIdRef.current, pipelineRunReason: reason };
+  }
+
+  function ensurePipelineRunTelemetry(reason = "manual") {
+    const pipelineRunId = pipelineRunIdRef.current ?? startPipelineRun(reason).pipelineRunId;
+    return { pipelineRunId, draftId: draftIdRef.current };
+  }
+
   function setStep(key: keyof StepState, status: StepStatus, log?: string) {
     const previous = stepsRef.current[key];
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     const label = STEP_EVENT_LABELS[String(key)] ?? String(key);
+    const pipelineTelemetry = ensurePipelineRunTelemetry(String(key));
 
     if (status === "running" && previous !== "running") {
       stepStartedAtRef.current[key] = now;
@@ -1028,7 +1050,7 @@ export default function VideoEditorPage() {
         path: "/video-editor",
         step: String(key),
         status: "running",
-        properties: { label },
+        properties: { label, ...pipelineTelemetry },
       });
     }
 
@@ -1045,6 +1067,7 @@ export default function VideoEditorPage() {
           durationMs,
           properties: {
             label,
+            ...pipelineTelemetry,
             message: log ? log.slice(0, 180) : undefined,
           },
         },
@@ -1310,6 +1333,7 @@ export default function VideoEditorPage() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
+        ...ensurePipelineRunTelemetry("fetchStock"),
         fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
         ...(perSubtitleClipCount > 0
@@ -2371,11 +2395,13 @@ export default function VideoEditorPage() {
     abortControllerRef.current = new AbortController();
     setSteps({ ...DEFAULT_STEPS }); stepsRef.current = { ...DEFAULT_STEPS };
     stepStartedAtRef.current = {};
+    const pipelineTelemetry = startPipelineRun("runAll");
     trackEvent("editor_script_ready", {
       category: "product",
       path: "/video-editor",
       status: "started",
       properties: {
+        ...pipelineTelemetry,
         scriptChars: script.trim().length,
         ttsProvider,
         stockSource,
@@ -2452,11 +2478,13 @@ export default function VideoEditorPage() {
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
+    const pipelineTelemetry = startPipelineRun(`runFrom:${String(startStep)}`);
     trackEvent("editor_script_ready", {
       category: "product",
       path: "/video-editor",
       status: "started",
       properties: {
+        ...pipelineTelemetry,
         scriptChars: script.trim().length,
         resumedFrom: String(startStep),
         ttsProvider,
