@@ -1,7 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
-import { evenSplitBgVideos, cyclePoolIndices } from "@/lib/broll-even-split";
+import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -377,36 +377,56 @@ export async function POST(req: Request) {
       // under the 1.5s threshold chained back to pool[0] = one frozen clip — prod logs
       // showed `per-subtitle-top: 1 clips for 81 captions (ratio=1%)`. Cycling can't collapse.)
       const pool = validStocks.slice(0, n);
-      const assignedPool = cyclePoolIndices(gapFilled.length, pool.length);
 
-      console.log(`[config] per-subtitle-top: cycling ${pool.length} clips across ${gapFilled.length} captions`);
+      // MIN-HOLD cadence (env STOCK_MIN_HOLD_SEC > 0, default 0 = legacy): hold each
+      // clip ≥N seconds spanning several captions instead of cutting on every caption
+      // — fixes the "b-roll strobes ~1×/sec in dense word-modes" feel. buildMinHoldSegments
+      // guarantees no segment outlives its clip (no freeze) and returns null when the
+      // env is unset, in which case we keep the exact legacy 1-clip-per-caption path.
+      const minHoldSec = Math.max(0, Math.min(8, Number(process.env.STOCK_MIN_HOLD_SEC) || 0));
+      const heldSegments = buildMinHoldSegments(
+        gapFilled.map((c) => ({ startSec: c.startMs / 1000, endSec: c.endMs / 1000 })),
+        pool.map((sv) => ({ src: (sv.localUrl ?? sv.videoUrl) as string, duration: sv.duration > 0 ? sv.duration : 10 })),
+        minHoldSec,
+      );
+      if (heldSegments) {
+        bgVideos.push(...heldSegments);
+        const avgHold = heldSegments.length
+          ? heldSegments.reduce((a, s) => a + (s.end - s.start), 0) / heldSegments.length
+          : 0;
+        console.log(`[config] per-subtitle-top MIN_HOLD=${minHoldSec}s: ${heldSegments.length} clips across ${gapFilled.length} captions (avg ${avgHold.toFixed(2)}s/clip)`);
+      } else {
+        const assignedPool = cyclePoolIndices(gapFilled.length, pool.length);
 
-      const clipOffsetMap = new Map<string, number>();
-      for (let ci = 0; ci < gapFilled.length; ci++) {
-        const cap = gapFilled[ci];
-        const capStartSec = cap.startMs / 1000;
-        const capEndSec   = cap.endMs   / 1000;
-        const dur = capEndSec - capStartSec;
-        if (dur < 0.1) continue;
+        console.log(`[config] per-subtitle-top: cycling ${pool.length} clips across ${gapFilled.length} captions`);
 
-        const poolIdx = Math.max(0, Math.min(assignedPool[ci] ?? 0, pool.length - 1));
-        const sv = pool[poolIdx];
-        const src = sv.localUrl ?? sv.videoUrl;
-        const clipDuration = sv.duration > 0 ? sv.duration : 10;
+        const clipOffsetMap = new Map<string, number>();
+        for (let ci = 0; ci < gapFilled.length; ci++) {
+          const cap = gapFilled[ci];
+          const capStartSec = cap.startMs / 1000;
+          const capEndSec   = cap.endMs   / 1000;
+          const dur = capEndSec - capStartSec;
+          if (dur < 0.1) continue;
 
-        // If the previous bgVideo uses the same clip src, just extend it
-        const last = bgVideos[bgVideos.length - 1];
-        if (last && last.src === src) {
-          last.end = capEndSec;
-          continue;
+          const poolIdx = Math.max(0, Math.min(assignedPool[ci] ?? 0, pool.length - 1));
+          const sv = pool[poolIdx];
+          const src = sv.localUrl ?? sv.videoUrl;
+          const clipDuration = sv.duration > 0 ? sv.duration : 10;
+
+          // If the previous bgVideo uses the same clip src, just extend it
+          const last = bgVideos[bgVideos.length - 1];
+          if (last && last.src === src) {
+            last.end = capEndSec;
+            continue;
+          }
+
+          const offset = clipOffsetMap.get(src) ?? 0;
+          const safeOffset = clipDuration > 0 ? offset % clipDuration : 0;
+          bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
+          clipOffsetMap.set(src, safeOffset + dur);
         }
-
-        const offset = clipOffsetMap.get(src) ?? 0;
-        const safeOffset = clipDuration > 0 ? offset % clipDuration : 0;
-        bgVideos.push({ src, start: capStartSec, end: capEndSec, clipOffset: safeOffset, clipDuration });
-        clipOffsetMap.set(src, safeOffset + dur);
+        console.log(`[config] per-subtitle-top: ${bgVideos.length} clips for ${gapFilled.length} captions (ratio=${(bgVideos.length/Math.max(1,gapFilled.length)*100).toFixed(0)}%)`);
       }
-      console.log(`[config] per-subtitle-top: ${bgVideos.length} clips for ${gapFilled.length} captions (ratio=${(bgVideos.length/Math.max(1,gapFilled.length)*100).toFixed(0)}%)`);
     } else if (useEvenSplit) {
       const splitCount = Math.max(1, Math.min(n, clipCountHint));
       const sliceSec = audioDurationSec / splitCount;
@@ -688,7 +708,7 @@ export async function POST(req: Request) {
     keywordPopups,
     voiceFile,
     voiceVolume: 1.0,
-    bgmVolume: 0.28,
+    bgmVolume: 0.12, // match the web video-editor default (was 0.28 = too loud); web overrides with its own state anyway
     durationInFrames,
     fontFamily,
     subtitleStylePreset,
@@ -697,8 +717,11 @@ export async function POST(req: Request) {
     subtitleShadow,
     subtitleOutline,
     subtitleOutlineSize,
+    // Ken Burns motion on b-roll — env-gated (STOCK_KEN_BURNS=1, default off). Set in
+    // the config so the render AND the editor preview (both read ShortVideoConfig) match.
+    kenBurns: process.env.STOCK_KEN_BURNS === "1",
   };
 
-  console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups`);
+  console.log(`[config] done: ${bgVideos.length} bgVideos, ${keywordPopups.length} popups, kenBurns=${config.kenBurns}`);
   return NextResponse.json({ config });
 }

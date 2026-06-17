@@ -11,6 +11,7 @@ import {
   normalizeContentProfile,
   type ContentProfile,
 } from "@/lib/broll-profile";
+import { clampedLongSide, pickPixabayVariant } from "@/lib/broll-source-quality";
 import {
   specToTerms,
   profileToTerms,
@@ -38,6 +39,20 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
   return Math.max(min, Math.min(max, Math.floor(raw)));
 }
 
+// x264 speed preset for the Remotion-safe re-encode. `ultrafast` cuts encode CPU
+// ~2-3× vs `veryfast` (the dominant cost of the b-roll step, which serializes through
+// NORMALIZE_CONCURRENCY=1 — so a faster encode drains the queue faster for everyone
+// when multiple users generate at once). Output stays CFR/no-B-frame/yuv420p (still
+// Remotion-seekable); only the file is a bit larger. Env-tunable so it can be dialed
+// back without a redeploy. Only known-good presets are accepted (no shell injection).
+const X264_PRESETS = new Set([
+  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
+]);
+function readPresetEnv(name: string, fallback: string): string {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
+  return X264_PRESETS.has(raw) ? raw : fallback;
+}
+
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
 const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
@@ -45,6 +60,7 @@ const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 
 // a SIGKILL'd encode must not be the common case (override via env, max 600s).
 const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 300_000, 30_000, 600_000);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
+const NORMALIZE_PRESET = readPresetEnv("STOCK_NORMALIZE_PRESET", "ultrafast");
 
 type StockProvider = "pexels" | "pixabay";
 
@@ -53,6 +69,8 @@ type FoundVideo = {
   id: number;
   duration: number;
   link: string;
+  width?: number;   // source resolution → HD tiebreak when relevance scores tie (#9)
+  height?: number;
   title?: string;
   query?: string;
   provider?: StockProvider;
@@ -67,7 +85,7 @@ type CandidateVideo = FoundVideo & {
   provider: StockProvider;
 };
 
-type PixabayVideo = { id: number; duration: number; videoUrl: string; tags?: string };
+type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string };
 
 type CandidateFit = {
   index: number;
@@ -131,7 +149,7 @@ async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> 
       // trunc pair forces even dimensions (yuv420p requires it) and is compatible
       // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
       "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+      "-c:v", "libx264", "-preset", NORMALIZE_PRESET, "-crf", "20",
       "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
       "-pix_fmt", "yuv420p",
       "-r", String(TARGET_FPS),           // force constant frame rate
@@ -309,27 +327,34 @@ async function downloadAndCrop(url: string, outPath: string): Promise<void> {
 }
 
 // Search Pixabay for portrait videos
-async function searchPixabay(query: string, pixabayKey: string, minDuration = 5): Promise<PixabayVideo[]> {
+async function searchPixabay(query: string, pixabayKey: string, minDuration = 5, perPage = 15): Promise<PixabayVideo[]> {
   const params = new URLSearchParams({
     key: pixabayKey,
     q: query,
     video_type: "film",
     orientation: "vertical",
-    per_page: "15",
+    // Honor the caller's perPage (was hardcoded 15) so per-subtitle search gets a
+    // deeper pool to rank — better/less-repetitive picks. Pixabay allows 3–200.
+    per_page: String(Math.max(3, Math.min(200, perPage))),
     min_duration: String(minDuration),
   });
   const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
     { provider: "pixabay", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
   const data = await res.json();
-  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string }; large?: { url: string } }; tags?: string }) => ({
-    id: h.id,
-    duration: h.duration,
-    // Prefer medium (~1920px) over large (can be 4K). large 4K clips are just
-    // downscaled in normalizeForRemotion anyway, so picking medium first avoids
-    // downloading the heavy file at all (saves bandwidth + disk + the heavy encode).
-    videoUrl: h.videos?.medium?.url ?? h.videos?.large?.url ?? "",
-    tags: (h.tags ?? "").slice(0, 60),
-  })).filter((v: PixabayVideo) => v.videoUrl);
+  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number }; large?: { url: string; width?: number; height?: number } }; tags?: string }) => {
+    // #8 soft resolution floor: prefer medium (avoids 4K, respects #63), but fall up
+    // to large when medium is sub-720p and large stays ≤1920 — keeps soft/upscaled
+    // clips out without reintroducing the 4K download #63 removed.
+    const v = pickPixabayVariant(h.videos?.medium, h.videos?.large);
+    return {
+      id: h.id,
+      duration: h.duration,
+      videoUrl: v.url,
+      width: v.width,
+      height: v.height,
+      tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
+    };
+  }).filter((v: PixabayVideo) => v.videoUrl);
 }
 
 
@@ -366,6 +391,11 @@ function orderCandidateIndices(
       if (b.index === preferredIndex) return 1;
       const scoreDiff = b.score - a.score;
       if (scoreDiff !== 0) return scoreDiff;
+      // #9 HD tiebreak: equal relevance → prefer the sharper clip (long side clamped
+      // to 1920 so ≥Full-HD clips rank equally and no provider is systematically favored).
+      const resA = clampedLongSide(candidates[a.index]?.width, candidates[a.index]?.height);
+      const resB = clampedLongSide(candidates[b.index]?.width, candidates[b.index]?.height);
+      if (resB !== resA) return resB - resA;
       return (candidates[b.index]?.duration ?? 0) - (candidates[a.index]?.duration ?? 0);
     });
 
@@ -1366,6 +1396,7 @@ export async function POST(req: Request) {
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
+        normalizePreset: NORMALIZE_PRESET,
         normalizeTimeoutMs: NORMALIZE_TIMEOUT_MS,
         perSubtitleDownloadLimit: PER_SUBTITLE_DOWNLOAD_LIMIT,
         staleTempDeleted,
@@ -1473,7 +1504,7 @@ export async function POST(req: Request) {
         ? searchPexels(query, pexelsKey!, 3, perPage)
         : Promise.resolve([] as PexelsVideo[]),
       canUsePixabay
-        ? searchPixabay(query, pixabayKey!)
+        ? searchPixabay(query, pixabayKey!, 5, perPage)
         : Promise.resolve([] as PixabayVideo[]),
     ]);
 
@@ -1497,18 +1528,22 @@ export async function POST(req: Request) {
         id: v.id,
         duration: v.duration,
         link: file.link,
+        width: file.width,
+        height: file.height,
         title: slugToTitle(v.url ?? ""),
         query,
         provider: "pexels",
       });
     }
     for (const pv of pixabayVideos) {
-      const title = pv.tags ? pv.tags.split(",").slice(0, 4).map((t) => t.trim()).join(" ") : query;
+      const title = pv.tags ? pv.tags.split(",").slice(0, 6).map((t) => t.trim()).join(" ") : query;
       candidates.push({
         keyword,
         id: pv.id + 9_000_000,
         duration: pv.duration,
         link: pv.videoUrl,
+        width: pv.width,
+        height: pv.height,
         title,
         query,
         provider: "pixabay",
@@ -1596,7 +1631,7 @@ export async function POST(req: Request) {
   console.log(`[fetch-stock] source=${srcLabel}`);
 
   // Pexels supports up to 80 per page — use that headroom for long videos
-  const basePerPage = isPerSubtitleMode ? 15 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
+  const basePerPage = isPerSubtitleMode ? 25 : Math.min(80, Math.max(15, clipsPerKeyword * 5));
 
   // ── Search phase — try keyword alternatives in order until candidates found ──
   const candidatesByKeyword: CandidateVideo[][] = await mapWithConcurrency(
@@ -1622,7 +1657,7 @@ export async function POST(req: Request) {
               ? searchPexels(query, pexelsKey!, 3, basePerPage)
               : Promise.resolve([] as PexelsVideo[]),
             canUsePixabay
-              ? searchPixabay(query, pixabayKey!)
+              ? searchPixabay(query, pixabayKey!, 5, basePerPage)
               : Promise.resolve([] as PixabayVideo[]),
           ]);
 
@@ -1641,12 +1676,12 @@ export async function POST(req: Request) {
             const file = pickBestFile(v);
             if (!file) continue;
             const title = slugToTitle(v.url ?? "");
-            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title, query, provider: "pexels" });
+            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title, query, provider: "pexels" });
           }
           for (const pv of pixabayVideos) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
-            const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 4).map((t: string) => t.trim()).join(" ") : query;
-            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, title: pbTitle, query, provider: "pixabay" });
+            const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 6).map((t: string) => t.trim()).join(" ") : query;
+            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, width: pv.width, height: pv.height, title: pbTitle, query, provider: "pixabay" });
           }
 
           if (candidates.length > 0) {
@@ -1667,7 +1702,7 @@ export async function POST(req: Request) {
             for (const v of page2) {
               const file = pickBestFile(v);
               if (!file) continue;
-              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
+              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
             }
             if (candidates.length > 0) {
               stockTelemetry.searchCandidatesTotal += candidates.length;

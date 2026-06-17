@@ -2,6 +2,7 @@ import React from "react";
 import {
   AbsoluteFill,
   Audio,
+  Easing,
   OffthreadVideo,
   Sequence,
   interpolate,
@@ -35,6 +36,7 @@ function VideoClip({
   headFrames,
   clipDurFrames,
   clipIndex,
+  kenBurns = false,
 }: {
   src: string;
   startFrom: number;
@@ -43,11 +45,21 @@ function VideoClip({
   headFrames: number;
   clipDurFrames: number | null;
   clipIndex: number;
+  kenBurns?: boolean;
 }) {
   const frame = useCurrentFrame();
   const { width, height } = useVideoConfig();
 
   const totalFrames = segDurFrames + tailFrames;
+  // Ken Burns: subtle continuous zoom so b-roll reads as intentional motion, not a
+  // static slideshow. Alternate zoom-in / zoom-out by clipIndex for variety. We only
+  // ever scale ≥1.0 and objectFit:cover already fills the frame, so no edge gap is
+  // ever exposed. Pure CSS transform on an already-decoded frame → ~free on render.
+  const kbScale = kenBurns
+    ? clipIndex % 2 === 0
+      ? interpolate(frame, [0, totalFrames], [1.0, 1.08], { extrapolateRight: "clamp" })
+      : interpolate(frame, [0, totalFrames], [1.08, 1.0], { extrapolateRight: "clamp" })
+    : 1;
   // Clamp startFrom and endAt so we never request frames past the clip's
   // actual duration — prevents "No frame found at position X" errors.
   // If startFrom is already near the end, loop back to frame 0.
@@ -57,10 +69,12 @@ function VideoClip({
   const rawEndAt = safeStart + totalFrames;
   const endAt = clipDurFrames ? Math.min(rawEndAt, Math.max(0, clipDurFrames - 2)) : rawEndAt;
 
-  // Opacity: fade-in (entry) × fade-out (tail for next clip)
-  const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { extrapolateRight: "clamp" }) : 1;
+  // Opacity: fade-in (entry) × fade-out (tail for next clip). Eased (smoothstep-ish)
+  // so the dissolve looks intentional instead of a linear ramp.
+  const ease = Easing.inOut(Easing.ease);
+  const fadeIn  = headFrames > 0 ? interpolate(frame, [0, headFrames], [0, 1], { easing: ease, extrapolateRight: "clamp" }) : 1;
   const fadeOut = tailFrames > 0
-    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    ? interpolate(frame, [segDurFrames, segDurFrames + tailFrames], [1, 0], { easing: ease, extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1;
   const opacity = Math.min(fadeIn, fadeOut);
 
@@ -78,6 +92,7 @@ function VideoClip({
           height,
           objectFit: "cover",
           filter: GRADE_FILTER,
+          ...(kenBurns ? { transform: `scale(${kbScale})`, transformOrigin: "center center" } : {}),
         }}
         muted
       />
@@ -535,6 +550,7 @@ export function ShortVideoComposition({
   subtitleShadow = false,
   subtitleOutline = false,
   subtitleOutlineSize = 2,
+  kenBurns = false,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -575,8 +591,14 @@ export function ShortVideoComposition({
         return segs.map((v, i) => {
           const isLast        = i === segs.length - 1;
           const segDurFrames  = v.endFrame - v.startFrame; // nominal duration
-          const tailFrames    = isLast ? 0 : CROSSFADE_FRAMES; // stay visible for next clip's fade-in
-          const headFrames    = i === 0 ? 0 : CROSSFADE_FRAMES; // fade in over previous clip
+          // #7 adaptive crossfade: cap the dissolve at 1/3 of the SHORTER clip at each
+          // boundary so a short clip is never swallowed. tail(i) and head(i+1) use the
+          // same value (min of the two clip lengths) so the overlap is symmetric.
+          const cfAt = (a: number, b: number) => Math.min(CROSSFADE_FRAMES, Math.floor(Math.min(a, b) / 3));
+          const nextDur = isLast ? 0 : segs[i + 1].endFrame - segs[i + 1].startFrame;
+          const prevDur = i === 0 ? 0 : segs[i - 1].endFrame - segs[i - 1].startFrame;
+          const tailFrames    = isLast ? 0 : cfAt(segDurFrames, nextDur); // stay visible for next clip's fade-in
+          const headFrames    = i === 0 ? 0 : cfAt(prevDur, segDurFrames); // fade in over previous clip
 
           const clipDurFrames = v.clipDuration ? Math.max(1, Math.round(v.clipDuration * fps)) : null;
           const clipOffsetFrames = Math.round(v.clipOffset * fps);
@@ -598,6 +620,7 @@ export function ShortVideoComposition({
                 headFrames={headFrames}
                 clipDurFrames={clipDurFrames}
                 clipIndex={i}
+                kenBurns={kenBurns}
               />
             </Sequence>
           );
