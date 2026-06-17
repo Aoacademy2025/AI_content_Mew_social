@@ -708,6 +708,11 @@ export function snapCaptionsToSilences<T extends { startMs: number; endMs: numbe
 // too briefly to read ("ขึ้นแว้บ–หายก่อนพูดจบ"). The first caption never merges
 // backward and the previous caption keeps its tag. minMs <= 0 is a no-op.
 //
+// Pause-aware: a short caption that BEGINS at a real pause starts a new speech
+// run, so it is NOT merged back across the pause (that would re-join what
+// splitCardsAtSilences deliberately split). Pass the silence intervals to enable
+// this; omit them to merge purely by duration.
+//
 // Used ONLY on the sentence/viral caption track (after snapCaptionsToSilences).
 // The per-word timeline that feeds word-count modes (cardsByWordCount) is built
 // separately by buildWordsFromTiming and never passes through here, so "1 word /
@@ -715,17 +720,62 @@ export function snapCaptionsToSilences<T extends { startMs: number; endMs: numbe
 export function mergeShortCaptions<T extends { text: string; startMs: number; endMs: number }>(
   captions: T[],
   minMs: number,
+  silences: SilenceInterval[] = [],
 ): T[] {
   if (minMs <= 0 || captions.length < 2) return captions;
+  const atPause = (t: number) => silences.some((s) => t >= s.startMs - 60 && t <= s.endMs + 60);
   const out: T[] = [];
   for (const c of captions) {
     const prev = out[out.length - 1];
-    if (prev && c.endMs - c.startMs < minMs) {
+    if (prev && c.endMs - c.startMs < minMs && !atPause(c.startMs)) {
       prev.endMs = c.endMs;
       prev.text = `${prev.text} ${c.text}`.trim();
     } else {
       out.push({ ...c });
     }
+  }
+  return out;
+}
+
+// Split any card whose char range STRADDLES a real pause, inserting a boundary
+// at the word that ends nearest the pause — so every detected pause becomes a
+// card edge. Without this a long card straddles a pause (e.g. a real 0.6s gap
+// mid-card): snapCaptionsToSilences can't move a boundary that isn't there, the
+// card drifts across the gap, and the next card lands late. The split point is a
+// word boundary (word.endChar) so a Thai word is never cut. Cards with no
+// straddled pause are returned unchanged. Gemini-only (ElevenLabs char timing
+// already sits on the real pauses).
+export function splitCardsAtSilences(
+  cards: ScriptCard[],
+  words: TimedWord[],
+  silences: SilenceInterval[],
+  tolMs = 600,
+): ScriptCard[] {
+  if (cards.length === 0 || words.length === 0 || silences.length === 0) return cards;
+  // candidate split positions = end of the word spoken just before each pause
+  const splitChars = new Set<number>();
+  for (const s of silences) {
+    let best: TimedWord | null = null;
+    let bestDist = Infinity;
+    for (const w of words) {
+      const d = Math.abs(w.endMs - s.startMs);
+      if (d < bestDist) { bestDist = d; best = w; }
+    }
+    if (best && bestDist <= tolMs) splitChars.add(best.endChar);
+  }
+  if (splitChars.size === 0) return cards;
+  const out: ScriptCard[] = [];
+  for (const c of cards) {
+    const inside = [...splitChars].filter((p) => p > c.startChar && p < c.endChar).sort((a, b) => a - b);
+    if (inside.length === 0) { out.push(c); continue; }
+    let s = c.startChar;
+    for (const p of inside) {
+      const piece: ScriptCard = { startChar: s, endChar: p };
+      if (s === c.startChar && c.tag) piece.tag = c.tag; // only the first piece keeps the tag
+      out.push(piece);
+      s = p;
+    }
+    out.push({ startChar: s, endChar: c.endChar });
   }
   return out;
 }

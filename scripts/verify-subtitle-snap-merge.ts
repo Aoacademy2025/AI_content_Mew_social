@@ -5,7 +5,7 @@
 //   • mergeShortCaptions folds too-short captions into the previous one.
 //   • the minCardMs guard prevents crushing a card.
 // Run: npx tsx scripts/verify-subtitle-snap-merge.ts
-import { snapCaptionsToSilences, mergeShortCaptions, type SilenceInterval } from "@/lib/tts-timing";
+import { snapCaptionsToSilences, mergeShortCaptions, splitCardsAtSilences, type SilenceInterval, type TimedWord, type ScriptCard } from "@/lib/tts-timing";
 
 let fail = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -70,6 +70,33 @@ const caps = (...xs: [string, number, number][]) => xs.map(([text, startMs, endM
   const c = caps(["only", 0, 1000]);
   snapCaptionsToSilences(c, [{ startMs: 100, endMs: 200 }], { target: "onset" });
   check("snap: single caption untouched", c.length === 1 && c[0].endMs === 1000);
+}
+// I) splitCardsAtSilences: a card straddling a pause is split at the word ending near it
+{
+  // one card spanning chars 0..20; words: wordA ends@char10 (endMs 2000), wordB ends@char20 (endMs 4000)
+  const words: TimedWord[] = [
+    { word: "A", startChar: 0, endChar: 10, startMs: 0, endMs: 2000 },
+    { word: "B", startChar: 10, endChar: 20, startMs: 2100, endMs: 4000 },
+  ];
+  const cards: ScriptCard[] = [{ startChar: 0, endChar: 20, tag: "hook" }];
+  const sil: SilenceInterval[] = [{ startMs: 2000, endMs: 2100 }]; // pause right after wordA
+  const out = splitCardsAtSilences(cards, words, sil);
+  check("split: card straddling a pause is split at the word boundary", out.length === 2 && out[0].endChar === 10 && out[1].startChar === 10,
+    JSON.stringify(out));
+  check("split: first piece keeps tag, second has none", out[0].tag === "hook" && out[1].tag === undefined);
+}
+// J) splitCardsAtSilences: no straddled pause → cards unchanged
+{
+  const words: TimedWord[] = [{ word: "A", startChar: 0, endChar: 10, startMs: 0, endMs: 2000 }];
+  const cards: ScriptCard[] = [{ startChar: 0, endChar: 10 }];
+  const out = splitCardsAtSilences(cards, words, [{ startMs: 5000, endMs: 5200 }]); // pause far from any word end
+  check("split: no straddled pause leaves cards unchanged", out.length === 1 && out[0].endChar === 10);
+}
+// K) mergeShortCaptions pause-aware: a short caption that BEGINS at a pause is NOT merged back
+{
+  const c = caps(["A", 0, 2000], ["B", 2100, 2400]); // B is 300ms (<600) but starts at a pause
+  const out = mergeShortCaptions(c, 600, [{ startMs: 2000, endMs: 2100 }]);
+  check("merge: short caption at a real pause is NOT merged across it", out.length === 2 && out[1].text === "B");
 }
 
 console.log(fail === 0 ? "\nALL PASS" : `\n${fail} FAILED`);

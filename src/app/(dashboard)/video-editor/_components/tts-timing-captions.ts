@@ -6,6 +6,7 @@ import {
   buildWordsFromTiming,
   buildCaptionsFromCards,
   splitSentenceCards,
+  splitCardsAtSilences,
   snapCaptionsToSilences,
   mergeShortCaptions,
   snapCardsToWordBoundaries,
@@ -80,24 +81,37 @@ export function captionsFromTtsTiming(
     // source is allowed to split a Thai word across two cards.
     const rawCards = validCards(cardsOverride, fullText.length)
       ?? splitSentenceCards(fullText, Math.max(10, maxCardChars));
-    const cards = snapCardsToWordBoundaries(rawCards, fullText);
-    let caps = buildCaptionsFromCards(cards, timing, fullText);
-    if (words.length === 0 || caps.length === 0) return null;
+    let cards = snapCardsToWordBoundaries(rawCards, fullText);
 
-    // Gemini's intra-segment times are char-proportional — snapping card
-    // boundaries into real pauses (at the speech ONSET) removes most of the
-    // residual error and the "next card appears before its speech" flicker;
-    // merging too-short cards kills the leftover "ขึ้นแว้บ–หายก่อนพูดจบ" on fast
-    // runs. ElevenLabs char timing is already exact; never snap/merge it.
+    // Gemini's intra-segment times are char-proportional, so card edges must be
+    // anchored to the REAL pauses (ffmpeg silencedetect). Two steps before timing:
+    //   • drop the LEADING/TRAILING silence (quiet before the first / after the
+    //     last word) — otherwise the opening card snaps onto the pre-speech gap
+    //     and gets crushed to a flash.
+    //   • split any card that STRADDLES a real pause at that pause, so every
+    //     pause becomes a card edge (a card can't drift across a gap it spans).
+    // ElevenLabs char timing already sits on the real pauses → leave it alone.
+    let intervals: SilenceInterval[] = [];
     if (timing.provider === "gemini") {
-      const intervals: SilenceInterval[] =
+      const segTotal = timing.segments.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0);
+      const raw: SilenceInterval[] =
         Array.isArray(timing.silenceIntervals) && timing.silenceIntervals.length > 0
           ? timing.silenceIntervals.filter((s) => Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs))
           : Array.isArray(timing.silences)
             ? timing.silences.filter((s) => Number.isFinite(s)).map((m) => ({ startMs: m, endMs: m }))
             : [];
-      if (intervals.length > 0) snapCaptionsToSilences(caps, intervals, { target: SNAP_TARGET });
-      caps = mergeShortCaptions(caps, MIN_CARD_MS);
+      intervals = raw.filter((s) => s.startMs > 150 && s.endMs < segTotal - 150);
+      cards = splitCardsAtSilences(cards, words, intervals);
+    }
+
+    let caps = buildCaptionsFromCards(cards, timing, fullText);
+    if (words.length === 0 || caps.length === 0) return null;
+
+    // Snap card boundaries to the speech ONSET of each real pause, then merge any
+    // card too short to read — pause-aware so split runs aren't re-joined.
+    if (timing.provider === "gemini" && intervals.length > 0) {
+      snapCaptionsToSilences(caps, intervals, { target: SNAP_TARGET });
+      caps = mergeShortCaptions(caps, MIN_CARD_MS, intervals);
     }
 
     const last = timing.segments[timing.segments.length - 1];
