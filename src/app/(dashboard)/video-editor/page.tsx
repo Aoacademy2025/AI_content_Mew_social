@@ -507,6 +507,14 @@ export default function VideoEditorPage() {
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
     }
 
+    // Tier-3 resume: ?resume=<videoId> from the gallery "ทำต่อ" button → reopen
+    // that clip in the editor and clear the param so a refresh doesn't re-trigger.
+    const resumeId = new URL(window.location.href).searchParams.get("resume");
+    if (resumeId) {
+      try { const u = new URL(window.location.href); u.searchParams.delete("resume"); window.history.replaceState({}, "", u.toString()); } catch {}
+      void resumeFromVideoId(resumeId);
+    }
+
     // Stop all polling and cancel active render job when tab closes/refreshes
     const onUnload = () => {
       autosaveRef.current();  // final best-effort autosave before the tab goes away
@@ -843,6 +851,60 @@ export default function VideoEditorPage() {
     setLastSaved(new Date(d.updatedAt));
     setShowDraftList(false);
     toast.success(`โหลด "${d.name}" แล้ว`);
+  }
+
+  // Tier-3 resume: open a gallery clip back in the editor to continue (e.g. Burn).
+  // Prefer the locally-autosaved draft (full fidelity); if none (another device,
+  // or a clip made before autosave), rebuild a draft from the saved Video record
+  // so the base render + captions still come back and Burn is available.
+  async function resumeFromVideoId(videoId: string) {
+    const localDraft = loadDrafts().find((d) => d.galleryVideoId === videoId);
+    if (localDraft) { loadDraftInto(localDraft); return; }
+    try {
+      const res = await fetch(`/api/videos/${videoId}`);
+      if (!res.ok) { toast.error("เปิดงานเดิมไม่สำเร็จ"); return; }
+      const v = await res.json();
+      const cfg = v.renderConfig
+        ? (typeof v.renderConfig === "string" ? JSON.parse(v.renderConfig) : v.renderConfig)
+        : null;
+      const fps = cfg?.fps || 30;
+      const caps: Caption[] = Array.isArray(cfg?.keywordPopups)
+        ? cfg.keywordPopups
+            .map((p: { text?: string; start: number; end: number; isHighlight?: boolean }) => ({
+              text: (p.text ?? "").trim(),
+              startMs: Math.round((p.start / fps) * 1000),
+              endMs: Math.round((p.end / fps) * 1000),
+              tag: (p.isHighlight ? "hook" : "body") as Caption["tag"],
+            }))
+            .filter((c: Caption) => c.text.length > 0)
+        : [];
+      const baseUrl: string = v.videoUrl || v.avatarVideoUrl || "";
+      if (!baseUrl && caps.length === 0) { toast.error("งานนี้ยังไม่มีวิดีโอ/ซับให้ทำต่อ"); return; }
+      const draft: EditorDraft = {
+        id: newDraftId(),
+        name: v.content?.headline || (v.script ? `${String(v.script).slice(0, 40)}…` : "งานที่ทำต่อ"),
+        updatedAt: Date.now(),
+        script: v.script || "",
+        style: {
+          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
+          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
+        },
+        renderedUrl: baseUrl,
+        renderedVideoNoSubUrl: baseUrl || undefined,
+        compositeUrl: v.avatarVideoUrl || undefined,
+        galleryVideoId: v.id,
+        ttsProvider, voiceId, geminiVoiceName,
+        captions: caps,
+        voiceUrl: v.audioUrl || undefined,
+        audioDurationMs: cfg?.durationInFrames ? Math.round((cfg.durationInFrames / fps) * 1000) : undefined,
+        config: cfg,
+      };
+      loadDraftInto(draft);
+      toast.success("โหลดงานเดิมมาทำต่อแล้ว — กด Burn เพื่อฝังซับ");
+    } catch {
+      toast.error("เปิดงานเดิมไม่สำเร็จ");
+    }
   }
 
   // silent=true → autosave (no toast, no error). Returns false when nothing was saved.
