@@ -1614,7 +1614,14 @@ export default function VideoEditorPage() {
     let svForConfig = sv;
     let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
     const capN = configCaptions.length;
-    if (capN > 0 && sv.length > 0) {
+    // กำหนดจำนวนคลิปเอง (targetClipCount > 0): ห้าม force per-subtitle —
+    // ส่งคลิปตามจำนวนที่ตั้งไป generate-config ตรงๆ ให้มันทำ even-split แบ่ง
+    // เวลาเท่าๆ กัน (ไม่งั้น 2 คลิปถูก cycle เป็น 64 ช่วง = ดูเหมือนคลิปเดียววน)
+    if (targetClipCount > 0) {
+      console.log(`[runConfig] manual clip count=${targetClipCount}: even-split ${sv.length} clips (skip per-subtitle)`);
+      // sceneClipCounts ว่าง → generate-config ใช้ n (=stockVideos.length) เป็น clipCountHint → even-split
+      sceneClipCountsForConfig = [];
+    } else if (capN > 0 && sv.length > 0) {
       if (sv.length >= capN) {
         svForConfig = sv.slice(0, capN);
         console.log(`[runConfig] per-subtitle: trimmed ${sv.length} → ${capN} clips`);
