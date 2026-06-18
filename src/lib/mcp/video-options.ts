@@ -18,8 +18,23 @@ export async function getVideoOptions(
   // Fetch the (slow, external) sources concurrently so the wizard isn't blocked ~30s+ serially.
   const [music, avatars, elevenlabs] = await Promise.all([
     safe(async () => {
-      const r = await caller.get<{ tracks: { id: string; title: string; filename: string }[] }>("/api/music");
-      return (r.tracks ?? []).map((t) => ({ id: t.id, title: t.title, bgmFile: `/music/${t.filename}` }));
+      const r = await caller.get<{
+        tracks: { id: string; title: string; filename: string }[];
+        userTracks?: { id: string; title: string; filename: string }[];
+      }>("/api/music");
+      const systemTracks = (r.tracks ?? []).map((t) => ({
+        id: t.id,
+        title: t.title,
+        bgmFile: `/music/${t.filename}`,
+        source: "system" as const,
+      }));
+      const userTracks = (r.userTracks ?? []).map((t) => ({
+        id: t.id,
+        title: t.title,
+        bgmFile: `/api/music/${t.filename}`,
+        source: "user" as const,
+      }));
+      return [...systemTracks, ...userTracks];
     }),
     user.heygenKey
       ? safe(async () => {

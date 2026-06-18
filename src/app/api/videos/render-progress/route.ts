@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { getRenderJob } from "@/lib/render/job-store";
 import path from "path";
 import fs from "fs";
 export const runtime = "nodejs";
@@ -10,6 +11,29 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const jobId = searchParams.get("jobId");
+
+  // PR-7: durable queue path — read the RenderJob row instead of the .tmp file.
+  if (process.env.RENDER_VIA_QUEUE === "1") {
+    if (!jobId) {
+      return NextResponse.json({ status: "error", error: "jobId required" });
+    }
+    const job = await getRenderJob(jobId);
+    if (!job) return NextResponse.json({ status: "error", error: "job not found" });
+    // Ownership check: prevent one user from polling another user's job.
+    if (job.userId !== authUser.id) return NextResponse.json({ status: "error", error: "job not found" });
+    const status =
+      job.status === "DONE"
+        ? "done"
+        : job.status === "FAILED" || job.status === "CANCELLED"
+        ? "error"
+        : "running";
+    return NextResponse.json({
+      status,
+      progress: job.progress,
+      videoUrl: job.videoUrl ?? undefined,
+      error: job.error ?? undefined,
+    });
+  }
 
   const renderTmpDir = process.env.RENDER_TMP_ROOT
     ? path.resolve(process.env.RENDER_TMP_ROOT)

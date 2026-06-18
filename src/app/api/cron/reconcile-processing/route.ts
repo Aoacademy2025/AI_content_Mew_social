@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyProcessingReconcile, getProcessingReconcilePlan } from "@/lib/video-reconcile";
+import { sweepDeadRenderJobs } from "@/lib/render/job-store";
 import { apiError } from "@/lib/api-error";
 
 export const runtime = "nodejs";
@@ -37,12 +38,24 @@ export async function GET(req: Request) {
       `appliedFailed=${applied?.failed ?? 0}`,
     );
 
+    // RenderJob sweeper backstop: flip RUNNING jobs with a stale heartbeat (worker dead)
+    // back to QUEUED/FAILED. Fail-open — a sweep error must never break the reconcile response.
+    let sweptRenderJobs = 0;
+    try {
+      sweptRenderJobs = await sweepDeadRenderJobs(90_000);
+      if (sweptRenderJobs > 0)
+        console.log(`[reconcile-processing] swept ${sweptRenderJobs} dead RenderJob(s)`);
+    } catch (sweepErr) {
+      console.error("[reconcile-processing] sweepDeadRenderJobs error (non-fatal):", sweepErr);
+    }
+
     return NextResponse.json({
       ok: true,
       dryRun,
       options: { ...plan.options, failMissingOutput },
       summary: plan.summary,
       applied,
+      sweptRenderJobs,
     });
   } catch (error) {
     return apiError({ route: "GET /api/cron/reconcile-processing", error });

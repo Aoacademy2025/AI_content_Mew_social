@@ -9,7 +9,8 @@
     "lint": "eslint",
     "db:migrate": "prisma migrate dev",
     "db:seed": "npx tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "verify:render-queue": "tsx scripts/verify-render-queue.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

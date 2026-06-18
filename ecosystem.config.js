@@ -27,6 +27,15 @@ module.exports = {
         RENDER_CONCURRENCY: "4",
         RENDER_OFFTHREAD_CACHE_MB: "128",
         RENDER_JPEG_QUALITY: "70",
+        // PR-7 durable render queue: when "1", the thin render route enqueues a
+        // RenderJob (returns jobId) instead of rendering in-process; the
+        // render-worker app below drains it. ecosystem env SHADOWS .env.
+        // DEFAULT "0" (legacy in-process render) — enable DELIBERATELY only
+        // TOGETHER with PR-8 containment (shrink this NODE_OPTIONS heap 12G→3G +
+        // oom_score_adj), else the queue goes live while the web heap is still
+        // 12G alongside the 5G worker = OOM on the 15GB box. Flip to "1" + restart
+        // with --update-env when ready. See docs/.../render-queue-phase2.md Task 7.
+        RENDER_VIA_QUEUE: "0",
       },
       env_production: {
         NODE_ENV: "production",
@@ -34,6 +43,10 @@ module.exports = {
         // Must repeat here — PM2 with `--env production` merges env_production
         // OVER env, so NODE_OPTIONS would be lost if only set in env.
         NODE_OPTIONS: "--max-old-space-size=12288",
+        // Must repeat RENDER_VIA_QUEUE here too — env_production shadows env entirely,
+        // so the flag would be lost if someone starts with `pm2 ... --env production`.
+        // DEFAULT "0" (see env block above) — enable deliberately with PR-8 heap shrink.
+        RENDER_VIA_QUEUE: "0",
       },
     },
     {
@@ -136,6 +149,35 @@ module.exports = {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+      },
+    },
+    {
+      // PR-7 durable render queue: long-lived worker that drains RenderJob rows
+      // (QUEUED→DONE/FAILED) via the shared runRender core. renderMedia runs IN this
+      // process (its own headless Chromium), so it carries a worker heap separate from
+      // the web app and tolerates a slow graceful drain on deploy (kill_timeout 30s,
+      // matching the watchdog cancel + requeueForShutdown path in the script).
+      name: "render-worker",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/render-worker.ts",
+      autorestart: true,
+      watch: false,
+      kill_timeout: 30000, // allow graceful drain (cancel render + requeue) before SIGKILL
+      max_memory_restart: "5G", // worker heap; web heap shrinks once renders move off ai-content (PR-8)
+      env: {
+        NODE_ENV: "production",
+        // Worker heap for in-process renderMedia (long videos accumulate frame buffers).
+        NODE_OPTIONS: "--max-old-space-size=4096",
+        // The worker reads the queue directly — flag is informational here (it does not
+        // gate the worker) but keeps the render path consistent across processes.
+        RENDER_VIA_QUEUE: "1",
+        // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
+        // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
+        DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        // Render tuning for the worker process (smaller per-job cache / quality floor).
+        RENDER_OFFTHREAD_CACHE_MB: "128",
+        RENDER_JPEG_QUALITY: "60",
       },
     },
   ],

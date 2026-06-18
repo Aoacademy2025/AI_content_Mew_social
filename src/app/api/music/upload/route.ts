@@ -95,6 +95,12 @@ export async function POST(req: Request) {
   if (!isAllowedAudio(file)) {
     return jsonError(400, "unsupported_type", "ไฟล์ต้องเป็น mp3, wav, ogg, aac หรือ m4a");
   }
+  // Security: reject filenames that contain path traversal sequences or path separators.
+  // The saved filename is always a server-generated UUID, but we still gate on the
+  // original name to block any future code paths that might use it directly.
+  if (/[/\\]|\.\./.test(file.name)) {
+    return jsonError(400, "invalid_filename", "ชื่อไฟล์ไม่ถูกต้อง");
+  }
   if (file.size <= 0) return jsonError(400, "empty_file", "ไฟล์เพลงว่างหรืออ่านไม่ได้");
   if (file.size > MAX_FILE_BYTES) return jsonError(413, "file_too_large", "ไฟล์เพลงใหญ่เกิน 50MB");
 

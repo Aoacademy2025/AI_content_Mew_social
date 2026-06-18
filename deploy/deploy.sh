@@ -130,6 +130,14 @@ if pm2 describe "$WORKER_NAME" > /dev/null 2>&1; then
 else
   pm2 start ecosystem.config.js --only "$WORKER_NAME"
 fi
+
+# PR-7 durable render queue: the render-worker runs the render core (runRender) in
+# its OWN process, so a deploy must restart it in lockstep with ai-content (else it
+# stays on stale render code → version skew). --update-env picks up ecosystem env
+# changes (RENDER_VIA_QUEUE, heap); kill_timeout (30s) lets the in-flight render drain
+# gracefully (cancel + requeue with no attempt consumed). Falls back to start if absent.
+pm2 restart render-worker --update-env || pm2 start ecosystem.config.js --only render-worker --update-env
+
 pm2 save
 pm2 startup
 
