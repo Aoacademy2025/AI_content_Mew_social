@@ -39,6 +39,10 @@ async function main() {
 
   // 2c. a BURN job (markReserved omitted/false) holds NO reservation — it reuses the
   // video's existing charge.
+  // NOTE: the complementary route-level contract — "BURN must skip reserveClipUsage when
+  // RENDER_VIA_QUEUE=1" — is enforced in src/app/api/videos/render/route.ts (the gate
+  // around reserveClipUsage at ~line 314). It cannot be exercised here because this
+  // store-level verify cannot invoke the HTTP handler's reserve-then-return flow.
   const burn = await store.enqueueRenderJob({ userId: "u1", type: "BURN", payload: { shortVideoConfig: {}, subtitleOverlayConfig: {} } });
   const burnJob = await store.getRenderJob(burn.id);
   ok(burnJob?.reservedQuota === false, "BURN job (no markReserved) holds no reservation");

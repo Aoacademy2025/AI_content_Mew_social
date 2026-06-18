@@ -19,6 +19,8 @@ export async function GET(req: Request) {
     }
     const job = await getRenderJob(jobId);
     if (!job) return NextResponse.json({ status: "error", error: "job not found" });
+    // Ownership check: prevent one user from polling another user's job.
+    if (job.userId !== authUser.id) return NextResponse.json({ status: "error", error: "job not found" });
     const status =
       job.status === "DONE"
         ? "done"

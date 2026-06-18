@@ -311,12 +311,22 @@ export async function POST(req: Request) {
       console.log(`[Render] superseding queued/pre-render job for scope ${renderOwnerKey} without waiting`);
     }
 
-    const quota = await reserveClipUsage(userId);
-    if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าคลิปสุดท้ายไประหว่าง precheck → reserve
-    if (!quota.allowed) return quotaExceededResponse(quota.message);
-    quotaReserved = true;
-    reservedUserId = userId;
+    // Queue-path BURN (isSubtitleOverlay under RENDER_VIA_QUEUE): the base RENDER
+    // already charged this video's clip slot at this same line. Do NOT reserve again —
+    // a second reserve would permanently leak quota because the queue BURN returns at
+    // ~line 692 before any legacy-path refund logic runs, and markReserved=false means
+    // the worker never refunds it either. The gate is purely additive: all other
+    // combinations (flag off, or flag on but base RENDER) still hit reserveClipUsage.
+    if (process.env.RENDER_VIA_QUEUE === "1" && isSubtitleOverlay) {
+      // BURN under the queue: base RENDER already charged this video's clip; skip reserve.
+    } else {
+      const quota = await reserveClipUsage(userId);
+      if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าคลิปสุดท้ายไประหว่าง precheck → reserve
+      if (!quota.allowed) return quotaExceededResponse(quota.message);
+      quotaReserved = true;
+      reservedUserId = userId;
+    }
 
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const writeProgress = (data: Record<string, unknown>) => {
