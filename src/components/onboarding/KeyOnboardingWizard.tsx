@@ -28,10 +28,11 @@ export function KeyOnboardingWizard({
     setTesting(id);
     try {
       // save first so the server can read the key, then test (test-key reads stored key)
-      await fetch("/api/user/api-keys", {
+      const putRes = await fetch("/api/user/api-keys", {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [KEY_TIERS.find((k) => k.id === id)!.apiKeysField]: values[id] ?? "" }),
       });
+      if (!putRes.ok) { setResults((p) => ({ ...p, [id]: { ok: false, message: "บันทึก key ไม่สำเร็จ ลองใหม่อีกครั้ง" } })); return; }
       const res = await fetch("/api/user/test-key", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ keyType: testKeyType }),
@@ -54,7 +55,8 @@ export function KeyOnboardingWizard({
         if (v != null && v.length > 0) payload[def.apiKeysField] = v;
       }
       if (Object.keys(payload).length > 0) {
-        await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const r = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (!r.ok) throw new Error("save failed");
       }
       toast.success("บันทึก API key แล้ว");
       onComplete();
