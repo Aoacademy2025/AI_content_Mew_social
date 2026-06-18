@@ -4,7 +4,6 @@ import { spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
-  LOW_RES_PREVIEW_WIDTH,
   existingLowResPreviewUrlForVideoUrl,
   lowResPreviewInfoForVideoUrl,
   type LowResPreviewInfo,
@@ -29,6 +28,13 @@ const MAX_QUEUED_PREVIEWS = 3;
 const activePreviewFiles = new Set<string>();
 const queuedPreviews = new Map<string, PreviewJob>();
 let previewWorkerRunning = false;
+
+function previewEncodeProfile(width: number) {
+  if (width >= 720) {
+    return { crf: "25", maxrate: "2500k", bufsize: "5000k", audioBitrate: "128k" };
+  }
+  return { crf: "30", maxrate: "1200k", bufsize: "2400k", audioBitrate: "96k" };
+}
 
 function mb(filePath: string) {
   try {
@@ -56,7 +62,7 @@ function emitPreviewTelemetry(
     properties: {
       videoId: job.videoId,
       reason: job.reason,
-      previewWidth: LOW_RES_PREVIEW_WIDTH,
+      previewWidth: job.info.previewWidth,
       sourceFilename: job.info.sourceFilename,
       previewFilename: job.info.previewFilename,
       sourceMb: mb(job.info.sourceFilePath),
@@ -70,6 +76,7 @@ function emitPreviewTelemetry(
 function runFfmpegPreview(job: PreviewJob): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const tmpPath = `${job.info.previewFilePath}.tmp-${process.pid}-${Date.now()}.mp4`;
+  const profile = previewEncodeProfile(job.info.previewWidth);
 
   fs.mkdirSync(path.dirname(job.info.previewFilePath), { recursive: true });
   try {
@@ -82,15 +89,15 @@ function runFfmpegPreview(job: PreviewJob): Promise<void> {
       "-i", job.info.sourceFilePath,
       "-map", "0:v:0",
       "-map", "0:a?",
-      "-vf", `scale=${LOW_RES_PREVIEW_WIDTH}:-2`,
+      "-vf", `scale=${job.info.previewWidth}:-2`,
       "-c:v", "libx264",
       "-preset", "veryfast",
-      "-crf", "30",
-      "-maxrate", "1200k",
-      "-bufsize", "2400k",
+      "-crf", profile.crf,
+      "-maxrate", profile.maxrate,
+      "-bufsize", profile.bufsize,
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      "-b:a", "96k",
+      "-b:a", profile.audioBitrate,
       "-ac", "2",
       "-movflags", "+faststart",
       "-threads", "1",

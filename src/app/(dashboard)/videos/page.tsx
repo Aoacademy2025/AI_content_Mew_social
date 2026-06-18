@@ -20,6 +20,7 @@ interface VideoItem {
   sceneCount: number;
   videoUrl: string | null;
   previewVideoUrl?: string | null;
+  previewFallbackVideoUrl?: string | null;
   previewStatus?: "ready" | "queued" | "unavailable";
   avatarVideoUrl: string | null;
   audioUrl: string | null;
@@ -28,6 +29,31 @@ interface VideoItem {
   createdAt: string;
   expiresAt: string | null;
   content?: { headline: string | null } | null;
+}
+
+type NavigatorConnection = {
+  saveData?: boolean;
+  effectiveType?: string;
+};
+
+function connectionPrefersFallbackPreview() {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & {
+    connection?: NavigatorConnection;
+    mozConnection?: NavigatorConnection;
+    webkitConnection?: NavigatorConnection;
+  };
+  const connection = nav.connection ?? nav.mozConnection ?? nav.webkitConnection;
+  if (!connection) return false;
+  if (connection.saveData) return true;
+  return connection.effectiveType === "slow-2g" || connection.effectiveType === "2g";
+}
+
+function chooseGalleryPreviewUrl(video: VideoItem) {
+  if (connectionPrefersFallbackPreview() && video.previewFallbackVideoUrl) {
+    return video.previewFallbackVideoUrl;
+  }
+  return video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
 }
 
 export default function VideosGalleryPage() {
@@ -174,8 +200,8 @@ export default function VideosGalleryPage() {
                 video={video}
                 daysLeft={daysLeft(video.expiresAt)}
                 onPreview={() => {
-                  // #87: prefer the low-res preview URL; #86: track which video for playback telemetry
-                  const url = video.previewVideoUrl || video.videoUrl || video.avatarVideoUrl;
+                  // Prefer the sharp optimized gallery preview; fall back to 540p only on data-saver/2G.
+                  const url = chooseGalleryPreviewUrl(video);
                   if (url) {
                     setPreviewVideoId(video.id);
                     setPreviewUrl(url);
@@ -281,7 +307,7 @@ function VideoCard({
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
   const isFailed = video.status === "FAILED";
   const title = video.content?.headline || (video.script ? video.script.slice(0, 40) + "..." : "Untitled");
-  const previewSrc = video.previewVideoUrl || video.videoUrl || video.avatarVideoUrl;
+  const previewSrc = video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
   const posterHue = posterHueFor(video.id);
 

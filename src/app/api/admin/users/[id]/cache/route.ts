@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import {
-  lowResPreviewFilenameForRender,
+  lowResPreviewFilenamesForRender,
   renderFilenameFromVideoUrl,
 } from "@/lib/low-res-preview-paths";
 import fs from "fs";
@@ -15,8 +15,7 @@ function protectRenderName(set: Set<string>, url: string | null) {
   if (!url) return;
   const filename = renderFilenameFromVideoUrl(url) ?? path.basename(url);
   set.add(filename);
-  const previewFilename = lowResPreviewFilenameForRender(filename);
-  if (previewFilename) set.add(previewFilename);
+  for (const previewFilename of lowResPreviewFilenamesForRender(filename)) set.add(previewFilename);
 }
 
 function scanUserFiles(userId: string) {
