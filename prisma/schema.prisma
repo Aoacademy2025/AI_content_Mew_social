@@ -429,3 +429,30 @@ model GeneratedImage {
   contentTitle String?
   createdAt    DateTime @default(now())
 }
+
+model RenderJob {
+  id              String    @id @default(cuid())
+  userId          String
+  videoId         String?   // gallery Video row, set when known
+  parentJobId     String?   // VideoJob.id when created by the MCP orchestrator; null for web jobs
+  type            String    // RENDER | BURN
+  status          String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(2)
+  payload         String    // JSON: full render config — no in-memory dependence
+  progress        Float     @default(0)
+  phase           String?   // bundling | rendering | encoding
+  heartbeatAt     DateTime?
+  cancelRequested Boolean   @default(false)
+  reservedQuota   Boolean   @default(false) // true iff THIS job reserved a clip for its video
+  error           String?   // JSON, PR-5 error taxonomy
+  idempotencyKey  String?   @unique
+  videoUrl        String?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  @@index([status, type])
+  @@index([userId, createdAt])
+  @@index([parentJobId])
+}
