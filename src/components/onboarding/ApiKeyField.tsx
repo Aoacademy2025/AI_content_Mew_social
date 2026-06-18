@@ -22,7 +22,7 @@ export function ApiKeyField({
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-1.5">
-          <label className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{def.label}</label>
+          <label htmlFor={def.id} className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{def.label}</label>
           <a href={def.getUrl} target="_blank" rel="noopener noreferrer"
             className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
             <ExternalLink className="h-3 w-3" />
@@ -46,6 +46,7 @@ export function ApiKeyField({
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Input
+            id={def.id}
             type={show ? "text" : "password"}
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -54,11 +55,11 @@ export function ApiKeyField({
             style={{ background: "var(--ui-input-bg)", color: "var(--ui-text-secondary)" }}
           />
           <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-            <button type="button" onClick={() => setShow((v) => !v)} className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
+            <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? "ซ่อน key" : "แสดง key"} className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
               {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </button>
             {isSaved && onDelete && (
-              <button type="button" onClick={onDelete} className="transition-colors hover:text-red-400" style={{ color: "var(--ui-text-muted)" }}>
+              <button type="button" onClick={onDelete} aria-label="ลบ key" className="transition-colors hover:text-red-400" style={{ color: "var(--ui-text-muted)" }}>
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             )}
