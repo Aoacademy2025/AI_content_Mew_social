@@ -50,6 +50,22 @@ export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] 
   { value: "qwen2/text-to-image", label: "Qwen2" },
 ];
 
+// ผู้ให้บริการภาพ fallback ของ Auto Mix (เมื่อหา video clip ไม่เจอ) — เลือกได้หลายตัว
+// ลำดับการลองจริงยังเป็นไปตาม keyword-aware routing ฝั่ง server (getImageProviderOrder)
+// รายการนี้แค่ "เปิด/ปิด" ตัวไหนให้อยู่ในการพิจารณา — ไม่ใช่ลำดับ
+export type AutoMixImageProvider = "unsplash" | "pexels-photo" | "pixabay-photo" | "wikimedia" | "flickr" | "nasa" | "met" | "kie-ai";
+export const AUTO_MIX_PROVIDER_OPTIONS: { value: AutoMixImageProvider; label: string; needsKey?: "unsplash" | "flickr" | "kie" }[] = [
+  { value: "unsplash", label: "Unsplash", needsKey: "unsplash" },
+  { value: "pexels-photo", label: "Pexels Photo" },
+  { value: "pixabay-photo", label: "Pixabay Photo" },
+  { value: "wikimedia", label: "Wikimedia Commons" },
+  { value: "flickr", label: "Flickr CC", needsKey: "flickr" },
+  { value: "nasa", label: "NASA Image" },
+  { value: "met", label: "The Met Museum" },
+  { value: "kie-ai", label: "kie.ai (AI generate)", needsKey: "kie" },
+];
+export const DEFAULT_AUTO_MIX_PROVIDERS: AutoMixImageProvider[] = AUTO_MIX_PROVIDER_OPTIONS.map(o => o.value);
+
 export interface StockVideo {
   keyword:   string;
   localUrl?: string;
@@ -155,6 +171,8 @@ export interface EditorDraft {
   stockSource?: StockSource;
   // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image")
   kieModel?: KieImageModel;
+  // ผู้ให้บริการภาพ fallback ที่เปิดใช้สำหรับ Auto Mix (undefined = ทุกตัว)
+  autoMixProviders?: AutoMixImageProvider[];
   // จำนวนคลิป B-roll (0/undefined = Auto)
   targetClipCount?: number;
 

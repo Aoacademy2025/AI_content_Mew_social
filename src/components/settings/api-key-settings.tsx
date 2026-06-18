@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { fetchMe } from "@/lib/use-me";
 
 interface ApiKeys {
   geminiKey?: string;
@@ -46,7 +47,7 @@ export function ApiKeySettings() {
   useEffect(() => {
     fetchApiKeys();
     // ช่อง adminOnly โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
-    fetch("/api/user/me").then(r => r.json()).then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
+    fetchMe().then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
   }, []);
 
   // Sync ข้ามจุดที่ component นี้ถูกใช้ (popup ใน editor / หน้า Settings) —

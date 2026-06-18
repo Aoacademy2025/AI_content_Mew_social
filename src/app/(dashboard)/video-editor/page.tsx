@@ -17,15 +17,16 @@ import {
   ZoomIn, User, X, Save, Pencil, KeyRound, ImagePlus,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { fetchMe } from "@/lib/use-me";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
-  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel,
+  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel, AutoMixImageProvider,
 } from "./_components/types";
-import { DEFAULT_STEPS } from "./_components/types";
+import { DEFAULT_STEPS, DEFAULT_AUTO_MIX_PROVIDERS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
 import { StepIcon } from "./_components/StepIcon";
 import { ApiCallError } from "./_components/ApiCallError";
@@ -239,11 +240,12 @@ export default function VideoEditorPage() {
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
   const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(DEFAULT_AUTO_MIX_PROVIDERS);
   // AI Image-to-Video (kie.ai) และ Auto Mix เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
   const [kieImageEnabled, setKieImageEnabled] = useState(false);
   const [autoMixEnabled, setAutoMixEnabled] = useState(false);
   useEffect(() => {
-    fetch("/api/user/me").then(r => r.json()).then(d => {
+    fetchMe().then(d => {
       const isAdmin = d?.role === "ADMIN";
       setKieImageEnabled(isAdmin);
       setAutoMixEnabled(isAdmin);
@@ -371,8 +373,7 @@ export default function VideoEditorPage() {
   const [userPlan, setUserPlan] = useState<string>("PRO");
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/user/me")
-      .then(r => (r.ok ? r.json() : null))
+    fetchMe()
       .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
       .catch(() => { /* keep PRO default — server still backstops at render */ });
     return () => { cancelled = true; };
@@ -790,6 +791,7 @@ export default function VideoEditorPage() {
     // Stock source
     if (d.stockSource) setStockSource(d.stockSource);
     if (d.kieModel) setKieModel(d.kieModel);
+    if (d.autoMixProviders) setAutoMixProviders(d.autoMixProviders);
     if (d.targetClipCount !== undefined) setTargetClipCount(d.targetClipCount);
 
     // BGM
@@ -895,6 +897,7 @@ export default function VideoEditorPage() {
 
       stockSource,
       kieModel,
+      autoMixProviders,
       targetClipCount,
       bgmEnabled, bgmFile, bgmVolume,
 
@@ -1210,6 +1213,7 @@ export default function VideoEditorPage() {
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
         ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
+        ...(stockSource === "auto-mix" ? { autoMixProviders } : {}),
         fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
         // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
@@ -2354,7 +2358,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -3371,17 +3375,14 @@ export default function VideoEditorPage() {
 
             {captions.length > 0 && scriptSegments
               .map((cap, i) => ({ cap, i }))
-              .filter(({ cap }) => !searchQuery || cap.text.toLowerCase().includes(searchQuery.toLowerCase()))
+              .filter(({ cap }) => !searchQuery || (cap.text ?? "").toLowerCase().includes(searchQuery.toLowerCase()))
               .map(({ cap, i }) => {
               const isActive = i === activeSegIdx || i === activeCaptionIdx;
               const isEditing = editingCapIdx === i;
               return (
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
-                  // Offscreen rows skip layout/paint; size hint ≈ row height so the
-                  // panel scrollbar stays stable. scrollIntoView still works.
-                  style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}
-                  className={cn("relative overflow-hidden rounded-xl border transition-all group",
+                  className={cn("relative shrink-0 overflow-hidden rounded-xl border transition-all group",
                     isActive ? "bg-gradient-to-b from-violet-500/15 to-violet-500/[0.04] border-violet-500/50 ring-1 ring-violet-400/30 shadow-[0_2px_12px_rgba(139,92,246,0.15)]" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
 
                   {/* แถบ progress วิ่งตามเวลาในซับตัวนี้ — เห็นชัดว่าเล่นถึงไหน */}
@@ -3427,7 +3428,7 @@ export default function VideoEditorPage() {
                       />
                     ) : (
                       <div
-                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors", isActive ? "text-slate-100 font-semibold" : "text-slate-400")}
+                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors", isActive ? "text-slate-100 font-semibold" : "text-slate-300")}
                         onDoubleClick={e => { e.stopPropagation(); setEditingCapIdx(i); }}
                         title="ดับเบิ้ลคลิกเพื่อแก้ข้อความ"
                       >
@@ -3919,6 +3920,7 @@ export default function VideoEditorPage() {
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
               kieModel={kieModel} setKieModel={setKieModel}
+              autoMixProviders={autoMixProviders} setAutoMixProviders={setAutoMixProviders}
               stockVideos={stockVideos}
               kieImageEnabled={kieImageEnabled} autoMixEnabled={autoMixEnabled}
               targetClipCount={targetClipCount} setTargetClipCount={setTargetClipCount}

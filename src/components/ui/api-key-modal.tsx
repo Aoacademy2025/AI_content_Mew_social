@@ -142,6 +142,11 @@ export function detectMissingKeyType(
     if (typeof mk === "string" && VALID_KEYS.has(mk as RequiredKeyType)) {
       return mk as RequiredKeyType;
     }
+    // retryable:true means the route already classified this as transient
+    // (rate limit/5xx/etc), not an auth problem — string-matching the
+    // provider name in a transient message (e.g. "Gemini ขัดข้องชั่วคราว")
+    // would otherwise wrongly pop the "missing key" modal on a key that's fine.
+    if (errorMessageOrData.retryable === true) return null;
     // Fall through to check error string inside the object
     const msg = String(errorMessageOrData.error ?? "").toLowerCase();
     return detectFromString(msg);

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { fetchMe } from "@/lib/use-me";
 
 type SubState = { plan?: string; cancelAtPeriodEnd?: boolean; cancelAt?: string | null };
 
@@ -13,7 +14,7 @@ export function ReactivateBanner() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch("/api/user/me").then(r => r.json()).then(setState).catch(() => {});
+    fetchMe().then(d => { if (d) setState(d as SubState); }).catch(() => {});
   }, []);
 
   if (!state?.cancelAtPeriodEnd) return null;

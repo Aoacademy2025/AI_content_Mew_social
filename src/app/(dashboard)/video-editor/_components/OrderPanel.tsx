@@ -5,8 +5,8 @@ import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2, Film
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import type { StepState, StockSource, KieImageModel, StockVideo } from "./types";
-import { KIE_IMAGE_MODEL_OPTIONS } from "./types";
+import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImageProvider } from "./types";
+import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 
 export interface OrderPanelProps {
@@ -39,14 +39,47 @@ export interface OrderPanelProps {
   kieImageEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม AI Image-to-Video (kie.ai)
   autoMixEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม Auto Mix (video + image fallback)
   kieModel?: KieImageModel; setKieModel?: (v: KieImageModel) => void;
+  autoMixProviders?: AutoMixImageProvider[]; setAutoMixProviders?: (v: AutoMixImageProvider[]) => void;
   stockVideos?: StockVideo[]; // ใช้แสดง preview ภาพที่ generate ระหว่าง/หลัง B-roll step (AI Image)
   targetClipCount: number; // 0 = Auto (1 คลิป/ซับ), >0 = จำนวนคลิปใน 1 วิดีโอ
   setTargetClipCount: (v: number) => void;
 }
 
+// Section header แบบพรีเมียม — accent bar ม่วงเรืองแสงด้านหน้า + ปุ่ม/ตัวเลือกเสริมด้านขวา
+function SectionLabel({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 mb-2.5">
+      <span aria-hidden className="h-3 w-[3px] rounded-full bg-gradient-to-b from-violet-400 to-violet-600 shadow-[0_0_8px_rgba(139,92,246,0.55)]" />
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{children}</span>
+      {right && <span className="ml-auto">{right}</span>}
+    </div>
+  );
+}
+
 export function OrderPanel(p: OrderPanelProps) {
   const posCanvasRef = React.useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = React.useState(false);
+  const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
+  const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!autoMixProvidersOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (autoMixProvidersRef.current && !autoMixProvidersRef.current.contains(e.target as Node)) {
+        setAutoMixProvidersOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [autoMixProvidersOpen]);
+
+  const selectedAutoMixProviders = p.autoMixProviders ?? AUTO_MIX_PROVIDER_OPTIONS.map(o => o.value);
+  function toggleAutoMixProvider(value: AutoMixImageProvider) {
+    const next = selectedAutoMixProviders.includes(value)
+      ? selectedAutoMixProviders.filter(v => v !== value)
+      : [...selectedAutoMixProviders, value];
+    p.setAutoMixProviders?.(next);
+  }
 
   // page.tsx เก็บ avatarOffsetX/Y เป็น px ช่วง -200..200 (preview map ด้วย /200, แกน y บวก = ลง)
   // nx/ny อยู่ในช่วง -1..1 → ×200 ให้เต็มช่วง และห้ามกลับเครื่องหมาย y — ไม่งั้นลากสวนทางกับ preview
@@ -73,7 +106,7 @@ export function OrderPanel(p: OrderPanelProps) {
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-none">
           {/* Stock Source */}
           <div>
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Stock Source</div>
+            <SectionLabel>Stock Source</SectionLabel>
             <div className="space-y-2">
               {/* Free */}
               <button onClick={() => p.setStockSource("both")}
@@ -201,6 +234,50 @@ export function OrderPanel(p: OrderPanelProps) {
                 </div>
               ) : null}
 
+              {/* เลือก provider ภาพ fallback ของ Auto Mix — multi-select checklist, เปิดเฉพาะตอนเลือก Auto Mix */}
+              {p.stockSource === "auto-mix" && p.autoMixEnabled && (
+                <div className="px-1 relative" ref={autoMixProvidersRef}>
+                  <label className="text-[9px] font-bold text-emerald-300/60 uppercase tracking-wider mb-1 block">
+                    Fallback Sources ({selectedAutoMixProviders.length}/{AUTO_MIX_PROVIDER_OPTIONS.length})
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setAutoMixProvidersOpen(v => !v)}
+                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-emerald-100 outline-none focus:ring-1 focus:ring-emerald-400/40 flex items-center justify-between"
+                    style={{ background: "hsl(160 40% 7%)", border: "1px solid rgba(16,185,129,0.25)" }}
+                  >
+                    <span className="truncate text-left">
+                      {selectedAutoMixProviders.length === AUTO_MIX_PROVIDER_OPTIONS.length
+                        ? "ทุกแหล่ง (ค่าเริ่มต้น)"
+                        : selectedAutoMixProviders.length === 0
+                        ? "ไม่เลือกเลย — ไม่มี fallback"
+                        : AUTO_MIX_PROVIDER_OPTIONS.filter(o => selectedAutoMixProviders.includes(o.value)).map(o => o.label).join(", ")}
+                    </span>
+                    <ChevronDown className={cn("w-3 h-3 shrink-0 ml-1 transition-transform", autoMixProvidersOpen && "rotate-180")} />
+                  </button>
+
+                  {autoMixProvidersOpen && (
+                    <div className="absolute z-20 mt-1 w-full rounded-lg p-1.5 shadow-lg"
+                      style={{ background: "hsl(160 40% 6%)", border: "1px solid rgba(16,185,129,0.3)" }}>
+                      {AUTO_MIX_PROVIDER_OPTIONS.map((opt) => {
+                        const checked = selectedAutoMixProviders.includes(opt.value);
+                        return (
+                          <label key={opt.value}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] text-slate-200 hover:bg-emerald-500/10 cursor-pointer">
+                            <input type="checkbox" checked={checked} onChange={() => toggleAutoMixProvider(opt.value)}
+                              className="w-3 h-3 rounded accent-emerald-500" />
+                            <span className="flex-1">{opt.label}</span>
+                            {opt.needsKey && (
+                              <span className="text-[8px] text-slate-500 uppercase tracking-wider">key</span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Preview ภาพที่ AI generate แล้ว — โชว์ระหว่าง/หลัง step B-roll (Ken Burns ใช้ภาพนี้ทำวิดีโอ) — รวม Auto Mix fallback */}
               {(p.stockSource === "kie-image" && p.kieImageEnabled || p.stockSource === "auto-mix" && p.autoMixEnabled) && !!p.stockVideos?.some(sv => sv.imageLocalUrl || sv.imageUrl) && (
                 <div className="px-1">
@@ -228,7 +305,7 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* B-roll clip count — กี่คลิปย่อยใน 1 วิดีโอ */}
           <div>
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">B-roll Clips</div>
+            <SectionLabel>B-roll Clips</SectionLabel>
             <div className="flex gap-1.5">
               <button onClick={() => p.setTargetClipCount(0)}
                 className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
@@ -269,12 +346,15 @@ export function OrderPanel(p: OrderPanelProps) {
           {/* TTS — ซ่อนเมื่อ Direct URL */}
           {p.avatarInputMode !== "direct" ? (
           <div>
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Voice</div>
+            <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
               {(["gemini","elevenlabs"] as const).map(pv => (
                 <button key={pv} onClick={() => p.setTtsProvider(pv)}
-                  className={cn("flex-1 py-2 rounded-lg border text-[11px] font-bold transition-all",
-                    p.ttsProvider === pv ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500")}>
+                  className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
+                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
+                  style={p.ttsProvider === pv
+                    ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
+                    : undefined}>
                   {pv === "gemini" ? "Gemini" : "ElevenLabs"}
                 </button>
               ))}
@@ -284,7 +364,7 @@ export function OrderPanel(p: OrderPanelProps) {
                 <div className="text-[10px] text-slate-600">Gemini Voice</div>
                 <div className="relative">
                   <select value={p.geminiVoiceName} onChange={e => p.setGeminiVoiceName(e.target.value)}
-                    className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-200 appearance-none cursor-pointer outline-none">
+                    className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-200 appearance-none cursor-pointer outline-none focus:border-violet-500/40 transition-colors">
                     {GEMINI_VOICES.map(v => (
                       <option key={v.id} value={v.id} style={{ background: "#1a1a2e" }}>
                         {v.label} — {v.gender === "Female" ? "หญิง" : "ชาย"}, {v.style}
@@ -305,7 +385,7 @@ export function OrderPanel(p: OrderPanelProps) {
               <div className="mt-2">
                 <div className="text-[10px] text-slate-600 mb-1">Voice ID</div>
                 <input value={p.voiceId} onChange={e => p.setVoiceId(e.target.value)} placeholder="ElevenLabs Voice ID"
-                  className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-2 py-1.5 text-[11px] text-slate-300 outline-none" />
+                  className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-300 placeholder:text-slate-700 outline-none focus:border-violet-500/40 transition-colors" />
               </div>
             )}
           </div>
@@ -318,19 +398,18 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* BGM */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Background Music</div>
+            <SectionLabel right={
               <button onClick={() => p.setBgmEnabled(!p.bgmEnabled)}
-                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.bgmEnabled ? "bg-violet-600" : "bg-[#2a2a36]")}>
+                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.bgmEnabled ? "bg-violet-600 shadow-[0_0_10px_rgba(139,92,246,0.5)]" : "bg-[#2a2a36]")}>
                 <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", p.bgmEnabled ? "left-5" : "left-0.5")} />
               </button>
-            </div>
+            }>Background Music</SectionLabel>
             {p.bgmEnabled && (
               <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-slate-600 w-14 shrink-0">Volume</span>
-                  <input type="range" min={0} max={1} step={0.01} value={p.bgmVolume} onChange={e => p.setBgmVolume(Number(e.target.value))} className="flex-1 accent-violet-400 h-1" />
-                  <span className="text-[10px] font-mono text-violet-400 w-8 text-right">{Math.round(p.bgmVolume * 100)}%</span>
+                <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[#15151b] border border-[#26262f]">
+                  <span className="text-[10px] font-semibold text-slate-500 w-12 shrink-0">Volume</span>
+                  <input type="range" min={0} max={1} step={0.01} value={p.bgmVolume} onChange={e => p.setBgmVolume(Number(e.target.value))} className="flex-1 accent-violet-500 h-1.5" />
+                  <span className="text-[10px] font-mono font-bold text-violet-300 w-9 text-right tabular-nums">{Math.round(p.bgmVolume * 100)}%</span>
                 </div>
                 {p.systemTracks.length > 0 && (
                   <div className="space-y-1">
@@ -383,13 +462,12 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* Avatar */}
           <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Avatar (HeyGen)</div>
+            <SectionLabel right={
               <button onClick={() => p.setUseAvatar(!p.useAvatar)}
-                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.useAvatar ? "bg-violet-600" : "bg-[#2a2a36]")}>
+                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.useAvatar ? "bg-violet-600 shadow-[0_0_10px_rgba(139,92,246,0.5)]" : "bg-[#2a2a36]")}>
                 <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", p.useAvatar ? "left-5" : "left-0.5")} />
               </button>
-            </div>
+            }>Avatar (HeyGen)</SectionLabel>
             {p.useAvatar && (
               <div className="space-y-3">
                 <div className="flex gap-1 rounded-lg p-0.5 bg-[#1a1a22] border border-[#2a2a36]">

@@ -739,7 +739,9 @@ async function kiePollResult(taskId: string, token: string): Promise<string> {
 }
 
 // โมเดล text-to-image ที่เลือกได้จาก dropdown — ขนาดภาพ fix ที่ 9:16 เสมอ
-export const KIE_IMAGE_MODELS = [
+// NOTE: ห้าม export จาก route.ts (Next.js อนุญาตเฉพาะ HTTP handlers/config) —
+// export ตัวอื่นทำให้ type-check ของ .next/types fail และ build/หน้าเว็บ error
+const KIE_IMAGE_MODELS = [
   "nano-banana-pro",
   "nano-banana-2",
   "gpt-image-2-text-to-image",
@@ -749,7 +751,7 @@ export const KIE_IMAGE_MODELS = [
   "grok-imagine/text-to-image",
   "qwen2/text-to-image",
 ] as const;
-export type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
+type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
 const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "nano-banana-pro";
 
 function isKieImageModel(value: unknown): value is KieImageModel {
@@ -1183,6 +1185,7 @@ export async function POST(req: Request) {
     overrideClipCount = 0,
     stockSource = "both",
     kieModel,
+    autoMixProviders,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     fullScript,
@@ -1197,6 +1200,7 @@ export async function POST(req: Request) {
     overrideClipCount?: number;
     stockSource?: string;
     kieModel?: string;
+    autoMixProviders?: string[];
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     fullScript?: string;
@@ -1204,6 +1208,8 @@ export async function POST(req: Request) {
     contentProfile?: string;
     relevanceSpec?: RelevanceSpec | null;
   } = body ?? {};
+  // Auto Mix: ผู้ใช้เลือกได้ว่าจะเปิด provider ภาพ fallback ตัวไหนบ้าง (undefined = ทุกตัว, ตาม default เดิม)
+  const allowedAutoMixProviders: Set<string> | null = Array.isArray(autoMixProviders) ? new Set(autoMixProviders) : null;
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
       fullScript,
@@ -1253,14 +1259,16 @@ export async function POST(req: Request) {
   // Auto Mix: fallback ภาพใช้ตัวไหนก็ได้ที่มี key — ไม่บังคับ ไม่ error ถ้าไม่มี (แค่ skip fallback)
   // Wikimedia/NASA/Met ไม่ต้องใช้ key — เปิดใช้ได้เสมอเมื่อ Auto Mix
   // Pexels/Pixabay photo ใช้ key เดียวกับ video search — ใช้ได้ทันทีถ้ามี key อยู่แล้ว
-  const canUseUnsplashFallback = useAutoMix && !!unsplashKey;
-  const canUsePexelsPhotoFallback = useAutoMix && !!pexelsKey;
-  const canUsePixabayPhotoFallback = useAutoMix && !!pixabayKey;
-  const canUseFlickrFallback = useAutoMix && !!flickrKey;
-  const canUseWikimediaFallback = useAutoMix;
-  const canUseNasaFallback = useAutoMix;
-  const canUseMetFallback = useAutoMix;
-  const canUseKieFallback = useAutoMix && !!kieKey;
+  // ผู้ใช้เลือก provider เองได้ผ่าน autoMixProviders (undefined = เปิดทุกตัวตาม default เดิม)
+  const isAutoMixProviderAllowed = (p: string) => !allowedAutoMixProviders || allowedAutoMixProviders.has(p);
+  const canUseUnsplashFallback = useAutoMix && !!unsplashKey && isAutoMixProviderAllowed("unsplash");
+  const canUsePexelsPhotoFallback = useAutoMix && !!pexelsKey && isAutoMixProviderAllowed("pexels-photo");
+  const canUsePixabayPhotoFallback = useAutoMix && !!pixabayKey && isAutoMixProviderAllowed("pixabay-photo");
+  const canUseFlickrFallback = useAutoMix && !!flickrKey && isAutoMixProviderAllowed("flickr");
+  const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
+  const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
+  const canUseMetFallback = useAutoMix && isAutoMixProviderAllowed("met");
+  const canUseKieFallback = useAutoMix && !!kieKey && isAutoMixProviderAllowed("kie-ai");
 
   if (useKieImage && !canUseKieImage) {
     return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
