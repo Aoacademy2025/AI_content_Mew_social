@@ -29,6 +29,20 @@ async function main() {
   const [x, y] = await Promise.all([store.claimNextRenderJob(), store.claimNextRenderJob()]);
   ok(!!x && !!y && x!.id !== y!.id, "two parallel claimers get two different jobs");
 
+  // 2b. markReserved flags reservedQuota WITHOUT calling reserveClipUsage (PR-7):
+  // the route reserves once before enqueue, so the queue path must NOT double-reserve.
+  // No User row exists here, so a reserveClipUsage call would throw quota_exceeded —
+  // markReserved must succeed regardless and set reservedQuota=true on the row.
+  const mr = await store.enqueueRenderJob({ userId: "u1", type: "RENDER", payload: { shortVideoConfig: {} }, markReserved: true });
+  const mrJob = await store.getRenderJob(mr.id);
+  ok(mrJob?.reservedQuota === true, "markReserved sets reservedQuota=true without re-reserving");
+
+  // 2c. a BURN job (markReserved omitted/false) holds NO reservation — it reuses the
+  // video's existing charge.
+  const burn = await store.enqueueRenderJob({ userId: "u1", type: "BURN", payload: { shortVideoConfig: {}, subtitleOverlayConfig: {} } });
+  const burnJob = await store.getRenderJob(burn.id);
+  ok(burnJob?.reservedQuota === false, "BURN job (no markReserved) holds no reservation");
+
   // 3. sweeper requeues a RUNNING job with a stale heartbeat (attempts left)
   const stale = await prisma.renderJob.create({ data: { userId: "u1", type: "RENDER", payload: "{}", status: "RUNNING", attempts: 0, maxAttempts: 2, heartbeatAt: new Date(Date.now() - 10 * 60_000) } });
   const swept = await store.sweepDeadRenderJobs(90_000);

@@ -13,6 +13,13 @@ export async function enqueueRenderJob(input: {
   idempotencyKey?: string;
   /** videoId this job is responsible for reserving quota for (first render of a video) */
   reserveQuotaFor?: string;
+  /**
+   * Set `reservedQuota: true` on the row WITHOUT calling reserveClipUsage here.
+   * Use when the caller already reserved the clip (e.g. the legacy render route
+   * reserves once before branching) so failRenderJob still refunds, but quota is
+   * reserved exactly once per video. Ignored if `reserveQuotaFor` is set.
+   */
+  markReserved?: boolean;
 }): Promise<{ id: string }> {
   let reserved = false;
   if (input.reserveQuotaFor) {
@@ -23,6 +30,10 @@ export async function enqueueRenderJob(input: {
       (e as any).code = "quota_exceeded";
       throw e;
     }
+    reserved = true;
+  } else if (input.markReserved) {
+    // Caller already reserved the clip — flag the row so failRenderJob refunds it,
+    // but do NOT reserve again (no double-charge).
     reserved = true;
   }
   const job = await prisma.renderJob.create({

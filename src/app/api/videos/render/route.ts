@@ -10,6 +10,8 @@ import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { runRender, SupersededError } from "@/lib/render/run-render";
+import type { ResolvedRenderInput } from "@/lib/render/run-render";
+import { enqueueRenderJob } from "@/lib/render/job-store";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -244,7 +246,7 @@ export async function POST(req: Request) {
     });
     if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -467,23 +469,28 @@ export async function POST(req: Request) {
       if (url.startsWith("/api/renders/")) return path.join(rendersDir, url.slice("/api/renders/".length));
       if (url.startsWith("/renders/")) return path.join(rendersDir, url.slice("/renders/".length));
       if (url.startsWith("/api/stocks/")) return path.join(stocksDir, url.slice("/api/stocks/".length));
+      if (url.startsWith("/api/music/")) return path.join(process.cwd(), "public", "music", url.slice("/api/music/".length));
+      if (url.startsWith("/music/")) return path.join(process.cwd(), "public", "music", url.slice("/music/".length));
       // absolute URL pointing to our own server
       try {
         const u = new URL(url);
         if (u.pathname.startsWith("/renders/")) return path.join(rendersDir, u.pathname.slice("/renders/".length));
         if (u.pathname.startsWith("/api/renders/")) return path.join(rendersDir, u.pathname.slice("/api/renders/".length));
         if (u.pathname.startsWith("/api/stocks/")) return path.join(stocksDir, u.pathname.slice("/api/stocks/".length));
+        if (u.pathname.startsWith("/api/music/")) return path.join(process.cwd(), "public", "music", u.pathname.slice("/api/music/".length));
+        if (u.pathname.startsWith("/music/")) return path.join(process.cwd(), "public", "music", u.pathname.slice("/music/".length));
       } catch {}
       return null;
     }
 
     function toLocalFilePathIfInternal(url: string): string | null {
       if (!url) return null;
-      if (url.startsWith("/api/")) return toLocalFilePath(url);
+      if (url.startsWith("/api/") || url.startsWith("/music/")) return toLocalFilePath(url);
       if (/^https?:\/\//.test(url)) {
         try {
           const parsed = new URL(url);
-          if (parsed.origin === `${new URL(req.url).origin}`) {
+          const baseOrigin = new URL(baseUrl).origin;
+          if (parsed.origin === `${new URL(req.url).origin}` || parsed.origin === baseOrigin) {
             return toLocalFilePath(parsed.pathname);
           }
         } catch {
@@ -620,6 +627,71 @@ export async function POST(req: Request) {
       }
     }
 
+    // Fully-resolved render core input. The legacy in-process path consumes this
+    // directly; the queue path persists the JSON-serializable subset (everything
+    // EXCEPT bundleCache, which is a process-level object passed by reference) and
+    // a future worker reconstructs the full input with its own bundleCache.
+    const renderInput: ResolvedRenderInput = {
+      isSubtitleOverlay,
+      isShortVideo,
+      isAvatarMode,
+      resolvedSubtitleConfig,
+      resolvedShortConfig,
+      resolvedScenes,
+      audioUrl: audioUrl ?? null,
+      captionsData,
+      avatarVideoUrl: avatarVideoUrl ?? null,
+      captionStyleId,
+      customCaptionStyle,
+      positionY,
+      fontSizeOverride,
+      fontWeightOverride,
+      durationInFrames,
+      customWidth,
+      customHeight,
+      fps,
+      requestedJpegQuality,
+      entryPoint,
+      bundlePublicDir: getRemotionBundlePublicDir(),
+      rendersDir,
+      // Shared bundle cache — process-level, on the caller, passed by reference so
+      // it is reused across requests/hot-reloads. NEVER persisted (has methods).
+      bundleCache: {
+        get: () => ({ location: cachedBundleLocation, mtime: cachedBundleMtime }),
+        set: (location: string | null, mtime: string) => {
+          cachedBundleLocation = location;
+          cachedBundleMtime = mtime;
+          saveBundleCache();
+        },
+      },
+    };
+
+    // PR-7: durable queue path (behind RENDER_VIA_QUEUE). Enqueue a RenderJob row
+    // and return its id instead of rendering in-process. Quota was already reserved
+    // ONCE at line ~312 above — the base RENDER job owns that reservation (so
+    // failRenderJob refunds it) via markReserved, but we do NOT reserve again. A BURN
+    // of an already-charged video holds no second reservation. The worker (next task)
+    // claims the row, rebuilds the full input (adding its own bundleCache) and renders.
+    if (process.env.RENDER_VIA_QUEUE === "1") {
+      const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
+      // The bundleCache reference cannot cross to a separate worker process — strip it.
+      // Everything else in ResolvedRenderInput is plain data/URLs/numbers (serializable).
+      const { bundleCache: _bundleCache, ...serializablePayload } = renderInput;
+      const { id } = await enqueueRenderJob({
+        userId,
+        type: isBurn ? "BURN" : "RENDER",
+        payload: serializablePayload,
+        videoId: typeof videoId === "string" ? videoId : undefined,
+        parentJobId: typeof parentJobId === "string" ? parentJobId : undefined,
+        // Globally-unique key (NOT content-derived). Use the route's own jobId.
+        idempotencyKey: jobId,
+        // Quota already reserved once above; flag the row so failRenderJob refunds it
+        // (base RENDER only), but do NOT re-reserve. BURN reuses the video's charge.
+        markReserved: !isBurn,
+      });
+      return NextResponse.json({ jobId: id });
+    }
+
     // Clear stale progress file and register job immediately — before bundle build
     writeProgress({ progress: 0, stage: "preparing", queued: false, queuePosition: null });
     setRenderJob(jobId, { status: "running", startedAt: Date.now() });
@@ -698,41 +770,9 @@ export async function POST(req: Request) {
       const { cancel, cancelSignal } = makeCancelSignal();
       renderCancelFn = cancel;
 
-      // What the render core needs — already-resolved (req-bound asset resolution,
-      // baseUrl, caching all happened above). Bundle cache is shared at the module
-      // level and passed by reference so it survives across requests.
-      const renderInput = {
-        isSubtitleOverlay,
-        isShortVideo,
-        isAvatarMode,
-        resolvedSubtitleConfig,
-        resolvedShortConfig,
-        resolvedScenes,
-        audioUrl: audioUrl ?? null,
-        captionsData,
-        avatarVideoUrl: avatarVideoUrl ?? null,
-        captionStyleId,
-        customCaptionStyle,
-        positionY,
-        fontSizeOverride,
-        fontWeightOverride,
-        durationInFrames,
-        customWidth,
-        customHeight,
-        fps,
-        requestedJpegQuality,
-        entryPoint,
-        bundlePublicDir: getRemotionBundlePublicDir(),
-        rendersDir,
-        bundleCache: {
-          get: () => ({ location: cachedBundleLocation, mtime: cachedBundleMtime }),
-          set: (location: string | null, mtime: string) => {
-            cachedBundleLocation = location;
-            cachedBundleMtime = mtime;
-            saveBundleCache();
-          },
-        },
-      };
+      // The render core input was fully resolved above (renderInput) — the legacy
+      // path reuses it directly. (req-bound asset resolution, baseUrl, caching, and
+      // the shared by-reference bundle cache all happened before the queue branch.)
 
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
