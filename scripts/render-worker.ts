@@ -17,6 +17,7 @@ import {
   finishRenderJob,
   failRenderJob,
   requeueForShutdown,
+  sweepDeadRenderJobs,
 } from "../src/lib/render/job-store";
 import { runRender, type ResolvedRenderInput } from "../src/lib/render/run-render";
 
@@ -137,6 +138,17 @@ async function loop(): Promise<void> {
     });
     if (draining) break; // a drain may have started while we were claiming
     if (!job) {
+      // Idle: sweep RUNNING jobs with a stale heartbeat (worker presumed dead).
+      // This gives sub-POLL_MS detection of dead workers (a dead worker's job sits
+      // RUNNING with a stale heartbeat; the next idle poll here sweeps → QUEUED →
+      // claimed on the very next iteration). Fail-open: a sweep error must never
+      // crash the claim loop.
+      try {
+        const swept = await sweepDeadRenderJobs(90_000);
+        if (swept > 0) console.log(`[render-worker] swept ${swept} dead RenderJob(s)`);
+      } catch (sweepErr) {
+        console.error("[render-worker] sweepDeadRenderJobs error (non-fatal):", sweepErr);
+      }
       await new Promise((r) => setTimeout(r, POLL_MS));
       continue;
     }
