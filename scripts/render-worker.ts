@@ -118,8 +118,9 @@ async function runOne(job: ClaimedJob): Promise<void> {
     // spawned inside runRender (those live in the route's pre-enqueue asset
     // resolution), so there is no orphan-child surface to reap in the worker.
     const cancelled = cancelledByWatchdog || isCancelError(e);
-    // An explicit cancel (user / stall / wallclock) must NOT retry — it would just
-    // re-stall. A genuine render error retries (requeue, attempts permitting).
+    // An explicit cancel (user / stall / wallclock) is TERMINAL — no retry, requeue:false.
+    // This is intentional first-version policy: stalled renders would just re-stall.
+    // A genuine render error retries (requeue, attempts permitting).
     await failRenderJob(job.id, e, { requeue: !cancelled });
     console.error(`[render-worker] ${cancelled ? "cancelled" : "failed"} ${job.id}:`, e instanceof Error ? e.message : e);
   } finally {

@@ -87,6 +87,17 @@ async function main() {
   const drNoop = await store.getRenderJob(dr.id);
   ok(drNoop?.attempts === 0, "requeueForShutdown on a QUEUED job is a no-op (attempts unchanged, not negative)");
 
+  // 7. drain-race guard: a late catch calling failRenderJob on a QUEUED job (already
+  // requeued by requeueForShutdown) must be a no-op — QUEUED must stay QUEUED.
+  // This closes the shutdown race: shutdown() calls requeueForShutdown (RUNNING→QUEUED),
+  // then runOne's catch calls failRenderJob — without the QUEUED guard the job would be
+  // re-failed, defeating the drain guarantee.
+  const race = await store.enqueueRenderJob({ userId: "u1", type: "RENDER", payload: { shortVideoConfig: {} } });
+  await prisma.renderJob.update({ where: { id: race.id }, data: { status: "QUEUED" } }); // ensure QUEUED
+  await store.failRenderJob(race.id, new Error("late catch from runOne during drain"));
+  const raceAfter = await store.getRenderJob(race.id);
+  ok(raceAfter?.status === "QUEUED", "failRenderJob on a QUEUED job is a no-op (drain-race guard)");
+
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
   console.log("\nALL PASS");
 }

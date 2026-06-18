@@ -38,6 +38,9 @@ module.exports = {
         // Must repeat here — PM2 with `--env production` merges env_production
         // OVER env, so NODE_OPTIONS would be lost if only set in env.
         NODE_OPTIONS: "--max-old-space-size=12288",
+        // Must repeat RENDER_VIA_QUEUE here too — env_production shadows env entirely,
+        // so the flag would be lost if someone starts with `pm2 ... --env production`.
+        RENDER_VIA_QUEUE: "1",
       },
     },
     {

@@ -132,7 +132,7 @@ export async function failRenderJob(
   opts?: { requeue?: boolean },
 ): Promise<void> {
   const job = await prisma.renderJob.findUnique({ where: { id } });
-  if (!job || job.status === "FAILED" || job.status === "DONE") return; // idempotent: terminal stays terminal
+  if (!job || job.status === "FAILED" || job.status === "DONE" || job.status === "QUEUED") return; // idempotent: terminal stays terminal; QUEUED = already re-enqueued (drain race), must not be re-failed
 
   const errStr = JSON.stringify({
     message: error instanceof Error ? error.message : String(error),
