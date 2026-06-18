@@ -70,6 +70,7 @@ type InsightSummary = {
     pipelineStarts: number;
     events: number;
     errors: number;
+    byokErrorCount: number;
     rawErrors: number;
     noiseEvents: number;
     frontendErrors: number;
@@ -96,6 +97,7 @@ type InsightSummary = {
   funnel: FunnelRow[];
   steps: StepRow[];
   errors: ErrorRow[];
+  byokErrors: ErrorRow[];
   noise: NoiseRow[];
   vitals: VitalRow[];
   resource: {
@@ -196,9 +198,28 @@ type ActivationData = {
   prevWindowCompletedUsers: number;
 };
 
+type JobOutcomes = {
+  total: number;
+  done: number;
+  failed: number;
+  processing: number;
+  queued: number;
+  systemFailed: number;
+  byokFailed: number;
+  noiseFailed: number;
+  failedByStage: Array<{
+    stage: string;
+    stageLabel: string;
+    kind: "system" | "byok" | "noise";
+    count: number;
+    sample: string;
+  }>;
+};
+
 type InsightsResponse = {
   range: { days: number; since: string; until: string };
   activation: ActivationData;
+  jobOutcomes: JobOutcomes;
   current: InsightSummary;
   previous: InsightSummary;
   processingReconcile?: { dryRun: boolean };
@@ -214,7 +235,9 @@ type ReconcileApplyResponse = {
 };
 
 const metricHelp: Record<string, string> = {
-  "Health Score": "คะแนนรวมจาก video completion, error, render latency และ status stuck ยิ่งใกล้ 100 ยิ่งดี",
+  "Health Score": "คะแนนสุขภาพระบบ 0–100 (v2) — คิดเฉพาะ error ของระบบเรา (ไม่รวมคีย์ลูกค้า/noise) + render p95 + video completion + งานค้าง ยิ่งใกล้ 100 ยิ่งดี",
+  "Error ระบบ": "บั๊กของเราที่ต้องแก้โค้ด (ตัด noise และปัญหาคีย์ลูกค้าออกแล้ว) — กองนี้คือสิ่งที่ทีม dev ต้องไล่แก้",
+  "Job outcomes": "ผลงานจริงจาก VideoJob ฝั่ง server (status เซิร์ฟเวอร์เขียน ไม่หายตอนปิดแท็บ) — บอกว่างานที่ล้มเหลวพังที่ขั้นไหน และเป็นบั๊กเราหรือคีย์ลูกค้า",
   "Drop-off": "เปอร์เซ็นต์ session ที่ไปไม่ถึงขั้นถัดไป — นับต่อ session หน่วยเดียวกันทุกขั้น (apples-to-apples) จึงเทียบกันได้จริง",
   "Activation": "สัดส่วนคนที่ได้ 'คุณค่าครั้งแรก' = ได้วิดีโอเสร็จอย่างน้อย 1 ตัว เป็นตัวชี้วัดว่าคนใช้ product ได้จริงไหม สำคัญกว่าตัวเลขระบบทุกตัว",
   "BYOK key": "ลูกค้าต้องใส่ API key ของตัวเอง (Gemini จำเป็นเสมอ) ถ้ายังไม่ตั้ง = ระบบเจนวิดีโอไม่ได้ แม้จ่ายเงินแล้ว — ไม่ใช่บั๊กของเรา แต่เสียลูกค้าจริง",
@@ -378,6 +401,7 @@ export default function AdminInsightsPage() {
   const current = data?.current;
   const previous = data?.previous;
   const activation = data?.activation;
+  const jobOutcomes = data?.jobOutcomes;
   const hasData = !!current && (current.totals.events > 0 || current.totals.videoJobs.total > 0);
   const worstDrop = useMemo(() => {
     if (!current) return null;
@@ -612,9 +636,9 @@ export default function AdminInsightsPage() {
                 tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300"
               />
               <MetricTile
-                label="Telemetry errors"
+                label="Error ระบบ"
                 value={formatNumber(current.totals.errors)}
-                helper={`real ${formatNumber(current.totals.errors)}/${formatNumber(current.totals.rawErrors)} · noise ${formatNumber(current.totals.noiseEvents)} · events ${formatNumber(current.totals.events)}`}
+                helper={`ระบบเรา ${formatNumber(current.totals.errors)} · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)}`}
                 icon={AlertTriangle}
                 tone="border-rose-400/20 bg-rose-500/12 text-rose-300"
               />
@@ -923,10 +947,62 @@ export default function AdminInsightsPage() {
               </div>
             </section>
 
+            {jobOutcomes && jobOutcomes.total > 0 && (
+              <section className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">
+                    งานจริง (server) — ล้มเหลวที่ขั้นไหน <InfoTip label="Job outcomes" />
+                  </h2>
+                  <CheckCircle2 className="h-5 w-5 text-emerald-300" />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-4">
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="text-xs text-slate-500">งานทั้งหมด</div>
+                    <div className="mt-1 text-2xl font-semibold text-white">{formatNumber(jobOutcomes.total)}</div>
+                    <div className="mt-1 text-xs text-slate-500">done {formatNumber(jobOutcomes.done)} · processing {formatNumber(jobOutcomes.processing)}</div>
+                  </div>
+                  <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3">
+                    <div className="text-xs text-rose-300/80">ล้มเหลว: บั๊กระบบ</div>
+                    <div className="mt-1 text-2xl font-semibold text-rose-200">{formatNumber(jobOutcomes.systemFailed)}</div>
+                    <div className="mt-1 text-xs text-rose-300/70">ของเรา → แก้โค้ด</div>
+                  </div>
+                  <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.07] p-3">
+                    <div className="text-xs text-amber-300/80">ล้มเหลว: คีย์ลูกค้า</div>
+                    <div className="mt-1 text-2xl font-semibold text-amber-200">{formatNumber(jobOutcomes.byokFailed)}</div>
+                    <div className="mt-1 text-xs text-amber-300/70">BYOK → แจ้งลูกค้า</div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="text-xs text-slate-500">ล้มเหลว: noise</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-300">{formatNumber(jobOutcomes.noiseFailed)}</div>
+                    <div className="mt-1 text-xs text-slate-600">superseded/cancel</div>
+                  </div>
+                </div>
+                {jobOutcomes.failedByStage.length > 0 && (
+                  <div className="mt-4 divide-y divide-white/10">
+                    {jobOutcomes.failedByStage.map((row) => (
+                      <div key={`${row.stage}:${row.kind}`} className="grid gap-2 py-3 sm:grid-cols-[150px_1fr_56px] sm:items-center">
+                        <div className={cn(
+                          "inline-flex w-fit items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold",
+                          row.kind === "system" ? "bg-rose-500/10 text-rose-300" : row.kind === "byok" ? "bg-amber-500/10 text-amber-300" : "bg-white/10 text-slate-300",
+                        )}>
+                          {row.stageLabel} · {row.kind === "system" ? "ระบบ" : row.kind === "byok" ? "คีย์ลูกค้า" : "noise"}
+                        </div>
+                        <div className="min-w-0 truncate text-sm text-slate-300">{row.sample || "-"}</div>
+                        <div className="text-right text-lg font-semibold text-white">{formatNumber(row.count)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                  💡 <span className="font-semibold text-slate-400">สำหรับ CEO:</span> นับจาก VideoJob ฝั่ง server (เชื่อถือได้ ไม่หายตอนปิดแท็บ) — โฟกัสกอง &ldquo;บั๊กระบบ&rdquo; ที่ต้องสั่งทีม dev แก้ ส่วน &ldquo;คีย์ลูกค้า&rdquo; ให้ support ช่วย
+                </p>
+              </section>
+            )}
+
             <section className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
-              <h2 className="text-lg font-semibold text-white">Error ที่เจอบ่อย</h2>
+              <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">Error ระบบ (ที่ต้องแก้) <InfoTip label="Error ระบบ" /></h2>
               <div className="mt-4 divide-y divide-white/10">
-                {current.errors.length === 0 && <div className="py-6 text-sm text-slate-500">ยังไม่มี error ในช่วงนี้</div>}
+                {current.errors.length === 0 && <div className="py-6 text-sm text-emerald-300/80">ไม่มี error ระบบในช่วงนี้ 🎉 (ปัญหาคีย์ลูกค้า/noise แยกไว้ด้านล่าง)</div>}
                 {current.errors.map((item) => (
                   <div key={`${item.stepLabel}:${item.label}`} className="grid gap-2 py-3 sm:grid-cols-[110px_1fr_80px] sm:items-center">
                     <div className="rounded-full bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-300">{item.stepLabel}</div>
@@ -938,6 +1014,24 @@ export default function AdminInsightsPage() {
                   </div>
                 ))}
               </div>
+              {current.byokErrors.length > 0 && (
+                <div className="mt-5 rounded-md border border-amber-400/20 bg-amber-500/[0.06] p-3">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-amber-200">ปัญหาคีย์ลูกค้า (BYOK) <InfoTip label="BYOK key" /></div>
+                  <div className="mt-1 text-xs text-amber-300/70">ไม่ใช่บั๊กของเรา — ให้ support แจ้ง/ช่วยลูกค้าตั้งค่า</div>
+                  <div className="mt-2 divide-y divide-white/10">
+                    {current.byokErrors.map((item) => (
+                      <div key={`byok:${item.stepLabel}:${item.label}`} className="grid gap-2 py-2 text-sm sm:grid-cols-[140px_1fr_64px] sm:items-center">
+                        <div className="text-xs font-semibold text-amber-300">{item.stepLabel}</div>
+                        <div className="min-w-0 text-slate-300">
+                          <div className="truncate">{item.label}</div>
+                          <div className="mt-0.5 text-xs text-slate-600">ล่าสุด {new Date(item.lastSeen).toLocaleString("th-TH")}</div>
+                        </div>
+                        <div className="text-right font-semibold text-slate-200">{formatNumber(item.count)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {current.noise.length > 0 && (
                 <div className="mt-5 rounded-md border border-white/10 bg-black/20 p-3">
                   <div className="text-sm font-semibold text-slate-200">Noise ที่แยกออก</div>

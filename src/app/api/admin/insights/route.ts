@@ -227,6 +227,34 @@ function benignTelemetryReason(row: TelemetryRow): string | null {
   return null;
 }
 
+// P2 กฎ #4: แยก error ฝั่ง "คีย์ลูกค้า" (BYOK) ออกจาก "ระบบเรา" — 429/503/quota/billing/คีย์ผิด
+// = ปัญหาของลูกค้า ไม่ใช่บั๊กระบบ → ไม่หัก Health Score และไม่ปนกับ error ที่ dev ต้องแก้
+function byokReasonFromText(text: string): string | null {
+  if (/\b429\b|\b503\b|quota|RESOURCE_EXHAUSTED|too many requests|rate limit/i.test(text)) return "คีย์ลูกค้า: เกินโควต้า/rate limit";
+  if (/ผูกบัตร|billing/i.test(text)) return "คีย์ลูกค้า: ยังไม่ผูกบัตร/billing";
+  if (/api[\s_-]?key|API_KEY_INVALID|invalid key|api key not valid|unauthorized|permission denied/i.test(text)) return "คีย์ลูกค้า: คีย์ผิด/ไม่มีสิทธิ์";
+  return null;
+}
+
+function byokErrorReason(row: TelemetryRow): string | null {
+  const props = parseProps(row);
+  const text = [row.name, row.status, props.message, props.reason, props.errorName].filter(Boolean).join(" ");
+  return byokReasonFromText(text);
+}
+
+function classifyJobError(message: string | null): "system" | "byok" | "noise" {
+  const text = message ?? "";
+  if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
+  if (byokReasonFromText(text)) return "byok";
+  return "system";
+}
+
+function jobStepLabel(step: string | null) {
+  if (!step) return "ไม่ระบุ";
+  const alias: Record<string, string> = { stock: "หา B-roll", burn: "ฝังซับ" };
+  return alias[step] ?? STEP_LABELS[step] ?? step;
+}
+
 function summarizeIssueGroups(rows: TelemetryRow[], reasonFn?: (row: TelemetryRow) => string | null) {
   const groups = new Map<string, { count: number; label: string; step: string | null; lastSeen: Date; reason?: string }>();
   for (const row of rows) {
@@ -407,7 +435,10 @@ function summarize(
   const pipelineJobs = videoJobs.total;
   const rawErrorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
   const noiseRows = rawErrorRows.filter((row) => benignTelemetryReason(row));
-  const errorRows = rawErrorRows.filter((row) => !benignTelemetryReason(row));
+  const realErrorRows = rawErrorRows.filter((row) => !benignTelemetryReason(row));
+  const byokErrorRows = realErrorRows.filter((row) => byokErrorReason(row));
+  // errorRows = "ระบบเรา" เท่านั้น (ตัด noise + คีย์ลูกค้าออก) → ใช้คิด Health Score v2
+  const errorRows = realErrorRows.filter((row) => !byokErrorReason(row));
   const frontendErrorRows = errorRows.filter((row) => row.name === "frontend_error" || row.source === "client");
   const serverErrorRows = errorRows.filter((row) => row.source === "server");
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
@@ -427,7 +458,7 @@ function summarize(
     const entry = stepMap.get(row.step) ?? { durations: [], started: 0, done: 0, error: 0, skipped: 0 };
     if (row.name === "pipeline_step_started") entry.started++;
     if (row.name === "pipeline_step_done") entry.done++;
-    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row)) entry.error++;
+    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row) && !byokErrorReason(row)) entry.error++;
     if (row.name === "pipeline_step_skipped") entry.skipped++;
     if (row.durationMs != null && row.durationMs >= 0) entry.durations.push(row.durationMs);
     stepMap.set(row.step, entry);
@@ -451,6 +482,7 @@ function summarize(
   }).sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0));
 
   const errors = summarizeIssueGroups(errorRows);
+  const byokErrors = summarizeIssueGroups(byokErrorRows, byokErrorReason);
   const noise = summarizeIssueGroups(noiseRows, benignTelemetryReason);
 
   const vitals = ["LCP", "INP", "CLS"].map((metric) => {
@@ -509,7 +541,10 @@ function summarize(
       ? `ขั้น "${bottleneck.label}" ช้าที่สุด p95 ${Math.round((bottleneck.p95Ms ?? 0) / 1000)} วินาที ควรแยกดู log/trace ของ provider และไฟล์ที่ใช้`
       : null,
     errors.length > 0
-      ? `error ที่เจอบ่อยสุดอยู่ที่ "${errors[0].stepLabel}" จำนวน ${errors[0].count} ครั้ง ควรแก้เป็นลำดับแรก`
+      ? `error ระบบที่เจอบ่อยสุดอยู่ที่ "${errors[0].stepLabel}" จำนวน ${errors[0].count} ครั้ง ควรแก้เป็นลำดับแรก`
+      : null,
+    byokErrorRows.length > 0
+      ? `พบ error จากคีย์ลูกค้า (BYOK) ${byokErrorRows.length} ครั้ง เช่น "${byokErrors[0]?.label ?? ""}" — ไม่ใช่บั๊กระบบ ควรแจ้ง/ช่วยลูกค้าตั้งค่า ไม่ใช่งาน dev`
       : null,
     videoJobs.statusStuckWithOutput > 0
       ? `มีวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มี output แล้วแต่ status ยังเป็น PROCESSING ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
@@ -544,6 +579,7 @@ function summarize(
       pipelineStarts,
       events: rows.length,
       errors: errorRows.length,
+      byokErrorCount: byokErrorRows.length,
       rawErrors: rawErrorRows.length,
       noiseEvents: noiseRows.length,
       frontendErrors: frontendErrorRows.length,
@@ -559,6 +595,7 @@ function summarize(
     funnel,
     steps,
     errors,
+    byokErrors,
     noise,
     vitals,
     resource: {
@@ -609,7 +646,7 @@ export async function GET(req: Request) {
 
     const [
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
-      allUsers, openedUserRows, startedUserRows, completedByUser,
+      allUsers, openedUserRows, startedUserRows, completedByUser, currentJobs,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -646,6 +683,11 @@ export async function GET(req: Request) {
       prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_script_ready", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
       prisma.video.groupBy({ by: ["userId"], where: { status: "COMPLETED" }, _count: { _all: true } }),
+      // P2 scorecard (server-authoritative): job outcome จาก VideoJob (status server เขียน, ไม่หายตอนปิดแท็บ)
+      prisma.videoJob.findMany({
+        where: { createdAt: { gte: since } },
+        select: { status: true, currentStep: true, errorMessage: true, startedAt: true, finishedAt: true },
+      }),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
@@ -668,9 +710,32 @@ export async function GET(req: Request) {
       prevWindowCompletedUsers: completedUsersIn(previousVideos),
     };
 
+    const failedJobs = currentJobs.filter((j) => j.status === "failed");
+    const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "noise"; count: number; sample: string }>();
+    for (const job of failedJobs) {
+      const kind = classifyJobError(job.errorMessage);
+      const key = `${job.currentStep ?? "unknown"}:${kind}`;
+      const entry = failedByStageMap.get(key) ?? { stage: job.currentStep ?? "unknown", stageLabel: jobStepLabel(job.currentStep), kind, count: 0, sample: "" };
+      entry.count++;
+      if (!entry.sample && job.errorMessage) entry.sample = job.errorMessage.slice(0, 100);
+      failedByStageMap.set(key, entry);
+    }
+    const jobOutcomes = {
+      total: currentJobs.length,
+      done: currentJobs.filter((j) => j.status === "done").length,
+      failed: failedJobs.length,
+      processing: currentJobs.filter((j) => j.status === "processing").length,
+      queued: currentJobs.filter((j) => j.status === "queued").length,
+      systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "system").length,
+      byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "byok").length,
+      noiseFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "noise").length,
+      failedByStage: Array.from(failedByStageMap.values()).sort((a, b) => b.count - a.count),
+    };
+
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
       activation,
+      jobOutcomes,
       current: summarize(currentRows, currentVideos, processingPlan.summary),
       previous: summarize(previousRows, previousVideos),
       processingReconcile: { dryRun: true, ...processingPlan },
