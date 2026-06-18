@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Music, Upload, X, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Music, Pause, Play, Upload, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -44,7 +44,29 @@ export interface OrderPanelProps {
 
 export function OrderPanel(p: OrderPanelProps) {
   const posCanvasRef = React.useRef<HTMLDivElement>(null);
+  const musicPreviewRef = React.useRef<HTMLAudioElement | null>(null);
   const [isDragging, setIsDragging] = React.useState(false);
+  const [previewingMusicUrl, setPreviewingMusicUrl] = React.useState("");
+
+  const stopMusicPreview = React.useCallback(() => {
+    musicPreviewRef.current?.pause();
+    musicPreviewRef.current = null;
+    setPreviewingMusicUrl("");
+  }, []);
+
+  React.useEffect(() => () => {
+    stopMusicPreview();
+  }, [stopMusicPreview]);
+
+  React.useEffect(() => {
+    if (!p.open || !p.bgmEnabled) stopMusicPreview();
+  }, [p.open, p.bgmEnabled, stopMusicPreview]);
+
+  React.useEffect(() => {
+    if (musicPreviewRef.current) {
+      musicPreviewRef.current.volume = Math.max(0, Math.min(1, p.bgmVolume));
+    }
+  }, [p.bgmVolume]);
 
   // page.tsx เก็บ avatarOffsetX/Y เป็น px ช่วง -200..200 (preview map ด้วย /200, แกน y บวก = ลง)
   // nx/ny อยู่ในช่วง -1..1 → ×200 ให้เต็มช่วง และห้ามกลับเครื่องหมาย y — ไม่งั้นลากสวนทางกับ preview
@@ -67,10 +89,41 @@ export function OrderPanel(p: OrderPanelProps) {
         return;
       }
       if (p.bgmFile === `/api/music/${track.filename}`) p.setBgmFile("");
+      if (previewingMusicUrl === `/api/music/${track.filename}`) stopMusicPreview();
       p.setUserTracks(p.userTracks.filter((t) => t.id !== track.id));
       toast.success("ลบเพลงแล้ว");
     } catch {
       toast.error("ลบเพลงไม่สำเร็จ");
+    }
+  }
+
+  async function toggleMusicPreview(url: string) {
+    if (previewingMusicUrl === url) {
+      stopMusicPreview();
+      return;
+    }
+
+    stopMusicPreview();
+    const audio = new Audio(url);
+    audio.volume = Math.max(0, Math.min(1, p.bgmVolume));
+    audio.preload = "auto";
+    musicPreviewRef.current = audio;
+    setPreviewingMusicUrl(url);
+
+    audio.onended = () => {
+      if (musicPreviewRef.current === audio) stopMusicPreview();
+    };
+    audio.onerror = () => {
+      if (musicPreviewRef.current !== audio) return;
+      stopMusicPreview();
+      toast.error("เล่นเพลงตัวอย่างไม่สำเร็จ");
+    };
+
+    try {
+      await audio.play();
+    } catch {
+      if (musicPreviewRef.current === audio) stopMusicPreview();
+      toast.error("เบราว์เซอร์ไม่อนุญาตให้เล่นเสียง ลองกดอีกครั้ง");
     }
   }
 
@@ -175,15 +228,33 @@ export function OrderPanel(p: OrderPanelProps) {
                   <div className="space-y-1">
                     <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">System Tracks</div>
                     <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {p.systemTracks.map(t => (
-                        <button key={t.id} onClick={() => p.setBgmFile(p.bgmFile === `/music/${t.filename}` ? "" : `/music/${t.filename}`)}
-                          className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
-                            p.bgmFile === `/music/${t.filename}` ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
-                          <Music className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{t.title}</span>
-                          {p.bgmFile === `/music/${t.filename}` && <span className="ml-auto text-violet-400">✓</span>}
-                        </button>
-                      ))}
+                      {p.systemTracks.map(t => {
+                        const selectedUrl = `/music/${t.filename}`;
+                        const previewUrl = `/api/music/${t.filename}`;
+                        const selected = p.bgmFile === selectedUrl;
+                        const previewing = previewingMusicUrl === previewUrl;
+                        return (
+                          <div key={t.id}
+                            className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
+                              selected ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
+                            <button type="button" onClick={() => p.setBgmFile(selected ? "" : selectedUrl)}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                              <Music className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{t.title}</span>
+                            </button>
+                            {selected && <span className="text-violet-400">✓</span>}
+                            <button
+                              type="button"
+                              onClick={() => { void toggleMusicPreview(previewUrl); }}
+                              className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
+                                previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
+                              title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
+                            >
+                              {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -193,6 +264,7 @@ export function OrderPanel(p: OrderPanelProps) {
                     <div className="space-y-1 max-h-32 overflow-y-auto">
                       {p.userTracks.map(t => {
                         const url = `/api/music/${t.filename}`;
+                        const previewing = previewingMusicUrl === url;
                         return (
                           <div key={t.id}
                             className={cn("w-full flex items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[11px] transition-all border",
@@ -201,6 +273,15 @@ export function OrderPanel(p: OrderPanelProps) {
                               className="flex min-w-0 flex-1 items-center gap-2 text-left">
                               <Music className="h-3 w-3 shrink-0" />
                               <span className="truncate">{t.title}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { void toggleMusicPreview(url); }}
+                              className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
+                                previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
+                              title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
+                            >
+                              {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
                             </button>
                             <button
                               type="button"
