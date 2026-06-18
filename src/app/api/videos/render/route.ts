@@ -7,23 +7,17 @@ import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-l
 import path from "path";
 import fs from "fs";
 import { execFileSync, spawn } from "child_process";
-import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
-import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { runRender, SupersededError } from "@/lib/render/run-render";
 import {
   activeRenderCancel,
   cancelByJobId,
   renderJobDoneByUser,
-  getBundleInProgress,
-  setBundleInProgress,
   getActiveRenderCount,
   incrementActiveRenderCount,
   decrementActiveRenderCount,
-  getActiveRenderSlots,
   getRenderSlotQueueLength,
-  withRenderSlot,
-  retainRemotionBundle,
   activeRemotionBundleNames,
 } from "./cancel-registry";
 
@@ -66,15 +60,6 @@ function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, exc
   } catch {}
 }
 
-function remotionBundleMissingReason(error: unknown): string | null {
-  const text = error instanceof Error
-    ? `${error.name} ${error.message} ${error.stack ?? ""}`
-    : String(error);
-  const mentionsBundle = /remotion-webpack-bundle|index\.html|getStaticCompositions|serveUrl|Remotion project/i.test(text);
-  const looksMissing = /does not exist|could not be found|not found|404|ENOENT|verify that it is a Remotion project/i.test(text);
-  return mentionsBundle && looksMissing ? text.slice(0, 220) : null;
-}
-
 /** Download external image URL to local public/renders and return a full absolute URL
  *  so Remotion's Chromium (which runs on its own port) can fetch from Next.js server */
 async function cacheImageLocally(url: string, rendersDir: string, baseUrl: string): Promise<string> {
@@ -101,17 +86,6 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 
 export const maxDuration = 60; // only needs to start the background job, not wait for it
 export const runtime = "nodejs";
-
-function readPositiveIntEnv(name: string, fallback: number, max: number): number {
-  const raw = Number(process.env[name]);
-  if (!Number.isFinite(raw) || raw < 1) return fallback;
-  return Math.max(1, Math.min(max, Math.floor(raw)));
-}
-
-function getRenderJobConcurrencyLimit(): number {
-  const cpuMax = Math.max(1, Math.min(4, os.cpus().length));
-  return readPositiveIntEnv("RENDER_JOB_CONCURRENCY", 1, cpuMax);
-}
 
 // Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
 type RenderJob = {
@@ -357,8 +331,10 @@ export async function POST(req: Request) {
     // webpackIgnore prevents Turbopack from statically analyzing these imports
     // and traversing into esbuild native binaries (README.md, .node files).
     // serverExternalPackages ensures they're loaded from node_modules at runtime.
-    const { bundle } = await import(/* webpackIgnore: true */ "@remotion/bundler" as string);
-    const { renderMedia, selectComposition, makeCancelSignal } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
+    // The bundle/selectComposition/renderMedia core now lives in runRender; the
+    // route only needs makeCancelSignal to own the cancel handle (registered in
+    // the cancel-registry exactly as before).
+    const { makeCancelSignal } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
 
     // Ensure output directory exists (moved up so cacheImageLocally can use rendersDir)
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -656,12 +632,10 @@ export async function POST(req: Request) {
     renderJobDoneByUser.set(renderOwnerKey, donePromise);
 
     (async () => {
-      let lastProgress = -1;
       let renderStartedAt = Date.now();
       let jobFinalized = false;
       let quotaRefunded = false;
       let renderCancelFn: (() => void) | null = null;
-      let releaseBundleRef: (() => void) | null = null;
       const clearCancelHandles = () => {
         if (renderCancelFn && activeRenderCancel.get(renderOwnerKey) === renderCancelFn) {
           activeRenderCancel.delete(renderOwnerKey);
@@ -671,8 +645,6 @@ export async function POST(req: Request) {
       const finishJob = () => {
         if (jobFinalized) return;
         jobFinalized = true;
-        releaseBundleRef?.();
-        releaseBundleRef = null;
         decrementActiveRenderCount();
         resolveDone();
       };
@@ -706,12 +678,7 @@ export async function POST(req: Request) {
         finishJob();
         return true;
       };
-      let bundleLocation = "";
-      const useBundleLocation = (nextLocation: string) => {
-        releaseBundleRef?.();
-        bundleLocation = nextLocation;
-        releaseBundleRef = retainRemotionBundle(nextLocation);
-      };
+      // Telemetry: a Remotion bundle had to be rebuilt mid-render.
       const recordBundleRetry = async (stage: string, reason: string) => {
         await recordTelemetryEvent(userId, {
           name: "render_bundle_rebuilt",
@@ -723,286 +690,156 @@ export async function POST(req: Request) {
           properties: { jobId, stage, reason },
         }).catch(() => {});
       };
+
+      // The cancel signal is owned by the route (registered in the cancel-registry
+      // exactly as before); runRender consumes it. Created up-front so the registry
+      // wiring stays identical; the live handle is (re)registered via onCancelHandle
+      // at the same point the legacy code registered it (just before renderMedia).
+      const { cancel, cancelSignal } = makeCancelSignal();
+      renderCancelFn = cancel;
+
+      // What the render core needs — already-resolved (req-bound asset resolution,
+      // baseUrl, caching all happened above). Bundle cache is shared at the module
+      // level and passed by reference so it survives across requests.
+      const renderInput = {
+        isSubtitleOverlay,
+        isShortVideo,
+        isAvatarMode,
+        resolvedSubtitleConfig,
+        resolvedShortConfig,
+        resolvedScenes,
+        audioUrl: audioUrl ?? null,
+        captionsData,
+        avatarVideoUrl: avatarVideoUrl ?? null,
+        captionStyleId,
+        customCaptionStyle,
+        positionY,
+        fontSizeOverride,
+        fontWeightOverride,
+        durationInFrames,
+        customWidth,
+        customHeight,
+        fps,
+        requestedJpegQuality,
+        entryPoint,
+        bundlePublicDir: getRemotionBundlePublicDir(),
+        rendersDir,
+        bundleCache: {
+          get: () => ({ location: cachedBundleLocation, mtime: cachedBundleMtime }),
+          set: (location: string | null, mtime: string) => {
+            cachedBundleLocation = location;
+            cachedBundleMtime = mtime;
+            saveBundleCache();
+          },
+        },
+      };
+
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
-        // Bundle (may be cached) — runs in background after jobId is returned
-        // Use mtime+size fingerprint of all remotion source files to detect changes
-        const remotionSrcDir = path.resolve(process.cwd(), "src/remotion");
-        const remotionFingerprint = fs.readdirSync(remotionSrcDir)
-          .filter(f => f.endsWith(".tsx") || f.endsWith(".ts"))
-          .sort()
-          .map(f => { const s = fs.statSync(path.join(remotionSrcDir, f)); return `${f}:${s.mtimeMs}:${s.size}`; })
-          .join("|");
-        // Reuse the shared cached bundle when its fingerprint matches and index.html
-        // is present, otherwise build once under a global lock (concurrent jobs await
-        // the same build, not a 2nd one that would OOM the VPS).
-        const ensureBundle = async (forceRebuild = false): Promise<string> => {
-          if (forceRebuild) {
-            cachedBundleLocation = null;
-            cachedBundleMtime = "";
-            saveBundleCache();
-          }
-          if (
-            !forceRebuild &&
-            cachedBundleLocation &&
-            remotionFingerprint === cachedBundleMtime &&
-            fs.existsSync(path.join(cachedBundleLocation, "index.html"))
-          ) {
-            console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
-            return cachedBundleLocation;
-          }
-          let inFlight = getBundleInProgress();
-          if (!inFlight) {
-            console.log("[Render] building new webpack bundle...");
-            inFlight = bundle({
-              entryPoint,
-              publicDir: getRemotionBundlePublicDir(),
-              webpackOverride: (config: unknown) => config,
-            })
-              .then((loc: string) => {
-                cachedBundleLocation = loc;
-                cachedBundleMtime = remotionFingerprint;
-                saveBundleCache();
-                setBundleInProgress(null);
-                console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
-                return loc;
-              })
-              .catch((err: unknown) => { setBundleInProgress(null); throw err; });
-            setBundleInProgress(inFlight);
-          } else {
-            console.log("[Render] waiting for concurrent bundle to finish...");
-          }
-          return inFlight!; // non-null after the branch above (assigned or already in-flight)
-        };
 
-        useBundleLocation(await ensureBundle());
-        // TOCTOU guard: a concurrent render's tmp-cleanup (or the media-cleanup cron)
-        // can delete the shared bundle between ensureBundle() and selectComposition()
-        // below → "index.html could not be found" 404. If it vanished, drop the cache
-        // and rebuild once.
-        if (!fs.existsSync(path.join(bundleLocation, "index.html"))) {
-          console.log(`[Render] cached bundle ${bundleLocation} vanished before composition — rebuilding`);
-          await recordBundleRetry("pre_composition", "bundle index.html missing before selectComposition");
-          useBundleLocation(await ensureBundle(true));
-        }
-        if (await stopSupersededJob("bundle")) return;
-
-        const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
-        const inputProps = isSubtitleOverlay
-          ? resolvedSubtitleConfig
-          : isShortVideo
-          ? resolvedShortConfig
-          : isAvatarMode
-          ? { avatarVideoUrl, captions: captionsData, captionStyleId: captionStyleId ?? "tiktok", customCaptionStyle: customCaptionStyle ?? null, positionY: positionY ?? 85, fontSizeOverride: fontSizeOverride ?? 0, fontWeightOverride: fontWeightOverride ?? 0 }
-          : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
-
-        const selectCurrentComposition = () => selectComposition({
-          serveUrl: bundleLocation,
-          id: compositionId,
-          inputProps,
-          timeoutInMilliseconds: 120000,
-        });
-        const applyCompositionOverrides = (target: Awaited<ReturnType<typeof selectComposition>>) => {
-          if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
-            target.durationInFrames = resolvedSubtitleConfig.durationInFrames;
-          } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
-            target.durationInFrames = resolvedShortConfig.durationInFrames;
-          } else if (!isAvatarMode && !isSubtitleOverlay) {
-            target.durationInFrames = durationInFrames;
-            if (customWidth) target.width = customWidth;
-            if (customHeight) target.height = customHeight;
-          }
-          return target;
-        };
-
-        let composition: Awaited<ReturnType<typeof selectComposition>>;
-        try {
-          composition = applyCompositionOverrides(await selectCurrentComposition());
-        } catch (error) {
-          const reason = remotionBundleMissingReason(error);
-          if (!reason) throw error;
-          console.log(`[Render] bundle missing at selectComposition for job=${jobId} — rebuilding once`);
-          await recordBundleRetry("select_composition", reason);
-          useBundleLocation(await ensureBundle(true));
-          composition = applyCompositionOverrides(await selectCurrentComposition());
-        }
-
-        const filename = `render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
-        const outputLocation = path.join(rendersDir, filename);
-
-        const renderSlotLimit = getRenderJobConcurrencyLimit();
-        const queuePosition = getActiveRenderSlots() >= renderSlotLimit ? getRenderSlotQueueLength() + 1 : 0;
-        if (queuePosition > 0) {
-          writeProgress({ progress: 0, stage: "queued", queued: true, queuePosition, queuedAt: Date.now() });
-          console.log(`[Render] job=${jobId} queued at position ${queuePosition} (limit=${renderSlotLimit})`);
-        }
-
-        const renderQueueStartedAt = Date.now();
-        let renderCompletedForLatestJob = false;
-
-        await withRenderSlot(renderSlotLimit, async () => {
-          const renderQueueWaitMs = Date.now() - renderQueueStartedAt;
-          if (await stopSupersededJob("render_slot")) return;
-          writeProgress({ progress: 0, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
-
-          const cpuCount = os.cpus().length;
-          const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-          const isCriticalLowMem = freeMemGb < 0.8;
-          const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
-          // Scale down threads-per-job as more CPU-heavy renderMedia slots run in parallel.
-          const activeJobs = Math.max(1, getActiveRenderCount());
-          const activeRenderSlots = Math.max(1, getActiveRenderSlots());
-          const totalThreadBudget = Math.max(1, cpuCount - 1);
-          const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-          // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
-          const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-            ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-            : isCriticalLowMem ? 1
-            : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots))
-            : Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots));
-          const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-          // Scale down cache per job when running many renderMedia slots in
-          // parallel; hard-capped at 1.5GB inside the resolver (PR-4 guardrail).
-          const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
-          const offthreadVideoCacheSizeInBytes = resolveOffthreadCacheBytes({
-            requestedMb: requestedOffthreadCacheMb,
-            baseCacheMb,
-            activeRenderSlots,
-          });
-          const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
-          const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
-          const isWindows = process.platform === "win32";
-          const chromiumArgs = [
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--no-zygote",
-            "--no-sandbox",
-            "--js-flags=--max-old-space-size=512",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-default-apps",
-            "--gpu-process-limit=0",
-            ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
-          ];
-          console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), slots=${activeRenderSlots}/${renderSlotLimit}, queueWaitMs=${renderQueueWaitMs}, lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
-          renderStartedAt = Date.now();
-          await recordTelemetryEvent(userId, {
-            name: "render_server_started",
-            category: "performance",
-            source: "server",
-            step: "render",
-            status: "started",
-            properties: {
-              jobId,
-              compositionId,
-              activeJobs,
-              activeRenderSlots,
-              renderSlotLimit,
-              renderQueueWaitMs,
-              queuedJobs: getRenderSlotQueueLength(),
-              cpuCount,
-              renderConcurrency,
-              freeMemGb: Number(freeMemGb.toFixed(2)),
-              lowResource: isLowResourceHost,
-              fps,
-              jpegQuality,
+        const { videoUrl } = await runRender(renderInput, {
+          jobId,
+          cancelSignal,
+          cancel,
+          onProgress: (pct, phase) => {
+            // Mirror the legacy per-phase progress + job-state writes. queued is its
+            // own hook (carries position); done is finalized after runRender returns.
+            if (phase === "done") return;
+            const p = Math.round(pct);
+            writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null });
+            setRenderJob(jobId, { status: "running", startedAt: getRenderJob(jobId)?.startedAt ?? renderStartedAt, progress: p });
+          },
+          hooks: {
+            recordBundleRetry,
+            onQueued: (position) => {
+              writeProgress({ progress: 0, stage: "queued", queued: true, queuePosition: position, queuedAt: Date.now() });
             },
-          }).catch(() => {});
-
-          const { cancel, cancelSignal } = makeCancelSignal();
-          renderCancelFn = cancel;
-          activeRenderCancel.set(renderOwnerKey, cancel);
-          cancelByJobId.set(jobId, cancel);
-
-          let renderMediaRetriedForBundle = false;
-          while (true) {
-            try {
-              await renderMedia({
-                composition,
-                serveUrl: bundleLocation,
-                codec: "h264",
-                outputLocation,
-                inputProps,
-                timeoutInMilliseconds: 7200000,
-                concurrency: renderConcurrency,
-                cancelSignal,
-                x264Preset: isLowResourceHost ? "faster" : "medium",
-                jpegQuality,
-                offthreadVideoCacheSizeInBytes,
-                chromiumOptions: {
-                  disableWebSecurity: true,
-                  ignoreCertificateErrors: true,
-                  gl: "swiftshader",
-                  args: chromiumArgs,
-                },
-                onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
-                  const p = Math.round(progress * 100);
-                  if (p !== lastProgress) {
-                    lastProgress = p;
-                    writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
-                  }
-                  if (p % 5 === 0) {
-                    console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
-                  }
-                },
-              });
-              break;
-            } catch (error) {
-              const reason = remotionBundleMissingReason(error);
-              if (renderMediaRetriedForBundle || !reason) throw error;
-              renderMediaRetriedForBundle = true;
-              console.log(`[Render] bundle missing during renderMedia for job=${jobId} — rebuilding once`);
-              await recordBundleRetry("render_media", reason);
-              try { if (fs.existsSync(outputLocation)) fs.rmSync(outputLocation, { force: true }); } catch {}
-              useBundleLocation(await ensureBundle(true));
-              composition = applyCompositionOverrides(await selectCurrentComposition());
-              lastProgress = -1;
-              if (await stopSupersededJob("render_bundle_retry")) return;
-            }
-          }
-
-          clearCancelHandles();
-          finishJob();
-
-          // If a newer job was started for this render scope, discard this result silently
-          if (await stopSupersededJob("render_complete")) return;
-
-          const videoUrl = `/api/renders/${filename}`;
-          setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
-          writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
-          await recordTelemetryEvent(userId, {
-            name: "render_server_done",
-            category: "performance",
-            source: "server",
-            step: "render",
-            status: "done",
-            durationMs: Date.now() - renderStartedAt,
-            properties: {
-              jobId,
-              compositionId,
-              activeJobs,
-              activeRenderSlots,
-              renderSlotLimit,
-              renderQueueWaitMs,
-              renderConcurrency,
-              freeMemGb: Number(freeMemGb.toFixed(2)),
-              outputMb: fs.existsSync(outputLocation) ? Number((fs.statSync(outputLocation).size / (1024 * 1024)).toFixed(1)) : null,
+            checkSuperseded: async (stage) => {
+              if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
+              await stopSupersededJob(stage);
+              return true;
             },
-          }).catch(() => {});
-          renderCompletedForLatestJob = true;
+            onRenderStart: async (info) => {
+              renderStartedAt = Date.now();
+              writeProgress({ progress: 0, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs: info.renderQueueWaitMs });
+              await recordTelemetryEvent(userId, {
+                name: "render_server_started",
+                category: "performance",
+                source: "server",
+                step: "render",
+                status: "started",
+                properties: {
+                  jobId,
+                  compositionId: info.compositionId,
+                  activeJobs: info.activeJobs,
+                  activeRenderSlots: info.activeRenderSlots,
+                  renderSlotLimit: info.renderSlotLimit,
+                  renderQueueWaitMs: info.renderQueueWaitMs,
+                  queuedJobs: getRenderSlotQueueLength(),
+                  cpuCount: info.cpuCount,
+                  renderConcurrency: info.renderConcurrency,
+                  freeMemGb: info.freeMemGb,
+                  fps: info.fps,
+                  jpegQuality: info.jpegQuality,
+                },
+              }).catch(() => {});
+            },
+            onCancelHandle: (cancelFn) => {
+              // Register the live render cancel handle exactly as the legacy route did,
+              // right before renderMedia starts.
+              activeRenderCancel.set(renderOwnerKey, cancelFn);
+              cancelByJobId.set(jobId, cancelFn);
+            },
+            // Runs after renderMedia succeeds, before success telemetry — the exact
+            // legacy point for clearCancelHandles() + finishJob() + render_complete.
+            onRenderSucceeded: async () => {
+              clearCancelHandles();
+              finishJob();
+              if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
+              await stopSupersededJob("render_complete");
+              return true;
+            },
+            onRenderDone: async (info) => {
+              await recordTelemetryEvent(userId, {
+                name: "render_server_done",
+                category: "performance",
+                source: "server",
+                step: "render",
+                status: "done",
+                durationMs: Date.now() - renderStartedAt,
+                properties: {
+                  jobId,
+                  compositionId: info.compositionId,
+                  activeJobs: info.activeJobs,
+                  activeRenderSlots: info.activeRenderSlots,
+                  renderSlotLimit: info.renderSlotLimit,
+                  renderQueueWaitMs: info.renderQueueWaitMs,
+                  renderConcurrency: info.renderConcurrency,
+                  freeMemGb: info.freeMemGb,
+                  outputMb: info.outputMb,
+                },
+              }).catch(() => {});
+            },
+          },
         });
 
-        if (renderCompletedForLatestJob) {
-          createNotification({
-            userId,
-            type: "VIDEO_COMPLETED",
-            title: "วิดีโอสร้างเสร็จแล้ว",
-            body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
-          }).catch(() => {});
-        }
+        // Success path: runRender already ran clearCancelHandles()/finishJob() via
+        // onRenderSucceeded; persist the done state + notify (route-owned).
+        setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
+        writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
+        createNotification({
+          userId,
+          type: "VIDEO_COMPLETED",
+          title: "วิดีโอสร้างเสร็จแล้ว",
+          body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
+        }).catch(() => {});
       } catch (error) {
         clearCancelHandles();
         finishJob();
+
+        // Superseded — already handled (job-state + refund) inside stopSupersededJob
+        // by the checkSuperseded/onRenderSucceeded hooks. Ignore here as before.
+        if (error instanceof SupersededError) return;
 
         // Intentional cancel (page refresh / new render) — not a real failure.
         // Don't log as error, don't mark job errored, don't notify the user.
