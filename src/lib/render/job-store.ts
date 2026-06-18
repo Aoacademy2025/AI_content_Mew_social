@@ -20,6 +20,14 @@ export async function enqueueRenderJob(input: {
    * reserved exactly once per video. Ignored if `reserveQuotaFor` is set.
    */
   markReserved?: boolean;
+  /**
+   * Render-scope identity (= the legacy route's `renderOwnerKey`, `${userId}:${renderScopeId}`).
+   * Stored on the row so the queue path can supersede a prior in-flight job for the
+   * same scope+user across processes (the in-memory cancel-registry can't, since the
+   * worker renders in a separate process). Null when the request has no jobScopeId
+   * (e.g. some MCP jobs, which dedupe via idempotencyKey instead).
+   */
+  scopeKey?: string | null;
 }): Promise<{ id: string }> {
   let reserved = false;
   if (input.reserveQuotaFor) {
@@ -44,11 +52,68 @@ export async function enqueueRenderJob(input: {
       videoId: input.videoId ?? null,
       parentJobId: input.parentJobId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
+      scopeKey: input.scopeKey ?? null,
       reservedQuota: reserved,
       status: "QUEUED",
     },
   });
   return { id: job.id };
+}
+
+/**
+ * Cross-process scope supersession for the queue path (replaces the in-memory
+ * cancel-registry, which lives in the WEB process while the queue renders in a
+ * SEPARATE worker). When a user re-renders the same scope (clicks Render again /
+ * refresh-resume), cancel any in-flight job for that scope+user so we don't run a
+ * second duplicate render or charge a second clip.
+ *
+ * Handling differs by status because the worker, not this caller, owns the
+ * RUNNING→terminal transition:
+ *  - QUEUED jobs never ran → cancel them directly (guarded updateMany so a job that
+ *    just got claimed isn't clobbered), refunding any reserved clip exactly once
+ *    (same idempotent pattern as failRenderJob).
+ *  - RUNNING jobs → only set cancelRequested=true; the worker's watchdog polls
+ *    isCancelRequested → cancels → failRenderJob(requeue:false) → FAILED + refund via
+ *    reservedQuota. Touching their status here would race that refund.
+ *
+ * A refund failure never blocks the supersede. Returns the count of jobs superseded.
+ */
+export async function supersedeScope(scopeKey: string, userId: string): Promise<number> {
+  let superseded = 0;
+
+  // QUEUED jobs never ran — cancel directly and refund their reserved clip once.
+  const queued = await prisma.renderJob.findMany({
+    where: { scopeKey, userId, status: "QUEUED" },
+  });
+  for (const job of queued) {
+    // Guarded transition: only cancel if STILL QUEUED (a concurrent claim may have
+    // just moved it to RUNNING — let the RUNNING path / worker own that one instead).
+    const res = await prisma.renderJob.updateMany({
+      where: { id: job.id, status: "QUEUED" },
+      data: { status: "CANCELLED", finishedAt: new Date() },
+    });
+    if (res.count !== 1) continue; // lost the race — it's RUNNING now, skip
+    superseded++;
+    if (job.reservedQuota) {
+      try {
+        await refundClipUsage(userId);
+      } catch (refundErr) {
+        // Refund failure must never block the supersede — log and continue.
+        console.error(`[job-store] refundClipUsage failed superseding QUEUED job ${job.id} user ${userId}:`, refundErr);
+      }
+      // Clear the flag regardless — refund at most once (idempotent), as in failRenderJob.
+      await prisma.renderJob.update({ where: { id: job.id }, data: { reservedQuota: false } });
+    }
+  }
+
+  // RUNNING jobs — request cancel; the worker's watchdog finishes the transition + refund.
+  const running = await prisma.renderJob.updateMany({
+    where: { scopeKey, userId, status: "RUNNING" },
+    data: { cancelRequested: true },
+  });
+  superseded += running.count;
+
+  return superseded;
 }
 
 /**

@@ -98,6 +98,60 @@ async function main() {
   const raceAfter = await store.getRenderJob(race.id);
   ok(raceAfter?.status === "QUEUED", "failRenderJob on a QUEUED job is a no-op (drain-race guard)");
 
+  // 8. supersedeScope (queue-path cross-process supersession). A user re-rendering the
+  // same scope must CANCEL the prior in-flight job (so it doesn't run a 2nd duplicate
+  // render / charge a 2nd clip), and refund any clip the cancelled job reserved.
+  // 8a. QUEUED job with reservedQuota=true → CANCELLED + refund accounted (flag cleared).
+  // Use a real User row so the refund is observable as an increment counter delta.
+  await prisma.user.create({ data: { id: "su", name: "Sup User", email: "su@example.com", plan: "PRO", usageCount: 5, usageLimit: 100, usagePeriodStartedAt: new Date() } });
+  const supA = await store.enqueueRenderJob({ userId: "su", type: "RENDER", payload: { shortVideoConfig: {} }, markReserved: true, scopeKey: "su:scopeS" });
+  const supANewer = await store.enqueueRenderJob({ userId: "su", type: "RENDER", payload: { shortVideoConfig: {} }, markReserved: true, scopeKey: "su:scopeS" });
+  const usageBefore = (await prisma.user.findUnique({ where: { id: "su" } }))?.usageCount;
+  const supCount = await store.supersedeScope("su:scopeS", "su");
+  const supAAfter = await store.getRenderJob(supA.id);
+  const supANewerAfter = await store.getRenderJob(supANewer.id);
+  const usageAfter = (await prisma.user.findUnique({ where: { id: "su" } }))?.usageCount;
+  ok(supCount === 2, "supersedeScope cancels BOTH QUEUED jobs for the scope (count=2)");
+  ok(supAAfter?.status === "CANCELLED", "superseded QUEUED job A → CANCELLED");
+  ok(supAAfter?.reservedQuota === false, "superseded QUEUED job A reservedQuota cleared (refund accounted, idempotent)");
+  ok(supANewerAfter?.status === "CANCELLED", "the newer same-scope QUEUED job is also CANCELLED");
+  ok((usageBefore ?? 0) - (usageAfter ?? 0) === 2, "two reserved clips refunded (usageCount dropped by 2)");
+
+  // 8a-ii. the route's real flow is supersedeScope(S) FIRST, THEN enqueue the new job
+  // for S. A same-scope job enqueued AFTER the supersede call must be untouched (it is
+  // the user's intended new render). This is the no-double-charge guarantee: exactly
+  // ONE live job per scope after a re-render.
+  const supNewest = await store.enqueueRenderJob({ userId: "su", type: "RENDER", payload: { shortVideoConfig: {} }, markReserved: true, scopeKey: "su:scopeS" });
+  const supNewestAfter = await store.getRenderJob(supNewest.id);
+  ok(supNewestAfter?.status === "QUEUED", "a same-scope job enqueued AFTER supersedeScope is untouched (the new render)");
+  ok(supNewestAfter?.reservedQuota === true, "the new render keeps its reservation");
+  await store.supersedeScope("su:scopeS", "su"); // clean up so 8a-iii sees nothing in-flight
+
+  // 8a-ii-b. a job in a DIFFERENT scope is never affected.
+  const supOther = await store.enqueueRenderJob({ userId: "su", type: "RENDER", payload: { shortVideoConfig: {} }, markReserved: true, scopeKey: "su:scopeT" });
+  await store.supersedeScope("su:scopeS", "su"); // supersede scopeS — must not affect scopeT
+  const supOtherAfter = await store.getRenderJob(supOther.id);
+  ok(supOtherAfter?.status === "QUEUED", "a job in a DIFFERENT scope is untouched by supersedeScope");
+  ok(supOtherAfter?.reservedQuota === true, "different-scope job keeps its reservation");
+
+  // 8a-iii. re-superseding (no QUEUED/RUNNING left for the scope) does not double-refund.
+  const usagePreReSup = (await prisma.user.findUnique({ where: { id: "su" } }))?.usageCount;
+  const reSupCount = await store.supersedeScope("su:scopeS", "su");
+  const usagePostReSup = (await prisma.user.findUnique({ where: { id: "su" } }))?.usageCount;
+  ok(reSupCount === 0, "re-superseding an already-cancelled scope supersedes nothing (count=0)");
+  ok(usagePreReSup === usagePostReSup, "no double-refund when nothing is in-flight");
+
+  // 8b. RUNNING job → supersedeScope only sets cancelRequested=true; status STAYS RUNNING
+  // (the worker's watchdog polls isCancelRequested → cancels → failRenderJob → FAILED+refund).
+  const supRunning = await prisma.renderJob.create({ data: { userId: "su", type: "RENDER", payload: "{}", status: "RUNNING", reservedQuota: true, scopeKey: "su:scopeR", heartbeatAt: new Date() } });
+  const runCount = await store.supersedeScope("su:scopeR", "su");
+  const supRunningAfter = await store.getRenderJob(supRunning.id);
+  ok(runCount === 1, "supersedeScope counts the RUNNING job");
+  ok(supRunningAfter?.status === "RUNNING", "RUNNING job stays RUNNING (worker owns the terminal transition)");
+  ok(supRunningAfter?.cancelRequested === true, "RUNNING job gets cancelRequested=true");
+  ok(supRunningAfter?.reservedQuota === true, "RUNNING job reservation untouched (worker refunds on FAILED, no double-refund race)");
+  ok(await store.isCancelRequested(supRunning.id), "isCancelRequested true for the superseded RUNNING job");
+
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
   console.log("\nALL PASS");
 }

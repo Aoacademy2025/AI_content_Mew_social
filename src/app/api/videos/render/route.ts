@@ -11,7 +11,7 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
-import { enqueueRenderJob } from "@/lib/render/job-store";
+import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -309,6 +309,29 @@ export async function POST(req: Request) {
       }
     } else if (renderJobDoneByUser.has(renderOwnerKey)) {
       console.log(`[Render] superseding queued/pre-render job for scope ${renderOwnerKey} without waiting`);
+    }
+
+    // Queue-path scope identity. The in-memory cancel-registry above (legacy path)
+    // can't supersede a prior render here because the queue renders in a SEPARATE
+    // worker process and this route returns at enqueue. So for the queue path we
+    // supersede via the RenderJob table (DB-level, cross-process) using the SAME scope
+    // identity as the legacy path — `renderOwnerKey` (`${userId}:${renderScopeId}`).
+    // Only when jobScopeId was actually supplied: without it renderScopeId defaults to
+    // "default", and we must NOT collapse unrelated MCP jobs (which dedupe via
+    // idempotencyKey) into one shared scope → leave scopeKey null + skip supersede.
+    const queueScopeKey =
+      process.env.RENDER_VIA_QUEUE === "1" && typeof jobScopeId === "string" && jobScopeId.trim()
+        ? renderOwnerKey
+        : null;
+    if (queueScopeKey) {
+      // Cancel any in-flight job (QUEUED → CANCELLED+refund; RUNNING → cancelRequested,
+      // worker finishes it) for this scope+user before reserving/enqueuing a new one.
+      // Targets only QUEUED/RUNNING of the SAME scope, so a normal sequential
+      // RENDER→BURN is unaffected (the prior RENDER is already DONE by burn time).
+      await supersedeScope(queueScopeKey, userId).catch((e) => {
+        console.error(`[Render] supersedeScope failed for scope ${queueScopeKey}:`, e);
+        return 0;
+      });
     }
 
     // Queue-path BURN (isSubtitleOverlay under RENDER_VIA_QUEUE): the base RENDER
@@ -712,6 +735,10 @@ export async function POST(req: Request) {
         // Quota already reserved once above; flag the row so failRenderJob refunds it
         // (base RENDER only), but do NOT re-reserve. BURN reuses the video's charge.
         markReserved: !isBurn,
+        // Scope identity for cross-process supersession (null when no jobScopeId).
+        // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
+        // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
+        scopeKey: queueScopeKey,
       });
       return NextResponse.json({ jobId: id });
     }
