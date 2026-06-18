@@ -86,11 +86,14 @@ export async function supersedeScope(scopeKey: string, userId: string): Promise<
     where: { scopeKey, userId, status: "QUEUED" },
   });
   for (const job of queued) {
-    // Guarded transition: only cancel if STILL QUEUED (a concurrent claim may have
-    // just moved it to RUNNING — let the RUNNING path / worker own that one instead).
+    // Atomic guarded transition: only cancel if STILL QUEUED (a concurrent claim may
+    // have just moved it to RUNNING — let the RUNNING path / worker own that one).
+    // Clear reservedQuota in the SAME write so a CANCELLED job can never linger with
+    // the flag set → no double-refund window. The refund below uses the pre-read
+    // job.reservedQuota (captured by findMany before this update).
     const res = await prisma.renderJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
-      data: { status: "CANCELLED", finishedAt: new Date() },
+      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false },
     });
     if (res.count !== 1) continue; // lost the race — it's RUNNING now, skip
     superseded++;
@@ -101,8 +104,6 @@ export async function supersedeScope(scopeKey: string, userId: string): Promise<
         // Refund failure must never block the supersede — log and continue.
         console.error(`[job-store] refundClipUsage failed superseding QUEUED job ${job.id} user ${userId}:`, refundErr);
       }
-      // Clear the flag regardless — refund at most once (idempotent), as in failRenderJob.
-      await prisma.renderJob.update({ where: { id: job.id }, data: { reservedQuota: false } });
     }
   }
 
