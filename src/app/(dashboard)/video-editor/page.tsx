@@ -19,6 +19,7 @@ import {
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { QuotaStatus } from "@/components/quota-status";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
@@ -3607,6 +3608,8 @@ export default function VideoEditorPage() {
 
           {/* Pipeline status */}
           <div className="border-t border-[#1e1e28] p-3 overflow-y-auto flex-shrink-0 max-h-[55%]">
+            {/* Clip quota — fail-soft: renders nothing while loading or on error */}
+            <QuotaStatus variant="chip" className="mb-2 w-full justify-center" />
             <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Process</div>
             <div className="flex flex-col gap-0.5">
               {/* Order matches runAll: TTS → Transcribe → Keywords → B-roll → Config → Render → (Avatar/Composite) → Burn */}

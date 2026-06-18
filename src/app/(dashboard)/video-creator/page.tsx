@@ -15,6 +15,7 @@ import {
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { QuotaStatus } from "@/components/quota-status";
 import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
 import { MusicPanel } from "./_panels/MusicPanel";
 import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
@@ -2427,6 +2428,8 @@ export default function ShortVideoPage() {
                   <span className="text-[10px] font-semibold text-green-400">Ready</span>
                 </div>
               )}
+              {/* Clip quota — fail-soft: renders nothing while loading or on error */}
+              <QuotaStatus variant="chip" />
             </div>
           </div>
 
