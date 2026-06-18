@@ -903,6 +903,10 @@ export default function VideoEditorPage() {
         },
         renderedUrl: baseUrl,
         renderedVideoNoSubUrl: baseUrl || undefined,
+        // v.videoUrl = the final burned video (what the gallery shows as the finished clip).
+        // Map it to burnedVideoUrl so loadDraftInto marks burnSubtitles="done" and
+        // the pipeline shows the clip as fully complete with no idle Render button.
+        burnedVideoUrl: v.videoUrl || undefined,
         compositeUrl: v.avatarVideoUrl || undefined,
         galleryVideoId: v.id,
         ttsProvider, voiceId, geminiVoiceName,
@@ -912,12 +916,25 @@ export default function VideoEditorPage() {
         config: cfg,
       };
       loadDraftInto(draft);
-      // The clip is already rendered, so keywords + b-roll are by definition done.
-      // The Video record carries no keyword/stock arrays, so loadDraftInto leaves
-      // those steps "idle" → the UI shows a "Run" button as if we'd re-generate
-      // them. Mark them done so only Burn remains as the next action.
-      setSteps((s) => ({ ...s, keywords: "done", fetchStock: "done" }));
-      stepsRef.current = { ...stepsRef.current, keywords: "done", fetchStock: "done" };
+      // The clip is already rendered — the Video record carries no keyword/stock arrays,
+      // so loadDraftInto leaves those steps "idle". Also, avatar/avatarTail/composite are
+      // never in the draft built here, so they stay idle if useAvatar is true. Mark all
+      // steps that are evidenced by the Video record as done so no spurious Render button appears.
+      const extraDone: Partial<Record<keyof StepState, "done">> = {
+        keywords: "done",
+        fetchStock: "done",
+      };
+      // If the video has an avatar composite, all three avatar pipeline steps are done.
+      // avatarTail is safe to mark done unconditionally: it is only *shown* when
+      // avatarTiming === "bookend-both", so marking it done on a non-bookend-both clip
+      // simply makes an invisible step green — no UI harm.
+      if (v.avatarVideoUrl) {
+        extraDone.avatar     = "done";
+        extraDone.avatarTail = "done";
+        extraDone.composite  = "done";
+      }
+      setSteps((s) => ({ ...s, ...extraDone }));
+      stepsRef.current = { ...stepsRef.current, ...extraDone };
       toast.success("โหลดงานเดิมมาทำต่อแล้ว — กด Burn เพื่อฝังซับ");
     } catch {
       toast.error("เปิดงานเดิมไม่สำเร็จ");
