@@ -278,26 +278,45 @@ export function OrderPanel(p: OrderPanelProps) {
                 </div>
               )}
 
-              {/* Preview ภาพที่ AI generate แล้ว — โชว์ระหว่าง/หลัง step B-roll (Ken Burns ใช้ภาพนี้ทำวิดีโอ) — รวม Auto Mix fallback */}
-              {(p.stockSource === "kie-image" && p.kieImageEnabled || p.stockSource === "auto-mix" && p.autoMixEnabled) && !!p.stockVideos?.some(sv => sv.imageLocalUrl || sv.imageUrl) && (
+              {/* Preview คลิป/ภาพที่ได้จาก API — โชว์ระหว่าง/หลัง step B-roll
+                  รวมทั้ง video clips (Pexels/Pixabay) และภาพ AI generate (kie.ai/Auto Mix fallback) */}
+              {!!p.stockVideos?.some(sv => sv.imageLocalUrl || sv.imageUrl || sv.localUrl || sv.videoUrl) && (
                 <div className="px-1">
-                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                     {p.steps.fetchStock === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
-                    Generated Images ({p.stockVideos!.length})
+                    B-roll ที่ได้ ({p.stockVideos!.filter(sv => sv.imageLocalUrl || sv.imageUrl || sv.localUrl || sv.videoUrl).length})
                   </label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {p.stockVideos!.map((sv, i) => {
-                      const src = sv.imageLocalUrl || sv.imageUrl;
-                      if (!src) return null;
+                      const imgSrc = sv.imageLocalUrl || sv.imageUrl;
+                      const vidSrc = sv.localUrl || sv.videoUrl;
+                      if (!imgSrc && !vidSrc) return null;
+                      // AI generate (kie.ai/auto-mix fallback) มี imageUrl → แสดงรูป
+                      // video clip ปกติ (Pexels/Pixabay) → แสดง frame แรกของวิดีโอ
+                      const isImage = !!imgSrc;
                       return (
-                        <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border border-cyan-500/20 bg-[#0a0a0f]">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={src} alt={sv.keyword || `clip ${i + 1}`} className="w-full h-full object-cover" />
-                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/50 truncate">{sv.keyword}</div>
+                        <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border border-cyan-500/20 bg-[#0a0a0f] group/clip">
+                          {isImage ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={imgSrc} alt={sv.keyword || `clip ${i + 1}`} className="w-full h-full object-cover" loading="lazy" />
+                          ) : (
+                            <video src={vidSrc} className="w-full h-full object-cover" muted playsInline preload="metadata"
+                              onMouseEnter={e => { e.currentTarget.play().catch(() => {}); }}
+                              onMouseLeave={e => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
+                          )}
+                          {/* badge บอก source: AI หรือ video */}
+                          <span className={cn("absolute top-0.5 right-0.5 text-[7px] font-bold px-1 py-px rounded uppercase tracking-wide",
+                            isImage ? "bg-cyan-500/80 text-white" : "bg-violet-500/80 text-white")}>
+                            {isImage ? "AI" : "VID"}
+                          </span>
+                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/60 truncate">{sv.keyword}</div>
                         </div>
                       );
                     })}
                   </div>
+                  <p className="text-[8px] text-slate-600 mt-1 leading-relaxed">
+                    <span className="text-violet-300 font-bold">VID</span> = วิดีโอจริง (hover เพื่อเล่น) · <span className="text-cyan-300 font-bold">AI</span> = ภาพ AI generate
+                  </p>
                 </div>
               )}
             </div>
