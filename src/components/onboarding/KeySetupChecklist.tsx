@@ -3,17 +3,19 @@
 import { CheckCircle2, Circle, KeyRound, ArrowRight } from "lucide-react";
 import type { KeyStatus } from "@/lib/key-tiers";
 
-export function KeySetupChecklist({ status, onSetup }: { status: KeyStatus; onSetup: () => void }) {
-  if (status.tier1Complete) return null;
-  const stockDone = status.pexels || status.pixabay;
-  const doneCount = (status.gemini ? 1 : 0) + (stockDone ? 1 : 0);
-
-  const Row = ({ done, label }: { done: boolean; label: string }) => (
+function Row({ done, label }: { done: boolean; label: string }) {
+  return (
     <div className="flex items-center gap-2 text-sm">
       {done ? <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" /> : <Circle className="h-4 w-4 text-slate-500 shrink-0" />}
       <span className={done ? "text-slate-400 line-through" : "text-slate-200"}>{label}</span>
     </div>
   );
+}
+
+export function KeySetupChecklist({ status, onSetup }: { status: KeyStatus; onSetup: () => void }) {
+  if (status.tier1Complete) return null;
+  const stockDone = status.pexels || status.pixabay;
+  const doneCount = (status.gemini ? 1 : 0) + (stockDone ? 1 : 0);
 
   return (
     <div className="rounded-xl border border-sky-400/25 bg-gradient-to-r from-sky-500/10 to-transparent p-4 sm:p-5">
