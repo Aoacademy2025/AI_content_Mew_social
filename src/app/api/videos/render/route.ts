@@ -793,7 +793,11 @@ export async function POST(req: Request) {
         resolveDone();
       };
       const refundReservedClip = async () => {
-        if (quotaRefunded) return;
+        // Only refund if THIS request actually reserved a clip. A FREE burn
+        // (burnAlreadyPaid → quotaReserved=false) never spent quota here — the
+        // charge lives on the base render — so refunding it would wrongly credit
+        // a clip back (quota leak). Matches the outer setup-error guard.
+        if (quotaRefunded || !quotaReserved) return;
         quotaRefunded = true;
         await refundClipUsage(userId).catch(() => {});
       };
