@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, FlaskConical, Trash2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { Loader2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
+import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
+import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
 
 interface ApiKeys {
   geminiKey?: string;
@@ -15,24 +16,16 @@ interface ApiKeys {
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
 type TestResult = { ok: boolean; message: string } | null;
 
-const KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
-  { id: "geminiKey",     keyType: "gemini",     label: "Gemini API Key",     placeholder: "AIza... หรือ AQ.",          description: "Google Gemini — ใช้สำหรับเสียง, ถอดซับ, keyword และ AI หลัก แนะนำผูกบัตร Google เพื่อเพิ่มโควต้า",   link: "https://aistudio.google.com/app/apikey" },
-  { id: "heygenKey",     keyType: "heygen",     label: "HeyGen API Key",     placeholder: "Enter your HeyGen key",    description: "Avatar video creation",                      link: "https://app.heygen.com/settings?nav=API" },
-  { id: "elevenlabsKey", keyType: "elevenlabs", label: "ElevenLabs API Key", placeholder: "Enter your ElevenLabs key",description: "Voice synthesis & cloning",                  link: "https://elevenlabs.io/app/settings/api-keys" },
-  { id: "pexelsKey",     keyType: "pexels",     label: "Pexels API Key",     placeholder: "Enter your Pexels key",    description: "Stock video (Pexels)",                       link: "https://www.pexels.com/api/" },
-  { id: "pixabayKey",    keyType: "pixabay",    label: "Pixabay API Key",    placeholder: "12345678-abcdef...",        description: "Stock video fallback (Pixabay)",             link: "https://pixabay.com/api/docs/" },
-];
-
 const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);
   const [apiKeys, setApiKeys] = useState<ApiKeys>({});
-  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [testingKey, setTestingKey] = useState<KeyType | null>(null);
   const [testResults, setTestResults] = useState<Record<KeyType, TestResult>>({ ...EMPTY_RESULTS });
   const [dirty, setDirty] = useState(false);
   const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => { fetchApiKeys(); }, []);
 
@@ -48,14 +41,19 @@ export function ApiKeySettings() {
   function updateKey(id: keyof ApiKeys, value: string) {
     setApiKeys(prev => ({ ...prev, [id]: value }));
     setDirty(true);
-    const cfg = KEY_CONFIG.find(k => k.id === id);
-    if (cfg) setTestResults(prev => ({ ...prev, [cfg.keyType]: null }));
+    const def = KEY_TIERS.find(k => k.apiKeysField === id);
+    if (def) setTestResults(prev => ({ ...prev, [def.testKeyType as KeyType]: null }));
   }
 
   async function handleTestKey(keyType: KeyType) {
     setTestingKey(keyType);
     setTestResults(prev => ({ ...prev, [keyType]: null }));
     try {
+      // Save the current value for this key first so the test always reflects what's in the input
+      const def = KEY_TIERS.find((k) => k.testKeyType === keyType);
+      if (def) {
+        await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [def.apiKeysField]: apiKeys[def.apiKeysField] ?? "" }) });
+      }
       const res = await fetch("/api/user/test-key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keyType }) });
       const result = await res.json();
       setTestResults(prev => ({ ...prev, [keyType]: result }));
@@ -71,8 +69,8 @@ export function ApiKeySettings() {
       const res = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updated) });
       if (!res.ok) throw new Error();
       toast.success("API Key removed");
-      const cfg = KEY_CONFIG.find(k => k.id === id);
-      if (cfg) setTestResults(prev => ({ ...prev, [cfg.keyType]: null }));
+      const def = KEY_TIERS.find(k => k.apiKeysField === id);
+      if (def) setTestResults(prev => ({ ...prev, [def.testKeyType as KeyType]: null }));
     } catch { toast.error("Failed to remove key"); }
   }
 
@@ -152,70 +150,47 @@ export function ApiKeySettings() {
         )}
       </div>
 
-      {KEY_CONFIG.map((cfg) => {
-        const result = testResults[cfg.keyType];
-        const isTesting = testingKey === cfg.keyType;
-        const set = isSet(cfg.id);
+      {(() => {
+        const status = computeKeyStatus({
+          gemini: isSet("geminiKey"), pexels: isSet("pexelsKey"), pixabay: isSet("pixabayKey"),
+          elevenlabs: isSet("elevenlabsKey"), heygen: isSet("heygenKey"),
+        });
+        const field = (id: KeyId) => {
+          const def = KEY_TIERS.find((k) => k.id === id)!;
+          return (
+            <ApiKeyField
+              key={def.id} def={def}
+              value={apiKeys[def.apiKeysField] || ""}
+              isSaved={isSet(def.apiKeysField)}
+              onChange={(v) => updateKey(def.apiKeysField, v)}
+              onTest={() => handleTestKey(def.testKeyType as KeyType)}
+              testResult={testResults[def.testKeyType as KeyType]}
+              testing={testingKey === (def.testKeyType as KeyType)}
+              onDelete={() => handleDelete(def.apiKeysField)}
+            />
+          );
+        };
         return (
-          <div key={cfg.id} className="space-y-2">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{cfg.label}</label>
-                {cfg.link && (
-                  <a href={cfg.link} target="_blank" rel="noopener noreferrer"
-                    className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
-              </div>
-              {set && !result && (
-                <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-green-400"
-                  style={{ background: "hsl(142 72% 29% / 0.15)", border: "1px solid hsl(142 72% 29% / 0.3)" }}>
-                  Active
-                </span>
-              )}
-              {result?.ok && <span className="flex items-start gap-1 text-xs text-green-400"><CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0" /> <span className="leading-snug">{result.message}</span></span>}
+          <>
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-medium"
+              style={{ color: status.tier1Complete ? "rgb(110 231 183)" : "rgb(252 211 77)" }}>
+              {status.tier1Complete ? "✓ พร้อมสร้างวิดีโอ" : "ตั้งค่าจำเป็นให้ครบเพื่อเริ่มสร้างวิดีโอ"}
             </div>
-            {/* Error result — given its own row so longer messages wrap readably */}
-            {result && !result.ok && (
-              <div className="flex items-start gap-1.5 text-xs text-red-400 px-2 py-1.5 rounded-lg bg-red-500/5 border border-red-500/20">
-                <XCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span className="leading-snug">{result.message}</span>
-              </div>
-            )}
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  type={showKeys[cfg.id] ? "text" : "password"}
-                  value={apiKeys[cfg.id] || ""}
-                  onChange={e => updateKey(cfg.id, e.target.value)}
-                  placeholder={cfg.placeholder}
-                  className="border-0 pr-16 font-mono text-xs focus-visible:ring-1 focus-visible:ring-cyan-500/50"
-                  style={{ background: "var(--ui-input-bg)", color: "var(--ui-text-secondary)" }}
-                />
-                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                  <button type="button" onClick={() => setShowKeys(p => ({ ...p, [cfg.id]: !p[cfg.id] }))}
-                    className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
-                    {showKeys[cfg.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                  {set && (
-                    <button type="button" onClick={() => handleDelete(cfg.id)}
-                      className="transition-colors hover:text-red-400" style={{ color: "var(--ui-text-muted)" }}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-              <button type="button" disabled={!set || isTesting} onClick={() => handleTestKey(cfg.keyType)}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all hover:opacity-80 disabled:opacity-30"
-                style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)", color: "var(--ui-text-secondary)" }}>
-                {isTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-                Test
-              </button>
-            </div>
-          </div>
+
+            <div className="text-xs font-semibold uppercase tracking-wide text-sky-200">จำเป็น</div>
+            {field("gemini")}
+            {field("pexels")}
+            {field("pixabay")}
+
+            <button type="button" onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex w-full items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5">
+              <ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+              ขั้นสูง (ไม่บังคับ) — ไม่ใส่ก็ใช้งานได้
+            </button>
+            {advancedOpen && (<>{field("elevenlabs")}{field("heygen")}</>)}
+          </>
         );
-      })}
+      })()}
 
       <div className="flex items-center justify-end gap-3 border-t pt-4" style={{ borderColor: "var(--ui-divider)" }}>
         <button type="button" onClick={handleDiscard} disabled={!dirty}
