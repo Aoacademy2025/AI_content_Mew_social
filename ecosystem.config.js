@@ -5,48 +5,47 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/next",
       args: "start",
-      // Raise the Node heap so renderMedia (which runs in this process) doesn't
-      // hit the default ~4GB ceiling and OOM mid-render even though the VPS has
-      // ~15GB RAM. Long videos accumulate frames/buffers past 4GB → fatal heap
-      // limit. 12GB leaves headroom under the 15GB box + max_memory_restart 12G.
-      // node_args alone doesn't reach the real node process: `script` points at
-      // the `next` shell wrapper, which spawns its own node, so PM2's node_args
-      // is dropped. NODE_OPTIONS in env propagates to every node in the chain
-      // (including next-server) and is the reliable way to raise the heap.
-      node_args: "--max-old-space-size=12288",
-      max_memory_restart: "13G",
+      // Web heap. With RENDER_VIA_QUEUE=1 (below) render runs in the separate
+      // render-worker app — NOT in this process — so ai-content no longer needs a
+      // huge heap; 3GB is plenty for serving + light orchestration (observed ~0.5GB).
+      // The worker carries the render heap (4GB). 3GB web + 4–5GB worker leaves
+      // headroom under the 15GB box. ⚠️ If you ever set RENDER_VIA_QUEUE=0 (legacy),
+      // RESTORE this to 12288 + max_memory_restart 13G — legacy renders in-process.
+      // node_args alone doesn't reach the real node (the `next` wrapper spawns its
+      // own node); NODE_OPTIONS in env is the reliable heap setter.
+      node_args: "--max-old-space-size=3072",
+      max_memory_restart: "4G",
       env: {
         NODE_ENV: "production",
         PORT: 3000,
         NEXT_DISABLE_ESLINT: "1",
-        // Raise heap to 12GB so renderMedia (runs in-process) doesn't OOM at the
-        // default ~4GB ceiling on long videos. VPS has ~15GB RAM.
-        NODE_OPTIONS: "--max-old-space-size=12288",
+        // 3GB web heap — render runs in the render-worker (RENDER_VIA_QUEUE=1), not
+        // here. Restore to 12288 if you ever revert to legacy in-process render.
+        NODE_OPTIONS: "--max-old-space-size=3072",
         // Render tuning. Offthread cache lowered 512→128MB: a large per-job cache
         // inflates heap usage during long renders, which contributed to the OOM.
         RENDER_CONCURRENCY: "4",
         RENDER_OFFTHREAD_CACHE_MB: "128",
         RENDER_JPEG_QUALITY: "70",
-        // PR-7 durable render queue: when "1", the thin render route enqueues a
+        // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
-        // render-worker app below drains it. ecosystem env SHADOWS .env.
-        // DEFAULT "0" (legacy in-process render) — enable DELIBERATELY only
-        // TOGETHER with PR-8 containment (shrink this NODE_OPTIONS heap 12G→3G +
-        // oom_score_adj), else the queue goes live while the web heap is still
-        // 12G alongside the 5G worker = OOM on the 15GB box. Flip to "1" + restart
-        // with --update-env when ready. See docs/.../render-queue-phase2.md Task 7.
-        RENDER_VIA_QUEUE: "0",
+        // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
+        // (first live queue render OK; web stays ~0.5GB, isolated). ecosystem env
+        // SHADOWS .env — apply changes with `pm2 restart ecosystem.config.js --only
+        // ai-content` (NOT --update-env, which does not re-read this file).
+        // To revert to legacy: set "0" AND restore the 12288 heap + 13G above.
+        RENDER_VIA_QUEUE: "1",
       },
       env_production: {
         NODE_ENV: "production",
         PORT: 3000,
         // Must repeat here — PM2 with `--env production` merges env_production
         // OVER env, so NODE_OPTIONS would be lost if only set in env.
-        NODE_OPTIONS: "--max-old-space-size=12288",
+        NODE_OPTIONS: "--max-old-space-size=3072",
         // Must repeat RENDER_VIA_QUEUE here too — env_production shadows env entirely,
         // so the flag would be lost if someone starts with `pm2 ... --env production`.
-        // DEFAULT "0" (see env block above) — enable deliberately with PR-8 heap shrink.
-        RENDER_VIA_QUEUE: "0",
+        // Keep in sync with the env block (see the RENDER_VIA_QUEUE notes above).
+        RENDER_VIA_QUEUE: "1",
       },
     },
     {
