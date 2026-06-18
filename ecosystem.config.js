@@ -27,10 +27,15 @@ module.exports = {
         RENDER_CONCURRENCY: "4",
         RENDER_OFFTHREAD_CACHE_MB: "128",
         RENDER_JPEG_QUALITY: "70",
-        // PR-7 durable render queue: the thin render route enqueues a RenderJob
-        // (returns jobId) instead of rendering in-process; the render-worker app
-        // below drains it. ecosystem env SHADOWS .env, so the flag MUST live here.
-        RENDER_VIA_QUEUE: "1",
+        // PR-7 durable render queue: when "1", the thin render route enqueues a
+        // RenderJob (returns jobId) instead of rendering in-process; the
+        // render-worker app below drains it. ecosystem env SHADOWS .env.
+        // DEFAULT "0" (legacy in-process render) — enable DELIBERATELY only
+        // TOGETHER with PR-8 containment (shrink this NODE_OPTIONS heap 12G→3G +
+        // oom_score_adj), else the queue goes live while the web heap is still
+        // 12G alongside the 5G worker = OOM on the 15GB box. Flip to "1" + restart
+        // with --update-env when ready. See docs/.../render-queue-phase2.md Task 7.
+        RENDER_VIA_QUEUE: "0",
       },
       env_production: {
         NODE_ENV: "production",
@@ -40,7 +45,8 @@ module.exports = {
         NODE_OPTIONS: "--max-old-space-size=12288",
         // Must repeat RENDER_VIA_QUEUE here too — env_production shadows env entirely,
         // so the flag would be lost if someone starts with `pm2 ... --env production`.
-        RENDER_VIA_QUEUE: "1",
+        // DEFAULT "0" (see env block above) — enable deliberately with PR-8 heap shrink.
+        RENDER_VIA_QUEUE: "0",
       },
     },
     {
