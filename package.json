@@ -10,7 +10,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "npx tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset",
-    "verify:render-queue": "tsx scripts/verify-render-queue.ts"
+    "verify:render-queue": "tsx scripts/verify-render-queue.ts",
+    "verify:clip-charge": "tsx scripts/verify-clip-charge.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

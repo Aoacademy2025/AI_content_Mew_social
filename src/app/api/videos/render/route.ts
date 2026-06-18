@@ -4,6 +4,7 @@ import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
 import { execFileSync, spawn } from "child_process";
@@ -232,20 +233,15 @@ export async function POST(req: Request) {
 
     const userId = authUser.id;
 
-    // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง — ก่อน parse body, ก่อนยกเลิก job เดิม
-    // ของ user (ซึ่งต้อง await render เก่าจบ อาจกินเวลาหลายนาทีและทำลาย preview เดิม)
-    // และก่อน bundle/render ใดๆ. อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่าง
-    // ยังเป็นตัวจองจริง (atomic) ตัวเดียวเหมือนเดิม จึงไม่มีการจองซ้ำ
-    const quotaCheck = await checkClipQuota(userId);
-    if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
-
-    const dbUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { plan: true },
-    });
-    if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
+    // Parse the body up-front. We need it BEFORE the quota pre-check to decide whether
+    // this request is a FREE burn — a BURN (subtitle overlay) of a base render THIS
+    // user already paid for must never be pre-checked OR reserved (otherwise a near-cap
+    // user who finished a clip can't export it). `isSubtitleOverlay` is client-controlled,
+    // so it alone CANNOT grant the skip; we verify the burn's source video resolves to a
+    // ChargedClip we recorded for THIS user (recorded only when a base render actually
+    // reserved + completed). Foreign/external/fabricated sources are not found → charge.
+    // This still runs before any heavy work (job cancellation / bundle / render), so the
+    // PR-1 fail-fast property is preserved.
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
@@ -257,6 +253,27 @@ export async function POST(req: Request) {
     const isSubtitleOverlay = !!subtitleOverlayConfig;
     const renderScopeId = normalizeRenderScopeId(jobScopeId);
     const renderOwnerKey = `${userId}:${renderScopeId}`;
+
+    // A burn is free IFF it references a base render this user already paid for.
+    // NOT-found (external / another user's render / fabricated) → falls through and is
+    // charged like a normal render below. Server-side check — not gameable from the client.
+    const burnAlreadyPaid =
+      isSubtitleOverlay && (await isBurnAlreadyPaid(userId, subtitleOverlayConfig?.videoUrl));
+
+    // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง (ก่อนยกเลิก job เดิม + ก่อน bundle/render).
+    // อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่างยังเป็นตัวจองจริง (atomic) ตัวเดียว.
+    // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
+    if (!burnAlreadyPaid) {
+      const quotaCheck = await checkClipQuota(userId);
+      if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true },
+    });
+    if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     if (!isSubtitleOverlay && !isShortVideo && !isAvatarMode && (!Array.isArray(scenes) || scenes.length === 0)) {
       return NextResponse.json({ error: "scenes, avatarVideoUrl, shortVideoConfig, or subtitleOverlayConfig is required" }, { status: 400 });
@@ -334,14 +351,15 @@ export async function POST(req: Request) {
       });
     }
 
-    // Queue-path BURN (isSubtitleOverlay under RENDER_VIA_QUEUE): the base RENDER
-    // already charged this video's clip slot at this same line. Do NOT reserve again —
-    // a second reserve would permanently leak quota because the queue BURN returns at
-    // ~line 692 before any legacy-path refund logic runs, and markReserved=false means
-    // the worker never refunds it either. The gate is purely additive: all other
-    // combinations (flag off, or flag on but base RENDER) still hit reserveClipUsage.
-    if (process.env.RENDER_VIA_QUEUE === "1" && isSubtitleOverlay) {
-      // BURN under the queue: base RENDER already charged this video's clip; skip reserve.
+    // Count a clip ONCE per video. Skip reserve IFF this is a BURN of a base render
+    // THIS user already paid for (burnAlreadyPaid, verified server-side above) — that
+    // video's clip was already charged at its base RENDER, so re-reserving would charge
+    // it twice (and a free burn never reaches any refund path, so a second reserve would
+    // leak quota permanently). An UNPAID burn (external / foreign / fabricated source)
+    // is NOT skipped: it reserves like a normal render — no free-render bypass. Both the
+    // legacy and queue paths share this single gate.
+    if (burnAlreadyPaid) {
+      // FREE: burn of this user's own paid render — never reserve, never block.
     } else {
       const quota = await reserveClipUsage(userId);
       if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -714,11 +732,13 @@ export async function POST(req: Request) {
     };
 
     // PR-7: durable queue path (behind RENDER_VIA_QUEUE). Enqueue a RenderJob row
-    // and return its id instead of rendering in-process. Quota was already reserved
-    // ONCE at line ~312 above — the base RENDER job owns that reservation (so
-    // failRenderJob refunds it) via markReserved, but we do NOT reserve again. A BURN
-    // of an already-charged video holds no second reservation. The worker (next task)
-    // claims the row, rebuilds the full input (adding its own bundleCache) and renders.
+    // and return its id instead of rendering in-process. This request reserved a clip
+    // above EXACTLY when `quotaReserved` is true (base RENDER, or an UNPAID burn) and
+    // did NOT reserve when `burnAlreadyPaid` (a free burn of the user's own render). We
+    // flag the row with markReserved=quotaReserved so failRenderJob refunds iff this job
+    // actually charged — a free burn holds no reservation, an unpaid burn refunds on fail
+    // just like a render. The worker claims the row, rebuilds the full input (adding its
+    // own bundleCache), renders, and records the ChargedClip on success (RENDER only).
     if (process.env.RENDER_VIA_QUEUE === "1") {
       const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
       // The bundleCache reference cannot cross to a separate worker process — strip it.
@@ -732,9 +752,10 @@ export async function POST(req: Request) {
         parentJobId: typeof parentJobId === "string" ? parentJobId : undefined,
         // Globally-unique key (NOT content-derived). Use the route's own jobId.
         idempotencyKey: jobId,
-        // Quota already reserved once above; flag the row so failRenderJob refunds it
-        // (base RENDER only), but do NOT re-reserve. BURN reuses the video's charge.
-        markReserved: !isBurn,
+        // Flag the row so failRenderJob refunds iff THIS job reserved a clip. True for a
+        // base RENDER and for an UNPAID burn (both reserved above); false only for a FREE
+        // burn (burnAlreadyPaid) which holds no reservation to refund.
+        markReserved: quotaReserved,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
@@ -918,6 +939,13 @@ export async function POST(req: Request) {
         // onRenderSucceeded; persist the done state + notify (route-owned).
         setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
         writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
+        // Record that this user was charged a clip for THIS base-render output, so a later
+        // BURN of it is free (isBurnAlreadyPaid). Only base renders that actually reserved
+        // (quotaReserved && not a burn). Fail-open: a bookkeeping write must not break the
+        // render — the worst case is a future burn re-charges (never a free bypass).
+        if (quotaReserved && !isSubtitleOverlay) {
+          await recordChargedClip(userId, videoUrl).catch(() => {});
+        }
         createNotification({
           userId,
           type: "VIDEO_COMPLETED",
