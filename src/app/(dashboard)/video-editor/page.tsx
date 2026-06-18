@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
+import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
@@ -354,6 +355,9 @@ export default function VideoEditorPage() {
   const [renderQuality, setRenderQuality] = useState<"480p" | "720p" | "1080p">("720p");
   const renderQualityToJpeg: Record<string, number> = { "480p": 70, "720p": 85, "1080p": 95 };
   const pendingRunAllRef = useRef<(() => void) | null>(null);
+
+  // ── Key onboarding wizard (proactive pre-check) ───────────────────────
+  const [keyWizardOpen, setKeyWizardOpen] = useState(false);
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
@@ -2343,7 +2347,18 @@ export default function VideoEditorPage() {
 
   // ── Run all pipeline ───────────────────────────────────────────────────
 
+  const ensureKeysReady = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
+      if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
+      const st = await res.json();
+      if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
+    } catch { return true; }
+    return true;
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const runAll = useCallback(async () => {
+    if (!(await ensureKeysReady())) return;
     if (runningRef.current || !script.trim()) return;
 
     // NOTE: a pre-TTS duration *estimate* gate was removed here — the script→duration
@@ -2469,7 +2484,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -4418,6 +4433,14 @@ export default function VideoEditorPage() {
             if (step === "runAvatarPipeline") runAvatarPipeline();
             else runAll();
           }}
+        />
+      )}
+
+      {keyWizardOpen && (
+        <KeyOnboardingWizard
+          open={true}
+          onClose={() => setKeyWizardOpen(false)}
+          onComplete={() => setKeyWizardOpen(false)}
         />
       )}
 

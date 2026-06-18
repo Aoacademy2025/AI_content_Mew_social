@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
 import { MusicPanel } from "./_panels/MusicPanel";
 import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
@@ -417,6 +418,9 @@ export default function ShortVideoPage() {
     renderProgressRef.current = v;
     setRenderProgressTick(t => t + 1);
   }
+
+  // Key onboarding wizard (proactive pre-check)
+  const [keyWizardOpen, setKeyWizardOpen] = useState(false);
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
@@ -1566,8 +1570,19 @@ export default function ShortVideoPage() {
 
   // ── Full pipeline ────────────────────────────────────────────────
 
+  async function ensureKeysReady(): Promise<boolean> {
+    try {
+      const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
+      if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
+      const st = await res.json();
+      if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
+    } catch { return true; }
+    return true;
+  }
+
   // Pipeline Phase 1: Content → Render (stops before HeyGen)
   async function runAll() {
+    if (!(await ensureKeysReady())) return;
     if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
@@ -2328,6 +2343,14 @@ export default function ShortVideoPage() {
             else if (step === "runAvatarPipeline") runAvatarPipeline();
             else rerunFromRef.current(step as keyof StepState);
           }}
+        />
+      )}
+
+      {keyWizardOpen && (
+        <KeyOnboardingWizard
+          open={true}
+          onClose={() => setKeyWizardOpen(false)}
+          onComplete={() => setKeyWizardOpen(false)}
         />
       )}
 
