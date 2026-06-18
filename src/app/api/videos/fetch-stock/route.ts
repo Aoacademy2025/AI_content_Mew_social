@@ -1227,8 +1227,12 @@ export async function POST(req: Request) {
 
   const useKieImage = stockSource === "kie-image";
   const useAutoMix = stockSource === "auto-mix";
-  const usePexels = stockSource === "pexels" || stockSource === "both" || useAutoMix;
-  const usePixabay = stockSource === "pixabay" || stockSource === "both" || useAutoMix;
+  // Auto Mix: ผู้ใช้เลือก "video" ใน autoMixProviders ไหม — ถ้าไม่เลือก = ข้ามการหา
+  // video จริง ไปใช้ภาพ fallback ล้วน (เช่น kie.ai อย่างเดียว → ได้ภาพ AI ทุก keyword)
+  // (undefined = เปิดทุกอย่างตาม default เดิม → video ทำงานปกติ)
+  const autoMixUsesVideo = !allowedAutoMixProviders || allowedAutoMixProviders.has("video");
+  const usePexels = stockSource === "pexels" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
+  const usePixabay = stockSource === "pixabay" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
 
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 
@@ -1933,16 +1937,21 @@ export async function POST(req: Request) {
   if (download && useAutoMix && hasImageFallback) {
     const foundKeywords = new Set(found.map(f => f.keyword));
     const seen = new Set<string>();
-    const uniqueMissing = keywords
+    const allMissing = keywords
       .map((kw, ki) => ({ kw, ki }))
       .filter(({ kw }) => {
         if (foundKeywords.has(kw) || seen.has(kw)) return false;
         seen.add(kw);
         return true;
       });
+    // Cap จำนวนภาพ fallback ไม่ให้เกิน downloadClipLimit — สำคัญตอนข้าม video
+    // (ทุก keyword missing) ไม่งั้น generate ภาพ kie.ai ทุก keyword = เปลือง credit
+    // และเกินจำนวนที่ผู้ใช้ตั้ง (เช่น B-roll=2 ควรได้ภาพ 2 อัน ไม่ใช่ 64)
+    const remainingSlots = Math.max(0, downloadClipLimit - found.length);
+    const uniqueMissing = allMissing.slice(0, remainingSlots > 0 ? remainingSlots : allMissing.length);
 
     if (uniqueMissing.length > 0) {
-      console.log(`[fetch-stock] Auto Mix: ${uniqueMissing.length} keyword(s) with no video clip — trying image fallback`);
+      console.log(`[fetch-stock] Auto Mix: ${allMissing.length} keyword(s) missing video → image fallback for ${uniqueMissing.length} (limit=${downloadClipLimit}, found=${found.length})`);
 
       const IMAGE_PROVIDER_OFFSET: Record<ImageProvider, number> = {
         unsplash: UNSPLASH_ID_OFFSET,

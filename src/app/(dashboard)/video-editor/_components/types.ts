@@ -50,11 +50,13 @@ export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] 
   { value: "qwen2/text-to-image", label: "Qwen2" },
 ];
 
-// ผู้ให้บริการภาพ fallback ของ Auto Mix (เมื่อหา video clip ไม่เจอ) — เลือกได้หลายตัว
-// ลำดับการลองจริงยังเป็นไปตาม keyword-aware routing ฝั่ง server (getImageProviderOrder)
+// แหล่งที่มาของ B-roll ที่ Auto Mix เลือกใช้ได้ — เลือกได้หลายตัว
+// - "video" = หาวิดีโอจริง (Pexels/Pixabay) — ถ้าปิด Auto Mix จะข้าม video ไปใช้ภาพล้วน
+// - ที่เหลือ = provider ภาพ fallback (ทำ Ken Burns), ลำดับลองตาม keyword-aware routing ฝั่ง server
 // รายการนี้แค่ "เปิด/ปิด" ตัวไหนให้อยู่ในการพิจารณา — ไม่ใช่ลำดับ
-export type AutoMixImageProvider = "unsplash" | "pexels-photo" | "pixabay-photo" | "wikimedia" | "flickr" | "nasa" | "met" | "kie-ai";
+export type AutoMixImageProvider = "video" | "unsplash" | "pexels-photo" | "pixabay-photo" | "wikimedia" | "flickr" | "nasa" | "met" | "kie-ai";
 export const AUTO_MIX_PROVIDER_OPTIONS: { value: AutoMixImageProvider; label: string; needsKey?: "unsplash" | "flickr" | "kie" }[] = [
+  { value: "video", label: "วิดีโอจริง (Pexels/Pixabay)" },
   { value: "unsplash", label: "Unsplash", needsKey: "unsplash" },
   { value: "pexels-photo", label: "Pexels Photo" },
   { value: "pixabay-photo", label: "Pixabay Photo" },

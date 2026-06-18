@@ -238,7 +238,7 @@ export function OrderPanel(p: OrderPanelProps) {
               {p.stockSource === "auto-mix" && p.autoMixEnabled && (
                 <div className="px-1 relative" ref={autoMixProvidersRef}>
                   <label className="text-[9px] font-bold text-emerald-300/60 uppercase tracking-wider mb-1 block">
-                    Fallback Sources ({selectedAutoMixProviders.length}/{AUTO_MIX_PROVIDER_OPTIONS.length})
+                    B-roll Sources ({selectedAutoMixProviders.length}/{AUTO_MIX_PROVIDER_OPTIONS.length})
                   </label>
                   <button
                     type="button"
@@ -275,6 +275,12 @@ export function OrderPanel(p: OrderPanelProps) {
                       })}
                     </div>
                   )}
+                  {/* hint บอกว่าจะได้ video หรือภาพล้วน ตามที่เลือก "วิดีโอจริง" ไว้ไหม */}
+                  <p className="text-[8px] text-emerald-200/40 mt-1 leading-relaxed">
+                    {selectedAutoMixProviders.includes("video")
+                      ? "หาวิดีโอจริงก่อน · ที่หาไม่เจอ fallback เป็นภาพจากแหล่งที่เลือก"
+                      : "🖼 ข้ามวิดีโอ — สร้างภาพล้วนทุก keyword จากแหล่งที่เลือก"}
+                  </p>
                 </div>
               )}
 
