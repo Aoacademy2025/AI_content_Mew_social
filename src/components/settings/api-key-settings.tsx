@@ -52,7 +52,8 @@ export function ApiKeySettings() {
       // Save the current value for this key first so the test always reflects what's in the input
       const def = KEY_TIERS.find((k) => k.testKeyType === keyType);
       if (def) {
-        await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [def.apiKeysField]: apiKeys[def.apiKeysField] ?? "" }) });
+        const putRes = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [def.apiKeysField]: apiKeys[def.apiKeysField] ?? "" }) });
+        if (!putRes.ok) { setTestResults((prev) => ({ ...prev, [keyType]: { ok: false, message: "บันทึก key ไม่สำเร็จ ลองใหม่อีกครั้ง" } })); setTestingKey(null); return; }
       }
       const res = await fetch("/api/user/test-key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keyType }) });
       const result = await res.json();
