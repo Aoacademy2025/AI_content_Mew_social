@@ -78,7 +78,7 @@ type InsightSummary = {
     videoCompletionPct: number;
     renderTaskSuccessPct: number;
     healthScore: number;
-    funnelMode: "run" | "event";
+    funnelMode: "run" | "event" | "session";
     funnelRuns: number;
     videoJobs: {
       total: number;
@@ -181,8 +181,24 @@ type InsightSummary = {
   recommendations: string[];
 };
 
+type ActivationData = {
+  signups: number;
+  hasGeminiKey: number;
+  hasStockKey: number;
+  paidTotal: number;
+  paidWithoutGeminiKey: number;
+  openedEditor: number;
+  startedPipeline: number;
+  completedFirstVideo: number;
+  repeatCreators: number;
+  windowSignups: number;
+  windowCompletedUsers: number;
+  prevWindowCompletedUsers: number;
+};
+
 type InsightsResponse = {
   range: { days: number; since: string; until: string };
+  activation: ActivationData;
   current: InsightSummary;
   previous: InsightSummary;
   processingReconcile?: { dryRun: boolean };
@@ -199,7 +215,11 @@ type ReconcileApplyResponse = {
 
 const metricHelp: Record<string, string> = {
   "Health Score": "คะแนนรวมจาก video completion, error, render latency และ status stuck ยิ่งใกล้ 100 ยิ่งดี",
-  "Drop-off": "เปอร์เซ็นต์ event ที่ไปไม่ถึงขั้นถัดไป ใช้ดูแนวโน้มเท่านั้นจนกว่าจะมี pipelineRunId ต่อหนึ่งงาน",
+  "Drop-off": "เปอร์เซ็นต์ session ที่ไปไม่ถึงขั้นถัดไป — นับต่อ session หน่วยเดียวกันทุกขั้น (apples-to-apples) จึงเทียบกันได้จริง",
+  "Activation": "สัดส่วนคนที่ได้ 'คุณค่าครั้งแรก' = ได้วิดีโอเสร็จอย่างน้อย 1 ตัว เป็นตัวชี้วัดว่าคนใช้ product ได้จริงไหม สำคัญกว่าตัวเลขระบบทุกตัว",
+  "BYOK key": "ลูกค้าต้องใส่ API key ของตัวเอง (Gemini จำเป็นเสมอ) ถ้ายังไม่ตั้ง = ระบบเจนวิดีโอไม่ได้ แม้จ่ายเงินแล้ว — ไม่ใช่บั๊กของเรา แต่เสียลูกค้าจริง",
+  "Activation funnel": "เส้นทางต่อ 'คน' (สะสมทั้งหมด ไม่ขึ้นกับช่วงเวลา): สมัคร → เปิด editor → กดเริ่ม → ได้วิดีโอ → ทำซ้ำ ใช้ดูว่าเสียลูกค้าตรงไหนกว่าจะได้ผลลัพธ์",
+  "Session funnel": "เส้นทางต่อ 'session' ในช่วงเวลาที่เลือก ใช้ดูพฤติกรรมระหว่างใช้ editor หนึ่งครั้ง (คนละมุมกับ Activation ที่นับต่อคน)",
   "p50": "ค่ากลาง: ผู้ใช้ครึ่งหนึ่งเร็วกว่าเวลานี้ และอีกครึ่งหนึ่งช้ากว่านี้",
   "p75": "75% ของผู้ใช้ได้ผลลัพธ์เร็วกว่า/ดีกว่าค่านี้ ใช้ดูประสบการณ์จริงโดยรวม",
   "p95": "เคสช้าเกือบสุด: 95% ของงานเร็วกว่าเวลานี้ ใช้หาคอขวดและเคสหนัก",
@@ -240,6 +260,11 @@ function InfoTip({ label }: { label: keyof typeof metricHelp | string }) {
 function formatNumber(value: number | null | undefined, digits = 0) {
   if (value == null || !Number.isFinite(value)) return "-";
   return new Intl.NumberFormat("th-TH", { maximumFractionDigits: digits }).format(value);
+}
+
+function pctOf(value: number, total: number) {
+  if (!total) return 0;
+  return Math.round((value / total) * 100);
 }
 
 function formatMs(value: number | null | undefined) {
@@ -352,11 +377,22 @@ export default function AdminInsightsPage() {
 
   const current = data?.current;
   const previous = data?.previous;
+  const activation = data?.activation;
   const hasData = !!current && (current.totals.events > 0 || current.totals.videoJobs.total > 0);
   const worstDrop = useMemo(() => {
     if (!current) return null;
     return current.funnel.slice(1).sort((a, b) => b.dropOffPct - a.dropOffPct)[0] ?? null;
   }, [current]);
+  const activationSteps = useMemo(() => {
+    if (!activation) return [];
+    return [
+      { label: "สมัคร", count: activation.signups, cause: "" },
+      { label: "เปิด editor", count: activation.openedEditor, cause: "สมัครแล้วไม่เข้าใช้ — onboarding / อีเมลต้อนรับ" },
+      { label: "กดเริ่มสร้าง", count: activation.startedPipeline, cause: "เข้าแล้วไม่กดเริ่ม — UX หรือยังไม่ตั้งคีย์" },
+      { label: "ได้วิดีโอเสร็จ", count: activation.completedFirstVideo, cause: "เริ่มแล้วไม่จบ — เช็คความเร็วระบบ (p95) ด้านล่าง" },
+      { label: "ทำซ้ำ ≥2", count: activation.repeatCreators, cause: "ทำครั้งเดียวแล้วหาย — คุณภาพ / ความคุ้มค่า" },
+    ];
+  }, [activation]);
 
   async function applyProcessingReconcile() {
     setReconcileBusy(true);
@@ -438,6 +474,121 @@ export default function AdminInsightsPage() {
               </div>
             )}
 
+            {activation && (
+              <section className="rounded-lg border border-sky-400/25 bg-gradient-to-r from-sky-500/12 via-sky-500/5 to-transparent p-4 sm:p-5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-200">
+                      North Star · Activation <InfoTip label="Activation" />
+                    </div>
+                    <div className="mt-2 text-2xl font-semibold text-white sm:text-3xl">
+                      {formatNumber(activation.signups)} สมัคร{" "}
+                      <span className="text-slate-500">→</span>{" "}
+                      {formatNumber(activation.completedFirstVideo)} ได้วิดีโอแรก{" "}
+                      <span className={cn(
+                        "ml-1 text-xl font-bold sm:text-2xl",
+                        pctOf(activation.completedFirstVideo, activation.signups) < 20 ? "text-rose-300" : "text-emerald-300",
+                      )}>
+                        ({pctOf(activation.completedFirstVideo, activation.signups)}%)
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-400">
+                      ช่วงที่เลือก: ได้วิดีโอ {formatNumber(activation.windowCompletedUsers)} คน · ก่อนหน้า {formatNumber(activation.prevWindowCompletedUsers)} คน
+                      {activation.windowCompletedUsers !== activation.prevWindowCompletedUsers && (
+                        <span className={cn("ml-1 font-semibold", activation.windowCompletedUsers >= activation.prevWindowCompletedUsers ? "text-emerald-300" : "text-rose-300")}>
+                          {activation.windowCompletedUsers >= activation.prevWindowCompletedUsers ? "▲" : "▼"}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  {activation.paidWithoutGeminiKey > 0 && (
+                    <div className="rounded-md border border-rose-400/25 bg-rose-500/10 p-3 sm:max-w-xs">
+                      <div className="flex items-center gap-1.5 text-sm font-semibold text-rose-200">
+                        🔴 {formatNumber(activation.paidWithoutGeminiKey)}/{formatNumber(activation.paidTotal)} ลูกค้าจ่ายเงินยังไม่ตั้งคีย์
+                        <InfoTip label="BYOK key" />
+                      </div>
+                      <div className="mt-1 text-xs leading-relaxed text-rose-300/80">
+                        จ่ายแล้วแต่ใช้ระบบไม่ได้ — โอกาสปลดล็อก usage/รายได้ทันที (เบอร์ 1)
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-relaxed text-sky-100/70">
+                  💡 <span className="font-semibold">สำหรับ CEO:</span> ตัวเลขสุขภาพธุรกิจตัวเดียวที่ต้องดูก่อน — ถ้า &ldquo;ได้วิดีโอแรก %&rdquo; ตก = ปัญหาใหญ่กว่า metric ระบบทุกตัวรวมกัน → ทุ่มแก้ activation ก่อน
+                </p>
+              </section>
+            )}
+
+            {activation && (
+              <section className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">
+                      Activation funnel — เสียลูกค้าตรงไหน <InfoTip label="Activation funnel" />
+                    </h2>
+                    <p className="mt-1 text-xs text-slate-500">นับต่อ &ldquo;คน&rdquo; · ภาพรวมสะสมทั้งหมด (ไม่ขึ้นกับช่วงเวลาด้านบน)</p>
+                  </div>
+                  <Users className="h-5 w-5 text-sky-300" />
+                </div>
+
+                <div className="space-y-3">
+                  {activationSteps.map((item, index) => {
+                    const prev = index === 0 ? item.count : activationSteps[index - 1].count;
+                    const conv = index === 0 ? 100 : pctOf(item.count, prev);
+                    const drop = index === 0 ? 0 : Math.max(0, 100 - conv);
+                    const width = Math.max(5, Math.min(100, conv));
+                    return (
+                      <div key={item.label} className="grid gap-2 sm:grid-cols-[150px_1fr_220px] sm:items-center">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-slate-100">{index + 1}. {item.label}</div>
+                          <div className="text-xs text-slate-500">{formatNumber(item.count)} คน</div>
+                        </div>
+                        <div className="h-9 overflow-hidden rounded-md bg-slate-900 ring-1 ring-white/10">
+                          <div
+                            className={cn(
+                              "flex h-full items-center justify-end rounded-md px-2 text-xs font-semibold text-slate-950 transition-all",
+                              index === 0 ? "bg-slate-200" : drop > 60 ? "bg-rose-300" : drop > 40 ? "bg-amber-300" : "bg-emerald-300",
+                            )}
+                            style={{ width: `${width}%` }}
+                          >
+                            {conv}%
+                          </div>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {index === 0 ? (
+                            <span className="text-slate-600">— ฐานเริ่มต้น</span>
+                          ) : (
+                            <>
+                              <span className={cn("font-semibold", drop > 60 ? "text-rose-300" : drop > 40 ? "text-amber-300" : "text-emerald-300")}>หลุด {drop}%</span>
+                              <span className="text-slate-500"> · {item.cause}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 grid gap-3 border-t border-white/10 pt-4 sm:grid-cols-3">
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-center gap-1 text-xs text-slate-500">Gemini key (บังคับ) <InfoTip label="BYOK key" /></div>
+                    <div className="mt-1 text-lg font-semibold text-white">{formatNumber(activation.hasGeminiKey)}/{formatNumber(activation.signups)} <span className="text-sm font-normal text-slate-500">ตั้งแล้ว</span></div>
+                  </div>
+                  <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3">
+                    <div className="text-xs text-rose-300/80">ลูกค้าจ่ายเงินยังไม่ตั้งคีย์</div>
+                    <div className="mt-1 text-lg font-semibold text-rose-200">{formatNumber(activation.paidWithoutGeminiKey)}/{formatNumber(activation.paidTotal)}</div>
+                  </div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                    <div className="text-xs text-slate-500">Stock key (Pexels/Pixabay)</div>
+                    <div className="mt-1 text-lg font-semibold text-white">{formatNumber(activation.hasStockKey)}/{formatNumber(activation.signups)} <span className="text-sm font-normal text-slate-500">ตั้งแล้ว</span></div>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                  💡 <span className="font-semibold text-slate-400">สำหรับ CEO:</span> ขั้นที่หลุดเพราะ &ldquo;คีย์/UX&rdquo; แก้ด้วย onboarding (ทีม product) · ขั้นที่หลุดเพราะ &ldquo;ช้า&rdquo; แก้ด้วย perf (ทีม dev) — ดู p95 ในตาราง &ldquo;ขั้นที่ใช้เวลานาน&rdquo;
+                </p>
+              </section>
+            )}
+
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MetricTile
                 label="Health Score"
@@ -473,10 +624,14 @@ export default function AdminInsightsPage() {
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 sm:p-5">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="text-lg font-semibold text-white">Funnel หน้า Video Editor</h2>
+                    <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">Session funnel หน้า Video Editor <InfoTip label="Session funnel" /></h2>
                     <p className="mt-1 text-xs text-slate-500">
                       จุดหลุดสูงสุด: {worstDrop ? `${worstDrop.label} (${worstDrop.dropOffPct}%)` : "-"}
-                      {" "}· {current.totals.funnelMode === "run" ? `นับต่อ run ${formatNumber(current.totals.funnelRuns)} งาน` : "event-count fallback"}
+                      {" "}· {current.totals.funnelMode === "session"
+                        ? `นับต่อ session ${formatNumber(current.totals.funnelRuns)} · ช่วงที่เลือก`
+                        : current.totals.funnelMode === "run"
+                          ? `นับต่อ run ${formatNumber(current.totals.funnelRuns)} งาน`
+                          : "event-count fallback"}
                     </p>
                   </div>
                   <BarChart3 className="h-5 w-5 text-sky-300" />

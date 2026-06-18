@@ -249,10 +249,6 @@ function summarizeIssueGroups(rows: TelemetryRow[], reasonFn?: (row: TelemetryRo
     }));
 }
 
-function pipelineRunKey(row: TelemetryRow) {
-  return stringProp(row, "pipelineRunId");
-}
-
 function matchesFunnelStep(row: TelemetryRow, step: FunnelStep, includeServerFetchStock = false) {
   if (step.event) return row.name === step.event;
   if (step.step === "fetchStock") {
@@ -261,18 +257,25 @@ function matchesFunnelStep(row: TelemetryRow, step: FunnelStep, includeServerFet
   return row.name === "pipeline_step_done" && row.step === step.step;
 }
 
-function summarizeEditorFunnel(rows: TelemetryRow[]) {
-  const runRows = rows.filter((row) => pipelineRunKey(row));
-  const runIds = new Set(runRows.map(pipelineRunKey).filter((value): value is string => Boolean(value)));
-  const hasRunLevelData = runIds.size > 0;
+// P0 fix: นับเป็น "จำนวน session ที่ไปถึงแต่ละขั้น" — หน่วยเดียวกันทุกขั้น (apples-to-apples)
+// เดิมขั้น 1 นับ raw event ส่วนขั้น 2-7 de-dup ด้วย pipelineRunId (เพิ่งเริ่มเก็บ 18 มิ.ย.)
+// → ทำให้ "drop 96%" ปลอม เพราะคนละหน่วย/คนละช่วงเวลา ตอนนี้ใช้ distinct sessionId ทุกขั้น
+function funnelStepSessionCount(rows: TelemetryRow[], step: FunnelStep) {
+  return uniqueCount(
+    rows,
+    (row) => Boolean(row.sessionId) && matchesFunnelStep(row, step, false),
+    (row) => row.sessionId ?? eventKey(row),
+  );
+}
 
-  const funnel = EDITOR_FUNNEL.map((step, index) => {
-    const count = hasRunLevelData && index > 0
-      ? uniqueCount(rows, (row) => Boolean(pipelineRunKey(row)) && matchesFunnelStep(row, step, true), (row) => pipelineRunKey(row) ?? eventKey(row))
-      : eventCount(rows, (row) => matchesFunnelStep(row, step));
-    const prev = index === 0 ? count : 0;
-    return { ...step, count, conversionPct: 0, dropOffPct: 0, previousCount: prev };
-  }).map((step, index, all) => {
+function summarizeEditorFunnel(rows: TelemetryRow[]) {
+  const funnel = EDITOR_FUNNEL.map((step) => ({
+    ...step,
+    count: funnelStepSessionCount(rows, step),
+    conversionPct: 0,
+    dropOffPct: 0,
+    previousCount: 0,
+  })).map((step, index, all) => {
     const previousCount = index === 0 ? step.count : all[index - 1].count;
     return {
       ...step,
@@ -284,8 +287,8 @@ function summarizeEditorFunnel(rows: TelemetryRow[]) {
 
   return {
     funnel,
-    funnelMode: hasRunLevelData ? "run" : "event",
-    funnelRuns: runIds.size,
+    funnelMode: "session" as const,
+    funnelRuns: funnel[0]?.count ?? 0,
   };
 }
 
@@ -604,7 +607,10 @@ export async function GET(req: Request) {
       updatedAt: true,
     } as const;
 
-    const [currentRows, previousRows, currentVideos, previousVideos, processingPlan] = await Promise.all([
+    const [
+      currentRows, previousRows, currentVideos, previousVideos, processingPlan,
+      allUsers, openedUserRows, startedUserRows, completedByUser,
+    ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
         select: {
@@ -635,10 +641,36 @@ export async function GET(req: Request) {
         take: 5_000,
       }),
       getProcessingReconcilePlan({ staleAfterMinutes: 20, failAfterHours: 3, limit: 100 }),
+      // P1 Activation: lifecycle ทั้งหมด (ไม่ขึ้นกับ window) — สมัคร → ตั้งคีย์ → เปิด → เริ่ม → ได้วิดีโอ → ซ้ำ
+      prisma.user.findMany({ select: { plan: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true } }),
+      prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
+      prisma.telemetryEvent.findMany({ where: { name: "editor_script_ready", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
+      prisma.video.groupBy({ by: ["userId"], where: { status: "COMPLETED" }, _count: { _all: true } }),
     ]);
+
+    const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
+    const isPaid = (plan: string) => plan === "PRO" || plan === "BUSINESS";
+    const completedUsersIn = (videos: VideoRow[]) =>
+      new Set(videos.filter((video) => video.status === "COMPLETED").map((video) => video.userId)).size;
+
+    const activation = {
+      signups: allUsers.length,
+      hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
+      hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
+      paidTotal: allUsers.filter((u) => isPaid(u.plan)).length,
+      paidWithoutGeminiKey: allUsers.filter((u) => isPaid(u.plan) && !nonEmpty(u.geminiKey)).length,
+      openedEditor: openedUserRows.length,
+      startedPipeline: startedUserRows.length,
+      completedFirstVideo: completedByUser.length,
+      repeatCreators: completedByUser.filter((g) => (g._count?._all ?? 0) >= 2).length,
+      windowSignups: allUsers.filter((u) => u.createdAt >= since).length,
+      windowCompletedUsers: completedUsersIn(currentVideos),
+      prevWindowCompletedUsers: completedUsersIn(previousVideos),
+    };
 
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
+      activation,
       current: summarize(currentRows, currentVideos, processingPlan.summary),
       previous: summarize(previousRows, previousVideos),
       processingReconcile: { dryRun: true, ...processingPlan },
