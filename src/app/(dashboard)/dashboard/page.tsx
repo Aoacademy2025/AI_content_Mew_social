@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { PremiumBackdrop, CornerBrackets } from "@/components/layout/premium-page";
+import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -135,6 +136,9 @@ export default function DashboardPage() {
         <p className="pp-fade-up text-base text-white/55 max-w-2xl leading-relaxed mb-6" style={{ animationDelay: "140ms" }}>
           เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม
         </p>
+
+        {/* Key setup checklist + first-login wizard */}
+        <DashboardOnboarding />
 
         {/* Quick actions — premium CTA row */}
         <div className="pp-fade-up grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8" style={{ animationDelay: "120ms" }}>
