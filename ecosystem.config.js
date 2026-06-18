@@ -27,6 +27,10 @@ module.exports = {
         RENDER_CONCURRENCY: "4",
         RENDER_OFFTHREAD_CACHE_MB: "128",
         RENDER_JPEG_QUALITY: "70",
+        // PR-7 durable render queue: the thin render route enqueues a RenderJob
+        // (returns jobId) instead of rendering in-process; the render-worker app
+        // below drains it. ecosystem env SHADOWS .env, so the flag MUST live here.
+        RENDER_VIA_QUEUE: "1",
       },
       env_production: {
         NODE_ENV: "production",
@@ -136,6 +140,35 @@ module.exports = {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+      },
+    },
+    {
+      // PR-7 durable render queue: long-lived worker that drains RenderJob rows
+      // (QUEUED→DONE/FAILED) via the shared runRender core. renderMedia runs IN this
+      // process (its own headless Chromium), so it carries a worker heap separate from
+      // the web app and tolerates a slow graceful drain on deploy (kill_timeout 30s,
+      // matching the watchdog cancel + requeueForShutdown path in the script).
+      name: "render-worker",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/render-worker.ts",
+      autorestart: true,
+      watch: false,
+      kill_timeout: 30000, // allow graceful drain (cancel render + requeue) before SIGKILL
+      max_memory_restart: "5G", // worker heap; web heap shrinks once renders move off ai-content (PR-8)
+      env: {
+        NODE_ENV: "production",
+        // Worker heap for in-process renderMedia (long videos accumulate frame buffers).
+        NODE_OPTIONS: "--max-old-space-size=4096",
+        // The worker reads the queue directly — flag is informational here (it does not
+        // gate the worker) but keeps the render path consistent across processes.
+        RENDER_VIA_QUEUE: "1",
+        // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
+        // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
+        DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        // Render tuning for the worker process (smaller per-job cache / quality floor).
+        RENDER_OFFTHREAD_CACHE_MB: "128",
+        RENDER_JPEG_QUALITY: "60",
       },
     },
   ],

@@ -65,6 +65,28 @@ async function main() {
   const deadAfter2 = await store.getRenderJob(dead.id);
   ok(deadAfter2?.status === "FAILED", "re-failing a FAILED job is a no-op (idempotent)");
 
+  // 6. graceful-drain requeue nets ZERO consumed attempts: enqueue → claim (attempts 0→1)
+  // → requeueForShutdown (QUEUED, attempts 1→0). A deploy must not burn a retry.
+  // Drain any leftover QUEUED jobs first (e.g. the requeued stale job from step 3) so
+  // the oldest-first claim deterministically returns OUR job, not an earlier one.
+  await prisma.renderJob.deleteMany({ where: { status: "QUEUED" } });
+  const dr = await store.enqueueRenderJob({ userId: "u1", type: "RENDER", payload: { shortVideoConfig: {} } });
+  const drBefore = await store.getRenderJob(dr.id);
+  ok(drBefore?.attempts === 0, "newly enqueued job has attempts=0");
+  const drClaimed = await store.claimNextRenderJob();
+  ok(drClaimed?.id === dr.id && drClaimed?.attempts === 1, "claim increments attempts to 1 and sets RUNNING");
+  ok(drClaimed?.status === "RUNNING", "claimed job is RUNNING");
+  await store.requeueForShutdown(dr.id);
+  const drAfter = await store.getRenderJob(dr.id);
+  ok(drAfter?.status === "QUEUED", "drain requeues job to QUEUED");
+  ok(drAfter?.attempts === 0, "drain requeue decrements attempts back to 0 (net-zero attempt consumed)");
+  ok(drAfter?.startedAt === null && drAfter?.heartbeatAt === null, "drain requeue clears startedAt + heartbeatAt");
+
+  // 6b. requeueForShutdown is a no-op on a non-RUNNING job (can't resurrect terminal/queued)
+  await store.requeueForShutdown(dr.id); // dr is QUEUED now
+  const drNoop = await store.getRenderJob(dr.id);
+  ok(drNoop?.attempts === 0, "requeueForShutdown on a QUEUED job is a no-op (attempts unchanged, not negative)");
+
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
   console.log("\nALL PASS");
 }

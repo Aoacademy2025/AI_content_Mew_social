@@ -166,6 +166,31 @@ export async function failRenderJob(
 }
 
 /**
+ * Graceful-drain requeue (deploy/SIGTERM). The worker already paid an `attempts+1`
+ * at claim time (claimNextRenderJob increments on the QUEUED→RUNNING transition).
+ * A deploy interruption is NOT a real attempt, so a plain requeue would unfairly
+ * burn one retry per deploy. This puts the job back to QUEUED, clears the run
+ * markers (startedAt/heartbeatAt) AND decrements attempts by 1 — exactly undoing
+ * the claim increment so a drain-requeue nets ZERO consumed attempts.
+ *
+ * Guarded to RUNNING so it can't resurrect a DONE/FAILED/QUEUED job, and attempts
+ * is floored at 0 (never negative). No-op if the job isn't RUNNING.
+ */
+export async function requeueForShutdown(id: string): Promise<void> {
+  const job = await prisma.renderJob.findUnique({ where: { id } });
+  if (!job || job.status !== "RUNNING") return; // only an in-flight (claimed) job
+  await prisma.renderJob.update({
+    where: { id },
+    data: {
+      status: "QUEUED",
+      startedAt: null,
+      heartbeatAt: null,
+      attempts: Math.max(0, job.attempts - 1), // undo the claim's increment
+    },
+  });
+}
+
+/**
  * Sweep RUNNING jobs whose heartbeatAt is older than staleMs milliseconds.
  * Each dead job is failed with the retry policy (requeue if attempts remain, else FAILED).
  * Returns the count of jobs swept.
