@@ -1,9 +1,13 @@
 import fs from "fs";
 import path from "path";
 
-export const LOW_RES_PREVIEW_WIDTH = 540;
+export const LOW_RES_PREVIEW_WIDTH = 720;
+export const LOW_RES_PREVIEW_FALLBACK_WIDTH = 540;
+export const LOW_RES_PREVIEW_WIDTHS = [LOW_RES_PREVIEW_FALLBACK_WIDTH, LOW_RES_PREVIEW_WIDTH] as const;
+export type LowResPreviewWidth = typeof LOW_RES_PREVIEW_WIDTHS[number];
 
 export type LowResPreviewInfo = {
+  previewWidth: LowResPreviewWidth;
   sourceFilename: string;
   sourceFilePath: string;
   previewFilename: string;
@@ -15,6 +19,10 @@ export type LowResPreviewInfo = {
 
 const RENDER_PREFIXES = ["/api/renders/", "/renders/"];
 
+function isPreviewWidth(width: number): width is LowResPreviewWidth {
+  return (LOW_RES_PREVIEW_WIDTHS as readonly number[]).includes(width);
+}
+
 function pathnameFromUrl(raw: string): string {
   const value = raw.trim();
   if (!value) return "";
@@ -24,19 +32,29 @@ function pathnameFromUrl(raw: string): string {
   return value.split("?")[0].split("#")[0];
 }
 
-export function lowResPreviewFilenameForRender(filename: string): string | null {
+export function lowResPreviewFilenameForRender(
+  filename: string,
+  width: LowResPreviewWidth = LOW_RES_PREVIEW_WIDTH,
+): string | null {
   const safeName = path.basename(filename);
   if (!safeName || safeName !== filename || /[/\\]/.test(safeName)) return null;
+  if (!isPreviewWidth(width)) return null;
 
   const ext = path.extname(safeName).toLowerCase();
   if (ext !== ".mp4") return null;
 
   const name = safeName.slice(0, -ext.length);
-  if (!name || (name.startsWith("preview-") && name.endsWith(`-${LOW_RES_PREVIEW_WIDTH}p`))) {
+  if (!name || (name.startsWith("preview-") && LOW_RES_PREVIEW_WIDTHS.some((w) => name.endsWith(`-${w}p`)))) {
     return null;
   }
 
-  return `preview-${name}-${LOW_RES_PREVIEW_WIDTH}p.mp4`;
+  return `preview-${name}-${width}p.mp4`;
+}
+
+export function lowResPreviewFilenamesForRender(filename: string): string[] {
+  return LOW_RES_PREVIEW_WIDTHS
+    .map((width) => lowResPreviewFilenameForRender(filename, width))
+    .filter((value): value is string => Boolean(value));
 }
 
 export function renderFilenameFromVideoUrl(videoUrl: string | null | undefined): string | null {
@@ -53,11 +71,12 @@ export function renderFilenameFromVideoUrl(videoUrl: string | null | undefined):
 export function lowResPreviewInfoForVideoUrl(
   videoUrl: string | null | undefined,
   cwd = process.cwd(),
+  width: LowResPreviewWidth = LOW_RES_PREVIEW_WIDTH,
 ): LowResPreviewInfo | null {
   const sourceFilename = renderFilenameFromVideoUrl(videoUrl);
   if (!sourceFilename) return null;
 
-  const previewFilename = lowResPreviewFilenameForRender(sourceFilename);
+  const previewFilename = lowResPreviewFilenameForRender(sourceFilename, width);
   if (!previewFilename) return null;
 
   const rendersDir = path.join(cwd, "public", "renders");
@@ -65,6 +84,7 @@ export function lowResPreviewInfoForVideoUrl(
   const previewFilePath = path.join(rendersDir, previewFilename);
 
   return {
+    previewWidth: width,
     sourceFilename,
     sourceFilePath,
     previewFilename,
@@ -78,21 +98,31 @@ export function lowResPreviewInfoForVideoUrl(
 export function existingLowResPreviewUrlForVideoUrl(
   videoUrl: string | null | undefined,
   cwd = process.cwd(),
+  width: LowResPreviewWidth = LOW_RES_PREVIEW_WIDTH,
 ): string | null {
-  const info = lowResPreviewInfoForVideoUrl(videoUrl, cwd);
+  const info = lowResPreviewInfoForVideoUrl(videoUrl, cwd, width);
   return info?.sourceExists && info.previewExists ? info.previewUrl : null;
+}
+
+export function existingLowResPreviewFallbackUrlForVideoUrl(
+  videoUrl: string | null | undefined,
+  cwd = process.cwd(),
+): string | null {
+  return existingLowResPreviewUrlForVideoUrl(videoUrl, cwd, LOW_RES_PREVIEW_FALLBACK_WIDTH);
 }
 
 export function deleteLowResPreviewForVideoUrl(
   videoUrl: string | null | undefined,
   cwd = process.cwd(),
 ): boolean {
-  const info = lowResPreviewInfoForVideoUrl(videoUrl, cwd);
-  if (!info?.previewExists) return false;
-  try {
-    fs.unlinkSync(info.previewFilePath);
-    return true;
-  } catch {
-    return false;
+  let deleted = false;
+  for (const width of LOW_RES_PREVIEW_WIDTHS) {
+    const info = lowResPreviewInfoForVideoUrl(videoUrl, cwd, width);
+    if (!info?.previewExists) continue;
+    try {
+      fs.unlinkSync(info.previewFilePath);
+      deleted = true;
+    } catch {}
   }
+  return deleted;
 }

@@ -3,14 +3,19 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
-import { existingLowResPreviewUrlForVideoUrl } from "@/lib/low-res-preview-paths";
+import {
+  existingLowResPreviewFallbackUrlForVideoUrl,
+  existingLowResPreviewUrlForVideoUrl,
+} from "@/lib/low-res-preview-paths";
 
 function withPreviewUrl<T extends { videoUrl: string | null; avatarVideoUrl: string | null }>(video: T) {
   const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
   const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+  const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
   return {
     ...video,
     previewVideoUrl,
+    previewFallbackVideoUrl,
     previewStatus: previewVideoUrl ? "ready" : "unavailable",
   };
 }

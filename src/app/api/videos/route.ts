@@ -6,6 +6,7 @@ import { videoExpiryFor } from "@/lib/plan-limits";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
 import {
   deleteLowResPreviewForVideoUrl,
+  existingLowResPreviewFallbackUrlForVideoUrl,
   existingLowResPreviewUrlForVideoUrl,
 } from "@/lib/low-res-preview-paths";
 import fs from "fs";
@@ -54,6 +55,7 @@ export async function GET() {
     const brokenIds: string[] = [];
     const valid: Array<(typeof videos)[number] & {
       previewVideoUrl: string | null;
+      previewFallbackVideoUrl: string | null;
       previewStatus: "ready" | "queued" | "unavailable";
     }> = [];
 
@@ -76,6 +78,7 @@ export async function GET() {
 
       const primaryVideoUrl = v.videoUrl || v.avatarVideoUrl;
       const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+      const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
       let previewStatus: "ready" | "queued" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
       if (!previewVideoUrl && v.status === "COMPLETED") {
         const queued = enqueueLowResPreview(primaryVideoUrl, {
@@ -85,7 +88,7 @@ export async function GET() {
         });
         previewStatus = queued.status === "queued" ? "queued" : "unavailable";
       }
-      valid.push({ ...v, previewVideoUrl, previewStatus });
+      valid.push({ ...v, previewVideoUrl, previewFallbackVideoUrl, previewStatus });
     }
 
     const toDelete = [...expiredIds, ...brokenIds];
@@ -158,9 +161,11 @@ export async function POST(req: Request) {
     });
 
     const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
+    const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
     return NextResponse.json({
       ...video,
       previewVideoUrl,
+      previewFallbackVideoUrl,
       previewStatus: previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
     }, { status: 201 });
   } catch (error) {
