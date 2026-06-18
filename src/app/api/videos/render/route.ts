@@ -474,21 +474,35 @@ export async function POST(req: Request) {
       return `${baseUrl}/api/stocks/${filename}`;
     }
 
+    // Security: resolve a user-supplied path fragment against a known base directory
+    // and return the absolute path only if it stays inside that base.
+    // Handles URL-encoded traversal sequences (e.g. %2e%2e) via decodeURIComponent.
+    function withinDir(baseDir: string, rest: string): string | null {
+      let decoded: string;
+      try { decoded = decodeURIComponent(rest); } catch { return null; }
+      const resolved = path.resolve(baseDir, decoded);
+      // Must be the base dir itself or strictly inside it
+      if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) return null;
+      return resolved;
+    }
+
+    const musicDir = path.join(process.cwd(), "public", "music");
+
     function toLocalFilePath(url: string): string | null {
       if (!url) return null;
-      if (url.startsWith("/api/renders/")) return path.join(rendersDir, url.slice("/api/renders/".length));
-      if (url.startsWith("/renders/")) return path.join(rendersDir, url.slice("/renders/".length));
-      if (url.startsWith("/api/stocks/")) return path.join(stocksDir, url.slice("/api/stocks/".length));
-      if (url.startsWith("/api/music/")) return path.join(process.cwd(), "public", "music", url.slice("/api/music/".length));
-      if (url.startsWith("/music/")) return path.join(process.cwd(), "public", "music", url.slice("/music/".length));
+      if (url.startsWith("/api/renders/")) return withinDir(rendersDir, url.slice("/api/renders/".length));
+      if (url.startsWith("/renders/")) return withinDir(rendersDir, url.slice("/renders/".length));
+      if (url.startsWith("/api/stocks/")) return withinDir(stocksDir, url.slice("/api/stocks/".length));
+      if (url.startsWith("/api/music/")) return withinDir(musicDir, url.slice("/api/music/".length));
+      if (url.startsWith("/music/")) return withinDir(musicDir, url.slice("/music/".length));
       // absolute URL pointing to our own server
       try {
         const u = new URL(url);
-        if (u.pathname.startsWith("/renders/")) return path.join(rendersDir, u.pathname.slice("/renders/".length));
-        if (u.pathname.startsWith("/api/renders/")) return path.join(rendersDir, u.pathname.slice("/api/renders/".length));
-        if (u.pathname.startsWith("/api/stocks/")) return path.join(stocksDir, u.pathname.slice("/api/stocks/".length));
-        if (u.pathname.startsWith("/api/music/")) return path.join(process.cwd(), "public", "music", u.pathname.slice("/api/music/".length));
-        if (u.pathname.startsWith("/music/")) return path.join(process.cwd(), "public", "music", u.pathname.slice("/music/".length));
+        if (u.pathname.startsWith("/renders/")) return withinDir(rendersDir, u.pathname.slice("/renders/".length));
+        if (u.pathname.startsWith("/api/renders/")) return withinDir(rendersDir, u.pathname.slice("/api/renders/".length));
+        if (u.pathname.startsWith("/api/stocks/")) return withinDir(stocksDir, u.pathname.slice("/api/stocks/".length));
+        if (u.pathname.startsWith("/api/music/")) return withinDir(musicDir, u.pathname.slice("/api/music/".length));
+        if (u.pathname.startsWith("/music/")) return withinDir(musicDir, u.pathname.slice("/music/".length));
       } catch {}
       return null;
     }
