@@ -430,6 +430,22 @@ model GeneratedImage {
   createdAt    DateTime @default(now())
 }
 
+// Records which base-render outputs a user has been CHARGED a clip for, so a
+// later BURN (subtitle overlay) of that same render can be FREE without being
+// gameable: a burn is free only when (userId, outputUrl) is found here. External
+// / foreign / fabricated burn sources are NOT recorded → they fall through to a
+// normal charge. outputUrl is the canonical `/api/renders/<file>` form (see
+// src/lib/clip-charge.ts canonicalRenderUrl). Additive table — no FK/cascade,
+// safe to `prisma db push`.
+model ChargedClip {
+  id        String   @id @default(cuid())
+  userId    String
+  outputUrl String // the base render's output, e.g. /api/renders/render-….mp4
+  createdAt DateTime @default(now())
+
+  @@index([userId, outputUrl])
+}
+
 model RenderJob {
   id              String    @id @default(cuid())
   userId          String

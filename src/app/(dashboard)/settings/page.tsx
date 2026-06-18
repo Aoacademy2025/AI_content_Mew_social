@@ -16,6 +16,7 @@ import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
 import { McpAccessSettings } from "@/components/settings/mcp-access-settings";
+import { QuotaStatus } from "@/components/quota-status";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
 
@@ -496,6 +497,8 @@ function SettingsContent() {
                 </p>
               </div>
             </div>
+            {/* Clip quota row — fail-soft: renders nothing while loading or on error */}
+            <QuotaStatus variant="row" className="mb-6" />
             <BillingTab />
           </div>
         )}

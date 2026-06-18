@@ -20,6 +20,7 @@ import {
   sweepDeadRenderJobs,
 } from "../src/lib/render/job-store";
 import { runRender, type ResolvedRenderInput } from "../src/lib/render/run-render";
+import { recordChargedClip } from "../src/lib/clip-charge";
 
 const POLL_MS = Number(process.env.RENDER_WORKER_POLL_MS) || 3000;
 const STALL_MS = Number(process.env.RENDER_STALL_MS) || 120_000; // no progress for 2 min ⇒ stuck
@@ -112,6 +113,11 @@ async function runOne(job: ClaimedJob): Promise<void> {
       },
     });
     await finishRenderJob(job.id, result.videoUrl);
+    // Record that this user was charged a clip for THIS base-render output, so a later
+    // BURN of it is free (isBurnAlreadyPaid in the route). Only base RENDER jobs (a BURN
+    // reuses the render's charge and never records). Fail-open: recordChargedClip swallows
+    // its own errors — a bookkeeping write must never affect the worker.
+    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl);
     console.log(`[render-worker] done ${job.id} → ${result.videoUrl}`);
   } catch (e) {
     // runRender's finally releases its bundle ref; Remotion tears down its own
