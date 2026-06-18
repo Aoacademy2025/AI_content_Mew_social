@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { KeySetupChecklist } from "./KeySetupChecklist";
 import { KeyOnboardingWizard } from "./KeyOnboardingWizard";
 import { computeKeyStatus, type KeyStatus } from "@/lib/key-tiers";
@@ -9,7 +9,7 @@ export function DashboardOnboarding() {
   const [status, setStatus] = useState<KeyStatus | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
       if (!res.ok) return; // fail-open
@@ -19,9 +19,9 @@ export function DashboardOnboarding() {
       // เด้ง wizard อัตโนมัติเฉพาะครั้งแรก: Tier-1 ยังไม่ครบ และยังไม่เคยกดข้าม
       if (!st.tier1Complete && !data.onboardingDismissed) setWizardOpen(true);
     } catch { /* fail-open */ }
-  }
+  }, []);
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [load]);
 
   if (!status) return null;
   return (
