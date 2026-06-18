@@ -1278,7 +1278,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
   }
 
-  if (!useKieImage && !canUsePexels && !canUsePixabay) {
+  // Auto Mix ที่ข้าม video (ผู้ใช้ติ๊กออก "video") ใช้ภาพ fallback ล้วน → ไม่ต้องมี
+  // Pexels/Pixabay key. ข้าม guard นี้ ปล่อยให้ image fallback ด้านล่างจัดการ
+  const autoMixImageOnly = useAutoMix && !autoMixUsesVideo;
+  if (!useKieImage && !autoMixImageOnly && !canUsePexels && !canUsePixabay) {
     const needPexels = usePexels;
     const needPixabay = usePixabay;
     if (needPexels && needPixabay) {
@@ -2062,8 +2065,10 @@ export async function POST(req: Request) {
       const { body: errBody, status } = toErrorResponse(capturedStockErr);
       return NextResponse.json(errBody, { status });
     }
-    await recordFetchStockTelemetry("done", { emptyResult: true, selectionDebugSample });
-    return NextResponse.json({ results: [] });
+    // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
+    // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
+    await recordFetchStockTelemetry("done", { emptyResult: results.length === 0, selectionDebugSample });
+    return NextResponse.json({ results });
   }
 
   // ── Download phase ──

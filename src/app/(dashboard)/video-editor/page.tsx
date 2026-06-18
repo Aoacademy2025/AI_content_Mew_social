@@ -2280,10 +2280,31 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "kie", retryStep: "runAll" });
           return;
         }
-        // Auto Mix: ใช้ Pexels/Pixabay เป็นหลัก (เหมือน "both") — Unsplash/kie.ai เป็น fallback เสริม ไม่บังคับ
-        if (stockSource === "auto-mix" && !keysData.pexelsKey && !keysData.pixabayKey) {
-          setMissingKey({ type: "pexels", retryStep: "runAll" });
-          return;
+        // Auto Mix: เช็ค key ตามแหล่งที่ผู้ใช้เลือกใน autoMixProviders
+        if (stockSource === "auto-mix") {
+          if (autoMixProviders.includes("video")) {
+            // ใช้วิดีโอจริง → ต้องมี Pexels หรือ Pixabay key (ภาพ fallback เป็นเสริม)
+            if (!keysData.pexelsKey && !keysData.pixabayKey) {
+              setMissingKey({ type: "pexels", retryStep: "runAll" });
+              return;
+            }
+          } else {
+            // ข้ามวิดีโอ — ภาพล้วน. ต้องมีแหล่งภาพที่ "ใช้งานได้จริง" อย่างน้อย 1 ตัว
+            // (Wikimedia/NASA/Met ไม่ต้อง key; ตัวอื่นต้องมี key ของมัน)
+            const keyByProvider: Record<string, boolean> = {
+              wikimedia: true, nasa: true, met: true,
+              unsplash: !!keysData.unsplashKey, flickr: !!keysData.flickrKey,
+              "pexels-photo": !!keysData.pexelsKey, "pixabay-photo": !!keysData.pixabayKey,
+              "kie-ai": !!keysData.kieKey,
+            };
+            const usable = autoMixProviders.filter(p => p !== "video" && keyByProvider[p]);
+            if (usable.length === 0) {
+              // ไม่มีแหล่งภาพที่ใช้ได้ → ขอ key ของตัวแรกที่เลือกไว้ (มักเป็น kie.ai)
+              const firstNeedsKey = autoMixProviders.find(p => p === "kie-ai" || p === "unsplash" || p === "flickr");
+              setMissingKey({ type: firstNeedsKey === "kie-ai" ? "kie" : (firstNeedsKey as "unsplash" | "flickr") ?? "kie", retryStep: "runAll" });
+              return;
+            }
+          }
         }
       }
     } catch { /* ถ้าตรวจสอบ key ไม่ได้ ปล่อยผ่านและให้ pipeline จัดการ */ }
