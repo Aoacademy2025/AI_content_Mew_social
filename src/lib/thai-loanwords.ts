@@ -22,6 +22,41 @@ export const THAI_LOANWORDS: string[] = [
   "ไวรัล", "ช้อปปิ้ง", "ไตเติ้ล", "เรนเดอร์", "คลาวด์", "สึนามิ",
   // surfaced by QA across content/tech/e-commerce scripts
   "สตรีม", "ฟีดแบ็ก", "ออร์แกนิก",
+  // ── cross-sector loanwords, ICU-validated mis-splits 2026-06-19 ──
+  // The daily auto-miner is a dictionary oracle: it can only surface a loanword
+  // that already exists in data/words_th.txt but ICU mis-split. ~72% of common
+  // transliterations (แคปชัน, คริปโต, ไจโรสโคป, เดลิเวอรี…) are NOT in that dict,
+  // so the cron can never reach them — they have to be seeded by hand. Every entry
+  // below was confirmed Intl.Segmenter-split mid-word AND not already kept whole
+  // (วิตามิน/ฮอร์โมน/คาเฟ่/เอไอ/แคปชั่น were checked and deliberately omitted).
+  // finance / investment
+  "คริปโต", "บิตคอยน์", "บล็อกเชน", "พอร์ตโฟลิโอ", "ดิวิเดนด์", "รีไฟแนนซ์", "ฟินเทค", "สเตกกิ้ง",
+  // health / medical
+  "คอลลาเจน", "อัลไซเมอร์", "โปรไบโอติก", "เมตาบอลิซึม",
+  // beauty / cosmetics
+  "เซรั่ม", "มอยส์เจอไรเซอร์", "รีทินอล", "ไฮยาลูรอน", "เอสเซนส์", "ทรีตเมนต์", "ไพรเมอร์", "คอนซีลเลอร์", "คอนทัวร์",
+  // food / cafe
+  "เดลิเวอรี", "เบเกอรี", "ครัวซองต์", "ลาเต้", "เอสเพรสโซ", "ทอปปิง", "ฟิวชัน", "ดริป",
+  // real estate
+  "คอนโด", "เพนต์เฮาส์", "ทาวน์โฮม", "ทาวน์เฮาส์", "ดีเวลลอปเปอร์", "ฟรีโฮลด์", "ลีสโฮลด์", "มอร์เกจ",
+  // automotive / drone
+  "ไฮบริด", "ทรานสมิชชัน", "แดชบอร์ด", "ไจโรสโคป", "อัลติจูด", "โฮลด์", "โพซิชันนิ่ง",
+  // travel
+  "รีสอร์ต", "โฮสเทล", "แลนด์มาร์ก", "พาสปอร์ต", "เลย์โอเวอร์", "แบ็กแพ็ก",
+  // education
+  "เวิร์กช็อป", "เว็บบินาร์", "เซอร์ติฟิเคต", "เลกเชอร์",
+  // fitness
+  "คาร์ดิโอ", "ครีเอทีน", "สแควต", "เดดลิฟต์",
+  // fashion
+  "คอลเลกชัน", "สนีกเกอร์", "แอกเซสเซอรี", "เทรนด์", "มินิมอล",
+  // gaming / esports
+  "เกมเมอร์", "สตรีมเมอร์", "อีสปอร์ต", "ลูทบ็อกซ์", "เมตาเวิร์ส",
+  // tech / AI
+  "แมชชีนเลิร์นนิง", "นิวรัล", "เอนจิน", "เอพีไอ", "ดาต้าเบส", "อินเทอร์เฟซ",
+  // marketing
+  "อิมเพรสชัน", "คอนเวอร์ชัน", "ฟันเนล", "รีมาร์เก็ตติ้ง", "แฮชแท็ก", "แคปชัน",
+  // logistics
+  "โลจิสติกส์", "ซัพพลายเชน", "แวร์เฮาส์", "อินเวนทอรี", "แทร็กกิ้ง",
 ];
 
 // Dynamic loanwords (auto-mined daily, stored in SiteConfig) merged on top of the
