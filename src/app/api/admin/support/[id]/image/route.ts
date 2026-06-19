@@ -5,9 +5,15 @@ import { apiError } from "@/lib/api-error";
 
 export const runtime = "nodejs";
 
-function attachmentName(name: string | null) {
-  if (!name) return "support-attachment";
-  return name.replace(/[\r\n"]/g, "").slice(0, 120) || "support-attachment";
+// Build a Content-Disposition header that is safe for HTTP. The raw filename can
+// contain non-Latin-1 chars (e.g. Thai "สกรีนช็อต …"), and Node/undici reject any
+// header value with a code point > 255 (ByteString error → the route 500s and the
+// admin can't view the attachment). So we emit BOTH: an ASCII-only `filename=`
+// fallback (non-ASCII → "_") and an RFC 5987 `filename*=UTF-8''…` for modern browsers.
+function contentDisposition(disposition: string, name: string | null) {
+  const raw = (name ?? "support-attachment").replace(/[\r\n"]/g, "").slice(0, 120) || "support-attachment";
+  const ascii = raw.replace(/[^\x20-\x7E]/g, "_");
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(raw)}`;
 }
 
 // Derive the Content-Type from the file EXTENSION, never from the stored MIME
@@ -50,7 +56,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       headers: {
         "Content-Type": contentType,
         "Content-Length": String(body.length),
-        "Content-Disposition": `${disposition}; filename="${attachmentName(ticket.imageName)}"`,
+        "Content-Disposition": contentDisposition(disposition, ticket.imageName),
         "X-Content-Type-Options": "nosniff",
         "Content-Security-Policy": "default-src 'none'; sandbox",
         "Cache-Control": "private, max-age=60",
