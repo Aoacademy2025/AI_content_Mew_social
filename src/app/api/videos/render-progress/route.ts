@@ -21,16 +21,22 @@ export async function GET(req: Request) {
     if (!job) return NextResponse.json({ status: "error", error: "job not found" });
     // Ownership check: prevent one user from polling another user's job.
     if (job.userId !== authUser.id) return NextResponse.json({ status: "error", error: "job not found" });
-    const status =
+    const stage =
       job.status === "DONE"
         ? "done"
         : job.status === "FAILED" || job.status === "CANCELLED"
         ? "error"
         : "running";
+    // Return BOTH `stage` and `status`: the MCP poller (pipeline-client.pollRender)
+    // and the legacy progress shape key off `stage`, while other callers may read
+    // `status`. Before this, the queue branch returned only `status`, so pollRender's
+    // `p.stage` was always undefined → it never saw "done" → every MCP render hit the
+    // 15-min timeout ("render timed out") even though the RenderJob was DONE.
     return NextResponse.json({
-      status,
+      stage,
+      status: stage,
       progress: job.progress,
-      videoUrl: job.videoUrl ?? undefined,
+      videoUrl: job.videoUrl ?? null,
       error: job.error ?? undefined,
     });
   }
