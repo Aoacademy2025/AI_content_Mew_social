@@ -2,11 +2,12 @@
 // Start (prod): export MCP_SERVICE_SECRET=...; pm2 start ecosystem.config.js --only mcp-video-worker --update-env && pm2 save
 import "dotenv/config"; // load .env BEFORE prisma init — tsx (unlike Next) doesn't auto-load it
 import { prisma } from "../src/lib/prisma";
-import { claimNextQueuedJob } from "../src/lib/mcp/video-job";
+import { claimNextQueuedJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
 
 const POLL_MS = Number(process.env.MCP_WORKER_POLL_MS ?? 4000);
+const ORPHAN_MAX_REQUEUES = Number(process.env.MCP_WORKER_ORPHAN_MAX_REQUEUES ?? 2);
 let running = true;
 process.on("SIGINT", () => { running = false; });
 process.on("SIGTERM", () => { running = false; });
@@ -33,13 +34,14 @@ async function main() {
     console.error("[mcp-worker] DATABASE_URL not set — refusing to start");
     process.exit(1);
   }
-  // Reaper: with a single worker, any 'processing' job at startup was orphaned by a previous
-  // crash/restart (e.g. OOM mid-render). Fail them so they don't wedge as 'processing' forever.
-  const orphaned = await prisma.videoJob.updateMany({
-    where: { status: "processing" },
-    data: { status: "failed", errorMessage: "worker restarted — job did not finish", finishedAt: new Date() },
-  });
-  if (orphaned.count > 0) console.log(`[mcp-worker] reaped ${orphaned.count} orphaned processing job(s)`);
+  // Recovery: with a single worker, any 'processing' job at startup was orphaned by a
+  // previous deploy/restart. Requeue safe stages instead of failing the user's MCP job.
+  const recovered = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: ORPHAN_MAX_REQUEUES });
+  if (recovered.inspected > 0) {
+    console.log(
+      `[mcp-worker] recovered orphaned processing job(s): inspected=${recovered.inspected} requeued=${recovered.requeued} failed=${recovered.failed}`,
+    );
+  }
   startLoanwordRefresh(); // load auto-mined loanwords now + refresh every 10 min (unref'd)
   console.log("[mcp-worker] started");
   while (running) {
