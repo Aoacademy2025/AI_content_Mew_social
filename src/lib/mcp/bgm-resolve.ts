@@ -15,8 +15,12 @@ export interface Mood { key: string; label: string; emoji: string; titleKw: stri
 // Order matters: styleToMood returns the FIRST mood whose synonym appears in the
 // input, so put the more specific moods before the broad "upbeat" catch-all.
 export const MOODS: Mood[] = [
+  // titleKw is ordered by specificity — "lofi" first so "ชิล" resolves to a Lofi
+  // track, not the broader "laid back". "ambient"/"acoustic" are intentionally NOT
+  // here: they live in Classical-Ambient-Cinematic / Pop-Acoustic tracks that are
+  // really cinematic/upbeat, so including them mis-pulled those into chill.
   { key: "chill", label: "ชิล/สบาย", emoji: "😌",
-    titleKw: ["lofi", "laid back", "peaceful", "rnb", "soulful", "ambient", "acoustic"],
+    titleKw: ["lofi", "laid back", "peaceful", "rnb", "soulful"],
     synonyms: ["ชิล", "ชิลล์", "ชิว", "สบาย", "สบายๆ", "ผ่อนคลาย", "เบาๆ", "lofi", "lo-fi", "chill", "relax", "calm", "peaceful", "laid back", "lounge"] },
   { key: "cinematic", label: "ดราม่า/อารมณ์", emoji: "🎬",
     titleKw: ["cinematic", "dramatic", "epic", "classical", "melancholic", "sad", "sentimental"],
@@ -97,11 +101,15 @@ export function resolveBgm(input: string | undefined | null, tracks: BgmTrack[])
   });
   if (sub) return { kind: "resolved", bgmFile: sub.bgmFile, title: sub.title, via: "title" };
 
-  // 4. Mood word → first track in that mood
+  // 4. Mood word → a track in that mood, preferring the mood's most-specific keyword
+  // (titleKw is ordered) so "ชิล" → a "lofi" track before a generic "laid back" one.
   const mood = styleToMood(low);
   if (mood) {
-    const hit = tracks.find((t) => deriveMoods(t.title).includes(mood));
-    if (hit) return { kind: "resolved", bgmFile: hit.bgmFile, title: hit.title, via: "mood" };
+    const def = MOODS.find((m) => m.key === mood);
+    for (const kw of def?.titleKw ?? []) {
+      const hit = tracks.find((t) => t.title.toLowerCase().includes(kw));
+      if (hit) return { kind: "resolved", bgmFile: hit.bgmFile, title: hit.title, via: "mood" };
+    }
   }
 
   // 5. Loose keyword: any title token (≥3 chars) appears in the input
