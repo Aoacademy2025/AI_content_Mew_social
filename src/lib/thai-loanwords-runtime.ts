@@ -25,6 +25,31 @@ export function mergeStore(store: LoanwordStore, newWords: string[]): LoanwordSt
   return { ...store, words: [...set] };
 }
 
+// Pure store mutations for the admin loanword manager. Words auto-applied by the
+// cron live in `words`; `denylist` blocks a word from being re-added by either pass.
+export function denyWord(store: LoanwordStore, word: string): LoanwordStore {
+  return {
+    ...store,
+    words: store.words.filter((w) => w !== word),
+    denylist: store.denylist.includes(word) ? store.denylist : [...store.denylist, word],
+  };
+}
+export function restoreWord(store: LoanwordStore, word: string): LoanwordStore {
+  return { ...store, denylist: store.denylist.filter((w) => w !== word) };
+}
+export function addWord(store: LoanwordStore, word: string): LoanwordStore {
+  return {
+    ...store,
+    words: store.words.includes(word) ? store.words : [...store.words, word],
+    denylist: store.denylist.filter((w) => w !== word), // a manually added word must not stay blocked
+  };
+}
+export function editWord(store: LoanwordStore, oldWord: string, newWord: string): LoanwordStore {
+  const words = store.words.filter((w) => w !== oldWord);
+  if (newWord && !words.includes(newWord)) words.push(newWord);
+  return { ...store, words };
+}
+
 export async function readLoanwordStore(): Promise<LoanwordStore> {
   const row = await prisma.siteConfig.findUnique({ where: { key: LOANWORD_STORE_KEY } });
   return parseLoanwordStore(row?.value);
