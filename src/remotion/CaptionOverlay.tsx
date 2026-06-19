@@ -72,6 +72,7 @@ export const CaptionOverlay: React.FC<CaptionOverlayProps> = ({
         fontWeight,
         lineHeight: style.lineHeight,
         letterSpacing: style.letterSpacing ?? "0.01em",
+        whiteSpace: "pre-line",
         wordBreak: "break-word",
         overflowWrap: "break-word",
       }}
