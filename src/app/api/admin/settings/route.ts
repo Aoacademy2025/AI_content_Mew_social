@@ -17,6 +17,9 @@ const KEYS = [
   "plan_pro_features",
   "plan_business_price",
   "plan_business_features",
+  // Server-owned (platform) API key for internal automation — NOT a user's BYOK
+  // key. Used by the loanword miner cron + other server-side Gemini calls.
+  "server_gemini_key",
 ] as const;
 
 type SettingKey = typeof KEYS[number];
@@ -32,6 +35,7 @@ async function getConfig(key: SettingKey): Promise<string> {
     stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET,
     stripe_price_pro: process.env.STRIPE_PRICE_PRO_MONTHLY,
     stripe_price_business: process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
+    server_gemini_key: process.env.LOANWORD_MINER_GEMINI_KEY,
   };
   return envMap[key] ?? "";
 }
@@ -50,6 +54,7 @@ async function setConfig(key: SettingKey, value: string) {
     stripe_webhook_secret: "STRIPE_WEBHOOK_SECRET",
     stripe_price_pro: "STRIPE_PRICE_PRO_MONTHLY",
     stripe_price_business: "STRIPE_PRICE_BUSINESS_MONTHLY",
+    server_gemini_key: "LOANWORD_MINER_GEMINI_KEY",
   };
   const envKey = envMap[key];
   if (envKey) process.env[envKey] = value;
