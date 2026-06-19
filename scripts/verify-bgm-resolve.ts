@@ -6,6 +6,10 @@ function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); pr
 // A representative slice of the real 22 system tracks (title → /music/<filename>)
 const tracks: BgmTrack[] = [
   { title: "Groove", bgmFile: "/music/1778471829756-groove.mp3" },
+  // Ambient-cinematic track placed BEFORE the Lofi one — this used to hijack "ชิล"
+  // (via the old "ambient" keyword + first-match). The fix must still pick Lofi.
+  { title: "Classical-Ambient-Cinematic", bgmFile: "/music/classical_ambient.mp3" },
+  { title: "Electronic-Laid Back-Upbeat", bgmFile: "/music/electronic_laidback.mp3" },
   { title: "Lofi-RnB-Laid Back-Peaceful-Jazz", bgmFile: "/music/lofi_rnb.mp3" },
   { title: "Cinematic-Epic-Dramatic", bgmFile: "/music/cinematic_epic.mp3" },
   { title: "Corporate-Happy-Energetic", bgmFile: "/music/corporate_happy.mp3" },
@@ -17,9 +21,10 @@ const tracks: BgmTrack[] = [
 const g = resolveBgm("Groove", tracks);
 assert(g.kind === "resolved" && g.bgmFile === "/music/1778471829756-groove.mp3", "title 'Groove' → real path (the kapokja bug)");
 
-// mood words (Thai)
+// mood words (Thai) — must pick Lofi, NOT the earlier ambient/laid-back tracks
 const chill = resolveBgm("ชิล", tracks);
-assert(chill.kind === "resolved" && chill.via === "mood" && chill.title.includes("Lofi"), "'ชิล' → a Lofi track");
+assert(chill.kind === "resolved" && chill.via === "mood" && chill.title.startsWith("Lofi"), "'ชิล' → a Lofi track (not ambient/laid-back)");
+assert(resolveBgm("ชิล", tracks).bgmFile === "/music/lofi_rnb.mp3", "'ชิล' resolves specifically to the Lofi path");
 const fun = resolveBgm("เอาเพลงสนุกๆ", tracks);
 assert(fun.kind === "resolved" && (fun.title.includes("Groov") || fun.title.includes("Happy") || fun.title === "Groove"), "'เพลงสนุกๆ' → an upbeat track");
 const drama = resolveBgm("ดราม่า", tracks);
