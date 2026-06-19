@@ -45,10 +45,13 @@ export default function AdminLoanwordsPage() {
   if (loading) return <div className="p-6 text-sm text-zinc-400">กำลังโหลด…</div>;
   if (!data) return <div className="p-6 text-sm text-red-400">โหลดข้อมูลไม่ได้</div>;
 
-  const seedFiltered = seedQuery ? data.seed.filter((w) => w.includes(seedQuery)) : [];
   const lastSet = new Set(data.lastAdded);
+  const denySet = new Set(data.denylist);
   // newest-first (store appends, so reverse), filtered by the search box
   const shownWords = (wordQuery ? data.words.filter((w) => w.includes(wordQuery)) : data.words).slice().reverse();
+  // seed words that aren't currently denied; show ALL so admins can audit every word
+  const seedActive = data.seed.filter((w) => !denySet.has(w));
+  const seedShown = seedQuery ? seedActive.filter((w) => w.includes(seedQuery)) : seedActive;
 
   return (
     <div className="mx-auto max-w-3xl p-6 space-y-6">
@@ -121,20 +124,23 @@ export default function AdminLoanwordsPage() {
             </ul>}
       </section>
 
-      {/* ── seed (read-only) ──────────────────────────────────────── */}
+      {/* ── seed (in-code, show all, deny-able via denylist override) ── */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3">
-        <div className="text-sm font-semibold text-white">Seed ในโค้ด — {data.seedCount} คำ <span className="text-xs font-normal text-zinc-500">(read-only · แก้ผ่านโค้ด)</span></div>
-        <input value={seedQuery} onChange={(e) => setSeedQuery(e.target.value)} placeholder="ค้นหาคำใน seed…"
+        <div className="text-sm font-semibold text-white">Seed ในโค้ด — {seedActive.length} คำ <span className="text-xs font-normal text-zinc-500">(ถอนได้ → override ผ่าน denylist · เพิ่มถาวรต้องผ่านโค้ด)</span></div>
+        <input value={seedQuery} onChange={(e) => setSeedQuery(e.target.value)} placeholder="ค้นหาคำใน seed… (ปล่อยว่าง = เห็นทั้งหมด)"
           className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-600 outline-none focus:border-violet-500/50" />
-        {seedQuery && (
-          <ul className="flex flex-wrap gap-2">
-            {seedFiltered.length === 0
-              ? <li className="text-xs text-zinc-500">ไม่พบ &quot;{seedQuery}&quot; ใน seed</li>
-              : seedFiltered.slice(0, 60).map((w) => (
-                  <li key={w} className="rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-sm font-mono text-zinc-300">{w}</li>
-                ))}
-          </ul>
-        )}
+        <ul className="flex flex-wrap gap-2">
+          {seedShown.length === 0
+            ? <li className="text-xs text-zinc-500">{seedQuery ? `ไม่พบ "${seedQuery}"` : "ว่าง"}</li>
+            : seedShown.map((w) => (
+                <li key={w} className="flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-sm text-zinc-300">
+                  <span className="font-mono">{w}</span>
+                  <button disabled={busy === w} onClick={() => act("deny", w)} title="ถอน (override ผ่าน denylist)" className="text-red-400/70 hover:text-red-300 disabled:opacity-40">
+                    {busy === w ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  </button>
+                </li>
+              ))}
+        </ul>
       </section>
     </div>
   );
