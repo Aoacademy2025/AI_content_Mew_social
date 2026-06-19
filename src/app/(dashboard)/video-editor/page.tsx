@@ -1489,7 +1489,7 @@ export default function VideoEditorPage() {
     originalCaptionsRef.current = sceneCaptions;
     setCaptions(sceneCaptions);
     setSplitMode("sentence");
-    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · เวลาจาก TTS เป๊ะ ✓`);
+    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · ใช้เวลาจาก TTS`);
     console.log(`[editor] subtitles from TTS timing: ${sceneCaptions.length} cards, ${res.words.length} words, ${res.audioDurationMs}ms — transcribe skipped`);
     return sceneCaptions;
   }
@@ -3103,8 +3103,9 @@ export default function VideoEditorPage() {
       // Clamp ผลลัพธ์เข้า timeline เสียงจริงเสมอ — กันซับชุดใหม่ยาวเกิน audio
       const bounded = normalizeCaptionsForTimeline(result, audioDurMs);
       setCaptions(bounded);
-      const label = m === "custom" ? `${n} คำ` : `${m} คำ`;
-      toast.success(`แบ่งซับ ${label}/ช่วง → ${bounded.length} ช่วง`);
+      const label = n === 1 ? "1 คำ" : `สูงสุด ${n} คำ`;
+      const suffix = n === 1 ? "" : " ตามจังหวะพูด";
+      toast.success(`แบ่งซับ ${label}/ช่วง${suffix} → ${bounded.length} ช่วง`);
     }
   }
 
@@ -3463,9 +3464,9 @@ export default function VideoEditorPage() {
                       {([
                         { mode: "sentence", label: "ประโยค" },
                         { mode: "1",        label: "1 คำ" },
-                        { mode: "2",        label: "2 คำ" },
-                        { mode: "3",        label: "3 คำ" },
-                        { mode: "4",        label: "4 คำ" },
+                        { mode: "2",        label: "≤2 คำ" },
+                        { mode: "3",        label: "≤3 คำ" },
+                        { mode: "4",        label: "≤4 คำ" },
                         { mode: "custom",   label: "กำหนด" },
                       ] as const).map(({ mode, label }) => (
                         <button
@@ -3486,7 +3487,7 @@ export default function VideoEditorPage() {
                     {/* Custom input */}
                     {splitMode === "custom" && (
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-slate-500 flex-shrink-0">จำนวนคำ/ช่วง:</span>
+                        <span className="text-[10px] text-slate-500 flex-shrink-0">คำสูงสุด/ช่วง:</span>
                         <input
                           type="number" min={1} max={20} value={splitCustomN}
                           onChange={e => setSplitCustomN(Math.max(1, parseInt(e.target.value) || 1))}
@@ -3500,10 +3501,10 @@ export default function VideoEditorPage() {
                     )}
                     {splitMode !== "custom" && splitMode !== "sentence" && (
                       <div className="text-[9px] text-slate-700 text-center">
-                        {splitMode === "1" && "เน้นทีละคำ — แรงมาก"}
-                        {splitMode === "2" && "เร็ว พลิ้ว — นิยมใน TikTok"}
-                        {splitMode === "3" && "แนะนำ — อ่านง่าย"}
-                        {splitMode === "4" && "ประโยคสั้น — ไหลลื่น"}
+                        {splitMode === "1" && "ทีละคำ — ตรงตามคำ"}
+                        {splitMode === "2" && "สูงสุด 2 คำ — ตัดตามจังหวะพูด"}
+                        {splitMode === "3" && "สูงสุด 3 คำ — อ่านง่าย"}
+                        {splitMode === "4" && "สูงสุด 4 คำ — ไหลลื่น"}
                       </div>
                     )}
                     {splitMode === "sentence" && (
