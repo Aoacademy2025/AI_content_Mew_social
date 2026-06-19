@@ -573,6 +573,23 @@ export async function POST(req: Request) {
       }
     }
 
+    // BGM is decorative + best-effort: NEVER fail the whole render over music. Return
+    // the value only if it's a real playable asset, else drop it (render with no music).
+    // Guards against a stray bgm value (e.g. a bare track name "Groove" the MCP client
+    // sent) that isn't an internal path → would otherwise crash Remotion's <Audio>.
+    function safeBgmOrDrop(bgm: string | undefined | null): string | undefined {
+      if (!bgm) return undefined;
+      const localPath = toLocalFilePathIfInternal(bgm);
+      if (localPath) {
+        if (fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500) return bgm;
+        console.warn(`[render] dropping bgm (file missing): ${bgm}`);
+        return undefined;
+      }
+      if (bgm.startsWith("http://") || bgm.startsWith("https://")) return bgm; // external, trust
+      console.warn(`[render] dropping bgm (not a playable src): ${bgm}`);
+      return undefined;
+    }
+
     function toAbsolute(url: string | undefined | null): string {
       if (!url) return url ?? "";
       if (url.startsWith("http://") || url.startsWith("https://")) return url;
@@ -659,11 +676,11 @@ export async function POST(req: Request) {
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
-        bgmFile: toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile)),
+        bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
         bgVideos: resolvedBgVideos,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
-      if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
+      // bgm: safeBgmOrDrop already removed any unplayable value — never throws on music
       console.log("[render] stock assets prepared from stocks -> renders");
       console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
       console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
@@ -680,11 +697,11 @@ export async function POST(req: Request) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
       const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
       const resolvedBgm = subtitleOverlayConfig.bgmFile
-        ? toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile))
+        ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
       resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl, bgmFile: resolvedBgm };
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
-      if (resolvedBgm) assertExistingAsset(resolvedBgm, "bgm");
+      // bgm: best-effort, dropped if unplayable (no throw)
       console.log(`[render] subtitle-overlay bgmFile: ${resolvedBgm ?? "(none)"}`);
       // Warmup /api/stocks route so Remotion doesn't timeout on first compile
       if (resolvedUrl?.includes("/api/stocks/")) {
