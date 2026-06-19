@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone, Languages,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -36,7 +36,6 @@ const adminNavItems: SidebarNavItem[] = [
   { title: "Updates",     href: "/admin/updates", icon: Megaphone, proOnly: false },
   { title: "จัดการผู้ใช้", href: "/admin/users",  icon: Users,   proOnly: false },
   { title: "คูปอง",        href: "/admin/coupons", icon: Ticket,  proOnly: false },
-  { title: "คำตัดซับ",     href: "/admin/loanwords", icon: Languages, proOnly: false },
 ];
 
 const userNavItems: SidebarNavItem[] = [
