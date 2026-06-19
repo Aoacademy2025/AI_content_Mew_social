@@ -1,5 +1,6 @@
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { moodBuckets, moodMenu, type BgmTrack } from "@/lib/mcp/bgm-resolve";
 
 async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
@@ -22,19 +23,17 @@ export async function getVideoOptions(
         tracks: { id: string; title: string; filename: string }[];
         userTracks?: { id: string; title: string; filename: string }[];
       }>("/api/music");
-      const systemTracks = (r.tracks ?? []).map((t) => ({
-        id: t.id,
-        title: t.title,
-        bgmFile: `/music/${t.filename}`,
-        source: "system" as const,
-      }));
-      const userTracks = (r.userTracks ?? []).map((t) => ({
-        id: t.id,
-        title: t.title,
-        bgmFile: `/api/music/${t.filename}`,
-        source: "user" as const,
-      }));
-      return [...systemTracks, ...userTracks];
+      const allTracks: BgmTrack[] = [
+        ...(r.tracks ?? []).map((t) => ({ title: t.title, bgmFile: `/music/${t.filename}` })),
+        ...(r.userTracks ?? []).map((t) => ({ title: t.title, bgmFile: `/api/music/${t.filename}` })),
+      ];
+      // Present music as MOODS, not filenames — in chat the user can't see a dropdown.
+      // Ask them a vibe, then pass it (mood word / title / path) as bgmFile; the server
+      // resolves it (see bgm-resolve.ts). create_video_job also accepts a mood word directly.
+      return {
+        byMood: moodBuckets(allTracks),
+        howToChoose: `ถาม user ว่าอยากได้เพลงแนวไหน (${moodMenu()}) แล้วส่งเป็น bgmFile ตอน create_video_job — ส่งชื่อแนว ("ชิล"/"ดราม่า"), ชื่อเพลง, หรือ path ก็ได้ ระบบ resolve ให้. ไม่อยากได้เพลงก็ไม่ต้องส่ง bgmFile`,
+      };
     }),
     user.heygenKey
       ? safe(async () => {

@@ -10,6 +10,7 @@ import {
   cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
 import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
+import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export interface OrchestratorDeps {
@@ -80,6 +81,28 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+
+    // Resolve BGM (path | track title | mood word like "ชิล"/"chill"/"ดราม่า") → a
+    // real /music path. In chat the client usually sends a title or mood, not a path,
+    // so without this the renderer gets <Audio src="Groove"> and crashes. Unresolvable
+    // → fail fast with the mood menu; music-list fetch failure → drop bgm rather than
+    // block the whole video over decorative music.
+    if (input.bgmFile) {
+      const rawBgm = input.bgmFile; // narrowed string — keep for the catch (input.bgmFile gets reassigned below)
+      try {
+        const lib = await caller.get<{ tracks?: { title: string; filename: string }[]; userTracks?: { title: string; filename: string }[] }>("/api/music");
+        const bgmTracks = [
+          ...(lib.tracks ?? []).map((t) => ({ title: t.title, bgmFile: `/music/${t.filename}` })),
+          ...(lib.userTracks ?? []).map((t) => ({ title: t.title, bgmFile: `/api/music/${t.filename}` })),
+        ];
+        const res = resolveBgm(rawBgm, bgmTracks);
+        if (res.kind === "resolved") input.bgmFile = res.bgmFile;
+        else if (res.kind === "none") input.bgmFile = undefined;
+        else { await failJob(jobId, `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`); return; }
+      } catch {
+        if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
+      }
+    }
 
     // 1. TTS
     await step("tts", 10);
