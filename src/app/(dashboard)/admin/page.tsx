@@ -8,7 +8,7 @@ import {
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
   Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
   CreditCard, Key, Eye, EyeOff, Tag, Plus, GripVertical, Zap, Building2,
-  Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save,
+  Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save, Languages,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -1158,6 +1158,20 @@ export default function AdminDashboardPage() {
                   </div>
                   <CardTitle className="mt-2 text-sm text-white">จัดการผู้ใช้งาน</CardTitle>
                   <p className="text-xs text-zinc-500">ดูข้อมูล แก้ไขแผน ระงับ/ปลดล็อกบัญชี และลบผู้ใช้งาน</p>
+                </CardHeader>
+              </Card>
+            </Link>
+            <Link href="/admin/loanwords">
+              <Card className="group border-white/10 bg-white/5 transition-all hover:border-violet-500/40 hover:bg-white/10">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div className="rounded-lg bg-violet-500/20 p-2.5 ring-1 ring-violet-500/30">
+                      <Languages className="h-4 w-4 text-violet-400" />
+                    </div>
+                    <ArrowRight className="h-4 w-4 text-zinc-600 transition-transform group-hover:translate-x-1 group-hover:text-zinc-400" />
+                  </div>
+                  <CardTitle className="mt-2 text-sm text-white">คำตัดซับ (Loanwords)</CardTitle>
+                  <p className="text-xs text-zinc-500">จัดการคำยืมที่ระบบกันไม่ให้ตัดผิด — ถอน/แก้/เพิ่ม/คืนค่า</p>
                 </CardHeader>
               </Card>
             </Link>
