@@ -281,6 +281,10 @@ export default function AdminDashboardPage() {
   const [stripeWebhookSecret, setStripeWebhookSecret] = useState("");
   const [stripePricePro, setStripePricePro] = useState("");
   const [stripePriceBusiness, setStripePriceBusiness] = useState("");
+
+  // Server-owned Gemini key (platform automation: loanword miner cron, etc.)
+  const [serverGeminiKey, setServerGeminiKey] = useState("");
+  const [savingServerKey, setSavingServerKey] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
   const [savingStripe, setSavingStripe] = useState(false);
 
@@ -309,7 +313,22 @@ export default function AdminDashboardPage() {
       if (d.plan_pro_features) setPlanProFeatures(d.plan_pro_features);
       if (d.plan_business_price) setPlanBusinessPrice(d.plan_business_price);
       if (d.plan_business_features) setPlanBusinessFeatures(d.plan_business_features);
+      if (d.server_gemini_key) setServerGeminiKey(d.server_gemini_key);
     } catch {}
+  }
+
+  async function saveServerGeminiKey() {
+    setSavingServerKey(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server_gemini_key: serverGeminiKey.trim() }),
+      });
+      if (res.ok) toast.success("บันทึก Server Gemini Key แล้ว");
+      else toast.error("บันทึกไม่สำเร็จ");
+    } catch { toast.error("เกิดข้อผิดพลาด"); }
+    finally { setSavingServerKey(false); }
   }
 
   async function saveSupportEmail() {
@@ -1272,6 +1291,30 @@ export default function AdminDashboardPage() {
               style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 50%))" }}>
               {savingStripe ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
               บันทึก Stripe
+            </button>
+          </div>
+        </div>
+
+        {/* ── Server Keys (platform automation) ────────────────────────── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-4">
+          <div>
+            <div className="text-sm font-semibold text-white">Server Gemini Key</div>
+            <p className="text-xs text-zinc-500 mt-0.5">คีย์ของบริษัท (ไม่ใช่ของ user) สำหรับงานอัตโนมัติฝั่ง server เช่น ตัวขุดคำตัดซับ (loanword miner) — แสดง/ซ่อนด้วยปุ่ม &quot;keys&quot; ด้านบน</p>
+          </div>
+          <div>
+            <label className="text-xs text-zinc-400 mb-1 block">Gemini API Key <span className="text-zinc-600">(AIza...)</span></label>
+            <input type={showSecrets ? "text" : "password"} value={serverGeminiKey}
+              onChange={e => setServerGeminiKey(e.target.value)}
+              placeholder="AIzaSyxxxx"
+              autoComplete="off"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
+          </div>
+          <div className="flex justify-end">
+            <button onClick={saveServerGeminiKey} disabled={savingServerKey}
+              className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+              style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 50%))" }}>
+              {savingServerKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+              บันทึก Server Key
             </button>
           </div>
         </div>
