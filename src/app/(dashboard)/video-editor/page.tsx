@@ -3562,13 +3562,14 @@ export default function VideoEditorPage() {
                           setEditingCapIdx(null);
                         }}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } if (e.key === "Escape") setEditingCapIdx(null); }}
-                        className="w-full bg-[#111115] border border-violet-500/50 rounded px-2 py-1 text-[12px] text-slate-100 resize-none outline-none leading-relaxed"
-                        rows={2}
+                        className="w-full bg-[#111115] border border-violet-500/50 rounded px-2 py-1 text-[12px] text-slate-100 resize-none outline-none leading-relaxed whitespace-pre-wrap"
+                        rows={Math.min(5, Math.max(2, cap.text.split(/\r\n|\r|\n/).length))}
+                        title="Shift+Enter เพื่อขึ้นบรรทัด"
                         onClick={e => e.stopPropagation()}
                       />
                     ) : (
                       <div
-                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors", isActive ? "text-slate-100 font-semibold" : "text-slate-400")}
+                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors whitespace-pre-wrap break-words", isActive ? "text-slate-100 font-semibold" : "text-slate-400")}
                         onDoubleClick={e => { e.stopPropagation(); setEditingCapIdx(i); }}
                         title="ดับเบิ้ลคลิกเพื่อแก้ข้อความ"
                       >
