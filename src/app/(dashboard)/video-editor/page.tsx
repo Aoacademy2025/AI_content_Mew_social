@@ -1087,7 +1087,9 @@ export default function VideoEditorPage() {
 
     // Detect type to pick the right action
     let action: { label: string; url: string } | null = null;
-    if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
+    if (lower.includes("kie.ai") && (lower.includes("เครดิต") || lower.includes("credit"))) {
+      action = { label: "เติมเครดิต kie.ai", url: "https://kie.ai/api-key" };
+    } else if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
       action = { label: "เปิด API ที่ Cloud Console", url: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" };
     } else if (lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
       action = { label: "สร้าง Key ใหม่", url: "https://aistudio.google.com/apikey" };

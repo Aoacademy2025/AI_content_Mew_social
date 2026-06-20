@@ -1937,6 +1937,7 @@ export async function POST(req: Request) {
   // ไม่กระทบ keyword ที่หา video clip ได้แล้ว — เติมเฉพาะ keyword ที่ found ว่างเปล่าเท่านั้น
   // ทำเฉพาะตอน download=true (Ken Burns ต้อง render ไฟล์จริง — ไม่เหมาะกับ preview/search-only call)
   const hasImageFallback = canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback || canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback || canUseKieFallback;
+  let kieCreditExhausted = false; // ตั้งเป็น true เมื่อ kie.ai ตอบ credit หมด → แจ้งผู้ใช้ตอนได้ 0 clips
   if (download && useAutoMix && hasImageFallback) {
     const foundKeywords = new Set(found.map(f => f.keyword));
     const seen = new Set<string>();
@@ -2045,6 +2046,11 @@ export async function POST(req: Request) {
             }
           } catch (e) {
             console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
+            // จับ "credit หมด" เพื่อแจ้งผู้ใช้ตอนท้าย (ไม่งั้นได้ 0 clips เงียบๆ)
+            const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
+            if (msg.includes("credit") || msg.includes("insufficient") || msg.includes("balance") || msg.includes("top up")) {
+              kieCreditExhausted = true;
+            }
           }
         }
       });
@@ -2075,6 +2081,16 @@ export async function POST(req: Request) {
       });
       const { body: errBody, status } = toErrorResponse(capturedStockErr);
       return NextResponse.json(errBody, { status });
+    }
+    // kie.ai credit หมด และ generate ไม่ได้เลย → แจ้งผู้ใช้ตรงๆ (ไม่ใช่ results ว่างเงียบ)
+    if (kieCreditExhausted && results.length === 0) {
+      await recordFetchStockTelemetry("error", { providerErrorCode: "quota", errorProvider: "kie" });
+      return NextResponse.json({
+        error: "kie.ai เครดิตหมด — กรุณาเติมเครดิตที่ kie.ai หรือเลือกแหล่งภาพอื่น (Unsplash/Wikimedia ฟรี) ใน B-roll Sources",
+        retryable: false,
+        provider: "kie",
+        code: "quota",
+      }, { status: 402 });
     }
     // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
     // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
