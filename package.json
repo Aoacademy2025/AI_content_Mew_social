@@ -13,7 +13,8 @@
     "verify:render-queue": "tsx scripts/verify-render-queue.ts",
     "verify:clip-charge": "tsx scripts/verify-clip-charge.ts",
     "verify:loanword-miner": "tsx scripts/verify-loanword-miner.ts",
-    "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts"
+    "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
+    "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

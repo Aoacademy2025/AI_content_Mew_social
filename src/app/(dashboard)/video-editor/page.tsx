@@ -6,7 +6,7 @@
  * DO NOT modify /video-creator/page.tsx — this is a separate page.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -47,6 +47,9 @@ import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
+import { useAudioPeaks } from "./_components/useAudioPeaks";
+import { WaveformCanvas } from "./_components/WaveformCanvas";
+import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -60,6 +63,8 @@ const STEP_EVENT_LABELS: Record<string, string> = {
   composite: "วาง Avatar บนวิดีโอ",
   burnSubtitles: "ฝังซับลงวิดีโอ",
 };
+
+const SNAP_MS = 120;
 
 type RenderProgressPayload = {
   progress?: number;
@@ -295,6 +300,14 @@ export default function VideoEditorPage() {
   const ttsTimingRef = useRef<TtsTiming | null>(null);
   // ref ที่ sync กับ captions state — ใช้ใน rAF loop เพื่อหลีกเลี่ยง stale closure
   const captionsRef = useRef<Caption[]>([]);
+  // ── Waveform / Snap ───────────────────────────────────────────────────
+  const [waveformVoiceUrl, setWaveformVoiceUrl] = useState<string | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [ttsTimingVersion, setTtsTimingVersion] = useState(0);
+  const snapGuideRef = useRef<number | null>(null);
+  const [snapGuideTick, setSnapGuideTick] = useState(0);
+  const waveLaneRef = useRef<HTMLDivElement>(null);
+  const [waveLaneSize, setWaveLaneSize] = useState({ w: 0, h: 0 });
 
   // ── Script override ก่อนส่ง LLM (TTS / Transcribe) ───────────────────
   const [scriptOverride, setScriptOverride] = useState("");
@@ -387,6 +400,31 @@ export default function VideoEditorPage() {
   }, []);
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
+
+  // ── Waveform peaks + snap points ─────────────────────────────────────
+  const { peaks: wavePeaks, durationMs: waveDurationMs } = useAudioPeaks(waveformVoiceUrl);
+
+  const snapPoints = useMemo(() => {
+    const totalForSnap = totalMs || waveDurationMs || 0;
+    const intervals = ttsTimingRef.current?.silenceIntervals;
+    if (Array.isArray(intervals) && intervals.length > 0) {
+      return snapPointsFromSilence(intervals.filter(s => Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs)), totalForSnap);
+    }
+    if (wavePeaks?.length && waveDurationMs > 0) {
+      return snapPointsFromPeaks(wavePeaks, waveDurationMs / wavePeaks.length);
+    }
+    return [];
+  }, [wavePeaks, waveDurationMs, totalMs, ttsTimingVersion]);
+
+  useEffect(() => {
+    const el = waveLaneRef.current;
+    if (!el) return;
+    const measure = () => setWaveLaneSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // ── Undo / Redo ────────────────────────────────────────────────────────
   function undo() {
@@ -826,6 +864,7 @@ export default function VideoEditorPage() {
 
     // Pipeline cache — restore so steps can re-run from any point
     pipe.current.voiceUrl = d.voiceUrl ?? "";
+    setWaveformVoiceUrl(pipe.current.voiceUrl || null);
     pipe.current.audioDurationMs = d.audioDurationMs ?? 0;
     pipe.current.renderedVideoUrl = d.renderedUrl ?? "";
     pipe.current.renderedVideoNoSubUrl = d.renderedVideoNoSubUrl ?? "";
@@ -1406,6 +1445,7 @@ export default function VideoEditorPage() {
   // length even when transcribe is skipped.
   function captureTtsTiming(data: { timing?: TtsTiming; audioDurationMs?: number }) {
     ttsTimingRef.current = data.timing && Array.isArray(data.timing.segments) ? data.timing : null;
+    setTtsTimingVersion(v => v + 1);
     const d = Number(data.audioDurationMs);
     if (Number.isFinite(d) && d > 0) pipe.current.audioDurationMs = d;
   }
@@ -1424,6 +1464,7 @@ export default function VideoEditorPage() {
       captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
     } else {
       setStep("tts", "running", "ElevenLabs...");
@@ -1437,6 +1478,7 @@ export default function VideoEditorPage() {
       captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
     }
   }
@@ -4238,6 +4280,10 @@ export default function VideoEditorPage() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setSnapEnabled(v => !v)}
+              className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold transition-colors",
+                snapEnabled ? "bg-violet-600/80 text-white" : "bg-[#2a2a36] text-slate-400")}
+              title="ดูดซับเข้าจังหวะเสียง (snap)">⌁ Snap</button>
             <ZoomIn className="w-3 h-3 text-slate-600" />
             <input
               aria-label="Timeline zoom"
@@ -4279,6 +4325,9 @@ export default function VideoEditorPage() {
               // Track drag distance — used to distinguish click vs drag on release
               if (Math.abs(dxPx) > 3) r.moved = true;
               const dxMs = (dxPx / trackW) * totalMs;
+              const rawTarget = r.startMs + dxMs;
+              const snapped = snapEnabled && snapPoints.length ? snapToNearest(rawTarget, snapPoints, SNAP_MS) : rawTarget;
+              const didSnap = snapEnabled && snapPoints.length ? Math.abs(snapped - rawTarget) > 0.5 : false;
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
                   if (j !== r.capIdx) return c;
@@ -4288,24 +4337,28 @@ export default function VideoEditorPage() {
                   const lowerBound = prevClip ? prevClip.endMs + minGap : 0;
                   const upperBound = nextClip ? nextClip.startMs - minGap : (totalMs || 999999);
                   if (r.edge === "left") {
-                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, snapped));
                     return { ...c, startMs: Math.round(newStart) };
                   } else if (r.edge === "right") {
-                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, r.startMs + dxMs));
+                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, snapped));
                     return { ...c, endMs: Math.round(newEnd) };
                   } else {
                     // "move" — slide whole clip, preserving duration, clamp between neighbors
                     const dur = r.durMs ?? (c.endMs - c.startMs);
                     const maxStart = Math.max(lowerBound, upperBound - dur);
-                    const newStart = Math.max(lowerBound, Math.min(maxStart, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(maxStart, snapped));
                     return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
                 captionsRef.current = next;
                 return next;
               });
+              snapGuideRef.current = didSnap ? snapped : null;
+              setSnapGuideTick(t => t + 1);
             }}
             onPointerUp={() => {
+              snapGuideRef.current = null;
+              setSnapGuideTick(t => t + 1);
               if (clipResizeRef.current) {
                 if (clipResizeRef.current.moved) {
                   setCaptions(captions); // push to history on release (only if actually dragged)
@@ -4315,6 +4368,18 @@ export default function VideoEditorPage() {
             }}
           >
             <div className="relative" style={{ width: `${timelineCanvasWidthPct}%`, minWidth: "100%" }}>
+              {/* read snapGuideTick so React re-renders the ref-driven snap guide */}
+              {void snapGuideTick}
+              {/* Waveform lane + snap guide */}
+              <div ref={waveLaneRef} className="absolute inset-x-0 top-0 bottom-0 pointer-events-none opacity-70" aria-hidden>
+                {wavePeaks?.length && waveLaneSize.w > 0 ? (
+                  <WaveformCanvas peaks={wavePeaks} width={waveLaneSize.w} height={waveLaneSize.h} />
+                ) : null}
+              </div>
+              {snapGuideRef.current != null && totalMs > 0 ? (
+                <div className="absolute top-0 bottom-0 w-px bg-amber-400/80 pointer-events-none" aria-hidden
+                  style={{ left: `${(snapGuideRef.current / totalMs) * 100}%` }} />
+              ) : null}
 
               {/* Ruler — click/drag to seek */}
               <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
