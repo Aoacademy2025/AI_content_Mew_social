@@ -1951,7 +1951,18 @@ export async function POST(req: Request) {
     // (ทุก keyword missing) ไม่งั้น generate ภาพ kie.ai ทุก keyword = เปลือง credit
     // และเกินจำนวนที่ผู้ใช้ตั้ง (เช่น B-roll=2 ควรได้ภาพ 2 อัน ไม่ใช่ 64)
     const remainingSlots = Math.max(0, downloadClipLimit - found.length);
-    const uniqueMissing = allMissing.slice(0, remainingSlots > 0 ? remainingSlots : allMissing.length);
+    const baseMissing = allMissing.slice(0, remainingSlots > 0 ? remainingSlots : allMissing.length);
+    // slot = ตำแหน่งใน list (ใช้ทำ id ไม่ให้ชนกัน), ki = index ของ keyword เดิม (ใช้ map subtitle)
+    let uniqueMissing = baseMissing.map((m, slot) => ({ ...m, slot }));
+    // กรณี keyword น้อยกว่าจำนวนที่ตั้ง (เช่น script สั้น 1 keyword แต่ B-roll=3):
+    // วน keyword ซ้ำให้ครบ slot — kie.ai สร้างภาพต่างกันแต่ละครั้ง แม้ query เดิม
+    // (slot ต่างกัน → id/ไฟล์ไม่ชนกัน). ทำเฉพาะตอนกำหนดจำนวนเองชัดเจน
+    if (overrideClipCount > 0 && allMissing.length > 0 && uniqueMissing.length < remainingSlots) {
+      uniqueMissing = Array.from({ length: remainingSlots }, (_, slot) => ({
+        ...allMissing[slot % allMissing.length],
+        slot,
+      }));
+    }
 
     if (uniqueMissing.length > 0) {
       console.log(`[fetch-stock] Auto Mix: ${allMissing.length} keyword(s) missing video → image fallback for ${uniqueMissing.length} (limit=${downloadClipLimit}, found=${found.length})`);
@@ -1966,7 +1977,7 @@ export async function POST(req: Request) {
         met: MET_ID_OFFSET,
       };
 
-      await withConcurrency(uniqueMissing, Math.min(2, DOWNLOAD_CONCURRENCY), async ({ kw, ki }) => {
+      await withConcurrency(uniqueMissing, Math.min(2, DOWNLOAD_CONCURRENCY), async ({ kw, ki, slot }) => {
         const query = subtitleTexts?.[ki] || kw;
 
         // ลองตามลำดับ provider ที่ตรงกับ topic ของ query (keyword-aware routing)
@@ -1979,7 +1990,7 @@ export async function POST(req: Request) {
           if (provider === "nasa" && !canUseNasaFallback) continue;
           if (provider === "met" && !canUseMetFallback) continue;
 
-          const id = IMAGE_PROVIDER_OFFSET[provider] + ki;
+          const id = IMAGE_PROVIDER_OFFSET[provider] + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
@@ -2014,7 +2025,7 @@ export async function POST(req: Request) {
 
         // Fall back to kie.ai AI image
         if (canUseKieFallback) {
-          const id = KIE_ID_OFFSET + ki;
+          const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
