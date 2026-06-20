@@ -59,8 +59,8 @@ export function OrderPanel(p: OrderPanelProps) {
   }, [stopMusicPreview]);
 
   React.useEffect(() => {
-    if (!p.open || !p.bgmEnabled) stopMusicPreview();
-  }, [p.open, p.bgmEnabled, stopMusicPreview]);
+    if (!p.open) stopMusicPreview();
+  }, [p.open, stopMusicPreview]);
 
   React.useEffect(() => {
     if (musicPreviewRef.current) {
@@ -210,130 +210,135 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* BGM */}
           <div>
-            <div className="flex items-center justify-between mb-2">
+            <div className="mb-2">
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Background Music</div>
-              <button onClick={() => p.setBgmEnabled(!p.bgmEnabled)}
-                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.bgmEnabled ? "bg-violet-600" : "bg-[#2a2a36]")}>
-                <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", p.bgmEnabled ? "left-5" : "left-0.5")} />
-              </button>
             </div>
-            {p.bgmEnabled && (
-              <div className="space-y-3">
+            <div className="space-y-3">
+              <button type="button" onClick={() => p.setBgmFile("")}
+                className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
+                  !p.bgmFile
+                    ? "bg-violet-500/15 border-violet-500/40 text-violet-300"
+                    : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
+                <span className="shrink-0">🚫</span>
+                <span className="truncate">ไม่ใส่เพลง</span>
+                {!p.bgmFile && <span className="ml-auto text-violet-400">✓</span>}
+              </button>
+              {p.bgmFile && (
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-600 w-14 shrink-0">Volume</span>
                   <input type="range" min={0} max={1} step={0.01} value={p.bgmVolume} onChange={e => p.setBgmVolume(Number(e.target.value))} className="flex-1 accent-violet-400 h-1" />
                   <span className="text-[10px] font-mono text-violet-400 w-8 text-right">{Math.round(p.bgmVolume * 100)}%</span>
                 </div>
-                {p.systemTracks.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">System Tracks</div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {p.systemTracks.map(t => {
-                        const selectedUrl = `/music/${t.filename}`;
-                        const previewUrl = `/api/music/${t.filename}`;
-                        const selected = p.bgmFile === selectedUrl;
-                        const previewing = previewingMusicUrl === previewUrl;
-                        return (
-                          <div key={t.id}
-                            className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
-                              selected ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
-                            <button type="button" onClick={() => p.setBgmFile(selected ? "" : selectedUrl)}
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left">
-                              <Music className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{t.title}</span>
-                            </button>
-                            {selected && <span className="text-violet-400">✓</span>}
-                            <button
-                              type="button"
-                              onClick={() => { void toggleMusicPreview(previewUrl); }}
-                              className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
-                                previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
-                              title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
-                            >
-                              {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                {p.userTracks.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">My Uploads</div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {p.userTracks.map(t => {
-                        const url = `/api/music/${t.filename}`;
-                        const previewing = previewingMusicUrl === url;
-                        return (
-                          <div key={t.id}
-                            className={cn("w-full flex items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[11px] transition-all border",
-                              p.bgmFile === url ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
-                            <button type="button" onClick={() => p.setBgmFile(p.bgmFile === url ? "" : url)}
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left">
-                              <Music className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{t.title}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => { void toggleMusicPreview(url); }}
-                              className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
-                                previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
-                              title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
-                            >
-                              {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => { void deleteUserTrack(t); }}
-                              className="rounded p-0.5 text-slate-600 hover:bg-red-500/10 hover:text-red-300"
-                              title="ลบเพลง">
-                              <X className="h-3 w-3" />
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+              )}
+              {p.systemTracks.length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">Upload Music</div>
-                  <label className={cn("flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer border border-dashed border-[#3a3a4a] bg-[#1a1a22]", p.bgmUploading && "opacity-50 pointer-events-none")}>
-                    <input type="file" accept="audio/*,.mp3,.wav,.ogg,.aac,.m4a" className="hidden"
-                      onChange={async (e) => {
-                        const f = e.target.files?.[0]; if (!f) return;
-                        p.setBgmUploading(true);
-                        try {
-                          const fd = new FormData(); fd.append("file", f);
-                          const res = await fetch("/api/music/upload", { method: "POST", body: fd });
-                          const data = await res.json();
-                          if (res.status === 403) { p.onPlanError?.(data.error ?? "ฟีเจอร์นี้ใช้ได้เฉพาะแผน Pro"); }
-                          else if (data.url) {
-                            if (data.track) p.setUserTracks([data.track, ...p.userTracks]);
-                            p.setBgmFile(data.url);
-                            toast.success("อัปโหลดสำเร็จ");
-                          }
-                          else toast.error(data.error ?? "อัปโหลดไม่สำเร็จ");
-                        } catch { toast.error("อัปโหลดไม่สำเร็จ"); }
-                        finally { p.setBgmUploading(false); e.target.value = ""; }
-                      }} />
-                    {p.bgmUploading
-                      ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" /><span className="text-[10px] text-slate-600">กำลังอัปโหลด...</span></>
-                      : <><Upload className="h-3.5 w-3.5 text-slate-600" /><span className="text-[10px] text-slate-600">เลือกไฟล์เสียง</span></>}
-                  </label>
-                  {p.bgmFile
-                    && !p.systemTracks.some(t => `/music/${t.filename}` === p.bgmFile)
-                    && !p.userTracks.some(t => `/api/music/${t.filename}` === p.bgmFile)
-                    && (
-                    <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/25">
-                      <Music className="h-3 w-3 text-violet-400/60 shrink-0" />
-                      <span className="text-[10px] text-violet-300 truncate flex-1">{p.bgmFile.split("/").pop()}</span>
-                      <button onClick={() => p.setBgmFile("")} className="text-slate-600 hover:text-slate-400"><X className="h-3 w-3" /></button>
-                    </div>
-                  )}
+                  <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">System Tracks</div>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {p.systemTracks.map(t => {
+                      const selectedUrl = `/music/${t.filename}`;
+                      const previewUrl = `/api/music/${t.filename}`;
+                      const selected = p.bgmFile === selectedUrl;
+                      const previewing = previewingMusicUrl === previewUrl;
+                      return (
+                        <div key={t.id}
+                          className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
+                            selected ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
+                          <button type="button" title="เลือกเพลง" onClick={() => p.setBgmFile(selected ? "" : selectedUrl)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                            <Music className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{t.title}</span>
+                          </button>
+                          {selected && <span className="text-violet-400">✓</span>}
+                          <button
+                            type="button"
+                            onClick={() => { void toggleMusicPreview(previewUrl); }}
+                            className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
+                              previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
+                            title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
+                          >
+                            {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+              )}
+              {p.userTracks.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">My Uploads</div>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {p.userTracks.map(t => {
+                      const url = `/api/music/${t.filename}`;
+                      const previewing = previewingMusicUrl === url;
+                      return (
+                        <div key={t.id}
+                          className={cn("w-full flex items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[11px] transition-all border",
+                            p.bgmFile === url ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:border-[#3a3a4a]")}>
+                          <button type="button" title="เลือกเพลง" onClick={() => p.setBgmFile(p.bgmFile === url ? "" : url)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                            <Music className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{t.title}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { void toggleMusicPreview(url); }}
+                            className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-600 transition-colors hover:bg-violet-500/10 hover:text-violet-300",
+                              previewing && "bg-emerald-500/10 text-emerald-300 hover:text-emerald-200")}
+                            title={previewing ? "หยุดตัวอย่างเพลง" : "ฟังตัวอย่างเพลง"}
+                          >
+                            {previewing ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { void deleteUserTrack(t); }}
+                            className="rounded p-0.5 text-slate-600 hover:bg-red-500/10 hover:text-red-300"
+                            title="ลบเพลง">
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-1">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-700">Upload Music</div>
+                <label className={cn("flex items-center justify-center gap-2 rounded-lg py-2 cursor-pointer border border-dashed border-[#3a3a4a] bg-[#1a1a22]", p.bgmUploading && "opacity-50 pointer-events-none")}>
+                  <input type="file" accept="audio/*,.mp3,.wav,.ogg,.aac,.m4a" className="hidden"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0]; if (!f) return;
+                      p.setBgmUploading(true);
+                      try {
+                        const fd = new FormData(); fd.append("file", f);
+                        const res = await fetch("/api/music/upload", { method: "POST", body: fd });
+                        const data = await res.json();
+                        if (res.status === 403) { p.onPlanError?.(data.error ?? "ฟีเจอร์นี้ใช้ได้เฉพาะแผน Pro"); }
+                        else if (data.url) {
+                          if (data.track) p.setUserTracks([data.track, ...p.userTracks]);
+                          p.setBgmFile(data.url);
+                          toast.success("อัปโหลดสำเร็จ");
+                        }
+                        else toast.error(data.error ?? "อัปโหลดไม่สำเร็จ");
+                      } catch { toast.error("อัปโหลดไม่สำเร็จ"); }
+                      finally { p.setBgmUploading(false); e.target.value = ""; }
+                    }} />
+                  {p.bgmUploading
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" /><span className="text-[10px] text-slate-600">กำลังอัปโหลด...</span></>
+                    : <><Upload className="h-3.5 w-3.5 text-slate-600" /><span className="text-[10px] text-slate-600">เลือกไฟล์เสียง</span></>}
+                </label>
+                {p.bgmFile
+                  && !p.systemTracks.some(t => `/music/${t.filename}` === p.bgmFile)
+                  && !p.userTracks.some(t => `/api/music/${t.filename}` === p.bgmFile)
+                  && (
+                  <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/25">
+                    <Music className="h-3 w-3 text-violet-400/60 shrink-0" />
+                    <span className="text-[10px] text-violet-300 truncate flex-1">{p.bgmFile.split("/").pop()}</span>
+                    <button onClick={() => p.setBgmFile("")} className="text-slate-600 hover:text-slate-400"><X className="h-3 w-3" /></button>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           {/* Avatar */}
