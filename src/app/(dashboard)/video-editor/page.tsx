@@ -3725,7 +3725,11 @@ export default function VideoEditorPage() {
                       <span className="text-[9px] text-red-600 truncate max-w-[60px]">{log.slice(0, 12)}</span>
                     )}
                     {isRunning && (
-                      <span className="text-[9px] text-slate-700 truncate max-w-[60px]">{log.slice(0, 12)}</span>
+                      <span className="text-[9px] text-slate-700 truncate max-w-[60px]">
+                        {(k === "render" || k === "burnSubtitles") && renderProgress > 0
+                          ? `${renderProgress}%`
+                          : log ? log.slice(0, 12) : "กำลังทำ…"}
+                      </span>
                     )}
                     {showRunBtn && (
                       <button
