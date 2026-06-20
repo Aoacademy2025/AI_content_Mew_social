@@ -67,7 +67,7 @@ check("silence: empty → []", arrEq(snapPointsFromSilence([], 5000), []));
 // downsamplePeaks: max-abs per bucket, normalized 0..1
 const peaks = downsamplePeaks([0, 0.5, -1, 0.25, 0, 0, 0.1, -0.2], 4);
 check("downsample: length = buckets", peaks.length === 4);
-check("downsample: bucket1 = 1 (|-1| max, normalized)", Math.abs(peaks[0] - 1) < 1e-9);
+check("downsample: bucket1 = 1 (|-1| max, normalized)", Math.abs(peaks[1] - 1) < 1e-9);
 check("downsample: all within 0..1", peaks.every(p => p >= 0 && p <= 1));
 
 // snapPointsFromPeaks: boundary ms where amplitude crosses threshold (with min run)
