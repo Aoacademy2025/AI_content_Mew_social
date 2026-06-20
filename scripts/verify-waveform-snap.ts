@@ -35,4 +35,4 @@ check("snap: outside threshold → unchanged", snapToNearest(1500, [0, 1000, 200
 check("snap: empty points → unchanged", snapToNearest(1500, [], 120) === 1500);
 check("snap: picks nearest of two", snapToNearest(1490, [1000, 1500], 120) === 1500);
 
-console.log(`\n${passed}/12 passed`);
+console.log(`\n${passed}/11 passed`);
