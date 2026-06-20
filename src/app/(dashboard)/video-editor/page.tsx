@@ -1246,7 +1246,11 @@ export default function VideoEditorPage() {
     //   sv ≥ caps → trim down to caps.length
     //   sv  < caps → cycle clips so every caption still has one
     let sv = svRaw;
-    if (caps.length > 0 && svRaw.length > 0) {
+    // กำหนดจำนวนคลิปเอง (targetClipCount > 0): เก็บคลิปครบตามที่ได้ — ห้าม trim ตาม
+    // caption count (script 1 ซับ แต่ B-roll=2 ต้องได้ 2 รูป ไม่ใช่ตัดเหลือ 1)
+    if (targetClipCount > 0) {
+      console.log(`[runFetchStock] manual clip count=${targetClipCount}: keep all ${svRaw.length} clips (skip per-subtitle trim)`);
+    } else if (caps.length > 0 && svRaw.length > 0) {
       if (svRaw.length >= caps.length) {
         sv = svRaw.slice(0, caps.length);
         console.log(`[runFetchStock] per-subtitle: trimmed ${svRaw.length} → ${sv.length} clips`);
