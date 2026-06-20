@@ -324,6 +324,11 @@ export default function VideoEditorPage() {
   const [bgmFile, setBgmFile] = useState("");
   const [bgmVolume, setBgmVolume] = useState(0.12);
   const [bgmUploading, setBgmUploading] = useState(false);
+
+  // BGM is "on" exactly when a track is selected — the UI no longer has a separate
+  // enable toggle. Deriving it here keeps every bgmEnabled consumer (render patch,
+  // save config, status chip, draft) working unchanged.
+  useEffect(() => { setBgmEnabled(!!bgmFile); }, [bgmFile]);
   interface SystemTrack { id: string; title: string; filename: string; }
   interface UserMusicTrack { id: string; title: string; filename: string; sizeBytes?: number | null; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
