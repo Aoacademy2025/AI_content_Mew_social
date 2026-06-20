@@ -62,6 +62,8 @@ export function OrderPanel(p: OrderPanelProps) {
   const [isDragging, setIsDragging] = React.useState(false);
   const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
   const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
+  const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
+  const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!autoMixProvidersOpen) return;
@@ -73,6 +75,17 @@ export function OrderPanel(p: OrderPanelProps) {
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [autoMixProvidersOpen]);
+
+  React.useEffect(() => {
+    if (!geminiVoiceOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (geminiVoiceRef.current && !geminiVoiceRef.current.contains(e.target as Node)) {
+        setGeminiVoiceOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [geminiVoiceOpen]);
 
   const selectedAutoMixProviders = p.autoMixProviders ?? AUTO_MIX_PROVIDER_OPTIONS.map(o => o.value);
   function toggleAutoMixProvider(value: AutoMixImageProvider) {
@@ -390,25 +403,50 @@ export function OrderPanel(p: OrderPanelProps) {
               ))}
             </div>
             {p.ttsProvider === "gemini" && (
-              <div className="mt-2 space-y-1.5">
+              <div className="mt-2 space-y-1.5 relative" ref={geminiVoiceRef}>
                 <div className="text-[10px] text-slate-600">Gemini Voice</div>
-                <div className="relative">
-                  <select value={p.geminiVoiceName} onChange={e => p.setGeminiVoiceName(e.target.value)}
-                    className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-200 appearance-none cursor-pointer outline-none focus:border-violet-500/40 transition-colors">
-                    {GEMINI_VOICES.map(v => (
-                      <option key={v.id} value={v.id} style={{ background: "#1a1a2e" }}>
-                        {v.label} — {v.gender === "Female" ? "หญิง" : "ชาย"}, {v.style}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-500" />
-                </div>
-                {(() => { const v = GEMINI_VOICES.find(x => x.id === p.geminiVoiceName); return v ? (
-                  <div className="rounded-lg px-2.5 py-2 flex items-center gap-2 bg-violet-500/5 border border-violet-500/15">
-                    <span className="text-[10px] font-bold text-slate-300">{v.label}</span>
-                    <span className="text-[9px] text-slate-600">{v.gender === "Female" ? "หญิง" : "ชาย"} · {v.style}</span>
-                  </div>
-                ) : null; })()}
+                {(() => {
+                  const sel = GEMINI_VOICES.find(x => x.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+                  const genderChip = (g: string) => g === "Female"
+                    ? { label: "หญิง", cls: "bg-pink-500/15 text-pink-300 border-pink-500/30" }
+                    : { label: "ชาย", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" };
+                  return (
+                    <>
+                      {/* ปุ่มเปิด dropdown — แสดงเสียงที่เลือกพร้อม gender chip + style */}
+                      <button type="button" onClick={() => setGeminiVoiceOpen(v => !v)}
+                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left outline-none transition-colors focus:border-violet-500/40"
+                        style={{ background: "#15151b", border: "1px solid #26262f" }}>
+                        <span className="text-[12px] font-bold text-slate-100 truncate">{sel.label}</span>
+                        <span className={cn("text-[8px] font-bold uppercase tracking-wide rounded px-1.5 py-px border shrink-0", genderChip(sel.gender).cls)}>
+                          {genderChip(sel.gender).label}
+                        </span>
+                        <span className="text-[9px] text-slate-500 truncate">{sel.style}</span>
+                        <ChevronDown className={cn("w-3 h-3 text-slate-500 ml-auto shrink-0 transition-transform", geminiVoiceOpen && "rotate-180")} />
+                      </button>
+
+                      {geminiVoiceOpen && (
+                        <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl p-1 shadow-xl max-h-64 overflow-y-auto scrollbar-none"
+                          style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
+                          {GEMINI_VOICES.map(v => {
+                            const active = v.id === p.geminiVoiceName;
+                            const chip = genderChip(v.gender);
+                            return (
+                              <button key={v.id} type="button"
+                                onClick={() => { p.setGeminiVoiceName(v.id); setGeminiVoiceOpen(false); }}
+                                className={cn("w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors",
+                                  active ? "bg-violet-500/20" : "hover:bg-violet-500/10")}>
+                                <span className={cn("text-[12px] font-bold truncate", active ? "text-violet-100" : "text-slate-200")}>{v.label}</span>
+                                <span className={cn("text-[8px] font-bold uppercase tracking-wide rounded px-1.5 py-px border shrink-0", chip.cls)}>{chip.label}</span>
+                                <span className="text-[9px] text-slate-500 truncate ml-auto">{v.style}</span>
+                                {active && <Check className="w-3 h-3 text-violet-300 shrink-0" strokeWidth={3} />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
             {p.ttsProvider === "elevenlabs" && (
