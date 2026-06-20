@@ -36,6 +36,22 @@ const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
   { value: "qwen2/text-to-image", label: "Qwen2" },
 ];
 
+// ฟอนต์ซับ — label แยก name/hint เพื่อให้ custom dropdown แสดง name ด้วยฟอนต์จริง + hint สีจาง
+const SUB_FONT_OPTIONS: { name: string; hint?: string; value: string }[] = [
+  { name: "Kanit",              hint: "หนา ชัด",        value: "'Kanit', sans-serif" },
+  { name: "Sarabun",            hint: "อ่านง่าย",       value: "'Sarabun', sans-serif" },
+  { name: "Prompt",             hint: "โมเดิร์น",       value: "'Prompt', sans-serif" },
+  { name: "Mitr",               hint: "TikTok",         value: "'Mitr', sans-serif" },
+  { name: "Noto Sans Thai",                             value: "'Noto Sans Thai', sans-serif" },
+  { name: "K2D",                hint: "กลม น่ารัก",     value: "'K2D', sans-serif" },
+  { name: "Bai Jamjuree",       hint: "คมชัด",          value: "'Bai Jamjuree', sans-serif" },
+  { name: "Krub",               hint: "เรียบร้อย",      value: "'Krub', sans-serif" },
+  { name: "Pridi",              hint: "สง่างาม",        value: "'Pridi', serif" },
+  { name: "Chonburi",           hint: "ตัวหนา display", value: "'Chonburi', sans-serif" },
+  { name: "Itim",               hint: "น่ารัก ลายมือ",  value: "'Itim', cursive" },
+  { name: "IBM Plex Sans Thai",                         value: "'IBM Plex Sans Thai', sans-serif" },
+];
+
 interface StepState {
   keywords: StepStatus;
   fetchStock: StepStatus;
@@ -418,6 +434,16 @@ export default function ShortVideoPage() {
 
   // Subtitle style settings
   const [subFontFamily, setSubFontFamily] = useState("'Kanit', sans-serif");
+  const [subFontOpen, setSubFontOpen] = useState(false);
+  const subFontRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!subFontOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (subFontRef.current && !subFontRef.current.contains(e.target as Node)) setSubFontOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [subFontOpen]);
   const [subFontSize, setSubFontSize] = useState(80);
   const [subPosition, setSubPosition] = useState(68);
   const [subColor, setSubColor] = useState("#FFFFFF");

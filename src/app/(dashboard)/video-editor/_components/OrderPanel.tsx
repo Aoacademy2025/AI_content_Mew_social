@@ -428,19 +428,26 @@ export function OrderPanel(p: OrderPanelProps) {
                       {geminiVoiceOpen && (
                         <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl shadow-xl overflow-hidden"
                           style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
-                          {/* Tab กรองเพศ: รวม / หญิง / ชาย */}
-                          <div className="flex gap-1 p-1.5 border-b border-violet-500/15">
+                          {/* Tab กรองเพศ — segmented control: track เดียว, active = pill มี glow */}
+                          <div className="m-1.5 flex gap-0.5 rounded-lg p-0.5 border-b-0"
+                            style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(139,92,246,0.12)" }}>
                             {([
-                              { key: "all" as const,    label: `รวม (${GEMINI_VOICES.length})`,                                       cls: "text-violet-200", on: "bg-violet-500/25 border-violet-400/40" },
-                              { key: "Female" as const, label: `หญิง (${GEMINI_VOICES.filter(x => x.gender === "Female").length})`,  cls: "text-pink-200",   on: "bg-pink-500/20 border-pink-400/40" },
-                              { key: "Male" as const,   label: `ชาย (${GEMINI_VOICES.filter(x => x.gender === "Male").length})`,     cls: "text-sky-200",    on: "bg-sky-500/20 border-sky-400/40" },
-                            ]).map(t => (
-                              <button key={t.key} type="button" onClick={() => setVoiceGenderFilter(t.key)}
-                                className={cn("flex-1 py-1 rounded-lg text-[10px] font-bold border transition-all",
-                                  voiceGenderFilter === t.key ? `${t.on} ${t.cls}` : "bg-transparent border-transparent text-slate-500 hover:text-slate-300")}>
-                                {t.label}
-                              </button>
-                            ))}
+                              { key: "all" as const,    label: "รวม",  count: GEMINI_VOICES.length,                                  grad: "linear-gradient(135deg,rgba(139,92,246,0.9),rgba(99,102,241,0.75))", glow: "rgba(139,92,246,0.45)", dot: "" },
+                              { key: "Female" as const, label: "หญิง", count: GEMINI_VOICES.filter(x => x.gender === "Female").length, grad: "linear-gradient(135deg,rgba(236,72,153,0.9),rgba(219,39,119,0.75))",  glow: "rgba(236,72,153,0.45)", dot: "bg-pink-400" },
+                              { key: "Male" as const,   label: "ชาย",  count: GEMINI_VOICES.filter(x => x.gender === "Male").length,   grad: "linear-gradient(135deg,rgba(56,189,248,0.9),rgba(14,165,233,0.75))", glow: "rgba(56,189,248,0.45)", dot: "bg-sky-400" },
+                            ]).map(t => {
+                              const on = voiceGenderFilter === t.key;
+                              return (
+                                <button key={t.key} type="button" onClick={() => setVoiceGenderFilter(t.key)}
+                                  className={cn("flex-1 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center justify-center gap-1",
+                                    on ? "text-white" : "text-slate-500 hover:text-slate-300")}
+                                  style={on ? { background: t.grad, boxShadow: `0 2px 10px ${t.glow}, inset 0 1px 0 rgba(255,255,255,0.15)` } : undefined}>
+                                  {t.dot && <span className={cn("w-1.5 h-1.5 rounded-full", on ? "bg-white/80" : t.dot)} />}
+                                  <span>{t.label}</span>
+                                  <span className={cn("text-[8px] tabular-nums px-1 rounded-full", on ? "bg-white/20 text-white" : "bg-white/5 text-slate-500")}>{t.count}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                           <div className="p-1 max-h-56 overflow-y-auto scrollbar-none">
                           {GEMINI_VOICES.filter(v => voiceGenderFilter === "all" || v.gender === voiceGenderFilter).map(v => {
