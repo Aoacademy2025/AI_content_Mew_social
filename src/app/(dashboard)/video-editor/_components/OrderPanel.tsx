@@ -41,6 +41,7 @@ export interface OrderPanelProps {
   kieModel?: KieImageModel; setKieModel?: (v: KieImageModel) => void;
   autoMixProviders?: AutoMixImageProvider[]; setAutoMixProviders?: (v: AutoMixImageProvider[]) => void;
   stockVideos?: StockVideo[]; // ใช้แสดง preview ภาพที่ generate ระหว่าง/หลัง B-roll step (AI Image)
+  stockCacheBust?: number; // bump ทุกครั้งที่ fetch เสร็จ → กัน browser cache ภาพชื่อไฟล์เดิม
   targetClipCount: number; // 0 = Auto (1 คลิป/ซับ), >0 = จำนวนคลิปใน 1 วิดีโอ
   setTargetClipCount: (v: number) => void;
 }
@@ -294,8 +295,12 @@ export function OrderPanel(p: OrderPanelProps) {
                   </label>
                   <div className="grid grid-cols-3 gap-1.5">
                     {p.stockVideos!.map((sv, i) => {
-                      const imgSrc = sv.imageLocalUrl || sv.imageUrl;
-                      const vidSrc = sv.localUrl || sv.videoUrl;
+                      // append cache-bust เฉพาะ local file (ชื่อซ้ำข้ามรอบ) — external URL ไม่ต้อง
+                      const bust = (u?: string) => u
+                        ? (u.startsWith("/api/") && p.stockCacheBust ? `${u}${u.includes("?") ? "&" : "?"}v=${p.stockCacheBust}` : u)
+                        : undefined;
+                      const imgSrc = bust(sv.imageLocalUrl) || sv.imageUrl;
+                      const vidSrc = bust(sv.localUrl) || sv.videoUrl;
                       if (!imgSrc && !vidSrc) return null;
                       // AI generate (kie.ai/auto-mix fallback) มี imageUrl → แสดงรูป
                       // video clip ปกติ (Pexels/Pixabay) → แสดง frame แรกของวิดีโอ

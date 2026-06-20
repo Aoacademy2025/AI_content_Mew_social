@@ -252,6 +252,9 @@ export default function VideoEditorPage() {
     }).catch(() => {});
   }, []);
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);
+  // cache-bust สำหรับ preview thumbnail — ไฟล์ kie/fallback ใช้ชื่อซ้ำข้ามรอบ
+  // (id = offset+slot คงที่) ทำให้ browser cache ภาพเก่า. bump ทุกครั้งที่ fetch เสร็จ
+  const [stockCacheBust, setStockCacheBust] = useState(0);
   // จำนวนคลิป B-roll ใน 1 วิดีโอ: 0 = Auto (1 คลิปต่อ 1 ซับ) / >0 = กำหนดเอง (แบ่งเวลาเท่าๆ กัน)
   const [targetClipCount, setTargetClipCount] = useState(0);
 
@@ -1262,6 +1265,7 @@ export default function VideoEditorPage() {
 
     pipe.current.stockVideos = sv;
     setStockVideos(sv);
+    setStockCacheBust(Date.now()); // ภาพ generate ใหม่ ใช้ชื่อไฟล์เดิม → บังคับ browser โหลดใหม่
     const pexelsCnt = sv.filter(v => v.pexelsId < 9_000_000).length;
     const pixabayCnt = sv.filter(v => v.pexelsId >= 9_000_000).length;
     const srcBreakdown = stockSource === "both" ? ` (P:${pexelsCnt} B:${pixabayCnt})` : "";
@@ -3957,7 +3961,7 @@ export default function VideoEditorPage() {
               stockSource={stockSource} setStockSource={setStockSource}
               kieModel={kieModel} setKieModel={setKieModel}
               autoMixProviders={autoMixProviders} setAutoMixProviders={setAutoMixProviders}
-              stockVideos={stockVideos}
+              stockVideos={stockVideos} stockCacheBust={stockCacheBust}
               kieImageEnabled={kieImageEnabled} autoMixEnabled={autoMixEnabled}
               targetClipCount={targetClipCount} setTargetClipCount={setTargetClipCount}
             />
