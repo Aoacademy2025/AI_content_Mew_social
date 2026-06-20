@@ -9,6 +9,11 @@ import { fetchWithBudget } from "@/lib/fetch-budget";
 import { classifyHttpStatus, isProviderError, providerError, toErrorResponse } from "@/lib/provider-errors";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
+  cachedVoicePreview,
+  getVoicePreviewCachePath,
+  normalizeVoicePreviewText,
+} from "@/lib/voice-preview-cache";
+import {
   splitScriptForTts,
   mergeSegmentTiming,
   mergeCharAlignments,
@@ -143,7 +148,7 @@ async function handleTts(req: Request) {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { text, voiceId = "9lvVsLbaxGND6aZnt1W1", languageCode = "th" } = body ?? {};
+  const { text, voiceId = "9lvVsLbaxGND6aZnt1W1", languageCode = "th", preview = false } = body ?? {};
   if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({
@@ -153,6 +158,36 @@ async function handleTts(req: Request) {
   if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
   if (!user?.elevenlabsKey) return NextResponse.json({ error: "ElevenLabs API key not set", missingKey: "elevenlabs" }, { status: 400 });
   const apiKey = Buffer.from(user.elevenlabsKey, "base64").toString("utf-8");
+  const selectedVoiceId = typeof voiceId === "string" && voiceId.trim() ? voiceId.trim() : "9lvVsLbaxGND6aZnt1W1";
+
+  if (preview === true) {
+    const previewText = normalizeVoicePreviewText(text);
+    const cache = getVoicePreviewCachePath({
+      provider: "elevenlabs",
+      userId: authUser.id,
+      voiceKey: `${selectedVoiceId}:${languageCode ?? ""}`,
+      text: previewText,
+      ext: "mp3",
+    });
+    const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
+    if (cached) return NextResponse.json({ ...cached, preview: true });
+
+    const r = await callElevenLabs(apiKey, selectedVoiceId, previewText, languageCode, "preview");
+    if (!r.ok) {
+      const code = r.errBody.includes("quota_exceeded") ? ("quota" as const) : classifyHttpStatus(r.status);
+      const pErr = providerError(code, "elevenlabs", `ElevenLabs preview failed (${r.status}): ${r.errBody.slice(0, 200)}`, { status: r.status });
+      const { body: errBody, status } = toErrorResponse(pErr);
+      return NextResponse.json(errBody, { status });
+    }
+    fs.writeFileSync(cache.filePath, r.mp3);
+    const durationSec = ffprobeDurationSec(cache.filePath);
+    return NextResponse.json({
+      voiceUrl: cache.voiceUrl,
+      ...(durationSec > 0 ? { audioDurationMs: Math.round(durationSec * 1000) } : {}),
+      preview: true,
+      cached: false,
+    });
+  }
 
   // IRON RULE: fullText is the one string both TTS and subtitles see.
   const fullText: string = (text as string).trim();
@@ -163,7 +198,7 @@ async function handleTts(req: Request) {
   const alignments: (ElAlignment | null)[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
-    const r = await callElevenLabs(apiKey, voiceId, chunks[i].text, languageCode, `chunk ${i + 1}/${chunks.length}`);
+    const r = await callElevenLabs(apiKey, selectedVoiceId, chunks[i].text, languageCode, `chunk ${i + 1}/${chunks.length}`);
     if (!r.ok) {
       // Same failure surface as the old single-call route. No automatic
       // full-script re-run: chunks already generated were paid for — burning

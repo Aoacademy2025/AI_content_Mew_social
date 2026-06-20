@@ -36,6 +36,7 @@ model User {
   geminiVoiceName    String?  @default("Aoede")
   suspended     Boolean   @default(false)
   planExpiresAt DateTime?
+  onboardingDismissedAt DateTime?
   // Phase 2 — subscriptions (card auto-renew cohort)
   stripeCustomerId     String?  @unique
   stripeSubscriptionId String?
@@ -63,6 +64,7 @@ model User {
   payments           Payment[]
   telemetryEvents    TelemetryEvent[]
   productUpdateReads ProductUpdateRead[]
+  userMusic          UserMusic[]
 }
 
 model Style {
@@ -283,11 +285,20 @@ model SupportTicket {
   message     String
   imageBase64 String?
   imageName   String?
+  imageMimeType String?
   status      SupportTicketStatus @default(OPEN)
   adminReply  String?
+  category    String?
+  severity    String?
+  recommendedAction String?
+  auditNote   String?
+  impactNote  String?
+  auditedAt   DateTime?
   repliedAt   DateTime?
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
+
+  @@index([status, createdAt])
 }
 
 enum SupportTicketStatus {
@@ -395,6 +406,21 @@ model Music {
   createdAt   DateTime @default(now())
 }
 
+model UserMusic {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  filename  String   @unique // file stored in public/music/
+  sizeBytes Int      @default(0)
+  mimeType  String?
+  duration  Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
 model GeneratedImage {
   id           String   @id @default(cuid())
   userId       String
@@ -405,4 +431,49 @@ model GeneratedImage {
   sceneTitle   String?
   contentTitle String?
   createdAt    DateTime @default(now())
+}
+
+// Records which base-render outputs a user has been CHARGED a clip for, so a
+// later BURN (subtitle overlay) of that same render can be FREE without being
+// gameable: a burn is free only when (userId, outputUrl) is found here. External
+// / foreign / fabricated burn sources are NOT recorded → they fall through to a
+// normal charge. outputUrl is the canonical `/api/renders/<file>` form (see
+// src/lib/clip-charge.ts canonicalRenderUrl). Additive table — no FK/cascade,
+// safe to `prisma db push`.
+model ChargedClip {
+  id        String   @id @default(cuid())
+  userId    String
+  outputUrl String // the base render's output, e.g. /api/renders/render-….mp4
+  createdAt DateTime @default(now())
+
+  @@index([userId, outputUrl])
+}
+
+model RenderJob {
+  id              String    @id @default(cuid())
+  userId          String
+  videoId         String?   // gallery Video row, set when known
+  parentJobId     String?   // VideoJob.id when created by the MCP orchestrator; null for web jobs
+  type            String    // RENDER | BURN
+  status          String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
+  attempts        Int       @default(0)
+  maxAttempts     Int       @default(2)
+  payload         String    // JSON: full render config — no in-memory dependence
+  progress        Float     @default(0)
+  phase           String?   // bundling | rendering | encoding
+  heartbeatAt     DateTime?
+  cancelRequested Boolean   @default(false)
+  reservedQuota   Boolean   @default(false) // true iff THIS job reserved a clip for its video
+  error           String?   // JSON, PR-5 error taxonomy
+  idempotencyKey  String?   @unique
+  scopeKey        String?   // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
+  videoUrl        String?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  @@index([status, type])
+  @@index([userId, createdAt])
+  @@index([parentJobId])
+  @@index([scopeKey, status])
 }

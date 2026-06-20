@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
+import { Readable } from "stream";
 
 export const runtime = "nodejs";
 
@@ -26,88 +27,99 @@ function parseByteRange(rangeHeader: string, total: number): { start: number; en
   return { start, end: Math.min(end, total - 1) };
 }
 
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+};
+
+function streamBody(stream: fs.ReadStream) {
+  return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+}
+
+function baseHeaders(total: number) {
+  return {
+    "Content-Type": "video/mp4",
+    "Content-Length": String(total),
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "public, max-age=86400",
+    ...cors,
+  };
+}
+
+function resolveStockFile(filename: string) {
+  if (!filename || /[/\\]/.test(filename)) {
+    return { error: NextResponse.json({ error: "Invalid filename" }, { status: 400 }) };
+  }
+
+  const filePath = path.join(process.cwd(), "stocks", filename);
+  if (!fs.existsSync(filePath)) {
+    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
+  }
+
+  try {
+    const total = fs.statSync(filePath).size;
+    return { filePath, total };
+  } catch (error) {
+    console.error("[stocks] stat failed:", error);
+    return { error: NextResponse.json({ error: "Failed to read stock file" }, { status: 500 }) };
+  }
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: cors });
+}
+
+export async function HEAD(
+  _req: Request,
+  { params }: { params: Promise<{ filename: string }> }
+) {
+  const { filename } = await params;
+  const resolved = resolveStockFile(filename);
+  if ("error" in resolved) return resolved.error;
+
+  return new NextResponse(null, {
+    status: 200,
+    headers: baseHeaders(resolved.total),
+  });
+}
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ filename: string }> }
 ) {
   const { filename } = await params;
-  // Only allow safe filenames (no path traversal)
-  if (!filename || /[/\\]/.test(filename)) {
-    return NextResponse.json({ error: "Invalid filename" }, { status: 400 });
-  }
-
-  const filePath = path.join(process.cwd(), "stocks", filename);
-  if (!fs.existsSync(filePath)) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  let total = 0;
-  try {
-    const stat = fs.statSync(filePath);
-    total = stat.size;
-  } catch (error) {
-    console.error("[stocks] stat failed:", error);
-    return NextResponse.json({ error: "Failed to read stock file" }, { status: 500 });
-  }
-
-  // kie.ai Ken Burns pipeline ก็เก็บภาพ source (.jpg/.png) ไว้ใน stocks/ ด้วย
-  const ext = path.extname(filename).toLowerCase();
-  const contentType = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "video/mp4";
+  const resolved = resolveStockFile(filename);
+  if ("error" in resolved) return resolved.error;
 
   const rangeHeader = req.headers.get("range");
 
   // Support Range requests — required for Remotion/Chromium to seek into videos
   if (rangeHeader) {
-    const parsed = parseByteRange(rangeHeader, total);
+    const parsed = parseByteRange(rangeHeader, resolved.total);
     if (!parsed) {
-      return NextResponse.json({ error: "Invalid range" }, { status: 416 });
+      return NextResponse.json(
+        { error: "Invalid range" },
+        { status: 416, headers: { "Content-Range": `bytes */${resolved.total}`, ...cors } }
+      );
     }
     const { start, end } = parsed;
     const chunkSize = end - start + 1;
 
-    let fd: number | null = null;
-    try {
-      fd = fs.openSync(filePath, "r");
-      const buf = Buffer.allocUnsafe(chunkSize);
-      const read = fs.readSync(fd, buf, 0, chunkSize, start);
-      const body = read === chunkSize ? buf : buf.slice(0, read);
-
-      return new NextResponse(body, {
-        status: 206,
-        headers: {
-          "Content-Type": contentType,
-          "Content-Range": `bytes ${start}-${end}/${total}`,
-          "Content-Length": String(body.length),
-          "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=86400",
-        },
-      });
-    } catch (error) {
-      console.error("[stocks] range read failed:", error);
-      return NextResponse.json({ error: "Failed to read stock range" }, { status: 500 });
-    } finally {
-      if (fd !== null) {
-        try {
-          fs.closeSync(fd);
-        } catch {}
-      }
-    }
-  }
-
-  // Full file response
-  try {
-    const fileBuffer = fs.readFileSync(filePath);
-    return new NextResponse(fileBuffer, {
-      status: 200,
+    return new NextResponse(streamBody(fs.createReadStream(resolved.filePath, { start, end })), {
+      status: 206,
       headers: {
-        "Content-Type": contentType,
-        "Content-Length": String(total),
+        "Content-Type": "video/mp4",
+        "Content-Range": `bytes ${start}-${end}/${resolved.total}`,
+        "Content-Length": String(chunkSize),
         "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=86400",
+        ...cors,
       },
     });
-  } catch (error) {
-    console.error("[stocks] full read failed:", error);
-    return NextResponse.json({ error: "Failed to read stock file" }, { status: 500 });
   }
+
+  return new NextResponse(streamBody(fs.createReadStream(resolved.filePath)), {
+    status: 200,
+    headers: baseHeaders(resolved.total),
+  });
 }

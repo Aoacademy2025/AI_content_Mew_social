@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -535,6 +536,10 @@ export async function POST(req: Request) {
       );
 
       console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
+      // Record composite output as paid so a subsequent burn of this composite is free
+      // (the base render already charged the clip; composite is a processing step, not new charge).
+      // Fail-open: a bookkeeping failure must never break the composite response.
+      await recordChargedClip(authUser.id, `/api/renders/${finalFile}`).catch(() => {});
       return NextResponse.json({ videoUrl: `/api/renders/${finalFile}`, usedMode: mode });
     }
 
@@ -568,6 +573,10 @@ export async function POST(req: Request) {
     }
 
     console.log("[composite] output:", finalFile, fs.statSync(finalPath).size, "bytes");
+    // Record composite output as paid so a subsequent burn of this composite is free
+    // (the base render already charged the clip; composite is a processing step, not new charge).
+    // Fail-open: a bookkeeping failure must never break the composite response.
+    await recordChargedClip(authUser.id, `/api/renders/${finalFile}`).catch(() => {});
     return NextResponse.json({ videoUrl: `/api/renders/${finalFile}`, usedMode: mode });
   } catch (error) {
     console.error("[composite] error:", error);

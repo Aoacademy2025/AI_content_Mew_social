@@ -6,7 +6,7 @@
  * DO NOT modify /video-creator/page.tsx — this is a separate page.
  */
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,8 @@ import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/compo
 import { fetchMe } from "@/lib/use-me";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
+import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { QuotaStatus } from "@/components/quota-status";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
@@ -39,6 +41,7 @@ import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
@@ -46,6 +49,9 @@ import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
+import { useAudioPeaks } from "./_components/useAudioPeaks";
+import { WaveformCanvas } from "./_components/WaveformCanvas";
+import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -59,6 +65,8 @@ const STEP_EVENT_LABELS: Record<string, string> = {
   composite: "วาง Avatar บนวิดีโอ",
   burnSubtitles: "ฝังซับลงวิดีโอ",
 };
+
+const SNAP_MS = 120;
 
 type RenderProgressPayload = {
   progress?: number;
@@ -135,6 +143,10 @@ function captionsTimelineEqual(a: Caption[], b: Caption[]) {
   ));
 }
 
+function hasBurnableCaptions(captions: Caption[]) {
+  return captions.some((cap) => typeof cap.text === "string" && cap.text.trim().length > 0);
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -143,10 +155,15 @@ export default function VideoEditorPage() {
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
+  const draftIdRef = useRef(draftId);
   const [projectName, setProjectName] = useState("New Project");
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [showDraftList, setShowDraftList] = useState(false);
   const [drafts, setDrafts] = useState<EditorDraft[]>([]);
+
+  useEffect(() => {
+    draftIdRef.current = draftId;
+  }, [draftId]);
 
   // ── Script ────────────────────────────────────────────────────────────
   const [script, setScript] = useState("");
@@ -164,6 +181,7 @@ export default function VideoEditorPage() {
   const pipe = useRef<Partial<PipelineData>>({});
   const runningRef = useRef(false);
   const activeJobIdRef = useRef<string | null>(null);
+  const pipelineRunIdRef = useRef<string | null>(null);
 
   // ── Media state ───────────────────────────────────────────────────────
   const [videoUrl, setVideoUrl] = useState("");
@@ -308,6 +326,14 @@ export default function VideoEditorPage() {
   const ttsTimingRef = useRef<TtsTiming | null>(null);
   // ref ที่ sync กับ captions state — ใช้ใน rAF loop เพื่อหลีกเลี่ยง stale closure
   const captionsRef = useRef<Caption[]>([]);
+  // ── Waveform / Snap ───────────────────────────────────────────────────
+  const [waveformVoiceUrl, setWaveformVoiceUrl] = useState<string | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [ttsTimingVersion, setTtsTimingVersion] = useState(0);
+  const snapGuideRef = useRef<number | null>(null);
+  const [snapGuideTick, setSnapGuideTick] = useState(0);
+  const waveLaneRef = useRef<HTMLDivElement>(null);
+  const [waveLaneSize, setWaveLaneSize] = useState({ w: 0, h: 0 });
 
   // ── Script override ก่อนส่ง LLM (TTS / Transcribe) ───────────────────
   const [scriptOverride, setScriptOverride] = useState("");
@@ -324,8 +350,15 @@ export default function VideoEditorPage() {
   const [bgmFile, setBgmFile] = useState("");
   const [bgmVolume, setBgmVolume] = useState(0.12);
   const [bgmUploading, setBgmUploading] = useState(false);
+
+  // BGM is "on" exactly when a track is selected — the UI no longer has a separate
+  // enable toggle. Deriving it here keeps every bgmEnabled consumer (render patch,
+  // save config, status chip, draft) working unchanged.
+  useEffect(() => { setBgmEnabled(!!bgmFile); }, [bgmFile]);
   interface SystemTrack { id: string; title: string; filename: string; }
+  interface UserMusicTrack { id: string; title: string; filename: string; sizeBytes?: number | null; }
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
+  const [userTracks, setUserTracks] = useState<UserMusicTrack[]>([]);
 
   // ── Render progress ───────────────────────────────────────────────────
   const renderProgressRef = useRef(0);
@@ -368,6 +401,9 @@ export default function VideoEditorPage() {
   const renderQualityToJpeg: Record<string, number> = { "480p": 70, "720p": 85, "1080p": 95 };
   const pendingRunAllRef = useRef<(() => void) | null>(null);
 
+  // ── Key onboarding wizard (proactive pre-check) ───────────────────────
+  const [keyWizardOpen, setKeyWizardOpen] = useState(false);
+
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
   const [upgradeModal, setUpgradeModal] = useState<{ open: boolean; message?: string; title?: string; benefits?: string[]; hideCta?: boolean }>({ open: false });
@@ -394,6 +430,31 @@ export default function VideoEditorPage() {
   }, []);
 
   // ── Timeline zoom ─────────────────────────────────────────────────────
+
+  // ── Waveform peaks + snap points ─────────────────────────────────────
+  const { peaks: wavePeaks, durationMs: waveDurationMs } = useAudioPeaks(waveformVoiceUrl);
+
+  const snapPoints = useMemo(() => {
+    const totalForSnap = totalMs || waveDurationMs || 0;
+    const intervals = ttsTimingRef.current?.silenceIntervals;
+    if (Array.isArray(intervals) && intervals.length > 0) {
+      return snapPointsFromSilence(intervals.filter(s => Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs)), totalForSnap);
+    }
+    if (wavePeaks?.length && waveDurationMs > 0) {
+      return snapPointsFromPeaks(wavePeaks, waveDurationMs / wavePeaks.length);
+    }
+    return [];
+  }, [wavePeaks, waveDurationMs, totalMs, ttsTimingVersion]);
+
+  useEffect(() => {
+    const el = waveLaneRef.current;
+    if (!el) return;
+    const measure = () => setWaveLaneSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // ── Undo / Redo ────────────────────────────────────────────────────────
   function undo() {
@@ -514,7 +575,10 @@ export default function VideoEditorPage() {
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
-    fetch("/api/music").then(r => r.json()).then(d => { if (d.tracks) setSystemTracks(d.tracks); }).catch(() => {});
+    fetch("/api/music").then(r => r.json()).then(d => {
+      if (d.tracks) setSystemTracks(d.tracks);
+      if (d.userTracks) setUserTracks(d.userTracks);
+    }).catch(() => {});
 
     // If jobId is in URL from a previous render session, cancel that job and clear the URL.
     // Refresh = stop render immediately — no auto-resume.
@@ -524,8 +588,17 @@ export default function VideoEditorPage() {
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
     }
 
+    // Tier-3 resume: ?resume=<videoId> from the gallery "ทำต่อ" button → reopen
+    // that clip in the editor and clear the param so a refresh doesn't re-trigger.
+    const resumeId = new URL(window.location.href).searchParams.get("resume");
+    if (resumeId) {
+      try { const u = new URL(window.location.href); u.searchParams.delete("resume"); window.history.replaceState({}, "", u.toString()); } catch {}
+      void resumeFromVideoId(resumeId);
+    }
+
     // Stop all polling and cancel active render job when tab closes/refreshes
     const onUnload = () => {
+      autosaveRef.current();  // final best-effort autosave before the tab goes away
       abortControllerRef.current?.abort();
       stopRenderPollRef.current?.();
       const jobId = activeJobIdRef.current;
@@ -827,6 +900,7 @@ export default function VideoEditorPage() {
 
     // Pipeline cache — restore so steps can re-run from any point
     pipe.current.voiceUrl = d.voiceUrl ?? "";
+    setWaveformVoiceUrl(pipe.current.voiceUrl || null);
     pipe.current.audioDurationMs = d.audioDurationMs ?? 0;
     pipe.current.renderedVideoUrl = d.renderedUrl ?? "";
     pipe.current.renderedVideoNoSubUrl = d.renderedVideoNoSubUrl ?? "";
@@ -865,8 +939,87 @@ export default function VideoEditorPage() {
     toast.success(`โหลด "${d.name}" แล้ว`);
   }
 
-  function saveDraftNow() {
-    if (!script.trim()) { toast.error("ยังไม่มี script ที่จะบันทึก"); return; }
+  // Tier-3 resume: open a gallery clip back in the editor to continue (e.g. Burn).
+  // Prefer the locally-autosaved draft (full fidelity); if none (another device,
+  // or a clip made before autosave), rebuild a draft from the saved Video record
+  // so the base render + captions still come back and Burn is available.
+  async function resumeFromVideoId(videoId: string) {
+    const localDraft = loadDrafts().find((d) => d.galleryVideoId === videoId);
+    if (localDraft) { loadDraftInto(localDraft); return; }
+    try {
+      const res = await fetch(`/api/videos/${videoId}`);
+      if (!res.ok) { toast.error("เปิดงานเดิมไม่สำเร็จ"); return; }
+      const v = await res.json();
+      const cfg = v.renderConfig
+        ? (typeof v.renderConfig === "string" ? JSON.parse(v.renderConfig) : v.renderConfig)
+        : null;
+      const fps = cfg?.fps || 30;
+      const caps: Caption[] = Array.isArray(cfg?.keywordPopups)
+        ? cfg.keywordPopups
+            .map((p: { text?: string; start: number; end: number; isHighlight?: boolean }) => ({
+              text: (p.text ?? "").trim(),
+              startMs: Math.round((p.start / fps) * 1000),
+              endMs: Math.round((p.end / fps) * 1000),
+              tag: (p.isHighlight ? "hook" : "body") as Caption["tag"],
+            }))
+            .filter((c: Caption) => c.text.length > 0)
+        : [];
+      const baseUrl: string = v.videoUrl || v.avatarVideoUrl || "";
+      if (!baseUrl && caps.length === 0) { toast.error("งานนี้ยังไม่มีวิดีโอ/ซับให้ทำต่อ"); return; }
+      const draft: EditorDraft = {
+        id: newDraftId(),
+        name: v.content?.headline || (v.script ? `${String(v.script).slice(0, 40)}…` : "งานที่ทำต่อ"),
+        updatedAt: Date.now(),
+        script: v.script || "",
+        style: {
+          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
+          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
+        },
+        renderedUrl: baseUrl,
+        renderedVideoNoSubUrl: baseUrl || undefined,
+        // v.videoUrl = the final burned video (what the gallery shows as the finished clip).
+        // Map it to burnedVideoUrl so loadDraftInto marks burnSubtitles="done" and
+        // the pipeline shows the clip as fully complete with no idle Render button.
+        burnedVideoUrl: v.videoUrl || undefined,
+        compositeUrl: v.avatarVideoUrl || undefined,
+        galleryVideoId: v.id,
+        ttsProvider, voiceId, geminiVoiceName,
+        captions: caps,
+        voiceUrl: v.audioUrl || undefined,
+        audioDurationMs: cfg?.durationInFrames ? Math.round((cfg.durationInFrames / fps) * 1000) : undefined,
+        config: cfg,
+      };
+      loadDraftInto(draft);
+      // The clip is already rendered — the Video record carries no keyword/stock arrays,
+      // so loadDraftInto leaves those steps "idle". Also, avatar/avatarTail/composite are
+      // never in the draft built here, so they stay idle if useAvatar is true. Mark all
+      // steps that are evidenced by the Video record as done so no spurious Render button appears.
+      const extraDone: Partial<Record<keyof StepState, "done">> = {
+        keywords: "done",
+        fetchStock: "done",
+      };
+      // If the video has an avatar composite, all three avatar pipeline steps are done.
+      // avatarTail is safe to mark done unconditionally: it is only *shown* when
+      // avatarTiming === "bookend-both", so marking it done on a non-bookend-both clip
+      // simply makes an invisible step green — no UI harm.
+      if (v.avatarVideoUrl) {
+        extraDone.avatar     = "done";
+        extraDone.avatarTail = "done";
+        extraDone.composite  = "done";
+      }
+      setSteps((s) => ({ ...s, ...extraDone }));
+      stepsRef.current = { ...stepsRef.current, ...extraDone };
+      toast.success("โหลดงานเดิมมาทำต่อแล้ว — กด Burn เพื่อฝังซับ");
+    } catch {
+      toast.error("เปิดงานเดิมไม่สำเร็จ");
+    }
+  }
+
+  // silent=true → autosave (no toast, no error). Returns false when nothing was saved.
+  function saveDraftNow(opts?: { silent?: boolean }): boolean {
+    const silent = opts?.silent === true;
+    if (!script.trim()) { if (!silent) toast.error("ยังไม่มี script ที่จะบันทึก"); return false; }
     const draft: EditorDraft = {
       id: draftId, name: projectName, updatedAt: Date.now(), script,
       scriptOverride: scriptOverride || undefined,
@@ -916,15 +1069,79 @@ export default function VideoEditorPage() {
     saveDrafts([draft, ...existing]);
     setDrafts([draft, ...existing]);
     setLastSaved(new Date());
-    toast.success("บันทึก draft แล้ว");
+    if (!silent) toast.success("บันทึก draft แล้ว");
+    return true;
   }
 
+  // ── Autosave (Tier-1 resume) ──────────────────────────────────────────────
+  // The draft already captures everything needed to resume (render URLs,
+  // captions, style, pipeline cache) — it was just never saved unless the user
+  // clicked "บันทึก draft". So accidentally leaving lost everything. Now we
+  // autosave a draft (silently) ~4s after any meaningful change, and once more
+  // on unload, so closing/refreshing/นเว็บหลุด no longer loses work — reopen the
+  // editor and load the draft to continue (e.g. Burn). Only saves once there is
+  // real progress, so we never spam empty drafts.
+  function hasResumableProgress() {
+    return (
+      script.trim().length > 0 &&
+      (!!videoUrl ||
+        !!pipe.current.voiceUrl ||
+        !!pipe.current.renderedVideoNoSubUrl ||
+        !!pipe.current.compositeUrl ||
+        captionsRef.current.length > 0)
+    );
+  }
+  useEffect(() => {
+    if (!hasResumableProgress()) return;
+    const t = setTimeout(() => { try { saveDraftNow({ silent: true }); } catch {} }, 4000);
+    return () => clearTimeout(t);
+    // Re-armed on any meaningful editor change. pipe.current (a ref) isn't a dep,
+    // but every stage transition calls setStep → `steps` changes → this re-runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
+      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize]);
+
+  // Latest-closure ref so the once-registered beforeunload handler can run the
+  // CURRENT autosave (a stale closure would persist mount-time empty state).
+  const autosaveRef = useRef<() => void>(() => {});
+  autosaveRef.current = () => { try { if (hasResumableProgress()) saveDraftNow({ silent: true }); } catch {} };
+
+  // Warn before leaving while a step is running or a render exists that hasn't
+  // been burned/exported yet (the state where Mew lost work). Re-evaluated on
+  // every step change. The draft is already autosaved, so this is just a guard
+  // against an accidental click — leaving is recoverable either way.
+  useEffect(() => {
+    const inProgress =
+      Object.values(steps).some((s) => s === "running") ||
+      (!!pipe.current.renderedVideoNoSubUrl && !pipe.current.burnedVideoUrl);
+    if (!inProgress) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [steps]);
+
   // ── Pipeline helpers (copied from video-creator) ───────────────────────
+
+  function startPipelineRun(reason: string) {
+    const randomPart =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID().slice(0, 8)
+        : Math.random().toString(36).slice(2, 10);
+    const nextId = `pipe_${Date.now()}_${randomPart}`;
+    pipelineRunIdRef.current = nextId;
+    return { pipelineRunId: nextId, draftId: draftIdRef.current, pipelineRunReason: reason };
+  }
+
+  function ensurePipelineRunTelemetry(reason = "manual") {
+    const pipelineRunId = pipelineRunIdRef.current ?? startPipelineRun(reason).pipelineRunId;
+    return { pipelineRunId, draftId: draftIdRef.current };
+  }
 
   function setStep(key: keyof StepState, status: StepStatus, log?: string) {
     const previous = stepsRef.current[key];
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     const label = STEP_EVENT_LABELS[String(key)] ?? String(key);
+    const pipelineTelemetry = ensurePipelineRunTelemetry(String(key));
 
     if (status === "running" && previous !== "running") {
       stepStartedAtRef.current[key] = now;
@@ -933,7 +1150,7 @@ export default function VideoEditorPage() {
         path: "/video-editor",
         step: String(key),
         status: "running",
-        properties: { label },
+        properties: { label, ...pipelineTelemetry },
       });
     }
 
@@ -950,6 +1167,7 @@ export default function VideoEditorPage() {
           durationMs,
           properties: {
             label,
+            ...pipelineTelemetry,
             message: log ? log.slice(0, 180) : undefined,
           },
         },
@@ -1221,6 +1439,7 @@ export default function VideoEditorPage() {
         keywords: kws, download: true, totalDurationSec, stockSource,
         ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
         ...(stockSource === "auto-mix" ? { autoMixProviders } : {}),
+        ...ensurePipelineRunTelemetry("fetchStock"),
         fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
         // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
@@ -1278,6 +1497,7 @@ export default function VideoEditorPage() {
   // length even when transcribe is skipped.
   function captureTtsTiming(data: { timing?: TtsTiming; audioDurationMs?: number }) {
     ttsTimingRef.current = data.timing && Array.isArray(data.timing.segments) ? data.timing : null;
+    setTtsTimingVersion(v => v + 1);
     const d = Number(data.audioDurationMs);
     if (Number.isFinite(d) && d > 0) pipe.current.audioDurationMs = d;
   }
@@ -1296,6 +1516,7 @@ export default function VideoEditorPage() {
       captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
     } else {
       setStep("tts", "running", "ElevenLabs...");
@@ -1309,6 +1530,7 @@ export default function VideoEditorPage() {
       captureTtsTiming(data);
       const url = data.voiceUrl as string;
       pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
     }
   }
@@ -1361,7 +1583,7 @@ export default function VideoEditorPage() {
     originalCaptionsRef.current = sceneCaptions;
     setCaptions(sceneCaptions);
     setSplitMode("sentence");
-    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · เวลาจาก TTS เป๊ะ ✓`);
+    setStep("transcribe", "done", `${sceneCaptions.length} ซับ · ใช้เวลาจาก TTS`);
     console.log(`[editor] subtitles from TTS timing: ${sceneCaptions.length} cards, ${res.words.length} words, ${res.audioDurationMs}ms — transcribe skipped`);
     return sceneCaptions;
   }
@@ -1797,7 +2019,12 @@ export default function VideoEditorPage() {
 
       const res = await fetch("/api/videos/render", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: patchedConfig, fps: renderFps, jpegQuality: renderQualityToJpeg[renderQuality] }),
+        body: JSON.stringify({
+          shortVideoConfig: patchedConfig,
+          fps: renderFps,
+          jpegQuality: renderQualityToJpeg[renderQuality],
+          jobScopeId: `video-editor-${draftId}`,
+        }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -2239,7 +2466,18 @@ export default function VideoEditorPage() {
 
   // ── Run all pipeline ───────────────────────────────────────────────────
 
+  const ensureKeysReady = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
+      if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
+      const st = await res.json();
+      if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
+    } catch { return true; }
+    return true;
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const runAll = useCallback(async () => {
+    if (!(await ensureKeysReady())) return;
     if (runningRef.current || !script.trim()) return;
 
     // NOTE: a pre-TTS duration *estimate* gate was removed here — the script→duration
@@ -2326,11 +2564,13 @@ export default function VideoEditorPage() {
     abortControllerRef.current = new AbortController();
     setSteps({ ...DEFAULT_STEPS }); stepsRef.current = { ...DEFAULT_STEPS };
     stepStartedAtRef.current = {};
+    const pipelineTelemetry = startPipelineRun("runAll");
     trackEvent("editor_script_ready", {
       category: "product",
       path: "/video-editor",
       status: "started",
       properties: {
+        ...pipelineTelemetry,
         scriptChars: script.trim().length,
         ttsProvider,
         stockSource,
@@ -2398,7 +2638,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2407,11 +2647,13 @@ export default function VideoEditorPage() {
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
+    const pipelineTelemetry = startPipelineRun(`runFrom:${String(startStep)}`);
     trackEvent("editor_script_ready", {
       category: "product",
       path: "/video-editor",
       status: "started",
       properties: {
+        ...pipelineTelemetry,
         scriptChars: script.trim().length,
         resumedFrom: String(startStep),
         ttsProvider,
@@ -2508,14 +2750,14 @@ export default function VideoEditorPage() {
   }: { toastOnSuccess?: boolean; toastOnError?: boolean } = {}) {
     const baseVideo = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
     if (!baseVideo) throw new Error("ต้อง Render วิดีโอก่อน แล้วค่อย Burn Subtitles");
-    if (!captionsRef.current.length) throw new Error("ไม่มีซับให้ Burn — กรุณา Transcribe ก่อน");
-    setStep("burnSubtitles", "running", "Burning subtitles...");
+    const hasSubtitlesToBurn = hasBurnableCaptions(captionsRef.current);
+    setStep("burnSubtitles", "running", hasSubtitlesToBurn ? "Burning subtitles..." : "Exporting without subtitles...");
     setRenderProgressError(null);
     renderProgressRef.current = 0;
     const burnActivityStartedAt = Date.now();
     setRenderActivity({
       phase: "burning",
-      label: "เตรียมฝังซับ",
+      label: hasSubtitlesToBurn ? "เตรียมฝังซับ" : "เตรียม Export",
       queuePosition: null,
       startedAt: burnActivityStartedAt,
     });
@@ -2533,6 +2775,39 @@ export default function VideoEditorPage() {
     stopRenderPollRef.current = () => pollAbort.abort();
 
     try {
+      const finalizeBurn = (url: string) => {
+        // Burn/export output is the final user-facing clip. Keep renderedVideoNoSubUrl
+        // as the editable base, but show/download/save the final version.
+        pipe.current.burnedVideoUrl = url;
+        setVideoUrl(url);
+        lastRenderedStyleRef.current = {
+          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
+          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
+          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
+          captions: captionsRef.current.map(c => ({ ...c })),
+        };
+        setStyleIsDirty(false);
+        setStep("burnSubtitles", "done", url);
+        setRenderProgress(100);
+        setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        saveToGallery({
+          videoUrl: url,
+          videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+          avatarVideoUrl: pipe.current.compositeUrl ? avatarGreenUrl || undefined : undefined,
+          status: "COMPLETED",
+        });
+        if (toastOnSuccess) {
+          toast.success(hasSubtitlesToBurn
+            ? "Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download"
+            : "Export วิดีโอไม่มีซับเสร็จแล้ว พร้อม Download");
+        }
+      };
+
+      if (!hasSubtitlesToBurn) {
+        finalizeBurn(baseVideo);
+        return;
+      }
+
       const fps = 30;
       const audioDurMs = pipe.current.audioDurationMs ?? 0;
       const rawLastCapMs = captionsRef.current.length > 0 ? Math.max(...captionsRef.current.map(c => c.endMs)) : 0;
@@ -2581,38 +2856,13 @@ export default function VideoEditorPage() {
 
       const res = await fetch("/api/videos/render", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subtitleOverlayConfig }),
+        body: JSON.stringify({ subtitleOverlayConfig, jobScopeId: `video-editor-${draftId}` }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
       // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
       // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
       assertOk("Burn", res, data as Record<string, unknown>);
-
-      const finalizeBurn = (url: string) => {
-        // Burn output is the final user-facing clip. Keep renderedVideoNoSubUrl as
-        // the editable base, but show/download/save the burned version.
-        pipe.current.burnedVideoUrl = url;
-        setVideoUrl(url);
-        lastRenderedStyleRef.current = {
-          fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight,
-          color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition,
-          shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize,
-          captions: captionsRef.current.map(c => ({ ...c })),
-        };
-        setStyleIsDirty(false);
-        setStep("burnSubtitles", "done", url);
-        setRenderProgress(100);
-        setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
-        // Update Gallery: replace videoUrl with the burned-in version (final result)
-        saveToGallery({
-          videoUrl: url,
-          videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
-          avatarVideoUrl: pipe.current.compositeUrl ? avatarGreenUrl || undefined : undefined,
-          status: "COMPLETED",
-        });
-        if (toastOnSuccess) toast.success("Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download");
-      };
 
       if (data.videoUrl) {
         finalizeBurn(data.videoUrl);
@@ -2769,6 +3019,25 @@ export default function VideoEditorPage() {
     ? burnedPreviewUrl
     : editablePreviewUrl || videoUrl || preRenderUrl;
   const previewUsesBurnedOutput = Boolean(burnedPreviewUrl && previewVideoUrl === burnedPreviewUrl);
+  const previewSourceKind = previewUsesBurnedOutput
+    ? "burned_output"
+    : pipe.current.compositeUrl
+      ? "composite_preview"
+      : pipe.current.renderedVideoNoSubUrl
+        ? "render_no_sub"
+        : preRenderUrl
+          ? "pre_render"
+          : videoUrl
+            ? "final_video"
+            : null;
+
+  useVideoPlaybackTelemetry(videoRef, {
+    enabled: Boolean(previewVideoUrl),
+    page: "video-editor",
+    videoUrl: previewVideoUrl || null,
+    videoId: draftId,
+    sourceKind: previewSourceKind,
+  });
 
   // activeSub: only show when video is ready AND a caption is active at current time.
   // Burned MP4s already contain subtitles. When the style becomes dirty we switch
@@ -2970,8 +3239,9 @@ export default function VideoEditorPage() {
       // Clamp ผลลัพธ์เข้า timeline เสียงจริงเสมอ — กันซับชุดใหม่ยาวเกิน audio
       const bounded = normalizeCaptionsForTimeline(result, audioDurMs);
       setCaptions(bounded);
-      const label = m === "custom" ? `${n} คำ` : `${m} คำ`;
-      toast.success(`แบ่งซับ ${label}/ช่วง → ${bounded.length} ช่วง`);
+      const label = n === 1 ? "1 คำ" : `สูงสุด ${n} คำ`;
+      const suffix = n === 1 ? "" : " ตามจังหวะพูด";
+      toast.success(`แบ่งซับ ${label}/ช่วง${suffix} → ${bounded.length} ช่วง`);
     }
   }
 
@@ -3095,6 +3365,7 @@ export default function VideoEditorPage() {
             const burnedClean = pipe.current.burnedVideoUrl && !styleIsDirty;
             const needsBurn = !burnedClean;
             const dlUrl = burnedClean ? pipe.current.burnedVideoUrl! : null;
+            const hasSubtitlesToBurn = hasBurnableCaptions(captions);
             return (
               <button
                 onClick={async () => {
@@ -3114,14 +3385,16 @@ export default function VideoEditorPage() {
                     // Need either composite (render+avatar) or plain render before we can burn
                     const baseAvailable = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
                     if (!baseAvailable) { toast.error("ต้อง Render วิดีโอก่อน"); return; }
-                    toast("กำลัง Burn Subtitles...", { duration: 3000 });
+                    toast(hasSubtitlesToBurn ? "กำลัง Burn Subtitles..." : "กำลัง Export วิดีโอไม่มีซับ...", { duration: 3000 });
                     await runBurnSubtitles();
                     const burned = pipe.current.burnedVideoUrl;
                     if (burned) {
                       // runBurnSubtitles → finalizeBurn → saveToGallery is already called
                       // inside, so we don't double-save here. Just download.
                       const a = document.createElement("a"); a.href = burned; a.download = ""; a.click();
-                      toast.success("Burn + Download + บันทึกลง Gallery แล้ว");
+                      toast.success(hasSubtitlesToBurn
+                        ? "Burn + Download + บันทึกลง Gallery แล้ว"
+                        : "Export + Download + บันทึกลง Gallery แล้ว");
                     }
                   }
                 }}
@@ -3131,10 +3404,12 @@ export default function VideoEditorPage() {
                     ? "bg-amber-600 hover:bg-amber-500"
                     : "bg-emerald-600 hover:bg-emerald-500"
                 )}
-                title={needsBurn ? "Burn ซับใหม่แล้ว Download" : "Download วิดีโอที่มีซับล่าสุด"}
+                title={needsBurn
+                  ? hasSubtitlesToBurn ? "Burn ซับใหม่แล้ว Download" : "Export วิดีโอไม่มีซับแล้ว Download"
+                  : "Download วิดีโอล่าสุด"}
               >
                 <Download className="w-3 h-3" />
-                {needsBurn ? "Burn & Download" : "Download"}
+                {needsBurn ? hasSubtitlesToBurn ? "Burn & Download" : "Export & Download" : "Download"}
               </button>
             );
           })()}
@@ -3166,7 +3441,7 @@ export default function VideoEditorPage() {
               {savingToGallery ? "กำลังบันทึก..." : "Save to Gallery"}
             </button>
           )}
-          <button onClick={saveDraftNow}
+          <button onClick={() => saveDraftNow()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-emerald-400 hover:border-emerald-500/40 transition-colors">
             <Save className="w-3 h-3" /> Save
           </button>
@@ -3361,9 +3636,9 @@ export default function VideoEditorPage() {
                       {([
                         { mode: "sentence", label: "ประโยค" },
                         { mode: "1",        label: "1 คำ" },
-                        { mode: "2",        label: "2 คำ" },
-                        { mode: "3",        label: "3 คำ" },
-                        { mode: "4",        label: "4 คำ" },
+                        { mode: "2",        label: "≤2 คำ" },
+                        { mode: "3",        label: "≤3 คำ" },
+                        { mode: "4",        label: "≤4 คำ" },
                         { mode: "custom",   label: "กำหนด" },
                       ] as const).map(({ mode, label }) => (
                         <button
@@ -3384,7 +3659,7 @@ export default function VideoEditorPage() {
                     {/* Custom input */}
                     {splitMode === "custom" && (
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-slate-500 flex-shrink-0">จำนวนคำ/ช่วง:</span>
+                        <span className="text-[10px] text-slate-500 flex-shrink-0">คำสูงสุด/ช่วง:</span>
                         <input
                           type="number" min={1} max={20} value={splitCustomN}
                           onChange={e => setSplitCustomN(Math.max(1, parseInt(e.target.value) || 1))}
@@ -3397,11 +3672,11 @@ export default function VideoEditorPage() {
                       </div>
                     )}
                     {splitMode !== "custom" && splitMode !== "sentence" && (
-                      <div className="text-[9px] text-slate-600 text-center">
-                        {splitMode === "1" && "เน้นทีละคำ — แรงมาก"}
-                        {splitMode === "2" && "เร็ว พลิ้ว — นิยมใน TikTok"}
-                        {splitMode === "3" && "แนะนำ — อ่านง่าย"}
-                        {splitMode === "4" && "ประโยคสั้น — ไหลลื่น"}
+                      <div className="text-[9px] text-slate-700 text-center">
+                        {splitMode === "1" && "ทีละคำ — ตรงตามคำ"}
+                        {splitMode === "2" && "สูงสุด 2 คำ — ตัดตามจังหวะพูด"}
+                        {splitMode === "3" && "สูงสุด 3 คำ — อ่านง่าย"}
+                        {splitMode === "4" && "สูงสุด 4 คำ — ไหลลื่น"}
                       </div>
                     )}
                     {splitMode === "sentence" && (
@@ -3462,13 +3737,15 @@ export default function VideoEditorPage() {
                           setEditingCapIdx(null);
                         }}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } if (e.key === "Escape") setEditingCapIdx(null); }}
-                        className="w-full bg-[#0c0c11] border border-violet-500/50 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-100 resize-none outline-none leading-relaxed shadow-[0_0_0_3px_rgba(139,92,246,0.12)] transition-shadow"
-                        rows={2}
+                        onInput={e => { const ta = e.currentTarget; ta.rows = Math.min(8, Math.max(2, ta.value.split(/\r\n|\r|\n/).length)); }}
+                        className="w-full bg-[#0c0c11] border border-violet-500/50 rounded-lg px-2.5 py-1.5 text-[12px] text-slate-100 resize-y outline-none leading-relaxed whitespace-pre-wrap shadow-[0_0_0_3px_rgba(139,92,246,0.12)] transition-shadow"
+                        rows={Math.min(8, Math.max(2, cap.text.split(/\r\n|\r|\n/).length))}
+                        title="Shift+Enter เพื่อขึ้นบรรทัด"
                         onClick={e => e.stopPropagation()}
                       />
                     ) : (
                       <div
-                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors", isActive ? "text-slate-100 font-semibold" : "text-slate-300")}
+                        className={cn("text-[12px] leading-relaxed cursor-text rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors whitespace-pre-wrap break-words", isActive ? "text-slate-100 font-semibold" : "text-slate-300")}
                         onDoubleClick={e => { e.stopPropagation(); setEditingCapIdx(i); }}
                         title="ดับเบิ้ลคลิกเพื่อแก้ข้อความ"
                       >
@@ -3525,6 +3802,8 @@ export default function VideoEditorPage() {
 
           {/* Pipeline status — ย่อได้ เพื่อคืนพื้นที่ให้ลิสต์ซับ */}
           <div className={cn("border-t border-[#1e1e28] p-3 flex-shrink-0", processOpen && "overflow-y-auto max-h-[55%]")}>
+            {/* Clip quota — fail-soft: renders nothing while loading or on error */}
+            {processOpen && <QuotaStatus variant="chip" className="mb-2 w-full justify-center" />}
             <button onClick={() => setProcessOpen(v => !v)} className="w-full flex items-center gap-2 text-left group/proc">
               <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider group-hover/proc:text-slate-400 transition-colors">Process</span>
               {!processOpen && running && (
@@ -3555,7 +3834,9 @@ export default function VideoEditorPage() {
               const nextActionIdx = visibleSteps.findIndex(([k], i) =>
                 steps[k] === "idle" && (i === 0 || steps[visibleSteps[i - 1][0]] === "done")
               );
+              const hasSubtitlesToBurn = hasBurnableCaptions(captions);
               return visibleSteps.map(([k, label], stepIdx) => {
+                const stepLabel = k === "burnSubtitles" && !hasSubtitlesToBurn ? "Export Final" : label;
                 const isDone = steps[k] === "done";
                 const isError = steps[k] === "error";
                 const isIdle = steps[k] === "idle";
@@ -3583,7 +3864,7 @@ export default function VideoEditorPage() {
                 // Burn needs either composite (avatar) or no-sub render as base
                 const burnHasBase = !!(pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl);
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
-                  k !== "burnSubtitles" || (burnHasBase && captions.length > 0 && !running)
+                  k !== "burnSubtitles" || (burnHasBase && !running)
                 ) && (
                   k !== "avatar" && k !== "avatarTail" && k !== "composite" || (useAvatar && !isDirectAvatar)
                 );
@@ -3616,7 +3897,7 @@ export default function VideoEditorPage() {
                   >
                     <StepIcon status={steps[k]} />
                     <span className={cn("text-[11px] flex-1 min-w-0", labelColor)}>
-                      {label}
+                      {stepLabel}
                     </span>
                     {isDone && (
                       <span className="text-[9px] text-slate-700 truncate max-w-[60px] group-hover:text-slate-500 transition-colors">
@@ -3632,7 +3913,11 @@ export default function VideoEditorPage() {
                       <span className="text-[9px] text-red-600 truncate max-w-[60px]">{log.slice(0, 12)}</span>
                     )}
                     {isRunning && (
-                      <span className="text-[9px] text-slate-700 truncate max-w-[60px]">{log.slice(0, 12)}</span>
+                      <span className="text-[9px] text-slate-700 truncate max-w-[60px]">
+                        {(k === "render" || k === "burnSubtitles") && renderProgress > 0
+                          ? `${renderProgress}%`
+                          : log ? log.slice(0, 12) : "กำลังทำ…"}
+                      </span>
                     )}
                     {showRunBtn && (
                       <button
@@ -3642,7 +3927,7 @@ export default function VideoEditorPage() {
                             ? "px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-500 shadow-sm shadow-emerald-500/30"
                             : "px-2 py-0.5 text-[9px] bg-violet-700/70 hover:bg-violet-600"
                         )}
-                      >{k === "burnSubtitles" ? "▶ Burn ซับ" : "▶ Run"}</button>
+                      >{k === "burnSubtitles" ? hasSubtitlesToBurn ? "▶ Burn ซับ" : "▶ Export" : "▶ Run"}</button>
                     )}
                     {showRerunBtn && (
                       <button
@@ -3943,6 +4228,7 @@ export default function VideoEditorPage() {
               bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
               setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
               bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
+              userTracks={userTracks} setUserTracks={setUserTracks}
               useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
               avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
               avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
@@ -4151,6 +4437,10 @@ export default function VideoEditorPage() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setSnapEnabled(v => !v)}
+              className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold transition-colors",
+                snapEnabled ? "bg-violet-600/80 text-white" : "bg-[#2a2a36] text-slate-400")}
+              title="ดูดซับเข้าจังหวะเสียง (snap)">⌁ Snap</button>
             <ZoomIn className="w-3 h-3 text-slate-600" />
             <input
               aria-label="Timeline zoom"
@@ -4192,6 +4482,9 @@ export default function VideoEditorPage() {
               // Track drag distance — used to distinguish click vs drag on release
               if (Math.abs(dxPx) > 3) r.moved = true;
               const dxMs = (dxPx / trackW) * totalMs;
+              const rawTarget = r.startMs + dxMs;
+              const snapped = snapEnabled && snapPoints.length ? snapToNearest(rawTarget, snapPoints, SNAP_MS) : rawTarget;
+              const didSnap = snapEnabled && snapPoints.length ? Math.abs(snapped - rawTarget) > 0.5 : false;
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
                   if (j !== r.capIdx) return c;
@@ -4201,24 +4494,28 @@ export default function VideoEditorPage() {
                   const lowerBound = prevClip ? prevClip.endMs + minGap : 0;
                   const upperBound = nextClip ? nextClip.startMs - minGap : (totalMs || 999999);
                   if (r.edge === "left") {
-                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, snapped));
                     return { ...c, startMs: Math.round(newStart) };
                   } else if (r.edge === "right") {
-                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, r.startMs + dxMs));
+                    const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, snapped));
                     return { ...c, endMs: Math.round(newEnd) };
                   } else {
                     // "move" — slide whole clip, preserving duration, clamp between neighbors
                     const dur = r.durMs ?? (c.endMs - c.startMs);
                     const maxStart = Math.max(lowerBound, upperBound - dur);
-                    const newStart = Math.max(lowerBound, Math.min(maxStart, r.startMs + dxMs));
+                    const newStart = Math.max(lowerBound, Math.min(maxStart, snapped));
                     return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
                 captionsRef.current = next;
                 return next;
               });
+              snapGuideRef.current = didSnap ? snapped : null;
+              setSnapGuideTick(t => t + 1);
             }}
             onPointerUp={() => {
+              snapGuideRef.current = null;
+              setSnapGuideTick(t => t + 1);
               if (clipResizeRef.current) {
                 if (clipResizeRef.current.moved) {
                   setCaptions(captions); // push to history on release (only if actually dragged)
@@ -4228,6 +4525,18 @@ export default function VideoEditorPage() {
             }}
           >
             <div className="relative" style={{ width: `${timelineCanvasWidthPct}%`, minWidth: "100%" }}>
+              {/* read snapGuideTick so React re-renders the ref-driven snap guide */}
+              {void snapGuideTick}
+              {/* Waveform lane + snap guide */}
+              <div ref={waveLaneRef} className="absolute inset-x-0 top-0 bottom-0 pointer-events-none opacity-70" aria-hidden>
+                {wavePeaks?.length && waveLaneSize.w > 0 ? (
+                  <WaveformCanvas peaks={wavePeaks} width={waveLaneSize.w} height={waveLaneSize.h} />
+                ) : null}
+              </div>
+              {snapGuideRef.current != null && totalMs > 0 ? (
+                <div className="absolute top-0 bottom-0 w-px bg-amber-400/80 pointer-events-none" aria-hidden
+                  style={{ left: `${(snapGuideRef.current / totalMs) * 100}%` }} />
+              ) : null}
 
               {/* Ruler — click/drag to seek */}
               <div className="h-[22px] bg-[#0a0a10] border-b border-[#1e1e28] relative flex items-end cursor-pointer"
@@ -4375,6 +4684,14 @@ export default function VideoEditorPage() {
             if (step === "runAvatarPipeline") runAvatarPipeline();
             else runAll();
           }}
+        />
+      )}
+
+      {keyWizardOpen && (
+        <KeyOnboardingWizard
+          open={true}
+          onClose={() => setKeyWizardOpen(false)}
+          onComplete={() => setKeyWizardOpen(false)}
         />
       )}
 

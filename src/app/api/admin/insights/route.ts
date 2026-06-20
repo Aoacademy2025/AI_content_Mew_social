@@ -75,6 +75,16 @@ function stringProp(row: TelemetryRow, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function numberProp(row: TelemetryRow, key: string): number | null {
+  const value = parseProps(row)[key];
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function booleanProp(row: TelemetryRow, key: string): boolean {
+  return parseProps(row)[key] === true;
+}
+
 function eventKey(row: TelemetryRow) {
   return `${row.name}:${row.step ?? ""}:${row.createdAt.getTime()}`;
 }
@@ -159,6 +169,252 @@ function summarizeVideoJobs(videos: VideoRow[]) {
   };
 }
 
+function playbackGroupKey(row: TelemetryRow) {
+  return [
+    row.sessionId ?? eventKey(row),
+    stringProp(row, "videoId") ?? "no-video-id",
+    stringProp(row, "sourcePath") ?? "no-source-path",
+  ].join(":");
+}
+
+function countByProp(rows: TelemetryRow[], key: string, fallback = "unknown") {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const label = stringProp(row, key) ?? fallback;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+}
+
+function sumProp(rows: TelemetryRow[], key: string) {
+  return rows.reduce((sum, row) => sum + (numberProp(row, key) ?? 0), 0);
+}
+
+function propValues(rows: TelemetryRow[], key: string) {
+  return rows
+    .map((row) => numberProp(row, key))
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
+function durationValues(rows: TelemetryRow[]) {
+  return rows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+}
+
+function telemetryIssueLabel(row: TelemetryRow) {
+  const props = parseProps(row);
+  return String(props.message ?? props.reason ?? row.status ?? row.name).slice(0, 160);
+}
+
+function benignTelemetryReason(row: TelemetryRow): string | null {
+  const props = parseProps(row);
+  const text = [
+    row.name,
+    row.status,
+    props.message,
+    props.reason,
+    props.errorName,
+  ].filter(Boolean).join(" ");
+
+  if (/play\(\) request was interrupted by a call to pause/i.test(text)) return "browser play/pause race";
+  if (/__SUPERSEDED__|(^|\s)superseded(\s|$)/i.test(text)) return "superseded job";
+  if (/AbortError|aborted|cancelled|canceled|got cancelled|Request closed|cancelSignal/i.test(text)) return "intentional cancel";
+  if (row.name === "frontend_error" && /^Script error\.?$/i.test(String(props.message ?? "").trim())) return "opaque script error";
+  return null;
+}
+
+// P2 กฎ #4: แยก error ฝั่ง "คีย์ลูกค้า" (BYOK) ออกจาก "ระบบเรา" — 429/503/quota/billing/คีย์ผิด
+// = ปัญหาของลูกค้า ไม่ใช่บั๊กระบบ → ไม่หัก Health Score และไม่ปนกับ error ที่ dev ต้องแก้
+function byokReasonFromText(text: string): string | null {
+  if (/\b429\b|\b503\b|quota|RESOURCE_EXHAUSTED|too many requests|rate limit/i.test(text)) return "คีย์ลูกค้า: เกินโควต้า/rate limit";
+  if (/ผูกบัตร|billing/i.test(text)) return "คีย์ลูกค้า: ยังไม่ผูกบัตร/billing";
+  if (/api[\s_-]?key|API_KEY_INVALID|invalid key|api key not valid|unauthorized|permission denied/i.test(text)) return "คีย์ลูกค้า: คีย์ผิด/ไม่มีสิทธิ์";
+  return null;
+}
+
+function byokErrorReason(row: TelemetryRow): string | null {
+  const props = parseProps(row);
+  const text = [row.name, row.status, props.message, props.reason, props.errorName].filter(Boolean).join(" ");
+  return byokReasonFromText(text);
+}
+
+function classifyJobError(message: string | null): "system" | "byok" | "noise" {
+  const text = message ?? "";
+  if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
+  if (byokReasonFromText(text)) return "byok";
+  return "system";
+}
+
+function jobStepLabel(step: string | null) {
+  if (!step) return "ไม่ระบุ";
+  const alias: Record<string, string> = { stock: "หา B-roll", burn: "ฝังซับ" };
+  return alias[step] ?? STEP_LABELS[step] ?? step;
+}
+
+function summarizeIssueGroups(rows: TelemetryRow[], reasonFn?: (row: TelemetryRow) => string | null) {
+  const groups = new Map<string, { count: number; label: string; step: string | null; lastSeen: Date; reason?: string }>();
+  for (const row of rows) {
+    const label = telemetryIssueLabel(row);
+    const reason = reasonFn?.(row) ?? undefined;
+    const key = `${row.step ?? "ทั่วไป"}:${reason ?? ""}:${label}`;
+    const entry = groups.get(key) ?? { count: 0, label, step: row.step, lastSeen: row.createdAt, reason };
+    entry.count++;
+    if (row.createdAt > entry.lastSeen) entry.lastSeen = row.createdAt;
+    groups.set(key, entry);
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+    .map((entry) => ({
+      ...entry,
+      stepLabel: entry.step ? STEP_LABELS[entry.step] ?? entry.step : "ทั่วไป",
+      lastSeen: entry.lastSeen.toISOString(),
+    }));
+}
+
+function matchesFunnelStep(row: TelemetryRow, step: FunnelStep, includeServerFetchStock = false) {
+  if (step.event) return row.name === step.event;
+  if (step.step === "fetchStock") {
+    return (row.name === "pipeline_step_done" && row.step === step.step) || (includeServerFetchStock && row.name === "fetch_stock_server_done");
+  }
+  return row.name === "pipeline_step_done" && row.step === step.step;
+}
+
+// P0 fix: นับเป็น "จำนวน session ที่ไปถึงแต่ละขั้น" — หน่วยเดียวกันทุกขั้น (apples-to-apples)
+// เดิมขั้น 1 นับ raw event ส่วนขั้น 2-7 de-dup ด้วย pipelineRunId (เพิ่งเริ่มเก็บ 18 มิ.ย.)
+// → ทำให้ "drop 96%" ปลอม เพราะคนละหน่วย/คนละช่วงเวลา ตอนนี้ใช้ distinct sessionId ทุกขั้น
+function funnelStepSessionCount(rows: TelemetryRow[], step: FunnelStep) {
+  return uniqueCount(
+    rows,
+    (row) => Boolean(row.sessionId) && matchesFunnelStep(row, step, false),
+    (row) => row.sessionId ?? eventKey(row),
+  );
+}
+
+function summarizeEditorFunnel(rows: TelemetryRow[]) {
+  const funnel = EDITOR_FUNNEL.map((step) => ({
+    ...step,
+    count: funnelStepSessionCount(rows, step),
+    conversionPct: 0,
+    dropOffPct: 0,
+    previousCount: 0,
+  })).map((step, index, all) => {
+    const previousCount = index === 0 ? step.count : all[index - 1].count;
+    return {
+      ...step,
+      previousCount,
+      conversionPct: index === 0 ? 100 : pct(step.count, previousCount),
+      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - pct(step.count, previousCount)),
+    };
+  });
+
+  return {
+    funnel,
+    funnelMode: "session" as const,
+    funnelRuns: funnel[0]?.count ?? 0,
+  };
+}
+
+function summarizeBroll(rows: TelemetryRow[]) {
+  const doneRows = rows.filter((row) => row.name === "fetch_stock_server_done");
+  const errorRows = rows.filter((row) => row.name === "fetch_stock_server_error");
+  const durations = durationValues(doneRows);
+  const normalizeTotals = propValues(doneRows, "normalizeMsTotal");
+  const servedClips = propValues(doneRows, "servedClipCount");
+  const searchQueries = propValues(doneRows, "searchQueries");
+  const totalRequests = doneRows.length + errorRows.length;
+  const cacheHitCount = sumProp(doneRows, "cacheHitCount");
+  const downloadedCount = sumProp(doneRows, "downloadedCount");
+  const downloadFailCount = sumProp(doneRows, "downloadFailCount");
+  const selectedPexelsCount = sumProp(doneRows, "selectedPexelsCount");
+  const selectedPixabayCount = sumProp(doneRows, "selectedPixabayCount");
+
+  return {
+    requests: totalRequests,
+    runs: doneRows.length,
+    errors: errorRows.length,
+    successPct: pct(doneRows.length, totalRequests),
+    p50Ms: percentile(durations, 50),
+    p95Ms: percentile(durations, 95),
+    searchP95Ms: percentile(propValues(doneRows, "searchPhaseMs"), 95),
+    rankingP95Ms: percentile(propValues(doneRows, "rankingPhaseMs"), 95),
+    selectionP95Ms: percentile(propValues(doneRows, "selectionPhaseMs"), 95),
+    downloadP95Ms: percentile(propValues(doneRows, "downloadPhaseMs"), 95),
+    normalizeP95Ms: percentile(normalizeTotals, 95),
+    cacheHitCount,
+    downloadedCount,
+    downloadFailCount,
+    cacheHitPct: pct(cacheHitCount, cacheHitCount + downloadedCount),
+    downloadFailPct: pct(downloadFailCount, downloadedCount + downloadFailCount),
+    servedClipTotal: sumProp(doneRows, "servedClipCount"),
+    servedClipAvg: average(servedClips),
+    searchQueriesAvg: average(searchQueries),
+    noCandidateKeywords: sumProp(doneRows, "noCandidateKeywords"),
+    forcedFallbackCount: sumProp(doneRows, "forcedFallbackCount"),
+    profileFallbackUsedCount: sumProp(doneRows, "profileFallbackUsedCount"),
+    llmRankingUsedCount: doneRows.filter((row) => booleanProp(row, "llmRankingUsed")).length,
+    llmRankingFailedCount: doneRows.filter((row) => booleanProp(row, "llmRankingFailed")).length,
+    emptyResultCount: doneRows.filter((row) => booleanProp(row, "emptyResult")).length,
+    normalizeRanCount: sumProp(doneRows, "normalizeRanCount"),
+    normalizeSkippedCount: sumProp(doneRows, "normalizeSkippedCount"),
+    normalizeFailedCount: sumProp(doneRows, "normalizeFailedCount"),
+    selectedPexelsCount,
+    selectedPixabayCount,
+    providerMix: [
+      { label: "Pexels", count: selectedPexelsCount },
+      { label: "Pixabay", count: selectedPixabayCount },
+    ].filter((item) => item.count > 0),
+    resolvedSources: countByProp(doneRows, "resolvedSource"),
+    contentProfiles: countByProp(doneRows, "contentProfile"),
+  };
+}
+
+function summarizePlayback(rows: TelemetryRow[]) {
+  const playbackRows = rows.filter((row) => row.name.startsWith("video_playback_"));
+  const startedRows = playbackRows.filter((row) => row.name === "video_playback_session_started");
+  const firstFrameRows = playbackRows.filter((row) => row.name === "video_playback_first_frame");
+  const canPlayRows = playbackRows.filter((row) => row.name === "video_playback_canplay");
+  const waitingRows = playbackRows.filter((row) => row.name === "video_playback_waiting");
+  const stalledRows = playbackRows.filter((row) => row.name === "video_playback_stalled");
+  const errorRows = playbackRows.filter((row) => row.name === "video_playback_error");
+
+  const startedKeys = new Set(startedRows.map(playbackGroupKey));
+  const bufferingKeys = new Set([...waitingRows, ...stalledRows].map(playbackGroupKey));
+  const firstFrameDurations = firstFrameRows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const canPlayDurations = canPlayRows
+    .map((row) => row.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const startupFromLoadValues = firstFrameRows
+    .map((row) => Number(parseProps(row).startupFromLoadMs))
+    .filter((value) => Number.isFinite(value));
+
+  return {
+    sessions: startedRows.length,
+    uniqueSessions: startedKeys.size,
+    firstFrames: firstFrameRows.length,
+    canPlay: canPlayRows.length,
+    waitingEvents: waitingRows.length,
+    stalledEvents: stalledRows.length,
+    errors: errorRows.length,
+    bufferingSessions: bufferingKeys.size,
+    bufferingSessionPct: pct(bufferingKeys.size, startedKeys.size || startedRows.length),
+    errorPct: pct(errorRows.length, startedRows.length),
+    firstFrameP50Ms: percentile(firstFrameDurations, 50),
+    firstFrameP95Ms: percentile(firstFrameDurations, 95),
+    canPlayP95Ms: percentile(canPlayDurations, 95),
+    startupFromLoadP95Ms: percentile(startupFromLoadValues, 95),
+    pages: countByProp(startedRows, "page"),
+    routes: countByProp(startedRows, "sourceRoute"),
+  };
+}
+
 function parseRangeDays(value: string | null) {
   const days = Number(value ?? 1);
   if (!Number.isFinite(days)) return 1;
@@ -177,32 +433,24 @@ function summarize(
   const editorOpens = eventCount(rows, (row) => row.name === "editor_opened");
   const pipelineStarts = eventCount(rows, (row) => row.name === "editor_script_ready");
   const pipelineJobs = videoJobs.total;
-  const errorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
+  const rawErrorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
+  const noiseRows = rawErrorRows.filter((row) => benignTelemetryReason(row));
+  const realErrorRows = rawErrorRows.filter((row) => !benignTelemetryReason(row));
+  const byokErrorRows = realErrorRows.filter((row) => byokErrorReason(row));
+  // errorRows = "ระบบเรา" เท่านั้น (ตัด noise + คีย์ลูกค้าออก) → ใช้คิด Health Score v2
+  const errorRows = realErrorRows.filter((row) => !byokErrorReason(row));
   const frontendErrorRows = errorRows.filter((row) => row.name === "frontend_error" || row.source === "client");
   const serverErrorRows = errorRows.filter((row) => row.source === "server");
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
   const serverStartRows = rows.filter((row) => row.name === "render_server_started");
+  const playback = summarizePlayback(rows);
+  const broll = summarizeBroll(rows);
   const mainRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const mainRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "ShortVideoComposition");
   const burnRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
   const burnRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
 
-  const funnel = EDITOR_FUNNEL.map((step, index) => {
-    const count = eventCount(rows, (row) => {
-      if (step.event) return row.name === step.event;
-      return row.name === "pipeline_step_done" && row.step === step.step;
-    });
-    const prev = index === 0 ? count : 0;
-    return { ...step, count, conversionPct: 0, dropOffPct: 0, previousCount: prev };
-  }).map((step, index, all) => {
-    const previousCount = index === 0 ? step.count : all[index - 1].count;
-    return {
-      ...step,
-      previousCount,
-      conversionPct: index === 0 ? 100 : pct(step.count, previousCount),
-      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - pct(step.count, previousCount)),
-    };
-  });
+  const { funnel, funnelMode, funnelRuns } = summarizeEditorFunnel(rows);
 
   const stepMap = new Map<string, { durations: number[]; started: number; done: number; error: number; skipped: number }>();
   for (const row of rows) {
@@ -210,7 +458,7 @@ function summarize(
     const entry = stepMap.get(row.step) ?? { durations: [], started: 0, done: 0, error: 0, skipped: 0 };
     if (row.name === "pipeline_step_started") entry.started++;
     if (row.name === "pipeline_step_done") entry.done++;
-    if (row.name === "pipeline_step_error") entry.error++;
+    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row) && !byokErrorReason(row)) entry.error++;
     if (row.name === "pipeline_step_skipped") entry.skipped++;
     if (row.durationMs != null && row.durationMs >= 0) entry.durations.push(row.durationMs);
     stepMap.set(row.step, entry);
@@ -233,25 +481,9 @@ function summarize(
     };
   }).sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0));
 
-  const errorGroups = new Map<string, { count: number; label: string; step: string | null; lastSeen: Date }>();
-  for (const row of errorRows) {
-    const props = parseProps(row);
-    const label = String(props.message ?? props.reason ?? row.name).slice(0, 160);
-    const key = `${row.step ?? "ทั่วไป"}:${label}`;
-    const entry = errorGroups.get(key) ?? { count: 0, label, step: row.step, lastSeen: row.createdAt };
-    entry.count++;
-    if (row.createdAt > entry.lastSeen) entry.lastSeen = row.createdAt;
-    errorGroups.set(key, entry);
-  }
-
-  const errors = Array.from(errorGroups.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8)
-    .map((entry) => ({
-      ...entry,
-      stepLabel: entry.step ? STEP_LABELS[entry.step] ?? entry.step : "ทั่วไป",
-      lastSeen: entry.lastSeen.toISOString(),
-    }));
+  const errors = summarizeIssueGroups(errorRows);
+  const byokErrors = summarizeIssueGroups(byokErrorRows, byokErrorReason);
+  const noise = summarizeIssueGroups(noiseRows, benignTelemetryReason);
 
   const vitals = ["LCP", "INP", "CLS"].map((metric) => {
     const values = rows
@@ -309,13 +541,31 @@ function summarize(
       ? `ขั้น "${bottleneck.label}" ช้าที่สุด p95 ${Math.round((bottleneck.p95Ms ?? 0) / 1000)} วินาที ควรแยกดู log/trace ของ provider และไฟล์ที่ใช้`
       : null,
     errors.length > 0
-      ? `error ที่เจอบ่อยสุดอยู่ที่ "${errors[0].stepLabel}" จำนวน ${errors[0].count} ครั้ง ควรแก้เป็นลำดับแรก`
+      ? `error ระบบที่เจอบ่อยสุดอยู่ที่ "${errors[0].stepLabel}" จำนวน ${errors[0].count} ครั้ง ควรแก้เป็นลำดับแรก`
+      : null,
+    byokErrorRows.length > 0
+      ? `พบ error จากคีย์ลูกค้า (BYOK) ${byokErrorRows.length} ครั้ง เช่น "${byokErrors[0]?.label ?? ""}" — ไม่ใช่บั๊กระบบ ควรแจ้ง/ช่วยลูกค้าตั้งค่า ไม่ใช่งาน dev`
       : null,
     videoJobs.statusStuckWithOutput > 0
       ? `มีวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มี output แล้วแต่ status ยังเป็น PROCESSING ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
       : null,
     processingSummary.total > 0
       ? `ตรวจพบ status PROCESSING ค้าง ${processingSummary.total} งาน: complete ได้ ${processingSummary.completeCandidates}, fail ได้ ${processingSummary.failCandidates}`
+      : null,
+    playback.firstFrameP95Ms != null && playback.firstFrameP95Ms > 3_000
+      ? `Playback เริ่มเห็นภาพช้า p95 ${Math.round(playback.firstFrameP95Ms / 1000)} วินาที ควรพิจารณา preview proxy 540p/720p หรือ CDN`
+      : null,
+    playback.bufferingSessionPct > 20
+      ? `มี playback sessions ที่ buffering ${playback.bufferingSessionPct}% ควรแยกดู source route และ bitrate ของไฟล์ที่มีปัญหา`
+      : null,
+    broll.runs > 0 && (broll.p95Ms ?? 0) > 5 * 60_000
+      ? `B-roll ช้า p95 ${Math.round((broll.p95Ms ?? 0) / 1000)} วินาที ควรดู phase search/download/normalize และ cache hit ก่อนเพิ่ม concurrency`
+      : null,
+    broll.runs > 0 && broll.cacheHitPct < 20 && broll.downloadedCount > 20
+      ? `B-roll cache hit ต่ำ (${broll.cacheHitPct}%) ทำให้ต้องโหลด stock ใหม่บ่อย ควรดู reuse/cache policy ก่อนเพิ่มโหลด provider`
+      : null,
+    broll.runs > 0 && broll.downloadFailPct > 10
+      ? `B-roll download fail ${broll.downloadFailPct}% ควรแยก provider/source และ network timeout ก่อนสรุปว่าเป็นปัญหา UI`
       : null,
   ].filter(Boolean);
 
@@ -329,6 +579,9 @@ function summarize(
       pipelineStarts,
       events: rows.length,
       errors: errorRows.length,
+      byokErrorCount: byokErrorRows.length,
+      rawErrors: rawErrorRows.length,
+      noiseEvents: noiseRows.length,
       frontendErrors: frontendErrorRows.length,
       serverErrors: serverErrorRows.length,
       renderSuccessPct: pct(renderDoneJobs, renderStartedJobs),
@@ -336,10 +589,14 @@ function summarize(
       renderTaskSuccessPct,
       healthScore,
       videoJobs,
+      funnelMode,
+      funnelRuns,
     },
     funnel,
     steps,
     errors,
+    byokErrors,
+    noise,
     vitals,
     resource: {
       renderCount: serverRenderRows.length,
@@ -358,6 +615,8 @@ function summarize(
       minFreeMemGb: freeMemValues.length ? Math.min(...freeMemValues) : null,
       lowMemoryStarts: freeMemValues.filter((value) => value < 1).length,
     },
+    broll,
+    playback,
     staleProcessing: processingSummary,
     recommendations,
   };
@@ -385,7 +644,10 @@ export async function GET(req: Request) {
       updatedAt: true,
     } as const;
 
-    const [currentRows, previousRows, currentVideos, previousVideos, processingPlan] = await Promise.all([
+    const [
+      currentRows, previousRows, currentVideos, previousVideos, processingPlan,
+      allUsers, openedUserRows, startedUserRows, completedByUser, currentJobs,
+    ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
         select: {
@@ -416,10 +678,64 @@ export async function GET(req: Request) {
         take: 5_000,
       }),
       getProcessingReconcilePlan({ staleAfterMinutes: 20, failAfterHours: 3, limit: 100 }),
+      // P1 Activation: lifecycle ทั้งหมด (ไม่ขึ้นกับ window) — สมัคร → ตั้งคีย์ → เปิด → เริ่ม → ได้วิดีโอ → ซ้ำ
+      prisma.user.findMany({ select: { plan: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true } }),
+      prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
+      prisma.telemetryEvent.findMany({ where: { name: "editor_script_ready", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
+      prisma.video.groupBy({ by: ["userId"], where: { status: "COMPLETED" }, _count: { _all: true } }),
+      // P2 scorecard (server-authoritative): job outcome จาก VideoJob (status server เขียน, ไม่หายตอนปิดแท็บ)
+      prisma.videoJob.findMany({
+        where: { createdAt: { gte: since } },
+        select: { status: true, currentStep: true, errorMessage: true, startedAt: true, finishedAt: true },
+      }),
     ]);
+
+    const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
+    const isPaid = (plan: string) => plan === "PRO" || plan === "BUSINESS";
+    const completedUsersIn = (videos: VideoRow[]) =>
+      new Set(videos.filter((video) => video.status === "COMPLETED").map((video) => video.userId)).size;
+
+    const activation = {
+      signups: allUsers.length,
+      hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
+      hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
+      paidTotal: allUsers.filter((u) => isPaid(u.plan)).length,
+      paidWithoutGeminiKey: allUsers.filter((u) => isPaid(u.plan) && !nonEmpty(u.geminiKey)).length,
+      openedEditor: openedUserRows.length,
+      startedPipeline: startedUserRows.length,
+      completedFirstVideo: completedByUser.length,
+      repeatCreators: completedByUser.filter((g) => (g._count?._all ?? 0) >= 2).length,
+      windowSignups: allUsers.filter((u) => u.createdAt >= since).length,
+      windowCompletedUsers: completedUsersIn(currentVideos),
+      prevWindowCompletedUsers: completedUsersIn(previousVideos),
+    };
+
+    const failedJobs = currentJobs.filter((j) => j.status === "failed");
+    const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "noise"; count: number; sample: string }>();
+    for (const job of failedJobs) {
+      const kind = classifyJobError(job.errorMessage);
+      const key = `${job.currentStep ?? "unknown"}:${kind}`;
+      const entry = failedByStageMap.get(key) ?? { stage: job.currentStep ?? "unknown", stageLabel: jobStepLabel(job.currentStep), kind, count: 0, sample: "" };
+      entry.count++;
+      if (!entry.sample && job.errorMessage) entry.sample = job.errorMessage.slice(0, 100);
+      failedByStageMap.set(key, entry);
+    }
+    const jobOutcomes = {
+      total: currentJobs.length,
+      done: currentJobs.filter((j) => j.status === "done").length,
+      failed: failedJobs.length,
+      processing: currentJobs.filter((j) => j.status === "processing").length,
+      queued: currentJobs.filter((j) => j.status === "queued").length,
+      systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "system").length,
+      byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "byok").length,
+      noiseFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "noise").length,
+      failedByStage: Array.from(failedByStageMap.values()).sort((a, b) => b.count - a.count),
+    };
 
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
+      activation,
+      jobOutcomes,
       current: summarize(currentRows, currentVideos, processingPlan.summary),
       previous: summarize(previousRows, previousVideos),
       processingReconcile: { dryRun: true, ...processingPlan },

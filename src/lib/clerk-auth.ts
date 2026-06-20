@@ -1,5 +1,6 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 import { syncUserEntitlement } from "@/lib/entitlements";
@@ -60,18 +61,36 @@ export async function getCurrentUser(): Promise<User | null> {
     return linked;
   }
 
-  // New user — create Prisma record + start their 7-day PRO trial
-  const created = await prisma.user.create({
-    data: {
-      clerkId: userId,
-      name:
-        `${clerkUser.firstName ?? ""} ${clerkUser.lastName ?? ""}`.trim() ||
-        email.split("@")[0],
-      email,
-      image: clerkUser.imageUrl ?? null,
-      ...(isAdminEmail ? { role: "ADMIN" } : {}),
-    },
-  });
+  // New user — create Prisma record + start their 7-day PRO trial.
+  // Race-safe: a brand-new user's first page load fires several authed API calls at
+  // once (e.g. /api/user/me + /api/user/api-keys/status); they all reach here and try
+  // to create the same row. The first wins; the rest hit a P2002 unique violation
+  // (email/clerkId) — recover by reusing the row the winner just created instead of
+  // surfacing a 500.
+  let created: User;
+  try {
+    created = await prisma.user.create({
+      data: {
+        clerkId: userId,
+        name:
+          `${clerkUser.firstName ?? ""} ${clerkUser.lastName ?? ""}`.trim() ||
+          email.split("@")[0],
+        email,
+        image: clerkUser.imageUrl ?? null,
+        ...(isAdminEmail ? { role: "ADMIN" } : {}),
+      },
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      // A concurrent request created this user first — use theirs (it created the row
+      // with our clerkId + email, and runs grantTrial itself).
+      const existing =
+        (await prisma.user.findUnique({ where: { clerkId: userId } })) ??
+        (await prisma.user.findUnique({ where: { email } }));
+      if (existing) return existing;
+    }
+    throw e;
+  }
   await grantTrial(created.id, TRIAL_DAYS_PUBLIC); // idempotent if the webhook already granted
   return prisma.user.findUnique({ where: { id: created.id } }) as Promise<typeof created>;
 }

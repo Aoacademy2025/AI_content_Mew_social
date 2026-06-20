@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { PremiumPage, PremiumCard, PremiumEyebrow } from "@/components/layout/premium-page";
+import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 
 interface VideoItem {
   id: string;
@@ -18,6 +19,9 @@ interface VideoItem {
   voiceModel: string;
   sceneCount: number;
   videoUrl: string | null;
+  previewVideoUrl?: string | null;
+  previewFallbackVideoUrl?: string | null;
+  previewStatus?: "ready" | "queued" | "unavailable";
   avatarVideoUrl: string | null;
   audioUrl: string | null;
   script: string | null;
@@ -27,13 +31,52 @@ interface VideoItem {
   content?: { headline: string | null } | null;
 }
 
+type NavigatorConnection = {
+  saveData?: boolean;
+  effectiveType?: string;
+};
+
+function connectionPrefersFallbackPreview() {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & {
+    connection?: NavigatorConnection;
+    mozConnection?: NavigatorConnection;
+    webkitConnection?: NavigatorConnection;
+  };
+  const connection = nav.connection ?? nav.mozConnection ?? nav.webkitConnection;
+  if (!connection) return false;
+  if (connection.saveData) return true;
+  return connection.effectiveType === "slow-2g" || connection.effectiveType === "2g";
+}
+
+function chooseGalleryPreviewUrl(video: VideoItem) {
+  if (connectionPrefersFallbackPreview() && video.previewFallbackVideoUrl) {
+    return video.previewFallbackVideoUrl;
+  }
+  return video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
+}
+
 export default function VideosGalleryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
+
+  const closePreview = useCallback(() => {
+    setPreviewUrl(null);
+    setPreviewVideoId(null);
+  }, []);
+
+  useVideoPlaybackTelemetry(previewVideoRef, {
+    enabled: Boolean(previewUrl),
+    page: "gallery",
+    videoUrl: previewUrl,
+    videoId: previewVideoId,
+    sourceKind: "gallery_modal",
+  });
 
   const fetchVideos = useCallback(() => {
     setLoading(true);
@@ -45,9 +88,15 @@ export default function VideosGalleryPage() {
 
   useEffect(() => { fetchVideos(); }, [fetchVideos]);
   useEffect(() => {
+    if (!videos.some(video => video.previewStatus === "queued")) return;
+    const timer = window.setTimeout(fetchVideos, 12_000);
+    return () => window.clearTimeout(timer);
+  }, [fetchVideos, videos]);
+
+  useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "Escape") setPreviewUrl(null);
+      if (e.key === "Escape") closePreview();
       if (e.key === " " && previewUrl) {
         const v = previewVideoRef.current;
         if (!v) return;
@@ -58,7 +107,7 @@ export default function VideosGalleryPage() {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [previewUrl]);
+  }, [closePreview, previewUrl]);
 
   async function handleDelete(id: string) {
     try {
@@ -151,8 +200,12 @@ export default function VideosGalleryPage() {
                 video={video}
                 daysLeft={daysLeft(video.expiresAt)}
                 onPreview={() => {
-                  const url = video.videoUrl || video.avatarVideoUrl;
-                  if (url) setPreviewUrl(url);
+                  // Prefer the sharp optimized gallery preview; fall back to 540p only on data-saver/2G.
+                  const url = chooseGalleryPreviewUrl(video);
+                  if (url) {
+                    setPreviewVideoId(video.id);
+                    setPreviewUrl(url);
+                  }
                 }}
                 onDelete={() => setDeleteId(video.id)}
                 deleteConfirm={deleteId === video.id}
@@ -210,7 +263,7 @@ export default function VideosGalleryPage() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
           style={{ background: "var(--ui-overlay-bg)" }}
-          onClick={() => setPreviewUrl(null)}
+          onClick={closePreview}
         >
           <div
             className="relative overflow-hidden rounded-2xl shadow-2xl"
@@ -225,7 +278,7 @@ export default function VideosGalleryPage() {
               className="absolute inset-0 h-full w-full object-contain bg-black"
             />
             <button
-              onClick={() => setPreviewUrl(null)}
+              onClick={closePreview}
               className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white text-sm"
               style={{ background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)" }}
             >
@@ -254,8 +307,9 @@ function VideoCard({
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
   const isFailed = video.status === "FAILED";
   const title = video.content?.headline || (video.script ? video.script.slice(0, 40) + "..." : "Untitled");
-  const previewSrc = video.videoUrl || video.avatarVideoUrl;
+  const previewSrc = video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
+  const posterHue = posterHueFor(video.id);
 
   return (
     <div
@@ -264,9 +318,28 @@ function VideoCard({
     >
       {/* Thumbnail / background */}
       {video.thumbnail ? (
-        <img src={video.thumbnail} alt={title} className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src={video.thumbnail}
+          alt={title}
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
       ) : previewSrc ? (
-        <video src={previewSrc} className="absolute inset-0 h-full w-full object-cover" muted playsInline />
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={{
+            background:
+              `linear-gradient(145deg, hsl(${posterHue} 74% 24% / 0.86), hsl(220 24% 8%) 58%, hsl(${posterHue + 34} 72% 16% / 0.72))`,
+          }}
+        >
+          <div
+            className="flex h-12 w-12 items-center justify-center rounded-xl"
+            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.14)" }}
+          >
+            <Film className="h-5 w-5 text-white/55" />
+          </div>
+        </div>
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           style={{ background: "var(--ui-card-bg-2)" }}>
@@ -349,6 +422,14 @@ function VideoCard({
             )}
           </>
         )}
+        {isRendering && (
+          <Link href={`/video-editor?resume=${video.id}`}
+            className="flex items-center gap-1 rounded-full px-3 h-10 text-xs font-semibold text-white transition-all hover:scale-105"
+            style={{ background: "hsl(45 100% 50% / 0.25)", border: "1px solid hsl(45 100% 50% / 0.55)" }}
+            title="เปิดในเอดิเตอร์เพื่อทำต่อ (เช่น Burn ซับ)">
+            <RefreshCw className="h-3.5 w-3.5" /> ทำต่อ
+          </Link>
+        )}
         {deleteConfirm ? (
           <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
             style={{ background: "rgba(0,0,0,0.8)", border: "1px solid hsl(0 84% 60% / 0.4)" }}>
@@ -366,4 +447,10 @@ function VideoCard({
       </div>
     </div>
   );
+}
+
+function posterHueFor(id: string) {
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) % 360;
+  return 170 + (hash % 90);
 }

@@ -28,14 +28,23 @@ export interface TtsCharAlignment {
   endSec: number[];
 }
 
+// A detected silence in the final audio (ffmpeg silencedetect): startMs = speech
+// stops, endMs = speech resumes. The boundary snap targets endMs (speech onset).
+export interface SilenceInterval { startMs: number; endMs: number }
+
 export interface TtsTiming {
   provider: "gemini" | "elevenlabs";
   segments: TtsSegment[];
   chars: TtsCharAlignment | null; // gemini has no char-level timing
   // Real-pause midpoints (ms) from ffmpeg silencedetect over the final audio.
   // Card boundaries snap to these on the Gemini line (PR-E); ElevenLabs char
-  // timing is already ground truth and never needs it.
+  // timing is already ground truth and never needs it. Legacy field kept for
+  // back-compat; new generations also send silenceIntervals (below).
   silences?: number[] | null;
+  // Full silence intervals (start/end ms) — lets the snap target the pause END
+  // (speech onset) so a card appears exactly when its words are spoken, instead
+  // of the pause midpoint (which showed the next card ~0.15–0.5s early).
+  silenceIntervals?: SilenceInterval[] | null;
 }
 
 export interface TimedWord { word: string; startMs: number; endMs: number; startChar: number; endChar: number }
@@ -651,33 +660,124 @@ export function snapCardsToWordBoundaries(cards: ScriptCard[], fullText: string)
 }
 
 // Snap shared card boundaries into real pauses. Only boundaries BETWEEN cards
-// move (start of first / end of last stay put), each by at most maxSnapMs,
-// and never so far that a card drops below minCardMs.
+// move (start of first / end of last stay put), each by at most maxSnapMs, and
+// never so far that a card drops below minCardMs.
+//
+// target "onset" (default, 2026-06-17 fix): snap to the pause END — the previous
+// caption holds through the whole pause and the next caption appears exactly when
+// its speech resumes. target "midpoint" (legacy rollback): snap to the pause
+// centre, which made the next caption appear ~0.15–0.5s before its speech.
+//
+// Accepts SilenceInterval[]; an old timing that only has midpoints can pass
+// degenerate intervals {startMs:m, endMs:m} → both targets collapse to the
+// midpoint, i.e. exactly the legacy behaviour (graceful back-compat).
 export function snapCaptionsToSilences<T extends { startMs: number; endMs: number }>(
   captions: T[],
-  silenceMidpointsMs: number[],
-  maxSnapMs = 1500,
-  minCardMs = 240,
+  silences: SilenceInterval[],
+  opts: { target?: "onset" | "midpoint"; maxSnapMs?: number; minCardMs?: number } = {},
 ): T[] {
-  if (captions.length < 2 || silenceMidpointsMs.length === 0) return captions;
-  const sil = [...silenceMidpointsMs].sort((a, b) => a - b);
+  const target = opts.target ?? "onset";
+  const maxSnapMs = opts.maxSnapMs ?? 1500;
+  const minCardMs = opts.minCardMs ?? 240;
+  if (captions.length < 2 || silences.length === 0) return captions;
+  const sil = [...silences].sort((a, b) => a.startMs - b.startMs);
+  const pointOf = (s: SilenceInterval) => (target === "onset" ? s.endMs : (s.startMs + s.endMs) / 2);
   for (let i = 0; i < captions.length - 1; i++) {
     const a = captions[i];
     const b = captions[i + 1];
     const boundary = (a.endMs + b.startMs) / 2;
-    let best = -1;
+    let bestPoint = NaN;
     let bestDist = Infinity;
-    for (const m of sil) {
-      const d = Math.abs(m - boundary);
-      if (d < bestDist) { bestDist = d; best = m; }
+    for (const s of sil) {
+      const p = pointOf(s);
+      const d = Math.abs(p - boundary);
+      if (d < bestDist) { bestDist = d; bestPoint = p; }
     }
-    if (best < 0 || bestDist > maxSnapMs) continue;
-    if (best - a.startMs < minCardMs) continue; // would crush card i
-    if (b.endMs - best < minCardMs) continue;   // would crush card i+1
-    a.endMs = Math.round(best);
-    b.startMs = Math.round(best);
+    if (!Number.isFinite(bestPoint) || bestDist > maxSnapMs) continue;
+    const snapTo = Math.round(bestPoint);
+    if (snapTo - a.startMs < minCardMs) continue; // would crush card i
+    if (b.endMs - snapTo < minCardMs) continue;   // would crush card i+1
+    a.endMs = snapTo;
+    b.startMs = snapTo;
   }
   return captions;
+}
+
+// Merge any caption shown for less than minMs into the PREVIOUS caption (combine
+// text + extend its end) so a fast / over-split phrase isn't flashed on screen
+// too briefly to read ("ขึ้นแว้บ–หายก่อนพูดจบ"). The first caption never merges
+// backward and the previous caption keeps its tag. minMs <= 0 is a no-op.
+//
+// Pause-aware: a short caption that BEGINS at a real pause starts a new speech
+// run, so it is NOT merged back across the pause (that would re-join what
+// splitCardsAtSilences deliberately split). Pass the silence intervals to enable
+// this; omit them to merge purely by duration.
+//
+// Used ONLY on the sentence/viral caption track (after snapCaptionsToSilences).
+// The per-word timeline that feeds word-count modes (cardsByWordCount) is built
+// separately by buildWordsFromTiming and never passes through here, so "1 word /
+// card" modes keep every card.
+export function mergeShortCaptions<T extends { text: string; startMs: number; endMs: number }>(
+  captions: T[],
+  minMs: number,
+  silences: SilenceInterval[] = [],
+): T[] {
+  if (minMs <= 0 || captions.length < 2) return captions;
+  const atPause = (t: number) => silences.some((s) => t >= s.startMs - 60 && t <= s.endMs + 60);
+  const out: T[] = [];
+  for (const c of captions) {
+    const prev = out[out.length - 1];
+    if (prev && c.endMs - c.startMs < minMs && !atPause(c.startMs)) {
+      prev.endMs = c.endMs;
+      prev.text = `${prev.text} ${c.text}`.trim();
+    } else {
+      out.push({ ...c });
+    }
+  }
+  return out;
+}
+
+// Split any card whose char range STRADDLES a real pause, inserting a boundary
+// at the word that ends nearest the pause — so every detected pause becomes a
+// card edge. Without this a long card straddles a pause (e.g. a real 0.6s gap
+// mid-card): snapCaptionsToSilences can't move a boundary that isn't there, the
+// card drifts across the gap, and the next card lands late. The split point is a
+// word boundary (word.endChar) so a Thai word is never cut. Cards with no
+// straddled pause are returned unchanged. Gemini-only (ElevenLabs char timing
+// already sits on the real pauses).
+export function splitCardsAtSilences(
+  cards: ScriptCard[],
+  words: TimedWord[],
+  silences: SilenceInterval[],
+  tolMs = 600,
+): ScriptCard[] {
+  if (cards.length === 0 || words.length === 0 || silences.length === 0) return cards;
+  // candidate split positions = end of the word spoken just before each pause
+  const splitChars = new Set<number>();
+  for (const s of silences) {
+    let best: TimedWord | null = null;
+    let bestDist = Infinity;
+    for (const w of words) {
+      const d = Math.abs(w.endMs - s.startMs);
+      if (d < bestDist) { bestDist = d; best = w; }
+    }
+    if (best && bestDist <= tolMs) splitChars.add(best.endChar);
+  }
+  if (splitChars.size === 0) return cards;
+  const out: ScriptCard[] = [];
+  for (const c of cards) {
+    const inside = [...splitChars].filter((p) => p > c.startChar && p < c.endChar).sort((a, b) => a - b);
+    if (inside.length === 0) { out.push(c); continue; }
+    let s = c.startChar;
+    for (const p of inside) {
+      const piece: ScriptCard = { startChar: s, endChar: p };
+      if (s === c.startChar && c.tag) piece.tag = c.tag; // only the first piece keeps the tag
+      out.push(piece);
+      s = p;
+    }
+    out.push({ startChar: s, endChar: c.endChar });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

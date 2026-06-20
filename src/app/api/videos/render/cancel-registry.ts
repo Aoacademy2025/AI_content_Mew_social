@@ -16,8 +16,8 @@ declare global {
   var __renderCancelByJobId: Map<string, () => void> | undefined;
   // eslint-disable-next-line no-var
   var __renderCancelByUserId: Map<string, () => void> | undefined;
-  // Promise that resolves when the in-flight render for a given user finishes (or is cancelled).
-  // New jobs wait on this before calling renderMedia so only one Chromium runs per user.
+  // Promise that resolves when the in-flight render for a given render scope finishes (or is cancelled).
+  // New jobs in the same scope wait on this before calling renderMedia.
   // eslint-disable-next-line no-var
   var __renderJobDoneByUserId: Map<string, Promise<void>> | undefined;
   // Global bundle lock — only one bundle() call runs at a time; others await the same promise.
@@ -31,6 +31,10 @@ declare global {
   var __activeRenderSlots: number | undefined;
   // eslint-disable-next-line no-var
   var __renderSlotWaiters: (() => void)[] | undefined;
+  // Active Remotion webpack bundle refs by directory basename.
+  // Cleanup jobs use this to avoid deleting a bundle while renderMedia still uses it.
+  // eslint-disable-next-line no-var
+  var __activeRemotionBundleRefs: Map<string, number> | undefined;
 }
 
 export const cancelByJobId: Map<string, () => void> =
@@ -39,7 +43,7 @@ export const cancelByJobId: Map<string, () => void> =
 export const activeRenderCancel: Map<string, () => void> =
   (global.__renderCancelByUserId ??= new Map());
 
-// Per-user promise: resolves when the current render job for that user is finished.
+// Per-scope promise: resolves when the current render job for that user+draft/session is finished.
 export const renderJobDoneByUser: Map<string, Promise<void>> =
   (global.__renderJobDoneByUserId ??= new Map());
 
@@ -113,4 +117,22 @@ export function setRenderJob(jobId: string, job: RenderJob) {
       JSON.stringify(job)
     );
   } catch {}
+}
+
+export function retainRemotionBundle(bundleLocation: string): () => void {
+  const name = path.basename(bundleLocation);
+  global.__activeRemotionBundleRefs ??= new Map();
+  global.__activeRemotionBundleRefs.set(name, (global.__activeRemotionBundleRefs.get(name) ?? 0) + 1);
+
+  return () => {
+    const refs = global.__activeRemotionBundleRefs;
+    if (!refs) return;
+    const next = (refs.get(name) ?? 1) - 1;
+    if (next <= 0) refs.delete(name);
+    else refs.set(name, next);
+  };
+}
+
+export function activeRemotionBundleNames(): string[] {
+  return Array.from((global.__activeRemotionBundleRefs ?? new Map()).keys());
 }

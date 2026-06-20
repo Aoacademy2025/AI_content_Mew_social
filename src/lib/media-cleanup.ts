@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { prisma } from "./prisma";
+import { lowResPreviewFilenamesForRender } from "./low-res-preview-paths";
 
 type MediaArea = "renders" | "stocks";
 
@@ -148,6 +149,9 @@ function addProtected(refs: Record<MediaArea, Set<string>>, area: MediaArea, fil
   if (!filename || filename === "." || filename === "..") return;
   refs[area].add(filename);
   if (area === "stocks") refs[area].add(`${filename}.normalized`);
+  if (area === "renders") {
+    for (const previewFilename of lowResPreviewFilenamesForRender(filename)) refs[area].add(previewFilename);
+  }
 }
 
 function collectRefs(value: unknown, refs: Record<MediaArea, Set<string>>, depth = 0) {

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
+import { deleteLowResPreviewForVideoUrl } from "@/lib/low-res-preview-paths";
+import { activeRemotionBundleNames } from "@/app/api/videos/render/cancel-registry";
 import fs from "fs";
 import path from "path";
 
@@ -33,12 +35,14 @@ function localFilePath(publicDir: string, url: string | null): string | null {
   return safePublicPath(publicDir, url.replace(/^\/+/, ""));
 }
 
-function cleanupOldChildren(dir: string, maxAgeMs: number): number {
+function cleanupOldChildren(dir: string, maxAgeMs: number, excludeNames: Iterable<string> = []): number {
   let deleted = 0;
+  const excludes = new Set(excludeNames);
   try {
     if (!fs.existsSync(dir)) return 0;
     const now = Date.now();
     for (const name of fs.readdirSync(dir)) {
+      if (excludes.has(name)) continue;
       const child = path.join(dir, name);
       const stat = fs.statSync(child);
       if (now - stat.mtimeMs <= maxAgeMs) continue;
@@ -100,6 +104,7 @@ export async function GET(req: Request) {
   result.remotionTmpDeleted = cleanupOldChildren(
     path.join(process.cwd(), ".tmp", "remotion"),
     REMOTION_TMP_MAX_AGE_MS,
+    activeRemotionBundleNames(),
   );
 
   // ── 3. Delete expired videos ──────────────────────────────────────────
@@ -112,6 +117,7 @@ export async function GET(req: Request) {
     const publicDir = path.join(process.cwd(), "public");
     for (const video of expired) {
       for (const url of [video.videoUrl, video.avatarVideoUrl, video.audioUrl, video.thumbnail]) {
+        deleteLowResPreviewForVideoUrl(url);
         const filePath = localFilePath(publicDir, url);
         if (!filePath) continue;
         try {

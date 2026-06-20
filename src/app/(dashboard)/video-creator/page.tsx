@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { QuotaStatus } from "@/components/quota-status";
 import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
 import { MusicPanel } from "./_panels/MusicPanel";
 import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
@@ -482,6 +484,9 @@ export default function ShortVideoPage() {
     setRenderProgressTick(t => t + 1);
   }
 
+  // Key onboarding wizard (proactive pre-check)
+  const [keyWizardOpen, setKeyWizardOpen] = useState(false);
+
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
   const [preferredLLM, setPreferredLLM] = useState<"gemini" | null>(null);
@@ -496,6 +501,14 @@ export default function ShortVideoPage() {
   const runningRef = useRef(false);
   // Track the currently active render jobId — results from any other jobId are discarded
   const activeJobIdRef = useRef<string | null>(null);
+  const renderScopeIdRef = useRef<string | null>(null);
+
+  function getRenderScopeId() {
+    if (!renderScopeIdRef.current) {
+      renderScopeIdRef.current = `video-creator-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return renderScopeIdRef.current;
+  }
 
   useEffect(() => {
     // Load stock cache info
@@ -1193,7 +1206,7 @@ export default function ShortVideoPage() {
       const renderRes = await fetch("/api/videos/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shortVideoConfig: patchedConfig }),
+        body: JSON.stringify({ shortVideoConfig: patchedConfig, jobScopeId: getRenderScopeId() }),
         signal: abortControllerRef.current?.signal,
       });
       if (renderFailedMessage) throw new Error(renderFailedMessage);
@@ -1623,8 +1636,19 @@ export default function ShortVideoPage() {
 
   // ── Full pipeline ────────────────────────────────────────────────
 
+  async function ensureKeysReady(): Promise<boolean> {
+    try {
+      const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
+      if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
+      const st = await res.json();
+      if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
+    } catch { return true; }
+    return true;
+  }
+
   // Pipeline Phase 1: Content → Render (stops before HeyGen)
   async function runAll() {
+    if (!(await ensureKeysReady())) return;
     if (!validateInputs("prepare")) return;
     const isDirectMode = avatarInputMode === "direct" && avatarDirectUrl.trim();
 
@@ -2398,6 +2422,14 @@ export default function ShortVideoPage() {
         />
       )}
 
+      {keyWizardOpen && (
+        <KeyOnboardingWizard
+          open={true}
+          onClose={() => setKeyWizardOpen(false)}
+          onComplete={() => setKeyWizardOpen(false)}
+        />
+      )}
+
       {showClearCacheDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
           style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(4px)" }}
@@ -2471,6 +2503,8 @@ export default function ShortVideoPage() {
                   <span className="text-[10px] font-semibold text-green-400">Ready</span>
                 </div>
               )}
+              {/* Clip quota — fail-soft: renders nothing while loading or on error */}
+              <QuotaStatus variant="chip" />
             </div>
           </div>
 

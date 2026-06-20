@@ -4,25 +4,24 @@ import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
 import { execFileSync, spawn } from "child_process";
-import os from "os";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
-import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { runRender, SupersededError } from "@/lib/render/run-render";
+import type { ResolvedRenderInput } from "@/lib/render/run-render";
+import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import {
   activeRenderCancel,
   cancelByJobId,
   renderJobDoneByUser,
-  getBundleInProgress,
-  setBundleInProgress,
   getActiveRenderCount,
   incrementActiveRenderCount,
   decrementActiveRenderCount,
-  getActiveRenderSlots,
   getRenderSlotQueueLength,
-  withRenderSlot,
+  activeRemotionBundleNames,
 } from "./cancel-registry";
 
 function getRenderTmpDir(): string {
@@ -46,16 +45,17 @@ function getRemotionBundlePublicDir(): string {
   return base;
 }
 
-function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, excludeName?: string) {
+function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, excludeNames?: Iterable<string>) {
   if (process.platform === "win32") return;
   try {
     // execFile (no shell) — avoids any command-injection surface from interpolated names.
     // Never delete the bundle that's currently cached/in use: a concurrent render may be
     // between its existsSync check and selectComposition (TOCTOU), and removing it under
     // that job's feet causes "index.html could not be found" 404s.
+    const excludes = Array.from(excludeNames ?? []).filter(Boolean);
     const args = [
       baseDir, "-maxdepth", "1", "-name", pattern,
-      ...(excludeName ? ["!", "-name", excludeName] : []),
+      ...excludes.flatMap((name) => ["!", "-name", name]),
       "-mmin", `+${minMinutes}`,
       "-exec", "rm", "-rf", "{}", "+",
     ];
@@ -89,17 +89,6 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
 
 export const maxDuration = 60; // only needs to start the background job, not wait for it
 export const runtime = "nodejs";
-
-function readPositiveIntEnv(name: string, fallback: number, max: number): number {
-  const raw = Number(process.env[name]);
-  if (!Number.isFinite(raw) || raw < 1) return fallback;
-  return Math.max(1, Math.min(max, Math.floor(raw)));
-}
-
-function getRenderJobConcurrencyLimit(): number {
-  const cpuMax = Math.max(1, Math.min(4, os.cpus().length));
-  return readPositiveIntEnv("RENDER_JOB_CONCURRENCY", 1, cpuMax);
-}
 
 // Job state persisted to disk so hot-reload and pm2 restarts don't lose in-flight jobs.
 type RenderJob = {
@@ -136,8 +125,18 @@ function readPersistedJob(jobId: string): RenderJob | undefined {
 // In-memory cache so same process doesn't re-read file on every poll
 const renderJobs = new Map<string, RenderJob>();
 
-// Track the latest jobId per user — older jobs are superseded and must not write results
-const latestJobPerUser = new Map<string, string>();
+// Track the latest jobId per render scope. The scope is user + draft/session, so
+// one account can queue multiple clips without those clips cancelling each other.
+const latestJobPerRenderScope = new Map<string, string>();
+
+function normalizeRenderScopeId(value: unknown): string {
+  if (typeof value !== "string") return "default";
+  const cleaned = value
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 96);
+  return cleaned || "default";
+}
 
 function setRenderJob(jobId: string, job: RenderJob) {
   renderJobs.set(jobId, job);
@@ -234,21 +233,16 @@ export async function POST(req: Request) {
 
     const userId = authUser.id;
 
-    // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง — ก่อน parse body, ก่อนยกเลิก job เดิม
-    // ของ user (ซึ่งต้อง await render เก่าจบ อาจกินเวลาหลายนาทีและทำลาย preview เดิม)
-    // และก่อน bundle/render ใดๆ. อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่าง
-    // ยังเป็นตัวจองจริง (atomic) ตัวเดียวเหมือนเดิม จึงไม่มีการจองซ้ำ
-    const quotaCheck = await checkClipQuota(userId);
-    if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
-
-    const dbUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { plan: true },
-    });
-    if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality } = await req.json();
+    // Parse the body up-front. We need it BEFORE the quota pre-check to decide whether
+    // this request is a FREE burn — a BURN (subtitle overlay) of a base render THIS
+    // user already paid for must never be pre-checked OR reserved (otherwise a near-cap
+    // user who finished a clip can't export it). `isSubtitleOverlay` is client-controlled,
+    // so it alone CANNOT grant the skip; we verify the burn's source video resolves to a
+    // ChargedClip we recorded for THIS user (recorded only when a base render actually
+    // reserved + completed). Foreign/external/fabricated sources are not found → charge.
+    // This still runs before any heavy work (job cancellation / bundle / render), so the
+    // PR-1 fail-fast property is preserved.
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -257,6 +251,29 @@ export async function POST(req: Request) {
     const isAvatarMode = !!avatarVideoUrl;
     const isShortVideo = !!shortVideoConfig;
     const isSubtitleOverlay = !!subtitleOverlayConfig;
+    const renderScopeId = normalizeRenderScopeId(jobScopeId);
+    const renderOwnerKey = `${userId}:${renderScopeId}`;
+
+    // A burn is free IFF it references a base render this user already paid for.
+    // NOT-found (external / another user's render / fabricated) → falls through and is
+    // charged like a normal render below. Server-side check — not gameable from the client.
+    const burnAlreadyPaid =
+      isSubtitleOverlay && (await isBurnAlreadyPaid(userId, subtitleOverlayConfig?.videoUrl));
+
+    // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง (ก่อนยกเลิก job เดิม + ก่อน bundle/render).
+    // อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่างยังเป็นตัวจองจริง (atomic) ตัวเดียว.
+    // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
+    if (!burnAlreadyPaid) {
+      const quotaCheck = await checkClipQuota(userId);
+      if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true },
+    });
+    if (!dbUser) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     if (!isSubtitleOverlay && !isShortVideo && !isAvatarMode && (!Array.isArray(scenes) || scenes.length === 0)) {
       return NextResponse.json({ error: "scenes, avatarVideoUrl, shortVideoConfig, or subtitleOverlayConfig is required" }, { status: 400 });
@@ -288,35 +305,69 @@ export async function POST(req: Request) {
       );
     }
 
-    const jobId = `${userId}-${Date.now()}`;
-    // Register this as the latest job for this user before cancelling the old one, so its
+    const jobId = `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Register this as the latest job for this render scope before cancelling the old one, so its
     // background catch can identify itself as superseded and refund the reserved usage.
-    latestJobPerUser.set(userId, jobId);
+    latestJobPerRenderScope.set(renderOwnerKey, jobId);
 
-    const prevCancel = activeRenderCancel.get(userId);
+    const prevCancel = activeRenderCancel.get(renderOwnerKey);
     if (prevCancel) {
-      console.log(`[Render] cancelling previous job for user ${userId}`);
+      console.log(`[Render] cancelling previous job for scope ${renderOwnerKey}`);
       prevCancel();
       // Wait only when the previous job is already inside renderMedia and has a
-      // real cancel handle. Queued/bundling jobs are superseded by latestJobPerUser
+      // real cancel handle. Queued/bundling jobs are superseded by latestJobPerRenderScope
       // and will self-cancel before entering renderMedia; waiting for them here
       // makes the next request inherit the old queue delay.
-      const prevDone = renderJobDoneByUser.get(userId);
+      const prevDone = renderJobDoneByUser.get(renderOwnerKey);
       if (prevDone) {
         console.log(`[Render] waiting for previous active render to finish before starting ${jobId}`);
         await prevDone;
         console.log(`[Render] previous active render finished — starting ${jobId}`);
       }
-    } else if (renderJobDoneByUser.has(userId)) {
-      console.log(`[Render] superseding queued/pre-render job for user ${userId} without waiting`);
+    } else if (renderJobDoneByUser.has(renderOwnerKey)) {
+      console.log(`[Render] superseding queued/pre-render job for scope ${renderOwnerKey} without waiting`);
     }
 
-    const quota = await reserveClipUsage(userId);
-    if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าคลิปสุดท้ายไประหว่าง precheck → reserve
-    if (!quota.allowed) return quotaExceededResponse(quota.message);
-    quotaReserved = true;
-    reservedUserId = userId;
+    // Queue-path scope identity. The in-memory cancel-registry above (legacy path)
+    // can't supersede a prior render here because the queue renders in a SEPARATE
+    // worker process and this route returns at enqueue. So for the queue path we
+    // supersede via the RenderJob table (DB-level, cross-process) using the SAME scope
+    // identity as the legacy path — `renderOwnerKey` (`${userId}:${renderScopeId}`).
+    // Only when jobScopeId was actually supplied: without it renderScopeId defaults to
+    // "default", and we must NOT collapse unrelated MCP jobs (which dedupe via
+    // idempotencyKey) into one shared scope → leave scopeKey null + skip supersede.
+    const queueScopeKey =
+      process.env.RENDER_VIA_QUEUE === "1" && typeof jobScopeId === "string" && jobScopeId.trim()
+        ? renderOwnerKey
+        : null;
+    if (queueScopeKey) {
+      // Cancel any in-flight job (QUEUED → CANCELLED+refund; RUNNING → cancelRequested,
+      // worker finishes it) for this scope+user before reserving/enqueuing a new one.
+      // Targets only QUEUED/RUNNING of the SAME scope, so a normal sequential
+      // RENDER→BURN is unaffected (the prior RENDER is already DONE by burn time).
+      await supersedeScope(queueScopeKey, userId).catch((e) => {
+        console.error(`[Render] supersedeScope failed for scope ${queueScopeKey}:`, e);
+        return 0;
+      });
+    }
+
+    // Count a clip ONCE per video. Skip reserve IFF this is a BURN of a base render
+    // THIS user already paid for (burnAlreadyPaid, verified server-side above) — that
+    // video's clip was already charged at its base RENDER, so re-reserving would charge
+    // it twice (and a free burn never reaches any refund path, so a second reserve would
+    // leak quota permanently). An UNPAID burn (external / foreign / fabricated source)
+    // is NOT skipped: it reserves like a normal render — no free-render bypass. Both the
+    // legacy and queue paths share this single gate.
+    if (burnAlreadyPaid) {
+      // FREE: burn of this user's own paid render — never reserve, never block.
+    } else {
+      const quota = await reserveClipUsage(userId);
+      if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าคลิปสุดท้ายไประหว่าง precheck → reserve
+      if (!quota.allowed) return quotaExceededResponse(quota.message);
+      quotaReserved = true;
+      reservedUserId = userId;
+    }
 
     const progressFile = path.join(renderTmpDir, `render-progress-${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
     const writeProgress = (data: Record<string, unknown>) => {
@@ -333,8 +384,10 @@ export async function POST(req: Request) {
     // webpackIgnore prevents Turbopack from statically analyzing these imports
     // and traversing into esbuild native binaries (README.md, .node files).
     // serverExternalPackages ensures they're loaded from node_modules at runtime.
-    const { bundle } = await import(/* webpackIgnore: true */ "@remotion/bundler" as string);
-    const { renderMedia, selectComposition, makeCancelSignal } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
+    // The bundle/selectComposition/renderMedia core now lives in runRender; the
+    // route only needs makeCancelSignal to own the cancel handle (registered in
+    // the cancel-registry exactly as before).
+    const { makeCancelSignal } = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
 
     // Ensure output directory exists (moved up so cacheImageLocally can use rendersDir)
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -346,9 +399,10 @@ export async function POST(req: Request) {
         // Clean assets older than 30 min and webpack bundles older than 60 min.
         // Exclude the active cached bundle so an aging-but-in-use bundle isn't deleted
         // out from under a concurrent render.
-        const activeBundleName = cachedBundleLocation ? path.basename(cachedBundleLocation) : undefined;
+        const activeBundleNames = new Set(activeRemotionBundleNames());
+        if (cachedBundleLocation) activeBundleNames.add(path.basename(cachedBundleLocation));
         runTmpCleanup(renderTmpDir, "remotion-*assets*", 30);
-        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60, activeBundleName);
+        runTmpCleanup(renderTmpDir, "remotion-webpack-bundle-*", 60, activeBundleNames);
         runTmpCleanup(renderTmpDir, "react-motion-render*", 60);
       }
     } catch {}
@@ -461,28 +515,47 @@ export async function POST(req: Request) {
       return `${baseUrl}/api/stocks/${filename}`;
     }
 
+    // Security: resolve a user-supplied path fragment against a known base directory
+    // and return the absolute path only if it stays inside that base.
+    // Handles URL-encoded traversal sequences (e.g. %2e%2e) via decodeURIComponent.
+    function withinDir(baseDir: string, rest: string): string | null {
+      let decoded: string;
+      try { decoded = decodeURIComponent(rest); } catch { return null; }
+      const resolved = path.resolve(baseDir, decoded);
+      // Must be the base dir itself or strictly inside it
+      if (resolved !== baseDir && !resolved.startsWith(baseDir + path.sep)) return null;
+      return resolved;
+    }
+
+    const musicDir = path.join(process.cwd(), "public", "music");
+
     function toLocalFilePath(url: string): string | null {
       if (!url) return null;
-      if (url.startsWith("/api/renders/")) return path.join(rendersDir, url.slice("/api/renders/".length));
-      if (url.startsWith("/renders/")) return path.join(rendersDir, url.slice("/renders/".length));
-      if (url.startsWith("/api/stocks/")) return path.join(stocksDir, url.slice("/api/stocks/".length));
+      if (url.startsWith("/api/renders/")) return withinDir(rendersDir, url.slice("/api/renders/".length));
+      if (url.startsWith("/renders/")) return withinDir(rendersDir, url.slice("/renders/".length));
+      if (url.startsWith("/api/stocks/")) return withinDir(stocksDir, url.slice("/api/stocks/".length));
+      if (url.startsWith("/api/music/")) return withinDir(musicDir, url.slice("/api/music/".length));
+      if (url.startsWith("/music/")) return withinDir(musicDir, url.slice("/music/".length));
       // absolute URL pointing to our own server
       try {
         const u = new URL(url);
-        if (u.pathname.startsWith("/renders/")) return path.join(rendersDir, u.pathname.slice("/renders/".length));
-        if (u.pathname.startsWith("/api/renders/")) return path.join(rendersDir, u.pathname.slice("/api/renders/".length));
-        if (u.pathname.startsWith("/api/stocks/")) return path.join(stocksDir, u.pathname.slice("/api/stocks/".length));
+        if (u.pathname.startsWith("/renders/")) return withinDir(rendersDir, u.pathname.slice("/renders/".length));
+        if (u.pathname.startsWith("/api/renders/")) return withinDir(rendersDir, u.pathname.slice("/api/renders/".length));
+        if (u.pathname.startsWith("/api/stocks/")) return withinDir(stocksDir, u.pathname.slice("/api/stocks/".length));
+        if (u.pathname.startsWith("/api/music/")) return withinDir(musicDir, u.pathname.slice("/api/music/".length));
+        if (u.pathname.startsWith("/music/")) return withinDir(musicDir, u.pathname.slice("/music/".length));
       } catch {}
       return null;
     }
 
     function toLocalFilePathIfInternal(url: string): string | null {
       if (!url) return null;
-      if (url.startsWith("/api/")) return toLocalFilePath(url);
+      if (url.startsWith("/api/") || url.startsWith("/music/")) return toLocalFilePath(url);
       if (/^https?:\/\//.test(url)) {
         try {
           const parsed = new URL(url);
-          if (parsed.origin === `${new URL(req.url).origin}`) {
+          const baseOrigin = new URL(baseUrl).origin;
+          if (parsed.origin === `${new URL(req.url).origin}` || parsed.origin === baseOrigin) {
             return toLocalFilePath(parsed.pathname);
           }
         } catch {
@@ -498,6 +571,23 @@ export async function POST(req: Request) {
       if (!fs.existsSync(localPath) || fs.statSync(localPath).size <= 1_500) {
         throw new Error(`Missing ${label} asset: ${url}`);
       }
+    }
+
+    // BGM is decorative + best-effort: NEVER fail the whole render over music. Return
+    // the value only if it's a real playable asset, else drop it (render with no music).
+    // Guards against a stray bgm value (e.g. a bare track name "Groove" the MCP client
+    // sent) that isn't an internal path → would otherwise crash Remotion's <Audio>.
+    function safeBgmOrDrop(bgm: string | undefined | null): string | undefined {
+      if (!bgm) return undefined;
+      const localPath = toLocalFilePathIfInternal(bgm);
+      if (localPath) {
+        if (fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500) return bgm;
+        console.warn(`[render] dropping bgm (file missing): ${bgm}`);
+        return undefined;
+      }
+      if (bgm.startsWith("http://") || bgm.startsWith("https://")) return bgm; // external, trust
+      console.warn(`[render] dropping bgm (not a playable src): ${bgm}`);
+      return undefined;
     }
 
     function toAbsolute(url: string | undefined | null): string {
@@ -586,11 +676,11 @@ export async function POST(req: Request) {
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
-        bgmFile: toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile)),
+        bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
         bgVideos: resolvedBgVideos,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
-      if (resolvedShortConfig.bgmFile) assertExistingAsset(resolvedShortConfig.bgmFile, "bgm");
+      // bgm: safeBgmOrDrop already removed any unplayable value — never throws on music
       console.log("[render] stock assets prepared from stocks -> renders");
       console.log(`[render] voiceFile: ${resolvedShortConfig.voiceFile}`);
       console.log(`[render] bgmFile: ${resolvedShortConfig.bgmFile}`);
@@ -607,16 +697,88 @@ export async function POST(req: Request) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
       const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
       const resolvedBgm = subtitleOverlayConfig.bgmFile
-        ? toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile))
+        ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
       resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl, bgmFile: resolvedBgm };
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
-      if (resolvedBgm) assertExistingAsset(resolvedBgm, "bgm");
+      // bgm: best-effort, dropped if unplayable (no throw)
       console.log(`[render] subtitle-overlay bgmFile: ${resolvedBgm ?? "(none)"}`);
       // Warmup /api/stocks route so Remotion doesn't timeout on first compile
       if (resolvedUrl?.includes("/api/stocks/")) {
         try { await fetch(resolvedUrl, { method: "HEAD" }); } catch {}
       }
+    }
+
+    // Fully-resolved render core input. The legacy in-process path consumes this
+    // directly; the queue path persists the JSON-serializable subset (everything
+    // EXCEPT bundleCache, which is a process-level object passed by reference) and
+    // a future worker reconstructs the full input with its own bundleCache.
+    const renderInput: ResolvedRenderInput = {
+      isSubtitleOverlay,
+      isShortVideo,
+      isAvatarMode,
+      resolvedSubtitleConfig,
+      resolvedShortConfig,
+      resolvedScenes,
+      audioUrl: audioUrl ?? null,
+      captionsData,
+      avatarVideoUrl: avatarVideoUrl ?? null,
+      captionStyleId,
+      customCaptionStyle,
+      positionY,
+      fontSizeOverride,
+      fontWeightOverride,
+      durationInFrames,
+      customWidth,
+      customHeight,
+      fps,
+      requestedJpegQuality,
+      entryPoint,
+      bundlePublicDir: getRemotionBundlePublicDir(),
+      rendersDir,
+      // Shared bundle cache — process-level, on the caller, passed by reference so
+      // it is reused across requests/hot-reloads. NEVER persisted (has methods).
+      bundleCache: {
+        get: () => ({ location: cachedBundleLocation, mtime: cachedBundleMtime }),
+        set: (location: string | null, mtime: string) => {
+          cachedBundleLocation = location;
+          cachedBundleMtime = mtime;
+          saveBundleCache();
+        },
+      },
+    };
+
+    // PR-7: durable queue path (behind RENDER_VIA_QUEUE). Enqueue a RenderJob row
+    // and return its id instead of rendering in-process. This request reserved a clip
+    // above EXACTLY when `quotaReserved` is true (base RENDER, or an UNPAID burn) and
+    // did NOT reserve when `burnAlreadyPaid` (a free burn of the user's own render). We
+    // flag the row with markReserved=quotaReserved so failRenderJob refunds iff this job
+    // actually charged — a free burn holds no reservation, an unpaid burn refunds on fail
+    // just like a render. The worker claims the row, rebuilds the full input (adding its
+    // own bundleCache), renders, and records the ChargedClip on success (RENDER only).
+    if (process.env.RENDER_VIA_QUEUE === "1") {
+      const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
+      // The bundleCache reference cannot cross to a separate worker process — strip it.
+      // Everything else in ResolvedRenderInput is plain data/URLs/numbers (serializable).
+      const { bundleCache: _bundleCache, ...serializablePayload } = renderInput;
+      const { id } = await enqueueRenderJob({
+        userId,
+        type: isBurn ? "BURN" : "RENDER",
+        payload: serializablePayload,
+        videoId: typeof videoId === "string" ? videoId : undefined,
+        parentJobId: typeof parentJobId === "string" ? parentJobId : undefined,
+        // Globally-unique key (NOT content-derived). Use the route's own jobId.
+        idempotencyKey: jobId,
+        // Flag the row so failRenderJob refunds iff THIS job reserved a clip. True for a
+        // base RENDER and for an UNPAID burn (both reserved above); false only for a FREE
+        // burn (burnAlreadyPaid) which holds no reservation to refund.
+        markReserved: quotaReserved,
+        // Scope identity for cross-process supersession (null when no jobScopeId).
+        // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
+        // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
+        scopeKey: queueScopeKey,
+      });
+      return NextResponse.json({ jobId: id });
     }
 
     // Clear stale progress file and register job immediately — before bundle build
@@ -628,13 +790,19 @@ export async function POST(req: Request) {
     // Client polls /api/videos/render-progress for % and /api/videos/render-status?jobId= for result.
     let resolveDone!: () => void;
     const donePromise = new Promise<void>(resolve => { resolveDone = resolve; });
-    renderJobDoneByUser.set(userId, donePromise);
+    renderJobDoneByUser.set(renderOwnerKey, donePromise);
 
     (async () => {
-      let lastProgress = -1;
       let renderStartedAt = Date.now();
       let jobFinalized = false;
       let quotaRefunded = false;
+      let renderCancelFn: (() => void) | null = null;
+      const clearCancelHandles = () => {
+        if (renderCancelFn && activeRenderCancel.get(renderOwnerKey) === renderCancelFn) {
+          activeRenderCancel.delete(renderOwnerKey);
+        }
+        cancelByJobId.delete(jobId);
+      };
       const finishJob = () => {
         if (jobFinalized) return;
         jobFinalized = true;
@@ -642,16 +810,19 @@ export async function POST(req: Request) {
         resolveDone();
       };
       const refundReservedClip = async () => {
-        if (quotaRefunded) return;
+        // Only refund if THIS request actually reserved a clip. A FREE burn
+        // (burnAlreadyPaid → quotaReserved=false) never spent quota here — the
+        // charge lives on the base render — so refunding it would wrongly credit
+        // a clip back (quota leak). Matches the outer setup-error guard.
+        if (quotaRefunded || !quotaReserved) return;
         quotaRefunded = true;
         await refundClipUsage(userId).catch(() => {});
       };
       const stopSupersededJob = async (stage: string) => {
-        if (latestJobPerUser.get(userId) === jobId) return false;
+        if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
 
         console.log(`[Render] job=${jobId} superseded at ${stage} — skipping`);
-        activeRenderCancel.delete(userId);
-        cancelByJobId.delete(jobId);
+        clearCancelHandles();
         const existing = getRenderJob(jobId);
         setRenderJob(jobId, {
           status: "error",
@@ -672,251 +843,143 @@ export async function POST(req: Request) {
         finishJob();
         return true;
       };
+      // Telemetry: a Remotion bundle had to be rebuilt mid-render.
+      const recordBundleRetry = async (stage: string, reason: string) => {
+        await recordTelemetryEvent(userId, {
+          name: "render_bundle_rebuilt",
+          category: "performance",
+          source: "server",
+          step: "render",
+          status: "retry",
+          durationMs: Date.now() - renderStartedAt,
+          properties: { jobId, stage, reason },
+        }).catch(() => {});
+      };
+
+      // The cancel signal is owned by the route (registered in the cancel-registry
+      // exactly as before); runRender consumes it. Created up-front so the registry
+      // wiring stays identical; the live handle is (re)registered via onCancelHandle
+      // at the same point the legacy code registered it (just before renderMedia).
+      const { cancel, cancelSignal } = makeCancelSignal();
+      renderCancelFn = cancel;
+
+      // The render core input was fully resolved above (renderInput) — the legacy
+      // path reuses it directly. (req-bound asset resolution, baseUrl, caching, and
+      // the shared by-reference bundle cache all happened before the queue branch.)
+
       try {
         console.log(`[Render] job=${jobId} starting, activeJobs=${getActiveRenderCount()}`);
-        // Bundle (may be cached) — runs in background after jobId is returned
-        // Use mtime+size fingerprint of all remotion source files to detect changes
-        const remotionSrcDir = path.resolve(process.cwd(), "src/remotion");
-        const remotionFingerprint = fs.readdirSync(remotionSrcDir)
-          .filter(f => f.endsWith(".tsx") || f.endsWith(".ts"))
-          .sort()
-          .map(f => { const s = fs.statSync(path.join(remotionSrcDir, f)); return `${f}:${s.mtimeMs}:${s.size}`; })
-          .join("|");
-        // Reuse the shared cached bundle when its fingerprint matches and index.html
-        // is present, otherwise build once under a global lock (concurrent jobs await
-        // the same build, not a 2nd one that would OOM the VPS).
-        const ensureBundle = async (): Promise<string> => {
-          if (
-            cachedBundleLocation &&
-            remotionFingerprint === cachedBundleMtime &&
-            fs.existsSync(path.join(cachedBundleLocation, "index.html"))
-          ) {
-            console.log(`[Render] reusing cached bundle at ${cachedBundleLocation}`);
-            return cachedBundleLocation;
-          }
-          let inFlight = getBundleInProgress();
-          if (!inFlight) {
-            console.log("[Render] building new webpack bundle...");
-            inFlight = bundle({
-              entryPoint,
-              publicDir: getRemotionBundlePublicDir(),
-              webpackOverride: (config: unknown) => config,
-            })
-              .then((loc: string) => {
-                cachedBundleLocation = loc;
-                cachedBundleMtime = remotionFingerprint;
-                saveBundleCache();
-                setBundleInProgress(null);
-                console.log(`[Render] bundle ready at ${cachedBundleLocation}`);
-                return loc;
-              })
-              .catch((err: unknown) => { setBundleInProgress(null); throw err; });
-            setBundleInProgress(inFlight);
-          } else {
-            console.log("[Render] waiting for concurrent bundle to finish...");
-          }
-          return inFlight!; // non-null after the branch above (assigned or already in-flight)
-        };
 
-        let bundleLocation = await ensureBundle();
-        // TOCTOU guard: a concurrent render's tmp-cleanup (or the media-cleanup cron)
-        // can delete the shared bundle between ensureBundle() and selectComposition()
-        // below → "index.html could not be found" 404. If it vanished, drop the cache
-        // and rebuild once.
-        if (!fs.existsSync(path.join(bundleLocation, "index.html"))) {
-          console.log(`[Render] cached bundle ${bundleLocation} vanished before composition — rebuilding`);
-          if (cachedBundleLocation === bundleLocation) { cachedBundleLocation = null; cachedBundleMtime = ""; }
-          bundleLocation = await ensureBundle();
-        }
-        if (await stopSupersededJob("bundle")) return;
-
-        const compositionId = isSubtitleOverlay ? "SubtitleOverlayComposition" : isShortVideo ? "ShortVideoComposition" : isAvatarMode ? "AvatarComposition" : "VideoComposition";
-        const inputProps = isSubtitleOverlay
-          ? resolvedSubtitleConfig
-          : isShortVideo
-          ? resolvedShortConfig
-          : isAvatarMode
-          ? { avatarVideoUrl, captions: captionsData, captionStyleId: captionStyleId ?? "tiktok", customCaptionStyle: customCaptionStyle ?? null, positionY: positionY ?? 85, fontSizeOverride: fontSizeOverride ?? 0, fontWeightOverride: fontWeightOverride ?? 0 }
-          : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
-
-        const composition = await selectComposition({
-          serveUrl: bundleLocation,
-          id: compositionId,
-          inputProps,
-          timeoutInMilliseconds: 120000,
+        const { videoUrl } = await runRender(renderInput, {
+          jobId,
+          cancelSignal,
+          cancel,
+          onProgress: (pct, phase) => {
+            // Mirror the legacy per-phase progress + job-state writes. queued is its
+            // own hook (carries position); done is finalized after runRender returns.
+            if (phase === "done") return;
+            const p = Math.round(pct);
+            writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null });
+            setRenderJob(jobId, { status: "running", startedAt: getRenderJob(jobId)?.startedAt ?? renderStartedAt, progress: p });
+          },
+          hooks: {
+            recordBundleRetry,
+            onQueued: (position) => {
+              writeProgress({ progress: 0, stage: "queued", queued: true, queuePosition: position, queuedAt: Date.now() });
+            },
+            checkSuperseded: async (stage) => {
+              if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
+              await stopSupersededJob(stage);
+              return true;
+            },
+            onRenderStart: async (info) => {
+              renderStartedAt = Date.now();
+              writeProgress({ progress: 0, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs: info.renderQueueWaitMs });
+              await recordTelemetryEvent(userId, {
+                name: "render_server_started",
+                category: "performance",
+                source: "server",
+                step: "render",
+                status: "started",
+                properties: {
+                  jobId,
+                  compositionId: info.compositionId,
+                  activeJobs: info.activeJobs,
+                  activeRenderSlots: info.activeRenderSlots,
+                  renderSlotLimit: info.renderSlotLimit,
+                  renderQueueWaitMs: info.renderQueueWaitMs,
+                  queuedJobs: getRenderSlotQueueLength(),
+                  cpuCount: info.cpuCount,
+                  renderConcurrency: info.renderConcurrency,
+                  freeMemGb: info.freeMemGb,
+                  fps: info.fps,
+                  jpegQuality: info.jpegQuality,
+                },
+              }).catch(() => {});
+            },
+            onCancelHandle: (cancelFn) => {
+              // Register the live render cancel handle exactly as the legacy route did,
+              // right before renderMedia starts.
+              activeRenderCancel.set(renderOwnerKey, cancelFn);
+              cancelByJobId.set(jobId, cancelFn);
+            },
+            // Runs after renderMedia succeeds, before success telemetry — the exact
+            // legacy point for clearCancelHandles() + finishJob() + render_complete.
+            onRenderSucceeded: async () => {
+              clearCancelHandles();
+              finishJob();
+              if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
+              await stopSupersededJob("render_complete");
+              return true;
+            },
+            onRenderDone: async (info) => {
+              await recordTelemetryEvent(userId, {
+                name: "render_server_done",
+                category: "performance",
+                source: "server",
+                step: "render",
+                status: "done",
+                durationMs: Date.now() - renderStartedAt,
+                properties: {
+                  jobId,
+                  compositionId: info.compositionId,
+                  activeJobs: info.activeJobs,
+                  activeRenderSlots: info.activeRenderSlots,
+                  renderSlotLimit: info.renderSlotLimit,
+                  renderQueueWaitMs: info.renderQueueWaitMs,
+                  renderConcurrency: info.renderConcurrency,
+                  freeMemGb: info.freeMemGb,
+                  outputMb: info.outputMb,
+                },
+              }).catch(() => {});
+            },
+          },
         });
 
-        if (isSubtitleOverlay && resolvedSubtitleConfig?.durationInFrames > 0) {
-          composition.durationInFrames = resolvedSubtitleConfig.durationInFrames;
-        } else if (isShortVideo && resolvedShortConfig?.durationInFrames > 0) {
-          composition.durationInFrames = resolvedShortConfig.durationInFrames;
-        } else if (!isAvatarMode && !isSubtitleOverlay) {
-          composition.durationInFrames = durationInFrames;
-          if (customWidth) composition.width = customWidth;
-          if (customHeight) composition.height = customHeight;
+        // Success path: runRender already ran clearCancelHandles()/finishJob() via
+        // onRenderSucceeded; persist the done state + notify (route-owned).
+        setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
+        writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
+        // Record that this user was charged a clip for THIS base-render output, so a later
+        // BURN of it is free (isBurnAlreadyPaid). Only base renders that actually reserved
+        // (quotaReserved && not a burn). Fail-open: a bookkeeping write must not break the
+        // render — the worst case is a future burn re-charges (never a free bypass).
+        if (quotaReserved && !isSubtitleOverlay) {
+          await recordChargedClip(userId, videoUrl).catch(() => {});
         }
-
-        const filename = `render-${Date.now()}.mp4`;
-        const outputLocation = path.join(rendersDir, filename);
-
-        const renderSlotLimit = getRenderJobConcurrencyLimit();
-        const queuePosition = getActiveRenderSlots() >= renderSlotLimit ? getRenderSlotQueueLength() + 1 : 0;
-        if (queuePosition > 0) {
-          writeProgress({ progress: 0, stage: "queued", queued: true, queuePosition, queuedAt: Date.now() });
-          console.log(`[Render] job=${jobId} queued at position ${queuePosition} (limit=${renderSlotLimit})`);
-        }
-
-        const renderQueueStartedAt = Date.now();
-        let renderCompletedForLatestJob = false;
-
-        await withRenderSlot(renderSlotLimit, async () => {
-          const renderQueueWaitMs = Date.now() - renderQueueStartedAt;
-          if (await stopSupersededJob("render_slot")) return;
-          writeProgress({ progress: 0, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
-
-          const cpuCount = os.cpus().length;
-          const freeMemGb = os.freemem() / (1024 * 1024 * 1024);
-          const isCriticalLowMem = freeMemGb < 0.8;
-          const isLowResourceHost = process.env.RENDER_LOW_RESOURCE === "1" || freeMemGb < 2.0;
-          // Scale down threads-per-job as more CPU-heavy renderMedia slots run in parallel.
-          const activeJobs = Math.max(1, getActiveRenderCount());
-          const activeRenderSlots = Math.max(1, getActiveRenderSlots());
-          const totalThreadBudget = Math.max(1, cpuCount - 1);
-          const requestedConcurrency = Number(process.env.RENDER_CONCURRENCY);
-          // RENDER_CONCURRENCY env var always wins — lets ecosystem.config.js override RAM check
-          const renderConcurrency = Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-            ? Math.min(Math.max(1, requestedConcurrency), cpuCount)
-            : isCriticalLowMem ? 1
-            : isLowResourceHost ? Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots))
-            : Math.max(1, Math.floor(totalThreadBudget / activeRenderSlots));
-          const requestedOffthreadCacheMb = Number(process.env.RENDER_OFFTHREAD_CACHE_MB);
-          // Scale down cache per job when running many renderMedia slots in
-          // parallel; hard-capped at 1.5GB inside the resolver (PR-4 guardrail).
-          const baseCacheMb = isCriticalLowMem ? 32 : isLowResourceHost ? 64 : 128;
-          const offthreadVideoCacheSizeInBytes = resolveOffthreadCacheBytes({
-            requestedMb: requestedOffthreadCacheMb,
-            baseCacheMb,
-            activeRenderSlots,
-          });
-          const jpegQualityFromEnv = process.env.RENDER_JPEG_QUALITY ? Number(process.env.RENDER_JPEG_QUALITY) : null;
-          const jpegQuality = jpegQualityFromEnv ?? (Number.isFinite(Number(requestedJpegQuality)) && Number(requestedJpegQuality) > 0 ? Number(requestedJpegQuality) : (isCriticalLowMem ? 75 : isLowResourceHost ? 80 : 95));
-          const isWindows = process.platform === "win32";
-          const chromiumArgs = [
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--no-zygote",
-            "--no-sandbox",
-            "--js-flags=--max-old-space-size=512",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-default-apps",
-            "--gpu-process-limit=0",
-            ...(isWindows ? [] : ["--disable-features=OutOfBlinkCors"]),
-          ];
-          console.log(`[Render] starting with concurrency=${renderConcurrency} (cpus=${cpuCount}), slots=${activeRenderSlots}/${renderSlotLimit}, queueWaitMs=${renderQueueWaitMs}, lowResource=${isLowResourceHost}, freeMemGb=${freeMemGb.toFixed(2)}, offthread=${offthreadVideoCacheSizeInBytes}`);
-          renderStartedAt = Date.now();
-          await recordTelemetryEvent(userId, {
-            name: "render_server_started",
-            category: "performance",
-            source: "server",
-            step: "render",
-            status: "started",
-            properties: {
-              jobId,
-              compositionId,
-              activeJobs,
-              activeRenderSlots,
-              renderSlotLimit,
-              renderQueueWaitMs,
-              queuedJobs: getRenderSlotQueueLength(),
-              cpuCount,
-              renderConcurrency,
-              freeMemGb: Number(freeMemGb.toFixed(2)),
-              lowResource: isLowResourceHost,
-              fps,
-              jpegQuality,
-            },
-          }).catch(() => {});
-
-          const { cancel, cancelSignal } = makeCancelSignal();
-          activeRenderCancel.set(userId, cancel);
-          cancelByJobId.set(jobId, cancel);
-
-          await renderMedia({
-            composition,
-            serveUrl: bundleLocation,
-            codec: "h264",
-            outputLocation,
-            inputProps,
-            timeoutInMilliseconds: 7200000,
-            concurrency: renderConcurrency,
-            cancelSignal,
-            x264Preset: isLowResourceHost ? "faster" : "medium",
-            jpegQuality,
-            offthreadVideoCacheSizeInBytes,
-            chromiumOptions: {
-              disableWebSecurity: true,
-              ignoreCertificateErrors: true,
-              gl: "swiftshader",
-              args: chromiumArgs,
-            },
-            onProgress: ({ progress, renderedFrames }: { progress: number; renderedFrames?: number }) => {
-              const p = Math.round(progress * 100);
-              if (p !== lastProgress) {
-                lastProgress = p;
-                writeProgress({ progress: p, stage: "rendering", queued: false, queuePosition: null, renderQueueWaitMs });
-              }
-              if (p % 5 === 0) {
-                console.log(`[Render] ${p}% (${renderedFrames ?? "?"} frames) job=${jobId}`);
-              }
-            },
-          });
-
-          // Cleanup abort controller for this user if it's still ours
-          activeRenderCancel.delete(userId);
-          cancelByJobId.delete(jobId);
-          finishJob();
-
-          // If a newer job was started for this user, discard this result silently
-          if (await stopSupersededJob("render_complete")) return;
-
-          const videoUrl = `/api/renders/${filename}`;
-          setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
-          writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
-          await recordTelemetryEvent(userId, {
-            name: "render_server_done",
-            category: "performance",
-            source: "server",
-            step: "render",
-            status: "done",
-            durationMs: Date.now() - renderStartedAt,
-            properties: {
-              jobId,
-              compositionId,
-              activeJobs,
-              activeRenderSlots,
-              renderSlotLimit,
-              renderQueueWaitMs,
-              renderConcurrency,
-              freeMemGb: Number(freeMemGb.toFixed(2)),
-              outputMb: fs.existsSync(outputLocation) ? Number((fs.statSync(outputLocation).size / (1024 * 1024)).toFixed(1)) : null,
-            },
-          }).catch(() => {});
-          renderCompletedForLatestJob = true;
-        });
-
-        if (renderCompletedForLatestJob) {
-          createNotification({
-            userId,
-            type: "VIDEO_COMPLETED",
-            title: "วิดีโอสร้างเสร็จแล้ว",
-            body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
-          }).catch(() => {});
-        }
+        createNotification({
+          userId,
+          type: "VIDEO_COMPLETED",
+          title: "วิดีโอสร้างเสร็จแล้ว",
+          body: "วิดีโอของคุณ render เสร็จสมบูรณ์ พร้อมดาวน์โหลดได้แล้ว",
+        }).catch(() => {});
       } catch (error) {
-        activeRenderCancel.delete(userId);
-        cancelByJobId.delete(jobId);
+        clearCancelHandles();
         finishJob();
+
+        // Superseded — already handled (job-state + refund) inside stopSupersededJob
+        // by the checkSuperseded/onRenderSucceeded hooks. Ignore here as before.
+        if (error instanceof SupersededError) return;
 
         // Intentional cancel (page refresh / new render) — not a real failure.
         // Don't log as error, don't mark job errored, don't notify the user.

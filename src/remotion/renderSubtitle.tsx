@@ -57,6 +57,38 @@ function segmentWords(s: string): string[] {
   return s.split(/\s+/).filter(w => w.length > 0);
 }
 
+type TokenLine = { tokens: string[]; hasInlineSpaces: boolean };
+
+function splitManualLines(s: string): string[] {
+  return s.replace(/\r\n?/g, "\n").split("\n");
+}
+
+function lineHasInlineSpaces(s: string): boolean {
+  return /[^\S\r\n]/.test(s);
+}
+
+function tokenLines(text: string): TokenLine[] {
+  return splitManualLines(text).map((line) => ({
+    tokens: segmentWords(line),
+    hasInlineSpaces: lineHasInlineSpaces(line),
+  }));
+}
+
+function activeTokenIndex(lines: TokenLine[], frame: number, captionDurFrames: number): number {
+  const tokens = lines.flatMap((line) => line.tokens);
+  if (tokens.length === 0) return -1;
+  const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
+  const cumulative: number[] = [];
+  let cum = 0;
+  for (const w of tokens) {
+    cum += w.length / totalChars;
+    cumulative.push(cum);
+  }
+  const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
+  const activeIdx = cumulative.findIndex(c => progress < c);
+  return activeIdx === -1 ? tokens.length - 1 : activeIdx;
+}
+
 export interface SubtitleDecorationOptions {
   shadow?: boolean;
   outline?: boolean;
@@ -84,7 +116,10 @@ export function renderSubtitle(
   accentColor = "#FFE500",
   decorations: SubtitleDecorationOptions = {},
 ) {
-  const charCount = text.length;
+  // Size by the LONGEST line, not total length: manual "\n" breaks split the caption across
+  // lines, so counting "\n" + every line's chars would shrink multi-line captions for no
+  // visual reason. Single-line text (no "\n") yields [text], so charCount is unchanged.
+  const charCount = splitManualLines(text).reduce((longest, line) => Math.max(longest, line.length), 0);
   const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
   const scaledSize = Math.round(size * lengthScale);
   const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
@@ -120,7 +155,7 @@ export function renderSubtitle(
     textAlign: "center",
     width: "100%",
     letterSpacing: "0.01em",
-    whiteSpace: "normal",
+    whiteSpace: "pre-line",
     wordBreak: "break-all",
     overflowWrap: "anywhere",
     color,
@@ -148,65 +183,72 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
-      const tokens = segmentWords(text);
-      // Thai words are written with no separating space; only re-insert a space
-      // between tokens when the original text actually used spaces (English).
-      const hasSpaces = /\s/.test(text.trim());
-      const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
-      const cumulative: number[] = [];
-      let cum = 0;
-      for (const w of tokens) { cum += w.length / totalChars; cumulative.push(cum); }
-      const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
-      const activeIdx = cumulative.findIndex(c => progress < c);
-      const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
+      const lines = tokenLines(text);
+      const active = activeTokenIndex(lines, frame, captionDurFrames);
+      if (active < 0) {
+        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+      }
       // Thinner outline + drop shadow only — heavy 4-way stroke smeared the
       // small text into an unreadable blob. The active word reads dark-on-yellow,
       // so it needs no stroke; inactive words keep a light outline for contrast.
+      let tokenIdx = 0;
       return (
         <span style={withDecorations({ ...base, display: "inline" })}>
-          {tokens.map((word, i) => {
-            const isActive = i === active;
-            return (
-              <React.Fragment key={i}>
-                <span style={withDecorations({
-                  background: isActive ? accentColor : "transparent",
-                  color: isActive ? "#000" : color,
-                  borderRadius: "0.12em",
-                  padding: isActive ? "0.02em 0.18em" : undefined,
-                  textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
-                  WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
-                  paintOrder: "stroke fill",
-                  boxDecorationBreak: "clone",
-                  WebkitBoxDecorationBreak: "clone",
-                } as React.CSSProperties)}>{word}</span>
-                {hasSpaces && i < tokens.length - 1 ? " " : null}
-              </React.Fragment>
-            );
-          })}
+          {lines.map((line, lineIdx) => (
+            <React.Fragment key={lineIdx}>
+              {line.tokens.map((word, wordIdx) => {
+                const currentIdx = tokenIdx++;
+                const isActive = currentIdx === active;
+                return (
+                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
+                    <span style={withDecorations({
+                      background: isActive ? accentColor : "transparent",
+                      color: isActive ? "#000" : color,
+                      borderRadius: "0.12em",
+                      padding: isActive ? "0.02em 0.18em" : undefined,
+                      textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
+                      WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
+                      paintOrder: "stroke fill",
+                      boxDecorationBreak: "clone",
+                      WebkitBoxDecorationBreak: "clone",
+                    } as React.CSSProperties)}>{word}</span>
+                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
+                  </React.Fragment>
+                );
+              })}
+              {lineIdx < lines.length - 1 ? <br /> : null}
+            </React.Fragment>
+          ))}
         </span>
       );
     }
 
     if (textEffect === "karaoke") {
-      const tokens = segmentWords(text);
-      const hasSpaces = /\s/.test(text.trim());
-      const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
-      const cumulative: number[] = [];
-      let cum = 0;
-      for (const w of tokens) { cum += w.length / totalChars; cumulative.push(cum); }
-      const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
-      const activeIdx = cumulative.findIndex(c => progress < c);
-      const active = activeIdx === -1 ? tokens.length - 1 : activeIdx;
+      const lines = tokenLines(text);
+      const active = activeTokenIndex(lines, frame, captionDurFrames);
+      if (active < 0) {
+        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+      }
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
+      let tokenIdx = 0;
       const inner = (
         <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
-          {tokens.map((word, i) => (
-            <React.Fragment key={i}>
-              <span style={{
-                color: i === active ? accentColor : `${color}60`,
-                fontWeight: i === active ? fontWeight : Math.min(fontWeight, 500),
-              }}>{word}</span>
-              {hasSpaces && i < tokens.length - 1 ? " " : null}
+          {lines.map((line, lineIdx) => (
+            <React.Fragment key={lineIdx}>
+              {line.tokens.map((word, wordIdx) => {
+                const currentIdx = tokenIdx++;
+                const isActive = currentIdx === active;
+                return (
+                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
+                    <span style={{
+                      color: isActive ? accentColor : `${color}60`,
+                      fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
+                    }}>{word}</span>
+                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
+                  </React.Fragment>
+                );
+              })}
+              {lineIdx < lines.length - 1 ? <br /> : null}
             </React.Fragment>
           ))}
         </span>

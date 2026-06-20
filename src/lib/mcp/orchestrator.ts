@@ -10,6 +10,8 @@ import {
   cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
 import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
+import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
@@ -30,6 +32,48 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   const caller = deps.caller ?? pipelineCaller(userId);
   const refund = deps.refundOneClip ?? refundClipUsage;
   const sleep = deps.sleep;
+
+  // P3: server-side stage telemetry — emitted from the worker so stage done/fail is
+  // recorded even when no browser is attached (the web editor emits client-side and
+  // loses events on tab-close). Maps worker phase → canonical insights step name.
+  // Fire-and-forget + fail-open: telemetry must NEVER break the pipeline.
+  const pipelineRunId = `mcp_${jobId}`;
+  const STEP_TELEMETRY_NAME: Record<string, string> = {
+    tts: "tts", keywords: "keywords", stock: "fetchStock",
+    config: "config", render: "render", avatar: "avatar", burn: "burnSubtitles",
+  };
+  const jobStartedAt = Date.now();
+  let phaseName = "startup";
+  let phaseStartedAt = jobStartedAt;
+  const timings: Array<[string, number]> = [];
+  function emitStage(phase: string, status: "started" | "done" | "error", durationMs?: number, extra?: Record<string, unknown>) {
+    const step = STEP_TELEMETRY_NAME[phase];
+    if (!step) return; // skip startup/captions and other non-pipeline phases
+    void recordTelemetryEvent(userId, {
+      name: status === "started" ? "pipeline_step_started" : status === "done" ? "pipeline_step_done" : "pipeline_step_error",
+      category: status === "error" ? "error" : "pipeline",
+      source: "server",
+      step,
+      status,
+      durationMs: durationMs != null && durationMs >= 0 ? Math.round(durationMs) : null,
+      properties: { pipelineRunId, jobId, via: "mcp", ...extra },
+    }).catch(() => {});
+  }
+  // step() logs the phase that just ended (worker log, for audits) + emits its `done`
+  // telemetry, then advances and emits the new phase's `started`. Render/burn progress
+  // callbacks keep calling setJobStep directly so they don't spam this.
+  async function step(name: string, progress: number) {
+    const now = Date.now();
+    const ended = now - phaseStartedAt;
+    timings.push([phaseName, ended]);
+    console.log(`[mcp-worker] job ${jobId} step=${phaseName} ${(ended / 1000).toFixed(1)}s`);
+    emitStage(phaseName, "done", ended);
+    phaseName = name;
+    phaseStartedAt = now;
+    emitStage(name, "started");
+    await setJobStep(jobId, name, progress);
+  }
+
   try {
     const job = await prisma.videoJob.findUnique({ where: { id: jobId } });
     if (!job) return;
@@ -38,21 +82,26 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
 
-    // ── per-step timing (so an audit sees where wall-time goes per job, in the
-    // mcp-video-worker log, without reconstructing it from telemetry). step()
-    // logs the phase that just ended, then advances. Render/burn progress
-    // callbacks keep calling setJobStep directly so they don't spam this.
-    const jobStartedAt = Date.now();
-    let phaseName = "startup";
-    let phaseStartedAt = jobStartedAt;
-    const timings: Array<[string, number]> = [];
-    async function step(name: string, progress: number) {
-      const now = Date.now();
-      timings.push([phaseName, now - phaseStartedAt]);
-      console.log(`[mcp-worker] job ${jobId} step=${phaseName} ${((now - phaseStartedAt) / 1000).toFixed(1)}s`);
-      phaseName = name;
-      phaseStartedAt = now;
-      await setJobStep(jobId, name, progress);
+    // Resolve BGM (path | track title | mood word like "ชิล"/"chill"/"ดราม่า") → a
+    // real /music path. In chat the client usually sends a title or mood, not a path,
+    // so without this the renderer gets <Audio src="Groove"> and crashes. Unresolvable
+    // → fail fast with the mood menu; music-list fetch failure → drop bgm rather than
+    // block the whole video over decorative music.
+    if (input.bgmFile) {
+      const rawBgm = input.bgmFile; // narrowed string — keep for the catch (input.bgmFile gets reassigned below)
+      try {
+        const lib = await caller.get<{ tracks?: { title: string; filename: string }[]; userTracks?: { title: string; filename: string }[] }>("/api/music");
+        const bgmTracks = [
+          ...(lib.tracks ?? []).map((t) => ({ title: t.title, bgmFile: `/music/${t.filename}` })),
+          ...(lib.userTracks ?? []).map((t) => ({ title: t.title, bgmFile: `/api/music/${t.filename}` })),
+        ];
+        const res = resolveBgm(rawBgm, bgmTracks);
+        if (res.kind === "resolved") input.bgmFile = res.bgmFile;
+        else if (res.kind === "none") input.bgmFile = undefined;
+        else { await failJob(jobId, `เพลงประกอบ "${rawBgm}" ไม่พบในระบบ — เลือกแนวเพลง: ${moodMenu()}`); return; }
+      } catch {
+        if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
+      }
     }
 
     // 1. TTS
@@ -144,12 +193,16 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
 
     // flush final phase + emit one-line breakdown for audits
-    timings.push([phaseName, Date.now() - phaseStartedAt]);
+    const finalDuration = Date.now() - phaseStartedAt;
+    timings.push([phaseName, finalDuration]);
+    emitStage(phaseName, "done", finalDuration); // final phase (burn) done
     const totalS = (Date.now() - jobStartedAt) / 1000;
     console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
 
     await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
   } catch (e) {
-    await failJob(jobId, e instanceof Error ? e.message : "internal error");
+    const message = e instanceof Error ? e.message : "internal error";
+    emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
+    await failJob(jobId, message);
   }
 }

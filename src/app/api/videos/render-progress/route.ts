@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { getRenderJob } from "@/lib/render/job-store";
 import path from "path";
 import fs from "fs";
 export const runtime = "nodejs";
@@ -10,6 +11,35 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const jobId = searchParams.get("jobId");
+
+  // PR-7: durable queue path — read the RenderJob row instead of the .tmp file.
+  if (process.env.RENDER_VIA_QUEUE === "1") {
+    if (!jobId) {
+      return NextResponse.json({ status: "error", error: "jobId required" });
+    }
+    const job = await getRenderJob(jobId);
+    if (!job) return NextResponse.json({ status: "error", error: "job not found" });
+    // Ownership check: prevent one user from polling another user's job.
+    if (job.userId !== authUser.id) return NextResponse.json({ status: "error", error: "job not found" });
+    const stage =
+      job.status === "DONE"
+        ? "done"
+        : job.status === "FAILED" || job.status === "CANCELLED"
+        ? "error"
+        : "running";
+    // Return BOTH `stage` and `status`: the MCP poller (pipeline-client.pollRender)
+    // and the legacy progress shape key off `stage`, while other callers may read
+    // `status`. Before this, the queue branch returned only `status`, so pollRender's
+    // `p.stage` was always undefined → it never saw "done" → every MCP render hit the
+    // 15-min timeout ("render timed out") even though the RenderJob was DONE.
+    return NextResponse.json({
+      stage,
+      status: stage,
+      progress: job.progress,
+      videoUrl: job.videoUrl ?? null,
+      error: job.error ?? undefined,
+    });
+  }
 
   const renderTmpDir = process.env.RENDER_TMP_ROOT
     ? path.resolve(process.env.RENDER_TMP_ROOT)

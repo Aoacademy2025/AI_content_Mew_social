@@ -8,7 +8,12 @@ function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); pr
 function mock(opts: { failVoices?: boolean } = {}): PipelineCaller {
   return {
     async get<T>(path: string): Promise<T> {
-      if (path === "/api/music") return { tracks: [{ id: "m1", title: "Chill", filename: "chill.mp3" }] } as T;
+      if (path === "/api/music") {
+        return {
+          tracks: [{ id: "m1", title: "Chill", filename: "chill.mp3" }],
+          userTracks: [{ id: "um1", title: "My Beat", filename: "user-1.wav" }],
+        } as T;
+      }
       if (path === "/api/heygen/avatars") return { avatars: [{ avatar_id: "av1", avatar_name: "Host", preview_image_url: "p.jpg" }] } as T;
       if (path === "/api/elevenlabs/voices") {
         if (opts.failVoices) throw new Error("GET /api/elevenlabs/voices → 500: boom");
@@ -25,6 +30,7 @@ async function main() {
   const u = { heygenKey: "k", elevenlabsKey: "k", heygenAvatarId: "av1", geminiVoiceName: "Aoede", elevenlabsVoiceId: "v1" };
   const o = await getVideoOptions(mock(), u);
   assert(Array.isArray(o.music) && (o.music as any[])[0].bgmFile === "/music/chill.mp3" && (o.music as any[])[0].title === "Chill", "music mapped to bgmFile path");
+  assert(Array.isArray(o.music) && (o.music as any[]).some((m) => m.bgmFile === "/api/music/user-1.wav" && m.source === "user"), "user uploaded music mapped to api music bgmFile path");
   assert(Array.isArray(o.avatars) && (o.avatars as any[])[0].avatarId === "av1", "avatars mapped");
   assert(o.savedAvatarId === "av1", "saved avatar id surfaced");
   assert(Array.isArray(o.voices.gemini) && o.voices.gemini.length > 0, "gemini voices present (static)");

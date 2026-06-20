@@ -1,5 +1,11 @@
 # Support Ticket → n8n
 
+> ⚠️ **DEPRECATED (2026-06-20).** เว็บ**เลิกยิง n8n แล้ว** — อีเมล ticket ทั้งหมด
+> (แจ้งทีม + ack user) ส่งจากเว็บเองผ่าน **Resend** (`src/lib/send-email.ts`:
+> `sendSupportTicketEmail` + `sendSupportAckEmail`, เรียกใน `src/app/api/support/route.ts`).
+> เหตุผล: n8n ฟรีบน Render + Gmail OAuth (สถานะ Testing) refresh token หมดอายุทุก 7 วัน
+> = "เคยส่งได้ อยู่ ๆ ไม่ส่ง". เอกสารด้านล่างเก็บไว้อ้างอิงประวัติเท่านั้น.
+
 เว็บจะยิง POST ไปที่ n8n webhook ทุกครั้งที่ user กด **"ส่งคำร้อง"** ใน Support modal.
 
 ## 1. ตั้งค่าฝั่งเว็บ (VPS `.env`)

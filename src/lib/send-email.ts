@@ -112,7 +112,7 @@ async function sendViaResend(opts: {
     const result = await resend.emails.send({
       from: RESEND_FROM,
       to: opts.to,
-      replyTo: opts.replyTo,
+      replyTo: opts.replyTo || undefined,
       subject: opts.subject,
       html: opts.html,
       attachments: opts.attachments?.map(a => ({ filename: a.filename, content: a.content })),
@@ -294,6 +294,34 @@ ${adminLink ? `<div style="margin:24px 0 8px">${premiumButton({ href: adminLink,
   });
 }
 
+/** Acknowledgement to the user right after they submit a ticket. */
+export async function sendSupportAckEmail(opts: {
+  userEmail: string;
+  userName: string;
+  ticketId: string;
+  message: string;
+}): Promise<boolean> {
+  return sendEmail({
+    to: opts.userEmail,
+    subject: `ได้รับคำร้องของคุณแล้ว #${opts.ticketId.slice(-6)} — ${BRAND}`,
+    html: emailShell({
+      title: "ได้รับคำร้องแล้ว",
+      previewText: "ทีมงานได้รับคำร้องของคุณแล้ว จะติดต่อกลับโดยเร็ว",
+      body: `
+<span style="color:#71717a;font-size:11px;letter-spacing:1.5px;text-transform:uppercase">Support · #${opts.ticketId.slice(-6)}</span>
+<h1 style="margin:4px 0 14px;color:#fff;font-size:22px;font-weight:700">สวัสดีคุณ ${escapeHtml(opts.userName)} 👋</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">เราได้รับคำร้องของคุณแล้ว ✅ ทีมงานจะติดต่อกลับทางอีเมลนี้โดยเร็วที่สุด (ปกติภายใน 24 ชั่วโมง)</p>
+
+<div style="margin:0 0 8px;color:#71717a;font-size:11px;letter-spacing:1px;text-transform:uppercase">ข้อความที่คุณส่ง</div>
+<div style="padding:18px;background:rgba(0,0,0,0.3);border-left:3px solid #22d3ee;border-radius:8px;color:#e5e7eb;font-size:14px;white-space:pre-wrap;word-wrap:break-word">${escapeHtml(opts.message)}</div>
+
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#52525b;font-size:11px">ขอบคุณที่แจ้งเข้ามา — ทีมงาน ${BRAND}</p>
+`.trim(),
+    }),
+  });
+}
+
 export async function sendSupportReplyEmail(opts: {
   userEmail: string;
   userName: string;
@@ -344,6 +372,38 @@ export async function sendRenewalReminderEmail(opts: { to: string; plan: string;
 ${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย" })}
 <hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
 <p style="margin:0;color:#71717a;font-size:12px">💡 ต่อก่อนหมดอายุ = ล็อกราคาผู้ก่อตั้งไว้</p>
+`.trim(),
+    }),
+  });
+}
+
+/** Admin alert when server disk crosses the configured threshold. */
+export async function sendDiskAlertEmail(opts: {
+  to: string | string[];
+  mount: string;
+  usedPercent: number;
+  usedGb: number;
+  totalGb: number;
+  availableGb: number;
+  breakdown: string[];
+  sweptMb: number;
+}): Promise<boolean> {
+  const rows = opts.breakdown.map((b) => `<li style="margin:3px 0">${escapeHtml(b)}</li>`).join("");
+  return sendEmail({
+    to: opts.to,
+    subject: `⚠️ ดิสก์เซิร์ฟเวอร์ใกล้เต็ม ${opts.usedPercent}% — ${BRAND}`,
+    html: emailShell({
+      title: "ดิสก์ใกล้เต็ม",
+      previewText: `ใช้ไป ${opts.usedGb}/${opts.totalGb} GB (${opts.usedPercent}%) เหลือ ${opts.availableGb} GB`,
+      accent: "#f59e0b",
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">⚠️ ดิสก์เซิร์ฟเวอร์ใกล้เต็ม</h1>
+<p style="margin:0 0 16px;color:#a1a1aa;font-size:14px">Mount <b style="color:#fff">${escapeHtml(opts.mount)}</b> ใช้ไป <b style="color:#fff">${opts.usedGb} / ${opts.totalGb} GB (${opts.usedPercent}%)</b> — เหลือ ${opts.availableGb} GB</p>
+<div style="margin:0 0 8px;color:#71717a;font-size:11px;letter-spacing:1px;text-transform:uppercase">แยกตามหมวด</div>
+<ul style="margin:0 0 16px;padding-left:18px;color:#e5e7eb;font-size:13px">${rows}</ul>
+${opts.sweptMb > 0 ? `<p style="margin:0 0 8px;color:#34d399;font-size:12px">🧹 กวาดของขยะอัตโนมัติแล้ว ${opts.sweptMb} MB</p>` : ""}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:20px 0 12px">
+<p style="margin:0;color:#71717a;font-size:12px">ตรวจ orphan media / stock cache / swap เพิ่มเติมที่ Admin → จัดการพื้นที่ดิสก์</p>
 `.trim(),
     }),
   });

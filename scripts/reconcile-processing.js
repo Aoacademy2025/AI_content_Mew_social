@@ -6,7 +6,7 @@ const http = require("http");
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 const SECRET = process.env.CRON_SECRET || "";
 
-const url = `${BASE_URL}/api/cron/reconcile-processing?dryRun=0&staleAfterMinutes=180&failAfterHours=24&failMissingOutput=0`;
+const url = `${BASE_URL}/api/cron/reconcile-processing?dryRun=0&staleAfterMinutes=30&failAfterHours=24&failMissingOutput=0`;
 const isHttps = url.startsWith("https");
 const client = isHttps ? https : http;
 
