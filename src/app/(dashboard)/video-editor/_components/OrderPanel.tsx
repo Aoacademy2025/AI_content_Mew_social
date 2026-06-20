@@ -65,6 +65,17 @@ export function OrderPanel(p: OrderPanelProps) {
   const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
   const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
+  const [kieModelOpen, setKieModelOpen] = React.useState(false);
+  const kieModelRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!kieModelOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (kieModelRef.current && !kieModelRef.current.contains(e.target as Node)) setKieModelOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [kieModelOpen]);
 
   React.useEffect(() => {
     if (!autoMixProvidersOpen) return;
@@ -236,16 +247,38 @@ export function OrderPanel(p: OrderPanelProps) {
                   <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 block">
                     Image Model (9:16)
                   </label>
-                  <select
-                    value={p.kieModel ?? "nano-banana-pro"}
-                    onChange={(e) => p.setKieModel?.(e.target.value as KieImageModel)}
-                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400/40"
-                    style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}
-                  >
-                    {KIE_IMAGE_MODEL_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
+                  <div className="relative" ref={kieModelRef}>
+                    {(() => {
+                      const selModel = KIE_IMAGE_MODEL_OPTIONS.find(o => o.value === (p.kieModel ?? "nano-banana-pro")) ?? KIE_IMAGE_MODEL_OPTIONS[0];
+                      return (
+                        <>
+                          <button type="button" onClick={() => setKieModelOpen(v => !v)}
+                            className="w-full rounded-lg px-2.5 py-2 flex items-center gap-2 text-left text-[11px] font-semibold text-cyan-100 outline-none transition-colors"
+                            style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}>
+                            <span className="truncate">{selModel.label}</span>
+                            <ChevronDown className={cn("w-3 h-3 text-cyan-400/60 ml-auto shrink-0 transition-transform", kieModelOpen && "rotate-180")} />
+                          </button>
+                          {kieModelOpen && (
+                            <div className="absolute z-30 left-0 right-0 mt-1 rounded-lg p-1 shadow-xl max-h-60 overflow-y-auto scrollbar-none"
+                              style={{ background: "hsl(200 40% 6%)", border: "1px solid rgba(34,211,238,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
+                              {KIE_IMAGE_MODEL_OPTIONS.map((opt) => {
+                                const active = opt.value === (p.kieModel ?? "nano-banana-pro");
+                                return (
+                                  <button key={opt.value} type="button"
+                                    onClick={() => { p.setKieModel?.(opt.value); setKieModelOpen(false); }}
+                                    className={cn("w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-[11px] font-semibold transition-colors",
+                                      active ? "bg-cyan-500/20 text-cyan-100" : "text-slate-300 hover:bg-cyan-500/10")}>
+                                    <span className="truncate">{opt.label}</span>
+                                    {active && <Check className="w-3 h-3 text-cyan-300 shrink-0 ml-auto" strokeWidth={3} />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
               ) : null}
 
