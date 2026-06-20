@@ -3563,8 +3563,9 @@ export default function VideoEditorPage() {
                           setEditingCapIdx(null);
                         }}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); (e.target as HTMLTextAreaElement).blur(); } if (e.key === "Escape") setEditingCapIdx(null); }}
-                        className="w-full bg-[#111115] border border-violet-500/50 rounded px-2 py-1 text-[12px] text-slate-100 resize-none outline-none leading-relaxed whitespace-pre-wrap"
-                        rows={Math.min(5, Math.max(2, cap.text.split(/\r\n|\r|\n/).length))}
+                        onInput={e => { const ta = e.currentTarget; ta.rows = Math.min(8, Math.max(2, ta.value.split(/\r\n|\r|\n/).length)); }}
+                        className="w-full bg-[#111115] border border-violet-500/50 rounded px-2 py-1 text-[12px] text-slate-100 resize-y outline-none leading-relaxed whitespace-pre-wrap"
+                        rows={Math.min(8, Math.max(2, cap.text.split(/\r\n|\r|\n/).length))}
                         title="Shift+Enter เพื่อขึ้นบรรทัด"
                         onClick={e => e.stopPropagation()}
                       />
