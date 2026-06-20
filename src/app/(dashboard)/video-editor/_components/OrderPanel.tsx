@@ -64,6 +64,7 @@ export function OrderPanel(p: OrderPanelProps) {
   const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
   const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
+  const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
 
   React.useEffect(() => {
     if (!autoMixProvidersOpen) return;
@@ -425,9 +426,24 @@ export function OrderPanel(p: OrderPanelProps) {
                       </button>
 
                       {geminiVoiceOpen && (
-                        <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl p-1 shadow-xl max-h-64 overflow-y-auto scrollbar-none"
+                        <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl shadow-xl overflow-hidden"
                           style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
-                          {GEMINI_VOICES.map(v => {
+                          {/* Tab กรองเพศ: รวม / หญิง / ชาย */}
+                          <div className="flex gap-1 p-1.5 border-b border-violet-500/15">
+                            {([
+                              { key: "all" as const,    label: `รวม (${GEMINI_VOICES.length})`,                                       cls: "text-violet-200", on: "bg-violet-500/25 border-violet-400/40" },
+                              { key: "Female" as const, label: `หญิง (${GEMINI_VOICES.filter(x => x.gender === "Female").length})`,  cls: "text-pink-200",   on: "bg-pink-500/20 border-pink-400/40" },
+                              { key: "Male" as const,   label: `ชาย (${GEMINI_VOICES.filter(x => x.gender === "Male").length})`,     cls: "text-sky-200",    on: "bg-sky-500/20 border-sky-400/40" },
+                            ]).map(t => (
+                              <button key={t.key} type="button" onClick={() => setVoiceGenderFilter(t.key)}
+                                className={cn("flex-1 py-1 rounded-lg text-[10px] font-bold border transition-all",
+                                  voiceGenderFilter === t.key ? `${t.on} ${t.cls}` : "bg-transparent border-transparent text-slate-500 hover:text-slate-300")}>
+                                {t.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="p-1 max-h-56 overflow-y-auto scrollbar-none">
+                          {GEMINI_VOICES.filter(v => voiceGenderFilter === "all" || v.gender === voiceGenderFilter).map(v => {
                             const active = v.id === p.geminiVoiceName;
                             const chip = genderChip(v.gender);
                             return (
@@ -442,6 +458,7 @@ export function OrderPanel(p: OrderPanelProps) {
                               </button>
                             );
                           })}
+                          </div>
                         </div>
                       )}
                     </>

@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   Mic, Captions, Film, Settings2, Video, Download,
   CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
-  Music2, Upload, X,
+  Music2, Upload, X, Check,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
@@ -392,6 +392,16 @@ export default function ShortVideoPage() {
   const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both" | "kie-image" | "auto-mix">("both");
   // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image" หรือ "auto-mix") — ขนาดภาพ fix ที่ 9:16 เสมอ
   const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [kieModelOpen, setKieModelOpen] = useState(false);
+  const kieModelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!kieModelOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (kieModelRef.current && !kieModelRef.current.contains(e.target as Node)) setKieModelOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [kieModelOpen]);
   const [kieImageEnabled, setKieImageEnabled] = useState(false);
   const [autoMixEnabled, setAutoMixEnabled] = useState(false);
   useEffect(() => {
@@ -2547,21 +2557,42 @@ export default function ShortVideoPage() {
 
                   {/* เลือกโมเดล text-to-image ของ kie.ai — แสดงเมื่อเลือก AI Image (ขนาดภาพ fix 9:16) — ใช้ร่วมกับ Auto Mix สำหรับ fallback ด้วย */}
                   {(stockSource === "kie-image" && kieImageEnabled) || (stockSource === "auto-mix" && autoMixEnabled) ? (
-                    <div className="px-1">
+                    <div className="px-1 relative" ref={kieModelRef}>
                       <label className="text-[9px] font-bold uppercase tracking-wider mb-1 block" style={{ color: "hsl(189 90% 65% / 0.7)" }}>
                         Image Model (9:16)
                       </label>
-                      <select
-                        value={kieModel}
-                        onChange={(e) => setKieModel(e.target.value as KieImageModel)}
-                        disabled={running}
-                        className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold outline-none focus:ring-1 disabled:opacity-50"
-                        style={{ background: "var(--sv-input)", border: "1px solid hsl(189 90% 55% / 0.25)", color: "hsl(189 90% 80%)" }}
-                      >
-                        {KIE_IMAGE_MODEL_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
+                      {(() => {
+                        const sel = KIE_IMAGE_MODEL_OPTIONS.find(o => o.value === kieModel) ?? KIE_IMAGE_MODEL_OPTIONS[0];
+                        return (
+                          <>
+                            {/* ปุ่มเปิด dropdown — แสดงโมเดลที่เลือก (สไตล์เดียวกับ Gemini Voice dropdown) */}
+                            <button type="button" onClick={() => setKieModelOpen(v => !v)} disabled={running}
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left outline-none transition-colors focus:border-violet-500/40 disabled:opacity-50"
+                              style={{ background: "#15151b", border: "1px solid #26262f" }}>
+                              <span className="text-[12px] font-bold text-slate-100 truncate">{sel.label}</span>
+                              <ChevronDown className={cn("w-3 h-3 text-slate-500 ml-auto shrink-0 transition-transform", kieModelOpen && "rotate-180")} />
+                            </button>
+
+                            {kieModelOpen && (
+                              <div className="absolute z-30 left-1 right-1 mt-1 rounded-xl p-1 shadow-xl max-h-64 overflow-y-auto scrollbar-none"
+                                style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
+                                {KIE_IMAGE_MODEL_OPTIONS.map((opt) => {
+                                  const active = opt.value === kieModel;
+                                  return (
+                                    <button key={opt.value} type="button"
+                                      onClick={() => { setKieModel(opt.value); setKieModelOpen(false); }}
+                                      className={cn("w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors",
+                                        active ? "bg-violet-500/20" : "hover:bg-violet-500/10")}>
+                                      <span className={cn("text-[12px] font-bold truncate", active ? "text-violet-100" : "text-slate-200")}>{opt.label}</span>
+                                      {active && <Check className="w-3 h-3 text-violet-300 ml-auto shrink-0" strokeWidth={3} />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   ) : null}
 
