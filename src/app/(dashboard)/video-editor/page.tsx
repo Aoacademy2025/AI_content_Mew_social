@@ -303,6 +303,7 @@ export default function VideoEditorPage() {
   // ── Waveform / Snap ───────────────────────────────────────────────────
   const [waveformVoiceUrl, setWaveformVoiceUrl] = useState<string | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [ttsTimingVersion, setTtsTimingVersion] = useState(0);
   const snapGuideRef = useRef<number | null>(null);
   const [snapGuideTick, setSnapGuideTick] = useState(0);
   const waveLaneRef = useRef<HTMLDivElement>(null);
@@ -413,7 +414,7 @@ export default function VideoEditorPage() {
       return snapPointsFromPeaks(wavePeaks, waveDurationMs / wavePeaks.length);
     }
     return [];
-  }, [wavePeaks, waveDurationMs, totalMs, waveformVoiceUrl, captions.length]);
+  }, [wavePeaks, waveDurationMs, totalMs, ttsTimingVersion]);
 
   useEffect(() => {
     const el = waveLaneRef.current;
@@ -423,7 +424,7 @@ export default function VideoEditorPage() {
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [wavePeaks]);
+  }, []);
 
   // ── Undo / Redo ────────────────────────────────────────────────────────
   function undo() {
@@ -1444,6 +1445,7 @@ export default function VideoEditorPage() {
   // length even when transcribe is skipped.
   function captureTtsTiming(data: { timing?: TtsTiming; audioDurationMs?: number }) {
     ttsTimingRef.current = data.timing && Array.isArray(data.timing.segments) ? data.timing : null;
+    setTtsTimingVersion(v => v + 1);
     const d = Number(data.audioDurationMs);
     if (Number.isFinite(d) && d > 0) pipe.current.audioDurationMs = d;
   }
@@ -4325,6 +4327,7 @@ export default function VideoEditorPage() {
               const dxMs = (dxPx / trackW) * totalMs;
               const rawTarget = r.startMs + dxMs;
               const snapped = snapEnabled && snapPoints.length ? snapToNearest(rawTarget, snapPoints, SNAP_MS) : rawTarget;
+              const didSnap = snapEnabled && snapPoints.length ? Math.abs(snapped - rawTarget) > 0.5 : false;
               setCaptionsRaw(prev => {
                 const next = prev.map((c, j) => {
                   if (j !== r.capIdx) return c;
@@ -4335,24 +4338,22 @@ export default function VideoEditorPage() {
                   const upperBound = nextClip ? nextClip.startMs - minGap : (totalMs || 999999);
                   if (r.edge === "left") {
                     const newStart = Math.max(lowerBound, Math.min(c.endMs - 200, snapped));
-                    snapGuideRef.current = (snapEnabled && snapPoints.length && Math.abs(snapped - rawTarget) > 0.5) ? snapped : null;
                     return { ...c, startMs: Math.round(newStart) };
                   } else if (r.edge === "right") {
                     const newEnd = Math.max(c.startMs + 200, Math.min(upperBound, snapped));
-                    snapGuideRef.current = (snapEnabled && snapPoints.length && Math.abs(snapped - rawTarget) > 0.5) ? snapped : null;
                     return { ...c, endMs: Math.round(newEnd) };
                   } else {
                     // "move" — slide whole clip, preserving duration, clamp between neighbors
                     const dur = r.durMs ?? (c.endMs - c.startMs);
                     const maxStart = Math.max(lowerBound, upperBound - dur);
                     const newStart = Math.max(lowerBound, Math.min(maxStart, snapped));
-                    snapGuideRef.current = (snapEnabled && snapPoints.length && Math.abs(snapped - rawTarget) > 0.5) ? snapped : null;
                     return { ...c, startMs: Math.round(newStart), endMs: Math.round(newStart + dur) };
                   }
                 });
                 captionsRef.current = next;
                 return next;
               });
+              snapGuideRef.current = didSnap ? snapped : null;
               setSnapGuideTick(t => t + 1);
             }}
             onPointerUp={() => {
@@ -4367,6 +4368,7 @@ export default function VideoEditorPage() {
             }}
           >
             <div className="relative" style={{ width: `${timelineCanvasWidthPct}%`, minWidth: "100%" }}>
+              {/* read snapGuideTick so React re-renders the ref-driven snap guide */}
               {void snapGuideTick}
               {/* Waveform lane + snap guide */}
               <div ref={waveLaneRef} className="absolute inset-x-0 top-0 bottom-0 pointer-events-none opacity-70" aria-hidden>
