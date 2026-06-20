@@ -1172,7 +1172,9 @@ export default function VideoEditorPage() {
       console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s`);
       const res = await fetch("/api/videos/extract-keywords", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
+        // targetClipCount > 0 (กำหนดเอง) → ให้ LLM สร้าง keyword ตามจำนวนนั้นพอดี
+        // 0 (Auto) → ใช้สูตรเดิม (คำนวณจาก audioDurationSec)
+        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), targetClipCount, preferredLLM: preferredLLMRef.current }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
