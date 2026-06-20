@@ -829,9 +829,12 @@ async function generateKieImageKenBurns(
   const prompt = `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`;
   const imageTaskId = await kieCreateTask(model, buildKieImageInput(model, prompt), token);
   const imageUrl = await kiePollResult(imageTaskId, token);
+  console.log(`[fetch-stock] kie image ready for "${query}": ${imageUrl.slice(0, 80)}`);
 
   await downloadAndCrop(imageUrl, imagePath);
+  console.log(`[fetch-stock] kie cropped "${query}" → ${imagePath.split(/[/\\]/).pop()}`);
   await applyKenBurns(imagePath, outPath);
+  console.log(`[fetch-stock] kie Ken Burns done "${query}" → ${outPath.split(/[/\\]/).pop()}`);
 
   return { duration: KEN_BURNS_DURATION_SEC, imageUrl };
 }
