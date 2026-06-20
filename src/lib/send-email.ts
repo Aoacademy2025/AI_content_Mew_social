@@ -376,3 +376,35 @@ ${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย"
     }),
   });
 }
+
+/** Admin alert when server disk crosses the configured threshold. */
+export async function sendDiskAlertEmail(opts: {
+  to: string | string[];
+  mount: string;
+  usedPercent: number;
+  usedGb: number;
+  totalGb: number;
+  availableGb: number;
+  breakdown: string[];
+  sweptMb: number;
+}): Promise<boolean> {
+  const rows = opts.breakdown.map((b) => `<li style="margin:3px 0">${escapeHtml(b)}</li>`).join("");
+  return sendEmail({
+    to: opts.to,
+    subject: `⚠️ ดิสก์เซิร์ฟเวอร์ใกล้เต็ม ${opts.usedPercent}% — ${BRAND}`,
+    html: emailShell({
+      title: "ดิสก์ใกล้เต็ม",
+      previewText: `ใช้ไป ${opts.usedGb}/${opts.totalGb} GB (${opts.usedPercent}%) เหลือ ${opts.availableGb} GB`,
+      accent: "#f59e0b",
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">⚠️ ดิสก์เซิร์ฟเวอร์ใกล้เต็ม</h1>
+<p style="margin:0 0 16px;color:#a1a1aa;font-size:14px">Mount <b style="color:#fff">${escapeHtml(opts.mount)}</b> ใช้ไป <b style="color:#fff">${opts.usedGb} / ${opts.totalGb} GB (${opts.usedPercent}%)</b> — เหลือ ${opts.availableGb} GB</p>
+<div style="margin:0 0 8px;color:#71717a;font-size:11px;letter-spacing:1px;text-transform:uppercase">แยกตามหมวด</div>
+<ul style="margin:0 0 16px;padding-left:18px;color:#e5e7eb;font-size:13px">${rows}</ul>
+${opts.sweptMb > 0 ? `<p style="margin:0 0 8px;color:#34d399;font-size:12px">🧹 กวาดของขยะอัตโนมัติแล้ว ${opts.sweptMb} MB</p>` : ""}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:20px 0 12px">
+<p style="margin:0;color:#71717a;font-size:12px">ตรวจ orphan media / stock cache / swap เพิ่มเติมที่ Admin → จัดการพื้นที่ดิสก์</p>
+`.trim(),
+    }),
+  });
+}

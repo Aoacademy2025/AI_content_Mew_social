@@ -138,6 +138,19 @@ module.exports = {
       },
     },
     {
+      name: "disk-watch",
+      cwd: "/var/www/ai-content",
+      script: "scripts/disk-watch.js",
+      cron_restart: "0 5 * * *", // daily 5:00 — after the 3:00/3:30 cleanups; sweep /tmp orphans + alert if disk over DISK_ALERT_THRESHOLD (default 80%)
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
       name: "mcp-video-worker",
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/tsx",
