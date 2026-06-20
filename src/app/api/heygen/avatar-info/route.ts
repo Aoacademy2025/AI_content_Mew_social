@@ -19,23 +19,40 @@ export async function GET(req: Request) {
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-  let res: Response;
-  try {
-    res = await fetch("https://api.heygen.com/v2/avatars", {
-      // accept header matches the working /api/heygen/avatars route — some HeyGen
-      // edges 401 a request that omits it.
-      headers: { "X-Api-Key": heygenKey, accept: "application/json" },
-      signal: AbortSignal.timeout(20000), // HeyGen's full avatar list can be slow
-    });
-  } catch {
-    // Timeout / network blip listing ALL avatars doesn't mean the ID is bad — the
-    // list call is just slow. Return unverified (not an error) so the UI shows the
-    // soft "can't confirm, but you can still render" state instead of a red block.
+  let res: Response | undefined;
+  let lastError: Error | null = null;
+
+  // Retry logic: HeyGen can be slow/flaky
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      res = await fetch("https://api.heygen.com/v2/avatars", {
+        headers: { "X-Api-Key": heygenKey, accept: "application/json" },
+        signal: AbortSignal.timeout(35000),
+      });
+      break; // Success, exit retry loop
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < 3) {
+        // Wait before retrying (exponential backoff)
+        await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * 500));
+        continue;
+      }
+      // All retries exhausted
+      console.error("[avatar-info] All retries exhausted:", lastError?.message);
+      return NextResponse.json({
+        previewImageUrl: "", name: "", unverified: true,
+        note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
+      });
+    }
+  }
+  if (!res) {
+    console.error("[avatar-info] No response after retries:", lastError?.message);
     return NextResponse.json({
       previewImageUrl: "", name: "", unverified: true,
       note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
     });
   }
+  console.log(`[avatar-info] Got response status: ${res.status}`);
   if (res.status === 401 || res.status === 403) {
     const body = await res.text().catch(() => "");
     console.warn(`[avatar-info] HeyGen ${res.status} — key len=${heygenKey.length}, body=${body.slice(0, 200)}`);
@@ -43,7 +60,16 @@ export async function GET(req: Request) {
   }
   if (!res.ok) return NextResponse.json({ error: `HeyGen API error ${res.status}` }, { status: 502 });
 
-  const data = await res.json();
+  let data: any;
+  try {
+    data = await res.json();
+  } catch (err) {
+    console.error("[avatar-info] Failed to parse HeyGen response as JSON:", err);
+    return NextResponse.json({
+      previewImageUrl: "", name: "", unverified: true,
+      note: "HeyGen ตอบ corrupt — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
+    });
+  }
   const avatars: Array<{
     avatar_id: string;
     avatar_name: string;

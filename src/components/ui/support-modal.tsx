@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { X, HelpCircle, Loader2, ImagePlus, CheckCircle2, Trash2, Sparkles, Crown, Building2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { fetchMe } from "@/lib/use-me";
 
 interface SupportModalProps {
   open: boolean;
@@ -23,7 +24,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
 
   useEffect(() => {
     if (open) {
-      fetch("/api/user/me").then(r => r.json()).then(d => { if (d.plan) setPlan(d.plan); }).catch(() => {});
+      fetchMe().then(d => { if (d?.plan) setPlan(d.plan); }).catch(() => {});
     }
   }, [open]);
 

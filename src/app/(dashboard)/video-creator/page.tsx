@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   Mic, Captions, Film, Settings2, Video, Download,
   CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
-  Music2, Upload, X,
+  Music2, Upload, X, Check,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
@@ -21,6 +21,38 @@ import { MusicPanel } from "./_panels/MusicPanel";
 import { SubtitleReviewPanel } from "./_panels/SubtitleReviewPanel";
 
 type StepStatus = "idle" | "running" | "done" | "error" | "skip";
+
+// โมเดล text-to-image ของ kie.ai ที่เลือกได้ — ขนาดภาพ fix ที่ 9:16 เสมอ
+type KieImageModel =
+  | "nano-banana-pro" | "nano-banana-2" | "gpt-image-2-text-to-image"
+  | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
+  | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
+const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "nano-banana-pro", label: "Nano Banana Pro" },
+  { value: "nano-banana-2", label: "Nano Banana 2" },
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
+  { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
+  { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
+  { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },
+  { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
+  { value: "qwen2/text-to-image", label: "Qwen2" },
+];
+
+// ฟอนต์ซับ — label แยก name/hint เพื่อให้ custom dropdown แสดง name ด้วยฟอนต์จริง + hint สีจาง
+const SUB_FONT_OPTIONS: { name: string; hint?: string; value: string }[] = [
+  { name: "Kanit",              hint: "หนา ชัด",        value: "'Kanit', sans-serif" },
+  { name: "Sarabun",            hint: "อ่านง่าย",       value: "'Sarabun', sans-serif" },
+  { name: "Prompt",             hint: "โมเดิร์น",       value: "'Prompt', sans-serif" },
+  { name: "Mitr",               hint: "TikTok",         value: "'Mitr', sans-serif" },
+  { name: "Noto Sans Thai",                             value: "'Noto Sans Thai', sans-serif" },
+  { name: "K2D",                hint: "กลม น่ารัก",     value: "'K2D', sans-serif" },
+  { name: "Bai Jamjuree",       hint: "คมชัด",          value: "'Bai Jamjuree', sans-serif" },
+  { name: "Krub",               hint: "เรียบร้อย",      value: "'Krub', sans-serif" },
+  { name: "Pridi",              hint: "สง่างาม",        value: "'Pridi', serif" },
+  { name: "Chonburi",           hint: "ตัวหนา display", value: "'Chonburi', sans-serif" },
+  { name: "Itim",               hint: "น่ารัก ลายมือ",  value: "'Itim', cursive" },
+  { name: "IBM Plex Sans Thai",                         value: "'IBM Plex Sans Thai', sans-serif" },
+];
 
 interface StepState {
   keywords: StepStatus;
@@ -36,7 +68,7 @@ interface StepState {
 
 interface Caption { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta"; }
 
-interface StockVideo { keyword: string; localUrl?: string; videoUrl: string; duration: number; pexelsId: number; }
+interface StockVideo { keyword: string; localUrl?: string; videoUrl: string; duration: number; pexelsId: number; imageUrl?: string; imageLocalUrl?: string; }
 
 
 const DEFAULT_STEPS: StepState = {
@@ -374,7 +406,29 @@ export default function ShortVideoPage() {
   // Auto clip count returned by the last fetch (so UI can show "Auto (12)")
   const [autoClipCount, setAutoClipCount] = useState(0);
   // Stock source selection (used for API fetch)
-  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  // "kie-image" = AI Image-to-Video, "auto-mix" = วิดีโอ + ภาพ fallback — เปิดเฉพาะ ADMIN (user ทั่วไปเห็นปุ่มแต่กดไม่ได้)
+  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both" | "kie-image" | "auto-mix">("both");
+  // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image" หรือ "auto-mix") — ขนาดภาพ fix ที่ 9:16 เสมอ
+  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [kieModelOpen, setKieModelOpen] = useState(false);
+  const kieModelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!kieModelOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (kieModelRef.current && !kieModelRef.current.contains(e.target as Node)) setKieModelOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [kieModelOpen]);
+  const [kieImageEnabled, setKieImageEnabled] = useState(false);
+  const [autoMixEnabled, setAutoMixEnabled] = useState(false);
+  useEffect(() => {
+    fetch("/api/user/me").then(r => r.json()).then(d => {
+      const isAdmin = d?.role === "ADMIN";
+      setKieImageEnabled(isAdmin);
+      setAutoMixEnabled(isAdmin);
+    }).catch(() => {});
+  }, []);
   // Grid display filter (independent from fetch source — doesn't affect API calls)
   const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
   // Clips excluded by user (pexelsId set)
@@ -382,6 +436,16 @@ export default function ShortVideoPage() {
 
   // Subtitle style settings
   const [subFontFamily, setSubFontFamily] = useState("'Kanit', sans-serif");
+  const [subFontOpen, setSubFontOpen] = useState(false);
+  const subFontRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!subFontOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (subFontRef.current && !subFontRef.current.contains(e.target as Node)) setSubFontOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [subFontOpen]);
   const [subFontSize, setSubFontSize] = useState(80);
   const [subPosition, setSubPosition] = useState(68);
   const [subColor, setSubColor] = useState("#FFFFFF");
@@ -756,7 +820,7 @@ export default function ShortVideoPage() {
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
-    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : "Pexels+Pixabay";
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "kie-image" ? "AI Image (kie.ai)" : stockSource === "auto-mix" ? "Auto Mix" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
 
     // Use scene durations from extract-keywords (more accurate than char-count estimate)
@@ -775,6 +839,7 @@ export default function ShortVideoPage() {
         download: true,
         totalDurationSec,
         stockSource,
+        ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
         preferredLLM: preferredLLMRef.current,
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
@@ -1604,11 +1669,15 @@ export default function ShortVideoPage() {
           return;
         }
         // Stock key check
-        const needPexels  = stockSource === "pexels" || stockSource === "both";
-        const needPixabay = stockSource === "pixabay" || stockSource === "both";
+        if (stockSource === "kie-image" && !keys.kieKey) {
+          setMissingKey({ type: "kie", retryStep: "runAll" });
+          return;
+        }
+        const needPexels  = stockSource === "pexels" || stockSource === "both" || stockSource === "auto-mix";
+        const needPixabay = stockSource === "pixabay" || stockSource === "both" || stockSource === "auto-mix";
         const canUsePexels = !needPexels || !!keys.pexelsKey;
         const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-        if (!canUsePexels && !canUsePixabay) {
+        if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay) {
           setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
           return;
         }
@@ -1750,6 +1819,7 @@ export default function ShortVideoPage() {
                   download: true,
                   totalDurationSec: audioDurSec,
                   stockSource,
+                  ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
                   overrideClipCount: kwsToFetch.length,
                   perSubtitleMode: true,
                   preferredLLM: preferredLLMRef.current,
@@ -2012,11 +2082,15 @@ export default function ShortVideoPage() {
         const keysRes = await fetch("/api/user/api-keys");
         if (keysRes.ok) {
           const keys = await keysRes.json();
-          const needPexels  = stockSource === "pexels" || stockSource === "both";
-          const needPixabay = stockSource === "pixabay" || stockSource === "both";
+          if (stockSource === "kie-image" && !keys.kieKey) {
+            setMissingKey({ type: "kie", retryStep: step });
+            return;
+          }
+          const needPexels  = stockSource === "pexels" || stockSource === "both" || stockSource === "auto-mix";
+          const needPixabay = stockSource === "pixabay" || stockSource === "both" || stockSource === "auto-mix";
           const canUsePexels = !needPexels || !!keys.pexelsKey;
           const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-          if (!canUsePexels && !canUsePixabay) {
+          if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay) {
             setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: step });
             return;
           }
@@ -2095,6 +2169,7 @@ export default function ShortVideoPage() {
                 keywordAlternatives: altsToFetch2,
                 subtitleTexts: textsToFetch2,
                 download: true, totalDurationSec: audioDurSec2, stockSource,
+                ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
                 overrideClipCount: perSubKws2.length,
                 perSubtitleMode: true,
                 preferredLLM: preferredLLMRef.current,
@@ -2464,26 +2539,186 @@ export default function ShortVideoPage() {
                     <h2 className="text-sm font-bold text-white">Stock Source</h2>
                   </div>
                   <span className="text-[9px] font-semibold uppercase tracking-wider text-white/25">
-                    {stockSource === "both" ? "Pexels + Pixabay" : stockSource === "pexels" ? "Pexels only" : "Pixabay only"}
+                    {stockSource === "kie-image" ? "AI Image (kie.ai)" : stockSource === "auto-mix" ? "Auto Mix" : "Pexels + Pixabay"}
                   </span>
                 </div>
-                <div className="p-3">
-                  <div className="flex gap-1 p-1 rounded-xl" style={{ background: "var(--sv-input)" }}>
-                    {(["pexels","pixabay","both"] as const).map((v) => (
+                <div className="p-3 space-y-1.5">
+                  {/* Free — Pexels + Pixabay */}
+                  <button
+                    onClick={() => setStockSource("both")}
+                    disabled={running}
+                    className="w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40"
+                    style={
+                      stockSource !== "kie-image" && stockSource !== "auto-mix"
+                        ? { background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                        : { background: "var(--sv-input)", border: "1px solid transparent" }
+                    }
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-bold" style={{ color: stockSource !== "kie-image" && stockSource !== "auto-mix" ? "hsl(190 100% 70%)" : "rgba(255,255,255,0.5)" }}>Free</span>
+                      {stockSource !== "kie-image" && stockSource !== "auto-mix" && <span className="ml-auto text-[10px]" style={{ color: "hsl(190 100% 70%)" }}>✓</span>}
+                    </div>
+                    <div className="text-[10px] text-white/30 mt-0.5">Pexels + Pixabay</div>
+                  </button>
+
+                  {/* AI Image-to-Video — kie.ai (ADMIN beta / user ทั่วไป: เร็วๆ นี้) */}
+                  <button
+                    disabled={!kieImageEnabled || running}
+                    onClick={() => kieImageEnabled && setStockSource("kie-image")}
+                    title={kieImageEnabled ? "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — admin beta" : "เร็วๆ นี้"}
+                    className={cn("w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40",
+                      !kieImageEnabled && "opacity-70 cursor-not-allowed")}
+                    style={
+                      stockSource === "kie-image"
+                        ? { background: "hsl(189 90% 55% / 0.12)", border: "1px solid hsl(189 90% 55% / 0.4)" }
+                        : { background: "var(--sv-input)", border: "1px solid hsl(189 90% 55% / 0.2)" }
+                    }
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-bold" style={{ color: stockSource === "kie-image" ? "hsl(189 90% 70%)" : "hsl(189 90% 70% / 0.85)" }}>AI Image</span>
+                      {stockSource === "kie-image" ? (
+                        <span className="ml-auto text-[10px]" style={{ color: "hsl(189 90% 65%)" }}>✓</span>
+                      ) : (
+                        <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+                          style={{ color: "hsl(189 90% 65%)", background: "hsl(189 90% 55% / 0.1)", border: "1px solid hsl(189 90% 55% / 0.3)" }}>
+                          {kieImageEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-white/30 mt-0.5">kie.ai</div>
+                  </button>
+
+                  {/* Auto Mix — วิดีโอ Pexels/Pixabay เป็นหลัก, fallback เป็นภาพ (Unsplash/AI) ถ้าหา clip ไม่เจอ (ADMIN beta) */}
+                  <button
+                    disabled={!autoMixEnabled || running}
+                    onClick={() => autoMixEnabled && setStockSource("auto-mix")}
+                    title={autoMixEnabled ? "วิดีโอเป็นหลัก + fallback เป็นภาพ Ken Burns ถ้าหา clip ไม่เจอ — admin beta" : "เร็วๆ นี้"}
+                    className={cn("w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40",
+                      !autoMixEnabled && "opacity-70 cursor-not-allowed")}
+                    style={
+                      stockSource === "auto-mix"
+                        ? { background: "hsl(160 84% 45% / 0.12)", border: "1px solid hsl(160 84% 45% / 0.4)" }
+                        : { background: "var(--sv-input)", border: "1px solid hsl(160 84% 45% / 0.2)" }
+                    }
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-bold" style={{ color: stockSource === "auto-mix" ? "hsl(160 84% 65%)" : "hsl(160 84% 65% / 0.85)" }}>Auto Mix</span>
+                      {stockSource === "auto-mix" ? (
+                        <span className="ml-auto text-[10px]" style={{ color: "hsl(160 84% 60%)" }}>✓</span>
+                      ) : (
+                        <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+                          style={{ color: "hsl(160 84% 60%)", background: "hsl(160 84% 45% / 0.1)", border: "1px solid hsl(160 84% 45% / 0.3)" }}>
+                          {autoMixEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-white/30 mt-0.5">วิดีโอ + ภาพ fallback</div>
+                  </button>
+
+                  {/* เลือกโมเดล text-to-image ของ kie.ai — แสดงเมื่อเลือก AI Image (ขนาดภาพ fix 9:16) — ใช้ร่วมกับ Auto Mix สำหรับ fallback ด้วย */}
+                  {(stockSource === "kie-image" && kieImageEnabled) || (stockSource === "auto-mix" && autoMixEnabled) ? (
+                    <div className="px-1 relative" ref={kieModelRef}>
+                      <label className="text-[9px] font-bold uppercase tracking-wider mb-1 block" style={{ color: "hsl(189 90% 65% / 0.7)" }}>
+                        Image Model (9:16)
+                      </label>
+                      {(() => {
+                        const sel = KIE_IMAGE_MODEL_OPTIONS.find(o => o.value === kieModel) ?? KIE_IMAGE_MODEL_OPTIONS[0];
+                        return (
+                          <>
+                            {/* ปุ่มเปิด dropdown — แสดงโมเดลที่เลือก (สไตล์เดียวกับ Gemini Voice dropdown) */}
+                            <button type="button" onClick={() => setKieModelOpen(v => !v)} disabled={running}
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left outline-none transition-colors focus:border-violet-500/40 disabled:opacity-50"
+                              style={{ background: "#15151b", border: "1px solid #26262f" }}>
+                              <span className="text-[12px] font-bold text-slate-100 truncate">{sel.label}</span>
+                              <ChevronDown className={cn("w-3 h-3 text-slate-500 ml-auto shrink-0 transition-transform", kieModelOpen && "rotate-180")} />
+                            </button>
+
+                            {kieModelOpen && (
+                              <div className="absolute z-30 left-1 right-1 mt-1 rounded-xl p-1 shadow-xl max-h-64 overflow-y-auto scrollbar-none"
+                                style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
+                                {KIE_IMAGE_MODEL_OPTIONS.map((opt) => {
+                                  const active = opt.value === kieModel;
+                                  return (
+                                    <button key={opt.value} type="button"
+                                      onClick={() => { setKieModel(opt.value); setKieModelOpen(false); }}
+                                      className={cn("w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors",
+                                        active ? "bg-violet-500/20" : "hover:bg-violet-500/10")}>
+                                      <span className={cn("text-[12px] font-bold truncate", active ? "text-violet-100" : "text-slate-200")}>{opt.label}</span>
+                                      {active && <Check className="w-3 h-3 text-violet-300 ml-auto shrink-0" strokeWidth={3} />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
+
+                  {/* Preview ภาพที่ AI generate แล้ว — โชว์ระหว่าง/หลัง step B-roll (Ken Burns ใช้ภาพนี้ทำวิดีโอ) — รวม Auto Mix fallback */}
+                  {(stockSource === "kie-image" && kieImageEnabled || stockSource === "auto-mix" && autoMixEnabled) && pipeStockVideos.some(sv => sv.imageLocalUrl || sv.imageUrl) && (
+                    <div className="px-1">
+                      <label className="text-[9px] font-bold uppercase tracking-wider mb-1 flex items-center gap-1.5" style={{ color: "hsl(189 90% 65% / 0.7)" }}>
+                        {steps.fetchStock === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                        Generated Images ({pipeStockVideos.length})
+                      </label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {pipeStockVideos.map((sv, i) => {
+                          const src = sv.imageLocalUrl || sv.imageUrl;
+                          if (!src) return null;
+                          return (
+                            <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border" style={{ borderColor: "hsl(189 90% 55% / 0.2)", background: "var(--sv-input)" }}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={src} alt={sv.keyword || `clip ${i + 1}`} className="w-full h-full object-cover" />
+                              <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-white/80 bg-black/50 truncate">{sv.keyword}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* จำนวนคลิป B-roll — กี่คลิปย่อยใน 1 วิดีโอ */}
+                  <div className="pt-2.5 mt-1" style={{ borderTop: "1px solid var(--sv-border)" }}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] font-semibold text-white/50">จำนวนคลิป B-roll</span>
+                      {targetClipCount === 0 && autoClipCount > 0 && (
+                        <span className="text-[10px] text-white/30">Auto ล่าสุด: {autoClipCount} คลิป</span>
+                      )}
+                    </div>
+                    <div className="flex gap-1.5">
                       <button
-                        key={v}
-                        onClick={() => setStockSource(v)}
+                        onClick={() => setTargetClipCount(0)}
                         disabled={running}
                         className="flex-1 py-1.5 rounded-lg text-[11px] font-bold transition-all disabled:opacity-40"
                         style={
-                          stockSource === v
+                          targetClipCount === 0
                             ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
-                            : { color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }
+                            : { background: "var(--sv-input)", color: "rgba(255,255,255,0.3)", border: "1px solid transparent" }
                         }
                       >
-                        {v === "both" ? "Both" : v === "pexels" ? "Pexels" : "Pixabay"}
+                        Auto
                       </button>
-                    ))}
+                      <input
+                        type="number" min={1} max={60} placeholder="เช่น 8"
+                        value={targetClipCount || ""}
+                        disabled={running}
+                        onChange={e => {
+                          const n = parseInt(e.target.value, 10);
+                          setTargetClipCount(isNaN(n) ? 0 : Math.max(1, Math.min(60, n)));
+                        }}
+                        className="w-24 rounded-lg px-2 py-1.5 text-[11px] text-center outline-none transition-all disabled:opacity-40 placeholder:text-white/20"
+                        style={
+                          targetClipCount > 0
+                            ? { background: "hsl(190 100% 50% / 0.15)", color: "hsl(190 100% 70%)", border: "1px solid hsl(190 100% 50% / 0.3)" }
+                            : { background: "var(--sv-input)", color: "rgba(255,255,255,0.5)", border: "1px solid transparent" }
+                        }
+                      />
+                    </div>
+                    <p className="text-[10px] text-white/25 mt-1.5 leading-relaxed">
+                      Auto = ระบบคำนวณจากความยาววิดีโอ · กำหนดเอง = จำนวนคลิปย่อยใน 1 วิดีโอ
+                    </p>
                   </div>
                 </div>
               </div>

@@ -22,8 +22,11 @@ export async function POST(req: Request) {
       select: { geminiKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    if (!user.geminiKey) return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
-    const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+    // Use user's key if set, fallback to server key
+    const apiKey = user.geminiKey
+      ? Buffer.from(user.geminiKey, "base64").toString("utf-8")
+      : process.env.GEMINI_API_KEY;
+    if (!apiKey) return NextResponse.json({ error: "Gemini API key not configured", missingKey: "gemini" }, { status: 500 });
 
     let style = null;
     if (styleId) {

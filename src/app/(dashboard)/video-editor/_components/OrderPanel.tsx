@@ -1,11 +1,12 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Music, Pause, Play, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Music, Pause, Play, Upload, X, Film, Check, Sparkles, Shuffle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import type { StepState } from "./types";
+import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImageProvider } from "./types";
+import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 import { VoicePreviewButton } from "./VoicePreviewButton";
 
@@ -38,8 +39,27 @@ export interface OrderPanelProps {
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void; setAvatarOffsetY: (v: number) => void;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
   onPlanError?: (msg: string) => void;
-  stockSource: "pexels" | "pixabay" | "both";
-  setStockSource: (v: "pexels" | "pixabay" | "both") => void;
+  stockSource: StockSource;
+  setStockSource: (v: StockSource) => void;
+  kieImageEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม AI Image-to-Video (kie.ai)
+  autoMixEnabled?: boolean; // ADMIN เท่านั้น — เปิดปุ่ม Auto Mix (video + image fallback)
+  kieModel?: KieImageModel; setKieModel?: (v: KieImageModel) => void;
+  autoMixProviders?: AutoMixImageProvider[]; setAutoMixProviders?: (v: AutoMixImageProvider[]) => void;
+  stockVideos?: StockVideo[]; // ใช้แสดง preview ภาพที่ generate ระหว่าง/หลัง B-roll step (AI Image)
+  stockCacheBust?: number; // bump ทุกครั้งที่ fetch เสร็จ → กัน browser cache ภาพชื่อไฟล์เดิม
+  targetClipCount: number; // 0 = Auto (1 คลิป/ซับ), >0 = จำนวนคลิปใน 1 วิดีโอ
+  setTargetClipCount: (v: number) => void;
+}
+
+// Section header แบบพรีเมียม — accent bar ม่วงเรืองแสงด้านหน้า + ปุ่ม/ตัวเลือกเสริมด้านขวา
+function SectionLabel({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 mb-2.5">
+      <span aria-hidden className="h-3 w-[3px] rounded-full bg-gradient-to-b from-violet-400 to-violet-600 shadow-[0_0_8px_rgba(139,92,246,0.55)]" />
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{children}</span>
+      {right && <span className="ml-auto">{right}</span>}
+    </div>
+  );
 }
 
 export function OrderPanel(p: OrderPanelProps) {
@@ -67,6 +87,42 @@ export function OrderPanel(p: OrderPanelProps) {
       musicPreviewRef.current.volume = Math.max(0, Math.min(1, p.bgmVolume));
     }
   }, [p.bgmVolume]);
+
+  const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
+  const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
+  const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
+  const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
+  const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
+
+  React.useEffect(() => {
+    if (!autoMixProvidersOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (autoMixProvidersRef.current && !autoMixProvidersRef.current.contains(e.target as Node)) {
+        setAutoMixProvidersOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [autoMixProvidersOpen]);
+
+  React.useEffect(() => {
+    if (!geminiVoiceOpen) return;
+    function onClickOutside(e: MouseEvent) {
+      if (geminiVoiceRef.current && !geminiVoiceRef.current.contains(e.target as Node)) {
+        setGeminiVoiceOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [geminiVoiceOpen]);
+
+  const selectedAutoMixProviders = p.autoMixProviders ?? AUTO_MIX_PROVIDER_OPTIONS.map(o => o.value);
+  function toggleAutoMixProvider(value: AutoMixImageProvider) {
+    const next = selectedAutoMixProviders.includes(value)
+      ? selectedAutoMixProviders.filter(v => v !== value)
+      : [...selectedAutoMixProviders, value];
+    p.setAutoMixProviders?.(next);
+  }
 
   // page.tsx เก็บ avatarOffsetX/Y เป็น px ช่วง -200..200 (preview map ด้วย /200, แกน y บวก = ลง)
   // nx/ny อยู่ในช่วง -1..1 → ×200 ให้เต็มช่วง และห้ามกลับเครื่องหมาย y — ไม่งั้นลากสวนทางกับ preview
@@ -140,58 +196,363 @@ export function OrderPanel(p: OrderPanelProps) {
         <div className="flex-1 overflow-y-auto p-3 space-y-4 scrollbar-none">
           {/* Stock Source */}
           <div>
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Stock Source</div>
-            <div className="flex gap-1.5">
-              {(["pexels", "pixabay", "both"] as const).map(src => (
-                <button key={src} onClick={() => p.setStockSource(src)}
-                  className={cn("flex-1 py-2 rounded-lg border text-[11px] font-bold transition-all",
-                    p.stockSource === src ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300")}>
-                  {src === "pexels" ? "Pexels" : src === "pixabay" ? "Pixabay" : "Both"}
-                </button>
-              ))}
+            <SectionLabel>Stock Source</SectionLabel>
+            <div className="space-y-2">
+              {/* Free */}
+              <button onClick={() => p.setStockSource("both")}
+                className={cn("relative w-full rounded-xl border px-3 py-2.5 text-left transition-all overflow-hidden",
+                  p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "border-violet-400/50" : "border-[#26262f] hover:border-violet-500/30")}
+                style={p.stockSource !== "kie-image" && p.stockSource !== "auto-mix"
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.07) 55%, rgba(139,92,246,0.04))", boxShadow: "0 0 18px rgba(139,92,246,0.18), inset 0 1px 0 rgba(255,255,255,0.06)" }
+                  : { background: "#15151b" }}>
+                <div className="flex items-center gap-2.5">
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "bg-violet-500/25 border-violet-400/40" : "bg-[#1e1e26] border-[#2a2a36]")}>
+                    <Film className={cn("w-3.5 h-3.5", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-300" : "text-slate-500")} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className={cn("text-[12px] font-bold leading-tight", p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" ? "text-violet-200" : "text-slate-400")}>Free</div>
+                    <div className="text-[9px] text-slate-500 mt-0.5">Pexels + Pixabay</div>
+                  </div>
+                  {p.stockSource !== "kie-image" && p.stockSource !== "auto-mix" && (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(139,92,246,0.6)]">
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              {/* AI Image-to-Video — kie.ai, gold-cyan luxe */}
+              <button
+                disabled={!p.kieImageEnabled}
+                onClick={() => p.kieImageEnabled && p.setStockSource("kie-image")}
+                title={p.kieImageEnabled ? "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — admin beta" : "เร็วๆ นี้"}
+                className={cn("relative w-full rounded-xl text-left transition-all overflow-hidden px-3 py-2.5 border",
+                  p.stockSource === "kie-image" ? "border-cyan-400/60"
+                  : p.kieImageEnabled ? "border-cyan-500/25 hover:border-cyan-400/50"
+                  : "border-cyan-500/15 cursor-not-allowed")}
+                style={p.stockSource === "kie-image"
+                  ? { background: "linear-gradient(135deg, rgba(34,211,238,0.18), rgba(13,148,136,0.08) 55%, rgba(34,211,238,0.04))", boxShadow: "0 0 18px rgba(34,211,238,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
+                  : { background: "linear-gradient(135deg, rgba(34,211,238,0.05), #15151b 60%)" }}>
+                {/* cyan sheen line on top */}
+                <div aria-hidden className="absolute inset-x-0 top-0 h-px"
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(103,232,249,0.45), transparent)" }} />
+                <div className={cn("flex items-center gap-2.5", !p.kieImageEnabled && "opacity-75")}>
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource === "kie-image" ? "border-cyan-400/50" : "border-cyan-500/25")}
+                    style={{ background: "linear-gradient(135deg, rgba(34,211,238,0.3), rgba(8,51,68,0.25))" }}>
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-bold leading-tight"
+                      style={{ background: "linear-gradient(90deg, #67e8f9, #06b6d4, #67e8f9)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      AI Image
+                    </div>
+                    <div className="text-[9px] text-cyan-200/40 mt-0.5">kie.ai</div>
+                  </div>
+                  {p.stockSource === "kie-image" ? (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(34,211,238,0.6)]"
+                      style={{ background: "linear-gradient(135deg, #22d3ee, #0e7490)" }}>
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-cyan-300 rounded-full px-2 py-0.5 shrink-0"
+                      style={{ background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.35)", boxShadow: "0 0 10px rgba(34,211,238,0.12)" }}>
+                      {p.kieImageEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              {/* Auto Mix — วิดีโอ Pexels/Pixabay เป็นหลัก, fallback เป็นภาพ (Unsplash/AI) ถ้าหา clip ไม่เจอ */}
+              <button
+                disabled={!p.autoMixEnabled}
+                onClick={() => p.autoMixEnabled && p.setStockSource("auto-mix")}
+                title={p.autoMixEnabled ? "วิดีโอเป็นหลัก + fallback เป็นภาพ Ken Burns ถ้าหา clip ไม่เจอ — admin beta" : "เร็วๆ นี้"}
+                className={cn("relative w-full rounded-xl text-left transition-all overflow-hidden px-3 py-2.5 border",
+                  p.stockSource === "auto-mix" ? "border-emerald-400/60"
+                  : p.autoMixEnabled ? "border-emerald-500/25 hover:border-emerald-400/50"
+                  : "border-emerald-500/15 cursor-not-allowed")}
+                style={p.stockSource === "auto-mix"
+                  ? { background: "linear-gradient(135deg, rgba(16,185,129,0.18), rgba(5,150,105,0.08) 55%, rgba(16,185,129,0.04))", boxShadow: "0 0 18px rgba(16,185,129,0.18), inset 0 1px 0 rgba(255,255,255,0.07)" }
+                  : { background: "linear-gradient(135deg, rgba(16,185,129,0.05), #15151b 60%)" }}>
+                <div aria-hidden className="absolute inset-x-0 top-0 h-px"
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(110,231,183,0.45), transparent)" }} />
+                <div className={cn("flex items-center gap-2.5", !p.autoMixEnabled && "opacity-75")}>
+                  <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border",
+                    p.stockSource === "auto-mix" ? "border-emerald-400/50" : "border-emerald-500/25")}
+                    style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.3), rgba(6,78,59,0.25))" }}>
+                    <Shuffle className="w-3.5 h-3.5 text-emerald-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-bold leading-tight"
+                      style={{ background: "linear-gradient(90deg, #6ee7b7, #10b981, #6ee7b7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                      Auto Mix
+                    </div>
+                    <div className="text-[9px] text-emerald-200/40 mt-0.5">วิดีโอ + ภาพ fallback</div>
+                  </div>
+                  {p.stockSource === "auto-mix" ? (
+                    <span className="ml-auto w-4.5 h-4.5 rounded-full flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"
+                      style={{ background: "linear-gradient(135deg, #10b981, #047857)" }}>
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </span>
+                  ) : (
+                    <span className="ml-auto text-[8px] font-bold uppercase tracking-wider text-emerald-300 rounded-full px-2 py-0.5 shrink-0"
+                      style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.35)", boxShadow: "0 0 10px rgba(16,185,129,0.12)" }}>
+                      {p.autoMixEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                    </span>
+                  )}
+                </div>
+              </button>
+
+              {/* เลือกโมเดล text-to-image ของ kie.ai — แสดงเมื่อเลือก AI Image (ขนาดภาพ fix 9:16) — ใช้ร่วมกับ Auto Mix สำหรับ fallback ด้วย */}
+              {(p.stockSource === "kie-image" && p.kieImageEnabled) || (p.stockSource === "auto-mix" && p.autoMixEnabled) ? (
+                <div className="px-1">
+                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 block">
+                    Image Model (9:16)
+                  </label>
+                  <select
+                    value={p.kieModel ?? "nano-banana-pro"}
+                    onChange={(e) => p.setKieModel?.(e.target.value as KieImageModel)}
+                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400/40"
+                    style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}
+                  >
+                    {KIE_IMAGE_MODEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+
+              {/* เลือก provider ภาพ fallback ของ Auto Mix — multi-select checklist, เปิดเฉพาะตอนเลือก Auto Mix */}
+              {p.stockSource === "auto-mix" && p.autoMixEnabled && (
+                <div className="px-1 relative" ref={autoMixProvidersRef}>
+                  <label className="text-[9px] font-bold text-emerald-300/60 uppercase tracking-wider mb-1 block">
+                    B-roll Sources ({selectedAutoMixProviders.length}/{AUTO_MIX_PROVIDER_OPTIONS.length})
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setAutoMixProvidersOpen(v => !v)}
+                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-emerald-100 outline-none focus:ring-1 focus:ring-emerald-400/40 flex items-center justify-between"
+                    style={{ background: "hsl(160 40% 7%)", border: "1px solid rgba(16,185,129,0.25)" }}
+                  >
+                    <span className="truncate text-left">
+                      {selectedAutoMixProviders.length === AUTO_MIX_PROVIDER_OPTIONS.length
+                        ? "ทุกแหล่ง (ค่าเริ่มต้น)"
+                        : selectedAutoMixProviders.length === 0
+                        ? "ไม่เลือกเลย — ไม่มี fallback"
+                        : AUTO_MIX_PROVIDER_OPTIONS.filter(o => selectedAutoMixProviders.includes(o.value)).map(o => o.label).join(", ")}
+                    </span>
+                    <ChevronDown className={cn("w-3 h-3 shrink-0 ml-1 transition-transform", autoMixProvidersOpen && "rotate-180")} />
+                  </button>
+
+                  {autoMixProvidersOpen && (
+                    <div className="absolute z-20 mt-1 w-full rounded-lg p-1.5 shadow-lg"
+                      style={{ background: "hsl(160 40% 6%)", border: "1px solid rgba(16,185,129,0.3)" }}>
+                      {AUTO_MIX_PROVIDER_OPTIONS.map((opt) => {
+                        const checked = selectedAutoMixProviders.includes(opt.value);
+                        return (
+                          <label key={opt.value}
+                            className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] text-slate-200 hover:bg-emerald-500/10 cursor-pointer">
+                            <input type="checkbox" checked={checked} onChange={() => toggleAutoMixProvider(opt.value)}
+                              className="w-3 h-3 rounded accent-emerald-500" />
+                            <span className="flex-1">{opt.label}</span>
+                            {opt.needsKey && (
+                              <span className="text-[8px] text-slate-500 uppercase tracking-wider">key</span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* hint บอกว่าจะได้ video หรือภาพล้วน ตามที่เลือก "วิดีโอจริง" ไว้ไหม */}
+                  <p className="text-[8px] text-emerald-200/40 mt-1 leading-relaxed">
+                    {selectedAutoMixProviders.includes("video")
+                      ? "หาวิดีโอจริงก่อน · ที่หาไม่เจอ fallback เป็นภาพจากแหล่งที่เลือก"
+                      : "🖼 ข้ามวิดีโอ — สร้างภาพล้วนทุก keyword จากแหล่งที่เลือก"}
+                  </p>
+                </div>
+              )}
+
+              {/* Preview คลิป/ภาพที่ได้จาก API — โชว์ระหว่าง/หลัง step B-roll
+                  รวมทั้ง video clips (Pexels/Pixabay) และภาพ AI generate (kie.ai/Auto Mix fallback) */}
+              {!!p.stockVideos?.some(sv => sv.imageLocalUrl || sv.imageUrl || sv.localUrl || sv.videoUrl) && (
+                <div className="px-1">
+                  <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                    {p.steps.fetchStock === "running" && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                    B-roll ที่ได้ ({p.stockVideos!.filter(sv => sv.imageLocalUrl || sv.imageUrl || sv.localUrl || sv.videoUrl).length})
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {p.stockVideos!.map((sv, i) => {
+                      // append cache-bust เฉพาะ local file (ชื่อซ้ำข้ามรอบ) — external URL ไม่ต้อง
+                      const bust = (u?: string) => u
+                        ? (u.startsWith("/api/") && p.stockCacheBust ? `${u}${u.includes("?") ? "&" : "?"}v=${p.stockCacheBust}` : u)
+                        : undefined;
+                      const imgSrc = bust(sv.imageLocalUrl) || sv.imageUrl;
+                      const vidSrc = bust(sv.localUrl) || sv.videoUrl;
+                      if (!imgSrc && !vidSrc) return null;
+                      // AI generate (kie.ai/auto-mix fallback) มี imageUrl → แสดงรูป
+                      // video clip ปกติ (Pexels/Pixabay) → แสดง frame แรกของวิดีโอ
+                      const isImage = !!imgSrc;
+                      return (
+                        <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border border-cyan-500/20 bg-[#0a0a0f] group/clip">
+                          {isImage ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={imgSrc} alt={sv.keyword || `clip ${i + 1}`} className="w-full h-full object-cover" loading="lazy" />
+                          ) : (
+                            <video src={vidSrc} className="w-full h-full object-cover" muted playsInline preload="metadata"
+                              onMouseEnter={e => { e.currentTarget.play().catch(() => {}); }}
+                              onMouseLeave={e => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
+                          )}
+                          {/* badge บอก source: AI หรือ video */}
+                          <span className={cn("absolute top-0.5 right-0.5 text-[7px] font-bold px-1 py-px rounded uppercase tracking-wide",
+                            isImage ? "bg-cyan-500/80 text-white" : "bg-violet-500/80 text-white")}>
+                            {isImage ? "AI" : "VID"}
+                          </span>
+                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/60 truncate">{sv.keyword}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[8px] text-slate-600 mt-1 leading-relaxed">
+                    <span className="text-violet-300 font-bold">VID</span> = วิดีโอจริง (hover เพื่อเล่น) · <span className="text-cyan-300 font-bold">AI</span> = ภาพ AI generate
+                  </p>
+                </div>
+              )}
             </div>
+          </div>
+
+          {/* B-roll clip count — กี่คลิปย่อยใน 1 วิดีโอ */}
+          <div>
+            <SectionLabel>B-roll Clips</SectionLabel>
+            <div className="flex gap-1.5">
+              <button onClick={() => p.setTargetClipCount(0)}
+                className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
+                  p.targetClipCount === 0 ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300")}
+                style={p.targetClipCount === 0
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15)" }
+                  : undefined}>
+                Auto
+              </button>
+              {/* custom stepper − n + (แทน native spinner) */}
+              <div className={cn("flex items-center rounded-xl border overflow-hidden transition-all",
+                p.targetClipCount > 0 ? "border-violet-400/50" : "border-[#26262f] bg-[#15151b]")}
+                style={p.targetClipCount > 0
+                  ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15)" }
+                  : undefined}>
+                <button
+                  onClick={() => p.setTargetClipCount(Math.max(0, (p.targetClipCount || 1) - 1))}
+                  className="w-7 self-stretch flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-white/5 transition-colors text-[13px] font-bold">−</button>
+                <input
+                  type="text" inputMode="numeric" placeholder="—"
+                  value={p.targetClipCount || ""}
+                  onChange={e => {
+                    const n = parseInt(e.target.value, 10);
+                    p.setTargetClipCount(isNaN(n) ? 0 : Math.max(1, Math.min(60, n)));
+                  }}
+                  className={cn("w-9 bg-transparent text-center text-[12px] font-bold outline-none py-2",
+                    p.targetClipCount > 0 ? "text-violet-200" : "text-slate-500 placeholder:text-slate-700")} />
+                <button
+                  onClick={() => p.setTargetClipCount(Math.min(60, (p.targetClipCount || 0) + 1))}
+                  className="w-7 self-stretch flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-white/5 transition-colors text-[13px] font-bold">+</button>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-700 mt-1.5 leading-relaxed">
+              Auto = เปลี่ยนคลิปตามซับ (1 คลิป/ซับ) · กำหนดเอง = จำนวนคลิปย่อยใน 1 วิดีโอ แบ่งเวลาเท่าๆ กัน
+            </p>
           </div>
 
           {/* TTS — ซ่อนเมื่อ Direct URL */}
           {p.avatarInputMode !== "direct" ? (
           <div>
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Voice</div>
+            <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
               {(["gemini","elevenlabs"] as const).map(pv => (
                 <button key={pv} onClick={() => p.setTtsProvider(pv)}
-                  className={cn("flex-1 py-2 rounded-lg border text-[11px] font-bold transition-all",
-                    p.ttsProvider === pv ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500")}>
+                  className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
+                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
+                  style={p.ttsProvider === pv
+                    ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
+                    : undefined}>
                   {pv === "gemini" ? "Gemini" : "ElevenLabs"}
                 </button>
               ))}
             </div>
             {p.ttsProvider === "gemini" && (
-              <div className="mt-2 space-y-1.5">
+              <div className="mt-2 space-y-1.5 relative" ref={geminiVoiceRef}>
                 <div className="text-[10px] text-slate-600">Gemini Voice</div>
-                <div className="relative">
-                  <select value={p.geminiVoiceName} onChange={e => p.setGeminiVoiceName(e.target.value)}
-                    className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-200 appearance-none cursor-pointer outline-none">
-                    {GEMINI_VOICES.map(v => (
-                      <option key={v.id} value={v.id} style={{ background: "#1a1a2e" }}>
-                        {v.label} — {v.gender === "Female" ? "หญิง" : "ชาย"}, {v.style}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-500" />
-                </div>
-                {(() => { const v = GEMINI_VOICES.find(x => x.id === p.geminiVoiceName); return v ? (
-                  <div className="rounded-lg px-2.5 py-2 flex items-center gap-2 bg-violet-500/5 border border-violet-500/15">
-                    <span className="text-[10px] font-bold text-slate-300">{v.label}</span>
-                    <span className="text-[9px] text-slate-600">{v.gender === "Female" ? "หญิง" : "ชาย"} · {v.style}</span>
-                  </div>
-                ) : null; })()}
+                {(() => {
+                  const sel = GEMINI_VOICES.find(x => x.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+                  const genderChip = (g: string) => g === "Female"
+                    ? { label: "หญิง", cls: "bg-pink-500/15 text-pink-300 border-pink-500/30" }
+                    : { label: "ชาย", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" };
+                  return (
+                    <>
+                      {/* ปุ่มเปิด dropdown — แสดงเสียงที่เลือกพร้อม gender chip + style */}
+                      <button type="button" onClick={() => setGeminiVoiceOpen(v => !v)}
+                        className="w-full rounded-xl px-3 py-2.5 flex items-center gap-2 text-left outline-none transition-colors focus:border-violet-500/40"
+                        style={{ background: "#15151b", border: "1px solid #26262f" }}>
+                        <span className="text-[12px] font-bold text-slate-100 truncate">{sel.label}</span>
+                        <span className={cn("text-[8px] font-bold uppercase tracking-wide rounded px-1.5 py-px border shrink-0", genderChip(sel.gender).cls)}>
+                          {genderChip(sel.gender).label}
+                        </span>
+                        <span className="text-[9px] text-slate-500 truncate">{sel.style}</span>
+                        <ChevronDown className={cn("w-3 h-3 text-slate-500 ml-auto shrink-0 transition-transform", geminiVoiceOpen && "rotate-180")} />
+                      </button>
+
+                      {geminiVoiceOpen && (
+                        <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl shadow-xl overflow-hidden"
+                          style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
+                          {/* Tab กรองเพศ — segmented control: track เดียว, active = pill มี glow */}
+                          <div className="m-1.5 flex gap-0.5 rounded-lg p-0.5 border-b-0"
+                            style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(139,92,246,0.12)" }}>
+                            {([
+                              { key: "all" as const,    label: "รวม",  count: GEMINI_VOICES.length,                                  grad: "linear-gradient(135deg,rgba(139,92,246,0.9),rgba(99,102,241,0.75))", glow: "rgba(139,92,246,0.45)", dot: "" },
+                              { key: "Female" as const, label: "หญิง", count: GEMINI_VOICES.filter(x => x.gender === "Female").length, grad: "linear-gradient(135deg,rgba(236,72,153,0.9),rgba(219,39,119,0.75))",  glow: "rgba(236,72,153,0.45)", dot: "bg-pink-400" },
+                              { key: "Male" as const,   label: "ชาย",  count: GEMINI_VOICES.filter(x => x.gender === "Male").length,   grad: "linear-gradient(135deg,rgba(56,189,248,0.9),rgba(14,165,233,0.75))", glow: "rgba(56,189,248,0.45)", dot: "bg-sky-400" },
+                            ]).map(t => {
+                              const on = voiceGenderFilter === t.key;
+                              return (
+                                <button key={t.key} type="button" onClick={() => setVoiceGenderFilter(t.key)}
+                                  className={cn("flex-1 py-1.5 rounded-md text-[10px] font-bold transition-all flex items-center justify-center gap-1",
+                                    on ? "text-white" : "text-slate-500 hover:text-slate-300")}
+                                  style={on ? { background: t.grad, boxShadow: `0 2px 10px ${t.glow}, inset 0 1px 0 rgba(255,255,255,0.15)` } : undefined}>
+                                  {t.dot && <span className={cn("w-1.5 h-1.5 rounded-full", on ? "bg-white/80" : t.dot)} />}
+                                  <span>{t.label}</span>
+                                  <span className={cn("text-[8px] tabular-nums px-1 rounded-full", on ? "bg-white/20 text-white" : "bg-white/5 text-slate-500")}>{t.count}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="p-1 max-h-56 overflow-y-auto scrollbar-none">
+                          {GEMINI_VOICES.filter(v => voiceGenderFilter === "all" || v.gender === voiceGenderFilter).map(v => {
+                            const active = v.id === p.geminiVoiceName;
+                            const chip = genderChip(v.gender);
+                            return (
+                              <button key={v.id} type="button"
+                                onClick={() => { p.setGeminiVoiceName(v.id); setGeminiVoiceOpen(false); }}
+                                className={cn("w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors",
+                                  active ? "bg-violet-500/20" : "hover:bg-violet-500/10")}>
+                                <span className={cn("text-[12px] font-bold truncate", active ? "text-violet-100" : "text-slate-200")}>{v.label}</span>
+                                <span className={cn("text-[8px] font-bold uppercase tracking-wide rounded px-1.5 py-px border shrink-0", chip.cls)}>{chip.label}</span>
+                                <span className="text-[9px] text-slate-500 truncate ml-auto">{v.style}</span>
+                                {active && <Check className="w-3 h-3 text-violet-300 shrink-0" strokeWidth={3} />}
+                              </button>
+                            );
+                          })}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
             {p.ttsProvider === "elevenlabs" && (
               <div className="mt-2">
                 <div className="text-[10px] text-slate-600 mb-1">Voice ID</div>
                 <input value={p.voiceId} onChange={e => p.setVoiceId(e.target.value)} placeholder="ElevenLabs Voice ID"
-                  className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-2 py-1.5 text-[11px] text-slate-300 outline-none" />
+                  className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-300 placeholder:text-slate-700 outline-none focus:border-violet-500/40 transition-colors" />
               </div>
             )}
             <VoicePreviewButton
@@ -343,13 +704,12 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* Avatar */}
           <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Avatar (HeyGen)</div>
+            <SectionLabel right={
               <button onClick={() => p.setUseAvatar(!p.useAvatar)}
-                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.useAvatar ? "bg-violet-600" : "bg-[#2a2a36]")}>
+                className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.useAvatar ? "bg-violet-600 shadow-[0_0_10px_rgba(139,92,246,0.5)]" : "bg-[#2a2a36]")}>
                 <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", p.useAvatar ? "left-5" : "left-0.5")} />
               </button>
-            </div>
+            }>Avatar (HeyGen)</SectionLabel>
             {p.useAvatar && (
               <div className="space-y-3">
                 <div className="flex gap-1 rounded-lg p-0.5 bg-[#1a1a22] border border-[#2a2a36]">

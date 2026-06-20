@@ -63,3 +63,40 @@ export const PlaybackProgressStrip = memo(function PlaybackProgressStrip({ total
 
   return <div ref={ref} className="h-full bg-violet-500 transition-none" style={{ width: "0%" }} />;
 });
+
+interface SegmentProgressBarProps {
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  captionEndMs: number;
+}
+
+/**
+ * Per-segment progress fill in the Transcript panel — same store + ref
+ * pattern as PlayheadIndicator. Hides itself (width 0, opacity 0) once
+ * playback leaves [startMs, endMs).
+ */
+export const SegmentProgressBar = memo(function SegmentProgressBar({ startMs, endMs, durationMs, captionEndMs }: SegmentProgressBarProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const apply = () => {
+      const wrap = wrapRef.current;
+      const fill = fillRef.current;
+      if (!wrap || !fill) return;
+      const playheadMs = toCaptionMs(playbackTime.getMs(), durationMs, captionEndMs);
+      const within = playheadMs >= startMs && playheadMs < endMs;
+      wrap.style.opacity = within ? "1" : "0";
+      fill.style.width = `${((playheadMs - startMs) / Math.max(1, endMs - startMs)) * 100}%`;
+    };
+    apply();
+    return playbackTime.subscribe(apply);
+  }, [startMs, endMs, durationMs, captionEndMs]);
+
+  return (
+    <div ref={wrapRef} className="absolute bottom-0 left-0 right-0 h-[2px] bg-violet-500/15 pointer-events-none" style={{ opacity: 0 }}>
+      <div ref={fillRef} className="h-full bg-gradient-to-r from-violet-400 to-violet-300" style={{ width: "0%" }} />
+    </div>
+  );
+});

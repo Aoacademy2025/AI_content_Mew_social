@@ -253,7 +253,7 @@ async function handleGenerateWithBg(req: Request) {
     }
     // 200 แต่ไม่มี video_id — response ผิดรูป ไม่ใช่ปัญหา key (อย่าเปิด modal ใส่ key ซ้ำ)
     return NextResponse.json(
-      { error: `HeyGen generate failed: ${JSON.stringify(genData.error ?? genData)}`, retryable: false },
+      { error: `HeyGen generate failed: ${JSON.stringify(genData?.error ?? genData)}`, retryable: false },
       { status: 500 }
     );
   }

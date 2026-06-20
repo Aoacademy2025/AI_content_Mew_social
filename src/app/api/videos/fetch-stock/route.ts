@@ -412,6 +412,666 @@ function bestRelevantCandidateIndex(
   return orderCandidateIndices(candidates, -1, keyword, subtitleText, terms, false)[0]?.index ?? -1;
 }
 
+// ── Pexels Photos (Auto Mix fallback photo, ใช้ key Pexels เดิม) ──────────
+// ใช้ key เดียวกับ Pexels video — ถ้ามี Pexels key อยู่แล้วใช้ photo search ได้ทันที
+// กันชน id — Pexels photo ใช้ index เป็น id ฐาน
+const PEXELS_PHOTO_ID_OFFSET = 8_000_000_000;
+
+interface PexelsPhoto {
+  id: number;
+  src: { large2x?: string; large?: string; original?: string };
+  photographer?: string;
+  url?: string;
+}
+
+async function searchPexelsPhotos(query: string, apiKey: string, perPage = 10): Promise<PexelsPhoto[]> {
+  const params = new URLSearchParams({
+    query, orientation: "portrait", size: "large",
+    per_page: String(Math.min(80, perPage)),
+  });
+  const res = await fetch(`https://api.pexels.com/v1/search?${params}`, {
+    headers: { Authorization: apiKey },
+  });
+  if (!res.ok) throw new Error(`Pexels photo search failed: ${res.status}`);
+  const data = await res.json();
+  return (data.photos ?? []) as PexelsPhoto[];
+}
+
+// ── Pixabay Photos (Auto Mix fallback photo, ใช้ key Pixabay เดิม) ─────────
+// ใช้ key เดียวกับ Pixabay video — ถ้ามี Pixabay key อยู่แล้วใช้ photo search ได้ทันที
+// กันชน id — Pixabay photo ใช้ index เป็น id ฐาน
+const PIXABAY_PHOTO_ID_OFFSET = 9_000_000_000;
+
+interface PixabayPhoto {
+  id: number;
+  largeImageURL?: string;
+  webformatURL?: string;
+  user?: string;
+  pageURL?: string;
+}
+
+async function searchPixabayPhotos(query: string, pixabayKey: string, perPage = 10): Promise<PixabayPhoto[]> {
+  const params = new URLSearchParams({
+    key: pixabayKey, q: query, image_type: "photo",
+    orientation: "vertical", per_page: String(Math.min(200, Math.max(3, perPage))),
+    safesearch: "true",
+  });
+  const res = await fetch(`https://pixabay.com/api/?${params}`);
+  if (!res.ok) throw new Error(`Pixabay photo search failed: ${res.status}`);
+  const data = await res.json();
+  return (data.hits ?? []) as PixabayPhoto[];
+}
+
+// ── Unsplash (Auto Mix fallback photo, admin-only) ────────────────────────
+// ใช้เป็น fallback ภาพคุณภาพสูงเมื่อหา video B-roll ที่ดีไม่เจอ — แปลงเป็น
+// คลิปด้วย Ken Burns (ffmpeg zoompan) เหมือนกับ kie.ai AI image
+// กันชน id กับ source อื่นๆ — Unsplash photo ใช้ index เป็น id ฐาน
+const UNSPLASH_ID_OFFSET = 3_000_000_000;
+
+interface UnsplashPhoto {
+  id: string;
+  urls: { regular?: string; full?: string; raw?: string };
+  links: { download_location?: string; html?: string };
+  user?: { name?: string; links?: { html?: string } };
+  description?: string | null;
+  alt_description?: string | null;
+}
+
+async function searchUnsplash(query: string, accessKey: string, perPage = 10): Promise<UnsplashPhoto[]> {
+  const params = new URLSearchParams({
+    query,
+    orientation: "portrait",
+    per_page: String(Math.min(30, perPage)),
+    content_filter: "high",
+  });
+  const res = await fetch(`https://api.unsplash.com/search/photos?${params}`, {
+    headers: { Authorization: `Client-ID ${accessKey}`, "Accept-Version": "v1" },
+  });
+  if (!res.ok) throw new Error(`Unsplash search failed: ${res.status}`);
+  const data = await res.json();
+  return (data.results ?? []) as UnsplashPhoto[];
+}
+
+// Unsplash API guideline: ทุกครั้งที่ "download" รูปมาใช้งานจริง ต้องยิง
+// photo.links.download_location เพื่อ track download (fire-and-forget)
+function trackUnsplashDownload(photo: UnsplashPhoto, accessKey: string) {
+  const url = photo.links?.download_location;
+  if (!url) return;
+  fetch(url, { headers: { Authorization: `Client-ID ${accessKey}`, "Accept-Version": "v1" } }).catch(() => {});
+}
+
+// ── Wikimedia Commons (Auto Mix fallback photo, no key required) ──────────
+// ดีสำหรับ landmark/history/documentary — ใช้ MediaWiki API ค้นหาไฟล์ภาพแล้วดึง imageinfo
+// กันชน id — Wikimedia ใช้ index เป็น id ฐาน
+const WIKIMEDIA_ID_OFFSET = 4_000_000_000;
+
+interface WikimediaPhoto {
+  pageid: number;
+  title: string;
+  url: string;
+  descriptionUrl?: string;
+  extMetadata?: { LicenseShortName?: { value?: string }; Artist?: { value?: string } };
+}
+
+async function searchWikimedia(query: string, limit = 5): Promise<WikimediaPhoto[]> {
+  const searchParams = new URLSearchParams({
+    action: "query", list: "search", srnamespace: "6", srlimit: String(Math.min(20, limit)),
+    srsearch: `${query} filetype:bitmap`, format: "json", origin: "*",
+  });
+  const searchRes = await fetch(`https://commons.wikimedia.org/w/api.php?${searchParams}`);
+  if (!searchRes.ok) throw new Error(`Wikimedia search failed: ${searchRes.status}`);
+  const searchData = await searchRes.json();
+  const titles = ((searchData?.query?.search ?? []) as { title: string }[]).map(s => s.title);
+  if (!titles.length) return [];
+
+  const infoParams = new URLSearchParams({
+    action: "query", titles: titles.join("|"), prop: "imageinfo",
+    iiprop: "url|extmetadata", iiurlwidth: "1080", format: "json", origin: "*",
+  });
+  const infoRes = await fetch(`https://commons.wikimedia.org/w/api.php?${infoParams}`);
+  if (!infoRes.ok) throw new Error(`Wikimedia imageinfo failed: ${infoRes.status}`);
+  const infoData = await infoRes.json();
+  const pages = Object.values(infoData?.query?.pages ?? {}) as {
+    pageid: number; title: string;
+    imageinfo?: { url?: string; descriptionurl?: string; extmetadata?: WikimediaPhoto["extMetadata"] }[];
+  }[];
+
+  return pages
+    .map(p => {
+      const info = p.imageinfo?.[0];
+      if (!info?.url) return null;
+      return {
+        pageid: p.pageid, title: p.title, url: info.url,
+        descriptionUrl: info.descriptionurl, extMetadata: info.extmetadata,
+      } as WikimediaPhoto;
+    })
+    .filter((p): p is WikimediaPhoto => p !== null);
+}
+
+// ── Flickr Creative Commons (Auto Mix fallback photo, admin-only BYOK) ────
+// ดีสำหรับ travel/real-world/event — ค้นหาเฉพาะภาพที่มี Creative Commons license
+// กันชน id — Flickr ใช้ index เป็น id ฐาน
+const FLICKR_ID_OFFSET = 5_000_000_000;
+
+interface FlickrPhoto {
+  id: string;
+  title: string;
+  url: string;
+  ownerName?: string;
+  license?: string;
+  sourcePage: string;
+}
+
+// Flickr CC license codes: 1-10 ครอบคลุม CC BY/BY-SA/BY-ND/BY-NC/etc + CC0 (9), Public Domain Mark (10)
+const FLICKR_CC_LICENSES = "1,2,3,4,5,6,7,8,9,10";
+
+async function searchFlickr(query: string, apiKey: string, perPage = 10): Promise<FlickrPhoto[]> {
+  const params = new URLSearchParams({
+    method: "flickr.photos.search", api_key: apiKey, text: query,
+    license: FLICKR_CC_LICENSES, content_type: "1", media: "photos",
+    sort: "relevance", per_page: String(Math.min(30, perPage)),
+    extras: "url_l,url_o,owner_name,license", format: "json", nojsoncallback: "1",
+  });
+  const res = await fetch(`https://www.flickr.com/services/rest/?${params}`);
+  if (!res.ok) throw new Error(`Flickr search failed: ${res.status}`);
+  const data = await res.json();
+  if (data?.stat !== "ok") throw new Error(`Flickr search error: ${data?.message ?? "unknown"}`);
+  const photos = (data?.photos?.photo ?? []) as {
+    id: string; title?: string; owner: string; secret: string; server: string;
+    url_l?: string; url_o?: string; ownername?: string; license?: string;
+  }[];
+  return photos
+    .map(p => {
+      const url = p.url_o ?? p.url_l;
+      if (!url) return null;
+      return {
+        id: p.id, title: p.title || query, url,
+        ownerName: p.ownername, license: p.license,
+        sourcePage: `https://www.flickr.com/photos/${p.owner}/${p.id}`,
+      } as FlickrPhoto;
+    })
+    .filter((p): p is FlickrPhoto => p !== null);
+}
+
+// ── NASA Image and Video Library (Auto Mix fallback photo, no key required) ─
+// ดีสำหรับ space/aircraft/science — ใช้ images-api.nasa.gov (DEMO_KEY ใช้ได้ ไม่ต้องสมัคร)
+// กันชน id — NASA ใช้ index เป็น id ฐาน
+const NASA_ID_OFFSET = 6_000_000_000;
+
+interface NasaImage {
+  nasaId: string;
+  title: string;
+  url: string;
+  description?: string;
+}
+
+async function searchNasa(query: string, limit = 5): Promise<NasaImage[]> {
+  const params = new URLSearchParams({ q: query, media_type: "image" });
+  const res = await fetch(`https://images-api.nasa.gov/search?${params}`);
+  if (!res.ok) throw new Error(`NASA search failed: ${res.status}`);
+  const data = await res.json();
+  const items = (data?.collection?.items ?? []) as {
+    data?: { nasa_id?: string; title?: string; description?: string }[];
+    links?: { href?: string; rel?: string; render?: string }[];
+  }[];
+
+  const results: NasaImage[] = [];
+  for (const item of items.slice(0, limit)) {
+    const meta = item.data?.[0];
+    const link = item.links?.find(l => l.rel === "preview")?.href;
+    if (!meta?.nasa_id || !link) continue;
+    results.push({ nasaId: meta.nasa_id, title: meta.title || query, url: link, description: meta.description });
+  }
+  return results;
+}
+
+// ── The Met Museum API (Auto Mix fallback photo, no key required) ─────────
+// ดีสำหรับ art/museum/painting/sculpture — Open Access public domain artworks
+// กันชน id — Met ใช้ index เป็น id ฐาน
+const MET_ID_OFFSET = 7_000_000_000;
+
+interface MetArtwork {
+  objectId: number;
+  title: string;
+  url: string;
+  artist?: string;
+  sourcePage: string;
+}
+
+async function searchMet(query: string, limit = 5): Promise<MetArtwork[]> {
+  const searchParams = new URLSearchParams({ q: query, hasImages: "true" });
+  const searchRes = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/search?${searchParams}`);
+  if (!searchRes.ok) throw new Error(`Met search failed: ${searchRes.status}`);
+  const searchData = await searchRes.json();
+  const objectIds = (searchData?.objectIDs ?? []) as number[];
+  if (!objectIds.length) return [];
+
+  const results: MetArtwork[] = [];
+  for (const objectId of objectIds.slice(0, limit)) {
+    try {
+      const objRes = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${objectId}`);
+      if (!objRes.ok) continue;
+      const obj = await objRes.json();
+      const url = obj?.primaryImage || obj?.primaryImageSmall;
+      if (!url) continue;
+      results.push({
+        objectId, title: obj?.title || query, url,
+        artist: obj?.artistDisplayName || undefined,
+        sourcePage: obj?.objectURL || `https://www.metmuseum.org/art/collection/search/${objectId}`,
+      });
+    } catch { /* skip this object */ }
+  }
+  return results;
+}
+
+// ── kie.ai image-to-video (Premium, admin-only) ───────────────────────────
+// สร้างภาพด้วย AI (GPT Image, text-to-image) จาก keyword/subtitle แล้วแปลง
+// เป็นวิดีโอด้วย Kling 2.6 image-to-video ผ่าน kie.ai unified jobs API
+// (createTask → recordInfo polling) เปิดเฉพาะ admin เพื่อทดลอง pipeline ก่อน
+const KIE_API_BASE = "https://api.kie.ai/api/v1";
+const KIE_POLL_INTERVAL_MS = 4_000;
+const KIE_POLL_TIMEOUT_MS = 180_000;
+
+// กันชน id กับ source อื่นๆ — kie.ai generated item ใช้ index เป็น id ฐาน
+const KIE_ID_OFFSET = 2_000_000_000;
+
+interface KieCreateTaskResponse {
+  code: number;
+  msg?: string;
+  data?: { taskId?: string };
+}
+
+interface KieRecordInfoResponse {
+  code: number;
+  msg?: string;
+  data?: {
+    taskId: string;
+    state: "waiting" | "queuing" | "generating" | "success" | "fail";
+    resultJson?: string;
+    failMsg?: string;
+  };
+}
+
+// อ่าน body เป็น text ก่อนเสมอ — kie.ai อาจตอบ body ว่างหรือ non-JSON เวลา error
+// (เช่น 401/500 บางกรณี) ซึ่งทำให้ res.json() throw "Unexpected end of JSON input"
+async function parseKieResponse<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  let data: T;
+  try {
+    data = JSON.parse(text) as T;
+  } catch {
+    throw new Error(`kie.ai returned non-JSON response (status ${res.status}): ${text.slice(0, 300) || "(empty body)"}`);
+  }
+  if (!res.ok) throw new Error(`kie.ai request failed (status ${res.status}): ${text.slice(0, 300)}`);
+  return data;
+}
+
+async function kieCreateTask(model: string, input: Record<string, unknown>, token: string): Promise<string> {
+  const res = await fetch(`${KIE_API_BASE}/jobs/createTask`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, input }),
+  });
+  const data = await parseKieResponse<KieCreateTaskResponse>(res);
+  const taskId = data.data?.taskId;
+  if (data.code !== 200 || !taskId) throw new Error(`kie.ai createTask error: ${data.msg ?? data.code}`);
+  return taskId;
+}
+
+// Poll /jobs/recordInfo until state is success/fail, returns resultUrls[0]
+async function kiePollResult(taskId: string, token: string): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < KIE_POLL_TIMEOUT_MS) {
+    const res = await fetch(`${KIE_API_BASE}/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await parseKieResponse<KieRecordInfoResponse>(res);
+    const state = data.data?.state;
+    if (state === "success") {
+      const resultJson = data.data?.resultJson ? JSON.parse(data.data.resultJson) : {};
+      const url = resultJson.resultUrls?.[0];
+      if (!url) throw new Error(`kie.ai task ${taskId} succeeded but has no resultUrls`);
+      return url;
+    }
+    if (state === "fail") throw new Error(`kie.ai task ${taskId} failed: ${data.data?.failMsg ?? "unknown error"}`);
+    await new Promise((r) => setTimeout(r, KIE_POLL_INTERVAL_MS));
+  }
+  throw new Error(`kie.ai task ${taskId} timed out after ${KIE_POLL_TIMEOUT_MS}ms`);
+}
+
+// โมเดล text-to-image ที่เลือกได้จาก dropdown — ขนาดภาพ fix ที่ 9:16 เสมอ
+// NOTE: ห้าม export จาก route.ts (Next.js อนุญาตเฉพาะ HTTP handlers/config) —
+// export ตัวอื่นทำให้ type-check ของ .next/types fail และ build/หน้าเว็บ error
+const KIE_IMAGE_MODELS = [
+  "nano-banana-pro",
+  "nano-banana-2",
+  "gpt-image-2-text-to-image",
+  "seedream/5-lite-text-to-image",
+  "seedream/4.5-text-to-image",
+  "flux-2/pro-text-to-image",
+  "grok-imagine/text-to-image",
+  "qwen2/text-to-image",
+] as const;
+type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
+const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "nano-banana-pro";
+
+function isKieImageModel(value: unknown): value is KieImageModel {
+  return typeof value === "string" && (KIE_IMAGE_MODELS as readonly string[]).includes(value);
+}
+
+// แต่ละโมเดลรับ input shape ต่างกันเล็กน้อย — รวม prompt + aspect ratio (fix 9:16)
+function buildKieImageInput(model: KieImageModel, prompt: string): Record<string, unknown> {
+  switch (model) {
+    case "gpt-image-2-text-to-image":
+      return { prompt, aspect_ratio: "9:16" };
+    case "seedream/5-lite-text-to-image":
+    case "seedream/4.5-text-to-image":
+      return { prompt, aspect_ratio: "9:16", quality: "basic" };
+    case "flux-2/pro-text-to-image":
+      return { prompt, aspect_ratio: "9:16", resolution: "1K" };
+    case "grok-imagine/text-to-image":
+      return { prompt, aspect_ratio: "9:16" };
+    case "qwen2/text-to-image":
+      return { prompt, image_size: "9:16", output_format: "png" };
+    case "nano-banana-pro":
+    case "nano-banana-2":
+    default:
+      return { prompt, image_input: [], aspect_ratio: "9:16", resolution: "1K", output_format: "png" };
+  }
+}
+
+const KEN_BURNS_DURATION_SEC = 5;
+const KEN_BURNS_WIDTH = 1080;
+const KEN_BURNS_HEIGHT = 1920;
+
+// แปลงภาพนิ่ง 1 ภาพเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg zoompan: pan+zoom ช้าๆ)
+async function applyKenBurns(imagePath: string, outPath: string): Promise<void> {
+  const ffmpeg = getFfmpegPath();
+  const totalFrames = KEN_BURNS_DURATION_SEC * TARGET_FPS;
+  // ซูมเข้าช้าๆ จาก 1.0 -> ~1.15 พร้อม pan ไปกลางภาพเล็กน้อย ให้ดูมีการเคลื่อนไหว
+  const zoompan = `zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
+  const tmp = `${outPath}.kb.mp4`;
+  safeUnlink(tmp);
+  await withNormalizeSlot(() => execFileAsync(ffmpeg, [
+    "-y", "-loop", "1", "-i", imagePath,
+    "-vf", zoompan,
+    "-t", String(KEN_BURNS_DURATION_SEC),
+    "-an",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    "-pix_fmt", "yuv420p",
+    "-r", String(TARGET_FPS),
+    "-g", String(TARGET_FPS),
+    "-keyint_min", String(TARGET_FPS),
+    "-bf", "0",
+    "-vsync", "cfr",
+    "-movflags", "+faststart",
+    tmp,
+  ], {
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: NORMALIZE_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  }));
+  if (!fs.existsSync(tmp) || fs.statSync(tmp).size <= 1_500) {
+    safeUnlink(tmp);
+    throw new Error("Ken Burns ffmpeg produced an empty/invalid output");
+  }
+  fs.renameSync(tmp, outPath);
+}
+
+// Generate 1 image (text-to-image, model เลือกได้) จาก keyword/subtitle แล้ว
+// แปลงเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg pan/zoom, ~5s) แทน Kling.
+async function generateKieImageKenBurns(
+  query: string,
+  token: string,
+  model: KieImageModel,
+  imagePath: string,
+  outPath: string,
+): Promise<{ duration: number; imageUrl: string }> {
+  const prompt = `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`;
+  const imageTaskId = await kieCreateTask(model, buildKieImageInput(model, prompt), token);
+  const imageUrl = await kiePollResult(imageTaskId, token);
+  console.log(`[fetch-stock] kie image ready for "${query}": ${imageUrl.slice(0, 80)}`);
+
+  await downloadAndCrop(imageUrl, imagePath);
+  console.log(`[fetch-stock] kie cropped "${query}" → ${imagePath.split(/[/\\]/).pop()}`);
+  await applyKenBurns(imagePath, outPath);
+  console.log(`[fetch-stock] kie Ken Burns done "${query}" → ${outPath.split(/[/\\]/).pop()}`);
+
+  return { duration: KEN_BURNS_DURATION_SEC, imageUrl };
+}
+
+// Metadata สำหรับ license/attribution ของ asset — ดู StockVideo["assetMeta"] ใน
+// video-editor/_components/types.ts (shape เดียวกัน)
+type AssetMeta = {
+  provider: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "wikimedia" | "flickr" | "nasa" | "met";
+  assetId: string;
+  downloadUrl?: string;
+  creator?: string;
+  license?: string;
+  sourcePage?: string;
+};
+
+type ImageFallbackResult = {
+  duration: number;
+  imageUrl: string;
+  assetMeta: AssetMeta;
+};
+
+// Auto Mix: หา photo จาก Pexels ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryPexelsPhotoKenBurns(
+  query: string,
+  apiKey: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const photos = await searchPexelsPhotos(query, apiKey, 1);
+  const photo = photos[0];
+  const imageUrl = photo?.src?.large2x ?? photo?.src?.large ?? photo?.src?.original;
+  if (!photo || !imageUrl) return null;
+
+  await downloadAndCrop(imageUrl, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl,
+    assetMeta: {
+      provider: "pexels",
+      assetId: String(photo.id),
+      downloadUrl: imageUrl,
+      creator: photo.photographer,
+      license: "Pexels License",
+      sourcePage: photo.url,
+    },
+  };
+}
+
+// Auto Mix: หา photo จาก Pixabay ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryPixabayPhotoKenBurns(
+  query: string,
+  apiKey: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const photos = await searchPixabayPhotos(query, apiKey, 3);
+  const photo = photos[0];
+  const imageUrl = photo?.largeImageURL ?? photo?.webformatURL;
+  if (!photo || !imageUrl) return null;
+
+  await downloadAndCrop(imageUrl, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl,
+    assetMeta: {
+      provider: "pixabay",
+      assetId: String(photo.id),
+      downloadUrl: imageUrl,
+      creator: photo.user,
+      license: "Pixabay License",
+      sourcePage: photo.pageURL,
+    },
+  };
+}
+
+// Auto Mix: หา photo จาก Unsplash ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryUnsplashKenBurns(
+  query: string,
+  accessKey: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const photos = await searchUnsplash(query, accessKey, 1);
+  const photo = photos[0];
+  const imageUrl = photo?.urls?.regular ?? photo?.urls?.full;
+  if (!photo || !imageUrl) return null;
+
+  await downloadAndCrop(imageUrl, imagePath);
+  await applyKenBurns(imagePath, outPath);
+  trackUnsplashDownload(photo, accessKey); // ตาม Unsplash API guideline — ต้อง track download
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl,
+    assetMeta: {
+      provider: "unsplash",
+      assetId: photo.id,
+      downloadUrl: imageUrl,
+      creator: photo.user?.name,
+      license: "Unsplash License",
+      sourcePage: photo.links?.html,
+    },
+  };
+}
+
+// Auto Mix: หา photo จาก Wikimedia Commons ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryWikimediaKenBurns(
+  query: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const photos = await searchWikimedia(query, 1);
+  const photo = photos[0];
+  if (!photo) return null;
+
+  await downloadAndCrop(photo.url, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl: photo.url,
+    assetMeta: {
+      provider: "wikimedia",
+      assetId: String(photo.pageid),
+      downloadUrl: photo.url,
+      creator: photo.extMetadata?.Artist?.value,
+      license: photo.extMetadata?.LicenseShortName?.value ?? "Wikimedia Commons",
+      sourcePage: photo.descriptionUrl,
+    },
+  };
+}
+
+// Auto Mix: หา photo Creative Commons จาก Flickr ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryFlickrKenBurns(
+  query: string,
+  apiKey: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const photos = await searchFlickr(query, apiKey, 1);
+  const photo = photos[0];
+  if (!photo) return null;
+
+  await downloadAndCrop(photo.url, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl: photo.url,
+    assetMeta: {
+      provider: "flickr",
+      assetId: photo.id,
+      downloadUrl: photo.url,
+      creator: photo.ownerName,
+      license: "Creative Commons",
+      sourcePage: photo.sourcePage,
+    },
+  };
+}
+
+// Auto Mix: หา photo จาก NASA Image Library ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryNasaKenBurns(
+  query: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const images = await searchNasa(query, 1);
+  const image = images[0];
+  if (!image) return null;
+
+  await downloadAndCrop(image.url, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl: image.url,
+    assetMeta: {
+      provider: "nasa",
+      assetId: image.nasaId,
+      downloadUrl: image.url,
+      license: "NASA (Public Domain)",
+      sourcePage: `https://images.nasa.gov/details/${image.nasaId}`,
+    },
+  };
+}
+
+// Auto Mix: หา artwork public domain จาก The Met ตาม query แล้วทำ Ken Burns — คืนค่า null ถ้าไม่เจอผลลัพธ์
+async function tryMetKenBurns(
+  query: string,
+  imagePath: string,
+  outPath: string,
+): Promise<ImageFallbackResult | null> {
+  const artworks = await searchMet(query, 1);
+  const artwork = artworks[0];
+  if (!artwork) return null;
+
+  await downloadAndCrop(artwork.url, imagePath);
+  await applyKenBurns(imagePath, outPath);
+
+  return {
+    duration: KEN_BURNS_DURATION_SEC,
+    imageUrl: artwork.url,
+    assetMeta: {
+      provider: "met",
+      assetId: String(artwork.objectId),
+      downloadUrl: artwork.url,
+      creator: artwork.artist,
+      license: "The Met Open Access (Public Domain)",
+      sourcePage: artwork.sourcePage,
+    },
+  };
+}
+
+// Auto Mix keyword-aware routing: เลือกลำดับ provider fallback ตาม topic ของ query
+// - space/aircraft/science -> NASA ก่อน
+// - art/museum/painting -> The Met ก่อน
+// - landmark/history/monument -> Wikimedia ก่อน
+// - อื่นๆ -> Flickr, Unsplash ตามลำดับปกติ (NASA/Met/Wikimedia ต่อท้ายเป็น fallback เพิ่ม)
+type ImageProvider = "unsplash" | "pexels-photo" | "pixabay-photo" | "flickr" | "wikimedia" | "nasa" | "met";
+
+const NASA_KEYWORDS = /\b(space|nasa|rocket|galaxy|planet|astronaut|satellite|aircraft|spacecraft|orbit|moon|mars|cosmos|universe|telescope)\b/i;
+const MET_KEYWORDS = /\b(art|museum|painting|sculpture|gallery|artwork|portrait|exhibit|masterpiece|fresco|artifact)\b/i;
+const WIKIMEDIA_KEYWORDS = /\b(landmark|history|historical|monument|temple|ruins|heritage|ancient|castle|cathedral|documentary)\b/i;
+
+// Default priority: unsplash -> pexels photo -> pixabay photo -> wikimedia -> flickr -> nasa/met (เฉพาะหมวด)
+function getImageProviderOrder(query: string): ImageProvider[] {
+  if (NASA_KEYWORDS.test(query)) return ["nasa", "wikimedia", "unsplash", "pexels-photo", "pixabay-photo", "flickr", "met"];
+  if (MET_KEYWORDS.test(query)) return ["met", "wikimedia", "unsplash", "pexels-photo", "pixabay-photo", "flickr", "nasa"];
+  if (WIKIMEDIA_KEYWORDS.test(query)) return ["wikimedia", "unsplash", "pexels-photo", "pixabay-photo", "flickr", "met", "nasa"];
+  return ["unsplash", "pexels-photo", "pixabay-photo", "wikimedia", "flickr", "met", "nasa"];
+}
+
 // LLM rank: given subtitle texts and candidate titles per keyword,
 // return the best-matching candidate index for each keyword.
 // Batched in chunks of RANK_BATCH_SIZE to handle long scripts reliably.
@@ -509,6 +1169,8 @@ export async function POST(req: Request) {
     totalDurationSec = 0,
     overrideClipCount = 0,
     stockSource = "both",
+    kieModel,
+    autoMixProviders,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     fullScript,
@@ -524,6 +1186,8 @@ export async function POST(req: Request) {
     totalDurationSec?: number;
     overrideClipCount?: number;
     stockSource?: string;
+    kieModel?: string;
+    autoMixProviders?: string[];
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     fullScript?: string;
@@ -539,6 +1203,8 @@ export async function POST(req: Request) {
   const telemetryDraftId = typeof draftId === "string" && draftId.trim()
     ? draftId.trim().slice(0, 120)
     : null;
+  // Auto Mix: ผู้ใช้เลือกได้ว่าจะเปิด provider ภาพ fallback ตัวไหนบ้าง (undefined = ทุกตัว, ตาม default เดิม)
+  const allowedAutoMixProviders: Set<string> | null = Array.isArray(autoMixProviders) ? new Set(autoMixProviders) : null;
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
       fullScript,
@@ -552,22 +1218,65 @@ export async function POST(req: Request) {
   const relTerms: RelevanceTerms = relSpec ? specToTerms(relSpec) : profileToTerms(resolvedContentProfile);
   console.log(`[fetch-stock] relevance source=${relSpec ? "spec" : "profile"} domain="${relTerms.domainLabel}" +${relTerms.positive.length}/-${relTerms.avoid.length}`);
 
-  const usePexels = stockSource === "pexels" || stockSource === "both";
-  const usePixabay = stockSource === "pixabay" || stockSource === "both";
+  const resolvedKieModel: KieImageModel = isKieImageModel(kieModel) ? kieModel : DEFAULT_KIE_IMAGE_MODEL;
+
+  const useKieImage = stockSource === "kie-image";
+  const useAutoMix = stockSource === "auto-mix";
+  // Auto Mix: ผู้ใช้เลือก "video" ใน autoMixProviders ไหม — ถ้าไม่เลือก = ข้ามการหา
+  // video จริง ไปใช้ภาพ fallback ล้วน (เช่น kie.ai อย่างเดียว → ได้ภาพ AI ทุก keyword)
+  // (undefined = เปิดทุกอย่างตาม default เดิม → video ทำงานปกติ)
+  const autoMixUsesVideo = !allowedAutoMixProviders || allowedAutoMixProviders.has("video");
+  const usePexels = stockSource === "pexels" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
+  const usePixabay = stockSource === "pixabay" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
 
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { pixabayKey: true, pexelsKey: true, geminiKey: true, ttsProvider: true },
+    select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true },
   });
+
+  // AI Image-to-Video (kie.ai) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
+  if (useKieImage && user?.role !== "ADMIN") {
+    return NextResponse.json({ error: "AI Image-to-Video (kie.ai) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
+  }
+
+  // Auto Mix (video + image fallback ผ่าน Ken Burns) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
+  if (useAutoMix && user?.role !== "ADMIN") {
+    return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
+  }
+
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
+  const kieKey = user?.kieKey ? Buffer.from(user.kieKey, "base64").toString("utf-8") : null;
+  const unsplashKey = user?.unsplashKey ? Buffer.from(user.unsplashKey, "base64").toString("utf-8") : null;
+  const flickrKey = user?.flickrKey ? Buffer.from(user.flickrKey, "base64").toString("utf-8") : null;
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;
+  const canUseKieImage = useKieImage && !!kieKey;
+  // Auto Mix: fallback ภาพใช้ตัวไหนก็ได้ที่มี key — ไม่บังคับ ไม่ error ถ้าไม่มี (แค่ skip fallback)
+  // Wikimedia/NASA/Met ไม่ต้องใช้ key — เปิดใช้ได้เสมอเมื่อ Auto Mix
+  // Pexels/Pixabay photo ใช้ key เดียวกับ video search — ใช้ได้ทันทีถ้ามี key อยู่แล้ว
+  // ผู้ใช้เลือก provider เองได้ผ่าน autoMixProviders (undefined = เปิดทุกตัวตาม default เดิม)
+  const isAutoMixProviderAllowed = (p: string) => !allowedAutoMixProviders || allowedAutoMixProviders.has(p);
+  const canUseUnsplashFallback = useAutoMix && !!unsplashKey && isAutoMixProviderAllowed("unsplash");
+  const canUsePexelsPhotoFallback = useAutoMix && !!pexelsKey && isAutoMixProviderAllowed("pexels-photo");
+  const canUsePixabayPhotoFallback = useAutoMix && !!pixabayKey && isAutoMixProviderAllowed("pixabay-photo");
+  const canUseFlickrFallback = useAutoMix && !!flickrKey && isAutoMixProviderAllowed("flickr");
+  const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
+  const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
+  const canUseMetFallback = useAutoMix && isAutoMixProviderAllowed("met");
+  const canUseKieFallback = useAutoMix && !!kieKey && isAutoMixProviderAllowed("kie-ai");
 
-  if (!canUsePexels && !canUsePixabay) {
+  if (useKieImage && !canUseKieImage) {
+    return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
+  }
+
+  // Auto Mix ที่ข้าม video (ผู้ใช้ติ๊กออก "video") ใช้ภาพ fallback ล้วน → ไม่ต้องมี
+  // Pexels/Pixabay key. ข้าม guard นี้ ปล่อยให้ image fallback ด้านล่างจัดการ
+  const autoMixImageOnly = useAutoMix && !autoMixUsesVideo;
+  if (!useKieImage && !autoMixImageOnly && !canUsePexels && !canUsePixabay) {
     const needPexels = usePexels;
     const needPixabay = usePixabay;
     if (needPexels && needPixabay) {
@@ -670,7 +1379,7 @@ export async function POST(req: Request) {
     if (result.status === "failed") stockTelemetry.normalizeFailedCount++;
   }
 
-  const srcLabel = canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
+  const srcLabel = canUseKieImage ? "AI Image-to-Video (kie.ai)" : useAutoMix ? "Auto Mix (video + image fallback)" : canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
 
   async function recordFetchStockTelemetry(status: "done" | "error", extra: Record<string, unknown> = {}) {
     const normalizeAttempts = stockTelemetry.normalizeRanCount + stockTelemetry.normalizeFailedCount;
@@ -699,6 +1408,7 @@ export async function POST(req: Request) {
         clipsPerKeyword,
         canUsePexels,
         canUsePixabay,
+        canUseKieImage,
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
@@ -732,6 +1442,9 @@ export async function POST(req: Request) {
     videoUrl: string;
     localPath?: string;
     localUrl?: string;
+    imageUrl?: string;
+    imageLocalUrl?: string;
+    assetMeta?: AssetMeta;
     title?: string;
     query?: string;
     provider?: StockProvider;
@@ -739,6 +1452,62 @@ export async function POST(req: Request) {
     selectionReason?: string;
     relevanceScore?: number;
   }[] = [];
+
+  // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────
+  // ไม่มี "candidate pool" ให้ค้นหา — generate ภาพ 1 ภาพ/keyword แล้วทำ Ken Burns (ffmpeg pan/zoom)
+  if (canUseKieImage) {
+    const clipsToGenerate = Math.min(keywords.length, downloadClipLimit, PER_SUBTITLE_DOWNLOAD_LIMIT);
+    console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
+
+    await withConcurrency(
+      keywords.slice(0, clipsToGenerate).map((keyword, i) => ({ keyword, i })),
+      Math.min(2, DOWNLOAD_CONCURRENCY),
+      async ({ keyword, i }) => {
+        const query = subtitleTexts?.[i] || keyword;
+        const id = KIE_ID_OFFSET + i;
+        const imageFile = `${userPrefix}${id}.src.jpg`;
+        const imagePath = path.join(rendersDir, imageFile);
+        try {
+          if (download) {
+            const outFile = `${userPrefix}${id}.mp4`;
+            const outPath = path.join(rendersDir, outFile);
+            try {
+              const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+              if (!isValidMp4Path(outPath)) {
+                stockTelemetry.downloadFailCount++;
+                return;
+              }
+              stockTelemetry.downloadedCount++;
+              stockTelemetry.normalizeSkippedCount++; // Ken Burns output is already CFR/no-B-frames — no extra normalize pass needed
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+              results.push({
+                keyword, pexelsId: id, duration, videoUrl: imageUrl,
+                localPath: outPath, localUrl: `/api/stocks/${outFile}`,
+                imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
+              });
+            } catch (e) {
+              stockTelemetry.downloadFailCount++;
+              console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
+            }
+          } else {
+            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`), kieKey!);
+            const imageUrl = await kiePollResult(imageTaskId, kieKey!);
+            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl });
+          }
+        } catch (e) {
+          stockTelemetry.noCandidateKeywords++;
+          console.error(`[fetch-stock] kie.ai generation failed for "${query}":`, e);
+        }
+      },
+    );
+
+    stockTelemetry.foundCount = results.length;
+    stockTelemetry.cappedCount = results.length;
+    stockTelemetry.servedClipCount = results.length;
+    await recordFetchStockTelemetry("done");
+    console.log(`[fetch-stock] kie.ai generated ${results.length} clips`);
+    return NextResponse.json({ results });
+  }
 
   const usedIds = new Set<number>();
   // eslint-disable-next-line prefer-const
@@ -1170,6 +1939,130 @@ export async function POST(req: Request) {
     return capped;
   }
 
+  // ── Auto Mix: image fallback (keyword-aware: Unsplash/Pexels/Pixabay photo/Wikimedia/Flickr/NASA/Met -> kie.ai) for keywords with zero video clips ──
+  // ไม่กระทบ keyword ที่หา video clip ได้แล้ว — เติมเฉพาะ keyword ที่ found ว่างเปล่าเท่านั้น
+  // ทำเฉพาะตอน download=true (Ken Burns ต้อง render ไฟล์จริง — ไม่เหมาะกับ preview/search-only call)
+  const hasImageFallback = canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback || canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback || canUseKieFallback;
+  let kieCreditExhausted = false; // ตั้งเป็น true เมื่อ kie.ai ตอบ credit หมด → แจ้งผู้ใช้ตอนได้ 0 clips
+  if (download && useAutoMix && hasImageFallback) {
+    const foundKeywords = new Set(found.map(f => f.keyword));
+    const seen = new Set<string>();
+    const allMissing = keywords
+      .map((kw, ki) => ({ kw, ki }))
+      .filter(({ kw }) => {
+        if (foundKeywords.has(kw) || seen.has(kw)) return false;
+        seen.add(kw);
+        return true;
+      });
+    // Cap จำนวนภาพ fallback ไม่ให้เกิน downloadClipLimit — สำคัญตอนข้าม video
+    // (ทุก keyword missing) ไม่งั้น generate ภาพ kie.ai ทุก keyword = เปลือง credit
+    // และเกินจำนวนที่ผู้ใช้ตั้ง (เช่น B-roll=2 ควรได้ภาพ 2 อัน ไม่ใช่ 64)
+    const remainingSlots = Math.max(0, downloadClipLimit - found.length);
+    const baseMissing = allMissing.slice(0, remainingSlots > 0 ? remainingSlots : allMissing.length);
+    // slot = ตำแหน่งใน list (ใช้ทำ id ไม่ให้ชนกัน), ki = index ของ keyword เดิม (ใช้ map subtitle)
+    let uniqueMissing = baseMissing.map((m, slot) => ({ ...m, slot }));
+    // กรณี keyword น้อยกว่าจำนวนที่ตั้ง (เช่น script สั้น 1 keyword แต่ B-roll=3):
+    // วน keyword ซ้ำให้ครบ slot — kie.ai สร้างภาพต่างกันแต่ละครั้ง แม้ query เดิม
+    // (slot ต่างกัน → id/ไฟล์ไม่ชนกัน). ทำเฉพาะตอนกำหนดจำนวนเองชัดเจน
+    if (overrideClipCount > 0 && allMissing.length > 0 && uniqueMissing.length < remainingSlots) {
+      uniqueMissing = Array.from({ length: remainingSlots }, (_, slot) => ({
+        ...allMissing[slot % allMissing.length],
+        slot,
+      }));
+    }
+
+    if (uniqueMissing.length > 0) {
+      console.log(`[fetch-stock] Auto Mix: ${allMissing.length} keyword(s) missing video → image fallback for ${uniqueMissing.length} (limit=${downloadClipLimit}, found=${found.length})`);
+
+      const IMAGE_PROVIDER_OFFSET: Record<ImageProvider, number> = {
+        unsplash: UNSPLASH_ID_OFFSET,
+        "pexels-photo": PEXELS_PHOTO_ID_OFFSET,
+        "pixabay-photo": PIXABAY_PHOTO_ID_OFFSET,
+        flickr: FLICKR_ID_OFFSET,
+        wikimedia: WIKIMEDIA_ID_OFFSET,
+        nasa: NASA_ID_OFFSET,
+        met: MET_ID_OFFSET,
+      };
+
+      await withConcurrency(uniqueMissing, Math.min(2, DOWNLOAD_CONCURRENCY), async ({ kw, ki, slot }) => {
+        const query = subtitleTexts?.[ki] || kw;
+
+        // ลองตามลำดับ provider ที่ตรงกับ topic ของ query (keyword-aware routing)
+        for (const provider of getImageProviderOrder(query)) {
+          if (provider === "unsplash" && !canUseUnsplashFallback) continue;
+          if (provider === "pexels-photo" && !canUsePexelsPhotoFallback) continue;
+          if (provider === "pixabay-photo" && !canUsePixabayPhotoFallback) continue;
+          if (provider === "flickr" && !canUseFlickrFallback) continue;
+          if (provider === "wikimedia" && !canUseWikimediaFallback) continue;
+          if (provider === "nasa" && !canUseNasaFallback) continue;
+          if (provider === "met" && !canUseMetFallback) continue;
+
+          const id = IMAGE_PROVIDER_OFFSET[provider] + slot;
+          const imageFile = `${userPrefix}${id}.src.jpg`;
+          const imagePath = path.join(rendersDir, imageFile);
+          const outFile = `${userPrefix}${id}.mp4`;
+          const outPath = path.join(rendersDir, outFile);
+          try {
+            let fallback: ImageFallbackResult | null = null;
+            switch (provider) {
+              case "unsplash":      fallback = await tryUnsplashKenBurns(query, unsplashKey!, imagePath, outPath); break;
+              case "pexels-photo":  fallback = await tryPexelsPhotoKenBurns(query, pexelsKey!, imagePath, outPath); break;
+              case "pixabay-photo": fallback = await tryPixabayPhotoKenBurns(query, pixabayKey!, imagePath, outPath); break;
+              case "flickr":        fallback = await tryFlickrKenBurns(query, flickrKey!, imagePath, outPath); break;
+              case "wikimedia":     fallback = await tryWikimediaKenBurns(query, imagePath, outPath); break;
+              case "nasa":          fallback = await tryNasaKenBurns(query, imagePath, outPath); break;
+              case "met":           fallback = await tryMetKenBurns(query, imagePath, outPath); break;
+            }
+            if (fallback && isValidMp4Path(outPath)) {
+              stockTelemetry.downloadedCount++;
+              stockTelemetry.normalizeSkippedCount++;
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+              results.push({
+                keyword: kw, pexelsId: id, duration: fallback.duration, videoUrl: fallback.imageUrl,
+                localPath: outPath, localUrl: `/api/stocks/${outFile}`,
+                imageUrl: fallback.imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
+                assetMeta: fallback.assetMeta,
+              });
+              return;
+            }
+          } catch (e) {
+            console.error(`[fetch-stock] Auto Mix ${provider} fallback failed for "${query}":`, e);
+          }
+        }
+
+        // Fall back to kie.ai AI image
+        if (canUseKieFallback) {
+          const id = KIE_ID_OFFSET + slot;
+          const imageFile = `${userPrefix}${id}.src.jpg`;
+          const imagePath = path.join(rendersDir, imageFile);
+          const outFile = `${userPrefix}${id}.mp4`;
+          const outPath = path.join(rendersDir, outFile);
+          try {
+            const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+            if (isValidMp4Path(outPath)) {
+              stockTelemetry.downloadedCount++;
+              stockTelemetry.normalizeSkippedCount++;
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+              results.push({
+                keyword: kw, pexelsId: id, duration, videoUrl: imageUrl,
+                localPath: outPath, localUrl: `/api/stocks/${outFile}`,
+                imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
+                assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
+              });
+            }
+          } catch (e) {
+            console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
+            // จับ "credit หมด" เพื่อแจ้งผู้ใช้ตอนท้าย (ไม่งั้นได้ 0 clips เงียบๆ)
+            const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
+            if (msg.includes("credit") || msg.includes("insufficient") || msg.includes("balance") || msg.includes("top up")) {
+              kieCreditExhausted = true;
+            }
+          }
+        }
+      });
+    }
+  }
+
   const clipsToDownload = capFoundClips(found, downloadClipLimit);
   stockTelemetry.foundCount = found.length;
   stockTelemetry.cappedCount = clipsToDownload.length;
@@ -1196,8 +2089,20 @@ export async function POST(req: Request) {
       const { body: errBody, status } = toErrorResponse(capturedStockErr);
       return NextResponse.json(errBody, { status });
     }
-    await recordFetchStockTelemetry("done", { emptyResult: true, selectionDebugSample });
-    return NextResponse.json({ results: [] });
+    // kie.ai credit หมด และ generate ไม่ได้เลย → แจ้งผู้ใช้ตรงๆ (ไม่ใช่ results ว่างเงียบ)
+    if (kieCreditExhausted && results.length === 0) {
+      await recordFetchStockTelemetry("error", { providerErrorCode: "quota", errorProvider: "kie" });
+      return NextResponse.json({
+        error: "kie.ai เครดิตหมด — กรุณาเติมเครดิตที่ kie.ai หรือเลือกแหล่งภาพอื่น (Unsplash/Wikimedia ฟรี) ใน B-roll Sources",
+        retryable: false,
+        provider: "kie",
+        code: "quota",
+      }, { status: 402 });
+    }
+    // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
+    // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
+    await recordFetchStockTelemetry("done", { emptyResult: results.length === 0, selectionDebugSample });
+    return NextResponse.json({ results });
   }
 
   // ── Download phase ──

@@ -29,12 +29,63 @@ export interface Caption {
   tag?:    "hook" | "body" | "cta";
 }
 
+// "kie-image" = สร้างภาพด้วย AI แล้วแปลงเป็นวิดีโอผ่าน kie.ai — admin-only
+// "auto-mix" = วิดีโอ Pexels/Pixabay เป็นหลัก ถ้า keyword ไหนหา clip ดีไม่ได้ fallback เป็นภาพ
+//   (Unsplash -> kie.ai AI image) แล้วทำ Ken Burns — admin-only (ทดลอง)
+export type StockSource = "pexels" | "pixabay" | "both" | "kie-image" | "auto-mix";
+
+// โมเดล text-to-image ของ kie.ai ที่เลือกได้ — ขนาดภาพ fix ที่ 9:16 เสมอ
+export type KieImageModel =
+  | "nano-banana-pro" | "nano-banana-2" | "gpt-image-2-text-to-image"
+  | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
+  | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
+export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "nano-banana-pro", label: "Nano Banana Pro" },
+  { value: "nano-banana-2", label: "Nano Banana 2" },
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
+  { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
+  { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
+  { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },
+  { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
+  { value: "qwen2/text-to-image", label: "Qwen2" },
+];
+
+// แหล่งที่มาของ B-roll ที่ Auto Mix เลือกใช้ได้ — เลือกได้หลายตัว
+// - "video" = หาวิดีโอจริง (Pexels/Pixabay) — ถ้าปิด Auto Mix จะข้าม video ไปใช้ภาพล้วน
+// - ที่เหลือ = provider ภาพ fallback (ทำ Ken Burns), ลำดับลองตาม keyword-aware routing ฝั่ง server
+// รายการนี้แค่ "เปิด/ปิด" ตัวไหนให้อยู่ในการพิจารณา — ไม่ใช่ลำดับ
+export type AutoMixImageProvider = "video" | "unsplash" | "pexels-photo" | "pixabay-photo" | "wikimedia" | "flickr" | "nasa" | "met" | "kie-ai";
+export const AUTO_MIX_PROVIDER_OPTIONS: { value: AutoMixImageProvider; label: string; needsKey?: "unsplash" | "flickr" | "kie" }[] = [
+  { value: "video", label: "วิดีโอจริง (Pexels/Pixabay)" },
+  { value: "unsplash", label: "Unsplash", needsKey: "unsplash" },
+  { value: "pexels-photo", label: "Pexels Photo" },
+  { value: "pixabay-photo", label: "Pixabay Photo" },
+  { value: "wikimedia", label: "Wikimedia Commons" },
+  { value: "flickr", label: "Flickr CC", needsKey: "flickr" },
+  { value: "nasa", label: "NASA Image" },
+  { value: "met", label: "The Met Museum" },
+  { value: "kie-ai", label: "kie.ai (AI generate)", needsKey: "kie" },
+];
+export const DEFAULT_AUTO_MIX_PROVIDERS: AutoMixImageProvider[] = AUTO_MIX_PROVIDER_OPTIONS.map(o => o.value);
+
 export interface StockVideo {
   keyword:   string;
   localUrl?: string;
   videoUrl:  string;
   duration:  number;
   pexelsId:  number;
+  // ภาพต้นทาง (kie.ai AI Image + Ken Burns) — ใช้แสดง preview ระหว่าง generate
+  imageUrl?:      string;
+  imageLocalUrl?: string;
+  // Metadata สำหรับ license/attribution ของ asset (auto-mix: pexels/pixabay/unsplash/kie-ai/wikimedia/flickr/nasa/met)
+  assetMeta?: {
+    provider: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "wikimedia" | "flickr" | "nasa" | "met";
+    assetId: string;
+    downloadUrl?: string;
+    creator?: string;
+    license?: string;
+    sourcePage?: string;
+  };
   title?: string;
   query?: string;
   provider?: "pexels" | "pixabay";
@@ -119,7 +170,13 @@ export interface EditorDraft {
   config?: unknown;
 
   // Stock source
-  stockSource?: "pexels" | "pixabay" | "both";
+  stockSource?: StockSource;
+  // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image")
+  kieModel?: KieImageModel;
+  // ผู้ให้บริการภาพ fallback ที่เปิดใช้สำหรับ Auto Mix (undefined = ทุกตัว)
+  autoMixProviders?: AutoMixImageProvider[];
+  // จำนวนคลิป B-roll (0/undefined = Auto)
+  targetClipCount?: number;
 
   // BGM
   bgmEnabled?: boolean;

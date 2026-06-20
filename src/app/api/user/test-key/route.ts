@@ -8,7 +8,7 @@ function decrypt(encrypted: string): string {
   return Buffer.from(encrypted, "base64").toString("utf-8");
 }
 
-type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
 // Test Gemini key against 3 capabilities our app uses:
 // 1. Auth + Generative Language API enabled (models endpoint)
@@ -144,6 +144,53 @@ async function testPixabay(key: string): Promise<{ ok: boolean; message: string 
   } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Pixabay ได้" }; }
 }
 
+// kie.ai personal API key — เช็คผ่าน /chat/credit (endpoint เบาๆ ใช้ตรวจ auth ได้)
+async function testKie(key: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch("https://api.kie.ai/api/v1/chat/credit", {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      const credits = typeof data?.data === "number" ? ` (เครดิตเหลือ ${data.data})` : "";
+      return { ok: true, message: `kie.ai key ใช้งานได้${credits}` };
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ — สร้างใหม่ที่ kie.ai" };
+    return { ok: false, message: `Error ${res.status}` };
+  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ kie.ai ได้" }; }
+}
+
+// Unsplash Access Key — เช็คผ่าน /photos/random (endpoint เบาๆ ใช้ตรวจ auth + rate limit ได้)
+async function testUnsplash(key: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch("https://api.unsplash.com/photos/random?count=1", {
+      headers: { Authorization: `Client-ID ${key}`, "Accept-Version": "v1" },
+    });
+    if (res.ok) {
+      const remaining = res.headers.get("x-ratelimit-remaining");
+      const limit = res.headers.get("x-ratelimit-limit");
+      const quota = remaining && limit ? ` (เหลือ ${remaining}/${limit} ต่อชั่วโมง)` : "";
+      return { ok: true, message: `Unsplash key ใช้งานได้${quota}` };
+    }
+    if (res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ — สร้างใหม่ที่ unsplash.com/oauth/applications" };
+    return { ok: false, message: `Error ${res.status}` };
+  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Unsplash ได้" }; }
+}
+
+// Flickr API Key — เช็คผ่าน flickr.test.echo (endpoint เบาๆ ใช้ตรวจ auth ได้ ไม่ต้องมี permission พิเศษ)
+async function testFlickr(key: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const params = new URLSearchParams({ method: "flickr.test.echo", api_key: key, format: "json", nojsoncallback: "1" });
+    const res = await fetch(`https://www.flickr.com/services/rest/?${params}`);
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data?.stat === "ok") return { ok: true, message: "Flickr key ใช้งานได้" };
+      if (data?.stat === "fail") return { ok: false, message: `Key ไม่ถูกต้อง — ${data?.message ?? "ตรวจสอบ API key อีกครั้ง"}` };
+    }
+    return { ok: false, message: `Error ${res.status}` };
+  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Flickr ได้" }; }
+}
+
 export async function POST(req: Request) {
   try {
     const authUser = await getCurrentUser();
@@ -153,7 +200,7 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true },
+      select: { geminiKey: true, heygenKey: true, elevenlabsKey: true, pexelsKey: true, pixabayKey: true, kieKey: true, unsplashKey: true, flickrKey: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -163,6 +210,9 @@ export async function POST(req: Request) {
       elevenlabs: user.elevenlabsKey,
       pexels:     user.pexelsKey,
       pixabay:    user.pixabayKey,
+      kie:        user.kieKey,
+      unsplash:   user.unsplashKey,
+      flickr:     user.flickrKey,
     };
 
     const encrypted = encryptedMap[keyType];
@@ -177,6 +227,9 @@ export async function POST(req: Request) {
       case "elevenlabs": result = await testElevenLabs(key); break;
       case "pexels":     result = await testPexels(key);     break;
       case "pixabay":    result = await testPixabay(key);    break;
+      case "kie":        result = await testKie(key);        break;
+      case "unsplash":   result = await testUnsplash(key);   break;
+      case "flickr":     result = await testFlickr(key);     break;
       default: return NextResponse.json({ error: "Unknown key type" }, { status: 400 });
     }
 

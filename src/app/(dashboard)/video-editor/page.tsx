@@ -14,9 +14,11 @@ import {
   Download, Scissors, Trash2,
   ChevronDown, ChevronLeft, ChevronRight, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
   Maximize2, Minimize2, Plus, Search, Loader2,
-  ZoomIn, User, X, Save, Pencil,
+  ZoomIn, User, X, Save, Pencil, KeyRound, ImagePlus,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { fetchMe } from "@/lib/use-me";
+import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 import { QuotaStatus } from "@/components/quota-status";
@@ -24,9 +26,9 @@ import { QuotaStatus } from "@/components/quota-status";
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
-  SubPreset, SubTextEffect, EditorDraft,
+  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel, AutoMixImageProvider,
 } from "./_components/types";
-import { DEFAULT_STEPS } from "./_components/types";
+import { DEFAULT_STEPS, DEFAULT_AUTO_MIX_PROVIDERS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
 import { StepIcon } from "./_components/StepIcon";
 import { ApiCallError } from "./_components/ApiCallError";
@@ -34,7 +36,7 @@ import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
 import { ScrubberBar } from "./_components/ScrubberBar";
 import { TimeLabel } from "./_components/TimeLabel";
-import { PlayheadIndicator, PlaybackProgressStrip } from "./_components/PlayheadIndicator";
+import { PlayheadIndicator, PlaybackProgressStrip, SegmentProgressBar } from "./_components/PlayheadIndicator";
 import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
@@ -223,6 +225,8 @@ export default function VideoEditorPage() {
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isEditorExpanded, setIsEditorExpanded] = useState(false);
+  const [apiSettingsOpen, setApiSettingsOpen] = useState(false);
+  const [savingToGallery, setSavingToGallery] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(0);
   const timelineCanvasWidthPct = 100 + timelineZoom * 4;
@@ -240,15 +244,37 @@ export default function VideoEditorPage() {
     durationMs > 0 && captionEndMs > 0 ? captionMs * (durationMs / captionEndMs) : captionMs
   ), [durationMs, captionEndMs]);
 
+  // ตอนเล่น: เลื่อนการ์ดซับ active มากลาง panel ให้เห็นชัดว่าซับวิ่งถึงไหน
+  // ตอน pause/คลิกเอง: เลื่อนแค่พอเห็น (nearest) จะได้ไม่กระตุกตอนผู้ใช้ scroll หาเอง
+  useEffect(() => {
+    activeSegCardRef.current?.scrollIntoView({ behavior: "smooth", block: playing ? "center" : "nearest" });
+  }, [activeCaptionIdx, playing]);
+
   // ── TTS / Voice ───────────────────────────────────────────────────────
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [voiceId, setVoiceId] = useState("");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
 
   // ── Stock ─────────────────────────────────────────────────────────────
-  const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both">("both");
+  const [stockSource, setStockSource] = useState<StockSource>("both");
+  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(DEFAULT_AUTO_MIX_PROVIDERS);
+  // AI Image-to-Video (kie.ai) และ Auto Mix เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
+  const [kieImageEnabled, setKieImageEnabled] = useState(false);
+  const [autoMixEnabled, setAutoMixEnabled] = useState(false);
+  useEffect(() => {
+    fetchMe().then(d => {
+      const isAdmin = d?.role === "ADMIN";
+      setKieImageEnabled(isAdmin);
+      setAutoMixEnabled(isAdmin);
+    }).catch(() => {});
+  }, []);
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);
-  const targetClipCount = 0;
+  // cache-bust สำหรับ preview thumbnail — ไฟล์ kie/fallback ใช้ชื่อซ้ำข้ามรอบ
+  // (id = offset+slot คงที่) ทำให้ browser cache ภาพเก่า. bump ทุกครั้งที่ fetch เสร็จ
+  const [stockCacheBust, setStockCacheBust] = useState(0);
+  // จำนวนคลิป B-roll ใน 1 วิดีโอ: 0 = Auto (1 คลิปต่อ 1 ซับ) / >0 = กำหนดเอง (แบ่งเวลาเท่าๆ กัน)
+  const [targetClipCount, setTargetClipCount] = useState(0);
 
   // ── Preferred LLM ─────────────────────────────────────────────────────
   const preferredLLMRef = useRef<"gemini" | null>(null);
@@ -386,8 +412,7 @@ export default function VideoEditorPage() {
   const [userPlan, setUserPlan] = useState<string>("PRO");
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/user/me")
-      .then(r => (r.ok ? r.json() : null))
+    fetchMe()
       .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
       .catch(() => { /* keep PRO default — server still backstops at render */ });
     return () => { cancelled = true; };
@@ -462,6 +487,8 @@ export default function VideoEditorPage() {
   // ── Search captions ────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  // ย่อแผง Process เพื่อให้ลิสต์ซับด้านบนสูงเต็ม panel ซ้าย
+  const [processOpen, setProcessOpen] = useState(true);
 
   // ── Timeline clip resize drag ──────────────────────────────────────────
   const clipResizeRef = useRef<{ capIdx: number; edge: "left" | "right" | "move"; startX: number; startMs: number; durMs?: number; moved?: boolean } | null>(null);
@@ -764,6 +791,7 @@ export default function VideoEditorPage() {
     // Stock
     setStockSource("both");
     setStockVideos([]);
+    setTargetClipCount(0);
 
     // BGM
     setBgmEnabled(false);
@@ -838,6 +866,9 @@ export default function VideoEditorPage() {
 
     // Stock source
     if (d.stockSource) setStockSource(d.stockSource);
+    if (d.kieModel) setKieModel(d.kieModel);
+    if (d.autoMixProviders) setAutoMixProviders(d.autoMixProviders);
+    if (d.targetClipCount !== undefined) setTargetClipCount(d.targetClipCount);
 
     // BGM
     if (d.bgmEnabled !== undefined) setBgmEnabled(d.bgmEnabled);
@@ -1021,6 +1052,9 @@ export default function VideoEditorPage() {
       config: pipe.current.config,
 
       stockSource,
+      kieModel,
+      autoMixProviders,
+      targetClipCount,
       bgmEnabled, bgmFile, bgmVolume,
 
       useAvatar, avatarId, avatarName, avatarPreviewUrl,
@@ -1274,7 +1308,9 @@ export default function VideoEditorPage() {
 
     // Detect type to pick the right action
     let action: { label: string; url: string } | null = null;
-    if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
+    if (lower.includes("kie.ai") && (lower.includes("เครดิต") || lower.includes("credit"))) {
+      action = { label: "เติมเครดิต kie.ai", url: "https://kie.ai/api-key" };
+    } else if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
       action = { label: "เปิด API ที่ Cloud Console", url: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" };
     } else if (lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
       action = { label: "สร้าง Key ใหม่", url: "https://aistudio.google.com/apikey" };
@@ -1359,7 +1395,9 @@ export default function VideoEditorPage() {
       console.log(`[runKeywords] dur estimate: known=${knownDurSec}s, script=${scriptEstimate.toFixed(1)}s → using ${estimatedDurSec}s`);
       const res = await fetch("/api/videos/extract-keywords", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), preferredLLM: preferredLLMRef.current }),
+        // targetClipCount > 0 (กำหนดเอง) → ให้ LLM สร้าง keyword ตามจำนวนนั้นพอดี
+        // 0 (Auto) → ใช้สูตรเดิม (คำนวณจาก audioDurationSec)
+        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), targetClipCount, preferredLLM: preferredLLMRef.current }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1386,7 +1424,7 @@ export default function VideoEditorPage() {
   }
 
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
-    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : "Pexels+Pixabay";
+    const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "kie-image" ? "AI Image (kie.ai)" : stockSource === "auto-mix" ? "Auto Mix" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
     const sceneDurations: number[] = pipe.current.sceneDurations ?? [];
     const totalDurationSec = sceneDurations.length > 0
@@ -1400,17 +1438,21 @@ export default function VideoEditorPage() {
       body: JSON.stringify({
         keywords: kws, download: true, totalDurationSec, stockSource,
         ...ensurePipelineRunTelemetry("fetchStock"),
+        ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
+        ...(stockSource === "auto-mix" ? { autoMixProviders } : {}),
         fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
-        ...(perSubtitleClipCount > 0
+        // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
+        ...(targetClipCount > 0
+          ? { overrideClipCount: targetClipCount }
+          : perSubtitleClipCount > 0
           ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
-          : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit }
-          : targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
+          : captionClipLimit > 0 ? { overrideClipCount: captionClipLimit } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
         ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
         ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
-        ...(perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
+        ...(targetClipCount === 0 && perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -1426,7 +1468,11 @@ export default function VideoEditorPage() {
     //   sv ≥ caps → trim down to caps.length
     //   sv  < caps → cycle clips so every caption still has one
     let sv = svRaw;
-    if (caps.length > 0 && svRaw.length > 0) {
+    // กำหนดจำนวนคลิปเอง (targetClipCount > 0): เก็บคลิปครบตามที่ได้ — ห้าม trim ตาม
+    // caption count (script 1 ซับ แต่ B-roll=2 ต้องได้ 2 รูป ไม่ใช่ตัดเหลือ 1)
+    if (targetClipCount > 0) {
+      console.log(`[runFetchStock] manual clip count=${targetClipCount}: keep all ${svRaw.length} clips (skip per-subtitle trim)`);
+    } else if (caps.length > 0 && svRaw.length > 0) {
       if (svRaw.length >= caps.length) {
         sv = svRaw.slice(0, caps.length);
         console.log(`[runFetchStock] per-subtitle: trimmed ${svRaw.length} → ${sv.length} clips`);
@@ -1438,6 +1484,7 @@ export default function VideoEditorPage() {
 
     pipe.current.stockVideos = sv;
     setStockVideos(sv);
+    setStockCacheBust(Date.now()); // ภาพ generate ใหม่ ใช้ชื่อไฟล์เดิม → บังคับ browser โหลดใหม่
     const pexelsCnt = sv.filter(v => v.pexelsId < 9_000_000).length;
     const pixabayCnt = sv.filter(v => v.pexelsId >= 9_000_000).length;
     const srcBreakdown = stockSource === "both" ? ` (P:${pexelsCnt} B:${pixabayCnt})` : "";
@@ -1801,7 +1848,14 @@ export default function VideoEditorPage() {
     let svForConfig = sv;
     let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
     const capN = configCaptions.length;
-    if (capN > 0 && sv.length > 0) {
+    // กำหนดจำนวนคลิปเอง (targetClipCount > 0): ห้าม force per-subtitle —
+    // ส่งคลิปตามจำนวนที่ตั้งไป generate-config ตรงๆ ให้มันทำ even-split แบ่ง
+    // เวลาเท่าๆ กัน (ไม่งั้น 2 คลิปถูก cycle เป็น 64 ช่วง = ดูเหมือนคลิปเดียววน)
+    if (targetClipCount > 0) {
+      console.log(`[runConfig] manual clip count=${targetClipCount}: even-split ${sv.length} clips (skip per-subtitle)`);
+      // sceneClipCounts ว่าง → generate-config ใช้ n (=stockVideos.length) เป็น clipCountHint → even-split
+      sceneClipCountsForConfig = [];
+    } else if (capN > 0 && sv.length > 0) {
       if (sv.length >= capN) {
         svForConfig = sv.slice(0, capN);
         console.log(`[runConfig] per-subtitle: trimmed ${sv.length} → ${capN} clips`);
@@ -2458,14 +2512,49 @@ export default function VideoEditorPage() {
           setMissingKey({ type: "heygen", retryStep: "runAll" });
           return;
         }
-        // Pexels/Pixabay key check
-        if ((stockSource === "pexels" || stockSource === "both") && !keysData.pexelsKey) {
+        // Pexels/Pixabay key check — Free tier (both) ขอแค่ key ใด key หนึ่ง
+        // (backend fallback ใช้ source ที่มี key อยู่แล้ว)
+        if (stockSource === "both" && !keysData.pexelsKey && !keysData.pixabayKey) {
           setMissingKey({ type: "pexels", retryStep: "runAll" });
           return;
         }
-        if ((stockSource === "pixabay" || stockSource === "both") && !keysData.pixabayKey) {
+        if (stockSource === "pexels" && !keysData.pexelsKey) {
+          setMissingKey({ type: "pexels", retryStep: "runAll" });
+          return;
+        }
+        if (stockSource === "pixabay" && !keysData.pixabayKey) {
           setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
+        }
+        if (stockSource === "kie-image" && !keysData.kieKey) {
+          setMissingKey({ type: "kie", retryStep: "runAll" });
+          return;
+        }
+        // Auto Mix: เช็ค key ตามแหล่งที่ผู้ใช้เลือกใน autoMixProviders
+        if (stockSource === "auto-mix") {
+          if (autoMixProviders.includes("video")) {
+            // ใช้วิดีโอจริง → ต้องมี Pexels หรือ Pixabay key (ภาพ fallback เป็นเสริม)
+            if (!keysData.pexelsKey && !keysData.pixabayKey) {
+              setMissingKey({ type: "pexels", retryStep: "runAll" });
+              return;
+            }
+          } else {
+            // ข้ามวิดีโอ — ภาพล้วน. ต้องมีแหล่งภาพที่ "ใช้งานได้จริง" อย่างน้อย 1 ตัว
+            // (Wikimedia/NASA/Met ไม่ต้อง key; ตัวอื่นต้องมี key ของมัน)
+            const keyByProvider: Record<string, boolean> = {
+              wikimedia: true, nasa: true, met: true,
+              unsplash: !!keysData.unsplashKey, flickr: !!keysData.flickrKey,
+              "pexels-photo": !!keysData.pexelsKey, "pixabay-photo": !!keysData.pixabayKey,
+              "kie-ai": !!keysData.kieKey,
+            };
+            const usable = autoMixProviders.filter(p => p !== "video" && keyByProvider[p]);
+            if (usable.length === 0) {
+              // ไม่มีแหล่งภาพที่ใช้ได้ → ขอ key ของตัวแรกที่เลือกไว้ (มักเป็น kie.ai)
+              const firstNeedsKey = autoMixProviders.find(p => p === "kie-ai" || p === "unsplash" || p === "flickr");
+              setMissingKey({ type: firstNeedsKey === "kie-ai" ? "kie" : (firstNeedsKey as "unsplash" | "flickr") ?? "kie", retryStep: "runAll" });
+              return;
+            }
+          }
         }
       }
     } catch { /* ถ้าตรวจสอบ key ไม่ได้ ปล่อยผ่านและให้ pipeline จัดการ */ }
@@ -2549,7 +2638,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -3324,9 +3413,42 @@ export default function VideoEditorPage() {
               </button>
             );
           })()}
+          {/* Save to Gallery — เซฟคลิปปัจจุบันลง Gallery ได้ทันทีหลัง render เสร็จ ไม่ต้องรอ Burn */}
+          {videoUrl && !running && (
+            <button
+              onClick={async () => {
+                if (savingToGallery) return;
+                setSavingToGallery(true);
+                try {
+                  // ใช้ตัว burn แล้วถ้ามีและ style ไม่ถูกแก้ ไม่งั้นใช้ preview ปัจจุบัน
+                  const best = (pipe.current.burnedVideoUrl && !styleIsDirty) ? pipe.current.burnedVideoUrl : videoUrl;
+                  await saveToGallery({
+                    videoUrl: best,
+                    videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
+                    status: "COMPLETED",
+                  });
+                  saveDraftNow(); // ผูก galleryVideoId ไว้กับ draft ด้วย
+                  toast.success("บันทึกลง Gallery แล้ว");
+                } finally {
+                  setSavingToGallery(false);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 transition-colors disabled:opacity-50"
+              disabled={savingToGallery}
+              title="บันทึกคลิปปัจจุบันลง Gallery"
+            >
+              {savingToGallery ? <Loader2 className="w-3 h-3 animate-spin" /> : <ImagePlus className="w-3 h-3" />}
+              {savingToGallery ? "กำลังบันทึก..." : "Save to Gallery"}
+            </button>
+          )}
           <button onClick={() => saveDraftNow()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-[#1a1a22] border border-[#2a2a36] text-slate-400 hover:text-emerald-400 hover:border-emerald-500/40 transition-colors">
             <Save className="w-3 h-3" /> Save
+          </button>
+          <button onClick={() => setApiSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-500/10 border border-violet-500/40 text-violet-300 hover:bg-violet-500/20 hover:border-violet-400/70 hover:text-violet-200 transition-colors"
+            title="ตั้งค่า API keys โดยไม่ต้องออกจาก editor">
+            <KeyRound className="w-3.5 h-3.5" /> API Keys
           </button>
           <button
             onClick={() => setIsEditorExpanded(v => !v)}
@@ -3399,14 +3521,14 @@ export default function VideoEditorPage() {
           >
             <div className="absolute right-0 top-0 bottom-0 w-px bg-[#1e1e28] group-hover:bg-violet-500/60 group-active:bg-violet-500 transition-colors" />
           </div>
-          <div className="px-4 py-3 border-b border-[#1e1e28] flex items-start justify-between gap-2">
+          <div className="px-4 py-3 border-b border-[#1e1e28] flex items-start justify-between gap-2 bg-gradient-to-b from-violet-500/[0.06] to-transparent">
             <div className="min-w-0">
-              <div className="font-bold text-[13px] tracking-tight">Transcript</div>
-              <div className="text-[10px] text-slate-600 mt-0.5">{displayCaptions.length} segments · {fmtMs(totalMs)}</div>
+              <div className="font-bold text-[13px] tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Transcript</div>
+              <div className="text-[10px] text-slate-600 mt-0.5 tabular-nums">{displayCaptions.length} segments · {fmtMs(totalMs)}</div>
             </div>
             <div className="flex items-center gap-1 flex-shrink-0">
               <button onClick={() => { setSearchOpen(v => !v); if (searchOpen) setSearchQuery(""); }}
-                className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors", searchOpen ? "bg-violet-500/20 text-violet-300" : "text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300")}>
+                className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-all", searchOpen ? "bg-violet-500/20 text-violet-300 shadow-[0_0_0_1px_rgba(167,139,250,0.25)]" : "text-slate-600 hover:bg-[#1e1e28] hover:text-slate-300")}>
                 <Search className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -3500,14 +3622,17 @@ export default function VideoEditorPage() {
 
               {/* ── แบ่งซับ ── */}
               {(captions.length > 0 || originalCaptionsRef.current.length > 0) && (
-                <div className="rounded-xl border border-[#2a2a36] bg-[#111118] overflow-hidden">
+                <div className="rounded-xl border border-[#2a2a36] bg-gradient-to-b from-[#15151e] to-[#0f0f15] overflow-hidden shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
                   <div className="px-3 py-2.5 flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex-1">✂️ Split Subtitles</span>
-                    <span className="text-[9px] text-slate-600">{captions.length} ช่วง</span>
+                    <div className="w-5 h-5 rounded-md bg-violet-500/15 border border-violet-500/25 flex items-center justify-center flex-shrink-0">
+                      <Scissors className="w-3 h-3 text-violet-400" />
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex-1">Split Subtitles</span>
+                    <span className="text-[9px] text-slate-500 bg-[#1a1a22] border border-[#2a2a36] rounded-full px-2 py-0.5 tabular-nums">{captions.length} ช่วง</span>
                   </div>
-                  <div className="border-t border-[#2a2a36] px-3 py-2.5 space-y-2">
+                  <div className="border-t border-[#2a2a36]/70 px-3 py-2.5 space-y-2">
                     {/* Mode buttons */}
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1.5">
                       {([
                         { mode: "sentence", label: "ประโยค" },
                         { mode: "1",        label: "1 คำ" },
@@ -3523,10 +3648,10 @@ export default function VideoEditorPage() {
                             if (mode !== "custom") splitCaptionsByMode(mode);
                           }}
                           className={cn(
-                            "py-1.5 rounded-lg text-[10px] font-bold transition-colors border",
+                            "py-1.5 rounded-lg text-[10px] font-bold transition-all border",
                             splitMode === mode
-                              ? "bg-violet-600 border-violet-500 text-white"
-                              : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300 hover:border-[#3a3a4a]"
+                              ? "bg-gradient-to-b from-violet-500 to-violet-600 border-violet-400/60 text-white shadow-[0_2px_8px_rgba(139,92,246,0.35)]"
+                              : "bg-[#1a1a22] border-[#2a2a36] text-slate-500 hover:text-slate-300 hover:border-[#3a3a4a] hover:bg-[#1e1e28]"
                           )}
                         >{label}</button>
                       ))}
@@ -3542,7 +3667,7 @@ export default function VideoEditorPage() {
                         />
                         <button
                           onClick={() => splitCaptionsByMode("custom", splitCustomN)}
-                          className="flex-1 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold transition-colors"
+                          className="flex-1 py-1 rounded-lg bg-gradient-to-b from-violet-500 to-violet-600 hover:from-violet-400 hover:to-violet-500 text-white text-[10px] font-bold transition-all shadow-[0_2px_8px_rgba(139,92,246,0.35)]"
                         >แบ่งเลย</button>
                       </div>
                     )}
@@ -3555,7 +3680,7 @@ export default function VideoEditorPage() {
                       </div>
                     )}
                     {splitMode === "sentence" && (
-                      <div className="text-[9px] text-slate-700 text-center">คืนค่าซับต้นฉบับจาก Transcribe</div>
+                      <div className="text-[9px] text-slate-600 text-center">คืนค่าซับต้นฉบับจาก Transcribe</div>
                     )}
                   </div>
                 </div>
@@ -3565,18 +3690,20 @@ export default function VideoEditorPage() {
 
             {captions.length > 0 && scriptSegments
               .map((cap, i) => ({ cap, i }))
-              .filter(({ cap }) => !searchQuery || cap.text.toLowerCase().includes(searchQuery.toLowerCase()))
+              .filter(({ cap }) => !searchQuery || (cap.text ?? "").toLowerCase().includes(searchQuery.toLowerCase()))
               .map(({ cap, i }) => {
               const isActive = i === activeSegIdx || i === activeCaptionIdx;
               const isEditing = editingCapIdx === i;
               return (
                 <div key={i}
                   ref={isActive ? activeSegCardRef : null}
-                  // Offscreen rows skip layout/paint; size hint ≈ row height so the
-                  // panel scrollbar stays stable. scrollIntoView still works.
-                  style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}
-                  className={cn("rounded-xl border transition-all group",
-                    isActive ? "bg-violet-500/10 border-violet-500/40" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
+                  className={cn("relative shrink-0 overflow-hidden rounded-xl border transition-all group",
+                    isActive ? "bg-gradient-to-b from-violet-500/15 to-violet-500/[0.04] border-violet-500/50 ring-1 ring-violet-400/30 shadow-[0_2px_12px_rgba(139,92,246,0.15)]" : "bg-transparent border-transparent hover:bg-[#1a1a22] hover:border-[#2a2a36]")}>
+
+                  {/* แถบ progress วิ่งตามเวลาในซับตัวนี้ — เห็นชัดว่าเล่นถึงไหน */}
+                  {isActive && (
+                    <SegmentProgressBar startMs={cap.startMs} endMs={cap.endMs} durationMs={durationMs} captionEndMs={captionEndMs} />
+                  )}
 
                   {/* Header row */}
                   <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1 cursor-pointer"
@@ -3628,7 +3755,7 @@ export default function VideoEditorPage() {
                   </div>
 
                   {/* Actions row */}
-                  <div className="flex items-center gap-1 px-3 pb-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                     <span className="text-[9px] text-slate-600 tabular-nums mr-auto">{((cap.endMs - cap.startMs) / 1000).toFixed(1)}s</span>
                     {/* Tag cycle */}
                     <button
@@ -3638,10 +3765,10 @@ export default function VideoEditorPage() {
                         const next = tags[(tags.indexOf(cap.tag ?? "body") + 1) % 3];
                         setCaptions(captions.map((c, j) => j === i ? { ...c, tag: next } : c));
                       }}
-                      className={cn("px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors", tagBg(cap.tag))}
+                      className={cn("px-2 py-0.5 rounded-full text-[9px] font-bold border transition-colors", tagBg(cap.tag))}
                     >{cap.tag ?? "body"}</button>
                     {/* Edit */}
-                    <button onClick={e => { e.stopPropagation(); setEditingCapIdx(i); }} className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-slate-300 hover:bg-white/10">
+                    <button onClick={e => { e.stopPropagation(); setEditingCapIdx(i); }} className="w-6 h-6 rounded-lg flex items-center justify-center text-slate-500 hover:text-violet-300 hover:bg-violet-500/10 transition-colors">
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
                     {/* Delete */}
@@ -3652,7 +3779,7 @@ export default function VideoEditorPage() {
                         setCaptions(updated);
                         if (activeSegIdx >= updated.length) setActiveSegIdx(Math.max(0, updated.length - 1));
                       }}
-                      className="w-5 h-5 rounded flex items-center justify-center text-slate-600 hover:text-red-400 hover:bg-red-500/10"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                     ><Trash2 className="w-3 h-3" /></button>
                   </div>
                 </div>
@@ -3667,18 +3794,32 @@ export default function VideoEditorPage() {
                 setCaptions([...captions, newCap]);
                 setTimeout(() => setEditingCapIdx(captions.length), 50);
               }}
-              className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-slate-600 hover:bg-[#1a1a22] hover:text-slate-400 text-[12px] transition-colors mt-1"
+              className="flex items-center justify-center gap-1.5 px-2 py-2 rounded-xl border border-dashed border-[#2a2a36] text-slate-600 hover:border-violet-500/40 hover:bg-violet-500/[0.06] hover:text-violet-300 text-[12px] font-medium transition-all mt-1"
             >
               <Plus className="w-3.5 h-3.5" /> Add Segment
             </button>
           </div>
 
-          {/* Pipeline status */}
-          <div className="border-t border-[#1e1e28] p-3 overflow-y-auto flex-shrink-0 max-h-[55%]">
+          {/* Pipeline status — ย่อได้ เพื่อคืนพื้นที่ให้ลิสต์ซับ */}
+          <div className={cn("border-t border-[#1e1e28] p-3 flex-shrink-0", processOpen && "overflow-y-auto max-h-[55%]")}>
             {/* Clip quota — fail-soft: renders nothing while loading or on error */}
             <QuotaStatus variant="chip" className="mb-2 w-full justify-center" />
-            <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Process</div>
-            <div className="flex flex-col gap-0.5">
+            <button onClick={() => setProcessOpen(v => !v)} className="w-full flex items-center gap-2 text-left group/proc">
+              <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider group-hover/proc:text-slate-400 transition-colors">Process</span>
+              {!processOpen && running && (
+                <span className="flex items-center gap-1 text-[9px] text-violet-400">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {renderActivity.phase !== "idle" && renderProgress > 0 && <span className="tabular-nums">{renderProgress}%</span>}
+                </span>
+              )}
+              {!processOpen && !running && (() => {
+                const done = Object.values(steps).filter(s => s === "done").length;
+                return done > 0 ? <span className="text-[9px] text-slate-700 tabular-nums">{done} done</span> : null;
+              })()}
+              <ChevronDown className={cn("w-3 h-3 text-slate-600 ml-auto transition-transform", !processOpen && "-rotate-90")} />
+            </button>
+            {processOpen && (<>
+            <div className="flex flex-col gap-0.5 mt-2">
               {/* Order matches runAll: TTS → Transcribe → Keywords → B-roll → Config → Render → (Avatar/Composite) → Burn */}
               {(() => {
               const visibleSteps = ([ ["tts","TTS Voice"], ["transcribe","Transcribe"], ["keywords","Keywords"], ["fetchStock","B-roll"], ["config","Config"], ["render","Render"], ["avatar","Avatar"], ["avatarTail","Avatar Tail"], ["composite","Composite"], ["burnSubtitles","Burn Subtitles"] ] as [keyof StepState, string][]).filter(([k]) => {
@@ -3849,8 +3990,14 @@ export default function VideoEditorPage() {
               }
               return null;
             })()}
+            </>)}
           </div>
         </div>
+
+        {/* คอลัมน์ขวาของ Transcript: (preview + settings) ด้านบน, timeline ด้านล่าง
+            — panel ซ้ายเลยยืดสูงเต็มจนถึงล่างสุดของจอ */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
 
         {/* ── CENTER: PREVIEW ── */}
         <div ref={centerPanelRef} className="flex-1 flex flex-col bg-[#0c0c0f]/80 min-w-0">
@@ -4098,6 +4245,11 @@ export default function VideoEditorPage() {
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
+              kieModel={kieModel} setKieModel={setKieModel}
+              autoMixProviders={autoMixProviders} setAutoMixProviders={setAutoMixProviders}
+              stockVideos={stockVideos} stockCacheBust={stockCacheBust}
+              kieImageEnabled={kieImageEnabled} autoMixEnabled={autoMixEnabled}
+              targetClipCount={targetClipCount} setTargetClipCount={setTargetClipCount}
             />
             <div className="flex-shrink-0 border-l border-[#1e1e28] flex flex-col h-full" style={{ width: rightPanelWidth }}>
               <RightSettingsPanel
@@ -4155,7 +4307,7 @@ export default function VideoEditorPage() {
             </div>
           </div>
         )}
-      </div>
+        </div>{/* /row: preview + settings */}
 
       {/* Floating detached panel */}
       {panelDetached && (
@@ -4451,7 +4603,7 @@ export default function VideoEditorPage() {
                         }
                       }}
                       className={cn("absolute top-1.5 h-[26px] rounded-md flex items-center text-[10px] font-semibold overflow-hidden whitespace-nowrap border transition-all hover:brightness-125 select-none touch-none cursor-grab active:cursor-grabbing",
-                        i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/20` : tagClipBg(cap.tag))}
+                        i === activeSegIdx ? `${tagClipBg(cap.tag)} ring-1 ring-white/50 brightness-125` : tagClipBg(cap.tag))}
                       style={{ left: `${left}%`, width: `calc(${Math.max(0.4, width)}% - 2px)`, marginRight: "2px" }}>
                       <div className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/20 rounded-l-md z-10"
                         onPointerDown={e => startResize(e, "left")} />
@@ -4518,6 +4670,8 @@ export default function VideoEditorPage() {
           </div>
         </div>
       </div>
+        </div>{/* /คอลัมน์ขวาของ Transcript */}
+      </div>{/* /MAIN BODY */}
 
       {/* Missing key modal */}
       {missingKey && (
@@ -4549,6 +4703,24 @@ export default function VideoEditorPage() {
         hideCta={upgradeModal.hideCta}
         onClose={() => setUpgradeModal({ open: false })}
       />
+
+      {/* API settings popup — ตั้งค่า key ได้โดยไม่ต้องออกจาก editor */}
+      {apiSettingsOpen && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setApiSettingsOpen(false)}>
+          <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl bg-[#101016] border border-[#2a2a36] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 bg-[#101016]/95 backdrop-blur border-b border-[#1e1e28]">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-violet-400" />
+                <h3 className="text-sm font-bold text-white">API Settings</h3>
+              </div>
+              <button onClick={() => setApiSettingsOpen(false)} className="text-slate-500 hover:text-slate-300 transition-colors"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-5">
+              <ApiKeySettings />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Render settings modal */}
       {renderSettingsOpen && (

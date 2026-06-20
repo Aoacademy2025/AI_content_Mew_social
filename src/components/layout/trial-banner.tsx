@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Sparkles, ArrowRight } from "lucide-react";
+import { fetchMe } from "@/lib/use-me";
 
 type Me = { plan: string; trialStartedAt: string | null; trialEndsAt: string | null };
 
@@ -10,7 +11,7 @@ export function TrialBanner() {
   const [me, setMe] = useState<Me | null>(null);
 
   useEffect(() => {
-    fetch("/api/user/me").then(r => r.json()).then(setMe).catch(() => {});
+    fetchMe().then(d => { if (d) setMe(d as unknown as Me); }).catch(() => {});
   }, []);
 
   if (!me) return null;

@@ -53,6 +53,49 @@ function isTooSimilar(candidate: string, usedSet: Set<string>, threshold = 0.6):
   return false;
 }
 
+// เลือก keyword ไม่ซ้ำให้ครบ `limit` ตัว — กันซ้ำทั้งแบบเป๊ะและคล้ายกัน (similarity)
+// ดึงจาก alternatives มาเติมก่อน ถ้ายังไม่ครบค่อยยอมรับตัวที่คล้าย (ดีกว่าได้ไม่ครบ)
+function pickDistinctKeywords(
+  keywords: string[],
+  alternatives: string[][],
+  limit: number,
+): { keywords: string[]; alternatives: string[][] } {
+  const used = new Set<string>();
+  const outKw: string[] = [];
+  const outAlts: string[][] = [];
+
+  const tryAdd = (kw: string, alts: string[]): boolean => {
+    if (!kw || used.has(kw) || isTooSimilar(kw, used, 0.6)) return false;
+    used.add(kw);
+    outKw.push(kw);
+    outAlts.push(alts.length ? alts : [kw]);
+    return true;
+  };
+
+  // รอบ 1: ลอง primary keyword ของแต่ละ slot
+  for (let i = 0; i < keywords.length && outKw.length < limit; i++) {
+    if (tryAdd(keywords[i], alternatives[i] ?? [])) continue;
+    // primary ซ้ำ → ลอง alternative ตัวอื่นใน slot เดียวกัน
+    for (const alt of alternatives[i] ?? []) {
+      if (tryAdd(alt, alternatives[i] ?? [])) break;
+    }
+  }
+
+  // รอบ 2 (เผื่อไม่ครบ): ยอมรับ exact-unique แม้จะคล้ายของเดิม
+  if (outKw.length < limit) {
+    for (let i = 0; i < keywords.length && outKw.length < limit; i++) {
+      const kw = keywords[i];
+      if (kw && !used.has(kw)) {
+        used.add(kw);
+        outKw.push(kw);
+        outAlts.push((alternatives[i] ?? []).length ? alternatives[i] : [kw]);
+      }
+    }
+  }
+
+  return { keywords: outKw, alternatives: outAlts };
+}
+
 // Minimal validation: must be English, 2-8 words, not noise
 const NOISE_RE = /^(scene|scenes|keywords?|clip|clips?|shot|shots|video|videos)\s*[:\-]?\s*\d*$/i;
 
@@ -203,7 +246,7 @@ export async function POST(req: Request) {
   const userId = authUser.id;
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false, audioDurationSec = 0 } = body ?? {};
+  const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
@@ -482,13 +525,19 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   const CLIP_AVG_SEC = 3.5;
   const BUFFER = 1.6;
   const CLIPS_PER_KW = 4; // realistic — fetch-stock caps at 15 but typical pick is ~4–6
+  // กำหนดจำนวนคลิปเอง (targetClipCount > 0): ให้ LLM สร้าง keyword ตามจำนวนนั้นพอดี
+  // (1 keyword/clip — แต่ละคลิปได้ภาพ/วิดีโอที่ต่างหัวข้อกัน). Auto (0): ใช้สูตรเดิมจาก duration
+  const manualClips = Number(targetClipCount) > 0 ? Math.min(60, Math.floor(Number(targetClipCount))) : 0;
   const clipsNeeded = durSec > 0 ? Math.ceil((durSec / CLIP_AVG_SEC) * BUFFER) : numScenes;
-  const keywordsNeeded = Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
+  const keywordsNeeded = manualClips > 0
+    ? manualClips
+    : Math.max(numScenes, Math.ceil(clipsNeeded / CLIPS_PER_KW));
   // แต่ละ scene สร้างกี่ keyword (ปัดขึ้น)
   const kwPerScene = Math.max(1, Math.min(10, Math.ceil(keywordsNeeded / numScenes)));
-  const totalKw = Math.min(500, numScenes * kwPerScene);
+  // โหมดกำหนดเอง: total = จำนวนที่ตั้งพอดี (trim ส่วนเกินทีหลัง). Auto: numScenes × kwPerScene
+  const totalKw = manualClips > 0 ? manualClips : Math.min(500, numScenes * kwPerScene);
 
-  console.log(`[extract-keywords] dur=${durSec}s clips_needed=${clipsNeeded} keywords_needed=${keywordsNeeded} kw/scene=${kwPerScene} total=${totalKw}`);
+  console.log(`[extract-keywords] ${manualClips > 0 ? `manual=${manualClips}` : `dur=${durSec}s`} clips_needed=${clipsNeeded} keywords_needed=${keywordsNeeded} kw/scene=${kwPerScene} total=${totalKw}`);
 
   let useHeuristicFallback = false;
   let heuristicFallbackReason: string | null = null;
@@ -522,6 +571,76 @@ Script: ${cleanScript.slice(0, 1500)}`;
   const directionBlock = visualDirection
     ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n${contentProfilePromptBlock(contentProfile)}\n═══ END DIRECTION ═══\n`
     : `\n═══ CONTENT PROFILE ═══\n${contentProfilePromptBlock(contentProfile)}\n═══ END CONTENT PROFILE ═══\n`;
+
+  // ── โหมดกำหนดจำนวนคลิปเอง: ให้ LLM สร้าง keyword หลากหลายไม่ซ้ำตามจำนวนที่ตั้ง ──
+  // ไม่ผูกกับ scenes — แตกหัวข้อจาก script เป็น N มุมที่ต่างกัน (เช่น script เรื่องเดียว
+  // B-roll=5 → 5 มุมภาพที่ต่างกัน ไม่ซ้ำ)
+  if (manualClips > 0) {
+    const manualPrompt = `You are a Visual Director and B-roll Editor for short-form video (TikTok/Reels).
+
+═══ FULL SCRIPT ═══
+${cleanScript}
+═══ END SCRIPT ═══
+${directionBlock}
+Generate EXACTLY ${manualClips} Pexels stock search queries that together illustrate this script.
+Even if the script focuses on one topic, break it into ${manualClips} DISTINCT visual angles
+(wide shot, close-up detail, people, environment, action, result, metaphor…).
+
+CRITICAL RULES:
+  • ALL ${manualClips} queries MUST be visually DISTINCT — no two queries about the same shot
+  • NO real person names or brand names (Pexels has none) — translate to what they look like
+  • English only, 2–6 words per query, each filmable in ONE shot
+  • Ground abstract concepts in concrete filmable objects
+  • Stay inside the content profile / visual direction above
+
+OUTPUT (JSON only, no explanation):
+{"keywords":["q1","q2",...]}
+Exactly ${manualClips} distinct queries.`;
+
+    let parsedFlat: string[][] = [];
+    if (!useHeuristicFallback) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 6000 * attempt));
+          const text = await callLLM(manualPrompt, Math.min(4096, manualClips * 60 + 300));
+          console.log(`[extract-keywords] manual=${manualClips} attempt${attempt}:`, text.slice(0, 120));
+          parsedFlat = parseKeywordAlternatives(text); // flat → [[q1],[q2],...]
+          if (parsedFlat.length >= Math.floor(manualClips * 0.7)) break;
+        } catch (e) {
+          const reason = useHeuristicKeywordFallback(e, "normal", manualClips);
+          if (reason) { useHeuristicFallback = true; heuristicFallbackReason = heuristicFallbackReason ?? reason; break; }
+        }
+      }
+    }
+
+    // รวม keyword ที่ LLM ให้ + เติม fallback ถ้าไม่ครบ แล้ว dedup ให้ครบ ${manualClips}
+    const flatKws = parsedFlat.map(g => g[0]).filter(Boolean);
+    const fallbackPool = fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile);
+    const merged = [...flatKws, ...fallbackPool];
+    const picked = pickDistinctKeywords(merged, merged.map(k => [k]), manualClips);
+    // เติมจาก fallback อีกถ้ายังไม่ครบ (กันเคส LLM ให้น้อย + fallback ซ้ำ)
+    while (picked.keywords.length < manualClips && fallbackPool.length > 0) {
+      const extra = fallbackPool[picked.keywords.length % fallbackPool.length];
+      const variant = `${extra} ${["closeup","wide","aerial","slow motion","detail"][picked.keywords.length % 5]}`;
+      picked.keywords.push(sanitizeKeyword(variant) || extra);
+      picked.alternatives.push([extra]);
+    }
+
+    console.log(`[extract-keywords] manual mode: ${picked.keywords.length} distinct keywords (target ${manualClips})`);
+    return NextResponse.json({
+      keywords: picked.keywords,
+      keywordAlternatives: picked.alternatives,
+      scenes: sceneList,
+      keywordsPerScene: 1,
+      sceneClipCounts: picked.keywords.map(() => 1),
+      sceneDurations: picked.keywords.map(() => Math.max(3, Math.ceil((durSec || numScenes * 3) / picked.keywords.length))),
+      visualDirection,
+      contentProfile,
+      relevanceSpec,
+      fallback: useHeuristicFallback ? "heuristic" : undefined,
+      fallbackReason: useHeuristicFallback ? heuristicFallbackReason : undefined,
+    });
+  }
 
   // ถ้าต้องการมากกว่า 1 keyword/scene → ส่ง prompt แบบ multi-kw/scene
   const multiKwMode = kwPerScene > 1;

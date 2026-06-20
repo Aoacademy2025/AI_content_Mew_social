@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Loader2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
 import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
+import { fetchMe } from "@/lib/use-me";
 
 interface ApiKeys {
   geminiKey?: string;
@@ -12,11 +13,14 @@ interface ApiKeys {
   elevenlabsKey?: string;
   pexelsKey?: string;
   pixabayKey?: string;
+  kieKey?: string;
+  unsplashKey?: string;
+  flickrKey?: string;
 }
-type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay";
+type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 type TestResult = { ok: boolean; message: string } | null;
 
-const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null };
+const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, kie: null, unsplash: null, flickr: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);
@@ -26,8 +30,23 @@ export function ApiKeySettings() {
   const [dirty, setDirty] = useState(false);
   const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => { fetchApiKeys(); }, []);
+  useEffect(() => {
+    fetchApiKeys();
+    // ช่อง adminOnly โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
+    fetchMe().then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
+  }, []);
+
+  // Sync ข้ามจุดที่ component นี้ถูกใช้ (popup ใน editor / หน้า Settings) —
+  // กลับมาโฟกัสเมื่อไหร่ refetch ใหม่ ถ้าไม่มีการแก้ค้างอยู่ จะได้ไม่ทับของที่พิมพ์
+  const dirtyRef = useRef(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+  useEffect(() => {
+    const onFocus = () => { if (!dirtyRef.current) fetchApiKeys(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   async function fetchApiKeys() {
     try {
@@ -189,6 +208,17 @@ export function ApiKeySettings() {
               ขั้นสูง (ไม่บังคับ) — ไม่ใส่ก็ใช้งานได้
             </button>
             {advancedOpen && (<>{field("elevenlabs")}{field("heygen")}</>)}
+
+            {isAdmin && (
+              <>
+                <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-fuchsia-200">
+                  Admin — แหล่งภาพทดลอง (ซ่อนจาก user)
+                </div>
+                {field("kie")}
+                {field("unsplash")}
+                {field("flickr")}
+              </>
+            )}
           </>
         );
       })()}

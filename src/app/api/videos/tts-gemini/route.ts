@@ -411,6 +411,7 @@ export async function POST(req: Request) {
       timing: { provider: "gemini" as const, segments, chars: null, silences: sil.midpoints, silenceIntervals: sil.intervals },
     });
   } catch (error) {
+    console.error("[tts-gemini] top-level error:", error);
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });
   }
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { fetchMe } from "@/lib/use-me";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone,
@@ -72,12 +73,12 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
 
   useEffect(() => {
-    fetch("/api/user/me")
-      .then(r => r.json())
+    fetchMe()
       .then(data => {
+        if (!data) { setSessionLoaded(true); return; }
         if (data.plan) setPlan(data.plan);
         if (data.name) setUserName(data.name);
-        if (data.role) setRole(data.role);
+        if (data.role) setRole(data.role as "ADMIN" | "USER");
         if (typeof data.usageCount === "number") setUsageCount(data.usageCount);
         if (typeof data.usageLimit === "number") setUsageLimit(data.usageLimit);
         setSessionLoaded(true);
