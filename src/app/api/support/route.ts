@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
+import { sendSupportTicketEmail, sendSupportAckEmail } from "@/lib/send-email";
 
 export const maxDuration = 30;
 
@@ -105,45 +106,34 @@ export async function POST(req: Request) {
     });
 
     // Resolve support inboxes (comma-separated). Prefer the value set in
-    // Admin → Settings (DB), fall back to env. n8n owns all ticket emails
-    // (team notification + user acknowledgement) — see deploy/n8n/README.md.
+    // Admin → Settings (DB), fall back to env.
     const supportConfig = await prisma.siteConfig.findUnique({ where: { key: "support_email" } });
     const supportEmail = supportConfig?.value || process.env.SUPPORT_EMAIL;
     const adminEmails = supportEmail ? supportEmail.split(",").map(e => e.trim()).filter(Boolean) : [];
 
-    // Forward to n8n webhook (fire-and-forget — never block the user response).
-    // If n8n is unreachable, the ticket is still saved (DB) and admins are
-    // notified in-app; only the emails are skipped.
-    const n8nUrl = process.env.N8N_SUPPORT_WEBHOOK_URL || process.env.N8N_WEBHOOK_URL;
-    if (n8nUrl) {
-      void fetch(n8nUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event: "support_ticket_created",
-          ticketId: ticket.id,
-          ticketShort: ticket.id.slice(-6),
-          createdAt: ticket.createdAt.toISOString(),
-          user: {
-            id: authUser.id,
-            name: user?.name ?? "User",
-            email: user?.email ?? "",
-            plan: user?.plan ?? "FREE",
-            isPaid: user?.plan === "PRO" || user?.plan === "BUSINESS",
-          },
-          message: cleanMessage,
-          // Support inboxes the platform notifies — n8n can CC/route to these
-          supportEmails: adminEmails,
-          attachment: imageName
-            ? {
-                name: imageName,
-                contentType: imageContentType,
-                // data URL so n8n can decode/attach without another request
-                dataUrl: imageBase64 ? `data:${imageContentType};base64,${imageBase64}` : null,
-              }
-            : null,
-        }),
-      }).catch((e) => console.error("[support] n8n webhook failed:", e));
+    // Email notifications via the in-app sender (Resend). Fire-and-forget — never
+    // block the user response; the ticket is already saved and admins are notified
+    // in-app, so an email failure only skips the email (logged, not fatal).
+    if (adminEmails.length > 0) {
+      void sendSupportTicketEmail({
+        adminEmail: adminEmails,
+        ticketId: ticket.id,
+        userName: user?.name ?? "User",
+        userEmail: user?.email ?? "",
+        userPlan: user?.plan ?? "FREE",
+        message: cleanMessage,
+        imageName,
+        imageBuffer,
+        imageContentType,
+      }).then((ok) => { if (!ok) console.error("[support] team email failed for", ticket.id); });
+    }
+    if (user?.email) {
+      void sendSupportAckEmail({
+        userEmail: user.email,
+        userName: user.name ?? "User",
+        ticketId: ticket.id,
+        message: cleanMessage,
+      }).then((ok) => { if (!ok) console.error("[support] ack email failed for", ticket.id); });
     }
 
     // Confirm to user

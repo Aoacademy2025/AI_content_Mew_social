@@ -112,7 +112,7 @@ async function sendViaResend(opts: {
     const result = await resend.emails.send({
       from: RESEND_FROM,
       to: opts.to,
-      replyTo: opts.replyTo,
+      replyTo: opts.replyTo || undefined,
       subject: opts.subject,
       html: opts.html,
       attachments: opts.attachments?.map(a => ({ filename: a.filename, content: a.content })),
@@ -289,6 +289,34 @@ ${adminLink ? `<div style="margin:24px 0 8px">${premiumButton({ href: adminLink,
 
 <hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
 <p style="margin:0;color:#52525b;font-size:11px">💡 ตอบกลับอีเมลนี้โดยตรงเพื่อส่งข้อความถึง user (Reply-To ตั้งไว้แล้ว) หรือเปิดใน Admin Panel เพื่อตอบผ่านระบบ</p>
+`.trim(),
+    }),
+  });
+}
+
+/** Acknowledgement to the user right after they submit a ticket. */
+export async function sendSupportAckEmail(opts: {
+  userEmail: string;
+  userName: string;
+  ticketId: string;
+  message: string;
+}): Promise<boolean> {
+  return sendEmail({
+    to: opts.userEmail,
+    subject: `ได้รับคำร้องของคุณแล้ว #${opts.ticketId.slice(-6)} — ${BRAND}`,
+    html: emailShell({
+      title: "ได้รับคำร้องแล้ว",
+      previewText: "ทีมงานได้รับคำร้องของคุณแล้ว จะติดต่อกลับโดยเร็ว",
+      body: `
+<span style="color:#71717a;font-size:11px;letter-spacing:1.5px;text-transform:uppercase">Support · #${opts.ticketId.slice(-6)}</span>
+<h1 style="margin:4px 0 14px;color:#fff;font-size:22px;font-weight:700">สวัสดีคุณ ${escapeHtml(opts.userName)} 👋</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">เราได้รับคำร้องของคุณแล้ว ✅ ทีมงานจะติดต่อกลับทางอีเมลนี้โดยเร็วที่สุด (ปกติภายใน 24 ชั่วโมง)</p>
+
+<div style="margin:0 0 8px;color:#71717a;font-size:11px;letter-spacing:1px;text-transform:uppercase">ข้อความที่คุณส่ง</div>
+<div style="padding:18px;background:rgba(0,0,0,0.3);border-left:3px solid #22d3ee;border-radius:8px;color:#e5e7eb;font-size:14px;white-space:pre-wrap;word-wrap:break-word">${escapeHtml(opts.message)}</div>
+
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#52525b;font-size:11px">ขอบคุณที่แจ้งเข้ามา — ทีมงาน ${BRAND}</p>
 `.trim(),
     }),
   });
