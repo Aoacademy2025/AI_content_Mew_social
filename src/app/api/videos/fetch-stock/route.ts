@@ -12,6 +12,7 @@ import {
   type ContentProfile,
 } from "@/lib/broll-profile";
 import { clampedLongSide, pickPixabayVariant } from "@/lib/broll-source-quality";
+import { parseLlmRankResponse } from "@/lib/llm-rank-parse";
 import {
   specToTerms,
   profileToTerms,
@@ -435,11 +436,13 @@ async function llmRankBatch(
     : "";
   const profileLine = `\nVISUAL DOMAIN: ${terms.domainLabel}\nPrefer footage of: ${terms.positive.slice(0, 12).join(", ") || "the subject described"}.\nDown-rank (do NOT hard-reject) footage of: ${terms.avoid.slice(0, 8).join(", ") || "obviously unrelated subjects"}.\n`;
 
+  const lastIdx = keywords.length - 1;
   const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content, content profile, and overall video direction.
 ${directionLine}
 ${profileLine}
 RULES:
-- Output ONLY a JSON array of integers, one per subtitle, same order
+- Output ONLY a JSON object mapping each subtitle index to its chosen candidate index, e.g. {"0": 2, "1": -1, "2": 0}
+- Include an entry for EVERY subtitle index from 0 to ${lastIdx}
 - Pick the index whose title most literally matches what is described in the subtitle
 - Return the BEST available index even if imperfect. Use -1 ONLY for a candidate that is truly unusable. NEVER return -1 for every subtitle.
 - Prefer candidates that fit the VIDEO DIRECTION tone (mood, setting, energy)
@@ -447,36 +450,15 @@ RULES:
 
 ${lines.join("\n")}
 
-OUTPUT (JSON array of ${keywords.length} integers; values may be -1):`;
+OUTPUT (JSON object with keys "0".."${lastIdx}" → candidate index; values may be -1):`;
 
-  // max_tokens: each integer + comma is ~3 tokens; 10 tokens overhead
-  const maxTokens = Math.max(128, keywords.length * 4 + 20);
+  // Keyed output is wordier than a bare array: each entry is ~6-8 tokens.
+  const maxTokens = Math.max(160, keywords.length * 8 + 64);
   const text = await geminiGenerateText(llmKey, prompt, maxTokens, 0);
 
-  let parsed: unknown[] = [];
-  const arrMatch = text.match(/\[[\d,\s-]+\]/);
-  if (arrMatch) {
-    parsed = JSON.parse(arrMatch[0]);
-  } else {
-    const objMatch = text.match(/\{[\s\S]*\}/);
-    if (objMatch) {
-      const obj = JSON.parse(objMatch[0]);
-      const arr = Array.isArray(obj) ? obj : Object.values(obj).find(v => Array.isArray(v));
-      if (Array.isArray(arr)) parsed = arr;
-    }
-  }
-
-  if (parsed.length !== keywords.length) {
-    console.warn(`[fetch-stock] LLM ranking length mismatch: got ${parsed.length}, expected ${keywords.length} — using profile fallback`);
-    return keywords.map(() => -1);
-  }
-
-  return parsed.map((v, i) => {
-    const n = typeof v === "number" ? v : parseInt(String(v), 10);
-    const maxIdx = (candidateTitles[i]?.length ?? 1) - 1;
-    if (isNaN(n) || n < 0) return -1;
-    return Math.min(n, maxIdx);
-  });
+  // Robust parse: tolerant of off-by-count and truncation, no positional
+  // mis-alignment, fail-open to -1 (deterministic fallback). See llm-rank-parse.
+  return parseLlmRankResponse(text, keywords.length, candidateTitles.map((t) => t.length));
 }
 
 async function llmRankCandidates(
