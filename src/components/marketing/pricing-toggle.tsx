@@ -18,7 +18,7 @@ const PRO_FEATURES = [
 ];
 const BUSINESS_FEATURES = ["ทุกอย่างใน PRO", "300 คลิป/เดือน", "คลิปยาว 10 นาที", "เก็บวิดีโอ 14 วัน"];
 
-const BRAND = "linear-gradient(120deg,#8b5cf6,#22d3ee)";
+const BRAND = "linear-gradient(120deg,#8b5cf6,#a78bfa)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 
 export function PricingToggle({
@@ -75,7 +75,7 @@ export function PricingToggle({
           style={yearly ? { background: BRAND } : undefined}
         >
           รายปี
-          <span className="ml-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/15 px-1.5 py-0.5 text-[11px] text-emerald-300">
+          <span className="ml-1.5 rounded-full border border-violet-400/40 bg-violet-400/15 px-1.5 py-0.5 text-[11px] text-violet-200">
             ประหยัด 2 เดือน
           </span>
         </button>
@@ -116,7 +116,7 @@ export function PricingToggle({
       {/* payment reassurance chips */}
       <div className="mt-7 flex flex-wrap justify-center gap-2.5">
         {["💳 PromptPay", "💳 บัตร", "🛡️ คืนเงินใน 7 วัน", "🔁 จ่ายครั้งเดียว ไม่ตัดอัตโนมัติ"].map((c) => (
-          <span key={c} className="rounded-full border border-cyan-400/35 bg-cyan-400/10 px-3.5 py-1.5 text-[13px] text-cyan-200">
+          <span key={c} className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3.5 py-1.5 text-[13px] text-violet-200">
             {c}
           </span>
         ))}
@@ -145,7 +145,7 @@ function Tier({
       style={
         best
           ? {
-              background: "linear-gradient(#07070f,#07070f) padding-box, linear-gradient(120deg,#8b5cf6,#22d3ee) border-box",
+              background: "linear-gradient(#06060b,#06060b) padding-box, linear-gradient(120deg,#8b5cf6,#a78bfa) border-box",
               border: "1.5px solid transparent",
               boxShadow: "0 0 60px -14px rgba(139,92,246,.6)",
             }
@@ -165,14 +165,14 @@ function Tier({
         <span className="text-[42px] font-bold leading-none" style={HEAD}>{amount}</span>
         {unit && <span className="ml-1 text-[15px] text-[#a7adcc]">{unit}</span>}
       </div>
-      <div className="min-h-5 text-center text-[13px] text-cyan-300">
+      <div className="min-h-5 text-center text-[13px] text-violet-300">
         {perm}
         {was && <span className="text-[#a7adcc] line-through">{was}</span>}
       </div>
       <ul className="my-5 flex-1 space-y-1.5 text-[14.5px]">
         {features.map((f) => (
           <li key={f} className="flex gap-2 text-[#d5d9ee]">
-            <Check className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" strokeWidth={3} aria-hidden />
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" strokeWidth={3} aria-hidden />
             {f}
           </li>
         ))}

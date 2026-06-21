@@ -1,6 +1,6 @@
 import Link from "next/link";
 import {
-  Sparkles, ArrowRight, Bot, Mic, Music, Film, Captions, Share2, Flame,
+  Sparkles, ArrowRight, Bot, Mic, Music, Film, Captions, Share2, Flame, Plus,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { getFoundingCoupon } from "@/lib/founding";
@@ -22,10 +22,15 @@ export const metadata = {
 // Marketing page: tolerate a 60s-stale price/founding count to cut DB load.
 export const revalidate = 60;
 
-const BRAND = "linear-gradient(120deg,#8b5cf6,#22d3ee)";
+// Single-accent design system (violet-only, ref-inspired premium look).
+const ACCENT = "linear-gradient(120deg,#8b5cf6,#a78bfa)"; // one hue family
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
+const DISPLAY = { fontFamily: "'Anton', sans-serif" } as const; // giant wordmark
 const GLASS =
-  "rounded-[22px] border border-white/10 bg-white/[0.045] shadow-[0_10px_40px_rgba(0,0,0,0.4)] backdrop-blur-md";
+  "rounded-[22px] border border-white/10 bg-white/[0.04] shadow-[0_10px_40px_rgba(0,0,0,0.4)] backdrop-blur-md";
+const GLOW = "0 0 34px rgba(139,92,246,.5)";
+const EYEBROW =
+  "text-center text-[13px] font-semibold uppercase tracking-[.14em] text-violet-300";
 
 async function getPlanPrices() {
   try {
@@ -54,19 +59,14 @@ async function getFounding() {
   }
 }
 
-const WHAT = [
-  { icon: Captions, title: "ซับไทยอัตโนมัติ", desc: "ยาว หรือ keyword ไวรัล" },
-  { icon: Film, title: "B-roll 3–5 วิ", desc: "เปลี่ยนภาพให้อัตโนมัติ" },
-  { icon: Bot, title: "มี/ไม่มี Avatar ก็ได้", desc: "พูดทั้งคลิป · เฉพาะเปิด-ปิด · หรือไม่มีเลย" },
-];
-
+// One consolidated capability grid (merged from the old "what" + "features").
 const FEATURES = [
-  { icon: Bot, title: "AI Avatar", desc: "สร้าง + ตัดต่อคลิป Avatar อัตโนมัติ" },
-  { icon: Mic, title: "โคลนเสียงตัวเอง", desc: "ให้ Avatar พูดด้วยเสียงคุณ" },
-  { icon: Music, title: "เพลง + เสียง Effect", desc: "ใส่ดนตรีประกอบ เลือกได้" },
-  { icon: Film, title: "B-roll ภาพ/วิดีโอ", desc: "ภาพประกอบเปลี่ยนตามเนื้อหา" },
-  { icon: Captions, title: "ซับไทย 2 สไตล์", desc: "เต็มประโยค หรือ keyword สั้น" },
-  { icon: Share2, title: "พร้อมโพสต์", desc: "แนวตั้ง ลง TikTok/Reels ได้เลย" },
+  { icon: Bot, title: "AI Avatar", desc: "สร้าง + ตัดต่อคลิป Avatar อัตโนมัติ พูดทั้งคลิป · เฉพาะเปิด-ปิด · หรือไม่มีเลย" },
+  { icon: Captions, title: "ซับไทยอัตโนมัติ", desc: "ตรงเสียง ไม่ต้องพิมพ์เอง — เต็มประโยค หรือ keyword ไวรัล" },
+  { icon: Film, title: "B-roll เปลี่ยนทุก 3–5 วิ", desc: "ภาพ/วิดีโอประกอบ เปลี่ยนตามเนื้อหาอัตโนมัติ" },
+  { icon: Mic, title: "โคลนเสียงตัวเอง", desc: "ให้ Avatar พูดด้วยเสียงคุณเอง" },
+  { icon: Music, title: "เพลง + เสียง Effect", desc: "ใส่ดนตรีประกอบ เลือกได้ตามอารมณ์คลิป" },
+  { icon: Share2, title: "พร้อมโพสต์", desc: "แนวตั้ง ลง TikTok / Reels / Shorts ได้เลย" },
 ];
 
 const STEPS = [
@@ -103,27 +103,36 @@ export default async function Home() {
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[#07070f] text-[#f4f5ff]" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", lineHeight: 1.65 }}>
-      {/* aurora (static glows) */}
+    <div className="relative min-h-screen overflow-x-hidden bg-[#06060b] text-[#f4f5ff]" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", lineHeight: 1.65 }}>
+      {/* atmosphere: single violet glow + faint grid texture (ref-style restraint) */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute -left-[8vw] -top-[12vw] h-[46vw] w-[46vw] rounded-full opacity-40 blur-[110px]" style={{ background: "radial-gradient(circle,#8b5cf6,transparent 60%)" }} />
-        <div className="absolute -right-[8vw] -bottom-[14vw] h-[42vw] w-[42vw] rounded-full opacity-40 blur-[110px]" style={{ background: "radial-gradient(circle,#22d3ee,transparent 60%)" }} />
-        <div className="absolute left-1/2 top-[38%] h-[30vw] w-[30vw] rounded-full opacity-20 blur-[110px]" style={{ background: "radial-gradient(circle,#d946ef,transparent 60%)" }} />
+        <div className="absolute left-1/2 top-[-18vw] h-[64vw] w-[64vw] -translate-x-1/2 rounded-full opacity-30 blur-[130px]" style={{ background: "radial-gradient(circle,#6d28d9,transparent 60%)" }} />
+        <div className="absolute left-1/2 bottom-[-24vw] h-[52vw] w-[52vw] -translate-x-1/2 rounded-full opacity-20 blur-[130px]" style={{ background: "radial-gradient(circle,#8b5cf6,transparent 60%)" }} />
+        <div
+          className="absolute inset-0 opacity-[0.05]"
+          style={{
+            backgroundImage:
+              "linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg,#ffffff 1px, transparent 1px)",
+            backgroundSize: "68px 68px",
+            maskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
+            WebkitMaskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
+          }}
+        />
       </div>
 
       {/* founding bar — server-rendered, only when active */}
       {founding?.active && (
-        <div className="sticky top-0 z-50 border-b border-white/10 bg-[rgba(7,7,15,0.72)] py-2.5 backdrop-blur-md">
+        <div className="sticky top-0 z-50 border-b border-white/10 bg-[rgba(6,6,11,0.72)] py-2.5 backdrop-blur-md">
           <div className="mx-auto flex max-w-[1140px] flex-wrap items-center justify-center gap-3 px-5 text-sm">
             <span className="font-bold" style={HEAD}>HERO AI</span>
             <span className="inline-flex items-center gap-1.5 text-white/70">
               <Flame className="h-4 w-4 text-amber-400" strokeWidth={2.5} aria-hidden /> ราคาผู้ก่อตั้ง {founding.total} คนแรก
             </span>
             <span className="h-[7px] w-[120px] overflow-hidden rounded-full bg-white/10">
-              <span className="block h-full rounded-full" style={{ width: `${filled}%`, background: BRAND }} />
+              <span className="block h-full rounded-full" style={{ width: `${filled}%`, background: ACCENT }} />
             </span>
-            <b className="text-cyan-300">เหลือ {founding.remaining}/{founding.total}</b>
-            <Link href="/register" className="rounded-full px-4 py-1.5 text-sm font-semibold text-white" style={{ background: BRAND }}>
+            <b className="text-violet-300">เหลือ {founding.remaining}/{founding.total}</b>
+            <Link href="/register" className="rounded-full px-4 py-1.5 text-sm font-semibold text-white" style={{ background: ACCENT }}>
               รับสิทธิ์
             </Link>
           </div>
@@ -131,16 +140,16 @@ export default async function Home() {
       )}
 
       {/* nav — always present */}
-      <nav className="relative z-40 mx-auto flex max-w-[1140px] items-center justify-between px-5 py-4">
+      <nav className="relative z-40 mx-auto flex max-w-[1140px] items-center justify-between px-5 py-5">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: BRAND }}>
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: ACCENT, boxShadow: GLOW }}>
             <Sparkles className="h-4 w-4 text-white" />
           </div>
-          <span className="text-sm font-bold" style={HEAD}>HERO AI</span>
+          <span className="text-sm font-bold tracking-wide" style={HEAD}>HERO AI</span>
         </div>
         <div className="flex items-center gap-3">
           <Link href="/login" className="text-sm text-white/60 transition-colors hover:text-white">เข้าสู่ระบบ</Link>
-          <Link href="/register" className="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-semibold text-white" style={{ background: "linear-gradient(135deg,#7c3aed,#06b6d4)" }}>
+          <Link href="/register" className="inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-semibold text-white" style={{ background: ACCENT }}>
             เริ่มฟรี <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
@@ -148,60 +157,46 @@ export default async function Home() {
 
       <main>
       {/* hero */}
-      <header className="relative px-5 pb-14 pt-12 text-center">
-        <div className="mx-auto max-w-[820px]">
-          <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/35 bg-cyan-400/10 px-4 py-1.5 text-[13px] text-cyan-200">
+      <header className="relative px-5 pb-20 pt-16 text-center sm:pt-20">
+        <div className="mx-auto max-w-[860px]">
+          <span className="inline-flex items-center gap-2 rounded-full border border-violet-400/30 bg-violet-400/10 px-4 py-1.5 text-[13px] text-violet-200">
             ✨ สำหรับสาย Faceless &amp; คนทำคอนเทนต์
           </span>
-          <h1 className="my-5 text-4xl font-bold leading-[1.08] sm:text-5xl md:text-6xl" style={{ ...HEAD, letterSpacing: "-.01em" }}>
-            มีแค่ <span className="bg-gradient-to-r from-violet-300 via-cyan-300 to-fuchsia-300 bg-clip-text text-transparent">สคริปต์ 1 ชุด</span>
+          <h1 className="my-6 text-[40px] font-bold leading-[1.05] sm:text-6xl md:text-[68px]" style={{ ...HEAD, letterSpacing: "-.02em" }}>
+            มีแค่ <span className="bg-gradient-to-r from-violet-300 to-violet-400 bg-clip-text text-transparent">สคริปต์ 1 ชุด</span>
             <br />ได้คลิปพร้อมโพสต์ — อัตโนมัติ
           </h1>
-          <p className="mx-auto max-w-[660px] text-lg text-[#a7adcc]">
+          <p className="mx-auto max-w-[640px] text-lg text-[#a7adcc]">
             ระบบตัดต่อวิดีโอ <b className="text-white">Faceless + AI Avatar</b> พร้อมซับไทยอัตโนมัติ — ไม่ต้องออกกล้อง ไม่ต้องตัดต่อเอง
           </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3.5">
-            <Link href="/register" className="inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-base font-semibold text-white" style={{ ...HEAD, background: BRAND, boxShadow: "0 0 34px rgba(139,92,246,.5)" }}>
+          <div className="mt-9 flex flex-wrap justify-center gap-3.5">
+            <Link href="/register" className="inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-base font-semibold text-white" style={{ ...HEAD, background: ACCENT, boxShadow: GLOW }}>
               เริ่มใช้ฟรี <ArrowRight className="h-4 w-4" />
             </Link>
             <Link href="/login" className="inline-flex items-center gap-2 rounded-full border border-white/10 px-7 py-3.5 text-base font-semibold text-white/85 transition-colors hover:bg-white/5">
               เข้าสู่ระบบ
             </Link>
           </div>
-          <div className="mx-auto mt-12 max-w-[880px]">
-            <YouTubeLite id={OVERVIEW_VIDEO.id} title={OVERVIEW_VIDEO.title} />
+          {/* glowing product demo — the single hero focal piece */}
+          <div className="relative mx-auto mt-16 max-w-[900px]">
+            <div aria-hidden className="absolute -inset-x-6 -top-10 bottom-0 opacity-70 blur-2xl" style={{ background: "radial-gradient(55% 60% at 50% 0%, rgba(139,92,246,.45), transparent 70%)" }} />
+            <div className="relative rounded-[24px] border border-violet-400/25 bg-white/[0.02] p-2 shadow-[0_0_90px_-24px_rgba(139,92,246,.7)]">
+              <YouTubeLite id={OVERVIEW_VIDEO.id} title={OVERVIEW_VIDEO.title} />
+            </div>
           </div>
         </div>
       </header>
 
-      {/* what it does */}
-      <section className="relative px-5 py-16">
+      {/* one consolidated feature grid */}
+      <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ทำอะไรได้บ้าง</p>
-          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>ขั้นตอนซ้ำๆ ที่เคยกินเวลา ระบบทำให้หมด</h2>
-          <div className="mt-9 grid gap-4 sm:grid-cols-3">
-            {WHAT.map(({ icon: Icon, title, desc }) => (
-              <div key={title} className={`${GLASS} p-6`}>
-                <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: BRAND }}>
-                  <Icon className="h-5 w-5 text-white" strokeWidth={2.2} aria-hidden />
-                </div>
-                <h3 className="text-lg font-semibold" style={HEAD}>{title}</h3>
-                <p className="mt-1 text-sm text-[#a7adcc]">{desc}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* feature grid */}
-      <section className="relative px-5 py-16">
-        <div className="mx-auto max-w-[1140px]">
-          <h2 className="text-center text-3xl font-bold sm:text-4xl" style={HEAD}>ครบทุกอย่างในที่เดียว</h2>
-          <div className="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <p className={EYEBROW} style={HEAD}>ทำอะไรได้บ้าง</p>
+          <h2 className="mx-auto mt-3 max-w-[680px] text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>ขั้นตอนซ้ำๆ ที่เคยกินเวลา ระบบทำให้หมด</h2>
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {FEATURES.map(({ icon: Icon, title, desc }) => (
-              <div key={title} className={`${GLASS} p-6`}>
-                <div className="mb-3.5 flex h-12 w-12 items-center justify-center rounded-[14px] border border-white/10 bg-black/20">
-                  <Icon className="h-5 w-5 text-cyan-300" strokeWidth={2.2} aria-hidden />
+              <div key={title} className={`${GLASS} group p-7 transition-colors hover:border-violet-400/40`}>
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-[14px] border border-violet-400/20 bg-violet-500/10">
+                  <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.2} aria-hidden />
                 </div>
                 <h3 className="text-lg font-semibold" style={HEAD}>{title}</h3>
                 <p className="mt-1.5 text-sm text-[#a7adcc]">{desc}</p>
@@ -212,15 +207,17 @@ export default async function Home() {
       </section>
 
       {/* see each system in action */}
-      <section className="relative px-5 py-16">
+      <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ดูระบบจริง</p>
-          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>เห็นแต่ละระบบทำงานจริง</h2>
-          <div className="mt-9 grid gap-5 md:grid-cols-3">
+          <p className={EYEBROW} style={HEAD}>ดูระบบจริง</p>
+          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เห็นแต่ละระบบทำงานจริง</h2>
+          <div className="mt-12 grid gap-6 md:grid-cols-3">
             {SYSTEM_VIDEOS.map(({ id, label, desc }) => (
               <div key={id}>
-                <YouTubeLite id={id} title={label} overlayTitle={false} />
-                <h3 className="mt-3.5 text-lg font-semibold" style={HEAD}>{label}</h3>
+                <div className="rounded-[20px] border border-white/10 bg-white/[0.02] p-1.5 shadow-[0_10px_40px_rgba(0,0,0,0.4)]">
+                  <YouTubeLite id={id} title={label} overlayTitle={false} />
+                </div>
+                <h3 className="mt-4 text-lg font-semibold" style={HEAD}>{label}</h3>
                 <p className="mt-0.5 text-sm text-[#a7adcc]">{desc}</p>
               </div>
             ))}
@@ -229,15 +226,15 @@ export default async function Home() {
       </section>
 
       {/* how it works */}
-      <section className="relative px-5 py-16">
-        <div className="mx-auto max-w-[920px]">
-          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ง่ายใน 3 ขั้น</p>
-          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>เริ่มจาก &quot;มีสคริปต์&quot; เท่านั้น</h2>
-          <div className="mt-9 grid gap-4 sm:grid-cols-3">
+      <section className="relative px-5 py-20 sm:py-28">
+        <div className="mx-auto max-w-[940px]">
+          <p className={EYEBROW} style={HEAD}>ง่ายใน 3 ขั้น</p>
+          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เริ่มจาก &quot;มีสคริปต์&quot; เท่านั้น</h2>
+          <div className="mt-12 grid gap-4 sm:grid-cols-3">
             {STEPS.map(({ n, title, desc }) => (
-              <div key={n} className={`${GLASS} p-6 text-center`}>
-                <div className="bg-gradient-to-r from-violet-300 to-cyan-300 bg-clip-text text-[40px] font-bold leading-none text-transparent" style={HEAD}>{n}</div>
-                <h3 className="mt-2.5 text-lg font-semibold" style={HEAD}>{title}</h3>
+              <div key={n} className={`${GLASS} p-7 text-center`}>
+                <div className="text-[44px] font-bold leading-none text-violet-300/90" style={DISPLAY}>{n}</div>
+                <h3 className="mt-3 text-lg font-semibold" style={HEAD}>{title}</h3>
                 <p className="mt-1 text-sm text-[#a7adcc]">{desc}</p>
               </div>
             ))}
@@ -245,17 +242,22 @@ export default async function Home() {
         </div>
       </section>
 
-      {/* real output samples (vertical shorts) */}
-      <section className="relative px-5 py-16">
+      {/* real output samples (vertical shorts) — fanned cards */}
+      <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className="text-center text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ตัวอย่างผลงาน</p>
-          <h2 className="mt-2 text-center text-3xl font-bold sm:text-4xl" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
-          <p className="mx-auto mt-3 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
-          <div className="mx-auto mt-9 grid max-w-[620px] grid-cols-2 gap-4 sm:gap-6">
-            {SAMPLE_VIDEOS.map(({ id, label }) => (
-              <div key={id}>
-                <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
-                <p className="mt-3 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
+          <p className={EYEBROW} style={HEAD}>ตัวอย่างผลงาน</p>
+          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
+          <p className="mx-auto mt-4 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
+          <div className="mx-auto mt-14 flex max-w-[640px] flex-col items-center justify-center gap-8 sm:flex-row sm:gap-10">
+            {SAMPLE_VIDEOS.map(({ id, label }, i) => (
+              <div
+                key={id}
+                className={`w-full max-w-[256px] transition-transform duration-300 sm:hover:rotate-0 ${i === 0 ? "sm:rotate-[-5deg]" : "sm:translate-y-6 sm:rotate-[5deg]"}`}
+              >
+                <div className="rounded-[24px] border border-violet-400/20 bg-white/[0.03] p-2 shadow-[0_24px_70px_-22px_rgba(139,92,246,.55)]">
+                  <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
+                </div>
+                <p className="mt-4 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
               </div>
             ))}
           </div>
@@ -263,24 +265,27 @@ export default async function Home() {
       </section>
 
       {/* pricing */}
-      <section id="pricing" className="relative px-5 py-16">
+      <section id="pricing" className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px] text-center">
-          <p className="text-[13px] font-semibold uppercase tracking-[.12em] text-cyan-300" style={HEAD}>ราคา</p>
-          <h2 className="mt-2 text-3xl font-bold sm:text-4xl" style={HEAD}>เลือกแพ็กที่ใช่</h2>
+          <p className={EYEBROW} style={HEAD}>ราคา</p>
+          <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
           <PricingToggle proPrice={plan.proPrice} businessPrice={plan.businessPrice} founding={founding} />
         </div>
       </section>
 
-      {/* faq */}
-      <section className="relative px-5 py-16">
+      {/* faq — accordion */}
+      <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[780px]">
-          <h2 className="text-center text-3xl font-bold sm:text-4xl" style={HEAD}>คำถามที่พบบ่อย</h2>
-          <div className="mt-8 space-y-3">
+          <h2 className="text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คำถามที่พบบ่อย</h2>
+          <div className="mt-10 space-y-3">
             {FAQS.map(({ q, a }) => (
-              <div key={q} className={`${GLASS} p-5`}>
-                <p className="font-semibold" style={HEAD}>{q}</p>
-                <p className="mt-1.5 text-sm text-[#a7adcc]">{a}</p>
-              </div>
+              <details key={q} className={`${GLASS} group overflow-hidden p-0`}>
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-semibold [&::-webkit-details-marker]:hidden" style={HEAD}>
+                  {q}
+                  <Plus className="h-5 w-5 shrink-0 text-violet-300 transition-transform duration-200 group-open:rotate-45" strokeWidth={2.5} aria-hidden />
+                </summary>
+                <p className="px-5 pb-5 text-sm text-[#a7adcc]">{a}</p>
+              </details>
             ))}
           </div>
         </div>
@@ -288,20 +293,39 @@ export default async function Home() {
 
       </main>
 
-      {/* final CTA */}
-      <footer className="relative border-t border-white/10 px-5 py-20 text-center">
+      {/* final CTA + giant wordmark signature */}
+      <footer className="relative border-t border-white/10 px-5 pt-20 text-center">
         <div className="mx-auto max-w-[820px]">
-          <h2 className="text-3xl font-bold sm:text-4xl" style={HEAD}>เริ่มทำคลิปแรกของคุณวันนี้</h2>
+          <h2 className="text-3xl font-bold sm:text-[40px]" style={HEAD}>เริ่มทำคลิปแรกของคุณวันนี้</h2>
           {founding?.active ? (
-            <p className="mx-auto mt-3.5 max-w-[560px] text-[#a7adcc]">🔥 ราคาผู้ก่อตั้ง เหลือ {founding.remaining}/{founding.total} ที่</p>
+            <p className="mx-auto mt-4 max-w-[560px] text-[#a7adcc]">🔥 ราคาผู้ก่อตั้ง เหลือ {founding.remaining}/{founding.total} ที่</p>
           ) : (
-            <p className="mx-auto mt-3.5 max-w-[560px] text-[#a7adcc]">มีแค่สคริปต์ ก็ได้คลิปพร้อมโพสต์ — เริ่มฟรีได้เลย</p>
+            <p className="mx-auto mt-4 max-w-[560px] text-[#a7adcc]">มีแค่สคริปต์ ก็ได้คลิปพร้อมโพสต์ — เริ่มฟรีได้เลย</p>
           )}
-          <Link href="/register" className="mt-6 inline-flex items-center gap-2 rounded-full px-9 py-4 text-lg font-semibold text-white" style={{ ...HEAD, background: BRAND, boxShadow: "0 0 34px rgba(139,92,246,.5)" }}>
+          <Link href="/register" className="mt-7 inline-flex items-center gap-2 rounded-full px-9 py-4 text-lg font-semibold text-white" style={{ ...HEAD, background: ACCENT, boxShadow: GLOW }}>
             เริ่มใช้ฟรี <ArrowRight className="h-5 w-5" />
           </Link>
-          <p className="mt-5 text-sm text-[#a7adcc]">© 2026 HERO AI</p>
         </div>
+
+        {/* signature: giant glowing wordmark */}
+        <div aria-hidden className="relative mt-20 select-none overflow-hidden">
+          <div className="absolute left-1/2 top-1/2 h-[40%] w-[70%] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-40 blur-[90px]" style={{ background: "radial-gradient(circle,#6d28d9,transparent 65%)" }} />
+          <div
+            className="relative text-center leading-[0.8]"
+            style={{
+              ...DISPLAY,
+              fontSize: "clamp(72px, 21vw, 280px)",
+              letterSpacing: ".01em",
+              background: "linear-gradient(180deg, rgba(167,139,250,.55), rgba(139,92,246,.04))",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent",
+            }}
+          >
+            HERO AI
+          </div>
+        </div>
+        <p className="pb-10 text-sm text-[#a7adcc]">© 2026 HERO AI</p>
       </footer>
     </div>
   );

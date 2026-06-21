@@ -64,7 +64,7 @@ export function YouTubeLite({ id, title, vertical = false, overlayTitle = true, 
           {/* play button — BRAND gradient + glow, matching the page CTAs */}
           <span
             className="absolute left-1/2 top-1/2 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-white transition duration-300 group-hover:scale-110"
-            style={{ background: "linear-gradient(120deg,#8b5cf6,#22d3ee)", boxShadow: "0 0 34px rgba(139,92,246,.55)" }}
+            style={{ background: "linear-gradient(120deg,#8b5cf6,#a78bfa)", boxShadow: "0 0 34px rgba(139,92,246,.55)" }}
             aria-hidden
           >
             <Play className="ml-0.5 h-6 w-6 fill-current" strokeWidth={0} />
