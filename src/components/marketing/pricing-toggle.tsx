@@ -60,9 +60,10 @@ export function PricingToggle({
       return { amount: `฿${monthlyPrice.toLocaleString()}`, unit: "/เดือน", sub: "จ่ายรายเดือน · ยกเลิกได้ทุกเมื่อ" };
     }
     const monthlyEq = Math.round(display.final / 12);
+    // Show only the per-month figure here; the annual total appears at checkout.
     const sub = display.isFounding
-      ? `Founding ลด ${display.pct}% · จ่ายปีละ ฿${display.final.toLocaleString()} ครั้งเดียว`
-      : `จ่ายปีละ ฿${display.final.toLocaleString()} ครั้งเดียว · ไม่ตัดอัตโนมัติ`;
+      ? `🔥 Founding ลด ${display.pct}% · จ่ายปีละครั้ง`
+      : `จ่ายปีละครั้ง · ไม่ตัดอัตโนมัติ`;
     return { amount: `฿${monthlyEq.toLocaleString()}`, unit: "/เดือน", sub, was: `฿${monthlyPrice.toLocaleString()}` };
   }
 
@@ -130,7 +131,7 @@ export function PricingToggle({
 
       {/* payment reassurance chips */}
       <div className="mt-7 flex flex-wrap justify-center gap-2.5">
-        {["💳 PromptPay", "💳 บัตร", "🛡️ คืนเงินใน 7 วัน", "🔁 จ่ายครั้งเดียว ไม่ตัดอัตโนมัติ"].map((c) => (
+        {["💳 PromptPay", "💳 บัตร", "🎁 ทดลอง PRO ฟรี 7 วัน", "🔁 จ่ายครั้งเดียว ไม่ตัดอัตโนมัติ"].map((c) => (
           <span key={c} className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3.5 py-1.5 text-[13px] text-violet-200">
             {c}
           </span>

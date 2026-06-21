@@ -77,11 +77,20 @@ const STEPS = [
   { n: "03", title: "กดสร้าง", desc: "ระบบตัดต่อให้ พร้อมโพสต์" },
 ];
 
+// Objection handling — real blockers a Thai faceless creator feels, + how we solve.
+const OBJECTIONS = [
+  { icon: "😶", pain: "ไม่อยากออกกล้อง โชว์หน้า", fix: "ทำคลิป Faceless ได้ 100% หรือใช้ AI Avatar เป็นพิธีกรแทน — ไม่ต้องโชว์หน้าเลย" },
+  { icon: "✂️", pain: "ตัดต่อไม่เป็น ไม่มีเวลานั่งตัด", fix: "วางสคริปต์ → ระบบตัด ใส่ซับ ภาพ เพลงให้อัตโนมัติ พร้อมโพสต์" },
+  { icon: "🇹🇭", pain: "AI ฝรั่งเสียงไทยแข็ง ซับเพี้ยน", fix: "ทำเพื่อภาษาไทยโดยเฉพาะ — เสียงไทยเป็นธรรมชาติ + ซับตรงเสียง ตัดคำถูก" },
+  { icon: "🤖", pain: "กลัวคลิปออกมาดูเป็น AI ไม่เนียน", fix: "B-roll เปลี่ยนทุก 3–5 วิ ตามเนื้อหา + ซับจังหวะไวรัล ดูเหมือนตัดมือ" },
+  { icon: "📝", pain: "คิดสคริปต์ได้ แต่ทำคลิปไม่เป็น", fix: "มีแค่สคริปต์ก็พอ ที่เหลือระบบจัดการ ไม่ต้องเป็นมือโปร" },
+  { icon: "💸", pain: "จ้างตัดต่อแพง โพสต์ไม่ทัน", fix: "ทำเองวันละหลายคลิป เริ่ม ฿499/เดือน ไม่ต้องจ้างทีม" },
+];
+
 const FAQS = [
+  { q: "ต้องใช้ API key ของตัวเองไหม?", a: "เริ่มด้วย Gemini key (ฟรี) ของคุณก็สร้างคลิปได้เลย — ส่วน AI Avatar / โคลนเสียง ค่อยใส่คีย์ HeyGen / ElevenLabs ของคุณเอง มีคู่มือพาตั้งทีละขั้น" },
   { q: "รายปีจ่ายครั้งเดียวจริงไหม ตัดเงินอัตโนมัติหรือเปล่า?", a: "จ่ายครั้งเดียว ใช้ได้ 1 ปี ไม่มีตัดเงินอัตโนมัติ ครบปีค่อยต่อเองถ้าพอใจ" },
-  { q: "ไม่ถนัดเทคโนโลยี ใช้ได้ไหม?", a: "เริ่มจากสคริปต์ที่มี → กดไม่กี่ขั้น ระบบตัดต่อให้" },
   { q: "จ่ายเงินยังไง?", a: "PromptPay หรือบัตรเครดิต/เดบิต" },
-  { q: "ไม่พอใจได้เงินคืนไหม?", a: "คืนเงินภายใน 7 วัน" },
 ];
 
 // Overall product demo (hero) — landscape
@@ -262,6 +271,32 @@ export default async function Home() {
                   <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
                 </div>
                 <p className="mt-4 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
+              </Reveal>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* objection handling — pain → how we solve it */}
+      <section className="relative px-5 py-20 sm:py-28">
+        <div className="mx-auto max-w-[1140px]">
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ก่อนตัดสินใจ</p>
+            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>กังวลแบบนี้อยู่ใช่ไหม?</h2>
+          </Reveal>
+          <div className="mx-auto mt-12 grid max-w-[920px] gap-4 md:grid-cols-2">
+            {OBJECTIONS.map(({ icon, pain, fix }, i) => (
+              <Reveal key={pain} delay={i * 0.06} className="h-full">
+                <SpotlightCard className={`${GLASS} flex h-full flex-col p-6`}>
+                  <p className="flex items-start gap-2.5 text-[15px] font-semibold text-white" style={HEAD}>
+                    <span className="text-xl leading-none">{icon}</span>
+                    <span>{pain}</span>
+                  </p>
+                  <p className="mt-3 flex items-start gap-2 text-sm text-[#a7adcc]">
+                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" strokeWidth={2.5} aria-hidden />
+                    <span>{fix}</span>
+                  </p>
+                </SpotlightCard>
               </Reveal>
             ))}
           </div>
