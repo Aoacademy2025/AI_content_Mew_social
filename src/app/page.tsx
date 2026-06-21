@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
-  Sparkles, ArrowRight, Bot, Mic, Music, Film, Captions, Share2, Flame, Plus,
+  Sparkles, ArrowRight, Bot, Mic, Music, Film, Captions, SlidersHorizontal, Flame, Plus,
+  CameraOff, Scissors, Languages, Wand2, FileText, Wallet, MousePointerClick, KeyRound,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { getFoundingCoupon } from "@/lib/founding";
@@ -63,12 +64,12 @@ async function getFounding() {
 
 // One consolidated capability grid (merged from the old "what" + "features").
 const FEATURES = [
-  { icon: Bot, title: "AI Avatar", desc: "สร้าง + ตัดต่อคลิป Avatar อัตโนมัติ พูดทั้งคลิป · เฉพาะเปิด-ปิด · หรือไม่มีเลย" },
-  { icon: Captions, title: "ซับไทยอัตโนมัติ", desc: "ตรงเสียง ไม่ต้องพิมพ์เอง — เต็มประโยค หรือ keyword ไวรัล" },
+  { icon: Bot, title: "AI Avatar พิธีกร", desc: "พูดทั้งคลิป · เปิด-ปิด · หรือไม่มีเลย (Faceless)" },
+  { icon: Captions, title: "ซับไทยตรงเสียงเป๊ะ", desc: "sync ระดับวินาทีจากเสียงจริง ไม่ใช่ AI เดา — เต็มประโยค/คำเด้งไวรัล + สไตล์ซับ 20+ แบบ" },
   { icon: Film, title: "B-roll เปลี่ยนทุก 3–5 วิ", desc: "ภาพ/วิดีโอประกอบ เปลี่ยนตามเนื้อหาอัตโนมัติ" },
-  { icon: Mic, title: "โคลนเสียงตัวเอง", desc: "ให้ Avatar พูดด้วยเสียงคุณเอง" },
-  { icon: Music, title: "เพลง + เสียง Effect", desc: "ใส่ดนตรีประกอบ เลือกได้ตามอารมณ์คลิป" },
-  { icon: Share2, title: "พร้อมโพสต์", desc: "แนวตั้ง ลง TikTok / Reels / Shorts ได้เลย" },
+  { icon: Mic, title: "เสียงพากย์ AI + เสียงโคลน", desc: "เสียง AI ไทยธรรมชาติ หรือใช้เสียงที่คุณโคลนไว้บน ElevenLabs" },
+  { icon: Music, title: "เพลง + Sound FX + ลบพื้นหลัง", desc: "คลังเพลงตามอารมณ์ + อัปโหลดเอง + chromakey ฉากหลัง avatar" },
+  { icon: SlidersHorizontal, title: "ตัดต่อในเว็บ + พร้อมโพสต์", desc: "ระบบตัดให้ เข้าไปแก้เอง พรีวิวก่อนโหลด ลง TikTok/Reels แนวตั้งได้เลย" },
 ];
 
 const STEPS = [
@@ -79,12 +80,14 @@ const STEPS = [
 
 // Objection handling — real blockers a Thai faceless creator feels, + how we solve.
 const OBJECTIONS = [
-  { icon: "😶", pain: "ไม่อยากออกกล้อง โชว์หน้า", fix: "ทำคลิป Faceless ได้ 100% หรือใช้ AI Avatar เป็นพิธีกรแทน — ไม่ต้องโชว์หน้าเลย" },
-  { icon: "✂️", pain: "ตัดต่อไม่เป็น ไม่มีเวลานั่งตัด", fix: "วางสคริปต์ → ระบบตัด ใส่ซับ ภาพ เพลงให้อัตโนมัติ พร้อมโพสต์" },
-  { icon: "🇹🇭", pain: "AI ฝรั่งเสียงไทยแข็ง ซับเพี้ยน", fix: "ทำเพื่อภาษาไทยโดยเฉพาะ — เสียงไทยเป็นธรรมชาติ + ซับตรงเสียง ตัดคำถูก" },
-  { icon: "🤖", pain: "กลัวคลิปออกมาดูเป็น AI ไม่เนียน", fix: "B-roll เปลี่ยนทุก 3–5 วิ ตามเนื้อหา + ซับจังหวะไวรัล ดูเหมือนตัดมือ" },
-  { icon: "📝", pain: "คิดสคริปต์ได้ แต่ทำคลิปไม่เป็น", fix: "มีแค่สคริปต์ก็พอ ที่เหลือระบบจัดการ ไม่ต้องเป็นมือโปร" },
-  { icon: "💸", pain: "จ้างตัดต่อแพง โพสต์ไม่ทัน", fix: "ทำเองวันละหลายคลิป เริ่ม ฿499/เดือน ไม่ต้องจ้างทีม" },
+  { icon: CameraOff, pain: "ไม่อยากออกกล้อง โชว์หน้า", fix: "ทำคลิป Faceless ได้ 100% หรือใช้ AI Avatar เป็นพิธีกรแทน — ไม่ต้องโชว์หน้าเลย" },
+  { icon: Scissors, pain: "ตัดต่อไม่เป็น ไม่มีเวลานั่งตัด", fix: "วางสคริปต์ → ระบบตัด ใส่ซับ ภาพ เพลงให้อัตโนมัติ พร้อมโพสต์" },
+  { icon: Languages, pain: "AI ฝรั่งเสียงไทยแข็ง ซับเพี้ยน", fix: "ทำเพื่อภาษาไทยโดยเฉพาะ — เสียงไทยเป็นธรรมชาติ + ซับตรงเสียง ตัดคำถูก" },
+  { icon: Wand2, pain: "กลัวคลิปออกมาดูเป็น AI ไม่เนียน", fix: "B-roll เปลี่ยนทุก 3–5 วิ ตามเนื้อหา + ซับจังหวะไวรัล ดูเหมือนตัดมือ" },
+  { icon: FileText, pain: "คิดสคริปต์ได้ แต่ทำคลิปไม่เป็น", fix: "มีแค่สคริปต์ก็พอ ที่เหลือระบบจัดการ ไม่ต้องเป็นมือโปร" },
+  { icon: Wallet, pain: "จ้างตัดต่อแพง โพสต์ไม่ทัน", fix: "ทำเองวันละหลายคลิป เริ่ม ฿499/เดือน ไม่ต้องจ้างทีม" },
+  { icon: MousePointerClick, pain: "ไม่เก่งเทคโนโลยี ใช้ยากไหม", fix: "เริ่มจากวางสคริปต์ กดไม่กี่ขั้น ระบบทำให้หมด ไม่ต้องเรียนรู้อะไรซับซ้อน" },
+  { icon: KeyRound, pain: "ต้องตั้ง API key เองยากไหม", fix: "ใช้คีย์ฟรีของคุณเอง (Gemini + Pexels/Pixabay) ตั้ง 5 นาที มีคู่มือพาทีละขั้น" },
 ];
 
 const FAQS = [
@@ -175,6 +178,7 @@ export default async function Home() {
               เข้าสู่ระบบ
             </Link>
           </div>
+          <p className="mt-4 text-sm text-[#9ca0be]">สมัครได้ <b className="text-white/90">PRO ฟรี 7 วัน</b> ทันที · ไม่ใช้บัตร · ยกเลิกเมื่อไหร่ก็ได้</p>
           {/* glowing product demo — hero focal piece w/ 3D scroll tilt */}
           <div className="relative mx-auto mt-16 max-w-[900px]">
             <div aria-hidden className="absolute -inset-x-6 -top-10 bottom-0 opacity-70 blur-2xl" style={{ background: "radial-gradient(55% 60% at 50% 0%, rgba(139,92,246,.45), transparent 70%)" }} />
@@ -285,17 +289,14 @@ export default async function Home() {
             <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>กังวลแบบนี้อยู่ใช่ไหม?</h2>
           </Reveal>
           <div className="mx-auto mt-12 grid max-w-[920px] gap-4 md:grid-cols-2">
-            {OBJECTIONS.map(({ icon, pain, fix }, i) => (
+            {OBJECTIONS.map(({ icon: Icon, pain, fix }, i) => (
               <Reveal key={pain} delay={i * 0.06} className="h-full">
                 <SpotlightCard className={`${GLASS} flex h-full flex-col p-6`}>
-                  <p className="flex items-start gap-2.5 text-[15px] font-semibold text-white" style={HEAD}>
-                    <span className="text-xl leading-none">{icon}</span>
-                    <span>{pain}</span>
-                  </p>
-                  <p className="mt-3 flex items-start gap-2 text-sm text-[#a7adcc]">
-                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" strokeWidth={2.5} aria-hidden />
-                    <span>{fix}</span>
-                  </p>
+                  <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-[14px] border border-violet-400/20 bg-violet-500/10">
+                    <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.2} aria-hidden />
+                  </div>
+                  <h3 className="text-[15px] font-semibold text-white" style={HEAD}>{pain}</h3>
+                  <p className="mt-2 text-sm text-[#a7adcc]">{fix}</p>
                 </SpotlightCard>
               </Reveal>
             ))}
@@ -350,6 +351,7 @@ export default async function Home() {
           <Link href="/register" className="mt-7 inline-flex items-center gap-2 rounded-full px-9 py-4 text-lg font-semibold text-white" style={{ ...HEAD, background: ACCENT, boxShadow: GLOW }}>
             เริ่มใช้ฟรี <ArrowRight className="h-5 w-5" />
           </Link>
+          <p className="mt-4 text-sm text-[#9ca0be]">PRO ฟรี 7 วัน · ไม่ใช้บัตร · ตั้งคีย์ฟรี 5 นาที มีคู่มือพา</p>
         </Reveal>
 
         {/* signature: giant glowing wordmark */}
