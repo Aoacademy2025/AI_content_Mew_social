@@ -1,6 +1,6 @@
 import Link from "next/link";
 import {
-  Sparkles, ArrowRight, Bot, Mic, Music, Film, Captions, SlidersHorizontal, Flame, Plus,
+  ArrowRight, Bot, Mic, Music, Film, Captions, SlidersHorizontal, Flame, Plus,
   CameraOff, Scissors, Languages, Wand2, FileText, Wallet, MousePointerClick, KeyRound,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
@@ -12,11 +12,11 @@ import { Reveal, ContainerScroll, SpotlightCard } from "@/components/marketing/m
 import { SaleBackground } from "@/components/marketing/marketing-fx";
 
 export const metadata = {
-  title: "HERO AI — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
+  title: "HERO AI Creator Studio — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
   description:
     "ระบบตัดต่อวิดีโอ Faceless + AI Avatar พร้อมซับไทยอัตโนมัติ — มีแค่สคริปต์ 1 ชุดก็ได้คลิปพร้อมโพสต์",
   openGraph: {
-    title: "HERO AI — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
+    title: "HERO AI Creator Studio — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
     description: "Faceless + AI Avatar + ซับไทยอัตโนมัติ มีแค่สคริปต์ก็ได้คลิปพร้อมโพสต์",
     url: "https://studio.heroaiengine.com",
     type: "website",
@@ -127,7 +127,7 @@ export default async function Home() {
       {founding?.active && (
         <div className="sticky top-0 z-50 border-b border-white/10 bg-[rgba(6,6,11,0.72)] py-2.5 backdrop-blur-md">
           <div className="mx-auto flex max-w-[1140px] flex-wrap items-center justify-center gap-3 px-5 text-sm">
-            <span className="font-bold" style={HEAD}>HERO AI</span>
+            <span className="font-bold" style={HEAD}>HERO AI Creator Studio</span>
             <span className="inline-flex items-center gap-1.5 text-white/70">
               <Flame className="h-4 w-4 text-amber-400" strokeWidth={2.5} aria-hidden /> ราคาผู้ก่อตั้ง {founding.total} คนแรก
             </span>
@@ -144,11 +144,10 @@ export default async function Home() {
 
       {/* nav — always present */}
       <nav className="relative z-40 mx-auto flex max-w-[1140px] items-center justify-between px-5 py-5">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: ACCENT, boxShadow: GLOW }}>
-            <Sparkles className="h-4 w-4 text-white" />
-          </div>
-          <span className="text-sm font-bold tracking-wide" style={HEAD}>HERO AI</span>
+        <div className="flex items-center gap-2.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.svg" alt="HERO AI Creator Studio" className="h-9 w-9 rounded-[11px]" style={{ boxShadow: GLOW }} />
+          <span className="text-sm font-bold tracking-wide" style={HEAD}>HERO AI <span className="font-semibold text-white/55">Creator Studio</span></span>
         </div>
         <div className="flex items-center gap-3">
           <Link href="/login" className="text-sm text-white/60 transition-colors hover:text-white">เข้าสู่ระบบ</Link>
@@ -367,8 +366,14 @@ export default async function Home() {
           >
             HERO AI
           </div>
+          <div
+            className="relative -mt-[2vw] text-center font-semibold text-violet-300/45"
+            style={{ ...HEAD, fontSize: "clamp(11px, 3vw, 30px)", letterSpacing: "0.42em" }}
+          >
+            CREATOR STUDIO
+          </div>
         </div>
-        <p className="pb-10 text-sm text-[#a7adcc]">© 2026 HERO AI</p>
+        <p className="pb-10 text-sm text-[#a7adcc]">© 2026 HERO AI Creator Studio</p>
       </footer>
     </div>
   );
