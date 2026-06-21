@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { getFoundingCoupon } from "@/lib/founding";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { YouTubeLite } from "@/components/marketing/youtube-lite";
+import { ShowcaseClip } from "@/components/marketing/showcase-clip";
 import { Reveal, ContainerScroll, SpotlightCard } from "@/components/marketing/motion-fx";
 import { SaleBackground } from "@/components/marketing/marketing-fx";
 
@@ -106,10 +107,11 @@ const SYSTEM_VIDEOS = [
   { id: "Jd84cTVpd8M", label: "ระบบ B-roll", desc: "ภาพประกอบเปลี่ยนตามเนื้อหา" },
 ];
 
-// Real output samples — vertical Shorts (with vs. without avatar)
-const SAMPLE_VIDEOS = [
-  { id: "jAo8kE3NQsA", label: "มี Avatar" },
-  { id: "mgscenGpyuw", label: "ไม่มี Avatar" },
+// Real outputs made with HERO AI — self-hosted vertical clips (public/showcase).
+const SHOWCASE = [
+  { src: "/showcase/showcase-1.mp4", poster: "/showcase/showcase-1.jpg", tag: "เล่าเรื่อง/สร้างเพจ · มีพิธีกร · ซับคำเด้ง" },
+  { src: "/showcase/showcase-3.mp4", poster: "/showcase/showcase-3.jpg", tag: "สายแรงบันดาลใจ · Faceless · B-roll ซีเนมาติก" },
+  { src: "/showcase/showcase-2.mp4", poster: "/showcase/showcase-2.jpg", tag: "ไลฟ์สไตล์ · Faceless · ซับตรงเสียง" },
 ];
 
 export default async function Home() {
@@ -256,25 +258,19 @@ export default async function Home() {
         </div>
       </section>
 
-      {/* real output samples (vertical shorts) — fanned cards */}
+      {/* showcase — real outputs made with HERO AI */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
           <Reveal>
-            <p className={EYEBROW} style={HEAD}>ตัวอย่างผลงาน</p>
-            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
-            <p className="mx-auto mt-4 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
+            <p className={EYEBROW} style={HEAD}>ผลงานจริง</p>
+            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คลิปจริงที่สร้างจากระบบ</h2>
+            <p className="mx-auto mt-4 max-w-[600px] text-center text-[#a7adcc]">จากสคริปต์ชุดเดียว → คลิปพร้อมโพสต์ · ทุกคลิปนี้ทำด้วย HERO AI ทั้งหมด</p>
           </Reveal>
-          <div className="mx-auto mt-14 flex max-w-[640px] flex-col items-center justify-center gap-8 sm:flex-row sm:gap-10">
-            {SAMPLE_VIDEOS.map(({ id, label }, i) => (
-              <Reveal
-                key={id}
-                delay={i * 0.12}
-                className={`w-full max-w-[256px] transition-transform duration-300 sm:hover:rotate-0 ${i === 0 ? "sm:rotate-[-5deg]" : "sm:translate-y-6 sm:rotate-[5deg]"}`}
-              >
-                <div className="rounded-[24px] border border-violet-400/20 bg-white/[0.03] p-2 shadow-[0_24px_70px_-22px_rgba(139,92,246,.55)]">
-                  <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
-                </div>
-                <p className="mt-4 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
+          <div className="mx-auto mt-12 grid max-w-[860px] gap-5 sm:grid-cols-3">
+            {SHOWCASE.map(({ src, poster, tag }, i) => (
+              <Reveal key={src} delay={i * 0.1}>
+                <ShowcaseClip src={src} poster={poster} title={tag} />
+                <p className="mt-3 text-center text-[13px] text-[#a7adcc]">{tag}</p>
               </Reveal>
             ))}
           </div>
