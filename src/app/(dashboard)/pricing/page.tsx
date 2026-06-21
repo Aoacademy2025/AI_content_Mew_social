@@ -215,12 +215,12 @@ function PricingContent() {
             <button className="underline opacity-80 hover:opacity-100" onClick={() => setAppliedCoupon(null)}>ลบ</button>
           </span>
         ) : showCoupon ? (
-          <div className="w-full max-w-sm">
-            <CouponBox onDiscountApplied={(c) => setAppliedCoupon({ code: c.code, percentOff: c.percentOff })} />
+          <div className="w-full max-w-md">
+            <CouponBox variant="inline" onDiscountApplied={(c) => setAppliedCoupon({ code: c.code, percentOff: c.percentOff })} />
           </div>
         ) : (
-          <button onClick={() => setShowCoupon(true)} className="inline-flex items-center gap-1.5 text-xs text-white/45 transition-colors hover:text-violet-200">
-            <Tag className="h-3.5 w-3.5" strokeWidth={2.2} /> มีโค้ดส่วนลด?
+          <button onClick={() => setShowCoupon(true)} className="inline-flex items-center gap-2 rounded-full border border-violet-400/30 bg-violet-400/10 px-5 py-2.5 text-sm font-semibold text-violet-200 transition hover:border-violet-400/50 hover:bg-violet-400/15">
+            <Tag className="h-4 w-4" strokeWidth={2.3} /> มีโค้ดส่วนลด? แตะกรอกที่นี่
           </button>
         )}
       </div>
