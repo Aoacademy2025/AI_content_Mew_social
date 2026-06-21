@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import { computeDisplayPrice } from "@/lib/pricing-display";
+import { BorderBeam } from "@/components/marketing/marketing-fx";
 
 type Period = "monthly" | "yearly";
 type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
@@ -152,6 +153,7 @@ function Tier({
           : undefined
       }
     >
+      {best && <BorderBeam size={72} duration={6} />}
       {badge && (
         <span
           className="absolute -top-3.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1 text-[13px] font-bold text-white"

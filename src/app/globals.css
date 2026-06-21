@@ -865,3 +865,23 @@ button, a {
     animation: none !important;
   }
 }
+
+/* ── Sale page motion (single-accent violet) ── */
+@keyframes sp-beam-1 {
+  0%, 100% { transform: translate(-50%, 0) scale(1); opacity: .30; }
+  50%      { transform: translate(-44%, 4%) scale(1.1); opacity: .42; }
+}
+@keyframes sp-beam-2 {
+  0%, 100% { transform: translate(-50%, 0) scale(1); opacity: .20; }
+  50%      { transform: translate(-56%, -4%) scale(1.08); opacity: .30; }
+}
+@keyframes sp-grid-pan { from { background-position: 0 0; } to { background-position: 68px 68px; } }
+@keyframes sp-border-beam { to { offset-distance: 100%; } }
+
+.sp-beam-1 { animation: sp-beam-1 18s ease-in-out infinite; }
+.sp-beam-2 { animation: sp-beam-2 23s ease-in-out infinite; }
+.sp-grid-anim { animation: sp-grid-pan 26s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-beam-1, .sp-beam-2, .sp-grid-anim { animation: none !important; }
+}

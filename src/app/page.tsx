@@ -6,6 +6,8 @@ import { prisma } from "@/lib/prisma";
 import { getFoundingCoupon } from "@/lib/founding";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { YouTubeLite } from "@/components/marketing/youtube-lite";
+import { Reveal, ContainerScroll, SpotlightCard } from "@/components/marketing/motion-fx";
+import { SaleBackground } from "@/components/marketing/marketing-fx";
 
 export const metadata = {
   title: "HERO AI — เปลี่ยนสคริปต์เป็นคลิป อัตโนมัติ",
@@ -104,21 +106,8 @@ export default async function Home() {
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[#06060b] text-[#f4f5ff]" style={{ fontFamily: "'IBM Plex Sans Thai', sans-serif", lineHeight: 1.65 }}>
-      {/* atmosphere: single violet glow + faint grid texture (ref-style restraint) */}
-      <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute left-1/2 top-[-18vw] h-[64vw] w-[64vw] -translate-x-1/2 rounded-full opacity-30 blur-[130px]" style={{ background: "radial-gradient(circle,#6d28d9,transparent 60%)" }} />
-        <div className="absolute left-1/2 bottom-[-24vw] h-[52vw] w-[52vw] -translate-x-1/2 rounded-full opacity-20 blur-[130px]" style={{ background: "radial-gradient(circle,#8b5cf6,transparent 60%)" }} />
-        <div
-          className="absolute inset-0 opacity-[0.05]"
-          style={{
-            backgroundImage:
-              "linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg,#ffffff 1px, transparent 1px)",
-            backgroundSize: "68px 68px",
-            maskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
-            WebkitMaskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
-          }}
-        />
-      </div>
+      {/* animated atmosphere: drifting violet beams + panning grid */}
+      <SaleBackground />
 
       {/* founding bar — server-rendered, only when active */}
       {founding?.active && (
@@ -177,12 +166,14 @@ export default async function Home() {
               เข้าสู่ระบบ
             </Link>
           </div>
-          {/* glowing product demo — the single hero focal piece */}
+          {/* glowing product demo — hero focal piece w/ 3D scroll tilt */}
           <div className="relative mx-auto mt-16 max-w-[900px]">
             <div aria-hidden className="absolute -inset-x-6 -top-10 bottom-0 opacity-70 blur-2xl" style={{ background: "radial-gradient(55% 60% at 50% 0%, rgba(139,92,246,.45), transparent 70%)" }} />
-            <div className="relative rounded-[24px] border border-violet-400/25 bg-white/[0.02] p-2 shadow-[0_0_90px_-24px_rgba(139,92,246,.7)]">
-              <YouTubeLite id={OVERVIEW_VIDEO.id} title={OVERVIEW_VIDEO.title} />
-            </div>
+            <ContainerScroll>
+              <div className="relative rounded-[24px] border border-violet-400/25 bg-white/[0.02] p-2 shadow-[0_0_90px_-24px_rgba(139,92,246,.7)]">
+                <YouTubeLite id={OVERVIEW_VIDEO.id} title={OVERVIEW_VIDEO.title} />
+              </div>
+            </ContainerScroll>
           </div>
         </div>
       </header>
@@ -190,17 +181,21 @@ export default async function Home() {
       {/* one consolidated feature grid */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className={EYEBROW} style={HEAD}>ทำอะไรได้บ้าง</p>
-          <h2 className="mx-auto mt-3 max-w-[680px] text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>ขั้นตอนซ้ำๆ ที่เคยกินเวลา ระบบทำให้หมด</h2>
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ทำอะไรได้บ้าง</p>
+            <h2 className="mx-auto mt-3 max-w-[680px] text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>ขั้นตอนซ้ำๆ ที่เคยกินเวลา ระบบทำให้หมด</h2>
+          </Reveal>
           <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {FEATURES.map(({ icon: Icon, title, desc }) => (
-              <div key={title} className={`${GLASS} group p-7 transition-colors hover:border-violet-400/40`}>
-                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-[14px] border border-violet-400/20 bg-violet-500/10">
-                  <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.2} aria-hidden />
-                </div>
-                <h3 className="text-lg font-semibold" style={HEAD}>{title}</h3>
-                <p className="mt-1.5 text-sm text-[#a7adcc]">{desc}</p>
-              </div>
+            {FEATURES.map(({ icon: Icon, title, desc }, i) => (
+              <Reveal key={title} delay={i * 0.07} className="h-full">
+                <SpotlightCard className={`${GLASS} h-full p-7 transition-colors hover:border-violet-400/40`}>
+                  <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-[14px] border border-violet-400/20 bg-violet-500/10">
+                    <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.2} aria-hidden />
+                  </div>
+                  <h3 className="text-lg font-semibold" style={HEAD}>{title}</h3>
+                  <p className="mt-1.5 text-sm text-[#a7adcc]">{desc}</p>
+                </SpotlightCard>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -209,17 +204,19 @@ export default async function Home() {
       {/* see each system in action */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className={EYEBROW} style={HEAD}>ดูระบบจริง</p>
-          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เห็นแต่ละระบบทำงานจริง</h2>
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ดูระบบจริง</p>
+            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เห็นแต่ละระบบทำงานจริง</h2>
+          </Reveal>
           <div className="mt-12 grid gap-6 md:grid-cols-3">
-            {SYSTEM_VIDEOS.map(({ id, label, desc }) => (
-              <div key={id}>
+            {SYSTEM_VIDEOS.map(({ id, label, desc }, i) => (
+              <Reveal key={id} delay={i * 0.1}>
                 <div className="rounded-[20px] border border-white/10 bg-white/[0.02] p-1.5 shadow-[0_10px_40px_rgba(0,0,0,0.4)]">
                   <YouTubeLite id={id} title={label} overlayTitle={false} />
                 </div>
                 <h3 className="mt-4 text-lg font-semibold" style={HEAD}>{label}</h3>
                 <p className="mt-0.5 text-sm text-[#a7adcc]">{desc}</p>
-              </div>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -228,15 +225,19 @@ export default async function Home() {
       {/* how it works */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[940px]">
-          <p className={EYEBROW} style={HEAD}>ง่ายใน 3 ขั้น</p>
-          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เริ่มจาก &quot;มีสคริปต์&quot; เท่านั้น</h2>
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ง่ายใน 3 ขั้น</p>
+            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>เริ่มจาก &quot;มีสคริปต์&quot; เท่านั้น</h2>
+          </Reveal>
           <div className="mt-12 grid gap-4 sm:grid-cols-3">
-            {STEPS.map(({ n, title, desc }) => (
-              <div key={n} className={`${GLASS} p-7 text-center`}>
-                <div className="text-[44px] font-bold leading-none text-violet-300/90" style={DISPLAY}>{n}</div>
-                <h3 className="mt-3 text-lg font-semibold" style={HEAD}>{title}</h3>
-                <p className="mt-1 text-sm text-[#a7adcc]">{desc}</p>
-              </div>
+            {STEPS.map(({ n, title, desc }, i) => (
+              <Reveal key={n} delay={i * 0.1} className="h-full">
+                <div className={`${GLASS} h-full p-7 text-center`}>
+                  <div className="text-[44px] font-bold leading-none text-violet-300/90" style={DISPLAY}>{n}</div>
+                  <h3 className="mt-3 text-lg font-semibold" style={HEAD}>{title}</h3>
+                  <p className="mt-1 text-sm text-[#a7adcc]">{desc}</p>
+                </div>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -245,20 +246,23 @@ export default async function Home() {
       {/* real output samples (vertical shorts) — fanned cards */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px]">
-          <p className={EYEBROW} style={HEAD}>ตัวอย่างผลงาน</p>
-          <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
-          <p className="mx-auto mt-4 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ตัวอย่างผลงาน</p>
+            <h2 className="mt-3 text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คลิปที่ระบบสร้างจริง</h2>
+            <p className="mx-auto mt-4 max-w-[560px] text-center text-[#a7adcc]">ผลลัพธ์จริงจากสคริปต์ชุดเดียว — เลือกได้ทั้งมีและไม่มี Avatar</p>
+          </Reveal>
           <div className="mx-auto mt-14 flex max-w-[640px] flex-col items-center justify-center gap-8 sm:flex-row sm:gap-10">
             {SAMPLE_VIDEOS.map(({ id, label }, i) => (
-              <div
+              <Reveal
                 key={id}
+                delay={i * 0.12}
                 className={`w-full max-w-[256px] transition-transform duration-300 sm:hover:rotate-0 ${i === 0 ? "sm:rotate-[-5deg]" : "sm:translate-y-6 sm:rotate-[5deg]"}`}
               >
                 <div className="rounded-[24px] border border-violet-400/20 bg-white/[0.03] p-2 shadow-[0_24px_70px_-22px_rgba(139,92,246,.55)]">
                   <YouTubeLite id={id} title={label} vertical overlayTitle={false} />
                 </div>
                 <p className="mt-4 text-center text-sm font-semibold text-white" style={HEAD}>{label}</p>
-              </div>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -267,8 +271,10 @@ export default async function Home() {
       {/* pricing */}
       <section id="pricing" className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[1140px] text-center">
-          <p className={EYEBROW} style={HEAD}>ราคา</p>
-          <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
+          <Reveal>
+            <p className={EYEBROW} style={HEAD}>ราคา</p>
+            <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
+          </Reveal>
           <PricingToggle proPrice={plan.proPrice} businessPrice={plan.businessPrice} founding={founding} />
         </div>
       </section>
@@ -276,16 +282,20 @@ export default async function Home() {
       {/* faq — accordion */}
       <section className="relative px-5 py-20 sm:py-28">
         <div className="mx-auto max-w-[780px]">
-          <h2 className="text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คำถามที่พบบ่อย</h2>
+          <Reveal>
+            <h2 className="text-center text-3xl font-bold sm:text-[40px]" style={HEAD}>คำถามที่พบบ่อย</h2>
+          </Reveal>
           <div className="mt-10 space-y-3">
-            {FAQS.map(({ q, a }) => (
-              <details key={q} className={`${GLASS} group overflow-hidden p-0`}>
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-semibold [&::-webkit-details-marker]:hidden" style={HEAD}>
-                  {q}
-                  <Plus className="h-5 w-5 shrink-0 text-violet-300 transition-transform duration-200 group-open:rotate-45" strokeWidth={2.5} aria-hidden />
-                </summary>
-                <p className="px-5 pb-5 text-sm text-[#a7adcc]">{a}</p>
-              </details>
+            {FAQS.map(({ q, a }, i) => (
+              <Reveal key={q} delay={i * 0.06}>
+                <details className={`${GLASS} group overflow-hidden p-0`}>
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-semibold [&::-webkit-details-marker]:hidden" style={HEAD}>
+                    {q}
+                    <Plus className="h-5 w-5 shrink-0 text-violet-300 transition-transform duration-200 group-open:rotate-45" strokeWidth={2.5} aria-hidden />
+                  </summary>
+                  <p className="px-5 pb-5 text-sm text-[#a7adcc]">{a}</p>
+                </details>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -295,7 +305,7 @@ export default async function Home() {
 
       {/* final CTA + giant wordmark signature */}
       <footer className="relative border-t border-white/10 px-5 pt-20 text-center">
-        <div className="mx-auto max-w-[820px]">
+        <Reveal className="mx-auto max-w-[820px]">
           <h2 className="text-3xl font-bold sm:text-[40px]" style={HEAD}>เริ่มทำคลิปแรกของคุณวันนี้</h2>
           {founding?.active ? (
             <p className="mx-auto mt-4 max-w-[560px] text-[#a7adcc]">🔥 ราคาผู้ก่อตั้ง เหลือ {founding.remaining}/{founding.total} ที่</p>
@@ -305,7 +315,7 @@ export default async function Home() {
           <Link href="/register" className="mt-7 inline-flex items-center gap-2 rounded-full px-9 py-4 text-lg font-semibold text-white" style={{ ...HEAD, background: ACCENT, boxShadow: GLOW }}>
             เริ่มใช้ฟรี <ArrowRight className="h-5 w-5" />
           </Link>
-        </div>
+        </Reveal>
 
         {/* signature: giant glowing wordmark */}
         <div aria-hidden className="relative mt-20 select-none overflow-hidden">
