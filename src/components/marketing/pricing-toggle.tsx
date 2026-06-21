@@ -4,33 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import { computeDisplayPrice } from "@/lib/pricing-display";
+import type { PlanConfig } from "@/lib/plan-config";
 
 type Period = "monthly" | "yearly";
 type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
-
-// Real capabilities by plan (mirrors src/lib/plan-limits.ts).
-const FREE_FEATURES = [
-  "ทดลอง PRO ฟรี 7 วัน — ไม่ต้องใช้บัตร",
-  "หลังทดลอง: 2 คลิป/เดือน · ยาวสุด 2 นาที",
-  "ซับไทย + B-roll อัตโนมัติ",
-  "เก็บวิดีโอ 3 วัน",
-];
-const PRO_FEATURES = [
-  "100 คลิป/เดือน · ยาวสุด 6 นาที/คลิป",
-  "AI Avatar พิธีกร (HeyGen) — เปิด-ปิด หรือทั้งคลิป",
-  "เสียง AI ไทย + ใช้เสียงโคลนจาก ElevenLabs",
-  "ซับไทยตรงเสียงเป๊ะ — เต็มประโยค / keyword ไวรัล",
-  "B-roll เปลี่ยนทุก 3–5 วิ + เพลง + Sound FX",
-  "ตัดต่อในเว็บ + ลบพื้นหลัง + ฟอนต์พรีเมียม",
-  "สั่งสร้างผ่านแชท Claude (MCP) ✨",
-  "เก็บวิดีโอ 7 วัน",
-];
-const BUSINESS_FEATURES = [
-  "ทุกอย่างใน PRO",
-  "300 คลิป/เดือน (3 เท่าของ PRO)",
-  "คลิปยาวสุด 10 นาที/คลิป",
-  "เก็บวิดีโอ 14 วัน",
-];
 
 const BRAND = "linear-gradient(120deg,#8b5cf6,#a78bfa)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
@@ -38,37 +15,33 @@ const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
 
 export function PricingToggle({
-  proPrice,
-  businessPrice,
+  plans,
   founding = null,
 }: {
-  proPrice: number;
-  businessPrice: number;
+  plans: PlanConfig;
   founding?: FoundingStatus;
 }) {
   const [period, setPeriod] = useState<Period>("yearly");
   const yearly = period === "yearly";
   const pricePeriod = yearly ? "annual" : "monthly";
-  const proDisplay = computeDisplayPrice({ monthlyPrice: proPrice, period: pricePeriod, coupon: null, founding });
-  const bizDisplay = computeDisplayPrice({ monthlyPrice: businessPrice, period: pricePeriod, coupon: null, founding });
+  const proDisplay = computeDisplayPrice({ monthlyPrice: plans.pro.price, period: pricePeriod, coupon: null, founding });
+  const bizDisplay = computeDisplayPrice({ monthlyPrice: plans.business.price, period: pricePeriod, coupon: null, founding });
   const hasFounding = Boolean(yearly && founding?.active);
 
-  // Make the effective MONTHLY price the hero number; keep the annual charge as a
-  // small honest line (it's a one-time annual payment, not a monthly auto-bill).
+  // Per-month figure is the hero; the annual total shows only at checkout.
   function priceBlock(display: typeof proDisplay, monthlyPrice: number): PriceBlock {
     if (!yearly) {
       return { amount: `฿${monthlyPrice.toLocaleString()}`, unit: "/เดือน", sub: "จ่ายรายเดือน · ยกเลิกได้ทุกเมื่อ" };
     }
     const monthlyEq = Math.round(display.final / 12);
-    // Show only the per-month figure here; the annual total appears at checkout.
     const sub = display.isFounding
       ? `🔥 Founding ลด ${display.pct}% · จ่ายปีละครั้ง`
       : `จ่ายปีละครั้ง · ไม่ตัดอัตโนมัติ`;
     return { amount: `฿${monthlyEq.toLocaleString()}`, unit: "/เดือน", sub, was: `฿${monthlyPrice.toLocaleString()}` };
   }
 
-  const proBlock = priceBlock(proDisplay, proPrice);
-  const bizBlock = priceBlock(bizDisplay, businessPrice);
+  const proBlock = priceBlock(proDisplay, plans.pro.price);
+  const bizBlock = priceBlock(bizDisplay, plans.business.price);
 
   return (
     <div>
@@ -104,28 +77,28 @@ export function PricingToggle({
       )}
 
       <div className="grid gap-4 text-left md:grid-cols-3">
-        <Tier name="FREE" amount="฿0" sub="เริ่มฟรี ไม่ต้องใช้บัตร" features={FREE_FEATURES} cta="เริ่มใช้ฟรี" ghost />
+        <Tier name={plans.free.name} amount="฿0" sub="เริ่มฟรี ไม่ต้องใช้บัตร" features={plans.free.features} cta="เริ่มใช้ฟรี" ghost badge={plans.free.badge ?? undefined} />
         <Tier
-          name="PRO"
+          name={plans.pro.name}
           amount={proBlock.amount}
           unit={proBlock.unit}
           sub={proBlock.sub}
           was={proBlock.was}
-          features={PRO_FEATURES}
-          cta="เริ่มใช้ PRO"
+          features={plans.pro.features}
+          cta={`เริ่มใช้ ${plans.pro.name}`}
           best
-          badge={proDisplay.isFounding ? "Founding" : "แนะนำ"}
+          badge={proDisplay.isFounding ? "Founding" : (plans.pro.badge ?? "แนะนำ")}
         />
         <Tier
-          name="BUSINESS"
+          name={plans.business.name}
           amount={bizBlock.amount}
           unit={bizBlock.unit}
           sub={bizBlock.sub}
           was={bizBlock.was}
-          features={BUSINESS_FEATURES}
-          cta="เลือก BUSINESS"
+          features={plans.business.features}
+          cta={`เลือก ${plans.business.name}`}
           ghost
-          badge={bizDisplay.isFounding ? "Founding" : undefined}
+          badge={bizDisplay.isFounding ? "Founding" : (plans.business.badge ?? undefined)}
         />
       </div>
 
@@ -183,7 +156,6 @@ function Tier({
   );
 
   if (best) {
-    // Spinning-conic ring = a light beam sweeping the border (Safari-safe; no mask-composite).
     return (
       <div className="relative h-full">
         {badge && (

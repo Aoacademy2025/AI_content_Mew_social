@@ -3,7 +3,7 @@ import {
   ArrowRight, Bot, Mic, Music, Film, Captions, SlidersHorizontal, Flame, Plus,
   CameraOff, Scissors, Languages, Wand2, FileText, Wallet, MousePointerClick, KeyRound,
 } from "lucide-react";
-import { prisma } from "@/lib/prisma";
+import { getPlanConfig } from "@/lib/plan-config";
 import { getFoundingCoupon } from "@/lib/founding";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { YouTubeLite } from "@/components/marketing/youtube-lite";
@@ -35,21 +35,6 @@ const GLASS =
 const GLOW = "0 0 34px rgba(139,92,246,.5)";
 const EYEBROW =
   "text-center text-[13px] font-semibold uppercase tracking-[.14em] text-violet-300";
-
-async function getPlanPrices() {
-  try {
-    const rows = await prisma.siteConfig.findMany({
-      where: { key: { in: ["plan_pro_price", "plan_business_price"] } },
-    });
-    const m = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-    return {
-      proPrice: parseInt(m.plan_pro_price ?? "599", 10),
-      businessPrice: parseInt(m.plan_business_price ?? "990", 10),
-    };
-  } catch {
-    return { proPrice: 599, businessPrice: 990 };
-  }
-}
 
 // Read-only founding status (no DB writes, no FoundingReservation dependency).
 async function getFounding() {
@@ -115,7 +100,7 @@ const SHOWCASE = [
 ];
 
 export default async function Home() {
-  const [plan, founding] = await Promise.all([getPlanPrices(), getFounding()]);
+  const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
@@ -306,7 +291,7 @@ export default async function Home() {
             <p className={EYEBROW} style={HEAD}>ราคา</p>
             <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
           </Reveal>
-          <PricingToggle proPrice={plan.proPrice} businessPrice={plan.businessPrice} founding={founding} />
+          <PricingToggle plans={plans} founding={founding} />
         </div>
       </section>
 
