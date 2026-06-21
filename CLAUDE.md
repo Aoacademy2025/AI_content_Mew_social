@@ -3,7 +3,7 @@
 > Read this first. It reflects the **actual** state of the project. `PRD.md` describes an older vision and is partly outdated — when they conflict, trust this file + `STATUS.md`.
 
 ## What this is
-**HERO AI** (studio.heroaiengine.com) — a Next.js SaaS that turns **one script into a finished short-form video, automatically**: AI avatar (full / bookend / none), auto **Thai subtitles** (long or viral-keyword style), auto **B-roll** (changes every 3–5s), voice cloning, music. Built for Faceless creators & content makers. Core flow: **Style → Content → Video**.
+**HERO AI Creator Studio** (studio.heroaiengine.com) — a Next.js SaaS that turns **one script into a finished short-form video, automatically**: AI avatar (full / bookend / none), auto **Thai subtitles** (long or viral-keyword style), auto **B-roll** (changes every 3–5s), voice cloning, music. Built for Faceless creators & content makers. Core flow: **Style → Content → Video**.
 
 ## Actual tech stack (differs from PRD.md!)
 | Area | Reality |
@@ -26,7 +26,7 @@
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
 ## Key directories
-- `src/app/page.tsx` — public homepage = **evergreen sale page** (logged-in users → redirected to `/dashboard` by middleware). `src/components/marketing/` — sale-page client islands (`pricing-toggle.tsx`)
+- `src/app/page.tsx` — public homepage = **evergreen sale page** (logged-in users → redirected to `/dashboard` by middleware). `src/components/marketing/` — sale-page + auth client islands: `pricing-toggle.tsx`, `motion-fx.tsx` (Reveal/ContainerScroll/SpotlightCard, dep `motion`), `marketing-fx.tsx` (animated bg), `showcase-clip.tsx`, `auth-shell.tsx` (shared /login+/register shell). **Design system = single-accent VIOLET** (`#8b5cf6`), Bai Jamjuree headings. Logo `public/logo.svg` + favicon `src/app/icon.svg`/`favicon.ico`. Real-output showcase clips self-hosted in `public/showcase/` (gitignored `*.jpg` → `git add -f`).
 - `src/app/(dashboard)/` — pages: pricing (redesigned + founding), settings, video-creator, video-editor, content, style, admin
 - `src/app/api/` — ~87 routes (`videos/*`, `payments/*`, `coupons/*`, `founding/*`, `cron/*`, `heygen/*`, `elevenlabs/*`, …)
 - `src/remotion/` + `src/components/remotion/` — render compositions
@@ -41,6 +41,9 @@
 - **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
 - **Subtitle timing (06-12, PRs #35-#39):** ซับของเสียง TTS (Gemini/ElevenLabs) มาจาก `timing` ใน TTS response — exact-by-arithmetic, **ข้าม transcribe** (`src/lib/tts-timing.ts` + `_components/tts-timing-captions.ts`); การ์ด viral มาจาก `/api/videos/split-script` (text-only LLM, server validate ห้ามแก้ข้อความ). transcribe = fallback สำหรับ avatar/อัปโหลด เท่านั้น. ทุกชั้นมี fail-open → ห้าม "ซ่อม" โดยเอา transcribe กลับมาเป็น path หลัก.
 - **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.
+- **Pricing tiers are admin-editable, NOT hardcoded:** `src/lib/plan-config.ts` is the single source (name/badge/tagline/features/price per tier), read from DB `SiteConfig` keys `plan_<tier>_<field>` (features pipe-delimited) → used by BOTH `/api/plans` (in-app `/pricing`) AND the marketing sale page (`PricingToggle` takes a `plans` prop). Edit at `/admin` → Plan Config. Don't re-hardcode tier features. **Plan LIMITS** (clips/duration/storage) stay in `plan-limits.ts` — backend-ENFORCED, not just display, so they're code not DB.
+- **Pricing display rule:** show effective **monthly price, NO annual total** on both pricing surfaces (full annual amount appears only at Stripe checkout). In-app `/pricing` is a LEAN convert page (personalized trial/usage band) — NOT a second sale page.
+- **Clerk middleware matcher must whitelist static media** (`mp4|webm|mov` in `src/middleware.ts`) or those files get redirected to /login (symptom: poster `.jpg` loads but `<video>` won't play). Any new static media type needs the same.
 - **BYOK:** paid features need the user's own API keys → onboarding must guide key setup.
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.
 
