@@ -868,20 +868,26 @@ button, a {
 
 /* ── Sale page motion (single-accent violet) ── */
 @keyframes sp-beam-1 {
-  0%, 100% { transform: translate(-50%, 0) scale(1); opacity: .30; }
-  50%      { transform: translate(-44%, 4%) scale(1.1); opacity: .42; }
+  0%, 100% { transform: translate(-58%, -3%) scale(1);    opacity: .34; }
+  50%      { transform: translate(-36%, 9%)  scale(1.22); opacity: .52; }
 }
 @keyframes sp-beam-2 {
-  0%, 100% { transform: translate(-50%, 0) scale(1); opacity: .20; }
-  50%      { transform: translate(-56%, -4%) scale(1.08); opacity: .30; }
+  0%, 100% { transform: translate(-42%, 3%)  scale(1.05); opacity: .22; }
+  50%      { transform: translate(-66%, -8%) scale(1.24); opacity: .42; }
+}
+@keyframes sp-beam-3 {
+  0%, 100% { transform: translate(-50%, 2%)  scale(.9);   opacity: .16; }
+  50%      { transform: translate(-50%, -6%) scale(1.18); opacity: .34; }
 }
 @keyframes sp-grid-pan { from { background-position: 0 0; } to { background-position: 68px 68px; } }
-@keyframes sp-border-beam { to { offset-distance: 100%; } }
+@keyframes sp-spin { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
 
-.sp-beam-1 { animation: sp-beam-1 18s ease-in-out infinite; }
-.sp-beam-2 { animation: sp-beam-2 23s ease-in-out infinite; }
-.sp-grid-anim { animation: sp-grid-pan 26s linear infinite; }
+.sp-beam-1 { animation: sp-beam-1 14s ease-in-out infinite; }
+.sp-beam-2 { animation: sp-beam-2 18s ease-in-out infinite; }
+.sp-beam-3 { animation: sp-beam-3 11s ease-in-out infinite; }
+.sp-grid-anim { animation: sp-grid-pan 20s linear infinite; }
+.sp-spin { animation: sp-spin 6s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .sp-beam-1, .sp-beam-2, .sp-grid-anim { animation: none !important; }
+  .sp-beam-1, .sp-beam-2, .sp-beam-3, .sp-grid-anim, .sp-spin { animation: none !important; }
 }

@@ -4,23 +4,38 @@ import { useState } from "react";
 import Link from "next/link";
 import { Check } from "lucide-react";
 import { computeDisplayPrice } from "@/lib/pricing-display";
-import { BorderBeam } from "@/components/marketing/marketing-fx";
 
 type Period = "monthly" | "yearly";
 type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
 
-const FREE_FEATURES = ["ทดลอง PRO ฟรี 7 วัน", "ไม่ต้องใช้บัตร", "หลังทดลอง: 2 คลิป/เดือน"];
+// Real capabilities by plan (mirrors src/lib/plan-limits.ts).
+const FREE_FEATURES = [
+  "ทดลอง PRO ฟรี 7 วัน — ไม่ต้องใช้บัตร",
+  "หลังทดลอง: 2 คลิป/เดือน · ยาวสุด 2 นาที",
+  "ซับไทย + B-roll อัตโนมัติ",
+  "เก็บวิดีโอ 3 วัน",
+];
 const PRO_FEATURES = [
-  "AI Avatar + ตัดต่ออัตโนมัติ",
-  "ซับไทย (ยาว/keyword)",
-  "B-roll + เพลง + โคลนเสียง",
-  "100 คลิป/เดือน",
+  "100 คลิป/เดือน · ยาวสุด 6 นาที/คลิป",
+  "AI Avatar พิธีกร (HeyGen) — เปิด-ปิด หรือทั้งคลิป",
+  "โคลนเสียงคุณเอง (ElevenLabs) + เสียง AI ไทย",
+  "ซับไทยตรงเสียง — เต็มประโยค / keyword ไวรัล",
+  "B-roll เปลี่ยนทุก 3–5 วิ + เพลง + Sound FX",
+  "ตัดต่อในเว็บ + ลบพื้นหลัง + ฟอนต์พรีเมียม",
+  "สั่งสร้างผ่านแชท Claude (MCP) ✨",
   "เก็บวิดีโอ 7 วัน",
 ];
-const BUSINESS_FEATURES = ["ทุกอย่างใน PRO", "300 คลิป/เดือน", "คลิปยาว 10 นาที", "เก็บวิดีโอ 14 วัน"];
+const BUSINESS_FEATURES = [
+  "ทุกอย่างใน PRO",
+  "300 คลิป/เดือน (3 เท่าของ PRO)",
+  "คลิปยาวสุด 10 นาที/คลิป",
+  "เก็บวิดีโอ 14 วัน",
+];
 
 const BRAND = "linear-gradient(120deg,#8b5cf6,#a78bfa)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
+
+type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
 
 export function PricingToggle({
   proPrice,
@@ -38,22 +53,21 @@ export function PricingToggle({
   const bizDisplay = computeDisplayPrice({ monthlyPrice: businessPrice, period: pricePeriod, coupon: null, founding });
   const hasFounding = Boolean(yearly && founding?.active);
 
-  function priceMeta(display: typeof proDisplay, monthlyPrice: number) {
-    if (!yearly) return { perm: "เก็บรายเดือน ยกเลิกได้", was: undefined };
-    if (display.isFounding) {
-      return {
-        perm: `≈ ฿${Math.round(display.final / 12).toLocaleString()}/เดือน · Founding ลด ${display.pct}%`,
-        was: `฿${display.base.toLocaleString()}`,
-      };
+  // Make the effective MONTHLY price the hero number; keep the annual charge as a
+  // small honest line (it's a one-time annual payment, not a monthly auto-bill).
+  function priceBlock(display: typeof proDisplay, monthlyPrice: number): PriceBlock {
+    if (!yearly) {
+      return { amount: `฿${monthlyPrice.toLocaleString()}`, unit: "/เดือน", sub: "จ่ายรายเดือน · ยกเลิกได้ทุกเมื่อ" };
     }
-    return {
-      perm: `≈ ฿${Math.round(display.base / 12).toLocaleString()}/เดือน · `,
-      was: `฿${(monthlyPrice * 12).toLocaleString()}`,
-    };
+    const monthlyEq = Math.round(display.final / 12);
+    const sub = display.isFounding
+      ? `Founding ลด ${display.pct}% · จ่ายปีละ ฿${display.final.toLocaleString()} ครั้งเดียว`
+      : `จ่ายปีละ ฿${display.final.toLocaleString()} ครั้งเดียว · ไม่ตัดอัตโนมัติ`;
+    return { amount: `฿${monthlyEq.toLocaleString()}`, unit: "/เดือน", sub, was: `฿${monthlyPrice.toLocaleString()}` };
   }
 
-  const proMeta = priceMeta(proDisplay, proPrice);
-  const bizMeta = priceMeta(bizDisplay, businessPrice);
+  const proBlock = priceBlock(proDisplay, proPrice);
+  const bizBlock = priceBlock(bizDisplay, businessPrice);
 
   return (
     <div>
@@ -77,25 +91,25 @@ export function PricingToggle({
         >
           รายปี
           <span className="ml-1.5 rounded-full border border-violet-400/40 bg-violet-400/15 px-1.5 py-0.5 text-[11px] text-violet-200">
-            ประหยัด 2 เดือน
+            2 เดือนฟรี
           </span>
         </button>
       </div>
 
       {hasFounding && founding && (
         <p className="mb-5 text-center text-sm font-semibold text-amber-200">
-          Founding รายปีลด {founding.percentOff}% เหลือ {founding.remaining}/{founding.total} ที่นั่ง
+          🔥 Founding รายปีลด {founding.percentOff}% — เหลือ {founding.remaining}/{founding.total} ที่นั่ง
         </p>
       )}
 
       <div className="grid gap-4 text-left md:grid-cols-3">
-        <Tier name="FREE" amount="฿0" features={FREE_FEATURES} cta="เริ่มใช้ฟรี" ghost />
+        <Tier name="FREE" amount="฿0" sub="เริ่มฟรี ไม่ต้องใช้บัตร" features={FREE_FEATURES} cta="เริ่มใช้ฟรี" ghost />
         <Tier
           name="PRO"
-          amount={`฿${proDisplay.final.toLocaleString()}`}
-          unit={yearly ? "/ปี" : "/เดือน"}
-          perm={proMeta.perm}
-          was={proMeta.was}
+          amount={proBlock.amount}
+          unit={proBlock.unit}
+          sub={proBlock.sub}
+          was={proBlock.was}
           features={PRO_FEATURES}
           cta="เริ่มใช้ PRO"
           best
@@ -103,10 +117,10 @@ export function PricingToggle({
         />
         <Tier
           name="BUSINESS"
-          amount={`฿${bizDisplay.final.toLocaleString()}`}
-          unit={yearly ? "/ปี" : "/เดือน"}
-          perm={bizMeta.perm}
-          was={bizMeta.was}
+          amount={bizBlock.amount}
+          unit={bizBlock.unit}
+          sub={bizBlock.sub}
+          was={bizBlock.was}
           features={BUSINESS_FEATURES}
           cta="เลือก BUSINESS"
           ghost
@@ -127,12 +141,12 @@ export function PricingToggle({
 }
 
 function Tier({
-  name, amount, unit, perm, was, features, cta, best, ghost, badge,
+  name, amount, unit, sub, was, features, cta, best, ghost, badge,
 }: {
   name: string;
   amount: string;
   unit?: string;
-  perm?: string;
+  sub?: string;
   was?: string;
   features: string[];
   cta: string;
@@ -140,37 +154,15 @@ function Tier({
   ghost?: boolean;
   badge?: string;
 }) {
-  return (
-    <div
-      className={`relative flex flex-col rounded-[22px] p-7 transition-transform hover:-translate-y-1 ${best ? "" : "border border-white/10 bg-white/[0.045]"}`}
-      style={
-        best
-          ? {
-              background: "linear-gradient(#06060b,#06060b) padding-box, linear-gradient(120deg,#8b5cf6,#a78bfa) border-box",
-              border: "1.5px solid transparent",
-              boxShadow: "0 0 60px -14px rgba(139,92,246,.6)",
-            }
-          : undefined
-      }
-    >
-      {best && <BorderBeam size={72} duration={6} />}
-      {badge && (
-        <span
-          className="absolute -top-3.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1 text-[13px] font-bold text-white"
-          style={{ ...HEAD, background: BRAND }}
-        >
-          {badge}
-        </span>
-      )}
+  const content = (
+    <>
       <h3 className="text-center text-[22px] font-bold" style={HEAD}>{name}</h3>
       <div className="mt-1 text-center">
         <span className="text-[42px] font-bold leading-none" style={HEAD}>{amount}</span>
         {unit && <span className="ml-1 text-[15px] text-[#a7adcc]">{unit}</span>}
+        {was && <span className="ml-2 text-[15px] text-[#7a7f9c] line-through">{was}</span>}
       </div>
-      <div className="min-h-5 text-center text-[13px] text-violet-300">
-        {perm}
-        {was && <span className="text-[#a7adcc] line-through">{was}</span>}
-      </div>
+      <div className="mt-1.5 min-h-[18px] text-center text-[12.5px] text-violet-300/90">{sub}</div>
       <ul className="my-5 flex-1 space-y-1.5 text-[14.5px]">
         {features.map((f) => (
           <li key={f} className="flex gap-2 text-[#d5d9ee]">
@@ -186,6 +178,42 @@ function Tier({
       >
         {cta}
       </Link>
+    </>
+  );
+
+  if (best) {
+    // Spinning-conic ring = a light beam sweeping the border (Safari-safe; no mask-composite).
+    return (
+      <div className="relative h-full">
+        {badge && (
+          <span className="absolute -top-3.5 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1 text-[13px] font-bold text-white" style={{ ...HEAD, background: BRAND }}>
+            {badge}
+          </span>
+        )}
+        <div className="relative h-full overflow-hidden rounded-[22px] p-[1.5px]" style={{ boxShadow: "0 0 60px -16px rgba(139,92,246,.6)" }}>
+          <span
+            aria-hidden
+            className="sp-spin absolute left-1/2 top-1/2 aspect-square w-[170%]"
+            style={{ background: "conic-gradient(from 0deg, transparent 0deg 210deg, #8b5cf6 280deg, #e9d5ff 320deg, #8b5cf6 340deg, transparent 360deg)" }}
+          />
+          <div className="relative flex h-full flex-col rounded-[21px] bg-[#06060b] p-7 transition-transform hover:-translate-y-1">
+            {content}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative h-full">
+      {badge && (
+        <span className="absolute -top-3.5 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full px-4 py-1 text-[13px] font-bold text-white" style={{ ...HEAD, background: BRAND }}>
+          {badge}
+        </span>
+      )}
+      <div className="relative flex h-full flex-col rounded-[22px] border border-white/10 bg-white/[0.045] p-7 transition-transform hover:-translate-y-1">
+        {content}
+      </div>
     </div>
   );
 }
