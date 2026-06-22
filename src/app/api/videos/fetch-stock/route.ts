@@ -1176,6 +1176,7 @@ export async function POST(req: Request) {
     autoMixProviders,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
+    brollWindowMode = false,
     fullScript,
     visualDirection,
     contentProfile,
@@ -1193,6 +1194,7 @@ export async function POST(req: Request) {
     autoMixProviders?: string[];
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
+    brollWindowMode?: boolean;
     fullScript?: string;
     visualDirection?: string;
     contentProfile?: string;
@@ -1346,7 +1348,9 @@ export async function POST(req: Request) {
       photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
       ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
     };
-    const pieceCount = aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
+    const pieceCount = brollWindowMode
+      ? keywords.length
+      : aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
     const activeIdx = pickEvenIndices(keywords.length, pieceCount);
     const plan = planAutoMixSources(activeIdx.length, weights);
     activeIdx.forEach((ki, j) => {
@@ -1486,12 +1490,14 @@ export async function POST(req: Request) {
     // Cost cap: on the per-subtitle AUTO path, pay for ~ceil(duration/cadence) images
     // (e.g. 21s → ~6), NOT one per caption. Manual clip counts (overrideClipCount set by
     // the user, perSubtitleMode false) bypass the cadence cap via isAuto=false.
-    const clipsToGenerate = aiGenPieceCount(
-      totalDurationSec,
-      Math.min(keywords.length, downloadClipLimit),
-      isPerSubtitleMode,
-      PER_SUBTITLE_DOWNLOAD_LIMIT,
-    );
+    const clipsToGenerate = brollWindowMode
+      ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
+      : aiGenPieceCount(
+          totalDurationSec,
+          Math.min(keywords.length, downloadClipLimit),
+          isPerSubtitleMode,
+          PER_SUBTITLE_DOWNLOAD_LIMIT,
+        );
     console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
