@@ -2,6 +2,7 @@
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
+import { buildKeywordPopups } from "@/lib/keyword-popups";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -151,49 +152,8 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
   return out;
 }
 
-function normalizeKeywordPopups(popups: KeywordPopupItem[], durationInFrames: number): KeywordPopupItem[] {
-  const totalFrames = Math.max(1, Math.round(Number(durationInFrames) || 1));
-  const out: KeywordPopupItem[] = [];
-  let cursor = 0;
-
-  for (const popup of popups) {
-    if (cursor >= totalFrames) break;
-    let start = Number.isFinite(Number(popup.start)) ? Math.round(Number(popup.start)) : cursor;
-    let end = Number.isFinite(Number(popup.end)) ? Math.round(Number(popup.end)) : start + 1;
-    start = Math.min(Math.max(0, start, cursor), totalFrames - 1);
-    end = Math.min(Math.max(end, start + 1), totalFrames);
-    if (end <= start) continue;
-    out.push({ ...popup, start, end });
-    cursor = end;
-  }
-
-  return out;
-}
-
-
-// Auto-scale font size down for longer phrases so they fit on one line (1080px wide, 88% usable = ~950px)
-// Thai chars ~= fontSize * 0.85 wide on average (Kanit/Leelawadee)
-// Max chars that fit on one line at baseSize: floor(950 / (baseSize * 0.85))
-function autoScaleSize(text: string, baseSize: number): number {
-  const usableWidth = 950; // 1080 * 0.88
-  const charWidthRatio = 0.85;
-  const maxCharsOneLine = Math.floor(usableWidth / (baseSize * charWidthRatio));
-  const len = text.length;
-  if (len <= maxCharsOneLine) return baseSize;
-  // Scale down proportionally so text fits in one line, minimum 60% of base
-  const scale = Math.max(0.6, maxCharsOneLine / len);
-  return Math.round(baseSize * scale);
-}
-
-function detectStyle(
-  text: string,
-  baseSize: number,
-  primaryColor: string,
-): { color: string; size: number; isHighlight: boolean } {
-  // Only auto-scale size for long text — color/highlight always come from user settings
-  const scaled = autoScaleSize(text, baseSize);
-  return { color: primaryColor, size: scaled, isHighlight: false };
-}
+// normalizeKeywordPopups / autoScaleSize / detectStyle moved to @/lib/keyword-popups
+// (pure buildKeywordPopups) so the window-mode b-roll flag can't alter subtitles.
 
 // POST /api/videos/generate-config
 export async function POST(req: Request) {
@@ -296,27 +256,16 @@ export async function POST(req: Request) {
 
   const popupCaptions = normalizeCaptionTimeline(gapFilled, audioDurationMs, minFrameMs);
 
-  const keywordPopups: KeywordPopupItem[] = normalizeKeywordPopups(popupCaptions
-    .map((c) => {
-      const text = c.text.trim();
-      const { color, size } = detectStyle(text, subtitleSize, primaryColor);
-      const isHighlight = c.tag === "hook";
-      const singleColor = subtitleStylePreset === "karaoke-box";
-      const startFrame = Math.floor((c.startMs / 1000) * fps);
-      const endFrame = Math.max(startFrame + 1, Math.ceil((c.endMs / 1000) * fps));
-      return {
-        text,
-        start: startFrame,
-        end: endFrame,
-        color: singleColor ? color : isHighlight ? accentColor : color,
-        size,
-        isHighlight,
-        topPercent: subtitlePosition,
-        fontWeight: subtitleFontWeight,
-        tag: c.tag,
-        stylePreset: subtitleStylePreset,
-      };
-    }), durationInFrames);
+  const keywordPopups: KeywordPopupItem[] = buildKeywordPopups(popupCaptions, {
+    fps,
+    durationInFrames,
+    subtitleSize,
+    primaryColor,
+    accentColor,
+    subtitleStylePreset,
+    subtitlePosition,
+    subtitleFontWeight,
+  });
 
   // 2. Build bgVideos
   //
