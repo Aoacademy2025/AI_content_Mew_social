@@ -18,6 +18,8 @@
     "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
+    "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
+    "verify:subtitle-invariant": "tsx scripts/verify-subtitle-invariant.ts",
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
   },
   "prisma": {
