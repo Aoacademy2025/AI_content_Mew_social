@@ -1427,8 +1427,17 @@ export default function VideoEditorPage() {
   async function runFetchStock(kws: string[]): Promise<StockVideo[]> {
     const srcLabel = stockSource === "pexels" ? "Pexels" : stockSource === "pixabay" ? "Pixabay" : stockSource === "kie-image" ? "AI Image (kie.ai)" : stockSource === "auto-mix" ? "Auto Mix" : "Pexels+Pixabay";
     setStep("fetchStock", "running", `${kws.length} keywords → ${srcLabel}...`);
+    // Prefer the REAL TTS audio duration (known after the TTS step, which runs before
+    // fetch-stock). generate-config derives the b-roll CUT count from this same real
+    // duration, so using it here keeps fetch-stock's piece count in sync with what the
+    // video actually shows — otherwise an over-estimated duration (sceneDurations assume
+    // 3s/caption, or the char-based fallback) makes auto-mix fetch/PAY for far more pieces
+    // (incl. kie.ai AI images) than the final render uses. Falls back only pre-TTS.
+    const knownDurSec = pipe.current.audioDurationMs ? pipe.current.audioDurationMs / 1000 : 0;
     const sceneDurations: number[] = pipe.current.sceneDurations ?? [];
-    const totalDurationSec = sceneDurations.length > 0
+    const totalDurationSec = knownDurSec > 0
+      ? knownDurSec
+      : sceneDurations.length > 0
       ? sceneDurations.reduce((a, b) => a + b, 0)
       : Math.max(30, Math.ceil((pipe.current.scenes ?? []).reduce((s, sc) => s + sc.replace(/\s/g,"").length, 0) / 3));
     const caps = pipe.current.sceneCaptions ?? [];
