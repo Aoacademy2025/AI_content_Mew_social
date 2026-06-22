@@ -21,6 +21,7 @@ import {
   type RelevanceSpec,
   type RelevanceTerms,
 } from "@/lib/relevance-spec";
+import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -821,21 +822,21 @@ async function applyKenBurns(imagePath: string, outPath: string): Promise<void> 
 // Generate 1 image (text-to-image, model เลือกได้) จาก keyword/subtitle แล้ว
 // แปลงเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg pan/zoom, ~5s) แทน Kling.
 async function generateKieImageKenBurns(
-  query: string,
+  prompt: string,
+  label: string,
   token: string,
   model: KieImageModel,
   imagePath: string,
   outPath: string,
 ): Promise<{ duration: number; imageUrl: string }> {
-  const prompt = `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`;
   const imageTaskId = await kieCreateTask(model, buildKieImageInput(model, prompt), token);
   const imageUrl = await kiePollResult(imageTaskId, token);
-  console.log(`[fetch-stock] kie image ready for "${query}": ${imageUrl.slice(0, 80)}`);
+  console.log(`[fetch-stock] kie image ready for "${label}": ${imageUrl.slice(0, 80)}`);
 
   await downloadAndCrop(imageUrl, imagePath);
-  console.log(`[fetch-stock] kie cropped "${query}" → ${imagePath.split(/[/\\]/).pop()}`);
+  console.log(`[fetch-stock] kie cropped "${label}" → ${imagePath.split(/[/\\]/).pop()}`);
   await applyKenBurns(imagePath, outPath);
-  console.log(`[fetch-stock] kie Ken Burns done "${query}" → ${outPath.split(/[/\\]/).pop()}`);
+  console.log(`[fetch-stock] kie Ken Burns done "${label}" → ${outPath.split(/[/\\]/).pop()}`);
 
   return { duration: KEN_BURNS_DURATION_SEC, imageUrl };
 }
@@ -1472,7 +1473,8 @@ export async function POST(req: Request) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+              const genPrompt = buildKieImagePrompt(keyword, { visualDirection, terms: relTerms });
+              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieKey!, resolvedKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
                 return;
@@ -1490,7 +1492,7 @@ export async function POST(req: Request) {
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`), kieKey!);
+            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, buildKieImagePrompt(keyword, { visualDirection, terms: relTerms })), kieKey!);
             const imageUrl = await kiePollResult(imageTaskId, kieKey!);
             results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl });
           }
@@ -2038,7 +2040,8 @@ export async function POST(req: Request) {
           const outFile = `${userPrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           try {
-            const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+            const genPrompt = buildKieImagePrompt(kw, { visualDirection, terms: relTerms });
+            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieKey!, resolvedKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
