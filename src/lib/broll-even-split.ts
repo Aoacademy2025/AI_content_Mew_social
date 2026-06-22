@@ -63,6 +63,40 @@ export function cyclePoolIndices(captionCount: number, poolSize: number): number
   return Array.from({ length: captionCount }, (_, i) => i % poolSize);
 }
 
+/**
+ * Target b-roll cut cadence (seconds per clip) for a video of the given length.
+ * Anchors the product's "B-roll changes every 3–5s" promise. Used to (a) cap how many
+ * AI images we pay to generate and (b) how long generate-config holds each clip.
+ * Always within [3, 5] so cadence neither strobes nor drags.
+ */
+export function targetCadenceSec(durationSec: number): number {
+  if (!(durationSec > 0)) return 4;
+  if (durationSec <= 20) return 3.5;
+  if (durationSec <= 45) return 4;
+  return 4.5;
+}
+
+/**
+ * How many AI images to generate (and PAY for) on the per-subtitle AI-gen / auto-mix
+ * path. Decouples paid generations from caption count: a 21s clip with 17 captions
+ * generates ceil(21/3.5)=6 images, not 17. Manual clip counts (isAuto=false) bypass the
+ * cadence cap — the user explicitly chose the number — but always respect keywordCount
+ * and the hard cap.
+ */
+export function aiGenPieceCount(
+  durationSec: number,
+  keywordCount: number,
+  isAuto: boolean,
+  hardCap: number,
+): number {
+  const byKeywords = Math.max(0, Math.floor(keywordCount));
+  const cap = Math.max(1, Math.floor(hardCap));
+  const base = Math.min(byKeywords, cap);
+  if (!isAuto || !(durationSec > 0)) return base;
+  const byCadence = Math.max(1, Math.ceil(durationSec / targetCadenceSec(durationSec)));
+  return Math.max(1, Math.min(base, byCadence));
+}
+
 export type MinHoldCaption = { startSec: number; endSec: number };
 export type MinHoldPoolClip = { src: string; duration: number };
 

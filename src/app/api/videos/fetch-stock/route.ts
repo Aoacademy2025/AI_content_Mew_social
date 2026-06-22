@@ -22,6 +22,7 @@ import {
   type RelevanceTerms,
 } from "@/lib/relevance-spec";
 import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
+import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -1299,14 +1300,6 @@ export async function POST(req: Request) {
 
   const llmKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
 
-  function avgCutSec(dur: number): number {
-    if (dur <= 10) return 5;
-    if (dur <= 20) return 4;
-    if (dur <= 40) return 3.5;
-    return 2.5;
-  }
-  void avgCutSec; // used for future adaptive logic
-
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
   const autoClipsNeeded = totalDurationSec > 0
@@ -1457,7 +1450,15 @@ export async function POST(req: Request) {
   // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────
   // ไม่มี "candidate pool" ให้ค้นหา — generate ภาพ 1 ภาพ/keyword แล้วทำ Ken Burns (ffmpeg pan/zoom)
   if (canUseKieImage) {
-    const clipsToGenerate = Math.min(keywords.length, downloadClipLimit, PER_SUBTITLE_DOWNLOAD_LIMIT);
+    // Cost cap: on the per-subtitle AUTO path, pay for ~ceil(duration/cadence) images
+    // (e.g. 21s → ~6), NOT one per caption. Manual clip counts (overrideClipCount set by
+    // the user, perSubtitleMode false) bypass the cadence cap via isAuto=false.
+    const clipsToGenerate = aiGenPieceCount(
+      totalDurationSec,
+      Math.min(keywords.length, downloadClipLimit),
+      isPerSubtitleMode,
+      PER_SUBTITLE_DOWNLOAD_LIMIT,
+    );
     console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
