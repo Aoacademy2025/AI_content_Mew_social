@@ -82,6 +82,10 @@ export function buildConfigPayload(
     sceneClipCounts,
     sceneDurations,
     preferredLLM: null as string | null,
+    // TODO(broll-cadence): MCP currently uses DEFAULT_STOCK_SOURCE="both", so the AI/auto-mix
+    // cadence (3–5s min-hold) never applies here. If auto-mix/kie-image is ever exposed via
+    // MCP, pass minHoldSec: targetCadenceSec(audioDurationMs/1000) like the web editor does,
+    // or generate-config will strobe one clip per caption (undoing the cadence cap).
   };
 }
 
