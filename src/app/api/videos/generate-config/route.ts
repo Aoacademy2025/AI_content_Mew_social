@@ -222,6 +222,7 @@ export async function POST(req: Request) {
     keywordsPerScene = 5,
     sceneClipCounts = [] as number[],
     sceneDurations = [] as number[],
+    minHoldSec: minHoldSecParam,
   }: {
     sceneCaptions?: Cap[];
     stockVideos: StockVideo[];
@@ -243,6 +244,7 @@ export async function POST(req: Request) {
     keywordsPerScene?: number;
     sceneClipCounts?: number[];
     sceneDurations?: number[];
+    minHoldSec?: number;
   } = body ?? {};
 
   const primaryColor = subtitleColor ?? "#FFFFFF";
@@ -383,7 +385,14 @@ export async function POST(req: Request) {
       // — fixes the "b-roll strobes ~1×/sec in dense word-modes" feel. buildMinHoldSegments
       // guarantees no segment outlives its clip (no freeze) and returns null when the
       // env is unset, in which case we keep the exact legacy 1-clip-per-caption path.
-      const minHoldSec = Math.max(0, Math.min(8, Number(process.env.STOCK_MIN_HOLD_SEC) || 0));
+      // Cadence: hold each clip ≥minHoldSec across several captions instead of cutting on
+      // every caption. The editor sends minHoldSec only for AI-gen / auto-mix (the small,
+      // cost-capped pool from B1) so normal video stock keeps the legacy 1-clip-per-caption
+      // path. STOCK_MIN_HOLD_SEC stays a global override; 0/unset = legacy. buildMinHoldSegments
+      // is freeze-safe (see verify-broll-min-hold.ts).
+      const minHoldSec = Math.max(0, Math.min(8,
+        Number(minHoldSecParam) || Number(process.env.STOCK_MIN_HOLD_SEC) || 0,
+      ));
       const heldSegments = buildMinHoldSegments(
         gapFilled.map((c) => ({ startSec: c.startMs / 1000, endSec: c.endMs / 1000 })),
         pool.map((sv) => ({ src: (sv.localUrl ?? sv.videoUrl) as string, duration: sv.duration > 0 ? sv.duration : 10 })),
