@@ -183,6 +183,7 @@ export async function POST(req: Request) {
     sceneClipCounts = [] as number[],
     sceneDurations = [] as number[],
     minHoldSec: minHoldSecParam,
+    brollWindows = [] as { startMs: number; endMs: number }[],
   }: {
     sceneCaptions?: Cap[];
     stockVideos: StockVideo[];
@@ -205,6 +206,7 @@ export async function POST(req: Request) {
     sceneClipCounts?: number[];
     sceneDurations?: number[];
     minHoldSec?: number;
+    brollWindows?: { startMs: number; endMs: number }[];
   } = body ?? {};
 
   const primaryColor = subtitleColor ?? "#FFFFFF";
@@ -295,7 +297,24 @@ export async function POST(req: Request) {
     });
   }
 
-  if (validStocks.length > 0) {
+  if (validStocks.length > 0 && Array.isArray(brollWindows) && brollWindows.length > 0) {
+    // WINDOW MODE: the editor pre-grouped captions into ~3–4s windows and fetched ONE
+    // asset per window (in window order). Place each clip over its window span — no
+    // per-caption assignment, no min-hold. Subtitles (keywordPopups) are unaffected.
+    const pool = validStocks;
+    const count = Math.min(brollWindows.length, pool.length);
+    for (let wi = 0; wi < count; wi++) {
+      const win = brollWindows[wi];
+      const sv = pool[wi];
+      const src = sv.localUrl ?? sv.videoUrl;
+      if (!src) continue;
+      const start = Math.max(0, Math.min(win.startMs / 1000, audioDurationSec));
+      const end = Math.min(Math.max(win.endMs / 1000, start + 1 / fps), audioDurationSec);
+      if (end - start < 1 / fps) continue;
+      bgVideos.push({ src, start, end, clipOffset: 0, clipDuration: sv.duration > 0 ? sv.duration : 10 });
+    }
+    console.log(`[config] window-mode: ${bgVideos.length} clips over ${brollWindows.length} windows`);
+  } else if (validStocks.length > 0) {
     const n = validStocks.length;
 
     // â”€â”€ EVEN-SPLIT: divide total duration equally across all selected clips â”€â”€
