@@ -510,9 +510,14 @@ git commit -m "feat(broll): hold AI/auto-mix b-roll at 3-5s cadence via scoped m
 
 ---
 
-### Task C (FOLLOW-UP — not in this plan): Automix true mix
+### Task C (DONE — added to this PR): Automix true mix
 
-Out of scope here per the agreed A+B-first sequencing. Tracked separately: make `/api/videos/fetch-stock` Automix interleave video + photo + AI-gen by ratio instead of "video-first, image only for zero-video keywords" (`route.ts:1947-1961`). A+B make the AI-gen path worth showing; C makes the mix actually surface it. Write a separate plan when starting C.
+Mew chose to fold C in before deploying. Implemented:
+- `src/lib/automix-plan.ts` — `planAutoMixSources(n, weights)` (weighted, interleaved source assignment; default video:photo:ai = 3:2:1) + `pickEvenIndices(total, n)` (evenly-spaced active captions). Pure, tested in `scripts/verify-automix-plan.ts`.
+- `fetch-stock/route.ts` — an "Auto Mix source plan" block computes a cadence-capped piece count (`aiGenPieceCount`, 21s→~6), picks that many evenly-spaced captions, and assigns each a source by weight (only providers the user enabled get weight; env-tunable `AUTOMIX_WEIGHT_VIDEO|PHOTO|AI`). The video loop now skips non-video slots in auto-mix; the image loop is driven by the planned photo/AI slots (kind `"ai"` → kie.ai directly; `"photo"` → free photo providers, then kie fallback) instead of "keywords with zero video". Results re-sorted by script order so the mix is interleaved, not grouped.
+- No editor change needed: it already sends `autoMixProviders` + per-subtitle + (via B2) `minHoldSec` for auto-mix.
+
+Known v1 limitations (acceptable; noted for follow-up): video SEARCH still runs for all keywords (only picking is skipped — wasteful but $0); a planned "photo" slot that finds no stock photo falls back to a paid AI image; results interleave is by keyword order (good enough), not exact plan order.
 
 ---
 
