@@ -15,6 +15,8 @@
     "verify:clip-charge": "tsx scripts/verify-clip-charge.ts",
     "verify:loanword-miner": "tsx scripts/verify-loanword-miner.ts",
     "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
+    "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
+    "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
   },
   "prisma": {
