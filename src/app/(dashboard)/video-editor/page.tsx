@@ -45,6 +45,7 @@ import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
+import { targetCadenceSec } from "@/lib/broll-even-split";
 import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
@@ -1881,6 +1882,11 @@ export default function VideoEditorPage() {
         scenes: pipe.current.scenes ?? [], keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: sceneClipCountsForConfig, sceneDurations: pipe.current.sceneDurations ?? [],
         preferredLLM: preferredLLMRef.current,
+        // AI-gen / auto-mix: hold the small cost-capped pool ~3–5s per clip instead of
+        // cutting on every caption (no strobe). Normal video stock sends nothing → legacy.
+        ...(stockSource === "auto-mix" || stockSource === "kie-image"
+          ? { minHoldSec: targetCadenceSec((audioDurationMs ?? 0) / 1000) }
+          : {}),
       }),
     });
     const data = await res.json();
