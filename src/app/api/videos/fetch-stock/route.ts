@@ -1346,7 +1346,7 @@ export async function POST(req: Request) {
       photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
       ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
     };
-    const pieceCount = aiGenPieceCount(totalDurationSec, downloadClipLimit, isPerSubtitleMode, downloadClipLimit);
+    const pieceCount = aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
     const activeIdx = pickEvenIndices(keywords.length, pieceCount);
     const plan = planAutoMixSources(activeIdx.length, weights);
     activeIdx.forEach((ki, j) => {
@@ -2066,8 +2066,11 @@ export async function POST(req: Request) {
           }
         }
 
-        // Fall back to kie.ai AI image
-        if (canUseKieFallback) {
+        // kie.ai generation — ONLY for planned "ai" slots. A "photo" slot that found no
+        // stock image is dropped (the piece is skipped) rather than silently spending a
+        // paid AI credit it wasn't budgeted for — keeps the plan's video/photo/ai cost
+        // split honest. min-hold tolerates a smaller pool, so a missing piece is fine.
+        if (kind === "ai" && canUseKieFallback) {
           const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
@@ -2218,7 +2221,9 @@ export async function POST(req: Request) {
   // video — grouped, not mixed. Re-order by the keyword's position in the script so the
   // planned video/photo/ai sequence is interleaved across the clip. Scoped to auto-mix.
   if (useAutoMix) {
-    const kwOrder = (kw: string) => { const i = keywords.indexOf(kw); return i < 0 ? Number.MAX_SAFE_INTEGER : i; };
+    const kwIdx = new Map<string, number>();
+    keywords.forEach((kw, i) => { if (!kwIdx.has(kw)) kwIdx.set(kw, i); });
+    const kwOrder = (kw: string) => kwIdx.get(kw) ?? Number.MAX_SAFE_INTEGER;
     results.sort((a, b) => kwOrder(a.keyword) - kwOrder(b.keyword));
   }
 
