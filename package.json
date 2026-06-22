@@ -17,6 +17,7 @@
     "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
     "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
+    "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
   },
   "prisma": {
