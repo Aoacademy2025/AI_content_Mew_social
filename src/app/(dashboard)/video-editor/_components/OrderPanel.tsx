@@ -12,6 +12,26 @@ import { VoicePreviewButton } from "./VoicePreviewButton";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
 
+// B-roll source classification — ground truth is assetMeta.provider (set by fetch-stock for
+// every photo/AI asset; video clips carry `provider`). kie-ai = real AI generation; any other
+// provider serving a still image = stock photo (Ken Burns); no image = real video clip.
+// NOTE: every Ken Burns photo also has an imageUrl, so the old `isImage ? "AI" : "VID"` badge
+// mislabeled ALL stock photos as "AI" — this restores the true AI/photo/video distinction.
+const BROLL_SOURCE_LABELS: Record<string, string> = {
+  pexels: "Pexels", pixabay: "Pixabay", unsplash: "Unsplash",
+  wikimedia: "Wikimedia", flickr: "Flickr", nasa: "NASA", met: "The Met", "kie-ai": "kie.ai",
+};
+function classifyBroll(sv: StockVideo, hasImage: boolean): { kind: "ai" | "photo" | "video"; source: string } {
+  const prov = sv.assetMeta?.provider;
+  const kind: "ai" | "photo" | "video" = prov === "kie-ai" ? "ai" : hasImage ? "photo" : "video";
+  return { kind, source: BROLL_SOURCE_LABELS[prov ?? sv.provider ?? ""] ?? "" };
+}
+const BROLL_BADGE: Record<"ai" | "photo" | "video", { label: string; cls: string }> = {
+  ai:    { label: "AI",    cls: "bg-fuchsia-500/85" },
+  photo: { label: "PHOTO", cls: "bg-emerald-500/85" },
+  video: { label: "VID",   cls: "bg-sky-500/85" },
+};
+
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
   ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
@@ -391,9 +411,11 @@ export function OrderPanel(p: OrderPanelProps) {
                       const imgSrc = bust(sv.imageLocalUrl) || sv.imageUrl;
                       const vidSrc = bust(sv.localUrl) || sv.videoUrl;
                       if (!imgSrc && !vidSrc) return null;
-                      // AI generate (kie.ai/auto-mix fallback) มี imageUrl → แสดงรูป
-                      // video clip ปกติ (Pexels/Pixabay) → แสดง frame แรกของวิดีโอ
+                      // isImage decides img-vs-video element only; the BADGE uses assetMeta
+                      // (via classifyBroll) so stock photos aren't lumped in with AI.
                       const isImage = !!imgSrc;
+                      const { kind, source } = classifyBroll(sv, isImage);
+                      const badge = BROLL_BADGE[kind];
                       return (
                         <div key={i} className="relative aspect-9/16 rounded-md overflow-hidden border border-cyan-500/20 bg-[#0a0a0f] group/clip">
                           {isImage ? (
@@ -404,18 +426,19 @@ export function OrderPanel(p: OrderPanelProps) {
                               onMouseEnter={e => { e.currentTarget.play().catch(() => {}); }}
                               onMouseLeave={e => { e.currentTarget.pause(); e.currentTarget.currentTime = 0; }} />
                           )}
-                          {/* badge บอก source: AI หรือ video */}
-                          <span className={cn("absolute top-0.5 right-0.5 text-[7px] font-bold px-1 py-px rounded uppercase tracking-wide",
-                            isImage ? "bg-cyan-500/80 text-white" : "bg-violet-500/80 text-white")}>
-                            {isImage ? "AI" : "VID"}
+                          {/* type badge — AI (kie.ai) / PHOTO (stock still + Ken Burns) / VID (real video) */}
+                          <span className={cn("absolute top-0.5 right-0.5 text-[7px] font-bold px-1 py-px rounded uppercase tracking-wide text-white", badge.cls)}>
+                            {badge.label}
                           </span>
-                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/60 truncate">{sv.keyword}</div>
+                          <div className="absolute bottom-0 left-0 right-0 px-1 py-0.5 text-[8px] text-cyan-100 bg-black/60 truncate">
+                            {source && <span className="text-amber-200/90 font-semibold">{source}</span>}{source && " · "}{sv.keyword}
+                          </div>
                         </div>
                       );
                     })}
                   </div>
                   <p className="text-[8px] text-slate-600 mt-1 leading-relaxed">
-                    <span className="text-violet-300 font-bold">VID</span> = วิดีโอจริง (hover เพื่อเล่น) · <span className="text-cyan-300 font-bold">AI</span> = ภาพ AI generate
+                    <span className="text-sky-300 font-bold">VID</span> = วิดีโอจริง (hover เล่น) · <span className="text-emerald-300 font-bold">PHOTO</span> = รูปสต็อก (Ken Burns) · <span className="text-fuchsia-300 font-bold">AI</span> = ภาพ AI generate (kie.ai) · <span className="text-amber-200/90 font-semibold">ชื่อแหล่ง</span>แสดงใต้ภาพ
                   </p>
                 </div>
               )}
