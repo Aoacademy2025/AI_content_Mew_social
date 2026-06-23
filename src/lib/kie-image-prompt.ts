@@ -32,6 +32,10 @@ export function buildKieImagePrompt(
   if (domain) parts.push(`in a ${domain} setting`);
   if (concepts.length) parts.push(`featuring ${concepts.join(" and ")}`);
   if (dir) parts.push(dir.replace(/[.?!]+$/g, ""));
-  parts.push("natural lighting, realistic detail, sharp focus, no text, no watermark, no logo, no caption");
+  // A single uninterrupted scene — abstract subjects (e.g. "step by step guide") otherwise
+  // make the model render a multi-panel storyboard/grid, which looks broken as a full-frame
+  // b-roll clip under Ken Burns. Guard the composition explicitly.
+  parts.push("a single uninterrupted scene, one continuous frame");
+  parts.push("natural lighting, realistic detail, sharp focus, no text, no watermark, no logo, no caption, no collage, no grid, no split screen, no multiple panels, no storyboard, no comic layout, no borders");
   return `${parts.join(", ")}.`;
 }
