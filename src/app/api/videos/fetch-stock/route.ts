@@ -1526,6 +1526,7 @@ export async function POST(req: Request) {
                 keyword, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
+                assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
             } catch (e) {
               stockTelemetry.downloadFailCount++;
@@ -1534,7 +1535,7 @@ export async function POST(req: Request) {
           } else {
             const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, buildKieImagePrompt(keyword, { visualDirection, terms: relTerms })), kieKey!);
             const imageUrl = await kiePollResult(imageTaskId, kieKey!);
-            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl });
+            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
           }
         } catch (e) {
           stockTelemetry.noCandidateKeywords++;
