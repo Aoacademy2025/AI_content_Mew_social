@@ -49,14 +49,14 @@ async function syncMinuteWindow(userId: string): Promise<{
 
 export async function checkMinuteQuota(
   userId: string
-): Promise<{ allowed: boolean; remaining: number; message?: string }> {
+): Promise<{ allowed: boolean; remaining: number; used: number; message?: string }> {
   const s = await syncMinuteWindow(userId);
-  if (!s) return { allowed: false, remaining: 0, message: "ไม่พบผู้ใช้" };
+  if (!s) return { allowed: false, remaining: 0, used: 0, message: "ไม่พบผู้ใช้" };
   const remaining = Math.max(0, s.minutesLimit - s.minutesUsed);
   if (remaining <= 0) {
-    return { allowed: false, remaining: 0, message: minuteQuotaMessage(s.plan, s.minutesLimit) };
+    return { allowed: false, remaining: 0, used: s.minutesUsed, message: minuteQuotaMessage(s.plan, s.minutesLimit) };
   }
-  return { allowed: true, remaining };
+  return { allowed: true, remaining, used: s.minutesUsed };
 }
 
 export async function reserveMinutes(

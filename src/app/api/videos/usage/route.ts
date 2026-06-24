@@ -25,9 +25,6 @@ export async function GET() {
     const remaining = Math.max(0, limit - used);
 
     const minuteQuota = await checkMinuteQuota(authUser.id);
-    const minuteLimit = minutesLimitForPlan(quota.plan);
-    const minuteRemaining = minuteQuota.remaining;
-    const minuteUsed = minuteLimit - minuteRemaining;
 
     return NextResponse.json({
       plan: quota.plan,
@@ -36,9 +33,9 @@ export async function GET() {
       remaining,
       resetAt: quota.resetAt.toISOString(),
       minutes: {
-        used: minuteUsed,
-        limit: minuteLimit,
-        remaining: minuteRemaining,
+        used: minuteQuota.used,
+        limit: minutesLimitForPlan(quota.plan),
+        remaining: minuteQuota.remaining,
       },
     });
   } catch (err) {

@@ -118,6 +118,24 @@ async function main() {
   assert(overCheck.allowed === false, "over-quota FREE user: checkMinuteQuota → not allowed");
   assert(typeof overCheck.message === "string" && overCheck.message.includes("นาที"), "over-quota: message includes Thai 'นาที'");
   assert(overCheck.remaining === 0, "over-quota: remaining = 0");
+  assert(overCheck.used === 5, "over-quota FREE user: checkMinuteQuota.used = real DB value 5 (not clamped back-calc)");
+
+  // ── P2-1: over-limit user: used reflects actual DB value, not clamped back-calc ─
+  // PRO limit=80, minutesUsed=95 (simulates a DB state where usage exceeded limit).
+  const uOverLimit = await prisma.user.create({
+    data: {
+      name: "over-limit",
+      email: "overlimit@t.test",
+      plan: "PRO",
+      minutesUsed: 95,
+      minutesLimit: 80,
+      usagePeriodStartedAt: now,
+    },
+  });
+  const overLimitCheck = await checkMinuteQuota(uOverLimit.id);
+  assert(overLimitCheck.allowed === false, "over-limit PRO user: checkMinuteQuota → not allowed");
+  assert(overLimitCheck.remaining === 0, "over-limit PRO user: remaining clamped to 0");
+  assert(overLimitCheck.used === 95, "over-limit PRO user: used = real 95, not clamped back-calc (would be 80)");
 
   await prisma.user.deleteMany();
   await prisma.$disconnect();
