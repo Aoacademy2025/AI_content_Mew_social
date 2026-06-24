@@ -6,7 +6,7 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
-import { grantCredits } from "@/lib/credits";
+import { grantCreditsOnce } from "@/lib/credits";
 
 export const config = { api: { bodyParser: false } };
 
@@ -49,12 +49,13 @@ export async function POST(req: Request) {
 
     // ── Credit-pack purchase: grant credits and return early ──────────────
     if (s.metadata?.type === "credits" && s.metadata.userId) {
-      await grantCredits(
-        s.metadata.userId,
-        parseInt(s.metadata.credits ?? "0", 10),
-        "purchase",
-        "pack"
-      ).catch((e) => console.error("[webhook] credit grant:", e));
+      const credits = parseInt(s.metadata.credits ?? "0", 10);
+      if (!credits || credits <= 0) {
+        console.error("[webhook] bad credit metadata", s.id);
+        return NextResponse.json({ ok: true });
+      }
+      await grantCreditsOnce(s.metadata.userId, credits, "purchase", "pack:" + s.id)
+        .catch((e) => console.error("[webhook] credit grant:", e));
       return NextResponse.json({ ok: true });
     }
 

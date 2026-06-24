@@ -136,6 +136,27 @@ export async function grantCredits(
   });
 }
 
+// ── Idempotent grant (dedup by ref) ──────────────────────────────────────────
+
+/**
+ * Grant credits at most once per `ref` (e.g. a Stripe session id).
+ * Returns {granted:false} if a ledger row with action===ref already exists.
+ *
+ * Stripe retries are spaced seconds-to-hours apart, never truly concurrent,
+ * so the findFirst-then-grant check is sufficient here.
+ */
+export async function grantCreditsOnce(
+  userId: string,
+  amount: number,
+  kind: "grant" | "purchase",
+  ref: string
+): Promise<{ granted: boolean }> {
+  const existing = await prisma.creditLedger.findFirst({ where: { userId, action: ref } });
+  if (existing) return { granted: false };
+  await grantCredits(userId, amount, kind, ref); // action === ref is the dedup marker
+  return { granted: true };
+}
+
 // ── Spend credits ─────────────────────────────────────────────────────────────
 
 /**
