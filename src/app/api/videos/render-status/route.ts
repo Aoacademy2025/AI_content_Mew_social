@@ -11,6 +11,7 @@ type RenderJob = {
   error?: string;
   startedAt: number;
   progress?: number;
+  userId?: string; // owner — set by the render route's setRenderJob for ownership checks
 };
 
 function jobFilePath(jobId: string): string {
@@ -39,6 +40,12 @@ export async function GET(req: Request) {
 
   const job = readJob(jobId);
   if (!job) {
+    return NextResponse.json({ status: "not_found" }, { status: 404 });
+  }
+  // Ownership check: prevent reading another user's job result by jobId. Jobs created
+  // before this field existed lack userId; enforce only when present (fail-open during
+  // the brief post-deploy window — this legacy path is dev/fallback, prod uses the queue).
+  if (job.userId && job.userId !== authUser.id) {
     return NextResponse.json({ status: "not_found" }, { status: 404 });
   }
 

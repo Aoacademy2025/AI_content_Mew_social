@@ -28,6 +28,16 @@ export async function POST(req: Request) {
     if (!image || !videoId)
       return NextResponse.json({ error: "image and videoId required" }, { status: 400 });
 
+    // Ownership check: a caller may only set the thumbnail of their OWN video (prevents IDOR).
+    // Fail fast before writing any file to disk.
+    const owns = (await prisma.$queryRawUnsafe(
+      `SELECT 1 FROM Video WHERE id = ? AND userId = ? LIMIT 1`,
+      videoId,
+      authUser.id,
+    )) as unknown[];
+    if (!owns || owns.length === 0)
+      return NextResponse.json({ error: "Video not found" }, { status: 404 });
+
     const rendersDir = path.join(process.cwd(), "public", "renders");
     fs.mkdirSync(rendersDir, { recursive: true });
 
@@ -39,12 +49,14 @@ export async function POST(req: Request) {
 
     const thumbnailUrl = `/api/renders/${filename}`;
 
-    // Save to DB using raw SQL (works without prisma generate for thumbnailConfig)
+    // Save to DB using raw SQL (works without prisma generate for thumbnailConfig).
+    // Scope by userId (defense-in-depth alongside the ownership check above).
     await prisma.$executeRawUnsafe(
-      `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ?`,
+      `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ? AND userId = ?`,
       thumbnailUrl,
       thumbnailConfigStr ?? null,
       videoId,
+      authUser.id,
     ).catch(() => {});
 
     return NextResponse.json({ thumbnailUrl });

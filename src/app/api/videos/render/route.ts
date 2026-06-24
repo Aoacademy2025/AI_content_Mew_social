@@ -7,6 +7,7 @@ import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-l
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
+import { randomBytes } from "crypto";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -97,6 +98,7 @@ type RenderJob = {
   error?: string;
   startedAt: number;
   progress?: number; // 0–100
+  userId?: string; // owner — used by the render-status legacy branch for ownership checks
 };
 
 // activeRenderCount is now stored in global via cancel-registry to survive hot-reloads.
@@ -139,6 +141,13 @@ function normalizeRenderScopeId(value: unknown): string {
 }
 
 function setRenderJob(jobId: string, job: RenderJob) {
+  // Carry forward the owner userId across status updates so it's always recorded
+  // (the render-status legacy branch uses it for an ownership check). Avoids having
+  // to thread userId through every setRenderJob call site.
+  if (job.userId === undefined) {
+    const prev = renderJobs.get(jobId) ?? readPersistedJob(jobId);
+    if (prev?.userId) job = { ...job, userId: prev.userId };
+  }
   renderJobs.set(jobId, job);
   persistJob(jobId, job);
 }
@@ -305,7 +314,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const jobId = `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // jobId doubles as the bearer token for the cookie-less, sendBeacon-driven
+    // render-cancel route, so it must be unguessable: 128-bit crypto randomness,
+    // not Math.random (which left the suffix only 6 base36 chars + a known userId prefix,
+    // letting one user enumerate & cancel another user's in-flight render).
+    const jobId = `${userId}-${Date.now()}-${randomBytes(16).toString("hex")}`;
     // Register this as the latest job for this render scope before cancelling the old one, so its
     // background catch can identify itself as superseded and refund the reserved usage.
     latestJobPerRenderScope.set(renderOwnerKey, jobId);
@@ -783,7 +796,7 @@ export async function POST(req: Request) {
 
     // Clear stale progress file and register job immediately — before bundle build
     writeProgress({ progress: 0, stage: "preparing", queued: false, queuePosition: null });
-    setRenderJob(jobId, { status: "running", startedAt: Date.now() });
+    setRenderJob(jobId, { status: "running", startedAt: Date.now(), userId });
     incrementActiveRenderCount();
 
     // Fire-and-forget: bundle + render in background so HTTP response returns immediately.
