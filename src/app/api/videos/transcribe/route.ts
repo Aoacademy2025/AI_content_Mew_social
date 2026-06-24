@@ -10,6 +10,7 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
 import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -836,11 +837,20 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, ttsProvider: true },
+      select: { geminiKey: true, plan: true, ttsProvider: true },
     });
 
-    const useGeminiTranscribe = !!user?.geminiKey;
-    console.log(`[transcribe] hasGemini=${!!user?.geminiKey} → ${useGeminiTranscribe ? "Gemini" : "LocalWhisper"}`);
+    let resolvedGeminiKey: string | null = null;
+    if (user) {
+      try {
+        resolvedGeminiKey = resolveGeminiKey(user).key;
+      } catch (e) {
+        if (!(e instanceof KeyRequiredError)) throw e;
+        // No key available → resolvedGeminiKey stays null
+      }
+    }
+    const useGeminiTranscribe = !!resolvedGeminiKey;
+    console.log(`[transcribe] hasGemini=${!!resolvedGeminiKey} → ${useGeminiTranscribe ? "Gemini" : "no-key"}`);
 
     // Resolve local file path or download remote
     const ts = Date.now();
@@ -906,7 +916,7 @@ export async function POST(req: Request) {
       // ── Gemini Audio Transcribe with timestamps ──
       console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {
-        const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
+        const geminiKey = resolvedGeminiKey!;
         const audioBuffer = fs.readFileSync(mp3Path);
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
@@ -1015,11 +1025,11 @@ export async function POST(req: Request) {
       }
     } else {
       try { fs.unlinkSync(mp3Path); } catch {}
-      return NextResponse.json({ error: "Gemini API Key is required for transcription. Please add your Gemini key in Settings.", missingKey: "gemini" }, { status: 401 });
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
     }
 
-    // LLM key for subtitle splitting
-    const apiKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
+    // LLM key for subtitle splitting (same resolved key)
+    const apiKey = resolvedGeminiKey;
     console.log(`[transcribe] LLM split provider: Gemini apiKey=${apiKey ? "ok" : "MISSING"}`);
 
     const isThai = /[฀-๿]/.test(fullText) || (typeof script === "string" && /[฀-๿]/.test(script));

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
@@ -222,12 +223,17 @@ export async function POST(req: Request) {
     if (mode === "suggest") {
       const user = await prisma.user.findUnique({
         where: { id: authUser.id },
-        select: { geminiKey: true },
+        select: { geminiKey: true, plan: true },
       });
-      const geminiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
-
-      if (!geminiKey) {
-        return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
+      if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      let geminiKey: string;
+      try {
+        geminiKey = resolveGeminiKey(user).key;
+      } catch (e) {
+        if (e instanceof KeyRequiredError) {
+          return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+        }
+        throw e;
       }
 
       // Extract captions from renderConfig

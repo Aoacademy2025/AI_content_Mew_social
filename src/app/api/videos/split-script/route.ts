@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { mapCardTextsToRangesTolerant, type CardPiece } from "@/lib/tts-timing";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
@@ -33,12 +34,18 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true },
+      select: { geminiKey: true, plan: true },
     });
-    if (!user?.geminiKey) {
-      return NextResponse.json({ error: "Gemini API key not set", missingKey: "gemini" }, { status: 400 });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    let apiKey: string;
+    try {
+      apiKey = resolveGeminiKey(user).key;
+    } catch (e) {
+      if (e instanceof KeyRequiredError) {
+        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+      }
+      throw e;
     }
-    const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
 
     const cardCap = Math.min(Math.max(Math.round(Number(maxCardChars) || 28), 12), 60);
 

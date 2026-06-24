@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
 import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
 import {
   splitScriptForTts,
@@ -291,15 +293,32 @@ export async function POST(req: Request) {
     if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
     const selectedVoice = GEMINI_VOICES.some((v) => v.id === voiceName) ? voiceName : "Aoede";
 
-    // Get user's Gemini key
+    // Get user's Gemini key (managed or BYOK)
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true },
+      select: { geminiKey: true, plan: true },
     });
-    if (!user?.geminiKey) {
-      return NextResponse.json({ error: "Gemini API key not set", missingKey: "gemini" }, { status: 400 });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    let apiKey: string;
+    let geminiMode: "managed" | "byok";
+    try {
+      const resolved = resolveGeminiKey(user);
+      apiKey = resolved.key;
+      geminiMode = resolved.mode;
+    } catch (e) {
+      if (e instanceof KeyRequiredError) {
+        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+      }
+      throw e;
     }
-    const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+
+    // Fail-fast minute quota check — only for managed-key users
+    if (geminiMode === "managed") {
+      const quota = await checkMinuteQuota(authUser.id);
+      if (!quota.allowed) {
+        return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
+      }
+    }
 
     if (preview === true) {
       const previewText = normalizeVoicePreviewText(text);
@@ -392,10 +411,19 @@ export async function POST(req: Request) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
       const r = await callGeminiTts(apiKey, fullText, selectedVoice);
       if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
+      const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
+      // Reserve minutes AFTER audio is produced (managed users only)
+      if (geminiMode === "managed") {
+        const minutes = Math.max(1, Math.ceil(failOpenDurationMs / 60_000));
+        const reserved = await reserveMinutes(authUser.id, minutes);
+        if (!reserved.allowed) {
+          return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
+        }
+      }
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl,
-        audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
+        audioDurationMs: failOpenDurationMs,
       });
     }
 
@@ -403,6 +431,14 @@ export async function POST(req: Request) {
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
+    // Reserve minutes AFTER audio is produced (managed users only)
+    if (geminiMode === "managed") {
+      const minutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
+      const reserved = await reserveMinutes(authUser.id, minutes);
+      if (!reserved.allowed) {
+        return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
+      }
+    }
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
     console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
     return NextResponse.json({

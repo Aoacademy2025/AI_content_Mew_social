@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -20,9 +21,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "scenes and whisperWords required" }, { status: 400 });
   }
 
-  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { geminiKey: true } });
-  if (!user?.geminiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
-  const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
+  const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { geminiKey: true, plan: true } });
+  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  let apiKey: string;
+  try {
+    apiKey = resolveGeminiKey(user).key;
+  } catch (e) {
+    if (e instanceof KeyRequiredError) {
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+    }
+    throw e;
+  }
 
   const transcript = whisperWords.map((w, i) => `[${i}]${w.word}`).join(" ");
   const sceneList = scenes.map((s, i) => `${i + 1}. ${s}`).join("\n");

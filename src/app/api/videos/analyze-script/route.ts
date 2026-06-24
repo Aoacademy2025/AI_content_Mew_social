@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 const SYSTEM_PROMPT = `คุณคือ Professional Content Creator และ Social Media Strategist
 ผู้เชี่ยวชาญด้านการ แบ่งสคริปต์ให้กลายเป็นฉากวิดีโอ short-form ที่ไหลลื่น เห็นภาพทันที
@@ -156,18 +157,22 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true },
+      select: { geminiKey: true, plan: true },
     });
 
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    if (!user.geminiKey) {
-      return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
+    let apiKey: string;
+    try {
+      apiKey = resolveGeminiKey(user).key;
+    } catch (e) {
+      if (e instanceof KeyRequiredError) {
+        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+      }
+      throw e;
     }
-
-    const apiKey = Buffer.from(user.geminiKey, "base64").toString("utf-8");
     const { geminiGenerateText } = await import("@/lib/gemini");
 
     // Send the full script as a single line to AI

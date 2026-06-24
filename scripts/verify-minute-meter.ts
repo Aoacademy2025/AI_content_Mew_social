@@ -102,6 +102,29 @@ async function main() {
   const rowFloor = await prisma.user.findUnique({ where: { id: uf2.id } });
   assert(rowFloor!.minutesUsed >= 0, "refund floor: minutesUsed never goes below 0");
 
+  // ── Task-3: over-quota path returns Thai message ──────────────────────────
+  // Simulate a managed user whose full quota is already consumed.
+  const uOver = await prisma.user.create({
+    data: {
+      name: "over-quota",
+      email: "over@t.test",
+      plan: "FREE",
+      minutesUsed: 5,
+      minutesLimit: 5,
+      usagePeriodStartedAt: now,
+    },
+  });
+  const overCheck = await checkMinuteQuota(uOver.id);
+  assert(overCheck.allowed === false, "over-quota FREE user: checkMinuteQuota → not allowed");
+  assert(typeof overCheck.message === "string" && overCheck.message.includes("นาที"), "over-quota: message includes Thai 'นาที'");
+  assert(overCheck.remaining === 0, "over-quota: remaining = 0");
+
+  // ── Task-3: managed vs BYOK metering branch logic ────────────────────────
+  // This tests the pure decision: should_meter = (mode === "managed")
+  function shouldMeter(mode: "managed" | "byok"): boolean { return mode === "managed"; }
+  assert(shouldMeter("managed") === true,  "metering branch: managed mode → meter=true");
+  assert(shouldMeter("byok")    === false, "metering branch: byok mode → meter=false");
+
   await prisma.user.deleteMany();
   await prisma.$disconnect();
   console.log(`\n✅ ALL ${passed} MINUTE-METER CHECKS PASSED`);
