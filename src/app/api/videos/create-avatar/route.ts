@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import { isSafeFetchUrl } from "@/lib/safe-fetch";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getFfmpeg(): any {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -37,7 +38,10 @@ async function readAsset(url: string, origin: string): Promise<Buffer | null> {
     if (!fs.existsSync(filePath)) return null;
     return fs.readFileSync(filePath);
   }
-  const res = await fetch(url.startsWith("http") ? url : `${origin}${url}`);
+  const target = url.startsWith("http") ? url : `${origin}${url}`;
+  // SSRF guard: only the external http(s) case is user-controlled; reject internal/private targets.
+  if (url.startsWith("http") && !(await isSafeFetchUrl(target))) return null;
+  const res = await fetch(target);
   if (!res.ok) return null;
   return Buffer.from(await res.arrayBuffer());
 }

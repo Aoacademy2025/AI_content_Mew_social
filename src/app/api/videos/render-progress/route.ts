@@ -41,6 +41,22 @@ export async function GET(req: Request) {
     });
   }
 
+  // Ownership (legacy branch): the prod queue branch above already checks job.userId.
+  // For the dev/fallback file path, cross-check the persisted render job's userId
+  // (set by the render route) so one user can't read another's progress by jobId.
+  if (jobId) {
+    try {
+      const jobFile = path.join(process.cwd(), ".tmp", "render-jobs", `${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+      const job = JSON.parse(fs.readFileSync(jobFile, "utf-8")) as { userId?: string };
+      if (job?.userId && job.userId !== authUser.id) {
+        return NextResponse.json({
+          progress: 0, videoUrl: null, error: null, queued: false, queuePosition: null,
+          stage: null, updatedAt: null, queuedAt: null, renderQueueWaitMs: null,
+        });
+      }
+    } catch { /* no job file → legacy/old job, fall through */ }
+  }
+
   const renderTmpDir = process.env.RENDER_TMP_ROOT
     ? path.resolve(process.env.RENDER_TMP_ROOT)
     : path.join(process.cwd(), ".tmp", "remotion");
