@@ -82,7 +82,10 @@ function AnimatedImage({ src, effect, durationFrames }: { src: string; effect?: 
     }
     case "fade-in": {
       transform = `scale(1.05)`;
-      opacity = interpolate(frame, [0, Math.round(d * 0.4)], [0, 1], { extrapolateRight: "clamp" });
+      // Math.max(1, …): a 1-frame scene makes Math.round(d*0.4)===0, giving the range
+      // [0,0] which Remotion's interpolate rejects ("inputRange must be strictly
+      // monotonically non-decreasing") → it would throw and abort the whole render.
+      opacity = interpolate(frame, [0, Math.max(1, Math.round(d * 0.4))], [0, 1], { extrapolateRight: "clamp" });
       break;
     }
     case "pulse": {

@@ -2266,7 +2266,24 @@ export default function VideoEditorPage() {
       if (abortRef.current) throw new Error("__SUPERSEDED__");
       if (document.visibilityState === "hidden") {
         await new Promise<void>(resolve => {
-          const h = () => { if (abortRef.current || document.visibilityState === "visible") { document.removeEventListener("visibilitychange", h); resolve(); } };
+          let poll: ReturnType<typeof setInterval> | undefined;
+          const h = () => {
+            if (abortRef.current || document.visibilityState === "visible") {
+              document.removeEventListener("visibilitychange", h);
+              clearInterval(poll);
+              resolve();
+            }
+          };
+          // Also resolve if the run is aborted/unmounted while the tab stays hidden —
+          // otherwise no visibilitychange ever fires and this listener + the suspended
+          // async frame would linger until the user next toggles tab visibility.
+          poll = setInterval(() => {
+            if (abortRef.current) {
+              document.removeEventListener("visibilitychange", h);
+              clearInterval(poll);
+              resolve();
+            }
+          }, 1000);
           document.addEventListener("visibilitychange", h);
         });
       }

@@ -16,6 +16,22 @@ import type { SubtitleStylePreset, SubtitleTextEffect } from "./types";
  * for the "static" look that matches the resting frame.
  */
 
+// Parse a hex color (#rgb or #rrggbb) to RGB channels. "#fff" shorthand IS expanded;
+// any other non-hex value ("rgb(...)", named colors) falls back to white instead of
+// making parseInt() return NaN — which would yield an invalid "rgba(...,NaN,...)"
+// textShadow that Chromium silently drops at render time. subtitleColor reaches here
+// unvalidated from the render API, so this normalization is the safety net.
+function hexToRgb(color: string): { r: number; g: number; b: number } {
+  let hex = (color || "").trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{3}$/.test(hex)) hex = hex.split("").map((c) => c + c).join("");
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) hex = "ffffff";
+  return {
+    r: parseInt(hex.slice(0, 2), 16),
+    g: parseInt(hex.slice(2, 4), 16),
+    b: parseInt(hex.slice(4, 6), 16),
+  };
+}
+
 // ── Intl.Segmenter singleton ────────────────────────────────────────────────
 // Constructing a Segmenter loads ICU word-break data and is expensive.
 // segmentWords runs on EVERY subtitle render — in the editor preview that is
@@ -170,9 +186,7 @@ export function renderSubtitle(
   // ── Text Effects that render special inline content ────────────────────────
   if (!LOCKED_PRESETS.includes(preset)) {
     if (textEffect === "glow-pulse") {
-      const r = parseInt(color.slice(1, 3), 16);
-      const g = parseInt(color.slice(3, 5), 16);
-      const b = parseInt(color.slice(5, 7), 16);
+      const { r, g, b } = hexToRgb(color);
       const pulse = 0.6 + 0.4 * Math.sin((frame / captionDurFrames) * Math.PI * 4);
       return (
         <span style={withDecorations({
@@ -299,9 +313,7 @@ export function renderSubtitle(
         </div>
       );
     case "glow": {
-      const r = parseInt(color.slice(1, 3), 16);
-      const g = parseInt(color.slice(3, 5), 16);
-      const b = parseInt(color.slice(5, 7), 16);
+      const { r, g, b } = hexToRgb(color);
       return (
         <span style={withDecorations({
           ...base,
