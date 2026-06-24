@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { checkClipQuota } from "@/lib/usage-limits";
+import { checkMinuteQuota, minutesLimitForPlan } from "@/lib/minute-limits";
 
-// GET /api/videos/usage — read-only clip quota status for the authenticated user
+// GET /api/videos/usage — read-only clip + minute quota status for the authenticated user
 // Does NOT increment usageCount; uses checkClipQuota which calls syncUsageWindow
 // (window sync only resets counter when the 30-day period expires — no increment).
 export async function GET() {
@@ -23,12 +24,22 @@ export async function GET() {
     const limit = quota.usageLimit;
     const remaining = Math.max(0, limit - used);
 
+    const minuteQuota = await checkMinuteQuota(authUser.id);
+    const minuteLimit = minutesLimitForPlan(quota.plan);
+    const minuteRemaining = minuteQuota.remaining;
+    const minuteUsed = minuteLimit - minuteRemaining;
+
     return NextResponse.json({
       plan: quota.plan,
       used,
       limit,
       remaining,
       resetAt: quota.resetAt.toISOString(),
+      minutes: {
+        used: minuteUsed,
+        limit: minuteLimit,
+        remaining: minuteRemaining,
+      },
     });
   } catch (err) {
     console.error("[api/videos/usage] error:", err);

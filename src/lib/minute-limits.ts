@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
+import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 
 const USAGE_PERIOD_MS = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
 
 export function minutesLimitForPlan(plan: string): number {
-  return ({ FREE: 5, PRO: 80, BUSINESS: 150 } as Record<string, number>)[plan] ?? 5;
+  return minutesPerMonthForPlan(plan);
 }
 
 function isWindowExpired(startedAt: Date | null, now: Date): boolean {
