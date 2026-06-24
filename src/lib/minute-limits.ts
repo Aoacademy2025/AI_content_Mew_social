@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
+import { syncUserEntitlement } from "@/lib/entitlements";
 
 const USAGE_PERIOD_MS = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
 
@@ -23,6 +24,7 @@ async function syncMinuteWindow(userId: string): Promise<{
   usagePeriodStartedAt: Date;
 } | null> {
   const now = new Date();
+  await syncUserEntitlement(userId, now);
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { plan: true, minutesUsed: true, minutesLimit: true, usagePeriodStartedAt: true },
@@ -87,13 +89,5 @@ export async function reserveMinutes(
 }
 
 export async function refundMinutes(userId: string, minutes: number): Promise<void> {
-  await prisma.user.updateMany({
-    where: { id: userId, minutesUsed: { gt: 0 } },
-    data: { minutesUsed: { decrement: minutes } },
-  });
-  // Clamp to 0 if decrement went negative (SQLite allows negative floats)
-  await prisma.user.updateMany({
-    where: { id: userId, minutesUsed: { lt: 0 } },
-    data: { minutesUsed: 0 },
-  });
+  await prisma.$executeRaw`UPDATE "User" SET "minutesUsed" = MAX(0, "minutesUsed" - ${minutes}) WHERE "id" = ${userId}`;
 }
