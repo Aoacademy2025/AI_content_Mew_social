@@ -119,12 +119,6 @@ async function main() {
   assert(typeof overCheck.message === "string" && overCheck.message.includes("นาที"), "over-quota: message includes Thai 'นาที'");
   assert(overCheck.remaining === 0, "over-quota: remaining = 0");
 
-  // ── Task-3: managed vs BYOK metering branch logic ────────────────────────
-  // This tests the pure decision: should_meter = (mode === "managed")
-  function shouldMeter(mode: "managed" | "byok"): boolean { return mode === "managed"; }
-  assert(shouldMeter("managed") === true,  "metering branch: managed mode → meter=true");
-  assert(shouldMeter("byok")    === false, "metering branch: byok mode → meter=false");
-
   await prisma.user.deleteMany();
   await prisma.$disconnect();
   console.log(`\n✅ ALL ${passed} MINUTE-METER CHECKS PASSED`);

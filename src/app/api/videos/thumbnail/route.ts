@@ -9,10 +9,6 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 export const maxDuration = 120;
 export const runtime = "nodejs";
 
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
-
 async function getFfmpegPath(): Promise<string> {
   try {
     const installer = await import(

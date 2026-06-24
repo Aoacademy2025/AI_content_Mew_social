@@ -312,14 +312,6 @@ export async function POST(req: Request) {
       throw e;
     }
 
-    // Fail-fast minute quota check — only for managed-key users
-    if (geminiMode === "managed") {
-      const quota = await checkMinuteQuota(authUser.id);
-      if (!quota.allowed) {
-        return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
-      }
-    }
-
     if (preview === true) {
       const previewText = normalizeVoicePreviewText(text);
       const cache = getVoicePreviewCachePath({
@@ -341,6 +333,14 @@ export async function POST(req: Request) {
         preview: true,
         cached: false,
       });
+    }
+
+    // Fail-fast minute quota check — only for managed-key users on the real-render path
+    if (geminiMode === "managed") {
+      const quota = await checkMinuteQuota(authUser.id);
+      if (!quota.allowed) {
+        return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
+      }
     }
 
     // IRON RULE: fullText is the one string both TTS and subtitles see.
@@ -428,10 +428,10 @@ export async function POST(req: Request) {
     }
 
     // ---- Success: concat PCM, write one WAV, return exact timing ----
-    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
-    // Reserve minutes AFTER audio is produced (managed users only)
+    // Reserve minutes BEFORE writing the WAV (managed users only) — avoids orphaned
+    // files on disk when a quota race loses after audio is already produced.
     if (geminiMode === "managed") {
       const minutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
       const reserved = await reserveMinutes(authUser.id, minutes);
@@ -439,6 +439,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
       }
     }
+    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
     console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
     return NextResponse.json({

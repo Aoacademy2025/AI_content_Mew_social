@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import {
   contentProfilePromptBlock,
   detectContentProfile,
@@ -14,10 +15,6 @@ import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
-
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 function preprocessScript(raw: string): string {
   return raw
@@ -254,14 +251,21 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { geminiKey: true },
+    select: { geminiKey: true, plan: true },
   });
-
-  const apiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
-  if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
+  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  let apiKey: string;
+  try {
+    apiKey = resolveGeminiKey(user).key;
+  } catch (e) {
+    if (e instanceof KeyRequiredError) {
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+    }
+    throw e;
+  }
 
   async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
-    return await geminiGenerateText(apiKey!, prompt, maxTokens);
+    return await geminiGenerateText(apiKey, prompt, maxTokens);
   }
 
   function geminiErrorResponse(error: unknown) {
