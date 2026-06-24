@@ -83,11 +83,26 @@ function lineHasInlineSpaces(s: string): boolean {
   return /[^\S\r\n]/.test(s);
 }
 
+// Bounded cache: tokenization is frame-invariant, but tokenLines runs once per caption
+// PER FRAME for karaoke/highlight (60×/s in preview; every frame at render). Cache by text
+// so the ICU word-segmentation runs once per distinct caption instead of once per frame.
+// The result is treated as read-only by all callers, so sharing the reference is safe.
+const tokenLinesCache = new Map<string, TokenLine[]>();
+const TOKEN_LINES_CACHE_MAX = 256;
+
 function tokenLines(text: string): TokenLine[] {
-  return splitManualLines(text).map((line) => ({
+  const cached = tokenLinesCache.get(text);
+  if (cached) return cached;
+  const result = splitManualLines(text).map((line) => ({
     tokens: segmentWords(line),
     hasInlineSpaces: lineHasInlineSpaces(line),
   }));
+  if (tokenLinesCache.size >= TOKEN_LINES_CACHE_MAX) {
+    const oldest = tokenLinesCache.keys().next().value; // Map preserves insertion order
+    if (oldest !== undefined) tokenLinesCache.delete(oldest);
+  }
+  tokenLinesCache.set(text, result);
+  return result;
 }
 
 function activeTokenIndex(lines: TokenLine[], frame: number, captionDurFrames: number): number {
