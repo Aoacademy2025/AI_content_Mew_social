@@ -6,6 +6,7 @@ import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
 import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   splitScriptForTts,
   mergeSegmentTiming,
@@ -312,6 +313,14 @@ export async function POST(req: Request) {
       throw e;
     }
 
+    // Telemetry: key mode adoption (fire-and-forget — must not block or throw)
+    recordTelemetryEvent(authUser.id, {
+      name: "gemini_key_mode",
+      category: "product",
+      source: "server",
+      properties: { mode: geminiMode, plan: user.plan },
+    }).catch(() => {});
+
     if (preview === true) {
       const previewText = normalizeVoicePreviewText(text);
       const cache = getVoicePreviewCachePath({
@@ -419,6 +428,13 @@ export async function POST(req: Request) {
         if (!reserved.allowed) {
           return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
         }
+        // Telemetry: minute burn (fire-and-forget)
+        recordTelemetryEvent(authUser.id, {
+          name: "minute_reserve",
+          category: "product",
+          source: "server",
+          properties: { minutes, remaining: reserved.remaining, plan: user.plan },
+        }).catch(() => {});
       }
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
@@ -438,6 +454,13 @@ export async function POST(req: Request) {
       if (!reserved.allowed) {
         return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
       }
+      // Telemetry: minute burn (fire-and-forget)
+      recordTelemetryEvent(authUser.id, {
+        name: "minute_reserve",
+        category: "product",
+        source: "server",
+        properties: { minutes, remaining: reserved.remaining, plan: user.plan },
+      }).catch(() => {});
     }
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
