@@ -6,6 +6,7 @@ import { auth } from "@clerk/nextjs/server";
 import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -141,7 +142,8 @@ const handler = createMcpHandler(
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
-          if (!u.geminiKey) return missingKeyError("gemini");
+          try { resolveGeminiKey(u); }
+          catch (e) { if (e instanceof KeyRequiredError) return missingKeyError("gemini"); throw e; }
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
           const avatar = resolveAvatarRequest(
             { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -1238,7 +1239,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true },
+    select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
   });
 
   // AI Image-to-Video (kie.ai) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
@@ -1301,7 +1302,11 @@ export async function POST(req: Request) {
     console.log("[fetch-stock] Pixabay requested but key missing; continuing with Pexels only");
   }
 
-  const llmKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
+  let llmKey: string | null = null;
+  if (user) {
+    try { llmKey = resolveGeminiKey(user).key; }
+    catch (e) { if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
+  }
 
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
