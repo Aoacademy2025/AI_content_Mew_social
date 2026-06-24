@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 type ValidatedCoupon = { code: string; type: "GRANT" | "DISCOUNT"; plan: string; percentOff: number | null; discountDuration: string | null; durationDays: number };
 
-export function CouponBox({ onDiscountApplied }: { onDiscountApplied?: (c: ValidatedCoupon) => void } = {}) {
+export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountApplied?: (c: ValidatedCoupon) => void; variant?: "card" | "inline" } = {}) {
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -42,6 +42,31 @@ export function CouponBox({ onDiscountApplied }: { onDiscountApplied?: (c: Valid
     } finally {
       setLoading(false);
     }
+  }
+
+  // Compact inline variant (e.g. on the lean pricing page) — matches the violet CI.
+  if (variant === "inline") {
+    return (
+      <div className="flex w-full gap-2">
+        <input
+          type="text"
+          placeholder="กรอกโค้ดส่วนลด"
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase())}
+          onKeyDown={(e) => e.key === "Enter" && redeem()}
+          className="h-11 flex-1 rounded-full border border-white/12 bg-white/5 px-4 text-sm font-mono uppercase tracking-wider text-white outline-none transition placeholder:font-sans placeholder:tracking-normal placeholder:text-white/35 focus:border-violet-400/50 focus:ring-2 focus:ring-violet-500/25"
+          autoFocus
+        />
+        <button
+          onClick={redeem}
+          disabled={loading || !code.trim()}
+          className="inline-flex h-11 items-center gap-1.5 rounded-full px-6 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ background: "linear-gradient(120deg,#8b5cf6,#a78bfa)", boxShadow: "0 0 24px rgba(139,92,246,.4)" }}
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "ใช้โค้ด"}
+        </button>
+      </div>
+    );
   }
 
   return (

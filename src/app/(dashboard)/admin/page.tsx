@@ -121,6 +121,7 @@ function recommendationLabel(value: SupportRecommendation | null) {
 // ── PlanEditor: visual feature list editor ────────────────────────────────
 function PlanEditor({
   label, accent, icon, price, onPriceChange, features, onFeaturesChange,
+  name, onNameChange, badge, onBadgeChange, tagline, onTaglineChange,
 }: {
   label: string;
   accent: "cyan" | "violet" | "zinc";
@@ -129,6 +130,12 @@ function PlanEditor({
   onPriceChange: (v: string) => void;
   features: string;
   onFeaturesChange: (v: string) => void;
+  name: string;
+  onNameChange: (v: string) => void;
+  badge: string;
+  onBadgeChange: (v: string) => void;
+  tagline: string;
+  onTaglineChange: (v: string) => void;
 }) {
   const items = features.split("|").map(f => f.trim()).filter(Boolean);
   const [newFeature, setNewFeature] = useState("");
@@ -188,6 +195,40 @@ function PlanEditor({
         <span className={`text-sm font-semibold ${accentText}`}>{label} Plan</span>
         {accent === "cyan" && <span className="ml-auto text-xs text-zinc-500">แนะนำ</span>}
         {accent === "zinc" && <span className="ml-auto text-xs text-zinc-500">เริ่มต้น</span>}
+      </div>
+
+      {/* Name / Badge / Tagline */}
+      <div className="space-y-2">
+        <label className="block space-y-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ชื่อแผน (Name)</span>
+          <input
+            type="text"
+            value={name}
+            onChange={e => onNameChange(e.target.value)}
+            placeholder={label}
+            className={`w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-sm text-white placeholder-zinc-600 outline-none ${focusBorder}`}
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">ป้าย (Badge)</span>
+          <input
+            type="text"
+            value={badge}
+            onChange={e => onBadgeChange(e.target.value)}
+            placeholder="ไม่มีป้าย"
+            className={`w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-sm text-white placeholder-zinc-600 outline-none ${focusBorder}`}
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">คำโปรย (Tagline)</span>
+          <input
+            type="text"
+            value={tagline}
+            onChange={e => onTaglineChange(e.target.value)}
+            placeholder="คำโปรยสั้นๆ..."
+            className={`w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-sm text-white placeholder-zinc-600 outline-none ${focusBorder}`}
+          />
+        </label>
       </div>
 
       {/* Price */}
@@ -295,6 +336,16 @@ export default function AdminDashboardPage() {
   const [planProFeatures, setPlanProFeatures] = useState("100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน|ความยาววิดีโอสูงสุด 6 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 7 วัน|รองรับ Avatar ทุกรูปแบบ รวมถึง HeyGen|Text-to-Speech ครบทุกผู้ให้บริการ (ElevenLabs, Gemini, HeyGen)|เลือกใช้ Font ได้ครบทุก Style|ลบพื้นหลังอัตโนมัติด้วย AI (Background Removal)|เพิ่มเพลงประกอบวิดีโอ|ปรับแต่ง Subtitle Style ได้ทุกรูปแบบ|Video Editor ขั้นสูงครบฟีเจอร์|สร้างคอนเทนต์ด้วย AI ไม่จำกัดจำนวน|Support ทาง Email — ทีมงานตอบสนองภายใน 48 ชั่วโมง");
   const [planBusinessPrice, setPlanBusinessPrice] = useState("990");
   const [planBusinessFeatures, setPlanBusinessFeatures] = useState("300 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน|ความยาววิดีโอสูงสุด 10 นาทีต่อคลิป|จัดเก็บวิดีโอบนระบบนาน 14 วัน|รองรับ Avatar ทุกรูปแบบ รวมถึง HeyGen|Text-to-Speech ครบทุกผู้ให้บริการ (ElevenLabs, Gemini, HeyGen)|เลือกใช้ Font ได้ครบทุก Style|ลบพื้นหลังอัตโนมัติด้วย AI (Background Removal)|เพิ่มเพลงประกอบวิดีโอ|ปรับแต่ง Subtitle Style ได้ทุกรูปแบบ|Video Editor ขั้นสูงครบฟีเจอร์|สร้างคอนเทนต์ด้วย AI ไม่จำกัดจำนวน|Priority Support — ทีมงานตอบสนองภายใน 24 ชั่วโมง|เหมาะสำหรับทีมงานและองค์กรธุรกิจ");
+  // Plan presentation (name / badge / tagline) — badge empty = no badge
+  const [planFreeName, setPlanFreeName] = useState("");
+  const [planProName, setPlanProName] = useState("");
+  const [planBusinessName, setPlanBusinessName] = useState("");
+  const [planFreeBadge, setPlanFreeBadge] = useState("");
+  const [planProBadge, setPlanProBadge] = useState("");
+  const [planBusinessBadge, setPlanBusinessBadge] = useState("");
+  const [planFreeTagline, setPlanFreeTagline] = useState("");
+  const [planProTagline, setPlanProTagline] = useState("");
+  const [planBusinessTagline, setPlanBusinessTagline] = useState("");
   const [savingPlans, setSavingPlans] = useState(false);
 
   async function loadSettings() {
@@ -313,6 +364,16 @@ export default function AdminDashboardPage() {
       if (d.plan_pro_features) setPlanProFeatures(d.plan_pro_features);
       if (d.plan_business_price) setPlanBusinessPrice(d.plan_business_price);
       if (d.plan_business_features) setPlanBusinessFeatures(d.plan_business_features);
+      // Plan presentation — read raw (empty badge is valid = no badge)
+      if (typeof d.plan_free_name === "string") setPlanFreeName(d.plan_free_name);
+      if (typeof d.plan_pro_name === "string") setPlanProName(d.plan_pro_name);
+      if (typeof d.plan_business_name === "string") setPlanBusinessName(d.plan_business_name);
+      if (typeof d.plan_free_badge === "string") setPlanFreeBadge(d.plan_free_badge);
+      if (typeof d.plan_pro_badge === "string") setPlanProBadge(d.plan_pro_badge);
+      if (typeof d.plan_business_badge === "string") setPlanBusinessBadge(d.plan_business_badge);
+      if (typeof d.plan_free_tagline === "string") setPlanFreeTagline(d.plan_free_tagline);
+      if (typeof d.plan_pro_tagline === "string") setPlanProTagline(d.plan_pro_tagline);
+      if (typeof d.plan_business_tagline === "string") setPlanBusinessTagline(d.plan_business_tagline);
       if (d.server_gemini_key) setServerGeminiKey(d.server_gemini_key);
     } catch {}
   }
@@ -379,6 +440,15 @@ export default function AdminDashboardPage() {
           plan_pro_features: planProFeatures,
           plan_business_price: planBusinessPrice,
           plan_business_features: planBusinessFeatures,
+          plan_free_name: planFreeName,
+          plan_pro_name: planProName,
+          plan_business_name: planBusinessName,
+          plan_free_badge: planFreeBadge,
+          plan_pro_badge: planProBadge,
+          plan_business_badge: planBusinessBadge,
+          plan_free_tagline: planFreeTagline,
+          plan_pro_tagline: planProTagline,
+          plan_business_tagline: planBusinessTagline,
         }),
       });
       if (res.ok) toast.success("บันทึก Plan Settings แล้ว");
@@ -1350,6 +1420,12 @@ export default function AdminDashboardPage() {
               onPriceChange={setPlanFreePrice}
               features={planFreeFeatures}
               onFeaturesChange={setPlanFreeFeatures}
+              name={planFreeName}
+              onNameChange={setPlanFreeName}
+              badge={planFreeBadge}
+              onBadgeChange={setPlanFreeBadge}
+              tagline={planFreeTagline}
+              onTaglineChange={setPlanFreeTagline}
             />
             {/* ── Pro Plan Card ── */}
             <PlanEditor
@@ -1360,6 +1436,12 @@ export default function AdminDashboardPage() {
               onPriceChange={setPlanProPrice}
               features={planProFeatures}
               onFeaturesChange={setPlanProFeatures}
+              name={planProName}
+              onNameChange={setPlanProName}
+              badge={planProBadge}
+              onBadgeChange={setPlanProBadge}
+              tagline={planProTagline}
+              onTaglineChange={setPlanProTagline}
             />
             {/* ── Business Plan Card ── */}
             <PlanEditor
@@ -1370,6 +1452,12 @@ export default function AdminDashboardPage() {
               onPriceChange={setPlanBusinessPrice}
               features={planBusinessFeatures}
               onFeaturesChange={setPlanBusinessFeatures}
+              name={planBusinessName}
+              onNameChange={setPlanBusinessName}
+              badge={planBusinessBadge}
+              onBadgeChange={setPlanBusinessBadge}
+              tagline={planBusinessTagline}
+              onTaglineChange={setPlanBusinessTagline}
             />
           </div>
 

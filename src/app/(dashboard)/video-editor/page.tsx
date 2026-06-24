@@ -45,6 +45,12 @@ import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
+import { targetCadenceSec } from "@/lib/broll-even-split";
+import { buildBrollWindows } from "@/lib/broll-windows";
+
+// Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
+const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
+const BROLL_WINDOW_SEC = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
 import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
@@ -1378,7 +1384,15 @@ export default function VideoEditorPage() {
       // caption gets its own visual moment — otherwise the LLM-split script ignores audio pacing.
       // Falls back to line-split for first run before transcribe.
       const existingCaps = captionsRef.current ?? [];
-      const sc = existingCaps.length > 0
+      // WINDOW MODE: group captions into ~3–4s windows; extract ONE keyword per window
+      // (from the window's combined text) so each window's b-roll relates to its content.
+      const windows = BROLL_WINDOW_MODE && existingCaps.length > 0
+        ? buildBrollWindows(existingCaps.map(c => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), BROLL_WINDOW_SEC)
+        : [];
+      pipe.current.brollWindows = windows.length > 0 ? windows : undefined;
+      const sc = windows.length > 0
+        ? windows.map(w => w.text)
+        : existingCaps.length > 0
         ? existingCaps.map(c => c.text)
         : splitScenes(script);
       pipe.current.scenes = sc;
@@ -1405,6 +1419,14 @@ export default function VideoEditorPage() {
       const kws: string[] = data.keywords ?? [];
       if (kws.length === 0) {
         throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+      }
+      // WINDOW MODE: keep keywords and windows strictly 1:1 (extract-keywords returns
+      // ~1/scene; guard so fetch count and window placement stay aligned).
+      if (windows.length > 0 && kws.length !== windows.length) {
+        const m = Math.min(kws.length, windows.length);
+        pipe.current.brollWindows = windows.slice(0, m);
+        kws.length = m;
+        console.log(`[runKeywords] window-mode: aligned keywords↔windows to ${m}`);
       }
       pipe.current.keywords = kws;
       pipe.current.keywordAlternatives = data.keywordAlternatives ?? [];
@@ -1433,6 +1455,9 @@ export default function VideoEditorPage() {
     const caps = pipe.current.sceneCaptions ?? [];
     const captionClipLimit = caps.length > 0 && kws.length > 0 ? Math.min(caps.length, kws.length) : 0;
     const perSubtitleClipCount = caps.length > 0 && caps.length === kws.length ? caps.length : 0;
+    // WINDOW MODE: keywords are already 1-per-window; fetch exactly that many (one asset
+    // per window). The window unit drives the count — no per-caption fetch/over-fetch.
+    const windowCount = pipe.current.brollWindows?.length ?? 0;
     const res = await fetch("/api/videos/fetch-stock", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1442,8 +1467,10 @@ export default function VideoEditorPage() {
         ...ensurePipelineRunTelemetry("fetchStock"),
         fullScript: scriptOverride.trim() || script,
         preferredLLM: preferredLLMRef.current,
-        // กำหนดเองชนะ per-subtitle: ได้คลิปตามจำนวนที่ตั้ง แล้ว config แบ่งเวลาเท่าๆ กัน
-        ...(targetClipCount > 0
+        // window mode wins: one asset per window. กำหนดเองชนะ per-subtitle รองลงมา.
+        ...(windowCount > 0
+          ? { overrideClipCount: windowCount, perSubtitleMode: true, brollWindowMode: true }
+          : targetClipCount > 0
           ? { overrideClipCount: targetClipCount }
           : perSubtitleClipCount > 0
           ? { overrideClipCount: perSubtitleClipCount, perSubtitleMode: true }
@@ -1470,7 +1497,9 @@ export default function VideoEditorPage() {
     let sv = svRaw;
     // กำหนดจำนวนคลิปเอง (targetClipCount > 0): เก็บคลิปครบตามที่ได้ — ห้าม trim ตาม
     // caption count (script 1 ซับ แต่ B-roll=2 ต้องได้ 2 รูป ไม่ใช่ตัดเหลือ 1)
-    if (targetClipCount > 0) {
+    if (windowCount > 0) {
+      console.log(`[runFetchStock] window-mode: keep all ${svRaw.length} clips (1 per window, no per-caption trim)`);
+    } else if (targetClipCount > 0) {
       console.log(`[runFetchStock] manual clip count=${targetClipCount}: keep all ${svRaw.length} clips (skip per-subtitle trim)`);
     } else if (caps.length > 0 && svRaw.length > 0) {
       if (svRaw.length >= caps.length) {
@@ -1848,10 +1877,16 @@ export default function VideoEditorPage() {
     let svForConfig = sv;
     let sceneClipCountsForConfig = pipe.current.sceneClipCounts ?? [];
     const capN = configCaptions.length;
+    const cfgWindowCount = pipe.current.brollWindows?.length ?? 0;
     // กำหนดจำนวนคลิปเอง (targetClipCount > 0): ห้าม force per-subtitle —
     // ส่งคลิปตามจำนวนที่ตั้งไป generate-config ตรงๆ ให้มันทำ even-split แบ่ง
     // เวลาเท่าๆ กัน (ไม่งั้น 2 คลิปถูก cycle เป็น 64 ช่วง = ดูเหมือนคลิปเดียววน)
-    if (targetClipCount > 0) {
+    if (cfgWindowCount > 0) {
+      // WINDOW MODE: one clip per window already; generate-config places each over its
+      // window span (brollWindows below). No per-caption cycling, no sceneClipCounts.
+      console.log(`[runConfig] window-mode: ${sv.length} clips over ${cfgWindowCount} windows (skip per-subtitle cycle)`);
+      sceneClipCountsForConfig = [];
+    } else if (targetClipCount > 0) {
       console.log(`[runConfig] manual clip count=${targetClipCount}: even-split ${sv.length} clips (skip per-subtitle)`);
       // sceneClipCounts ว่าง → generate-config ใช้ n (=stockVideos.length) เป็น clipCountHint → even-split
       sceneClipCountsForConfig = [];
@@ -1881,6 +1916,15 @@ export default function VideoEditorPage() {
         scenes: pipe.current.scenes ?? [], keywordsPerScene: pipe.current.keywordsPerScene ?? 5,
         sceneClipCounts: sceneClipCountsForConfig, sceneDurations: pipe.current.sceneDurations ?? [],
         preferredLLM: preferredLLMRef.current,
+        // WINDOW MODE: send window spans so generate-config places one clip per window.
+        ...(cfgWindowCount > 0
+          ? { brollWindows: (pipe.current.brollWindows ?? []).map(w => ({ startMs: w.startMs, endMs: w.endMs })) }
+          : {}),
+        // AI-gen / auto-mix: hold the small cost-capped pool ~3–5s per clip instead of
+        // cutting on every caption (no strobe). Normal video stock sends nothing → legacy.
+        ...(cfgWindowCount === 0 && (stockSource === "auto-mix" || stockSource === "kie-image")
+          ? { minHoldSec: targetCadenceSec((audioDurationMs ?? 0) / 1000) }
+          : {}),
       }),
     });
     const data = await res.json();

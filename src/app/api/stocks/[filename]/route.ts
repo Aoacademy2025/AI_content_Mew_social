@@ -36,9 +36,9 @@ function streamBody(stream: fs.ReadStream) {
   return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 }
 
-function baseHeaders(total: number) {
+function baseHeaders(total: number, contentType: string = "video/mp4") {
   return {
-    "Content-Type": "video/mp4",
+    "Content-Type": contentType,
     "Content-Length": String(total),
     "Accept-Ranges": "bytes",
     "Cache-Control": "public, max-age=86400",
@@ -77,9 +77,13 @@ export async function HEAD(
   const resolved = resolveStockFile(filename);
   if ("error" in resolved) return resolved.error;
 
+  // kie.ai Ken Burns pipeline เก็บภาพ source (.jpg/.png) ไว้ใน stocks/ → ต้อง Content-Type ตรงชนิดไฟล์
+  const ext = path.extname(filename).toLowerCase();
+  const contentType = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "video/mp4";
+
   return new NextResponse(null, {
     status: 200,
-    headers: baseHeaders(resolved.total),
+    headers: baseHeaders(resolved.total, contentType),
   });
 }
 
@@ -90,6 +94,10 @@ export async function GET(
   const { filename } = await params;
   const resolved = resolveStockFile(filename);
   if ("error" in resolved) return resolved.error;
+
+  // kie.ai Ken Burns pipeline เก็บภาพ source (.jpg/.png) ไว้ใน stocks/ → ต้อง Content-Type ตรงชนิดไฟล์
+  const ext = path.extname(filename).toLowerCase();
+  const contentType = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : "video/mp4";
 
   const rangeHeader = req.headers.get("range");
 
@@ -108,7 +116,7 @@ export async function GET(
     return new NextResponse(streamBody(fs.createReadStream(resolved.filePath, { start, end })), {
       status: 206,
       headers: {
-        "Content-Type": "video/mp4",
+        "Content-Type": contentType,
         "Content-Range": `bytes ${start}-${end}/${resolved.total}`,
         "Content-Length": String(chunkSize),
         "Accept-Ranges": "bytes",
@@ -120,6 +128,6 @@ export async function GET(
 
   return new NextResponse(streamBody(fs.createReadStream(resolved.filePath)), {
     status: 200,
-    headers: baseHeaders(resolved.total),
+    headers: baseHeaders(resolved.total, contentType),
   });
 }

@@ -108,6 +108,7 @@ export interface PipelineData {
   voiceUrl:               string;
   captions:               Caption[];
   sceneCaptions:          Caption[];
+  brollWindows?:          import("@/lib/broll-windows").BrollWindow[];  // window-mode b-roll (flag-gated)
   words:                  { word: string; startMs: number; endMs: number }[];
   audioDurationMs:        number;
   config:                 unknown;

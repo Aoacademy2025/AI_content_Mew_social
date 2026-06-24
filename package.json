@@ -15,6 +15,11 @@
     "verify:clip-charge": "tsx scripts/verify-clip-charge.ts",
     "verify:loanword-miner": "tsx scripts/verify-loanword-miner.ts",
     "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
+    "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
+    "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
+    "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
+    "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
+    "verify:subtitle-invariant": "tsx scripts/verify-subtitle-invariant.ts",
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
   },
   "prisma": {
@@ -63,6 +68,7 @@
     "googleapis": "^171.4.0",
     "lucide-react": "^0.564.0",
     "mcp-handler": "^1.1.0",
+    "motion": "^12.40.0",
     "next": "^15.3.9",
     "next-auth": "^4.24.13",
     "next-themes": "^0.4.6",

@@ -17,6 +17,16 @@ const KEYS = [
   "plan_pro_features",
   "plan_business_price",
   "plan_business_features",
+  // Plan presentation (name / badge / tagline) — edited by admin, no env fallback
+  "plan_free_name",
+  "plan_pro_name",
+  "plan_business_name",
+  "plan_free_badge",
+  "plan_pro_badge",
+  "plan_business_badge",
+  "plan_free_tagline",
+  "plan_pro_tagline",
+  "plan_business_tagline",
   // Server-owned (platform) API key for internal automation — NOT a user's BYOK
   // key. Used by the loanword miner cron + other server-side Gemini calls.
   "server_gemini_key",

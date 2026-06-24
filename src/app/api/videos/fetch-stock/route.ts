@@ -21,6 +21,9 @@ import {
   type RelevanceSpec,
   type RelevanceTerms,
 } from "@/lib/relevance-spec";
+import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
+import { aiGenPieceCount } from "@/lib/broll-even-split";
+import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -821,21 +824,21 @@ async function applyKenBurns(imagePath: string, outPath: string): Promise<void> 
 // Generate 1 image (text-to-image, model เลือกได้) จาก keyword/subtitle แล้ว
 // แปลงเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg pan/zoom, ~5s) แทน Kling.
 async function generateKieImageKenBurns(
-  query: string,
+  prompt: string,
+  label: string,
   token: string,
   model: KieImageModel,
   imagePath: string,
   outPath: string,
 ): Promise<{ duration: number; imageUrl: string }> {
-  const prompt = `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`;
   const imageTaskId = await kieCreateTask(model, buildKieImageInput(model, prompt), token);
   const imageUrl = await kiePollResult(imageTaskId, token);
-  console.log(`[fetch-stock] kie image ready for "${query}": ${imageUrl.slice(0, 80)}`);
+  console.log(`[fetch-stock] kie image ready for "${label}": ${imageUrl.slice(0, 80)}`);
 
   await downloadAndCrop(imageUrl, imagePath);
-  console.log(`[fetch-stock] kie cropped "${query}" → ${imagePath.split(/[/\\]/).pop()}`);
+  console.log(`[fetch-stock] kie cropped "${label}" → ${imagePath.split(/[/\\]/).pop()}`);
   await applyKenBurns(imagePath, outPath);
-  console.log(`[fetch-stock] kie Ken Burns done "${query}" → ${outPath.split(/[/\\]/).pop()}`);
+  console.log(`[fetch-stock] kie Ken Burns done "${label}" → ${outPath.split(/[/\\]/).pop()}`);
 
   return { duration: KEN_BURNS_DURATION_SEC, imageUrl };
 }
@@ -1173,6 +1176,7 @@ export async function POST(req: Request) {
     autoMixProviders,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
+    brollWindowMode = false,
     fullScript,
     visualDirection,
     contentProfile,
@@ -1190,6 +1194,7 @@ export async function POST(req: Request) {
     autoMixProviders?: string[];
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
+    brollWindowMode?: boolean;
     fullScript?: string;
     visualDirection?: string;
     contentProfile?: string;
@@ -1197,14 +1202,14 @@ export async function POST(req: Request) {
     pipelineRunId?: string;
     draftId?: string;
   } = body ?? {};
-  // Auto Mix: ผู้ใช้เลือกได้ว่าจะเปิด provider ภาพ fallback ตัวไหนบ้าง (undefined = ทุกตัว, ตาม default เดิม)
-  const allowedAutoMixProviders: Set<string> | null = Array.isArray(autoMixProviders) ? new Set(autoMixProviders) : null;
   const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
     ? pipelineRunId.trim().slice(0, 120)
     : null;
   const telemetryDraftId = typeof draftId === "string" && draftId.trim()
     ? draftId.trim().slice(0, 120)
     : null;
+  // Auto Mix: ผู้ใช้เลือกได้ว่าจะเปิด provider ภาพ fallback ตัวไหนบ้าง (undefined = ทุกตัว, ตาม default เดิม)
+  const allowedAutoMixProviders: Set<string> | null = Array.isArray(autoMixProviders) ? new Set(autoMixProviders) : null;
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
       fullScript,
@@ -1298,14 +1303,6 @@ export async function POST(req: Request) {
 
   const llmKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
 
-  function avgCutSec(dur: number): number {
-    if (dur <= 10) return 5;
-    if (dur <= 20) return 4;
-    if (dur <= 40) return 3.5;
-    return 2.5;
-  }
-  void avgCutSec; // used for future adaptive logic
-
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
   const autoClipsNeeded = totalDurationSec > 0
@@ -1330,6 +1327,40 @@ export async function POST(req: Request) {
     : 1;
 
   console.log(`[fetch-stock] duration=${totalDurationSec}s need=${totalClipsNeeded} clips${overrideClipCount > 0 ? " (manual)" : " (auto)"}, limit=${downloadClipLimit}, ${clipsPerKeyword}/keyword over ${keywords.length} keywords${isPerSubtitleMode ? " (per-subtitle)" : ""}`);
+
+  // ── Auto Mix source plan ──────────────────────────────────────────────────
+  // Pre-assign each b-roll PIECE a source (video / free photo / paid AI) by weight so
+  // the result is a real, interleaved mix — NOT "all video, image only where video is
+  // missing" (the old video-first-fallback that collapsed to 100% video). Piece count is
+  // cadence-capped (21s → ~6) so we never pay for one AI image per caption. Default
+  // weight video:photo:ai = 3:2:1 (env-tunable AUTOMIX_WEIGHT_*); only providers the user
+  // actually enabled (key present + checked) get a non-zero weight. Active only for
+  // stockSource=auto-mix; every other mode is untouched.
+  const autoMixActiveVideo = new Set<number>();   // ki → fetch a real video clip
+  const autoMixPhotoSlots = new Set<number>();    // ki → free-photo provider (Ken Burns)
+  const autoMixAiSlots = new Set<number>();       // ki → kie.ai generated image (paid)
+  if (useAutoMix) {
+    const anyPhotoUsable =
+      canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback ||
+      canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback;
+    const weights = {
+      video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
+      photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
+      ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
+    };
+    const pieceCount = brollWindowMode
+      ? keywords.length
+      : aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
+    const activeIdx = pickEvenIndices(keywords.length, pieceCount);
+    const plan = planAutoMixSources(activeIdx.length, weights);
+    activeIdx.forEach((ki, j) => {
+      const src = plan[j] ?? "video";
+      if (src === "ai") autoMixAiSlots.add(ki);
+      else if (src === "photo") autoMixPhotoSlots.add(ki);
+      else autoMixActiveVideo.add(ki);
+    });
+    console.log(`[fetch-stock] Auto Mix plan: ${pieceCount} pieces over ${keywords.length} kw → ${autoMixActiveVideo.size} video / ${autoMixPhotoSlots.size} photo / ${autoMixAiSlots.size} ai (weights v${weights.video}:p${weights.photo}:a${weights.ai})`);
+  }
 
   const rendersDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(rendersDir, { recursive: true });
@@ -1456,7 +1487,17 @@ export async function POST(req: Request) {
   // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────
   // ไม่มี "candidate pool" ให้ค้นหา — generate ภาพ 1 ภาพ/keyword แล้วทำ Ken Burns (ffmpeg pan/zoom)
   if (canUseKieImage) {
-    const clipsToGenerate = Math.min(keywords.length, downloadClipLimit, PER_SUBTITLE_DOWNLOAD_LIMIT);
+    // Cost cap: on the per-subtitle AUTO path, pay for ~ceil(duration/cadence) images
+    // (e.g. 21s → ~6), NOT one per caption. Manual clip counts (overrideClipCount set by
+    // the user, perSubtitleMode false) bypass the cadence cap via isAuto=false.
+    const clipsToGenerate = brollWindowMode
+      ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
+      : aiGenPieceCount(
+          totalDurationSec,
+          Math.min(keywords.length, downloadClipLimit),
+          isPerSubtitleMode,
+          PER_SUBTITLE_DOWNLOAD_LIMIT,
+        );
     console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
@@ -1472,7 +1513,8 @@ export async function POST(req: Request) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+              const genPrompt = buildKieImagePrompt(keyword, { visualDirection, terms: relTerms });
+              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieKey!, resolvedKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
                 return;
@@ -1484,15 +1526,16 @@ export async function POST(req: Request) {
                 keyword, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
+                assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
             } catch (e) {
               stockTelemetry.downloadFailCount++;
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, `${query}, cinematic photo, vertical 9:16, high detail, no text, no watermark`), kieKey!);
+            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, buildKieImagePrompt(keyword, { visualDirection, terms: relTerms })), kieKey!);
             const imageUrl = await kiePollResult(imageTaskId, kieKey!);
-            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl });
+            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
           }
         } catch (e) {
           stockTelemetry.noCandidateKeywords++;
@@ -1788,6 +1831,11 @@ export async function POST(req: Request) {
   const found: FoundVideo[] = [];
 
   for (let ki = 0; ki < keywords.length; ki++) {
+    // Auto Mix: only the planned VIDEO slots fetch a real video clip. Photo/AI slots and
+    // unselected captions are handled by the image-fallback loop below (or skipped), so
+    // the mix isn't drowned out by per-caption video backfill. Other modes never skip.
+    if (useAutoMix && !autoMixActiveVideo.has(ki)) continue;
+
     const candidates = candidatesByKeyword[ki] ?? [];
     const keyword = keywords[ki] ?? "";
     const subtitleText = Array.isArray(subtitleTexts) ? subtitleTexts[ki] ?? "" : "";
@@ -1945,34 +1993,27 @@ export async function POST(req: Request) {
   const hasImageFallback = canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback || canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback || canUseKieFallback;
   let kieCreditExhausted = false; // ตั้งเป็น true เมื่อ kie.ai ตอบ credit หมด → แจ้งผู้ใช้ตอนได้ 0 clips
   if (download && useAutoMix && hasImageFallback) {
+    // Plan-driven: process the PHOTO and AI slots chosen up front (broll-source plan
+    // above), plus any planned VIDEO slot that found no video (graceful → a photo so the
+    // piece isn't lost). Each job carries `kind`: "ai" → kie.ai directly; "photo" → free
+    // photo providers first, then kie.ai only if nothing matched. `slot` is unique across
+    // all jobs so generated file ids never collide.
     const foundKeywords = new Set(found.map(f => f.keyword));
-    const seen = new Set<string>();
-    const allMissing = keywords
-      .map((kw, ki) => ({ kw, ki }))
-      .filter(({ kw }) => {
-        if (foundKeywords.has(kw) || seen.has(kw)) return false;
-        seen.add(kw);
-        return true;
-      });
-    // Cap จำนวนภาพ fallback ไม่ให้เกิน downloadClipLimit — สำคัญตอนข้าม video
-    // (ทุก keyword missing) ไม่งั้น generate ภาพ kie.ai ทุก keyword = เปลือง credit
-    // และเกินจำนวนที่ผู้ใช้ตั้ง (เช่น B-roll=2 ควรได้ภาพ 2 อัน ไม่ใช่ 64)
-    const remainingSlots = Math.max(0, downloadClipLimit - found.length);
-    const baseMissing = allMissing.slice(0, remainingSlots > 0 ? remainingSlots : allMissing.length);
-    // slot = ตำแหน่งใน list (ใช้ทำ id ไม่ให้ชนกัน), ki = index ของ keyword เดิม (ใช้ map subtitle)
-    let uniqueMissing = baseMissing.map((m, slot) => ({ ...m, slot }));
-    // กรณี keyword น้อยกว่าจำนวนที่ตั้ง (เช่น script สั้น 1 keyword แต่ B-roll=3):
-    // วน keyword ซ้ำให้ครบ slot — kie.ai สร้างภาพต่างกันแต่ละครั้ง แม้ query เดิม
-    // (slot ต่างกัน → id/ไฟล์ไม่ชนกัน). ทำเฉพาะตอนกำหนดจำนวนเองชัดเจน
-    if (overrideClipCount > 0 && allMissing.length > 0 && uniqueMissing.length < remainingSlots) {
-      uniqueMissing = Array.from({ length: remainingSlots }, (_, slot) => ({
-        ...allMissing[slot % allMissing.length],
-        slot,
-      }));
+    type ImageJobKind = "photo" | "ai";
+    const imageJobs: { kw: string; ki: number; slot: number; kind: ImageJobKind }[] = [];
+    let imageSlotCounter = 0;
+    const pushImageJob = (ki: number, kind: ImageJobKind) => {
+      imageJobs.push({ kw: keywords[ki] ?? "", ki, slot: imageSlotCounter++, kind });
+    };
+    for (const ki of autoMixPhotoSlots) pushImageJob(ki, "photo");
+    for (const ki of autoMixAiSlots) pushImageJob(ki, "ai");
+    for (const ki of autoMixActiveVideo) {
+      if (!foundKeywords.has(keywords[ki] ?? "")) pushImageJob(ki, "photo");
     }
 
-    if (uniqueMissing.length > 0) {
-      console.log(`[fetch-stock] Auto Mix: ${allMissing.length} keyword(s) missing video → image fallback for ${uniqueMissing.length} (limit=${downloadClipLimit}, found=${found.length})`);
+    if (imageJobs.length > 0) {
+      const aiJobCount = imageJobs.filter(j => j.kind === "ai").length;
+      console.log(`[fetch-stock] Auto Mix image jobs: ${imageJobs.length} (${aiJobCount} ai, ${imageJobs.length - aiJobCount} photo); ${found.length} video found`);
 
       const IMAGE_PROVIDER_OFFSET: Record<ImageProvider, number> = {
         unsplash: UNSPLASH_ID_OFFSET,
@@ -1984,11 +2025,13 @@ export async function POST(req: Request) {
         met: MET_ID_OFFSET,
       };
 
-      await withConcurrency(uniqueMissing, Math.min(2, DOWNLOAD_CONCURRENCY), async ({ kw, ki, slot }) => {
-        const query = subtitleTexts?.[ki] || kw;
+      await withConcurrency(imageJobs, Math.min(2, DOWNLOAD_CONCURRENCY), async ({ kw, ki, slot, kind }) => {
+        // English keyword is a better stock-search query than the raw Thai subtitle.
+        const query = kw || subtitleTexts?.[ki] || "";
 
-        // ลองตามลำดับ provider ที่ตรงกับ topic ของ query (keyword-aware routing)
-        for (const provider of getImageProviderOrder(query)) {
+        // ลองตามลำดับ provider ที่ตรงกับ topic ของ query (keyword-aware routing).
+        // AI slots skip stock search entirely → straight to the kie.ai block below.
+        if (kind === "photo") for (const provider of getImageProviderOrder(query)) {
           if (provider === "unsplash" && !canUseUnsplashFallback) continue;
           if (provider === "pexels-photo" && !canUsePexelsPhotoFallback) continue;
           if (provider === "pixabay-photo" && !canUsePixabayPhotoFallback) continue;
@@ -2030,15 +2073,19 @@ export async function POST(req: Request) {
           }
         }
 
-        // Fall back to kie.ai AI image
-        if (canUseKieFallback) {
+        // kie.ai generation — ONLY for planned "ai" slots. A "photo" slot that found no
+        // stock image is dropped (the piece is skipped) rather than silently spending a
+        // paid AI credit it wasn't budgeted for — keeps the plan's video/photo/ai cost
+        // split honest. min-hold tolerates a smaller pool, so a missing piece is fine.
+        if (kind === "ai" && canUseKieFallback) {
           const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           try {
-            const { duration, imageUrl } = await generateKieImageKenBurns(query, kieKey!, resolvedKieModel, imagePath, outPath);
+            const genPrompt = buildKieImagePrompt(kw, { visualDirection, terms: relTerms });
+            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieKey!, resolvedKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
@@ -2175,6 +2222,17 @@ export async function POST(req: Request) {
     }
   });
   stockTelemetry.downloadPhaseMs = Date.now() - downloadPhaseStartedAt;
+
+  // Auto Mix: images land in `results` first (rendered during the image loop) and videos
+  // after (downloaded later), so without sorting the timeline shows all photos/AI then all
+  // video — grouped, not mixed. Re-order by the keyword's position in the script so the
+  // planned video/photo/ai sequence is interleaved across the clip. Scoped to auto-mix.
+  if (useAutoMix) {
+    const kwIdx = new Map<string, number>();
+    keywords.forEach((kw, i) => { if (!kwIdx.has(kw)) kwIdx.set(kw, i); });
+    const kwOrder = (kw: string) => kwIdx.get(kw) ?? Number.MAX_SAFE_INTEGER;
+    results.sort((a, b) => kwOrder(a.keyword) - kwOrder(b.keyword));
+  }
 
   stockTelemetry.servedClipCount = results.length;
   await recordFetchStockTelemetry("done", { selectionDebugSample });

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Loader2, ExternalLink, ChevronDown, ChevronUp, Sparkles } from "lucide-react";
-import { KEY_TIERS, computeKeyStatus, type KeyId, type KeyDef } from "@/lib/key-tiers";
+import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
 import { fetchMe } from "@/lib/use-me";
 
@@ -19,14 +19,6 @@ interface ApiKeys {
 }
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 type TestResult = { ok: boolean; message: string } | null;
-
-// Admin-only keys (kie.ai / Unsplash / Flickr) — ยังไม่อยู่ใน KEY_TIERS ทั่วไป
-// แสดงเป็น section แยกสำหรับ admin (Auto Mix / AI Image-to-Video)
-const ADMIN_KEY_CONFIG: { id: keyof ApiKeys; keyType: KeyType; label: string; placeholder: string; description: string; link?: string }[] = [
-  { id: "kieKey",      keyType: "kie",      label: "kie.ai API Key",      placeholder: "Enter your kie.ai key",          description: "AI Image-to-Video (GPT Image + Kling) — admin only", link: "https://kie.ai/api-key" },
-  { id: "unsplashKey", keyType: "unsplash", label: "Unsplash Access Key", placeholder: "Enter your Unsplash Access Key", description: "Auto Mix fallback photo source (Ken Burns) — admin only", link: "https://unsplash.com/oauth/applications" },
-  { id: "flickrKey",   keyType: "flickr",   label: "Flickr API Key",      placeholder: "Enter your Flickr API key",      description: "Auto Mix fallback photo source — Creative Commons (Ken Burns) — admin only", link: "https://www.flickr.com/services/apps/create/apply/" },
-];
 
 const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, kie: null, unsplash: null, flickr: null };
 
@@ -77,9 +69,7 @@ export function ApiKeySettings() {
     setTestResults(prev => ({ ...prev, [keyType]: null }));
     try {
       // Save the current value for this key first so the test always reflects what's in the input
-      // (รองรับทั้ง KEY_TIERS ปกติ และ admin keys ใน ADMIN_KEY_CONFIG)
-      const field = KEY_TIERS.find((k) => k.testKeyType === keyType)?.apiKeysField
-        ?? ADMIN_KEY_CONFIG.find((c) => c.keyType === keyType)?.id;
+      const field = KEY_TIERS.find((k) => k.testKeyType === keyType)?.apiKeysField;
       if (field) {
         const putRes = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [field]: apiKeys[field] ?? "" }) });
         if (!putRes.ok) { setTestResults((prev) => ({ ...prev, [keyType]: { ok: false, message: "บันทึก key ไม่สำเร็จ ลองใหม่อีกครั้ง" } })); setTestingKey(null); return; }
@@ -219,27 +209,14 @@ export function ApiKeySettings() {
             </button>
             {advancedOpen && (<>{field("elevenlabs")}{field("heygen")}</>)}
 
-            {/* Admin-only: Auto Mix / AI Image-to-Video keys (kie.ai / Unsplash / Flickr) */}
             {isAdmin && (
               <>
-                <div className="text-xs font-semibold uppercase tracking-wide text-amber-200/70 pt-1">Admin — Auto Mix / AI Image</div>
-                {ADMIN_KEY_CONFIG.map((cfg) => (
-                  <ApiKeyField
-                    key={cfg.id}
-                    def={{
-                      id: cfg.keyType, apiKeysField: cfg.id, testKeyType: cfg.keyType,
-                      tier: "advanced", group: "stock", label: cfg.label, desc: cfg.description,
-                      getUrl: cfg.link ?? "", free: false,
-                    } as unknown as KeyDef}
-                    value={apiKeys[cfg.id] || ""}
-                    isSaved={isSet(cfg.id)}
-                    onChange={(v) => updateKey(cfg.id, v)}
-                    onTest={() => handleTestKey(cfg.keyType)}
-                    testResult={testResults[cfg.keyType]}
-                    testing={testingKey === cfg.keyType}
-                    onDelete={() => handleDelete(cfg.id)}
-                  />
-                ))}
+                <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-fuchsia-200">
+                  Admin — แหล่งภาพทดลอง (ซ่อนจาก user)
+                </div>
+                {field("kie")}
+                {field("unsplash")}
+                {field("flickr")}
               </>
             )}
           </>

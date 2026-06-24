@@ -2,6 +2,7 @@
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
+import { buildKeywordPopups } from "@/lib/keyword-popups";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -151,49 +152,8 @@ function normalizeCaptionTimeline(raw: Cap[], audioDurationMs: number, minFrameM
   return out;
 }
 
-function normalizeKeywordPopups(popups: KeywordPopupItem[], durationInFrames: number): KeywordPopupItem[] {
-  const totalFrames = Math.max(1, Math.round(Number(durationInFrames) || 1));
-  const out: KeywordPopupItem[] = [];
-  let cursor = 0;
-
-  for (const popup of popups) {
-    if (cursor >= totalFrames) break;
-    let start = Number.isFinite(Number(popup.start)) ? Math.round(Number(popup.start)) : cursor;
-    let end = Number.isFinite(Number(popup.end)) ? Math.round(Number(popup.end)) : start + 1;
-    start = Math.min(Math.max(0, start, cursor), totalFrames - 1);
-    end = Math.min(Math.max(end, start + 1), totalFrames);
-    if (end <= start) continue;
-    out.push({ ...popup, start, end });
-    cursor = end;
-  }
-
-  return out;
-}
-
-
-// Auto-scale font size down for longer phrases so they fit on one line (1080px wide, 88% usable = ~950px)
-// Thai chars ~= fontSize * 0.85 wide on average (Kanit/Leelawadee)
-// Max chars that fit on one line at baseSize: floor(950 / (baseSize * 0.85))
-function autoScaleSize(text: string, baseSize: number): number {
-  const usableWidth = 950; // 1080 * 0.88
-  const charWidthRatio = 0.85;
-  const maxCharsOneLine = Math.floor(usableWidth / (baseSize * charWidthRatio));
-  const len = text.length;
-  if (len <= maxCharsOneLine) return baseSize;
-  // Scale down proportionally so text fits in one line, minimum 60% of base
-  const scale = Math.max(0.6, maxCharsOneLine / len);
-  return Math.round(baseSize * scale);
-}
-
-function detectStyle(
-  text: string,
-  baseSize: number,
-  primaryColor: string,
-): { color: string; size: number; isHighlight: boolean } {
-  // Only auto-scale size for long text — color/highlight always come from user settings
-  const scaled = autoScaleSize(text, baseSize);
-  return { color: primaryColor, size: scaled, isHighlight: false };
-}
+// normalizeKeywordPopups / autoScaleSize / detectStyle moved to @/lib/keyword-popups
+// (pure buildKeywordPopups) so the window-mode b-roll flag can't alter subtitles.
 
 // POST /api/videos/generate-config
 export async function POST(req: Request) {
@@ -222,6 +182,8 @@ export async function POST(req: Request) {
     keywordsPerScene = 5,
     sceneClipCounts = [] as number[],
     sceneDurations = [] as number[],
+    minHoldSec: minHoldSecParam,
+    brollWindows = [] as { startMs: number; endMs: number }[],
   }: {
     sceneCaptions?: Cap[];
     stockVideos: StockVideo[];
@@ -243,6 +205,8 @@ export async function POST(req: Request) {
     keywordsPerScene?: number;
     sceneClipCounts?: number[];
     sceneDurations?: number[];
+    minHoldSec?: number;
+    brollWindows?: { startMs: number; endMs: number }[];
   } = body ?? {};
 
   const primaryColor = subtitleColor ?? "#FFFFFF";
@@ -294,27 +258,16 @@ export async function POST(req: Request) {
 
   const popupCaptions = normalizeCaptionTimeline(gapFilled, audioDurationMs, minFrameMs);
 
-  const keywordPopups: KeywordPopupItem[] = normalizeKeywordPopups(popupCaptions
-    .map((c) => {
-      const text = c.text.trim();
-      const { color, size } = detectStyle(text, subtitleSize, primaryColor);
-      const isHighlight = c.tag === "hook";
-      const singleColor = subtitleStylePreset === "karaoke-box";
-      const startFrame = Math.floor((c.startMs / 1000) * fps);
-      const endFrame = Math.max(startFrame + 1, Math.ceil((c.endMs / 1000) * fps));
-      return {
-        text,
-        start: startFrame,
-        end: endFrame,
-        color: singleColor ? color : isHighlight ? accentColor : color,
-        size,
-        isHighlight,
-        topPercent: subtitlePosition,
-        fontWeight: subtitleFontWeight,
-        tag: c.tag,
-        stylePreset: subtitleStylePreset,
-      };
-    }), durationInFrames);
+  const keywordPopups: KeywordPopupItem[] = buildKeywordPopups(popupCaptions, {
+    fps,
+    durationInFrames,
+    subtitleSize,
+    primaryColor,
+    accentColor,
+    subtitleStylePreset,
+    subtitlePosition,
+    subtitleFontWeight,
+  });
 
   // 2. Build bgVideos
   //
@@ -344,7 +297,24 @@ export async function POST(req: Request) {
     });
   }
 
-  if (validStocks.length > 0) {
+  if (validStocks.length > 0 && Array.isArray(brollWindows) && brollWindows.length > 0) {
+    // WINDOW MODE: the editor pre-grouped captions into ~3–4s windows and fetched ONE
+    // asset per window (in window order). Place each clip over its window span — no
+    // per-caption assignment, no min-hold. Subtitles (keywordPopups) are unaffected.
+    const pool = validStocks;
+    const count = Math.min(brollWindows.length, pool.length);
+    for (let wi = 0; wi < count; wi++) {
+      const win = brollWindows[wi];
+      const sv = pool[wi];
+      const src = sv.localUrl ?? sv.videoUrl;
+      if (!src) continue;
+      const start = Math.max(0, Math.min(win.startMs / 1000, audioDurationSec));
+      const end = Math.min(Math.max(win.endMs / 1000, start + 1 / fps), audioDurationSec);
+      if (end - start < 1 / fps) continue;
+      bgVideos.push({ src, start, end, clipOffset: 0, clipDuration: sv.duration > 0 ? sv.duration : 10 });
+    }
+    console.log(`[config] window-mode: ${bgVideos.length} clips over ${brollWindows.length} windows`);
+  } else if (validStocks.length > 0) {
     const n = validStocks.length;
 
     // â”€â”€ EVEN-SPLIT: divide total duration equally across all selected clips â”€â”€
@@ -383,7 +353,14 @@ export async function POST(req: Request) {
       // — fixes the "b-roll strobes ~1×/sec in dense word-modes" feel. buildMinHoldSegments
       // guarantees no segment outlives its clip (no freeze) and returns null when the
       // env is unset, in which case we keep the exact legacy 1-clip-per-caption path.
-      const minHoldSec = Math.max(0, Math.min(8, Number(process.env.STOCK_MIN_HOLD_SEC) || 0));
+      // Cadence: hold each clip ≥minHoldSec across several captions instead of cutting on
+      // every caption. The editor sends minHoldSec only for AI-gen / auto-mix (the small,
+      // cost-capped pool from B1) so normal video stock keeps the legacy 1-clip-per-caption
+      // path. STOCK_MIN_HOLD_SEC stays a global override; 0/unset = legacy. buildMinHoldSegments
+      // is freeze-safe (see verify-broll-min-hold.ts).
+      const minHoldSec = Math.max(0, Math.min(8,
+        Number(minHoldSecParam) || Number(process.env.STOCK_MIN_HOLD_SEC) || 0,
+      ));
       const heldSegments = buildMinHoldSegments(
         gapFilled.map((c) => ({ startSec: c.startMs / 1000, endSec: c.endMs / 1000 })),
         pool.map((sv) => ({ src: (sv.localUrl ?? sv.videoUrl) as string, duration: sv.duration > 0 ? sv.duration : 10 })),
