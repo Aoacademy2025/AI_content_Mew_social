@@ -4,6 +4,7 @@ import { createNotification } from "@/lib/notifications";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 
 export const TRIAL_DAYS_PUBLIC = 7;
+export const TRIAL_MINUTES = 15;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**

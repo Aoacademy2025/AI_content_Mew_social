@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { TRIAL_MINUTES } from "@/lib/trial";
 
 const USAGE_PERIOD_MS = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
 
@@ -28,11 +29,14 @@ async function syncMinuteWindow(userId: string): Promise<{
   await syncUserEntitlement(userId, now);
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { plan: true, minutesUsed: true, minutesLimit: true, usagePeriodStartedAt: true },
+    select: { plan: true, minutesUsed: true, minutesLimit: true, usagePeriodStartedAt: true, trialEndsAt: true },
   });
   if (!user) return null;
 
-  const minutesLimit = minutesLimitForPlan(user.plan);
+  const isActiveTrial = !!user.trialEndsAt && user.trialEndsAt > now;
+  const minutesLimit = isActiveTrial
+    ? Math.min(minutesLimitForPlan(user.plan), TRIAL_MINUTES)
+    : minutesLimitForPlan(user.plan);
   const shouldReset = isWindowExpired(user.usagePeriodStartedAt, now);
   const usagePeriodStartedAt = shouldReset ? now : user.usagePeriodStartedAt!;
   const minutesUsed = shouldReset ? 0 : user.minutesUsed;
