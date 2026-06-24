@@ -24,7 +24,11 @@ async function main() {
   await prisma.creditBalance.deleteMany();
 
   // ── creditCostFor ──────────────────────────────────────────────────────────
+  assert(creditCostFor("minute") === 2, 'creditCostFor("minute") === 2');
+  assert(creditCostFor("image-gpt-1k") === 3, 'creditCostFor("image-gpt-1k") === 3');
   assert(creditCostFor("image-nano-1k") === 4, 'creditCostFor("image-nano-1k") === 4');
+  assert(creditCostFor("image-gpt-2k") === 5, 'creditCostFor("image-gpt-2k") === 5');
+  assert(creditCostFor("image-nano-2k") === 6, 'creditCostFor("image-nano-2k") === 6');
   assert(creditCostFor("video-seedance-5s") === 10, 'creditCostFor("video-seedance-5s") === 10');
   assert(creditCostFor("unknown-action-xyz") === 0, 'creditCostFor("unknown-action-xyz") === 0 (unknown → 0)');
 
@@ -56,6 +60,17 @@ async function main() {
   assert(bal3.granted === 20, "granted-first: granted 50→20 after spend 30");
   assert(bal3.purchased === 100, "granted-first: purchased unchanged at 100");
   assert(r1.ok && r1.balanceAfter === 120, "spendCredits(30): balanceAfter = 120");
+
+  // ── balanceAfter in ledger matches authoritative getBalance().total ────────
+  const ledgerSpend1 = await prisma.creditLedger.findFirst({
+    where: { userId, kind: "spend" },
+    orderBy: { createdAt: "desc" },
+  });
+  const actualBal1 = await getBalance(userId);
+  assert(
+    ledgerSpend1 !== null && ledgerSpend1.balanceAfter === actualBal1.total,
+    `ledger balanceAfter (${ledgerSpend1?.balanceAfter}) === actual getBalance total (${actualBal1.total})`
+  );
 
   // ── spendCredits: spend spans both buckets ────────────────────────────────
   // Reset to: granted=10, purchased=100 → spend 30 → granted 0, purchased 80

@@ -21,8 +21,13 @@ import { prisma } from "@/lib/prisma";
  * Unknown actions → 0 (safe default; callers should validate before spending).
  */
 export const CREDIT_COST: Record<string, number> = {
+  // Per-minute usage
+  minute: 2,
   // Image generation
+  "image-gpt-1k": 3,
   "image-nano-1k": 4,
+  "image-gpt-2k": 5,
+  "image-nano-2k": 6,
   "image-nano-4k": 8,
   "image-nano-8k": 12,
   // Video generation
@@ -156,7 +161,9 @@ export async function spendCredits(
     return { ok: false, reason: "insufficient", balanceAfter: latest.total };
   }
 
-  const balanceAfter = bal.granted - fromGranted + (bal.purchased - fromPurchased);
+  // Re-read the row to get the authoritative post-update balance
+  const afterBal = await getBalance(userId);
+  const balanceAfter = afterBal.total;
 
   await prisma.creditLedger.create({
     data: {
@@ -186,6 +193,10 @@ export async function resetMonthlyGranted(
   const newGranted = MONTHLY_GRANT[plan] ?? 0;
   const now = new Date();
 
+  // Read prior granted so we can record the true delta
+  const prior = await getBalance(userId);
+  const priorGranted = prior.granted;
+
   // Upsert so row exists, then hard-set granted and reset timestamp
   const updated = await prisma.creditBalance.upsert({
     where: { userId },
@@ -206,7 +217,7 @@ export async function resetMonthlyGranted(
   await prisma.creditLedger.create({
     data: {
       userId,
-      delta: newGranted,
+      delta: newGranted - priorGranted,
       kind: "grant",
       action: `monthly-reset:${plan}`,
       balanceAfter,
