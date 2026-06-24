@@ -47,6 +47,9 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt DateTime?  // set once; never cleared (one-trial-per-user guard)
   trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
+  minutesUsed   Float    @default(0)
+  minutesLimit  Int      @default(0)
+  geminiKeyMode String   @default("byok")
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime  @default(now())
