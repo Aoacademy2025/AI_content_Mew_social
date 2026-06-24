@@ -8,6 +8,8 @@ import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
+import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -70,6 +72,9 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
   if (!url) return url;
   // Already a full URL pointing to our own server — keep as-is
   if (url.startsWith("http://") || url.startsWith("https://")) {
+    // SSRF guard: never fetch a private/internal target, and don't pass it downstream
+    // to Remotion's Chromium either (drop to "" → scene renders without this image).
+    if (!(await isSafeFetchUrl(url))) return "";
     // external URL — download and re-serve via Next.js
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
@@ -737,7 +742,9 @@ export async function POST(req: Request) {
       captionsData,
       avatarVideoUrl: avatarVideoUrl ?? null,
       captionStyleId,
-      customCaptionStyle,
+      // Strip url()/expression()/@import from the unvalidated style before it reaches
+      // Remotion inline styles (covers both the queue payload and the legacy path).
+      customCaptionStyle: stripDangerousCss(customCaptionStyle),
       positionY,
       fontSizeOverride,
       fontWeightOverride,

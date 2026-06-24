@@ -9,6 +9,7 @@ import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
+import { isSafeFetchUrl } from "@/lib/safe-fetch";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -862,6 +863,9 @@ export async function POST(req: Request) {
       if (localPath && fs.existsSync(localPath)) {
         inputPath = localPath;
       } else {
+        // SSRF guard: this remote branch fetches a user-supplied URL — block internal/private targets.
+        if (!(await isSafeFetchUrl(audioUrl)))
+          return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
         const audioRes = await fetch(audioUrl);
         if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${audioUrl}` }, { status: 400 });
         inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);

@@ -37,8 +37,11 @@ const MIME: Record<string, string> = {
   png: "image/png",
 };
 
+// No `Access-Control-Allow-Origin: *`: renders are served same-origin (the editor's
+// <video>/<img>, downloads, and Remotion's Chromium all fetch from this same origin),
+// so dropping the wildcard stops arbitrary sites from fetch()ing a user's private render
+// without affecting any legitimate same-origin use.
 const cors = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
 };
 
