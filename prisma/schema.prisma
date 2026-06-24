@@ -452,6 +452,26 @@ model ChargedClip {
   @@index([userId, outputUrl])
 }
 
+model CreditBalance {
+  userId         String    @id
+  granted        Int       @default(0)
+  purchased      Int       @default(0)
+  grantedResetAt DateTime?
+  updatedAt      DateTime  @updatedAt
+}
+
+model CreditLedger {
+  id           String   @id @default(cuid())
+  userId       String
+  delta        Int
+  kind         String   // grant | purchase | spend | expire
+  action       String?
+  balanceAfter Int
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
 model RenderJob {
   id              String    @id @default(cuid())
   userId          String
