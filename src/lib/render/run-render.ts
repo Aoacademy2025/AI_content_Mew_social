@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
@@ -350,7 +351,10 @@ export async function runRender(
     composition = applyCompositionOverrides(await selectCurrentComposition());
   }
 
-  const filename = `render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
+  // Render outputs are served world-readable by /api/renders, so the filename is the
+  // only thing protecting a paid user's private video — use 128-bit crypto randomness
+  // (was 6 base36 chars, trivially guessable within the render's time window).
+  const filename = `render-${Date.now()}-${randomBytes(16).toString("hex")}.mp4`;
   const outputLocation = path.join(rendersDir, filename);
 
   const renderSlotLimit = getRenderJobConcurrencyLimit();

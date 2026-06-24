@@ -187,10 +187,12 @@ export async function POST(req: Request) {
       thumbnailConfig: string | null;
     } | null = null;
     if (videoId) {
-      // Use raw query to access thumbnailConfig without needing prisma generate
+      // Use raw query to access thumbnailConfig without needing prisma generate.
+      // Scope by userId so a caller can only read their OWN video (prevents IDOR).
       const rows = (await prisma.$queryRawUnsafe(
-        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ?`,
+        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ? AND userId = ?`,
         videoId,
+        authUser.id,
       )) as Array<{
         videoUrl: string | null;
         avatarVideoUrl: string | null;
@@ -199,6 +201,8 @@ export async function POST(req: Request) {
         thumbnailConfig: string | null;
       }>;
       video = rows[0] ?? null;
+      if (!video)
+        return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
 
     const videoSrc = bodyVideoUrl || video?.videoUrl || video?.avatarVideoUrl;
@@ -309,12 +313,14 @@ export async function POST(req: Request) {
       const thumbConfig = mode === "render" && textLayers
         ? JSON.stringify({ seekTime: atSec, textLayers })
         : null;
-      // Use raw query to write thumbnailConfig without needing prisma generate
+      // Use raw query to write thumbnailConfig without needing prisma generate.
+      // Scope by userId so a caller can only write their OWN video (prevents IDOR).
       await prisma.$executeRawUnsafe(
-        `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ?`,
+        `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ? AND userId = ?`,
         thumbnailUrl,
         thumbConfig,
         videoId,
+        authUser.id,
       ).catch(() => {});
     }
 

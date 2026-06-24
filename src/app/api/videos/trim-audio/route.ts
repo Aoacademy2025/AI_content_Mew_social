@@ -63,6 +63,11 @@ export async function POST(req: Request) {
 
   const normalizedUrl = audioUrl.replace(/^\/api\/renders\//, "/renders/");
   const srcPath = path.join(process.cwd(), "public", normalizedUrl);
+  // Containment guard: reject any audioUrl that escapes the public webroot (path traversal).
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedSrc = path.resolve(srcPath);
+  if (resolvedSrc !== publicDir && !resolvedSrc.startsWith(publicDir + path.sep))
+    return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
   if (!fs.existsSync(srcPath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
 
   const ffmpeg = getFfmpegPath();

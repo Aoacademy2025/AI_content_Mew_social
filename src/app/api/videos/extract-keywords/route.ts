@@ -248,6 +248,10 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
 
+  // Cap script length server-side (matches split-script's 12k guard) to bound LLM cost / memory.
+  if (typeof script === "string" && script.length > 12_000)
+    return NextResponse.json({ error: "สคริปต์ยาวเกินไป (เกิน 12,000 ตัวอักษร)" }, { status: 400 });
+
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
     select: { geminiKey: true },
