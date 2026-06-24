@@ -727,6 +727,10 @@ export async function POST(req: Request) {
       }
     }
 
+    // FREE-tier watermark: only add the overlay for FREE plan renders.
+    // Paid plans (PRO / BUSINESS) must never be watermarked. Default false when plan unknown.
+    const watermark = dbUser.plan === "FREE";
+
     // Fully-resolved render core input. The legacy in-process path consumes this
     // directly; the queue path persists the JSON-serializable subset (everything
     // EXCEPT bundleCache, which is a process-level object passed by reference) and
@@ -756,6 +760,7 @@ export async function POST(req: Request) {
       entryPoint,
       bundlePublicDir: getRemotionBundlePublicDir(),
       rendersDir,
+      watermark,
       // Shared bundle cache — process-level, on the caller, passed by reference so
       // it is reused across requests/hot-reloads. NEVER persisted (has methods).
       bundleCache: {

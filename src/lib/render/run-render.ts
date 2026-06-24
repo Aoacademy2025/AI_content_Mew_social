@@ -45,6 +45,8 @@ export type ResolvedRenderInput = {
   customWidth?: number;
   customHeight?: number;
   fps: number;
+  /** Show HERO watermark overlay on this render (FREE-tier only, default false) */
+  watermark?: boolean;
   requestedJpegQuality?: unknown;
   // bundle + output locations
   entryPoint: string;
@@ -200,6 +202,7 @@ export async function runRender(
     bundlePublicDir,
     rendersDir,
     bundleCache,
+    watermark,
   } = payload;
 
   let lastProgress = -1;
@@ -304,7 +307,7 @@ export async function runRender(
   const inputProps = isSubtitleOverlay
     ? resolvedSubtitleConfig
     : isShortVideo
-    ? resolvedShortConfig
+    ? { ...resolvedShortConfig, watermark: watermark ?? false }
     : isAvatarMode
     ? {
         avatarVideoUrl,
@@ -315,7 +318,7 @@ export async function runRender(
         fontSizeOverride: fontSizeOverride ?? 0,
         fontWeightOverride: fontWeightOverride ?? 0,
       }
-    : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
+    : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData, watermark: watermark ?? false };
 
   const selectCurrentComposition = () =>
     selectComposition({

@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, Img, useVideoConfig, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, Sequence, Img, staticFile, useVideoConfig, useCurrentFrame, interpolate } from "remotion";
 import { Caption } from "./Caption";
 import { parseTime } from "./types";
 import type { VideoCompositionProps, SceneEffect } from "./types";
@@ -119,7 +119,7 @@ function AnimatedImage({ src, effect, durationFrames }: { src: string; effect?: 
   );
 }
 
-export function VideoComposition({ scenes, captionSegments }: VideoCompositionProps) {
+export function VideoComposition({ scenes, captionSegments, watermark }: VideoCompositionProps) {
   const { fps } = useVideoConfig();
 
   return (
@@ -169,6 +169,21 @@ export function VideoComposition({ scenes, captionSegments }: VideoCompositionPr
           </Sequence>
         );
       })}
+
+      {watermark && (
+        <Img
+          src={staticFile("watermark.png")}
+          style={{
+            position: "absolute",
+            bottom: "4%",
+            right: "4%",
+            width: "14%",
+            opacity: 0.9,
+            mixBlendMode: "screen",
+            pointerEvents: "none",
+          }}
+        />
+      )}
     </AbsoluteFill>
   );
 }

@@ -3,10 +3,12 @@ import {
   AbsoluteFill,
   Audio,
   Easing,
+  Img,
   OffthreadVideo,
   Sequence,
   interpolate,
   spring,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
@@ -551,6 +553,7 @@ export function ShortVideoComposition({
   subtitleOutline = false,
   subtitleOutlineSize = 2,
   kenBurns = false,
+  watermark = false,
 }: ShortVideoConfig) {
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -660,6 +663,22 @@ export function ShortVideoComposition({
 
       {/* Fade to black at end */}
       <EndFade totalFrames={durationInFrames} />
+
+      {/* FREE-tier watermark — sits above all content, invisible on paid plans */}
+      {watermark && (
+        <Img
+          src={staticFile("watermark.png")}
+          style={{
+            position: "absolute",
+            bottom: "4%",
+            right: "4%",
+            width: "14%",
+            opacity: 0.9,
+            mixBlendMode: "screen",
+            pointerEvents: "none",
+          }}
+        />
+      )}
     </AbsoluteFill>
   );
 }
