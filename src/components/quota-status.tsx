@@ -3,12 +3,19 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
+interface MinutesQuota {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
 interface QuotaData {
   plan: string;
   used: number;
   limit: number;
   remaining: number;
   resetAt: string;
+  minutes?: MinutesQuota;
 }
 
 interface QuotaStatusProps {
@@ -46,7 +53,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
     fetch("/api/videos/usage", { cache: "no-store" })
       .then(r => {
         if (!r.ok) return null;
-        return r.json() as Promise<QuotaData>;
+        return r.json() as Promise<QuotaData & { minutes?: MinutesQuota }>;
       })
       .then(data => {
         if (!cancelled) setQuota(data);
@@ -61,10 +68,43 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
   // While loading → render nothing (no skeleton flash, no layout shift)
   if (quota === null) return null;
 
-  const low = isLowQuota(quota.remaining, quota.limit);
+  const mins = quota.minutes;
+  // For low-quota warning: use minutes if available, else clips
+  const low = mins
+    ? isLowQuota(mins.remaining, mins.limit)
+    : isLowQuota(quota.remaining, quota.limit);
   const resetStr = formatThaiDate(quota.resetAt);
 
   if (variant === "chip") {
+    // Minutes-based chip (primary) — falls back to clip display if minutes absent
+    if (mins) {
+      return (
+        <div
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium select-none",
+            low
+              ? "bg-amber-500/15 border border-amber-500/30 text-amber-300"
+              : "bg-white/5 border border-white/8 text-white/45",
+            className
+          )}
+          title={`แผน ${quota.plan} · เหลือ ${mins.remaining}/${mins.limit} นาที · ใช้คลิปไป ${quota.used}/${quota.limit} · รีเซ็ต ${resetStr}`}
+          aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที รีเซ็ต ${resetStr}`}
+        >
+          {low && (
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />
+          )}
+          <span>
+            <span className={cn("font-semibold", low ? "text-amber-200" : "text-white/70")}>
+              {mins.remaining}/{mins.limit}
+            </span>{" "}
+            นาที{" "}
+            <span className="opacity-60">(~{mins.limit} คลิป)</span>
+          </span>
+        </div>
+      );
+    }
+
+    // Fallback: clip-based chip (minutes not in response)
     return (
       <div
         className={cn(
