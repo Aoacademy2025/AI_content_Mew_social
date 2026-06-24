@@ -6,6 +6,7 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import { grantCredits } from "@/lib/credits";
 
 export const config = { api: { bodyParser: false } };
 
@@ -45,6 +46,18 @@ export async function POST(req: Request) {
   // ── Checkout completed (one-time OR first subscription payment) ──────────
   if (event.type === "checkout.session.completed") {
     const s = event.data.object as any;
+
+    // ── Credit-pack purchase: grant credits and return early ──────────────
+    if (s.metadata?.type === "credits" && s.metadata.userId) {
+      await grantCredits(
+        s.metadata.userId,
+        parseInt(s.metadata.credits ?? "0", 10),
+        "purchase",
+        "pack"
+      ).catch((e) => console.error("[webhook] credit grant:", e));
+      return NextResponse.json({ ok: true });
+    }
+
     const { userId, plan, period, periodDays } = s.metadata ?? {};
     if (userId && plan) {
       const newExpiry = await activatePlan(userId, plan, parseInt(periodDays ?? "30", 10));

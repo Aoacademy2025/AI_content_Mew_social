@@ -40,6 +40,30 @@ export function creditCostFor(action: string): number {
   return CREDIT_COST[action] ?? 0;
 }
 
+// ── Credit packs (purchasable one-time) ──────────────────────────────────────
+
+/**
+ * Available credit packs purchasable via Stripe one-time payment.
+ * `baht` is the THB price; `credits` is the amount granted to `purchased` bucket.
+ */
+export const CREDIT_PACKS: Record<
+  "starter" | "popular" | "pro",
+  { baht: number; credits: number }
+> = {
+  starter: { baht: 199, credits: 200 },
+  popular: { baht: 499, credits: 540 },
+  pro:     { baht: 999, credits: 1150 },
+};
+
+/**
+ * Looks up a credit pack by id. Returns `null` if the id is not valid.
+ */
+export function creditPack(
+  id: string
+): { baht: number; credits: number } | null {
+  return (CREDIT_PACKS as Record<string, { baht: number; credits: number }>)[id] ?? null;
+}
+
 // ── Monthly grant amounts per plan ────────────────────────────────────────────
 
 export const MONTHLY_GRANT: Record<string, number> = {
