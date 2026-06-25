@@ -35,6 +35,7 @@ export function DashboardOnboarding() {
         if (!d) return;
         // map plan → minutes (matches plan-limits.ts)
         const plan: string = d.plan ?? "FREE";
+        // ⚠️ MUST stay in sync with minutesPerMonthForPlan in src/lib/plan-limits.ts (authoritative source).
         const planMinutes: Record<string, number> = { FREE: 5, PRO: 80, BUSINESS: 150 };
         setMinutesForPlan(planMinutes[plan] ?? null);
       })

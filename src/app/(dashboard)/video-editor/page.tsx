@@ -3103,7 +3103,11 @@ export default function VideoEditorPage() {
       if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
       // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-      if (toastOnError && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+      // Exclude PollStaleError/PollTransientLimitError: the server burn may have completed and
+      // charged minutes even though the client timed out polling — showing "ไม่ถูกหักนาที" would
+      // be false reassurance. The error message already tells the user to check Gallery.
+      const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError;
+      if (toastOnError && !isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
         toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
       }
       throw err;
