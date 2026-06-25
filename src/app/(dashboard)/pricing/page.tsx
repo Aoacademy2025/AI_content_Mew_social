@@ -283,11 +283,13 @@ function PricingContent() {
                 )}
               </div>
 
-              {/* minutes per plan — additive info, sourced from plan-limits single-source */}
-              <p className="mt-2 text-[12px] text-[#a7adcc]">
-                {minutesPerMonthForPlan(key)} นาที/เดือน
-                <span className="ml-1 text-[#6b7091]">(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
-              </p>
+              {/* minutes per plan — additive info, only shown when MINUTE_QUOTA is enabled */}
+              {me?.minuteQuota && (
+                <p className="mt-2 text-[12px] text-[#a7adcc]">
+                  {minutesPerMonthForPlan(key)} นาที/เดือน
+                  <span className="ml-1 text-[#6b7091]">(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
+                </p>
+              )}
 
               <ul className="my-5 flex-1 space-y-2 text-[14px]">
                 {features.map((f) => (

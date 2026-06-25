@@ -105,11 +105,9 @@ const SHOWCASE = [
 
 export default async function Home() {
   const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
-  const minutesPerPlan = {
-    free: minutesPerMonthForPlan("FREE"),
-    pro: minutesPerMonthForPlan("PRO"),
-    business: minutesPerMonthForPlan("BUSINESS"),
-  };
+  const minutesPerPlan = process.env.MINUTE_QUOTA === "1"
+    ? { free: minutesPerMonthForPlan("FREE"), pro: minutesPerMonthForPlan("PRO"), business: minutesPerMonthForPlan("BUSINESS") }
+    : undefined;
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
