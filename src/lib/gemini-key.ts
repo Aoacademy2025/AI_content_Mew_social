@@ -3,13 +3,15 @@ export class KeyRequiredError extends Error {
 }
 
 export function resolveGeminiKey(user: { geminiKey: string | null; plan: string }): { key: string; mode: "managed" | "byok" } {
+  const managed = process.env.MANAGED_GEMINI === "1";
+  const serverKey = process.env.GEMINI_SERVER_KEY ?? "";
+  // Managed-first: when managed mode is on and a server key is configured, always
+  // use it and IGNORE any stored user key (Gemini BYOK is removed in managed mode).
+  if (managed && serverKey) return { key: serverKey, mode: "managed" };
+  // Flag off (or managed but server key missing) → legacy BYOK, byte-identical to before.
   if (user.geminiKey && user.geminiKey.trim()) {
-    // Keys are stored base64-encoded; decode to the raw API key for callers.
     const decoded = Buffer.from(user.geminiKey.trim(), "base64").toString("utf-8");
     return { key: decoded, mode: "byok" };
   }
-  const managed = process.env.MANAGED_GEMINI === "1";
-  const serverKey = process.env.GEMINI_SERVER_KEY ?? "";
-  if (managed && serverKey) return { key: serverKey, mode: "managed" };
   throw new KeyRequiredError("gemini");
 }
