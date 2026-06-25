@@ -45,6 +45,7 @@ export async function GET() {
       usageLimit: usage?.usageLimit ?? limits.clips,
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
       usageResetAt: usage?.resetAt ?? null,
+      ...(process.env.MINUTE_QUOTA === "1" ? { minuteQuota: true } : {}),
     });
   } catch (error) {
     return apiError({ route: "user/me", error });

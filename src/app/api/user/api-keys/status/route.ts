@@ -28,6 +28,7 @@ export async function GET() {
       ...status,
       onboardingDismissed: user.onboardingDismissedAt != null,
       ...(isManagedMode ? { managed: true } : {}),
+      ...(process.env.MINUTE_QUOTA === "1" ? { minuteQuota: true } : {}),
     });
   } catch (error) {
     return apiError({ route: "user/api-keys/status", error });

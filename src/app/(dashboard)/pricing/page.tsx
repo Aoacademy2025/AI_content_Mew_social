@@ -23,7 +23,7 @@ const GLOW = "0 0 30px rgba(139,92,246,.45)";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
-type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null } | null;
+type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; minuteQuota?: boolean } | null;
 
 const TIER_META: { key: PlanKey; cfgKey: keyof PlanConfig; icon: React.ElementType; highlight?: boolean }[] = [
   { key: "FREE", cfgKey: "free", icon: Zap },
@@ -144,7 +144,7 @@ function PricingContent() {
                 </div>
               )}
               <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
-                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">2 คลิป/เดือน</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
+                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">{me?.minuteQuota ? "5 นาที/เดือน · ~5 คลิป" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
                 <b className="text-violet-200"> อัปเกรดเพื่อใช้ต่อไม่สะดุด</b>
               </p>
             </>
@@ -160,7 +160,7 @@ function PricingContent() {
                 </div>
               )}
               <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
-                อัปเกรด PRO ปลดล็อก <b className="text-white/80">100 คลิป/เดือน</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
+                อัปเกรด PRO ปลดล็อก <b className="text-white/80">{me?.minuteQuota ? "80 นาที/เดือน · ~80 คลิป" : "100 คลิป/เดือน"}</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
               </p>
             </>
           ) : (

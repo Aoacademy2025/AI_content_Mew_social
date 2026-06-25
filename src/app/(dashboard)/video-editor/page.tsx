@@ -414,6 +414,7 @@ export default function VideoEditorPage() {
   // ── Key onboarding wizard (proactive pre-check) ───────────────────────
   const [keyWizardOpen, setKeyWizardOpen] = useState(false);
   const [managed, setManaged] = useState(false);
+  const [minuteQuota, setMinuteQuota] = useState(false);
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
@@ -424,7 +425,12 @@ export default function VideoEditorPage() {
   useEffect(() => {
     let cancelled = false;
     fetchMe()
-      .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
+      .then(d => {
+        if (!cancelled) {
+          if (d?.plan) setUserPlan(d.plan);
+          if (d?.minuteQuota) setMinuteQuota(true);
+        }
+      })
       .catch(() => { /* keep PRO default — server still backstops at render */ });
     return () => { cancelled = true; };
   }, []);
@@ -4845,6 +4851,7 @@ export default function VideoEditorPage() {
         title={upgradeModal.title}
         benefits={upgradeModal.benefits}
         hideCta={upgradeModal.hideCta}
+        minuteQuota={minuteQuota}
         onClose={() => setUpgradeModal({ open: false })}
       />
 

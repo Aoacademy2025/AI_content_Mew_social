@@ -15,16 +15,21 @@ interface UpgradeModalProps {
   ctaLabel?: string;
   /** Hide the upgrade CTA — for users already on the top tier (just trim the clip). */
   hideCta?: boolean;
+  /** When true, show minutes-quota copy instead of clips. Sourced from /api/user/me minuteQuota. */
+  minuteQuota?: boolean;
 }
 
-const DEFAULT_BENEFITS = [
-  "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
-  "Avatar, ElevenLabs TTS, Background Removal",
-  "Music, Subtitle styles ทุกรูปแบบ",
-  "Video Editor ขั้นสูงครบฟีเจอร์",
-];
+// from minutesPerMonthForPlan("PRO") = 80
+function getDefaultBenefits(minuteQuota?: boolean): string[] {
+  return [
+    minuteQuota ? "80 นาที/เดือน · ~80 คลิป" : "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
+    "Avatar, ElevenLabs TTS, Background Removal",
+    "Music, Subtitle styles ทุกรูปแบบ",
+    "Video Editor ขั้นสูงครบฟีเจอร์",
+  ];
+}
 
-export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta }: UpgradeModalProps) {
+export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta, minuteQuota }: UpgradeModalProps) {
   const router = useRouter();
   if (!open) return null;
 
@@ -60,7 +65,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
 
         {/* Benefits */}
         <ul className="mb-5 space-y-2">
-          {(benefits ?? DEFAULT_BENEFITS).map((f) => (
+          {(benefits ?? getDefaultBenefits(minuteQuota)).map((f) => (
             <li key={f} className="flex items-center gap-2 text-xs text-zinc-300">
               <Zap className="h-3.5 w-3.5 shrink-0 text-violet-400" />
               {f}
