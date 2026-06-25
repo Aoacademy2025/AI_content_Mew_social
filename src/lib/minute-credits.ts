@@ -4,7 +4,7 @@ import { refundClipUsage } from "@/lib/usage-limits";
 
 export type ReserveResult =
   | { allowed: true; via: "minutes"; reservedMinutes: number; remaining: number }
-  | { allowed: true; via: "credits"; reservedMinutes: number; creditsSpent: number; balanceAfter: number }
+  | { allowed: true; via: "credits"; creditsSpent: number; balanceAfter: number }
   | { allowed: false; via: "none"; remaining: number; message?: string };
 
 /**
@@ -33,7 +33,7 @@ export async function reserveMinutesOrCredits(
     const action = opts.ref ? `render-overflow:${opts.ref}` : "render-overflow";
     const spend = await spendCredits(userId, cost, action);
     if (spend.ok) {
-      return { allowed: true, via: "credits", reservedMinutes: minutes, creditsSpent: cost, balanceAfter: spend.balanceAfter };
+      return { allowed: true, via: "credits", creditsSpent: cost, balanceAfter: spend.balanceAfter };
     }
   }
   return { allowed: false, via: "none", remaining: r.remaining, message: r.message };
