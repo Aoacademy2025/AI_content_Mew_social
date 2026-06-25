@@ -12,6 +12,15 @@ import { cn } from "@/lib/utils";
 import { PremiumBackdrop } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
+import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+
+// Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
+// Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
+const CREDIT_PACKS_DISPLAY = [
+  { id: "starter", label: "Starter", baht: 199, credits: 200 },
+  { id: "popular", label: "Popular", baht: 499, credits: 540 },
+  { id: "pro",     label: "Pro",     baht: 999, credits: 1150 },
+] as const;
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 type BillingPeriod = "monthly" | "annual";
@@ -274,6 +283,12 @@ function PricingContent() {
                 )}
               </div>
 
+              {/* minutes per plan — additive info, sourced from plan-limits single-source */}
+              <p className="mt-2 text-[12px] text-[#a7adcc]">
+                {minutesPerMonthForPlan(key)} นาที/เดือน
+                <span className="ml-1 text-[#6b7091]">(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
+              </p>
+
               <ul className="my-5 flex-1 space-y-2 text-[14px]">
                 {features.map((f) => (
                   <li key={f} className="flex items-start gap-2 text-[#d5d9ee]">
@@ -314,6 +329,36 @@ function PricingContent() {
           <span key={c} className="rounded-full border border-violet-400/25 bg-violet-400/10 px-3.5 py-1.5 text-[13px] text-violet-200">{c}</span>
         ))}
       </div>
+
+      {/* credit packs — flag-gated, compact */}
+      {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && (
+        <div className="mx-auto mt-10 max-w-2xl">
+          <p className="mb-4 text-center text-[12px] font-semibold uppercase tracking-[.12em] text-violet-300" style={HEAD}>เครดิต AI เสริม</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {CREDIT_PACKS_DISPLAY.map((pack) => {
+              const bonusPctRaw = pack.credits > pack.baht ? Math.round(((pack.credits - pack.baht) / pack.baht) * 100) : 0;
+              const bonusPct = bonusPctRaw >= 2 ? bonusPctRaw : undefined;
+              return (
+                <div key={pack.id} className={`relative rounded-[16px] border p-4 text-left ${pack.id === "popular" ? "border-violet-400/40 bg-violet-500/10" : "border-white/10 bg-white/[0.03]"}`}>
+                  {pack.id === "popular" && (
+                    <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-0.5 text-[10px] font-bold text-white" style={{ background: "linear-gradient(120deg,#8b5cf6,#a78bfa)" }}>ยอดนิยม</span>
+                  )}
+                  <p className="text-[14px] font-bold text-white" style={HEAD}>{pack.label}</p>
+                  <p className="mt-0.5 text-[20px] font-bold text-white" style={HEAD}>฿{pack.baht.toLocaleString()}</p>
+                  <p className="mt-0.5 text-[12px] text-[#a7adcc]">
+                    {pack.credits} เครดิต
+                    {bonusPct ? <span className="ml-1 text-violet-300">+{bonusPct}%</span> : null}
+                  </p>
+                  <Link href="/settings?tab=billing" className="mt-3 block rounded-full border border-violet-400/25 py-1.5 text-center text-[12px] font-semibold text-violet-200 transition hover:bg-violet-400/10">
+                    ซื้อเครดิต →
+                  </Link>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-center text-[11px] text-[#7a7f9c]">1 เครดิต = ฿1 · ใช้สำหรับ AI สร้างภาพ / วิดีโอ / นาทีเสริม</p>
+        </div>
+      )}
 
       {/* mini FAQ */}
       <div className="mx-auto mt-12 max-w-2xl">

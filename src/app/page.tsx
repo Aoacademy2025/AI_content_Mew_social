@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { getPlanConfig } from "@/lib/plan-config";
 import { getFoundingCoupon } from "@/lib/founding";
+import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { YouTubeLite } from "@/components/marketing/youtube-lite";
 import { ShowcaseClip } from "@/components/marketing/showcase-clip";
@@ -104,6 +105,11 @@ const SHOWCASE = [
 
 export default async function Home() {
   const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
+  const minutesPerPlan = {
+    free: minutesPerMonthForPlan("FREE"),
+    pro: minutesPerMonthForPlan("PRO"),
+    business: minutesPerMonthForPlan("BUSINESS"),
+  };
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
@@ -294,7 +300,7 @@ export default async function Home() {
             <p className={EYEBROW} style={HEAD}>ราคา</p>
             <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
           </Reveal>
-          <PricingToggle plans={plans} founding={founding} />
+          <PricingToggle plans={plans} founding={founding} minutesPerPlan={minutesPerPlan} />
         </div>
       </section>
 
