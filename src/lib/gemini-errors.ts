@@ -55,15 +55,6 @@ function statusFromParsed(parsed: unknown, fallback = 500): number {
 const MANAGED_PLATFORM_MSG =
   "ระบบ AI ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง หรือแจ้งทีมงานหากยังเป็นอยู่";
 
-/** Kinds where the user-message is replaced when managed=true.
- *  Transient kinds (quota / high_demand / timeout) remain as-is — they are
- *  genuine platform/capacity conditions regardless of key ownership. */
-const KEY_FAULT_KINDS: ReadonlySet<GeminiErrorKind> = new Set([
-  "invalid_key",
-  "billing",
-  "permission",
-  "api_disabled",
-]);
 
 export function getGeminiErrorInfo(
   error: unknown,
@@ -175,7 +166,6 @@ export function getGeminiErrorInfo(
   };
 }
 
-export { KEY_FAULT_KINDS };
 
 // Google 429 bodies carry RetryInfo, e.g. {"retryDelay":"18s"} — honoring it
 // matters once a clip is many sequential TTS calls (free-tier RPM windows are
