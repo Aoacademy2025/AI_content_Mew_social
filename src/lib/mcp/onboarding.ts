@@ -36,7 +36,10 @@ function howTo(p: ProviderHelp): string {
 
 /** Actionable missing-key error returned by create_video_job (key=value tells runTool it's an error). */
 export function missingKeyError(which: "gemini" | "broll" | "elevenlabs" | "heygen") {
-  if (which === "gemini") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
+  if (which === "gemini") {
+    if (process.env.MANAGED_GEMINI === "1") return { error: "missing_key", message: "Gemini จัดการโดยระบบ (managed) — ไม่ต้องตั้งค่า key เอง" };
+    return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
+  }
   if (which === "elevenlabs")
     return {
       error: "missing_key",
@@ -69,10 +72,10 @@ export function missingAvatarError() {
 export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixabay: boolean; elevenlabs: boolean }) {
   return {
     pasteKeysAt: SETTINGS_URL,
-    canCreateVideo: keys.gemini && (keys.pexels || keys.pixabay),
+    canCreateVideo: (process.env.MANAGED_GEMINI === "1" ? true : keys.gemini) && (keys.pexels || keys.pixabay),
     avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
-      { key: "gemini", required: true, configured: keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
+      { key: "gemini", required: process.env.MANAGED_GEMINI !== "1", configured: process.env.MANAGED_GEMINI === "1" ? true : keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
       { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: PROVIDERS.pexels.whatFor, getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
       { key: "elevenlabs", required: false, configured: keys.elevenlabs, label: PROVIDERS.elevenlabs.label, whatFor: PROVIDERS.elevenlabs.whatFor, getKeyUrl: PROVIDERS.elevenlabs.getKeyUrl, note: ELEVENLABS_VOICEID_HELP },
     ],
@@ -88,7 +91,7 @@ avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดีย
 BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
 - ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.
-- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.
+- key ที่จำเป็น: ${process.env.MANAGED_GEMINI === "1" ? "" : "Gemini (เสมอ) และ "}Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.${process.env.MANAGED_GEMINI === "1" ? " (Gemini จัดการโดยระบบ — ไม่ต้องตั้งค่า key เอง)" : ""}
 
 ทำตัวเป็นผู้ช่วยตั้งค่า:
 1) ก่อนสั่งงานครั้งแรก เรียก get_current_user ดู field "setup" ว่าขาด key ตัวไหน.
