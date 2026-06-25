@@ -59,11 +59,16 @@ export function canonicalRenderUrl(url: string | null | undefined): string | nul
  *
  * Optional `chargedMinutes`: when provided (minutes-quota mode), stored on the row.
  * Omitting it (2-arg call) leaves `chargedMinutes` null — byte-identical for existing callers.
+ *
+ * Optional `creditsSpent`: when provided (credit-overflow mode), stored on the row
+ * for bucket-aware refunds and receipts. Omitting it (2- or 3-arg call) leaves
+ * `creditsSpent` null — backward-compatible with all existing call sites.
  */
 export async function recordChargedClip(
   userId: string,
   outputUrl: string,
   chargedMinutes?: number,
+  creditsSpent?: number,
 ): Promise<void> {
   try {
     const canonical = canonicalRenderUrl(outputUrl);
@@ -72,7 +77,8 @@ export async function recordChargedClip(
       data: {
         userId,
         outputUrl: canonical,
-        ...(chargedMinutes !== undefined ? { chargedMinutes } : {}),
+        chargedMinutes: chargedMinutes ?? null,
+        creditsSpent: creditsSpent ?? null,
       },
     });
   } catch {

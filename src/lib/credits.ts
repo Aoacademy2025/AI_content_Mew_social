@@ -223,6 +223,34 @@ export async function spendCredits(
   return { ok: true, balanceAfter };
 }
 
+// ── Refund credits ────────────────────────────────────────────────────────────
+
+/**
+ * Refund credits previously spent (e.g. a credit-funded overflow render that
+ * failed / was superseded / cancelled). Adds the amount back to the `purchased`
+ * bucket and writes a `kind:"refund"` ledger row.
+ *
+ * v1 always restores to `purchased` (the permanent bucket): this never
+ * disadvantages the user and never leaks credits against them. Exact per-bucket
+ * restoration is a future refinement.
+ */
+export async function refundCredits(
+  userId: string,
+  amount: number,
+  action: string
+): Promise<void> {
+  if (amount <= 0) throw new Error("refundCredits: amount must be positive");
+  const updated = await prisma.creditBalance.upsert({
+    where: { userId },
+    create: { userId, granted: 0, purchased: amount },
+    update: { purchased: { increment: amount } },
+  });
+  const balanceAfter = updated.granted + updated.purchased;
+  await prisma.creditLedger.create({
+    data: { userId, delta: amount, kind: "refund", action, balanceAfter },
+  });
+}
+
 // ── Monthly reset ─────────────────────────────────────────────────────────────
 
 /**

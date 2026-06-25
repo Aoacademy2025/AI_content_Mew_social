@@ -448,6 +448,7 @@ model ChargedClip {
   userId         String
   outputUrl      String // the base render's output, e.g. /api/renders/render-….mp4
   chargedMinutes Int?   // minutes charged for this video; null = legacy/clips-mode
+  creditsSpent   Int?   // credits charged for a credit-funded (overflow) render; null = minute/clip-funded
   createdAt      DateTime @default(now())
 
   @@index([userId, outputUrl])
@@ -489,6 +490,7 @@ model RenderJob {
   cancelRequested Boolean   @default(false)
   reservedQuota   Boolean   @default(false) // true iff THIS job reserved a clip for its video
   reservedMinutes Int?      // minutes reserved for a queued job; for exact refund
+  creditsSpent    Int?      // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
   error           String?   // JSON, PR-5 error taxonomy
   idempotencyKey  String?   @unique
   scopeKey        String?   // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
