@@ -306,8 +306,16 @@ export async function POST(req: Request) {
     // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
     if (!burnAlreadyPaid) {
       if (useMinuteQuota) {
-        const quotaCheck = await checkMinuteQuota(userId);
-        if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว");
+        // Fail-fast minute pre-check. SKIP it entirely when creditsLive: an out-of-minutes
+        // user can still render by overflowing to credits, so a minute-only 403 here would
+        // make that path (the reserve at ~:423) unreachable and the buy-credits CTA never
+        // show. With creditsLive on we fall through to reserveMinutesOrCredits below, which
+        // is the real atomic gate (minutes→credits, and returns canBuyCredits on true
+        // exhaustion). creditsLive OFF → this hard-walls exactly as before (byte-identical).
+        if (!creditsLive) {
+          const quotaCheck = await checkMinuteQuota(userId);
+          if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว");
+        }
       } else {
         const quotaCheck = await checkClipQuota(userId);
         if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
