@@ -13,7 +13,7 @@ function deriveTitle(v: { content: { headline: string | null } | null; script: s
 
 export async function getCurrentUserTool(user: User) {
   const keysConfigured = {
-    gemini: !!user.geminiKey,
+    gemini: !!user.geminiKey || process.env.MANAGED_GEMINI === "1",
     heygen: !!user.heygenKey,
     elevenlabs: !!user.elevenlabsKey,
     pexels: !!user.pexelsKey,

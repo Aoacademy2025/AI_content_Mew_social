@@ -1659,15 +1659,11 @@ export default function ShortVideoPage() {
     }
 
     // Step 2: Check keys for the chosen provider — show key modal if missing
+    // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
-        const hasLLMKey = !!keys.geminiKey;
-        if (!hasLLMKey) {
-          setMissingKey({ type: "gemini", retryStep: "runAll" });
-          return;
-        }
         // Stock key check
         if (stockSource === "kie-image" && !keys.kieKey) {
           setMissingKey({ type: "kie", retryStep: "runAll" });

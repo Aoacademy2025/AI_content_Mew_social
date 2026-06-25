@@ -85,9 +85,9 @@ export function isTier1Complete(s: { gemini: boolean; pexels: boolean; pixabay: 
   return s.gemini && (s.pexels || s.pixabay);
 }
 
-export function computeKeyStatus(present: Partial<Record<KeyId, boolean>>): KeyStatus {
+export function computeKeyStatus(present: Partial<Record<KeyId, boolean>>, isManagedMode = false): KeyStatus {
   const base = {
-    gemini: !!present.gemini, pexels: !!present.pexels, pixabay: !!present.pixabay,
+    gemini: !!present.gemini || isManagedMode, pexels: !!present.pexels, pixabay: !!present.pixabay,
     elevenlabs: !!present.elevenlabs, heygen: !!present.heygen,
     kie: !!present.kie, unsplash: !!present.unsplash, flickr: !!present.flickr,
   };

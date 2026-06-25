@@ -2553,15 +2553,11 @@ export default function VideoEditorPage() {
     }
 
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
+    // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keysData = await keysRes.json();
-        // Gemini ต้องการสำหรับ extract-keywords, transcribe, config
-        if (!keysData.geminiKey) {
-          setMissingKey({ type: "gemini", retryStep: "runAll" });
-          return;
-        }
         // ElevenLabs TTS ต้องการ key (ข้ามถ้าใช้ Direct URL mode)
         const needsTts = !(avatarInputMode === "direct" && !!avatarDirectUrl.trim());
         if (needsTts && ttsProvider === "elevenlabs" && !keysData.elevenlabsKey) {
