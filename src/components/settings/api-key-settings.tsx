@@ -7,7 +7,6 @@ import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
 import { fetchMe } from "@/lib/use-me";
 
-
 interface ApiKeys {
   geminiKey?: string;
   heygenKey?: string;
@@ -181,7 +180,7 @@ export function ApiKeySettings() {
         const status = computeKeyStatus({
           gemini: isSet("geminiKey"), pexels: isSet("pexelsKey"), pixabay: isSet("pixabayKey"),
           elevenlabs: isSet("elevenlabsKey"), heygen: isSet("heygenKey"),
-        });
+        }, managed);
         const field = (id: KeyId) => {
           const def = KEY_TIERS.find((k) => k.id === id)!;
           return (

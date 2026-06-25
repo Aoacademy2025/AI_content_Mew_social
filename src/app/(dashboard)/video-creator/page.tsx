@@ -489,6 +489,7 @@ export default function ShortVideoPage() {
 
   // Key onboarding wizard (proactive pre-check)
   const [keyWizardOpen, setKeyWizardOpen] = useState(false);
+  const [managed, setManaged] = useState(false);
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
@@ -1697,6 +1698,7 @@ export default function ShortVideoPage() {
       const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
       if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
       const st = await res.json();
+      setManaged(!!st.managed);
       if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
     } catch { return true; }
     return true;
@@ -2490,6 +2492,7 @@ export default function ShortVideoPage() {
           open={true}
           onClose={() => setKeyWizardOpen(false)}
           onComplete={() => setKeyWizardOpen(false)}
+          managed={managed}
         />
       )}
 
