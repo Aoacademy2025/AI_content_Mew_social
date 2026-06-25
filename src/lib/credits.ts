@@ -13,6 +13,7 @@
  */
 
 import { prisma } from "@/lib/prisma";
+import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
 
 // ── Cost table ────────────────────────────────────────────────────────────────
 
@@ -162,16 +163,19 @@ export async function grantCreditsOnce(
 /**
  * Atomically spend `amount` credits (granted-first, then purchased).
  *
- * On success: returns `{ ok: true, balanceAfter }` and writes one ledger row.
+ * On success: returns `{ ok: true, balanceAfter, fromGranted, fromPurchased }` and writes one ledger row.
  * On failure (insufficient or lost race): returns `{ ok: false, reason: "insufficient", balanceAfter }`.
  * Does NOT write a ledger row on failure.
+ *
+ * Ledger `delta` sign convention: positive = credit (balance up), negative = debit
+ * (balance down). A spend writes a NEGATIVE delta.
  */
 export async function spendCredits(
   userId: string,
   amount: number,
   action: string
 ): Promise<
-  | { ok: true; balanceAfter: number }
+  | { ok: true; balanceAfter: number; fromGranted: number; fromPurchased: number }
   | { ok: false; reason: "insufficient"; balanceAfter: number }
 > {
   if (amount <= 0) throw new Error("spendCredits: amount must be positive");
@@ -220,34 +224,62 @@ export async function spendCredits(
     },
   });
 
-  return { ok: true, balanceAfter };
+  return { ok: true, balanceAfter, fromGranted, fromPurchased };
 }
 
 // ── Refund credits ────────────────────────────────────────────────────────────
 
 /**
- * Refund credits previously spent (e.g. a credit-funded overflow render that
- * failed / was superseded / cancelled). Adds the amount back to the `purchased`
- * bucket and writes a `kind:"refund"` ledger row.
+ * Refund credits back to the exact buckets they were spent from.
  *
- * v1 always restores to `purchased` (the permanent bucket): this never
- * disadvantages the user and never leaks credits against them. Exact per-bucket
- * restoration is a future refinement.
+ * Increments `granted` by `fromGranted` and `purchased` by `fromPurchased` in
+ * one atomic upsert, then writes one `kind:"refund"` ledger row.
+ *
+ * Throws if either bucket amount is negative (would silently corrupt the balance).
+ * No-op (returns without writing any ledger row) if fromGranted+fromPurchased <= 0.
+ *
+ * Ledger `delta` sign convention: positive = credit (balance up), negative = debit
+ * (balance down). A refund writes a POSITIVE delta.
+ *
+ * Intended to be called with the fromGranted/fromPurchased values returned by a
+ * prior successful spendCredits call, so that balance is restored exactly.
  */
 export async function refundCredits(
   userId: string,
-  amount: number,
+  fromGranted: number,
+  fromPurchased: number,
   action: string
 ): Promise<void> {
-  if (amount <= 0) throw new Error("refundCredits: amount must be positive");
+  if (fromGranted < 0 || fromPurchased < 0)
+    throw new Error("refundCredits: bucket amounts must be non-negative");
+
+  const total = fromGranted + fromPurchased;
+  if (total <= 0) return;
+
+  // Atomically restore both buckets (upsert so row is guaranteed to exist)
   const updated = await prisma.creditBalance.upsert({
     where: { userId },
-    create: { userId, granted: 0, purchased: amount },
-    update: { purchased: { increment: amount } },
+    create: {
+      userId,
+      granted: fromGranted,
+      purchased: fromPurchased,
+    },
+    update: {
+      granted: { increment: fromGranted },
+      purchased: { increment: fromPurchased },
+    },
   });
+
   const balanceAfter = updated.granted + updated.purchased;
+
   await prisma.creditLedger.create({
-    data: { userId, delta: amount, kind: "refund", action, balanceAfter },
+    data: {
+      userId,
+      delta: total,
+      kind: "refund",
+      action: action ?? null,
+      balanceAfter,
+    },
   });
 }
 
@@ -296,4 +328,46 @@ export async function resetMonthlyGranted(
       balanceAfter,
     },
   });
+}
+
+// ── Lazy monthly grant ────────────────────────────────────────────────────────
+
+/**
+ * Ensure the user has received their current-period monthly credit allowance.
+ * No-op when:
+ *   - CREDITS_LIVE env is not "1" (flag-gated)
+ *   - user is FREE (allowance 0)
+ *   - a grant was already made within the current 30-day window
+ *     (grantedResetAt is set AND less than USAGE_PERIOD_DAYS old)
+ *
+ * When the window has expired (or no grant was ever made), calls
+ * `resetMonthlyGranted` which hard-sets `granted` to the plan allowance
+ * (use-it-or-lose-it — leftover is overwritten, not rolled over).
+ *
+ * Idempotent: safe to call multiple times per request.
+ */
+export async function ensureMonthlyGrant(userId: string): Promise<void> {
+  if (process.env.CREDITS_LIVE !== "1") return;
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { plan: true },
+  });
+  if (!user) return;
+
+  const allowance = MONTHLY_GRANT[user.plan] ?? 0;
+  if (allowance <= 0) return; // FREE or unknown plan — no allowance
+
+  const balance = await prisma.creditBalance.findUnique({ where: { userId } });
+  const now = Date.now();
+  const windowMs = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
+
+  const withinWindow =
+    balance?.grantedResetAt !== null &&
+    balance?.grantedResetAt !== undefined &&
+    now - balance.grantedResetAt.getTime() < windowMs;
+
+  if (withinWindow) return; // already granted this period
+
+  await resetMonthlyGranted(userId, user.plan);
 }

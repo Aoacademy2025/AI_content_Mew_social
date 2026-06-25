@@ -51,7 +51,11 @@ export async function refundReservation(
   action: string
 ): Promise<void> {
   if (res.creditsSpent && res.creditsSpent > 0) {
-    await refundCredits(userId, res.creditsSpent, action);
+    // Overflow credits were spent from the `purchased` bucket (minute-overflow
+    // only ever drains purchased, since granted is the in-quota allowance) — so
+    // refund the whole amount back to `purchased`. Same effect as the prior
+    // 3-arg refundCredits(userId, amount, action).
+    await refundCredits(userId, 0, res.creditsSpent, action);
   } else if (res.reservedMinutes != null) {
     await refundMinutes(userId, res.reservedMinutes);
   } else {
