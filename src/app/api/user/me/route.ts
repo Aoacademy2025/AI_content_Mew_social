@@ -5,7 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
-import { checkMinuteQuota, minutesLimitForPlan } from "@/lib/minute-limits";
+import { checkMinuteQuota } from "@/lib/minute-limits";
 
 export async function GET() {
   try {
@@ -45,7 +45,7 @@ export async function GET() {
       minuteFields = {
         minuteQuota: true,
         minutesUsed: mq.used,
-        minutesLimit: minutesLimitForPlan((user as any).plan ?? "FREE"),
+        minutesLimit: mq.used + mq.remaining,
       };
     }
     return NextResponse.json({

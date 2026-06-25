@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { checkClipQuota } from "@/lib/usage-limits";
-import { checkMinuteQuota, minutesLimitForPlan } from "@/lib/minute-limits";
+import { checkMinuteQuota } from "@/lib/minute-limits";
 
 // GET /api/videos/usage — read-only clip + minute quota status for the authenticated user
 // Does NOT increment usageCount; uses checkClipQuota which calls syncUsageWindow
@@ -34,7 +34,7 @@ export async function GET() {
       resetAt: quota.resetAt.toISOString(),
       minutes: {
         used: minuteQuota.used,
-        limit: minutesLimitForPlan(quota.plan),
+        limit: minuteQuota.used + minuteQuota.remaining,
         remaining: minuteQuota.remaining,
       },
     });
