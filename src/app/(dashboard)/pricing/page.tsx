@@ -152,7 +152,12 @@ function PricingContent() {
                   <div className="h-full rounded-full" style={{ width: `${usagePct}%`, background: ACCENT }} />
                 </div>
               )}
-              <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
+              {me?.minuteQuota && (
+                <p className="mt-2 text-[13px] font-semibold text-amber-300">
+                  โควต้าทดลอง: 15 นาที ใน 7 วัน
+                </p>
+              )}
+              <p className="mt-2 text-[13px] leading-relaxed text-[#a7adcc]">
                 หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">{me?.minuteQuota ? "5 นาที/เดือน · ~5 คลิป" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
                 <b className="text-violet-200"> อัปเกรดเพื่อใช้ต่อไม่สะดุด</b>
               </p>

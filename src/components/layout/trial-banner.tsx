@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Sparkles, ArrowRight } from "lucide-react";
 import { fetchMe } from "@/lib/use-me";
 
-type Me = { plan: string; trialStartedAt: string | null; trialEndsAt: string | null };
+type Me = { plan: string; trialStartedAt: string | null; trialEndsAt: string | null; minuteQuota?: boolean };
 
 export function TrialBanner() {
   const [me, setMe] = useState<Me | null>(null);
@@ -23,8 +23,9 @@ export function TrialBanner() {
   if (!trialing && !ended) return null;
 
   const daysLeft = trialing ? Math.ceil((endsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+  const minuteNote = me.minuteQuota ? " · 15 นาที ใน 7 วัน" : "";
   const text = trialing
-    ? `ทดลอง PRO เหลืออีก ${daysLeft} วัน`
+    ? `ทดลอง PRO เหลืออีก ${daysLeft} วัน${minuteNote}`
     : "ทดลอง PRO หมดแล้ว — อัปเกรดรายปีรับราคาพิเศษ";
 
   return (

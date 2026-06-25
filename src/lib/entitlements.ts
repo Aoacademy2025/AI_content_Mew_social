@@ -171,11 +171,12 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
     if (process.env.CREDITS_LIVE === "1") {
       await resetMonthlyGranted(userId, "FREE").catch(() => {});
     }
+    const minuteImpact = process.env.MINUTE_QUOTA === "1" ? " (เหลือ 5 นาที/เดือน)" : "";
     await createNotification({
       userId,
       type: "LIMIT_REACHED",
       title: decision.reason === "trial_expired" ? "ทดลอง PRO หมดอายุแล้ว" : "แพ็กเกจหมดอายุแล้ว",
-      body: "บัญชีของคุณกลับเป็น Free แล้ว อัปเกรดเพื่อใช้ฟีเจอร์ PRO ต่อ",
+      body: `บัญชีของคุณกลับเป็น Free แล้ว${minuteImpact} อัปเกรดเพื่อใช้ฟีเจอร์ PRO ต่อ`,
     }).catch(() => {});
   }
 
