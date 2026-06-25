@@ -40,7 +40,7 @@ export async function geminiGenerateText(
       });
       return response.text ?? "";
     } catch (e) {
-      const info = getGeminiErrorInfo(e);
+      const info = getGeminiErrorInfo(e, { managed: process.env.MANAGED_GEMINI === "1" });
       if (info.retryable && attempt < MAX_ATTEMPTS) {
         const delayMs = 1000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 500);
         console.warn(`[gemini] ${info.kind} (attempt ${attempt}/${MAX_ATTEMPTS}) — retry in ${delayMs}ms`);

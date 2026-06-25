@@ -61,5 +61,80 @@ check("managed keeps pexels required",
 check("managed keeps pixabay required",
   requiredKeysFor(true).some(k => k.id === "pixabay"));
 
+// ── Task 3: gemini-errors managed-aware messaging ──
+import { getGeminiErrorInfo } from "../src/lib/gemini-errors";
+
+const PLATFORM_PHRASE = "ระบบ AI ขัดข้องชั่วคราว";
+const KEY_FIX_PATTERNS = ["key ใหม่", "Settings", "ผูกบัตร", "สร้าง key", "Enable"];
+
+function containsKeyFix(msg: string): boolean {
+  return KEY_FIX_PATTERNS.some((p) => msg.includes(p));
+}
+
+// Construct error objects that trigger specific kinds:
+const invalidKeyErr = new Error("API_KEY_INVALID: invalid api key provided");
+const apiDisabledErr = new Error("service_disabled: generative language api has not been used in project");
+const billingErr = new Error("403 BILLING_DISABLED: billing account not found, enable billing");
+const permissionErr = new Error("403 PERMISSION_DENIED: permission denied");
+
+// Transient kinds — should be unchanged even when managed=true:
+const quotaErr = new Error("429 resource_exhausted: quota exceeded");
+const highDemandErr = new Error("503 Service Unavailable: high demand");
+const timeoutErr = new Error("AbortError: headers_timeout");
+
+// ── managed=true: key-fault kinds → platform message ──
+const ivManaged = getGeminiErrorInfo(invalidKeyErr, { managed: true });
+check("managed invalid_key → platform msg (no 'key ใหม่'/'Settings')",
+  ivManaged.kind === "invalid_key" && !containsKeyFix(ivManaged.userMessage) && ivManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${ivManaged.kind} msg="${ivManaged.userMessage}"`);
+
+const adManaged = getGeminiErrorInfo(apiDisabledErr, { managed: true });
+check("managed api_disabled → platform msg",
+  adManaged.kind === "api_disabled" && !containsKeyFix(adManaged.userMessage) && adManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${adManaged.kind} msg="${adManaged.userMessage}"`);
+
+const biManaged = getGeminiErrorInfo(billingErr, { managed: true });
+check("managed billing → platform msg (no 'ผูกบัตร')",
+  biManaged.kind === "billing" && !containsKeyFix(biManaged.userMessage) && biManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${biManaged.kind} msg="${biManaged.userMessage}"`);
+
+const pmManaged = getGeminiErrorInfo(permissionErr, { managed: true });
+check("managed permission → platform msg",
+  pmManaged.kind === "permission" && !containsKeyFix(pmManaged.userMessage) && pmManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${pmManaged.kind} msg="${pmManaged.userMessage}"`);
+
+// ── managed=false (default): key-fault kinds → original messages ──
+const ivByok = getGeminiErrorInfo(invalidKeyErr, { managed: false });
+check("byok invalid_key → contains key-fix wording",
+  ivByok.kind === "invalid_key" && containsKeyFix(ivByok.userMessage),
+  `msg="${ivByok.userMessage}"`);
+
+const biByok = getGeminiErrorInfo(billingErr, { managed: false });
+check("byok billing → contains 'ผูกบัตร'",
+  biByok.kind === "billing" && biByok.userMessage.includes("ผูกบัตร"),
+  `msg="${biByok.userMessage}"`);
+
+// ── managed=true: transient kinds stay unchanged ──
+const qtManaged = getGeminiErrorInfo(quotaErr, { managed: true });
+check("managed quota → kind=quota (unchanged), NOT platform msg",
+  qtManaged.kind === "quota" && !qtManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${qtManaged.kind} msg="${qtManaged.userMessage}"`);
+
+const hdManaged = getGeminiErrorInfo(highDemandErr, { managed: true });
+check("managed high_demand → unchanged",
+  hdManaged.kind === "high_demand" && !hdManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${hdManaged.kind} msg="${hdManaged.userMessage}"`);
+
+const toManaged = getGeminiErrorInfo(timeoutErr, { managed: true });
+check("managed timeout → unchanged",
+  toManaged.kind === "timeout" && !toManaged.userMessage.includes(PLATFORM_PHRASE),
+  `kind=${toManaged.kind} msg="${toManaged.userMessage}"`);
+
+// ── no-opts call (default managed=false) → key-fault gets original msg ──
+const ivNoOpts = getGeminiErrorInfo(invalidKeyErr);
+check("no-opts (default) invalid_key → original key-fix msg",
+  ivNoOpts.kind === "invalid_key" && containsKeyFix(ivNoOpts.userMessage),
+  `msg="${ivNoOpts.userMessage}"`);
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll gemini-managed checks passed.");
