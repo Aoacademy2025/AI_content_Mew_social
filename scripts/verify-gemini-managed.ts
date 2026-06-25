@@ -119,6 +119,14 @@ const qtManaged = getGeminiErrorInfo(quotaErr, { managed: true });
 check("managed quota → kind=quota (unchanged), NOT platform msg",
   qtManaged.kind === "quota" && !qtManaged.userMessage.includes(PLATFORM_PHRASE),
   `kind=${qtManaged.kind} msg="${qtManaged.userMessage}"`);
+check("managed quota → platform-framed (no 'ผูกบัตร'/'โควต้าฟรี')",
+  qtManaged.kind === "quota" && !qtManaged.userMessage.includes("ผูกบัตร") && !qtManaged.userMessage.includes("โควต้าฟรี"),
+  `msg="${qtManaged.userMessage}"`);
+
+const qtByok = getGeminiErrorInfo(quotaErr, { managed: false });
+check("byok quota → original BYOK message (contains 'ผูกบัตร')",
+  qtByok.kind === "quota" && qtByok.userMessage.includes("ผูกบัตร"),
+  `msg="${qtByok.userMessage}"`);
 
 const hdManaged = getGeminiErrorInfo(highDemandErr, { managed: true });
 check("managed high_demand → unchanged",

@@ -120,7 +120,9 @@ export function getGeminiErrorInfo(
       kind: "quota",
       status: 429,
       retryable: true,
-      userMessage: "Gemini โควต้าฟรีเต็มแล้ว กรุณารอรอบรีเซ็ต หรือผูกบัตร Google เพื่อเพิ่มโควต้า",
+      userMessage: managed
+        ? "ระบบ AI กำลังใช้งานหนาแน่น กรุณาลองใหม่อีกครั้งสักครู่"
+        : "Gemini โควต้าฟรีเต็มแล้ว กรุณารอรอบรีเซ็ต หรือผูกบัตร Google เพื่อเพิ่มโควต้า",
       technicalMessage: raw,
     };
   }

@@ -10,7 +10,9 @@ type ProviderHelp = { label: string; whatFor: string; getKeyUrl: string };
 export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs" | "heygen", ProviderHelp> = {
   gemini: {
     label: "Gemini (Google AI Studio)",
-    whatFor: "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
+    whatFor: process.env.MANAGED_GEMINI === "1"
+      ? "จัดการโดยระบบ — ไม่ต้องตั้งค่า"
+      : "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
     getKeyUrl: "https://aistudio.google.com/app/apikey",
   },
   pexels: { label: "Pexels", whatFor: "คลิป b-roll (ฟรี)", getKeyUrl: "https://www.pexels.com/api/" },
@@ -88,10 +90,13 @@ export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปล�
 ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
 avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด), full แพง. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
-BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
+${process.env.MANAGED_GEMINI === "1"
+  ? `ระบบจัดการ Gemini ให้ — ใส่เฉพาะ Pexels/Pixabay (อย่างน้อย 1 สำหรับ B-roll); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.
+- ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.`
+  : `BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
 - ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.
-- key ที่จำเป็น: ${process.env.MANAGED_GEMINI === "1" ? "" : "Gemini (เสมอ) และ "}Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.${process.env.MANAGED_GEMINI === "1" ? " (Gemini จัดการโดยระบบ — ไม่ต้องตั้งค่า key เอง)" : ""}
+- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.`}
 
 ทำตัวเป็นผู้ช่วยตั้งค่า:
 1) ก่อนสั่งงานครั้งแรก เรียก get_current_user ดู field "setup" ว่าขาด key ตัวไหน.
