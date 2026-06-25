@@ -3,8 +3,9 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
-import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
-import { checkMinuteQuota, refundMinutes, reserveMinutes, minutesFromSeconds } from "@/lib/minute-limits";
+import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
+import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
+import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
@@ -105,6 +106,11 @@ type RenderJob = {
   startedAt: number;
   progress?: number; // 0–100
   userId?: string; // owner — used by the render-status legacy branch for ownership checks
+  // Receipt fields, set only when the render was funded by credit overflow (CREDITS_LIVE).
+  // Absent (undefined) on every minute/clip-funded render → no change to the persisted
+  // job JSON when CREDITS_LIVE is off. The render-status route can surface these (Task 5).
+  creditsSpent?: number;
+  creditBalanceAfter?: number;
 };
 
 // activeRenderCount is now stored in global via cancel-registry to survive hot-reloads.
@@ -208,15 +214,18 @@ function saveBundleCache() {
 // Design-doc §8 error contract: { code, provider, message, userAction, retryable }.
 // `detail` duplicates the Thai message as a plain string for legacy clients that
 // render data.error / data.detail directly (e.g. video-creator's ApiCallError message).
-function quotaExceededResponse(message: string) {
+function quotaExceededResponse(message: string, opts?: { canBuyCredits?: boolean }) {
   return NextResponse.json(
     {
       error: {
         code: "quota_exceeded",
         provider: "heroai",
         message,
-        userAction: "อัปเกรดแพ็กเกจที่หน้า Pricing เพื่อสร้างคลิปต่อ",
+        userAction: opts?.canBuyCredits
+          ? "ซื้อเครดิตเพื่อเรนเดอร์ต่อ หรืออัปเกรดแพ็กเกจ"
+          : "อัปเกรดแพ็กเกจที่หน้า Pricing เพื่อสร้างคลิปต่อ",
         retryable: false,
+        ...(opts?.canBuyCredits ? { canBuyCredits: true } : {}),
       },
       detail: message,
     },
@@ -229,9 +238,18 @@ export async function POST(req: Request) {
   loadBundleCache();
   let quotaReserved = false;
   let reservedUserId: string | null = null;
+  // Funding source of THIS reservation when it overflowed minutes → credits. Stays null
+  // for the minute/clip path → every refund/record below routes to the original bucket
+  // (byte-identical when CREDITS_LIVE is off, since reserveMinutesOrCredits never enters
+  // the credit branch and these stay null).
+  let creditsSpent: number | null = null;
+  let creditBalanceAfter: number | null = null;
   // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
   // unit reserved/refunded/recorded is whole minutes-by-output-duration instead of clips.
   const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
+  // Credit-overflow flag (default OFF → byte-identical). When ON, an out-of-minutes
+  // reserve silently spends purchased credits instead of walling.
+  const creditsLive = process.env.CREDITS_LIVE === "1";
   // Minutes to reserve, computed once the output duration is known (after
   // requestedDurationSec below, before the reserve). Initialized to 0 only to keep it
   // definitely-assigned for the outer setup-error refund; it is reassigned to the real
@@ -399,11 +417,20 @@ export async function POST(req: Request) {
     if (burnAlreadyPaid) {
       // FREE: burn of this user's own paid render — never reserve, never block.
     } else if (useMinuteQuota) {
-      const quota = await reserveMinutes(userId, reservedMinutes);
+      // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
+      // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
+      // never enters the credit branch, so this is byte-identical to reserveMinutes.
+      const result = await reserveMinutesOrCredits(userId, reservedMinutes, { creditsLive, ref: jobId });
       // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าไประหว่าง precheck → reserve
-      if (!quota.allowed) return quotaExceededResponse(quota.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว");
+      if (!result.allowed) return quotaExceededResponse(result.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว", { canBuyCredits: creditsLive });
       quotaReserved = true;
       reservedUserId = userId;
+      if (result.via === "credits") {
+        // Funded by credits (minute meter untouched). Carry the spend + post-spend
+        // balance for the bucket-aware refund and the receipt surfaced on the job.
+        creditsSpent = result.creditsSpent;
+        creditBalanceAfter = result.balanceAfter;
+      }
     } else {
       const quota = await reserveClipUsage(userId);
       if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -830,6 +857,12 @@ export async function POST(req: Request) {
         // Only when this job actually reserved (quotaReserved): a free burn holds nothing.
         // Flag off → undefined → row stays clips-mode (reservedMinutes null), unchanged.
         reservedMinutes: useMinuteQuota && quotaReserved ? reservedMinutes : undefined,
+        // Credits spent if THIS reserve overflowed minutes → credits (CREDITS_LIVE on).
+        // Persisted on RenderJob.creditsSpent so failRenderJob/supersedeScope refund the
+        // SAME bucket (credits, not minutes/clips) and the receipt can be surfaced.
+        // Null/flag-off → undefined → row stays minute/clip-funded (creditsSpent null),
+        // byte-identical to before.
+        creditsSpent: creditsSpent ?? undefined,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
@@ -873,11 +906,15 @@ export async function POST(req: Request) {
         // a clip back (quota leak). Matches the outer setup-error guard.
         if (quotaRefunded || !quotaReserved) return;
         quotaRefunded = true;
-        if (useMinuteQuota) {
-          await refundMinutes(userId, reservedMinutes).catch(() => {});
-        } else {
-          await refundClipUsage(userId).catch(() => {});
-        }
+        // Bucket-aware: credit-funded (creditsSpent>0) → refundCredits; minute-funded
+        // (MINUTE_QUOTA on → reservedMinutes) → refundMinutes; else (clips-mode/flag-off)
+        // → refundClipUsage. With CREDITS_LIVE off, creditsSpent stays null, so this is
+        // identical to the prior refundMinutes/refundClipUsage branch.
+        await refundReservation(
+          userId,
+          { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent },
+          `render-refund:${jobId}`
+        ).catch(() => {});
       };
       const stopSupersededJob = async (stage: string) => {
         if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
@@ -1018,15 +1055,25 @@ export async function POST(req: Request) {
         });
 
         // Success path: runRender already ran clearCancelHandles()/finishJob() via
-        // onRenderSucceeded; persist the done state + notify (route-owned).
-        setRenderJob(jobId, { status: "done", videoUrl, startedAt: getRenderJob(jobId)!.startedAt });
+        // onRenderSucceeded; persist the done state + notify (route-owned). The receipt
+        // fields are spread in ONLY when credit-funded (creditsSpent != null) → the
+        // persisted job JSON is byte-identical to before when CREDITS_LIVE is off.
+        setRenderJob(jobId, {
+          status: "done",
+          videoUrl,
+          startedAt: getRenderJob(jobId)!.startedAt,
+          ...(creditsSpent != null ? { creditsSpent } : {}),
+          ...(creditBalanceAfter != null ? { creditBalanceAfter } : {}),
+        });
         writeProgress({ progress: 100, stage: "done", videoUrl, queued: false, queuePosition: null });
         // Record that this user was charged a clip for THIS base-render output, so a later
         // BURN of it is free (isBurnAlreadyPaid). Only base renders that actually reserved
         // (quotaReserved && not a burn). Fail-open: a bookkeeping write must not break the
         // render — the worst case is a future burn re-charges (never a free bypass).
         if (quotaReserved && !isSubtitleOverlay) {
-          await recordChargedClip(userId, videoUrl, useMinuteQuota ? reservedMinutes : undefined).catch(() => {});
+          // 4th arg persists the credit spend (credit-funded overflow). Null → undefined
+          // → byte-identical to the prior 3-arg call (creditsSpent stays null on the row).
+          await recordChargedClip(userId, videoUrl, useMinuteQuota ? reservedMinutes : undefined, creditsSpent ?? undefined).catch(() => {});
         }
         createNotification({
           userId,
@@ -1095,11 +1142,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ jobId });
   } catch (error) {
     if (quotaReserved && reservedUserId) {
-      if (useMinuteQuota) {
-        await refundMinutes(reservedUserId, reservedMinutes).catch(() => {});
-      } else {
-        await refundClipUsage(reservedUserId).catch(() => {});
-      }
+      // Bucket-aware refund (mirrors the in-flight refundReservedClip). credit-funded →
+      // refundCredits; minute-funded → refundMinutes; else clips. CREDITS_LIVE off →
+      // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
+      await refundReservation(
+        reservedUserId,
+        { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent },
+        "render-setup-refund"
+      ).catch(() => {});
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
