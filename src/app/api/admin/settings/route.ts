@@ -30,6 +30,15 @@ const KEYS = [
   // Server-owned (platform) API key for internal automation — NOT a user's BYOK
   // key. Used by the loanword miner cron + other server-side Gemini calls.
   "server_gemini_key",
+  // Cost-rate config for the Cost & Margin admin dashboard (admin-editable ฿ rates)
+  "cost_render_per_minute",
+  "cost_image_gpt_1k",
+  "cost_image_nano_1k",
+  "cost_image_gpt_2k",
+  "cost_image_nano_2k",
+  "cost_video_seedance_5s",
+  "cost_infra_monthly",
+  "fx_baht_per_usd",
 ] as const;
 
 type SettingKey = typeof KEYS[number];
