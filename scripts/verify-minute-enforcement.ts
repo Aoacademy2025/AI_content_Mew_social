@@ -33,9 +33,14 @@ async function main() {
   ok(minutesFromSeconds(60) === 1,  "60s → 1 min");
   ok(minutesFromSeconds(30) === 1,  "30s → 1 min (floor 1)");
   ok(minutesFromSeconds(0)  === 1,  "0s → 1 min (guard)");
-  ok(minutesFromSeconds(150) === 3, "150s → 3 min");
+  ok(minutesFromSeconds(150) === 3, "150s → 3 min (2.5 rounds up)");
   ok(minutesFromSeconds(360) === 6, "360s → 6 min");
   ok(minutesFromSeconds(NaN) === 1, "NaN → 1 min (guard)");
+  // round-to-nearest (NEW — these were 2 under ceil):
+  ok(minutesFromSeconds(65) === 1,  "65s (1:05) → 1 min (nearest)");
+  ok(minutesFromSeconds(89) === 1,  "89s (1:29) → 1 min (nearest)");
+  ok(minutesFromSeconds(91) === 2,  "91s (1:31) → 2 min (nearest)");
+  ok(minutesFromSeconds(105) === 2, "105s (1:45) → 2 min (nearest)");
 
   // --- recordChargedClip 3-arg: stores chargedMinutes ---
   const userId = "test-me-user";

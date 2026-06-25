@@ -31,6 +31,8 @@
 
 **Meter = นาที/เดือน** (= หน่วยต้นทุนจริง) · **display = "~X คลิป ถ้า ~1 นาที"** · คงเพดานความยาว/คลิป (นิยาม short-form)
 
+> **Rounding (evolved 2026-06-26):** minutes are rounded to the NEAREST whole minute (min 1), one rule everywhere — NOT ceil. Rationale: a 1:05 clip charging 2 minutes felt punitive on the real-money overflow path; nearest is statistically fair and stays integer-credit. (Supersedes the earlier "ceil to whole minute".)
+
 | Tier | นาที/เดือน | max/คลิป | รายเดือน | รายปี (ปกติ) | **Founder annual (−50%, 100 คนแรก)** |
 |---|---|---|---|---|---|
 | **Free** | 3–5 คลิป (watermark) | 1–2 นาที | ฿0 | — | — |
