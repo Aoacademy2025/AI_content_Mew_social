@@ -492,6 +492,7 @@ export default function ShortVideoPage() {
   // Key onboarding wizard (proactive pre-check)
   const [keyWizardOpen, setKeyWizardOpen] = useState(false);
   const [managed, setManaged] = useState(false);
+  const [minuteQuota, setMinuteQuota] = useState(false);
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
@@ -1707,6 +1708,7 @@ export default function ShortVideoPage() {
       if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
       const st = await res.json();
       setManaged(!!st.managed);
+      if (st.minuteQuota) setMinuteQuota(true);
       if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
     } catch { return true; }
     return true;
@@ -2063,6 +2065,11 @@ export default function ShortVideoPage() {
         const msg = friendlyError(err);
         toast.error(msg);
         markError(msg);
+        // Refund reassurance — show only when the user has a minute/credit quota so they know
+        // they weren't charged. Gated on flags; dead branch when both are off (flag-off = no-op).
+        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
       }
     } finally {
       abortRef.current = false;

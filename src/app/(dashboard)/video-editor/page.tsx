@@ -2765,7 +2765,13 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
+      if (!handleMissingKey(err, "runAll")) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -2848,7 +2854,13 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
+      if (!handleMissingKey(err, "runAll")) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -2867,7 +2879,13 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (!handlePlanError(err)) showErrorToast(err);
+      if (!handlePlanError(err)) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -3084,6 +3102,10 @@ export default function VideoEditorPage() {
       // โควต้าคลิปหมด (403 quota_exceeded) → เปิด Upgrade modal พร้อมลิงก์หน้า Pricing แทน toast
       if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
+      // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+      if (toastOnError && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+        toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+      }
       throw err;
     } finally {
       pollAbort.abort();
