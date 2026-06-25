@@ -8,7 +8,7 @@ import {
   ArrowRight, Loader2, Ticket, CheckCircle2, Clock, Send, ChevronDown, ChevronUp,
   Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
   CreditCard, Key, Eye, EyeOff, Tag, Plus, GripVertical, Zap, Building2,
-  Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save, Languages,
+  Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save, Languages, BarChart3,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -348,6 +348,17 @@ export default function AdminDashboardPage() {
   const [planBusinessTagline, setPlanBusinessTagline] = useState("");
   const [savingPlans, setSavingPlans] = useState(false);
 
+  // Cost-rate editor state
+  const [costRenderPerMinute, setCostRenderPerMinute] = useState("");
+  const [costImageGpt1k, setCostImageGpt1k] = useState("");
+  const [costImageNano1k, setCostImageNano1k] = useState("");
+  const [costImageGpt2k, setCostImageGpt2k] = useState("");
+  const [costImageNano2k, setCostImageNano2k] = useState("");
+  const [costVideoSeedance5s, setCostVideoSeedance5s] = useState("");
+  const [costInfraMonthly, setCostInfraMonthly] = useState("");
+  const [fxBahtPerUsd, setFxBahtPerUsd] = useState("");
+  const [savingCostRates, setSavingCostRates] = useState(false);
+
   async function loadSettings() {
     try {
       const res = await fetch("/api/admin/settings");
@@ -375,7 +386,39 @@ export default function AdminDashboardPage() {
       if (typeof d.plan_pro_tagline === "string") setPlanProTagline(d.plan_pro_tagline);
       if (typeof d.plan_business_tagline === "string") setPlanBusinessTagline(d.plan_business_tagline);
       if (d.server_gemini_key) setServerGeminiKey(d.server_gemini_key);
+      // Cost rates
+      if (d.cost_render_per_minute) setCostRenderPerMinute(d.cost_render_per_minute);
+      if (d.cost_image_gpt_1k) setCostImageGpt1k(d.cost_image_gpt_1k);
+      if (d.cost_image_nano_1k) setCostImageNano1k(d.cost_image_nano_1k);
+      if (d.cost_image_gpt_2k) setCostImageGpt2k(d.cost_image_gpt_2k);
+      if (d.cost_image_nano_2k) setCostImageNano2k(d.cost_image_nano_2k);
+      if (d.cost_video_seedance_5s) setCostVideoSeedance5s(d.cost_video_seedance_5s);
+      if (d.cost_infra_monthly) setCostInfraMonthly(d.cost_infra_monthly);
+      if (d.fx_baht_per_usd) setFxBahtPerUsd(d.fx_baht_per_usd);
     } catch {}
+  }
+
+  async function saveCostRates() {
+    setSavingCostRates(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cost_render_per_minute: costRenderPerMinute,
+          cost_image_gpt_1k: costImageGpt1k,
+          cost_image_nano_1k: costImageNano1k,
+          cost_image_gpt_2k: costImageGpt2k,
+          cost_image_nano_2k: costImageNano2k,
+          cost_video_seedance_5s: costVideoSeedance5s,
+          cost_infra_monthly: costInfraMonthly,
+          fx_baht_per_usd: fxBahtPerUsd,
+        }),
+      });
+      if (res.ok) toast.success("บันทึก Cost Rates แล้ว");
+      else toast.error("บันทึกไม่สำเร็จ");
+    } catch { toast.error("เกิดข้อผิดพลาด"); }
+    finally { setSavingCostRates(false); }
   }
 
   async function saveServerGeminiKey() {
@@ -1501,6 +1544,136 @@ export default function AdminDashboardPage() {
                 บันทึก
               </button>
             </div>
+          </div>
+        </div>
+
+        {/* ── Cost-rate Editor ──────────────────────────────────────────── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-violet-400" />
+            <h2 className="text-sm font-semibold text-white">Cost Rates (ต้นทุน)</h2>
+          </div>
+          <p className="text-xs text-zinc-500">
+            อัตราต้นทุนที่ใช้คำนวณใน Cost &amp; Margin dashboard — ระบุเป็น <span className="font-mono text-zinc-400">฿</span> ต่อหน่วย; ตัวเลขจาก DB ทับ default ใน code
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Gemini TTS — ฿/นาที
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costRenderPerMinute}
+                onChange={e => setCostRenderPerMinute(e.target.value)}
+                placeholder="0.014"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Image GPT-4o 1K — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageGpt1k}
+                onChange={e => setCostImageGpt1k(e.target.value)}
+                placeholder="0.60"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Image Nano 1K — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageNano1k}
+                onChange={e => setCostImageNano1k(e.target.value)}
+                placeholder="0.15"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Image GPT-4o 4K — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageGpt2k}
+                onChange={e => setCostImageGpt2k(e.target.value)}
+                placeholder="1.20"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Image Nano 4K — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageNano2k}
+                onChange={e => setCostImageNano2k(e.target.value)}
+                placeholder="0.30"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Video Seedance 5s — ฿/วิดีโอ
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costVideoSeedance5s}
+                onChange={e => setCostVideoSeedance5s(e.target.value)}
+                placeholder="2.80"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Infra รายเดือน — ฿/เดือน
+              </label>
+              <input
+                type="number"
+                step="1"
+                value={costInfraMonthly}
+                onChange={e => setCostInfraMonthly(e.target.value)}
+                placeholder="2600"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                อัตราแลกเปลี่ยน ฿/USD
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={fxBahtPerUsd}
+                onChange={e => setFxBahtPerUsd(e.target.value)}
+                placeholder="35"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              onClick={saveCostRates}
+              disabled={savingCostRates}
+              className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-80 disabled:opacity-40"
+              style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 50%))" }}
+            >
+              {savingCostRates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              บันทึก Cost Rates
+            </button>
           </div>
         </div>
 

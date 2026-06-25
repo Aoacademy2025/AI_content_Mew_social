@@ -15,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import CostMarginPanel from "@/components/admin/cost-margin-panel";
 
 type FunnelRow = {
   key: string;
@@ -477,6 +478,9 @@ export default function AdminInsightsPage() {
             ))}
           </div>
         </header>
+
+        {/* ── Cost & Margin panel (additive — do not modify below sections) ── */}
+        <CostMarginPanel />
 
         {loading && (
           <div className="flex h-72 items-center justify-center rounded-lg border border-white/10 bg-white/[0.025]">
