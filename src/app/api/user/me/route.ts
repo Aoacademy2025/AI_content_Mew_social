@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
+import { checkMinuteQuota, minutesLimitForPlan } from "@/lib/minute-limits";
 
 export async function GET() {
   try {
@@ -38,6 +39,15 @@ export async function GET() {
 
     const limits = limitsForPlan((user as any).plan ?? "FREE");
     const usage = await syncUsageWindow(authUser.id);
+    let minuteFields: { minuteQuota: true; minutesUsed: number; minutesLimit: number } | Record<string, never> = {};
+    if (process.env.MINUTE_QUOTA === "1") {
+      const mq = await checkMinuteQuota(authUser.id);
+      minuteFields = {
+        minuteQuota: true,
+        minutesUsed: mq.used,
+        minutesLimit: minutesLimitForPlan((user as any).plan ?? "FREE"),
+      };
+    }
     return NextResponse.json({
       ...user,
       effectivePlan: classifyEntitlement(authUser).effectivePlan,
@@ -45,7 +55,7 @@ export async function GET() {
       usageLimit: usage?.usageLimit ?? limits.clips,
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
       usageResetAt: usage?.resetAt ?? null,
-      ...(process.env.MINUTE_QUOTA === "1" ? { minuteQuota: true } : {}),
+      ...minuteFields,
     });
   } catch (error) {
     return apiError({ route: "user/me", error });

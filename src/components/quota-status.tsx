@@ -181,7 +181,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
               {mins.remaining}/{mins.limit}
             </strong>{" "}
             นาที{" "}
-            <span className="opacity-60">(~{quota.used}/{quota.limit} คลิป)</span>
+            <span className="opacity-60">(~{mins.limit} คลิป)</span>
           </span>
         </span>
 

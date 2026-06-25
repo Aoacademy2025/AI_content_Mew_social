@@ -32,7 +32,7 @@ const GLOW = "0 0 30px rgba(139,92,246,.45)";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
-type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; minuteQuota?: boolean } | null;
+type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; minuteQuota?: boolean; minutesUsed?: number; minutesLimit?: number } | null;
 
 const TIER_META: { key: PlanKey; cfgKey: keyof PlanConfig; icon: React.ElementType; highlight?: boolean }[] = [
   { key: "FREE", cfgKey: "free", icon: Zap },
@@ -77,7 +77,9 @@ function PricingContent() {
   const onTrial = currentPlan === "PRO" && daysLeft > 0;
   const usageLimit = me?.usageLimit ?? 0;
   const usageCount = me?.usageCount ?? 0;
-  const usagePct = usageLimit > 0 ? Math.min(100, Math.round((usageCount / usageLimit) * 100)) : 0;
+  const usagePct = me?.minuteQuota
+    ? ((me.minutesLimit ?? 0) > 0 ? Math.min(100, Math.round(((me.minutesUsed ?? 0) / (me.minutesLimit ?? 1)) * 100)) : 0)
+    : (usageLimit > 0 ? Math.min(100, Math.round((usageCount / usageLimit) * 100)) : 0);
 
   async function handleUpgrade(planKey: "PRO" | "BUSINESS") {
     if (userChecked && !currentPlan) {
@@ -145,9 +147,11 @@ function PricingContent() {
                   <Clock className="h-4 w-4 text-amber-300" strokeWidth={2.5} aria-hidden />
                   ทดลอง PRO เหลือ <span className="text-amber-300">{daysLeft} วัน</span>
                 </span>
-                {usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาทีเดือนนี้</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>)}
               </div>
-              {usageLimit > 0 && (
+              {(me?.minuteQuota ? (me.minutesLimit ?? 0) > 0 : usageLimit > 0) && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div className="h-full rounded-full" style={{ width: `${usagePct}%`, background: ACCENT }} />
                 </div>
@@ -166,9 +170,11 @@ function PricingContent() {
             <>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[15px] font-semibold text-white" style={HEAD}>คุณกำลังใช้แผน Free</span>
-                {usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาทีเดือนนี้</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>)}
               </div>
-              {usageLimit > 0 && (
+              {(me?.minuteQuota ? (me.minutesLimit ?? 0) > 0 : usageLimit > 0) && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div className="h-full rounded-full" style={{ width: `${usagePct}%`, background: ACCENT }} />
                 </div>
@@ -181,7 +187,10 @@ function PricingContent() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="inline-flex items-center gap-2 text-[15px] font-semibold text-white" style={HEAD}>
                 <ShieldCheck className="h-4 w-4 text-violet-300" strokeWidth={2.5} aria-hidden />
-                คุณอยู่แผน {currentPlan} 🎉 {usageLimit > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {usageCount}/{usageLimit} คลิป</span>}
+                คุณอยู่แผน {currentPlan} 🎉{" "}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาที</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {usageCount}/{usageLimit} คลิป</span>)}
               </span>
               <Link href="/settings?tab=billing" className="text-[13px] font-medium text-violet-300 hover:text-violet-200">จัดการบิล →</Link>
             </div>
