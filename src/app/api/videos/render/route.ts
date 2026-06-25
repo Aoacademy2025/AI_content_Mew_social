@@ -4,6 +4,7 @@ import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { checkClipQuota, refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { checkMinuteQuota, refundMinutes, reserveMinutes, minutesFromSeconds } from "@/lib/minute-limits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import path from "path";
 import fs from "fs";
@@ -228,6 +229,14 @@ export async function POST(req: Request) {
   loadBundleCache();
   let quotaReserved = false;
   let reservedUserId: string | null = null;
+  // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
+  // unit reserved/refunded/recorded is whole minutes-by-output-duration instead of clips.
+  const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
+  // Minutes to reserve, computed once the output duration is known (after
+  // requestedDurationSec below, before the reserve). Initialized to 0 only to keep it
+  // definitely-assigned for the outer setup-error refund; it is reassigned to the real
+  // (>=1) value before any reserve runs, so the reserve never under-charges with 0.
+  let reservedMinutes = 0;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
@@ -278,9 +287,14 @@ export async function POST(req: Request) {
     // อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่างยังเป็นตัวจองจริง (atomic) ตัวเดียว.
     // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
     if (!burnAlreadyPaid) {
-      const quotaCheck = await checkClipQuota(userId);
-      if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
-      if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
+      if (useMinuteQuota) {
+        const quotaCheck = await checkMinuteQuota(userId);
+        if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว");
+      } else {
+        const quotaCheck = await checkClipQuota(userId);
+        if (!quotaCheck) return NextResponse.json({ error: "User not found" }, { status: 404 });
+        if (!quotaCheck.allowed) return quotaExceededResponse(quotaCheck.message);
+      }
     }
 
     const dbUser = await prisma.user.findUnique({
@@ -302,6 +316,12 @@ export async function POST(req: Request) {
         : Number.isFinite(configDurationFrames) && configDurationFrames > 0
           ? configDurationFrames / fps
           : null;
+
+    // Minutes to reserve, from the best available output duration at reserve-time.
+    // requestedDurationSec is null only when no explicit duration AND no config frames
+    // were supplied; minutesFromSeconds then falls back to 60s → 1 min (never 0/under-charge).
+    // This is computed BEFORE the reserve (~below) and stays in scope for every refund path.
+    reservedMinutes = minutesFromSeconds(requestedDurationSec ?? 60);
 
     const planLimits = limitsForPlan(dbUser.plan);
     if (requestedDurationSec && requestedDurationSec > planLimits.durationSec) {
@@ -378,6 +398,12 @@ export async function POST(req: Request) {
     // legacy and queue paths share this single gate.
     if (burnAlreadyPaid) {
       // FREE: burn of this user's own paid render — never reserve, never block.
+    } else if (useMinuteQuota) {
+      const quota = await reserveMinutes(userId, reservedMinutes);
+      // Race guard: คำขออื่นของ user เดียวกันอาจกินโควต้าไประหว่าง precheck → reserve
+      if (!quota.allowed) return quotaExceededResponse(quota.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว");
+      quotaReserved = true;
+      reservedUserId = userId;
     } else {
       const quota = await reserveClipUsage(userId);
       if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -841,7 +867,11 @@ export async function POST(req: Request) {
         // a clip back (quota leak). Matches the outer setup-error guard.
         if (quotaRefunded || !quotaReserved) return;
         quotaRefunded = true;
-        await refundClipUsage(userId).catch(() => {});
+        if (useMinuteQuota) {
+          await refundMinutes(userId, reservedMinutes).catch(() => {});
+        } else {
+          await refundClipUsage(userId).catch(() => {});
+        }
       };
       const stopSupersededJob = async (stage: string) => {
         if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
@@ -990,7 +1020,7 @@ export async function POST(req: Request) {
         // (quotaReserved && not a burn). Fail-open: a bookkeeping write must not break the
         // render — the worst case is a future burn re-charges (never a free bypass).
         if (quotaReserved && !isSubtitleOverlay) {
-          await recordChargedClip(userId, videoUrl).catch(() => {});
+          await recordChargedClip(userId, videoUrl, useMinuteQuota ? reservedMinutes : undefined).catch(() => {});
         }
         createNotification({
           userId,
@@ -1059,7 +1089,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ jobId });
   } catch (error) {
     if (quotaReserved && reservedUserId) {
-      await refundClipUsage(reservedUserId).catch(() => {});
+      if (useMinuteQuota) {
+        await refundMinutes(reservedUserId, reservedMinutes).catch(() => {});
+      } else {
+        await refundClipUsage(reservedUserId).catch(() => {});
+      }
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
