@@ -11,7 +11,7 @@ import { minutesFromSeconds, refundMinutes, reserveMinutes } from "@/lib/minute-
 // this handler returns immediately with a PENDING video). When MINUTE_QUOTA is on we
 // must still reserve SOME minutes up front, so we estimate the narration length from
 // the script text: Thai speech runs ~13-16 chars/sec (see tts-timing.ts) — use 14 as a
-// middle estimate. minutesFromSeconds then ceils to whole minutes (min 1).
+// middle estimate. minutesFromSeconds rounds to nearest whole minute (min 1).
 const EST_CHARS_PER_SEC = 14;
 function estimateScriptMinutes(script: string): number {
   const chars = (script ?? "").replace(/\s+/g, "").length;

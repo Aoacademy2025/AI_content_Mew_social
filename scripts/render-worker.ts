@@ -124,7 +124,7 @@ async function runOne(job: ClaimedJob): Promise<void> {
     // Pass reservedMinutes so a minutes-mode job (MINUTE_QUOTA on at enqueue) records the
     // SAME chargedMinutes as the in-process render path; clips-mode rows have it null →
     // 2-arg-equivalent (chargedMinutes stays null), byte-identical to flag-off.
-    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl, job.reservedMinutes ?? undefined);
+    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl, job.reservedMinutes ?? undefined, job.creditsSpent ?? undefined);
     console.log(`[render-worker] done ${job.id} → ${result.videoUrl}`);
   } catch (e) {
     // runRender's finally releases its bundle ref; Remotion tears down its own
