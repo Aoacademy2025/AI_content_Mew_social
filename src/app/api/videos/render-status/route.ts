@@ -12,6 +12,7 @@ type RenderJob = {
   startedAt: number;
   progress?: number;
   userId?: string; // owner — set by the render route's setRenderJob for ownership checks
+  creditsSpent?: number; // set only when the render was credit-funded (overflow); receipt field (Task 4)
 };
 
 function jobFilePath(jobId: string): string {
@@ -59,5 +60,9 @@ export async function GET(req: Request) {
     status: job.status,
     videoUrl: job.videoUrl,
     error: job.error,
+    // Surface the credit-overflow receipt amount ONLY when credits are live, so
+    // the response is byte-identical when CREDITS_LIVE is off. The client fetches
+    // the remaining balance separately (GET /api/credits/balance).
+    ...(process.env.CREDITS_LIVE === "1" ? { creditsSpent: job.creditsSpent ?? null } : {}),
   });
 }

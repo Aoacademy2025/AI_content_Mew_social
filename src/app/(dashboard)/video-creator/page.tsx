@@ -478,6 +478,9 @@ export default function ShortVideoPage() {
   const [renderProgressTick, setRenderProgressTick] = useState(0);
   const renderProgress = renderProgressRef.current;
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+  // Credits overflow (NEXT_PUBLIC_CREDITS_LIVE): true when the render wall is hit AND
+  // credits are also empty (canBuyCredits) → render a [ซื้อเครดิต] CTA in the error UI.
+  const [outOfMinutes, setOutOfMinutes] = useState(false);
 
   function setRenderProgress(v: number) {
     renderProgressRef.current = v;
@@ -704,6 +707,47 @@ export default function ShortVideoPage() {
     });
   }
 
+  // Credit overflow is build-baked OFF unless NEXT_PUBLIC_CREDITS_LIVE==="1". With it unset
+  // this is the literal `false`, so every guarded branch below is dead → page byte-identical.
+  const CREDITS_LIVE_CLIENT = process.env.NEXT_PUBLIC_CREDITS_LIVE === "1";
+
+  /** Start a Stripe checkout for a credit pack and redirect to it. */
+  async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
+    try {
+      const res = await fetch("/api/payments/credits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pack }),
+      });
+      const data = await res.json();
+      if (data?.url) window.location.href = data.url as string;
+      else toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    } catch {
+      toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    }
+  }
+
+  /**
+   * Post-render receipt for a credit-funded (overflow) render: shows how many credits
+   * were spent + the remaining balance (fetched separately, since the queue render path
+   * carries no balance), plus a low-balance nudge. No-op unless credits are live and
+   * the render actually spent credits.
+   */
+  async function fireCreditReceipt(creditsSpent: number | null | undefined) {
+    if (!CREDITS_LIVE_CLIENT) return;
+    const spent = Number(creditsSpent);
+    if (!Number.isFinite(spent) || spent <= 0) return;
+    let left: number | null = null;
+    try {
+      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
+      left = typeof b?.total === "number" ? b.total : null;
+    } catch { /* balance fetch is best-effort — still show the spend */ }
+    toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);
+    if (left != null && left < 20) {
+      toast("เครดิตใกล้หมด เติมเลยไหม?", { action: { label: "ซื้อเครดิต", onClick: () => buyCredits() } });
+    }
+  }
+
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
@@ -711,8 +755,13 @@ export default function ShortVideoPage() {
       const status = (err.data as any)._status as number | undefined;
       // PR-1 structured errors จาก /api/videos/render: { error: { code, message, userAction } }
       const structuredErr = typeof err.data.error === "object" && err.data.error !== null
-        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        ? (err.data.error as { code?: string; message?: string; userAction?: string; canBuyCredits?: boolean })
         : null;
+      // Out of minutes AND credits (overflow live) → show the buy-credits CTA. Gated on
+      // NEXT_PUBLIC_CREDITS_LIVE so this branch is dead (and the page byte-identical) when off.
+      if (CREDITS_LIVE_CLIENT && structuredErr?.code === "quota_exceeded" && structuredErr.canBuyCredits) {
+        setOutOfMinutes(true);
+      }
       if (structuredErr?.message) {
         return [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ");
       }
@@ -1093,7 +1142,10 @@ export default function ShortVideoPage() {
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
     setRenderProgressError(null);
+    if (CREDITS_LIVE_CLIENT) setOutOfMinutes(false); // clear any prior wall CTA
     setPreRenderUrl("");
+    // Credits spent on THIS render (from the completion status); fed to the receipt on success.
+    let creditsSpentThisRender: number | null = null;
     // Reset ref immediately (synchronous) so popup always opens at 0%
     renderProgressRef.current = 0;
     setRenderPopupOpen(false);
@@ -1148,10 +1200,11 @@ export default function ShortVideoPage() {
           }
           return;
         }
-        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null; creditsSpent?: number | null };
         if (pollStopped) return; // stopped while parsing
         // Only resolve from progress file if we have a confirmed jobId — prevents resolving with stale videoUrl from a previous render
         if (progressData?.videoUrl && resolveRenderUrl && currentJobId) {
+          if (CREDITS_LIVE_CLIENT && progressData.creditsSpent != null) creditsSpentThisRender = progressData.creditsSpent;
           resolveRenderUrl(progressData.videoUrl);
           resolveRenderUrl = null;
           return;
@@ -1224,6 +1277,7 @@ export default function ShortVideoPage() {
         setStep("render", "done", immediateUrl);
         setRenderProgressError(null);
         setRenderProgress(100);
+        if (CREDITS_LIVE_CLIENT) void fireCreditReceipt((renderData as { creditsSpent?: number | null }).creditsSpent);
         return immediateUrl;
       }
 
@@ -1246,6 +1300,7 @@ export default function ShortVideoPage() {
             const statusData = await statusRes.json();
             if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
             if (statusData.status === "done" && statusData.videoUrl) {
+              if (CREDITS_LIVE_CLIENT && statusData.creditsSpent != null) creditsSpentThisRender = statusData.creditsSpent;
               clearInterval(statusInterval);
               resolveRenderUrl = null;
               resolve(statusData.videoUrl as string);
@@ -1280,6 +1335,7 @@ export default function ShortVideoPage() {
       setStep("render", "done", url);
       setRenderProgressError(null);
       setRenderProgress(100);
+      if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisRender);
       return url;
     } catch (err) {
       // Silently discard results from superseded jobs — a newer render has taken over
@@ -2375,6 +2431,17 @@ export default function ShortVideoPage() {
               <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.35)" }}>วิดีโอพร้อมแล้ว — กด Close เพื่อดูผลลัพธ์</p>
             ) : (
               <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.3)" }}>กรุณารอจนเสร็จ อย่าปิดหน้านี้</p>
+            )}
+            {/* Out-of-minutes-AND-credits wall → buy-credits CTA (NEXT_PUBLIC_CREDITS_LIVE). */}
+            {CREDITS_LIVE_CLIENT && outOfMinutes && (
+              <button
+                type="button"
+                onClick={() => buyCredits()}
+                className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+                style={{ background: "hsl(258 90% 66%)", color: "#fff", border: "1px solid hsl(258 90% 70%)" }}
+              >
+                ซื้อเครดิต
+              </button>
             )}
             <button
               type="button"

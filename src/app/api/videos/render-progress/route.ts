@@ -38,6 +38,10 @@ export async function GET(req: Request) {
       progress: job.progress,
       videoUrl: job.videoUrl ?? null,
       error: job.error ?? undefined,
+      // Surface the credit-overflow receipt amount ONLY when credits are live, so
+      // the response is byte-identical when CREDITS_LIVE is off. getRenderJob reads
+      // the full RenderJob row, so job.creditsSpent is already present (no select change).
+      ...(process.env.CREDITS_LIVE === "1" ? { creditsSpent: job.creditsSpent ?? null } : {}),
     });
   }
 
