@@ -854,7 +854,11 @@ export default function ShortVideoPage() {
     assertOk("Keywords", kwRes, kwData);
     const kws: string[] = kwData.keywords ?? [];
     if (kws.length === 0) {
-      throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+      throw new Error(
+        managed
+          ? "ไม่สามารถดึง keywords ได้ — ลองใหม่อีกครั้งหรือแจ้งทีมงาน"
+          : "ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google"
+      );
     }
     pipe.current.keywords = kws;
     pipe.current.keywordAlternatives = kwData.keywordAlternatives ?? [];

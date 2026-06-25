@@ -158,17 +158,30 @@ async function callGeminiTts(
 
 // Map a failed call to the exact user-facing responses this route has always
 // returned (text unchanged — the editor surfaces these verbatim).
-function geminiErrorResponse(status: number, errBody: string) {
+// `managed` = true when Gemini runs on the platform key (MANAGED_GEMINI=1).
+// In that case a failure is a platform issue — don't tell the user to fix their key.
+function geminiErrorResponse(status: number, errBody: string, managed = false) {
   if (errBody === NO_AUDIO) {
     return NextResponse.json({ error: "Gemini ไม่ส่งข้อมูลเสียงกลับมา" }, { status: 500 });
   }
   if (status === 401) {
+    if (managed) {
+      return NextResponse.json({
+        error: "ระบบ TTS ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน",
+      }, { status: 503 });
+    }
     return NextResponse.json({
       error: "Gemini API Key ไม่ถูกต้อง — Key นี้ไม่มีสิทธิ์ใช้ TTS preview models (ลองทั้ง 3 models แล้ว). กรุณาสร้าง key ใหม่จาก aistudio.google.com แล้วใส่ใน Settings",
       missingKey: "gemini",
     }, { status: 401 });
   }
   if (status === 403) {
+    if (managed) {
+      return NextResponse.json({
+        error: "ระบบ TTS ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน",
+        retryable: false,
+      }, { status: 503 });
+    }
     // Distinguish "API not enabled" from "key valid but lacks TTS access"
     const isApiDisabled = errBody.includes("SERVICE_DISABLED") || errBody.includes("has not been used") || errBody.includes("PERMISSION_DENIED");
     if (isApiDisabled) {
@@ -334,7 +347,7 @@ export async function POST(req: Request) {
       if (cached) return NextResponse.json({ ...cached, preview: true });
 
       const r = await callGeminiTts(apiKey, previewText, selectedVoice);
-      if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
+      if (!r.ok) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
       fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl: cache.voiceUrl,
@@ -371,7 +384,7 @@ export async function POST(req: Request) {
       if (!r.ok) {
         // A 1-chunk clip has no fallback that differs from what just failed —
         // surface the mapped error exactly like the old single-call route.
-        if (chunks.length === 1) return geminiErrorResponse(r.status, r.errBody);
+        if (chunks.length === 1) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
         failOpen = `segment ${i + 1}/${chunks.length} failed (${r.status})`;
         pcms = null;
         break;
@@ -419,7 +432,7 @@ export async function POST(req: Request) {
     if (!pcms) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
       const r = await callGeminiTts(apiKey, fullText, selectedVoice);
-      if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
+      if (!r.ok) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
       // Reserve minutes AFTER audio is produced (managed users only).
       // When MINUTE_QUOTA is on, the render route reserves minutes by output duration

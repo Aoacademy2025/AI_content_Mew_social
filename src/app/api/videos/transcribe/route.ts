@@ -1013,6 +1013,9 @@ export async function POST(req: Request) {
         const status = (e as { status?: number })?.status;
         const body = (e as { body?: string })?.body;
         if (status === 401) {
+          if (process.env.MANAGED_GEMINI === "1") {
+            return NextResponse.json({ error: "ระบบ AI ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน" }, { status: 503 });
+          }
           return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
         }
         const info = getGeminiErrorInfo(body ?? e, status ?? 503);

@@ -418,7 +418,7 @@ export default function DocsPage() {
         {/* Key on `tab` so content re-mounts and re-animates on tab change */}
         <div key={tab} className="doc-fade-up space-y-5" style={{ animationDelay: "380ms" }}>
           {tab === "api" && <ApiSetupDoc managed={managed} />}
-          {tab === "video" && <VideoOnlyDoc />}
+          {tab === "video" && <VideoOnlyDoc managed={managed} />}
           {tab === "avatar" && <AvatarDoc />}
         </div>
 
@@ -542,25 +542,31 @@ function ApiSetupDoc({ managed = false }: { managed?: boolean }) {
 
       <Section title="เจอปัญหา? วิธีแก้" icon={AlertTriangle}>
         <div className="space-y-3">
-          <ErrBox title="Gemini key ใช้ไม่ได้ / Test ขึ้นแดง / ขึ้น 401 invalid">
-            <p>มักเกิดจาก copy key มาไม่ครบ หรือ key ถูก Google revoke (เช่นเผลอ paste ในแชต/ที่สาธารณะ)</p>
-            <p>→ เข้า <b className="text-white">Google AI Studio</b> สร้าง key ใหม่ (กด <b className="text-white">+ Create API key</b>) → วางใหม่ → กด Test → <b className="text-white">ห้าม share key ที่ไหนอีก</b></p>
-          </ErrBox>
-          <ErrBox title='Test ขึ้น "Generative Language API ยังไม่ได้เปิด"'>
-            <p>key ส่วนใหญ่ใช้ได้เลย แต่บาง project เก่าต้องเปิด API เอง</p>
-            <p>→ เข้า{" "}
-              <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noopener noreferrer"
-                className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2">Google Cloud Console</a>{" "}
-              → เลือก project เดียวกับที่สร้าง key → กด <b className="text-white">ENABLE</b> → รอ 1-2 นาที → Test ใหม่</p>
-          </ErrBox>
+          {!managed && (
+            <ErrBox title="Gemini key ใช้ไม่ได้ / Test ขึ้นแดง / ขึ้น 401 invalid">
+              <p>มักเกิดจาก copy key มาไม่ครบ หรือ key ถูก Google revoke (เช่นเผลอ paste ในแชต/ที่สาธารณะ)</p>
+              <p>→ เข้า <b className="text-white">Google AI Studio</b> สร้าง key ใหม่ (กด <b className="text-white">+ Create API key</b>) → วางใหม่ → กด Test → <b className="text-white">ห้าม share key ที่ไหนอีก</b></p>
+            </ErrBox>
+          )}
+          {!managed && (
+            <ErrBox title='Test ขึ้น "Generative Language API ยังไม่ได้เปิด"'>
+              <p>key ส่วนใหญ่ใช้ได้เลย แต่บาง project เก่าต้องเปิด API เอง</p>
+              <p>→ เข้า{" "}
+                <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noopener noreferrer"
+                  className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2">Google Cloud Console</a>{" "}
+                → เลือก project เดียวกับที่สร้าง key → กด <b className="text-white">ENABLE</b> → รอ 1-2 นาที → Test ใหม่</p>
+            </ErrBox>
+          )}
           <ErrBox title="Test ผ่าน แต่ TTS / Render fail ขึ้น 503 high demand">
             <p>Google Gemini ฝั่ง server overload ชั่วคราว ไม่ใช่ที่ key — ระบบ retry อัตโนมัติให้แล้ว</p>
             <p>→ รอ 5-10 นาทีแล้วลองใหม่ หรือสลับ Voice เป็น <b className="text-white">ElevenLabs</b> ใน Pipeline panel</p>
           </ErrBox>
-          <ErrBox title="ขึ้นว่า Gemini โควต้าฟรีเต็ม / quota เต็ม">
-            <p>Gemini key ใช้โควต้าฟรีอยู่ และโควต้าของ Google หมดแล้ว โดยเฉพาะตอนสร้างเสียง ถอดซับ หรือหา keyword หลายครั้งติดกัน</p>
-            <p>→ รอรอบรีเซ็ตของ Google หรือผูกบัตร Google ใน project เดียวกับ key เพื่อเพิ่มโควต้า</p>
-          </ErrBox>
+          {!managed && (
+            <ErrBox title="ขึ้นว่า Gemini โควต้าฟรีเต็ม / quota เต็ม">
+              <p>Gemini key ใช้โควต้าฟรีอยู่ และโควต้าของ Google หมดแล้ว โดยเฉพาะตอนสร้างเสียง ถอดซับ หรือหา keyword หลายครั้งติดกัน</p>
+              <p>→ รอรอบรีเซ็ตของ Google หรือผูกบัตร Google ใน project เดียวกับ key เพื่อเพิ่มโควต้า</p>
+            </ErrBox>
+          )}
           <ErrBox title="B-roll หาคลิปไม่เจอ / ขึ้น error ที่ขั้น B-roll">
             <p>เช็คว่าใส่ <b className="text-white">Pexels</b> หรือ <b className="text-white">Pixabay</b> key อย่างน้อย 1 ตัว และกด Test ผ่าน</p>
             <p>→ แนะนำใส่ทั้งคู่ แล้วเลือก Stock Source = <b className="text-white">Both</b> เพื่อให้มีคลิปให้เลือกมากขึ้น</p>
@@ -583,7 +589,7 @@ function ApiSetupDoc({ managed = false }: { managed?: boolean }) {
 /* ═══════════════════════════════════════════════════
    TAB 2 — Video Editor
 ═══════════════════════════════════════════════════ */
-function VideoOnlyDoc() {
+function VideoOnlyDoc({ managed = false }: { managed?: boolean }) {
   return (
     <>
       <Section title="ทำความรู้จัก Video Editor" icon={Film}>
@@ -699,13 +705,15 @@ function VideoOnlyDoc() {
             <p>กด <b className="text-white">action button</b> ใน toast → เปิด Google Cloud Console</p>
             <p>กด <b className="text-white">ENABLE</b> → รอ 1-2 นาที → Test ใน Settings ใหม่</p>
           </ErrBox>
-          <ErrBox title="Toast บอก Gemini key ไม่ถูกต้อง / 401">
-            <p>Key ถูก Google revoke (มักจาก paste ใน chat/public)</p>
-            <p>กด action button → ไป aistudio → สร้าง key ใหม่ → <b className="text-white">ห้าม share ที่ไหนอีก</b></p>
-          </ErrBox>
+          {!managed && (
+            <ErrBox title="Toast บอก Gemini key ไม่ถูกต้อง / 401">
+              <p>Key ถูก Google revoke (มักจาก paste ใน chat/public)</p>
+              <p>กด action button → ไป aistudio → สร้าง key ใหม่ → <b className="text-white">ห้าม share ที่ไหนอีก</b></p>
+            </ErrBox>
+          )}
           <ErrBox title="ปุ่ม Render กดไม่ติด / หน้าค้าง">
             <p>เช็คว่า script ไม่ว่าง (อย่างน้อย 1 บรรทัด)</p>
-            <p>เช็คว่าตั้ง Gemini key แล้วใน Settings → API Keys</p>
+            {!managed && <p>เช็คว่าตั้ง Gemini key แล้วใน Settings → API Keys</p>}
             <p>กด F12 เปิด DevTools → ดู Console error</p>
           </ErrBox>
           <ErrBox title="ซับแบ่งไม่สวย / ตัดกลางคำ">
