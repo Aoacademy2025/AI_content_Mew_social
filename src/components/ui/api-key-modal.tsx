@@ -142,6 +142,8 @@ export function detectMissingKeyType(
     if (typeof mk === "string" && VALID_KEYS.has(mk as RequiredKeyType)) {
       return mk as RequiredKeyType;
     }
+    // 409 KEY_REQUIRED from resolveGeminiKey — always a Gemini key requirement
+    if (errorMessageOrData.code === "KEY_REQUIRED") return "gemini";
     // retryable:true means the route already classified this as transient
     // (rate limit/5xx/etc), not an auth problem — string-matching the
     // provider name in a transient message (e.g. "Gemini ขัดข้องชั่วคราว")
