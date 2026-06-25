@@ -1625,7 +1625,7 @@ export default function AdminDashboardPage() {
             </div>
             <div>
               <label className="text-xs text-zinc-400 mb-1 block">
-                AI Video Seedance 5s — ฿/วิดีโอ
+                AI Video Seedance 5s — ฿/วิดีโอ (เร็วๆ นี้)
               </label>
               <input
                 type="number"

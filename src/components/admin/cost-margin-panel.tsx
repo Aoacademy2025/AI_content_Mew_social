@@ -337,7 +337,7 @@ export default function CostMarginPanel() {
                 <div className="space-y-3">
                   <BreakdownBar label="Gemini TTS (นาที)" value={bd.tts} max={bdMax} color="bg-violet-500" />
                   <BreakdownBar label="AI Image (GPT/Nano)" value={bd.image} max={bdMax} color="bg-sky-500" />
-                  <BreakdownBar label="AI Video (Seedance)" value={bd.video} max={bdMax} color="bg-cyan-500" />
+                  <BreakdownBar label="AI Video (Seedance) — เร็วๆ นี้" value={bd.video} max={bdMax} color="bg-cyan-500" />
                   <BreakdownBar label="Infra (เดือน pro-rate)" value={bd.infra} max={bdMax} color="bg-zinc-500" />
                 </div>
                 <div className="pt-2 border-t border-white/10">

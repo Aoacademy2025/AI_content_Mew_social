@@ -21,6 +21,9 @@ const PACK_CREDIT_TO_BAHT: Record<number, number> = {
 };
 
 // AI-image spend delta → image model bucket
+// MUST stay in sync with CREDIT_COST / costKeyForKieModel in src/lib/credits.ts.
+// Today only 3 (gpt-1k) and 4 (nano-1k) are reachable; 5/6 reserved.
+// If CREDIT_COST image values change, update here or spends silently drop from COGS.
 function imageModelBucket(absDelta: number): "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
   if (absDelta === 3) return "gpt1k";
   if (absDelta === 4) return "nano1k";
@@ -66,6 +69,7 @@ export async function GET(req: Request) {
       rendersMcp,
       activeCreatorsCount,
       creditGrantRows,
+      imageRefundRows,
     ] = await Promise.all([
       getCostRates(),
       getPlanConfig(),
@@ -119,6 +123,14 @@ export async function GET(req: Request) {
         where: { kind: "grant", createdAt: { gte: from } },
         select: { delta: true },
       }),
+
+      // AI-image refunds in window — failed generations are refunded as a separate row
+      // (kind="refund", action="ai-image-refund"); the original spend row remains.
+      // We net these out so image COGS/creditsSpent are not upward-biased.
+      prisma.creditLedger.findMany({
+        where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: from } },
+        select: { delta: true },
+      }),
     ]);
 
     // ── Managed minutes — parse properties JSON ───────────────────────────────
@@ -161,10 +173,21 @@ export async function GET(req: Request) {
 
     // ── Credit-pack cash ──────────────────────────────────────────────────────
     let packCash = 0;
-    let creditsSpent = 0;
+    // FIX 2: creditsSpent counts only BUCKETED ai-image deltas {3,4,5,6} so it
+    // matches imageCounts (non-bucketed rows are unknown spend not attributable
+    // to a model and should not inflate the gross).
+    let grossImageSpend = 0;
     for (const row of imageSpendRows) {
-      creditsSpent += Math.abs(row.delta);
+      const absDelta = Math.abs(row.delta);
+      if (imageModelBucket(absDelta) !== null) {
+        grossImageSpend += absDelta;
+      }
     }
+    // FIX 1: net out refunds — image COGS/creditsSpent are NET of refunds (best-
+    // effort estimate; per-model refund attribution not tracked because the refund
+    // row does not record which model bucket was originally charged).
+    const refundCredits = imageRefundRows.reduce((sum, r) => sum + Math.abs(r.delta), 0);
+    const creditsSpent = Math.max(0, grossImageSpend - refundCredits);
     for (const row of creditPurchaseRows) {
       const baht = PACK_CREDIT_TO_BAHT[row.delta];
       if (baht !== undefined) packCash += baht;
@@ -183,7 +206,15 @@ export async function GET(req: Request) {
     const activeSubs = { pro: proSubCount, business: businessSubCount };
 
     const mrr = computeMrr(activeSubs, prices);
-    const cogs = computeCogs({ managedMinutes, imageCounts, rates });
+    const cogsGross = computeCogs({ managedMinutes, imageCounts, rates });
+    // FIX 1: scale image COGS proportionally to net out refunds.
+    // imageCogsNet = imageCogsGross × max(0, 1 − refundCredits / grossImageSpend)
+    // Guard grossImageSpend=0 to avoid NaN.
+    const imageRefundRatio = grossImageSpend > 0
+      ? Math.max(0, 1 - refundCredits / grossImageSpend)
+      : 1;
+    const imageCogsNet = cogsGross.image * imageRefundRatio;
+    const cogs = { ...cogsGross, image: imageCogsNet, total: cogsGross.tts + imageCogsNet + cogsGross.video };
     const margins = computeMargins({
       revenue: mrr,
       variableCogs: cogs.total,

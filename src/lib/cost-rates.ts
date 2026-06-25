@@ -82,7 +82,12 @@ export async function getCostRates(): Promise<CostRates> {
 }
 
 // ── Break-even constant ──────────────────────────────────────────────────────
-/** Number of active subscribers required to cover fixed infra costs. */
+/**
+ * Number of active subscribers required to cover fixed infra costs.
+ * Derivation: ≈ infraMonthly (฿2,600) ÷ blended contribution-margin-per-sub
+ * (~฿190/sub after variable AI COGS), from the 2026-06-24 business-model spec.
+ * Revisit if economics change (infra cost, pricing, or variable-cost rate).
+ */
 export const BREAK_EVEN_SUBS = 14;
 
 // ── Pure calculation functions ───────────────────────────────────────────────
