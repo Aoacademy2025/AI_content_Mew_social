@@ -12,17 +12,19 @@ function Row({ done, label }: { done: boolean; label: string }) {
   );
 }
 
-export function KeySetupChecklist({ status, onSetup }: { status: KeyStatus; onSetup: () => void }) {
+export function KeySetupChecklist({ status, onSetup, managed = false }: { status: KeyStatus; onSetup: () => void; managed?: boolean }) {
   if (status.tier1Complete) return null;
   const stockDone = status.pexels || status.pixabay;
-  const doneCount = (status.gemini ? 1 : 0) + (stockDone ? 1 : 0);
+  // When managed, Gemini is handled server-side — only count/show the stock key requirement
+  const totalRequired = managed ? 1 : 2;
+  const doneCount = ((!managed && status.gemini) ? 1 : 0) + (stockDone ? 1 : 0);
 
   return (
     <div className="rounded-xl border border-sky-400/25 bg-gradient-to-r from-sky-500/10 to-transparent p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <KeyRound className="h-4 w-4 text-sky-300" />
-          <span className="text-sm font-semibold text-white">ตั้งค่าให้พร้อมสร้างวิดีโอ ({doneCount}/2)</span>
+          <span className="text-sm font-semibold text-white">ตั้งค่าให้พร้อมสร้างวิดีโอ ({doneCount}/{totalRequired})</span>
         </div>
         <button type="button" onClick={onSetup}
           className="inline-flex items-center gap-1 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/15">
@@ -30,7 +32,7 @@ export function KeySetupChecklist({ status, onSetup }: { status: KeyStatus; onSe
         </button>
       </div>
       <div className="mt-3 space-y-1.5">
-        <Row done={status.gemini} label="Gemini key (จำเป็น)" />
+        {!managed && <Row done={status.gemini} label="Gemini key (จำเป็น)" />}
         <Row done={stockDone} label="Pexels หรือ Pixabay — B-roll (จำเป็น)" />
       </div>
       <p className="mt-2 text-[11px] text-slate-500">ขั้นสูง (ไม่บังคับ): ElevenLabs · HeyGen — ไม่ใส่ก็ใช้งานได้</p>

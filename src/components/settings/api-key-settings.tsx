@@ -7,6 +7,7 @@ import { KEY_TIERS, computeKeyStatus, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "@/components/onboarding/ApiKeyField";
 import { fetchMe } from "@/lib/use-me";
 
+
 interface ApiKeys {
   geminiKey?: string;
   heygenKey?: string;
@@ -31,11 +32,17 @@ export function ApiKeySettings() {
   const [geminiGuideOpen, setGeminiGuideOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [managed, setManaged] = useState(false);
 
   useEffect(() => {
     fetchApiKeys();
     // ช่อง adminOnly โชว์เฉพาะ ADMIN — user ทั่วไปไม่เห็น
     fetchMe().then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
+    // managed mode: hide Gemini surfaces when server manages the key
+    fetch("/api/user/api-keys/status", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.managed) setManaged(true); })
+      .catch(() => {});
   }, []);
 
   // Sync ข้ามจุดที่ component นี้ถูกใช้ (popup ใน editor / หน้า Settings) —
@@ -114,8 +121,8 @@ export function ApiKeySettings() {
 
   return (
     <div className="space-y-5">
-      {/* Gemini onboarding guide — collapsible, shown above the Gemini key row */}
-      <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden">
+      {/* Gemini onboarding guide — collapsible, shown above the Gemini key row (hidden when managed) */}
+      {!managed && <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden">
         <button type="button" onClick={() => setGeminiGuideOpen(v => !v)}
           className="w-full flex items-center gap-3 px-4 py-3 hover:bg-violet-500/10 transition-colors text-left">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/20 border border-violet-500/30 shrink-0">
@@ -168,7 +175,7 @@ export function ApiKeySettings() {
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
       {(() => {
         const status = computeKeyStatus({
@@ -198,7 +205,7 @@ export function ApiKeySettings() {
             </div>
 
             <div className="text-xs font-semibold uppercase tracking-wide text-sky-200">จำเป็น</div>
-            {field("gemini")}
+            {!managed && field("gemini")}
             {field("pexels")}
             {field("pixabay")}
 

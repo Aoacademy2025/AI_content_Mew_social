@@ -8,6 +8,7 @@ import { computeKeyStatus, type KeyStatus } from "@/lib/key-tiers";
 export function DashboardOnboarding() {
   const [status, setStatus] = useState<KeyStatus | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [managed, setManaged] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -16,6 +17,7 @@ export function DashboardOnboarding() {
       const data = await res.json();
       const st = computeKeyStatus(data);
       setStatus(st);
+      setManaged(!!data.managed);
       // เด้ง wizard อัตโนมัติเฉพาะครั้งแรก: Tier-1 ยังไม่ครบ และยังไม่เคยกดข้าม
       if (!st.tier1Complete && !data.onboardingDismissed) setWizardOpen(true);
     } catch { /* fail-open */ }
@@ -26,12 +28,13 @@ export function DashboardOnboarding() {
   if (!status) return null;
   return (
     <>
-      <KeySetupChecklist status={status} onSetup={() => setWizardOpen(true)} />
+      <KeySetupChecklist status={status} onSetup={() => setWizardOpen(true)} managed={managed} />
       {wizardOpen && (
         <KeyOnboardingWizard
           open={true}
           onClose={() => setWizardOpen(false)}
           onComplete={() => { setWizardOpen(false); void load(); }}
+          managed={managed}
         />
       )}
     </>
