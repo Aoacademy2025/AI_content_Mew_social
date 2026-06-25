@@ -2256,9 +2256,12 @@ export default function VideoEditorPage() {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
       // stale/transient-limit: งานฝั่ง server อาจยังทำงานอยู่ — แนะนำให้เช็ค Gallery แล้วค่อยลองใหม่
-      const finalErr = err instanceof PollStaleError || err instanceof PollTransientLimitError
-        ? new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง")
-        : err;
+      let finalErr: Error | unknown = err;
+      if (err instanceof PollStaleError || err instanceof PollTransientLimitError) {
+        const e2 = new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง");
+        (e2 as Error & { isStale?: boolean }).isStale = true;
+        finalErr = e2;
+      }
       if (!(finalErr instanceof Error && finalErr.name === "AbortError")) {
         const msg = friendlyError(finalErr);
         setRenderProgressError(msg); setStep("render", "error", msg);
@@ -2607,6 +2610,7 @@ export default function VideoEditorPage() {
       if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
       const st = await res.json();
       setManaged(!!st.managed);
+      if (st.minuteQuota) setMinuteQuota(true);
       if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
     } catch { return true; }
     return true;
@@ -2768,7 +2772,9 @@ export default function VideoEditorPage() {
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
         // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
           toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
         }
       }
@@ -2857,7 +2863,9 @@ export default function VideoEditorPage() {
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
         // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
           toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
         }
       }
@@ -2882,7 +2890,9 @@ export default function VideoEditorPage() {
       if (!handlePlanError(err)) {
         showErrorToast(err);
         // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
           toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
         }
       }

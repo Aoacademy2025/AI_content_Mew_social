@@ -1358,6 +1358,11 @@ export default function ShortVideoPage() {
         const msg = friendlyError(err);
         markRenderError(msg);
       }
+      // Mark timeout errors so outer catches skip the "ไม่ถูกหักนาที" refund toast
+      // (server job may still be running and may have charged minutes).
+      if (err instanceof Error && err.message.startsWith("Render ใช้เวลานานผิดปกติ")) {
+        (err as Error & { isStale?: boolean }).isStale = true;
+      }
       throw err;
     } finally {
       stopRenderPoll();
@@ -2067,7 +2072,9 @@ export default function ShortVideoPage() {
         markError(msg);
         // Refund reassurance — show only when the user has a minute/credit quota so they know
         // they weren't charged. Gated on flags; dead branch when both are off (flag-off = no-op).
-        if (minuteQuota || CREDITS_LIVE_CLIENT) {
+        // Skip when render timed out (server job may still be running and may have charged minutes).
+        const isStale = (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
           toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
         }
       }
