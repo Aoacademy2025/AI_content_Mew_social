@@ -7,13 +7,18 @@ import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { creditPack } from "@/lib/credits";
 
 export async function POST(req: Request) {
+  if (process.env.CREDITS_LIVE !== "1") {
+    return NextResponse.json({ code: "CREDITS_NOT_LIVE" }, { status: 403 });
+  }
   try {
     await ensureStripeConfig();
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const userId = authUser.id;
 
-    const { pack } = (await req.json()) as { pack: string };
+    const body = await req.json().catch(() => ({} as any));
+    const pack = body?.pack;
+    if (!pack) return NextResponse.json({ error: "Missing pack" }, { status: 400 });
 
     const p = creditPack(pack);
     if (!p) return NextResponse.json({ error: "Invalid credit pack" }, { status: 400 });
@@ -63,7 +68,7 @@ export async function POST(req: Request) {
       },
       expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
       success_url: `${origin}/settings?tab=billing&credits=success`,
-      cancel_url: `${origin}/pricing?credits=cancelled`,
+      cancel_url: `${origin}/settings?tab=billing&credits=cancelled`,
     });
 
     return NextResponse.json({ url: session.url });

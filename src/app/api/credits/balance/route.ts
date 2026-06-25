@@ -1,23 +1,24 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { getBalance } from "@/lib/credits";
+import { getBalance, ensureMonthlyGrant } from "@/lib/credits";
+import { apiError } from "@/lib/api-error";
 
-export const runtime = "nodejs";
-
-/**
- * GET /api/credits/balance — returns the CALLER's own credit balance.
- *
- * Used by the post-render receipt ("เหลือ X เครดิต") and the low-balance nudge.
- * The render-status/progress routes surface only `creditsSpent`; the client
- * fetches the remaining balance here so the figure is uniform across the queue
- * and legacy render paths (the queue path carries no `creditBalanceAfter`).
- *
- * Caller-scoped — no userId param, so no IDOR. `getBalance` upserts an empty
- * row, so a user who has never touched credits gets `{0,0,0}` (not an error).
- */
+// GET /api/credits/balance — returns the authenticated user's credit balance.
+// When CREDITS_LIVE is not "1", returns a zero shape with live:false so the UI can hide.
 export async function GET() {
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const bal = await getBalance(user.id);
-  return NextResponse.json(bal); // { granted, purchased, total }
+  try {
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    if (process.env.CREDITS_LIVE !== "1") {
+      return NextResponse.json({ granted: 0, purchased: 0, total: 0, live: false });
+    }
+
+    await ensureMonthlyGrant(authUser.id);
+    const balance = await getBalance(authUser.id);
+
+    return NextResponse.json({ ...balance, live: true });
+  } catch (error) {
+    return apiError({ route: "GET /api/credits/balance", error });
+  }
 }
