@@ -824,6 +824,12 @@ export async function POST(req: Request) {
         // base RENDER and for an UNPAID burn (both reserved above); false only for a FREE
         // burn (burnAlreadyPaid) which holds no reservation to refund.
         markReserved: quotaReserved,
+        // Minutes already reserved by THIS route above (MINUTE_QUOTA on). Persisted on
+        // RenderJob.reservedMinutes so failRenderJob/supersedeScope refund the SAME unit
+        // (minutes) the route charged — never refundClipUsage on a minutes-mode job.
+        // Only when this job actually reserved (quotaReserved): a free burn holds nothing.
+        // Flag off → undefined → row stays clips-mode (reservedMinutes null), unchanged.
+        reservedMinutes: useMinuteQuota && quotaReserved ? reservedMinutes : undefined,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).

@@ -121,7 +121,10 @@ async function runOne(job: ClaimedJob): Promise<void> {
     // BURN of it is free (isBurnAlreadyPaid in the route). Only base RENDER jobs (a BURN
     // reuses the render's charge and never records). Fail-open: recordChargedClip swallows
     // its own errors — a bookkeeping write must never affect the worker.
-    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl);
+    // Pass reservedMinutes so a minutes-mode job (MINUTE_QUOTA on at enqueue) records the
+    // SAME chargedMinutes as the in-process render path; clips-mode rows have it null →
+    // 2-arg-equivalent (chargedMinutes stays null), byte-identical to flag-off.
+    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl, job.reservedMinutes ?? undefined);
     console.log(`[render-worker] done ${job.id} → ${result.videoUrl}`);
   } catch (e) {
     // runRender's finally releases its bundle ref; Remotion tears down its own

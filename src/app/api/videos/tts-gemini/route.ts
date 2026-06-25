@@ -421,8 +421,11 @@ export async function POST(req: Request) {
       const r = await callGeminiTts(apiKey, fullText, selectedVoice);
       if (!r.ok) return geminiErrorResponse(r.status, r.errBody);
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
-      // Reserve minutes AFTER audio is produced (managed users only)
-      if (geminiMode === "managed") {
+      // Reserve minutes AFTER audio is produced (managed users only).
+      // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
+      // instead — skip here so the same video isn't charged twice (TTS + render).
+      // Flag off → unchanged: managed still reserves at TTS time.
+      if (geminiMode === "managed" && process.env.MINUTE_QUOTA !== "1") {
         const minutes = Math.max(1, Math.ceil(failOpenDurationMs / 60_000));
         const reserved = await reserveMinutes(authUser.id, minutes);
         if (!reserved.allowed) {
@@ -448,7 +451,10 @@ export async function POST(req: Request) {
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
     // Reserve minutes BEFORE writing the WAV (managed users only) — avoids orphaned
     // files on disk when a quota race loses after audio is already produced.
-    if (geminiMode === "managed") {
+    // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
+    // instead — skip here so the same video isn't charged twice (TTS + render).
+    // Flag off → unchanged: managed still reserves at TTS time.
+    if (geminiMode === "managed" && process.env.MINUTE_QUOTA !== "1") {
       const minutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
       const reserved = await reserveMinutes(authUser.id, minutes);
       if (!reserved.allowed) {

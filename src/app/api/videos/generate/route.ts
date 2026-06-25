@@ -5,11 +5,28 @@ import axios from "axios";
 import { apiError } from "@/lib/api-error";
 import { isPaid, videoExpiryFor } from "@/lib/plan-limits";
 import { refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { minutesFromSeconds, refundMinutes, reserveMinutes } from "@/lib/minute-limits";
+
+// Avatar/narration duration is not known in this route (n8n renders downstream and
+// this handler returns immediately with a PENDING video). When MINUTE_QUOTA is on we
+// must still reserve SOME minutes up front, so we estimate the narration length from
+// the script text: Thai speech runs ~13-16 chars/sec (see tts-timing.ts) — use 14 as a
+// middle estimate. minutesFromSeconds then ceils to whole minutes (min 1).
+const EST_CHARS_PER_SEC = 14;
+function estimateScriptMinutes(script: string): number {
+  const chars = (script ?? "").replace(/\s+/g, "").length;
+  return minutesFromSeconds(chars > 0 ? chars / EST_CHARS_PER_SEC : 60);
+}
 
 // POST /api/videos/generate - Generate avatar video via n8n webhook
 export async function POST(req: Request) {
+  // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
+  // unit reserved/refunded is whole minutes estimated from the narration (script) length.
+  const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
   let quotaReserved = false;
   let reservedUserId: string | null = null;
+  // Minutes reserved (only meaningful when useMinuteQuota); kept in scope for refund.
+  let reservedMinutes = 0;
   try {
     const authUser = await getCurrentUser();
 
@@ -92,11 +109,20 @@ export async function POST(req: Request) {
       );
     }
 
-    const quota = await reserveClipUsage(authUser.id);
-    if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
-    if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
-    quotaReserved = true;
-    reservedUserId = authUser.id;
+    if (useMinuteQuota) {
+      // Avatar length ≈ narration length; estimate minutes from the script text.
+      reservedMinutes = estimateScriptMinutes(script);
+      const quota = await reserveMinutes(authUser.id, reservedMinutes);
+      if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
+      quotaReserved = true;
+      reservedUserId = authUser.id;
+    } else {
+      const quota = await reserveClipUsage(authUser.id);
+      if (!quota) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      if (!quota.allowed) return NextResponse.json({ error: quota.message }, { status: 403 });
+      quotaReserved = true;
+      reservedUserId = authUser.id;
+    }
 
     // Create video record with PENDING status (expiresAt set by user's plan)
     const video = await prisma.video.create({
@@ -153,7 +179,11 @@ export async function POST(req: Request) {
             where: { id: video.id },
             data: { status: "FAILED" },
           });
-          await refundClipUsage(authUser.id).catch(() => {});
+          if (useMinuteQuota) {
+            await refundMinutes(authUser.id, reservedMinutes).catch(() => {});
+          } else {
+            await refundClipUsage(authUser.id).catch(() => {});
+          }
         });
     } else {
       // No webhook configured - use mock data
@@ -176,7 +206,11 @@ export async function POST(req: Request) {
     return NextResponse.json(video, { status: 201 });
   } catch (error) {
     if (quotaReserved && reservedUserId) {
-      await refundClipUsage(reservedUserId).catch(() => {});
+      if (useMinuteQuota) {
+        await refundMinutes(reservedUserId, reservedMinutes).catch(() => {});
+      } else {
+        await refundClipUsage(reservedUserId).catch(() => {});
+      }
     }
     return apiError({ route: "videos/generate", error });
   }

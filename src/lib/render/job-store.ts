@@ -1,6 +1,26 @@
 import { prisma } from "@/lib/prisma";
 import { refundClipUsage, reserveClipUsage } from "@/lib/usage-limits";
+import { refundMinutes } from "@/lib/minute-limits";
 import type { RenderJobType, RenderPayload } from "@/lib/render/types";
+
+// Refund a job's reserved quota in the SAME unit it was reserved. A minutes-mode
+// job (reservedMinutes != null, set when MINUTE_QUOTA was on at enqueue) refunds
+// minutes; otherwise (clips-mode / flag-off) it refunds a clip. Fail-open: a refund
+// error must never block the caller's terminal/cancel transition.
+async function refundJobReservation(
+  job: { userId: string; reservedMinutes: number | null },
+  context: string,
+): Promise<void> {
+  try {
+    if (job.reservedMinutes != null) {
+      await refundMinutes(job.userId, job.reservedMinutes);
+    } else {
+      await refundClipUsage(job.userId);
+    }
+  } catch (refundErr) {
+    console.error(`[job-store] refund failed ${context} user ${job.userId}:`, refundErr);
+  }
+}
 
 export type RenderJobRow = Awaited<ReturnType<typeof prisma.renderJob.findFirst>>;
 
@@ -20,6 +40,13 @@ export async function enqueueRenderJob(input: {
    * reserved exactly once per video. Ignored if `reserveQuotaFor` is set.
    */
   markReserved?: boolean;
+  /**
+   * Minutes the CALLER already reserved for this job (MINUTE_QUOTA on). Persisted on
+   * RenderJob.reservedMinutes so failRenderJob/supersedeScope refund minutes (not a clip).
+   * Does NOT reserve here — the route reserves once before enqueue (paired with markReserved).
+   * Undefined → clips-mode row (reservedMinutes null), byte-identical to flag-off.
+   */
+  reservedMinutes?: number;
   /**
    * Render-scope identity (= the legacy route's `renderOwnerKey`, `${userId}:${renderScopeId}`).
    * Stored on the row so the queue path can supersede a prior in-flight job for the
@@ -54,6 +81,7 @@ export async function enqueueRenderJob(input: {
       idempotencyKey: input.idempotencyKey ?? null,
       scopeKey: input.scopeKey ?? null,
       reservedQuota: reserved,
+      reservedMinutes: input.reservedMinutes ?? null,
       status: "QUEUED",
     },
   });
@@ -88,22 +116,19 @@ export async function supersedeScope(scopeKey: string, userId: string): Promise<
   for (const job of queued) {
     // Atomic guarded transition: only cancel if STILL QUEUED (a concurrent claim may
     // have just moved it to RUNNING — let the RUNNING path / worker own that one).
-    // Clear reservedQuota in the SAME write so a CANCELLED job can never linger with
-    // the flag set → no double-refund window. The refund below uses the pre-read
-    // job.reservedQuota (captured by findMany before this update).
+    // Clear reservedQuota AND reservedMinutes in the SAME write so a CANCELLED job can
+    // never linger with either set → no double-refund window. The refund below uses the
+    // pre-read job.reservedQuota/reservedMinutes (captured by findMany before this update).
     const res = await prisma.renderJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
-      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false },
+      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false, reservedMinutes: null },
     });
     if (res.count !== 1) continue; // lost the race — it's RUNNING now, skip
     superseded++;
     if (job.reservedQuota) {
-      try {
-        await refundClipUsage(userId);
-      } catch (refundErr) {
-        // Refund failure must never block the supersede — log and continue.
-        console.error(`[job-store] refundClipUsage failed superseding QUEUED job ${job.id} user ${userId}:`, refundErr);
-      }
+      // Refund in the SAME unit reserved: minutes-mode (reservedMinutes != null) → minutes;
+      // else clips. Refund failure must never block the supersede — logged, continue.
+      await refundJobReservation(job, `superseding QUEUED job ${job.id}`);
     }
   }
 
@@ -220,14 +245,11 @@ export async function failRenderJob(
   });
 
   if (job.reservedQuota) {
-    try {
-      await refundClipUsage(job.userId);
-    } catch (refundErr) {
-      // Refund failure must never block the terminal transition — log and continue.
-      console.error(`[job-store] refundClipUsage failed for job ${id} user ${job.userId}:`, refundErr);
-    }
-    // Clear the flag regardless — prevent double-refund on any retry of this path.
-    await prisma.renderJob.update({ where: { id }, data: { reservedQuota: false } });
+    // Refund in the SAME unit reserved: minutes-mode (reservedMinutes != null) → minutes;
+    // else clips. Refund failure must never block the terminal transition — logged, continue.
+    await refundJobReservation(job, `for job ${id}`);
+    // Clear both flags regardless — prevent double-refund on any retry of this path.
+    await prisma.renderJob.update({ where: { id }, data: { reservedQuota: false, reservedMinutes: null } });
   }
 }
 
