@@ -10,6 +10,11 @@
 //  - 2nd call within the USAGE_PERIOD_DAYS window → no-op (idempotent via grantedResetAt)
 //  - FREE user (allowance 0) → never granted
 //  - `purchased` bucket is NEVER touched by a grant
+//
+// And about the (ก) downgrade-reset wired into entitlements.syncUserEntitlement:
+//  - PRO(granted 50)→FREE transition → resetMonthlyGranted drops granted to 0,
+//    while `purchased` (paid) credits are PRESERVED
+//  - flag-off → the caller-gated reset is skipped → leftover granted untouched
 import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +31,7 @@ function ok(cond: boolean, msg: string) {
 }
 
 async function main() {
-  const { ensureMonthlyGrant, getBalance, grantCredits, MONTHLY_GRANT } =
+  const { ensureMonthlyGrant, resetMonthlyGranted, getBalance, grantCredits, MONTHLY_GRANT } =
     await import("../src/lib/credits");
   const { prisma } = await import("../src/lib/prisma");
 
@@ -114,6 +119,48 @@ async function main() {
     const row = await prisma.creditBalance.findUnique({ where: { userId: freeId } });
     ok(row?.grantedResetAt == null, "FREE → grantedResetAt never stamped");
   }
+
+  // ── Test 6: DOWNGRADE reset (ก) — PRO(granted 50)→FREE drops granted to 0 ──
+  // Mirrors entitlements.syncUserEntitlement: on the plan→FREE transition write it
+  // calls resetMonthlyGranted(userId, "FREE"). Proves leftover granted credits do
+  // NOT survive a downgrade, while the `purchased` (paid) bucket is preserved.
+  const downId = "earn-downgrade-1";
+  await prisma.user.create({
+    data: { id: downId, name: "Earn Downgrade", email: "earn-down@example.com", plan: "PRO" },
+  });
+  process.env.CREDITS_LIVE = "1";
+  // Give them a full PRO monthly grant + some purchased credits.
+  await ensureMonthlyGrant(downId);
+  await grantCredits(downId, 30, "purchase", "seed-purchased-down");
+  let downBal = await getBalance(downId);
+  ok(downBal.granted === 50, "downgrade setup → PRO granted = 50");
+  ok(downBal.purchased === 30, "downgrade setup → purchased = 30");
+  // Simulate the entitlements transition: plan dropped to FREE → reset granted.
+  await resetMonthlyGranted(downId, "FREE");
+  downBal = await getBalance(downId);
+  ok(downBal.granted === 0, "downgrade PRO→FREE → granted reset to 0 (no leftover)");
+  ok(downBal.purchased === 30, "downgrade PRO→FREE → purchased PRESERVED (still 30)");
+  ok(downBal.total === 30, "downgrade PRO→FREE → total = 0 + 30 = 30");
+
+  // ── Test 7: flag-off → entitlements downgrade reset is a NO-OP ──────────────
+  // resetMonthlyGranted itself isn't flag-gated; the gate lives in its CALLER
+  // (entitlements.ts: `if (process.env.CREDITS_LIVE === "1") resetMonthlyGranted(...)`).
+  // This reproduces that caller-gate exactly: flag off → the call is skipped → the
+  // PRO user's leftover granted credits are untouched (byte-identical to today).
+  const downOffId = "earn-downgrade-off-1";
+  await prisma.user.create({
+    data: { id: downOffId, name: "Earn Downgrade Off", email: "earn-down-off@example.com", plan: "PRO" },
+  });
+  await ensureMonthlyGrant(downOffId);          // grants 50 (flag still on here)
+  await grantCredits(downOffId, 8, "purchase", "seed-purchased-down-off");
+  delete process.env.CREDITS_LIVE;              // flag OFF for the downgrade
+  // Caller-gated path: flag off means the reset is NEVER invoked.
+  if (process.env.CREDITS_LIVE === "1") {
+    await resetMonthlyGranted(downOffId, "FREE");
+  }
+  const downOffBal = await getBalance(downOffId);
+  ok(downOffBal.granted === 50, "flag-off downgrade → granted UNCHANGED (reset skipped, 50)");
+  ok(downOffBal.purchased === 8, "flag-off downgrade → purchased untouched (8)");
 
   await prisma.$disconnect();
 

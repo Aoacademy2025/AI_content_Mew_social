@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan } from "@/lib/plan-limits";
+import { resetMonthlyGranted } from "@/lib/credits";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -160,6 +161,16 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   });
 
   if (res.count === 1) {
+    // Plan actually transitioned to FREE on THIS call (updateMany matched the
+    // PAID→expired guard exactly once). Reset the monthly `granted` bucket to the
+    // new plan's allowance (FREE→0) so leftover PRO/BUSINESS credits don't persist
+    // through a downgrade. CREDITS_LIVE-gated inside resetMonthlyGranted's callers,
+    // so we gate the call here too — flag-off makes this a no-op (byte-identical path).
+    // Lives inside `res.count === 1` so it fires ONCE per transition, never on a
+    // steady-state sync (which returns early at `action !== "DOWNGRADE"` above).
+    if (process.env.CREDITS_LIVE === "1") {
+      await resetMonthlyGranted(userId, "FREE").catch(() => {});
+    }
     await createNotification({
       userId,
       type: "LIMIT_REACHED",

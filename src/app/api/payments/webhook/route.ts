@@ -6,7 +6,7 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
-import { grantCreditsOnce } from "@/lib/credits";
+import { grantCreditsOnce, ensureMonthlyGrant } from "@/lib/credits";
 
 export const config = { api: { bodyParser: false } };
 
@@ -49,6 +49,22 @@ export async function POST(req: Request) {
 
     // ── Credit-pack purchase: grant credits and return early ──────────────
     if (s.metadata?.type === "credits" && s.metadata.userId) {
+      // Defense-in-depth: never grant when feature flag is off
+      if (process.env.CREDITS_LIVE !== "1") {
+        console.log("[webhook] CREDITS_LIVE off — skipping credit grant for", s.id);
+        return NextResponse.json({ ok: true });
+      }
+      // Only grant when actually paid (PromptPay/bank sessions can fire completed while unpaid)
+      if (s.payment_status !== "paid") {
+        console.warn("[webhook] credit session not yet paid, status:", s.payment_status, s.id);
+        return NextResponse.json({ ok: true });
+      }
+      // Validate the user exists before minting credits to an unvalidated id
+      const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true } });
+      if (!creditUser) {
+        console.error("[webhook] credit grant: user not found", s.metadata.userId, s.id);
+        return NextResponse.json({ ok: true });
+      }
       const credits = parseInt(s.metadata.credits ?? "0", 10);
       if (!credits || credits <= 0) {
         console.error("[webhook] bad credit metadata", s.id);
@@ -95,6 +111,10 @@ export async function POST(req: Request) {
           } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
         }
       }
+      // CREDITS_LIVE-gated initial grant — fire-and-forget, flag-off = no-op
+      if (process.env.CREDITS_LIVE === "1") {
+        ensureMonthlyGrant(userId).catch(() => {});
+      }
       console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
     }
   }
@@ -112,6 +132,10 @@ export async function POST(req: Request) {
         const days = user.billingPeriod === "annual" ? 365 : 30;
         await activatePlan(user.id, user.plan, days);
         await prisma.user.update({ where: { id: user.id }, data: { subStatus: "active" } });
+        // Refresh monthly credit grant on renewal (CREDITS_LIVE-gated, fire-and-forget)
+        if (process.env.CREDITS_LIVE === "1") {
+          ensureMonthlyGrant(user.id).catch(() => {});
+        }
         console.log(`[stripe-webhook] renewed subscription for ${user.id} (+${days}d)`);
       }
     }
