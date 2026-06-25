@@ -56,12 +56,25 @@ export function canonicalRenderUrl(url: string | null | undefined): string | nul
  * Record that `userId` was charged a clip for base-render output `outputUrl`.
  * Stores the canonical form. FAIL-OPEN: a write failure (or non-render url) must
  * never break the render — the worst case is a future burn re-charges (no bypass).
+ *
+ * Optional `chargedMinutes`: when provided (minutes-quota mode), stored on the row.
+ * Omitting it (2-arg call) leaves `chargedMinutes` null — byte-identical for existing callers.
  */
-export async function recordChargedClip(userId: string, outputUrl: string): Promise<void> {
+export async function recordChargedClip(
+  userId: string,
+  outputUrl: string,
+  chargedMinutes?: number,
+): Promise<void> {
   try {
     const canonical = canonicalRenderUrl(outputUrl);
     if (!canonical) return; // nothing sensible to record
-    await prisma.chargedClip.create({ data: { userId, outputUrl: canonical } });
+    await prisma.chargedClip.create({
+      data: {
+        userId,
+        outputUrl: canonical,
+        ...(chargedMinutes !== undefined ? { chargedMinutes } : {}),
+      },
+    });
   } catch {
     // bookkeeping only — swallow
   }

@@ -10,6 +10,12 @@ export function minutesLimitForPlan(plan: string): number {
   return minutesPerMonthForPlan(plan);
 }
 
+/** Convert a duration in seconds to whole minutes, ceiling-rounded, minimum 1.
+ *  Non-finite / non-positive / NaN inputs default to 60s (→ 1 min). */
+export function minutesFromSeconds(sec: number): number {
+  return Math.max(1, Math.ceil((Number.isFinite(sec) && sec > 0 ? sec : 60) / 60));
+}
+
 function isWindowExpired(startedAt: Date | null, now: Date): boolean {
   return !startedAt || startedAt.getTime() + USAGE_PERIOD_MS <= now.getTime();
 }
