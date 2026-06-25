@@ -182,6 +182,8 @@ export default function VideoEditorPage() {
   const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
+  // Bumped after render or burn completes so QuotaStatus re-fetches the updated balance
+  const [quotaRefresh, setQuotaRefresh] = useState(0);
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -2142,6 +2144,7 @@ export default function VideoEditorPage() {
         clearDerivedPreviewOutputs({ clearComposite: true });
         setPreRenderUrl(immediateUrl); setVideoUrl(immediateUrl);
         setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        setQuotaRefresh(n => n + 1);
         if (CREDITS_LIVE_CLIENT) void fireCreditReceipt((data as { creditsSpent?: number | null }).creditsSpent);
         return immediateUrl;
       }
@@ -2246,6 +2249,7 @@ export default function VideoEditorPage() {
       };
       setStyleIsDirty(false);
       setStep("render", "done", url); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+      setQuotaRefresh(n => n + 1);
       if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisRender);
       return url;
     } catch (err) {
@@ -2921,6 +2925,7 @@ export default function VideoEditorPage() {
         setStep("burnSubtitles", "done", url);
         setRenderProgress(100);
         setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        setQuotaRefresh(n => n + 1);
         saveToGallery({
           videoUrl: url,
           videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
@@ -3942,7 +3947,7 @@ export default function VideoEditorPage() {
           {/* Pipeline status — ย่อได้ เพื่อคืนพื้นที่ให้ลิสต์ซับ */}
           <div className={cn("border-t border-[#1e1e28] p-3 flex-shrink-0", processOpen && "overflow-y-auto max-h-[55%]")}>
             {/* Clip quota — fail-soft: renders nothing while loading or on error */}
-            <QuotaStatus variant="chip" className="mb-2 w-full justify-center" />
+            <QuotaStatus variant="chip" className="mb-2 w-full justify-center" refreshKey={quotaRefresh} />
             <button onClick={() => setProcessOpen(v => !v)} className="w-full flex items-center gap-2 text-left group/proc">
               <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider group-hover/proc:text-slate-400 transition-colors">Process</span>
               {!processOpen && running && (

@@ -363,6 +363,8 @@ export default function ShortVideoPage() {
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [running, setRunning] = useState(false);
+  // Bumped after a render or burn completes so QuotaStatus re-fetches the updated balance
+  const [quotaRefresh, setQuotaRefresh] = useState(0);
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -1282,6 +1284,7 @@ export default function ShortVideoPage() {
         setStep("render", "done", immediateUrl);
         setRenderProgressError(null);
         setRenderProgress(100);
+        setQuotaRefresh(n => n + 1);
         if (CREDITS_LIVE_CLIENT) void fireCreditReceipt((renderData as { creditsSpent?: number | null }).creditsSpent);
         return immediateUrl;
       }
@@ -1340,6 +1343,7 @@ export default function ShortVideoPage() {
       setStep("render", "done", url);
       setRenderProgressError(null);
       setRenderProgress(100);
+      setQuotaRefresh(n => n + 1);
       if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisRender);
       return url;
     } catch (err) {
@@ -2574,7 +2578,7 @@ export default function ShortVideoPage() {
                 </div>
               )}
               {/* Clip quota — fail-soft: renders nothing while loading or on error */}
-              <QuotaStatus variant="chip" />
+              <QuotaStatus variant="chip" refreshKey={quotaRefresh} />
             </div>
           </div>
 
