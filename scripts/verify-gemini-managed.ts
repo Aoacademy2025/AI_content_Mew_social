@@ -49,5 +49,17 @@ else process.env.MANAGED_GEMINI = origManaged;
 if (origServerKey === undefined) delete process.env.GEMINI_SERVER_KEY;
 else process.env.GEMINI_SERVER_KEY = origServerKey;
 
+// ── requiredKeysFor tests (Task 2) ──
+import { requiredKeysFor } from "../src/lib/key-tiers";
+
+check("managed → gemini not required",
+  !requiredKeysFor(true).some(k => k.id === "gemini"));
+check("off → gemini required",
+  requiredKeysFor(false).some(k => k.id === "gemini"));
+check("managed keeps pexels required",
+  requiredKeysFor(true).some(k => k.id === "pexels"));
+check("managed keeps pixabay required",
+  requiredKeysFor(true).some(k => k.id === "pixabay"));
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll gemini-managed checks passed.");

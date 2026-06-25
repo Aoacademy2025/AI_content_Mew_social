@@ -24,7 +24,11 @@ export async function GET() {
       gemini: present(user.geminiKey), pexels: present(user.pexelsKey), pixabay: present(user.pixabayKey),
       elevenlabs: present(user.elevenlabsKey), heygen: present(user.heygenKey),
     }, isManagedMode);
-    return NextResponse.json({ ...status, onboardingDismissed: user.onboardingDismissedAt != null });
+    return NextResponse.json({
+      ...status,
+      onboardingDismissed: user.onboardingDismissedAt != null,
+      ...(isManagedMode ? { managed: true } : {}),
+    });
   } catch (error) {
     return apiError({ route: "user/api-keys/status", error });
   }

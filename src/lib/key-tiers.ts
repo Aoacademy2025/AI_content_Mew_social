@@ -96,3 +96,7 @@ export function computeKeyStatus(present: Partial<Record<KeyId, boolean>>, isMan
 
 export const REQUIRED_KEYS = KEY_TIERS.filter((k) => k.tier === "required");
 export const ADVANCED_KEYS = KEY_TIERS.filter((k) => k.tier === "advanced");
+
+export function requiredKeysFor(managed: boolean): KeyDef[] {
+  return REQUIRED_KEYS.filter((k) => !(managed && k.id === "gemini"));
+}
