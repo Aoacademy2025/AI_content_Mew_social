@@ -652,11 +652,11 @@ export default function VideoEditorPage() {
 
   // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
   // the debounced auto-load effect and the manual "โหลด avatar" button.
-  const loadAvatarInfo = useCallback(async (id: string) => {
+  const loadAvatarInfo = useCallback(async (id: string, refresh = false) => {
     if (!id || id.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("idle"); return; }
     setAvatarStatus("loading");
     try {
-      const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}`);
+      const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}${refresh ? "&refresh=1" : ""}`);
       if (!r.ok) {
         const d = await r.json().catch(() => null);
         setAvatarPreviewUrl(""); setAvatarName("");
@@ -4423,7 +4423,7 @@ export default function VideoEditorPage() {
               avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
               avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
               avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
-              onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+              onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
               avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
               avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
               setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -4477,7 +4477,7 @@ export default function VideoEditorPage() {
                 useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
                 avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
                 avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
                 avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
                 avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
                 setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -4542,7 +4542,7 @@ export default function VideoEditorPage() {
             useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
             avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
             avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
             avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
             avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
             setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
