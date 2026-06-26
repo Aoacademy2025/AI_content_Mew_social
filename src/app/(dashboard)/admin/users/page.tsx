@@ -19,6 +19,7 @@ import {
   Ticket,
   ChevronDown,
   Check,
+  BadgeDollarSign,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
@@ -86,7 +87,15 @@ export default function AdminUsersPage() {
     fetchUsers();
   }, [fetchUsers]);
 
-  async function patchUser(id: string, data: { plan?: PlanKey; role?: "ADMIN" | "USER"; suspended?: boolean }) {
+  async function patchUser(
+    id: string,
+    data: {
+      plan?: PlanKey;
+      role?: "ADMIN" | "USER";
+      suspended?: boolean;
+      markPaid?: { plan: "PRO" | "BUSINESS"; periodDays: number };
+    }
+  ) {
     setActionLoading(id);
     try {
       const res = await fetch(`/api/admin/users/${id}`, {
@@ -103,6 +112,13 @@ export default function AdminUsersPage() {
     } finally {
       setActionLoading(null);
     }
+  }
+
+  // Convert a trial / bank-transfer customer to a real paid term (sets expiry + clears the
+  // trial flag so they don't auto-revert to FREE). Use this for off-Stripe payments.
+  function markPaid(user: AdminUser, plan: "PRO" | "BUSINESS", periodDays: number, label: string) {
+    if (!confirm(`ยืนยัน: บันทึก ${user.email} เป็น ${plan} แบบ${label} (${periodDays} วัน)?\nระบบจะตั้งวันหมดอายุและล้างสถานะทดลองให้ — ใช้สำหรับลูกค้าที่โอนเงิน/จ่ายนอก Stripe`)) return;
+    patchUser(user.id, { markPaid: { plan, periodDays } });
   }
 
   async function deleteUser(id: string) {
@@ -365,6 +381,41 @@ export default function AdminUsersPage() {
                                 </DropdownMenu>
                               );
                             })()}
+
+                            {/* Mark as paid (off-Stripe / bank transfer) — sets a real term + clears trial */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  className="h-7 inline-flex items-center gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 text-xs font-medium text-emerald-300 outline-none hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                                  title="บันทึกการชำระเงิน (สำหรับลูกค้าโอนเงิน/นอก Stripe) — ตั้งวันหมดอายุและล้างสถานะทดลอง"
+                                >
+                                  <BadgeDollarSign className="h-3 w-3" />
+                                  บันทึกชำระ
+                                  <ChevronDown className="h-3 w-3 opacity-60" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent
+                                align="end"
+                                className="min-w-44 border"
+                                style={{ background: "rgba(20, 20, 28, 0.98)", borderColor: "rgba(255,255,255,0.1)", backdropFilter: "blur(8px)" }}
+                              >
+                                {([
+                                  { plan: "PRO", days: 365, label: "รายปี" },
+                                  { plan: "PRO", days: 30, label: "รายเดือน" },
+                                  { plan: "BUSINESS", days: 365, label: "รายปี" },
+                                  { plan: "BUSINESS", days: 30, label: "รายเดือน" },
+                                ] as const).map((o) => (
+                                  <DropdownMenuItem
+                                    key={`${o.plan}-${o.days}`}
+                                    onClick={() => markPaid(user, o.plan, o.days, o.label)}
+                                    className="gap-2 text-xs cursor-pointer text-white/80 focus:bg-white/10"
+                                  >
+                                    <BadgeDollarSign className="h-3 w-3 text-emerald-400" />
+                                    <span className="flex-1">{o.plan} · {o.label}</span>
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
 
                             {/* Toggle Admin */}
                             <Button

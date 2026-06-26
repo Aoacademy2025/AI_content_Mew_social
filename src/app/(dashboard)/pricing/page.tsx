@@ -13,6 +13,7 @@ import { PremiumBackdrop } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { PLAN_RANK } from "@/lib/plan-change";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -32,7 +33,7 @@ const GLOW = "0 0 30px rgba(139,92,246,.45)";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
-type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; minuteQuota?: boolean; minutesUsed?: number; minutesLimit?: number } | null;
+type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; subStatus?: string | null; minuteQuota?: boolean; minutesUsed?: number; minutesLimit?: number } | null;
 
 const TIER_META: { key: PlanKey; cfgKey: keyof PlanConfig; icon: React.ElementType; highlight?: boolean }[] = [
   { key: "FREE", cfgKey: "free", icon: Zap },
@@ -65,10 +66,15 @@ function PricingContent() {
   useEffect(() => {
     fetch("/api/plans").then((r) => r.json()).then(setPlanConfig).catch(() => {});
     fetch("/api/user/me")
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((d) => setMe(d))
-      .catch(() => setMe(null))
-      .finally(() => setUserChecked(true));
+      // Only treat a real 401 as "signed out". A transient/non-401 failure must NOT collapse a
+      // logged-in user to the signed-out CTA set (which would bounce them to /register on checkout).
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        if (r.status === 401) return null;
+        throw new Error(`me ${r.status}`);
+      })
+      .then((d) => { setMe(d); setUserChecked(true); })
+      .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
     fetch("/api/founding/status").then((r) => r.json()).then(setFounding).catch(() => {});
   }, []);
 
@@ -91,7 +97,9 @@ function PricingContent() {
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planKey, period, method, couponCode: appliedCoupon?.code }),
+        // Monthly is card-only (the method toggle is hidden in monthly mode, so the promptpay default
+        // would otherwise build an invalid monthly+promptpay session). Server coerces too.
+        body: JSON.stringify({ plan: planKey, period, method: period === "monthly" ? "card" : method, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -257,11 +265,26 @@ function PricingContent() {
           const name = data?.name ?? key;
           const tagline = data?.tagline ?? "";
           const badge = key === "PRO" ? (data?.badge ?? "แนะนำ") : data?.badge ?? null;
-          const isCurrent = !!currentPlan && currentPlan === key;
+          // A trial user holds PRO but hasn't paid — they MUST still be able to subscribe, so the
+          // PRO card is NOT treated as "current" for them (otherwise the button is disabled and
+          // there is no way to convert a trial into a paid plan in-product).
+          const isTrialPlan = onTrial && key === "PRO";
+          const isCurrent = !!currentPlan && currentPlan === key && !isTrialPlan;
           const isPaid = key !== "FREE";
           const isLoading = loading === key;
           const isSignedOut = userChecked && !currentPlan;
           const pb = isPaid ? priceBlock(price) : null;
+
+          // Tier-aware gating (no more equality-only check that let BUSINESS pay for PRO).
+          const hasActiveSub = me?.subStatus === "active";
+          // A trial user has no committed paid tier → treat as FREE so they can buy any plan.
+          const currentRank = (currentPlan && !isTrialPlan) ? (PLAN_RANK[currentPlan] ?? 0) : 0;
+          const cardRank = PLAN_RANK[key];
+          // Active subscriber: ALL plan changes go through the billing portal (Stripe swaps/prorates
+          // the existing sub instead of minting a duplicate). One-time/manual paid user: block paying
+          // for a strictly LOWER tier (downgrade-by-pay).
+          const isManageViaPortal = isPaid && !isCurrent && !!hasActiveSub;
+          const isDowngradeLocked = isPaid && !isCurrent && !hasActiveSub && cardRank < currentRank;
 
           const card = (
             <div className={cn(
@@ -277,6 +300,7 @@ function PricingContent() {
                   <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.3} aria-hidden />
                 </div>
                 {isCurrent && <span className="rounded-full border border-violet-300/25 bg-violet-300/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-violet-100">แผนปัจจุบัน</span>}
+                {isTrialPlan && <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-200">ทดลองอยู่ · {daysLeft} วัน</span>}
               </div>
 
               <h3 className="text-xl font-bold" style={HEAD}>{name}</h3>
@@ -314,23 +338,46 @@ function PricingContent() {
                 ))}
               </ul>
 
-              {isPaid ? (
-                <button
-                  onClick={() => handleUpgrade(key as "PRO" | "BUSINESS")}
-                  disabled={isCurrent || isLoading || !userChecked}
-                  className={cn("inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed",
-                    highlight ? "text-white" : "border border-white/12 text-white hover:bg-white/5",
-                    isCurrent && "!border-white/10 !bg-white/5 text-white/55")}
-                  style={highlight && !isCurrent ? { background: ACCENT, boxShadow: GLOW } : undefined}
-                >
-                  {!userChecked || isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : isCurrent ? (<><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</>) : (<>{isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
-                </button>
+              {!userChecked ? (
+                // Pre-load placeholder — avoids a CTA flash that could mis-route a click before we
+                // know who the user is (the FREE card used to flash "ใช้แผน Free" → /dashboard).
+                <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+              ) : isPaid ? (
+                isCurrent ? (
+                  <div className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/55"><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
+                ) : isManageViaPortal ? (
+                  <Link href="/settings?tab=billing" className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                    จัดการแผนผ่านบิล <ArrowRight className="h-4 w-4" strokeWidth={2.5} />
+                  </Link>
+                ) : isDowngradeLocked ? (
+                  <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">รวมอยู่ในแผนของคุณ</div>
+                ) : (
+                  <button
+                    onClick={() => handleUpgrade(key as "PRO" | "BUSINESS")}
+                    disabled={isLoading}
+                    className={cn("inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed",
+                      highlight ? "text-white" : "border border-white/12 text-white hover:bg-white/5")}
+                    style={highlight ? { background: ACCENT, boxShadow: GLOW } : undefined}
+                  >
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : (<>{isTrialPlan ? `สมัคร ${name} เลย` : isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
+                  </button>
+                )
               ) : isCurrent ? (
                 <div className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-violet-300/20 bg-violet-300/10 px-4 py-3 text-sm font-semibold text-violet-100"><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
-              ) : (
-                <Link href={isSignedOut ? "/register" : "/dashboard"} className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
-                  {isSignedOut ? "ทดลอง PRO ฟรี 7 วัน" : "ใช้แผน Free"}
+              ) : isSignedOut ? (
+                <Link href="/register" className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                  ทดลอง PRO ฟรี 7 วัน
                 </Link>
+              ) : hasActiveSub ? (
+                // FREE card for an active subscriber — the real "downgrade" is cancel-in-portal.
+                <Link href="/settings?tab=billing" className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                  จัดการ / ยกเลิกแผน
+                </Link>
+              ) : (
+                // Logged-in trial / one-time / manual paid user: Free is their fallback, no action.
+                <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">รวมอยู่ในแผนของคุณ</div>
               )}
             </div>
           );

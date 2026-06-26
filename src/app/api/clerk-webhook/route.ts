@@ -64,15 +64,29 @@ export async function POST(req: NextRequest) {
       const name =
         `${data.first_name ?? ""} ${data.last_name ?? ""}`.trim() ||
         primaryEmail.split("@")[0];
-      const created = await prisma.user.create({
-        data: {
-          clerkId: data.id,
-          name,
-          email: primaryEmail,
-          image: data.image_url ?? null,
-        },
-      });
-      await grantTrial(created.id, TRIAL_DAYS_PUBLIC);
+      try {
+        const created = await prisma.user.create({
+          data: {
+            clerkId: data.id,
+            name,
+            email: primaryEmail,
+            image: data.image_url ?? null,
+          },
+        });
+        await grantTrial(created.id, TRIAL_DAYS_PUBLIC);
+      } catch {
+        // Unique race with the lazy-create in getCurrentUser (first page load can insert the row
+        // first) → link clerkId to the existing row instead of 500ing. grantTrial is idempotent
+        // (one-trial guard), so no second trial is granted.
+        const row = await prisma.user.findFirst({
+          where: { OR: [{ email: primaryEmail }, { clerkId: data.id }] },
+          select: { id: true },
+        });
+        if (row) {
+          await prisma.user.update({ where: { id: row.id }, data: { clerkId: data.id } }).catch(() => {});
+          await grantTrial(row.id, TRIAL_DAYS_PUBLIC).catch(() => {});
+        }
+      }
     }
   }
 

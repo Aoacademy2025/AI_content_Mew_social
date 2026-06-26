@@ -364,6 +364,15 @@ model Payment {
   paidAt            DateTime?
 }
 
+// Idempotency ledger for Stripe webhooks. Stripe delivers events "at least once"; we record
+// each processed event.id and skip duplicates so plan activation / renewal extension can't run
+// twice for the same event. Additive table — flag-independent.
+model StripeWebhookEvent {
+  id          String   @id // Stripe event.id (evt_...)
+  type        String
+  processedAt DateTime @default(now())
+}
+
 model TelemetryEvent {
   id          String   @id @default(cuid())
   userId      String?

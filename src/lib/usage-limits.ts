@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { limitsForPlan } from "@/lib/plan-limits";
+import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
 
 export const USAGE_PERIOD_DAYS = 30;
@@ -12,10 +12,16 @@ export function usageLimitForPlan(plan: string): number {
 }
 
 export function usageWindowForPlan(plan: string, from: Date = new Date()) {
+  // Reset BOTH the clip window and the minute window together. usagePeriodStartedAt is the
+  // single shared cycle anchor for both counters; resetting clips alone left `minutesUsed`
+  // stranded across plan transitions, so e.g. a trial→FREE downgrade kept minutesUsed at the
+  // trial total (>FREE limit) → 0 render minutes for 30 days once MINUTE_QUOTA is on.
   return {
     usageCount: 0,
     usageLimit: usageLimitForPlan(plan),
     usagePeriodStartedAt: from,
+    minutesUsed: 0,
+    minutesLimit: minutesPerMonthForPlan(plan),
   };
 }
 

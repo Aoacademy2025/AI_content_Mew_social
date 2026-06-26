@@ -30,6 +30,7 @@ export async function GET() {
         cancelAt: true,
         trialStartedAt: true,
         trialEndsAt: true,
+        subStatus: true,
       } as any,
     });
 

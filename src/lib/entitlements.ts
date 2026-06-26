@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
-import { limitsForPlan } from "@/lib/plan-limits";
+import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { resetMonthlyGranted } from "@/lib/credits";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
@@ -48,10 +48,14 @@ function hasActiveSubscription(user: Pick<EntitlementUser, "subStatus">): boolea
 
 function usageWindowForPlanValue(plan: string, from: Date) {
   const clips = limitsForPlan(plan).clips;
+  // Reset clip AND minute windows together (see usageWindowForPlan) — a downgrade that
+  // reset only clips left minutesUsed stranded above the new (lower) limit.
   return {
     usageCount: 0,
     usageLimit: Number.isFinite(clips) ? Number(clips) : 100,
     usagePeriodStartedAt: from,
+    minutesUsed: 0,
+    minutesLimit: minutesPerMonthForPlan(plan),
   };
 }
 

@@ -21,11 +21,13 @@ export async function POST() {
       return NextResponse.json({ error: "ไม่พบการสมัครแบบต่ออัตโนมัติ" }, { status: 400 });
     }
 
-    await stripe.subscriptions.update(dbUser.stripeSubscriptionId, { cancel_at_period_end: false });
+    const sub = await stripe.subscriptions.update(dbUser.stripeSubscriptionId, { cancel_at_period_end: false });
 
     await prisma.user.update({
       where: { id: authUser.id },
-      data: { cancelAtPeriodEnd: false, cancelAt: null, subStatus: "active" },
+      // Use the subscription's REAL status, not a hardcoded "active" — un-cancelling a past_due
+      // sub must not optimistically re-grant full access (the updated webhook reconciles too).
+      data: { cancelAtPeriodEnd: false, cancelAt: null, subStatus: (sub as any).status ?? "active" },
     });
 
     return NextResponse.json({ ok: true });
