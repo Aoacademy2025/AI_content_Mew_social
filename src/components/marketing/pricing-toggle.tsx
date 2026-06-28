@@ -17,15 +17,6 @@ type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
 /** Minutes per plan threaded from server to avoid client-side DB access. */
 type MinutesPerPlan = { free: number; pro: number; business: number };
 
-/** Credit-pack display info (optional, rendered only when CREDITS_LIVE flag is set). */
-type CreditPack = { label: string; baht: number; credits: number; bonusPct?: number };
-
-const CREDIT_PACKS_DATA: (CreditPack & { popular?: boolean })[] = [
-  { label: "Starter", baht: 199, credits: 200 },
-  { label: "Popular", baht: 499, credits: 540, bonusPct: 8, popular: true },
-  { label: "Pro", baht: 999, credits: 1150, bonusPct: 15 },
-];
-
 export function PricingToggle({
   plans,
   founding = null,
@@ -117,42 +108,6 @@ export function PricingToggle({
           minutesPerMonth={minutesPerPlan?.business}
         />
       </div>
-
-      {/* credit packs — rendered only when NEXT_PUBLIC_CREDITS_LIVE === "1" */}
-      {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && (
-        <div className="mt-10">
-          <p className="mb-4 text-center text-[13px] font-semibold uppercase tracking-[.12em] text-violet-300" style={HEAD}>
-            เครดิต AI เสริม
-          </p>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {CREDIT_PACKS_DATA.map((pack) => (
-              <div
-                key={pack.label}
-                className={`relative rounded-[18px] border p-5 text-left ${pack.popular ? "border-violet-400/45 bg-violet-500/10" : "border-white/10 bg-white/[0.035]"}`}
-              >
-                {pack.popular && (
-                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-3.5 py-0.5 text-[11px] font-bold text-white" style={{ background: BRAND }}>
-                    ยอดนิยม
-                  </span>
-                )}
-                <p className="text-[15px] font-bold text-white" style={HEAD}>{pack.label}</p>
-                <p className="mt-1 text-[22px] font-bold text-white" style={HEAD}>฿{pack.baht.toLocaleString()}</p>
-                <p className="mt-1 text-[13px] text-[#a7adcc]">
-                  ได้ {pack.credits} เครดิต
-                  {pack.bonusPct ? <span className="ml-1 text-violet-300">+{pack.bonusPct}% โบนัส</span> : null}
-                </p>
-                <Link
-                  href="/settings?tab=billing"
-                  className="mt-4 block rounded-full border border-violet-400/30 py-1.5 text-center text-[13px] font-semibold text-violet-200 transition hover:bg-violet-400/10"
-                >
-                  ซื้อเครดิต →
-                </Link>
-              </div>
-            ))}
-          </div>
-          <p className="mt-3 text-center text-[12px] text-[#7a7f9c]">1 เครดิต = ฿1 · ใช้สำหรับ AI สร้างภาพ / วิดีโอ / นาทีเสริม</p>
-        </div>
-      )}
 
       {/* payment reassurance chips */}
       <div className="mt-7 flex flex-wrap justify-center gap-2.5">
