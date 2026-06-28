@@ -59,6 +59,27 @@ function usageWindowForPlanValue(plan: string, from: Date) {
   };
 }
 
+/**
+ * Force a fresh monthly credit grant on PAID plan activation, IGNORING the 30-day grant
+ * window. The symmetric counterpart to the downgrade-reset inside syncUserEntitlement.
+ *
+ * Why force (NOT ensureMonthlyGrant): a trial-expiry downgrade calls
+ * `resetMonthlyGranted(userId, "FREE")`, which stamps `grantedResetAt = now` even though
+ * the FREE allowance is 0. If the user then SUBSCRIBES within 30 days, ensureMonthlyGrant
+ * sees `withinWindow === true` and SKIPS the grant → the paying subscriber gets 0 credits
+ * for ~the first month (bug H4). resetMonthlyGranted hard-sets `granted` to the new plan's
+ * allowance and re-stamps the window from now, so the credits land immediately.
+ *
+ * Flag-gated on CREDITS_LIVE (no-op when off → byte-identical). No-op for non-paid plans
+ * (FREE/unknown — nothing to grant; avoids a spurious monthly-reset:FREE ledger row).
+ * `purchased` (paid) credits are never touched (resetMonthlyGranted only sets `granted`).
+ */
+export async function grantOnPaidActivation(userId: string, plan: string): Promise<void> {
+  if (process.env.CREDITS_LIVE !== "1") return;
+  if (!isPaidPlan(plan)) return; // FREE / unknown — no monthly allowance to grant
+  await resetMonthlyGranted(userId, plan);
+}
+
 export function classifyEntitlement(user: EntitlementUser, now: Date = new Date()): EntitlementDecision {
   if (!isPaidPlan(user.plan)) {
     return { effectivePlan: "FREE", source: "FREE", action: "KEEP", reason: "free_plan", expiresAt: null };

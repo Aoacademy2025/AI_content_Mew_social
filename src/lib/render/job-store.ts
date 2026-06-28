@@ -11,13 +11,13 @@ import type { RenderJobType, RenderPayload } from "@/lib/render/types";
 // as before. Fail-open: a refund error must never block the caller's terminal/cancel
 // transition.
 async function refundJobReservation(
-  job: { userId: string; reservedMinutes: number | null; creditsSpent: number | null },
+  job: { userId: string; reservedMinutes: number | null; creditsSpent: number | null; creditsFromGranted: number | null },
   context: string,
 ): Promise<void> {
   try {
     await refundReservation(
       job.userId,
-      { reservedMinutes: job.reservedMinutes, creditsSpent: job.creditsSpent },
+      { reservedMinutes: job.reservedMinutes, creditsSpent: job.creditsSpent, creditsFromGranted: job.creditsFromGranted },
       `queue-${context}`,
     );
   } catch (refundErr) {
@@ -59,6 +59,13 @@ export async function enqueueRenderJob(input: {
    */
   creditsSpent?: number;
   /**
+   * Granted-bucket portion of creditsSpent (the rest came from purchased). Persisted on
+   * RenderJob.creditsFromGranted so failRenderJob/supersedeScope refund the EXACT buckets
+   * the spend drained — refunding the lump to purchased permanently inflates it (H3).
+   * Undefined → null (legacy/lump refund falls back to all-purchased).
+   */
+  creditsFromGranted?: number;
+  /**
    * Render-scope identity (= the legacy route's `renderOwnerKey`, `${userId}:${renderScopeId}`).
    * Stored on the row so the queue path can supersede a prior in-flight job for the
    * same scope+user across processes (the in-memory cancel-registry can't, since the
@@ -94,6 +101,7 @@ export async function enqueueRenderJob(input: {
       reservedQuota: reserved,
       reservedMinutes: input.reservedMinutes ?? null,
       creditsSpent: input.creditsSpent ?? null,
+      creditsFromGranted: input.creditsFromGranted ?? null,
       status: "QUEUED",
     },
   });
@@ -128,13 +136,12 @@ export async function supersedeScope(scopeKey: string, userId: string): Promise<
   for (const job of queued) {
     // Atomic guarded transition: only cancel if STILL QUEUED (a concurrent claim may
     // have just moved it to RUNNING — let the RUNNING path / worker own that one).
-    // Clear reservedQuota, reservedMinutes AND creditsSpent in the SAME write so a
-    // CANCELLED job can never linger with any set → no double-refund window. The refund
-    // below uses the pre-read job.reservedQuota/reservedMinutes/creditsSpent (captured by
-    // findMany before this update).
+    // Clear reservedQuota, reservedMinutes, creditsSpent AND creditsFromGranted in the SAME
+    // write so a CANCELLED job can never linger with any set → no double-refund window. The
+    // refund below uses the pre-read job fields (captured by findMany before this update).
     const res = await prisma.renderJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
-      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false, reservedMinutes: null, creditsSpent: null },
+      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false, reservedMinutes: null, creditsSpent: null, creditsFromGranted: null },
     });
     if (res.count !== 1) continue; // lost the race — it's RUNNING now, skip
     superseded++;
@@ -264,7 +271,7 @@ export async function failRenderJob(
     // never block the terminal transition — logged, continue.
     await refundJobReservation(job, `for job ${id}`);
     // Clear all reservation flags regardless — prevent double-refund on any retry of this path.
-    await prisma.renderJob.update({ where: { id }, data: { reservedQuota: false, reservedMinutes: null, creditsSpent: null } });
+    await prisma.renderJob.update({ where: { id }, data: { reservedQuota: false, reservedMinutes: null, creditsSpent: null, creditsFromGranted: null } });
   }
 }
 

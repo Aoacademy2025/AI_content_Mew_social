@@ -244,6 +244,10 @@ export async function POST(req: Request) {
   // the credit branch and these stay null).
   let creditsSpent: number | null = null;
   let creditBalanceAfter: number | null = null;
+  // Granted-bucket portion of an overflow credit spend (rest came from purchased). Threaded
+  // into every refund path + persisted on the queued RenderJob so a refund restores the SAME
+  // buckets the spend drained (H3). Stays null on the minute/clip path (CREDITS_LIVE off too).
+  let creditsFromGranted: number | null = null;
   // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
   // unit reserved/refunded/recorded is whole minutes-by-output-duration instead of clips.
   const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
@@ -434,9 +438,11 @@ export async function POST(req: Request) {
       quotaReserved = true;
       reservedUserId = userId;
       if (result.via === "credits") {
-        // Funded by credits (minute meter untouched). Carry the spend + post-spend
-        // balance for the bucket-aware refund and the receipt surfaced on the job.
+        // Funded by credits (minute meter untouched). Carry the spend, the bucket split
+        // (granted-first) for an exact bucket-aware refund, and the post-spend balance for
+        // the receipt surfaced on the job.
         creditsSpent = result.creditsSpent;
+        creditsFromGranted = result.fromGranted;
         creditBalanceAfter = result.balanceAfter;
       }
     } else {
@@ -871,6 +877,9 @@ export async function POST(req: Request) {
         // Null/flag-off → undefined → row stays minute/clip-funded (creditsSpent null),
         // byte-identical to before.
         creditsSpent: creditsSpent ?? undefined,
+        // Granted-bucket portion of that spend → RenderJob.creditsFromGranted, so a queue-side
+        // refund (failRenderJob/supersedeScope) restores the SAME buckets (H3). Null → undefined.
+        creditsFromGranted: creditsFromGranted ?? undefined,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
@@ -920,7 +929,7 @@ export async function POST(req: Request) {
         // identical to the prior refundMinutes/refundClipUsage branch.
         await refundReservation(
           userId,
-          { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent },
+          { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
           `render-refund:${jobId}`
         ).catch(() => {});
       };
@@ -1155,7 +1164,7 @@ export async function POST(req: Request) {
       // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
       await refundReservation(
         reservedUserId,
-        { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent },
+        { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
         "render-setup-refund"
       ).catch(() => {});
     }

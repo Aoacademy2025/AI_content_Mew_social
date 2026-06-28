@@ -4,7 +4,18 @@ import { refundClipUsage } from "@/lib/usage-limits";
 
 export type ReserveResult =
   | { allowed: true; via: "minutes"; reservedMinutes: number; remaining: number }
-  | { allowed: true; via: "credits"; creditsSpent: number; balanceAfter: number }
+  | {
+      allowed: true;
+      via: "credits";
+      creditsSpent: number;
+      // The bucket split spendCredits actually drained (granted-first, then purchased).
+      // MUST be threaded to refundReservation so a refund restores the EXACT buckets —
+      // refunding the lump to `purchased` permanently inflates it (granted is hard-reset
+      // monthly, purchased persists). fromGranted + fromPurchased === creditsSpent.
+      fromGranted: number;
+      fromPurchased: number;
+      balanceAfter: number;
+    }
   | { allowed: false; via: "none"; remaining: number; message?: string };
 
 /**
@@ -33,7 +44,16 @@ export async function reserveMinutesOrCredits(
     const action = opts.ref ? `render-overflow:${opts.ref}` : "render-overflow";
     const spend = await spendCredits(userId, cost, action);
     if (spend.ok) {
-      return { allowed: true, via: "credits", creditsSpent: cost, balanceAfter: spend.balanceAfter };
+      // Carry the real bucket split (granted-first) through so the refund hits the SAME
+      // buckets the spend drained — see refundReservation / the H3 fix.
+      return {
+        allowed: true,
+        via: "credits",
+        creditsSpent: cost,
+        fromGranted: spend.fromGranted,
+        fromPurchased: spend.fromPurchased,
+        balanceAfter: spend.balanceAfter,
+      };
     }
   }
   return { allowed: false, via: "none", remaining: r.remaining, message: r.message };
@@ -41,21 +61,33 @@ export async function reserveMinutesOrCredits(
 
 /**
  * Refund a reservation, choosing the correct bucket:
- *  - credit-funded (creditsSpent>0) → refundCredits
+ *  - credit-funded (creditsSpent>0) → refundCredits, split across the EXACT buckets the
+ *    spend drained (creditsFromGranted to granted, the remainder to purchased)
  *  - minute-funded (reservedMinutes!=null) → refundMinutes
  *  - legacy clip-funded → refundClipUsage
  */
 export async function refundReservation(
   userId: string,
-  res: { reservedMinutes: number | null; creditsSpent: number | null },
+  res: {
+    reservedMinutes: number | null;
+    creditsSpent: number | null;
+    // The granted-bucket portion of creditsSpent (the rest came from purchased). Threaded
+    // from reserveMinutesOrCredits → persisted on RenderJob.creditsFromGranted. Optional/
+    // nullable for backward-compat: an in-flight job enqueued BEFORE this field existed has
+    // no split, so we fall back to all-purchased (the pre-fix behavior) instead of crashing.
+    creditsFromGranted?: number | null;
+  },
   action: string
 ): Promise<void> {
   if (res.creditsSpent && res.creditsSpent > 0) {
-    // Overflow credits were spent from the `purchased` bucket (minute-overflow
-    // only ever drains purchased, since granted is the in-quota allowance) — so
-    // refund the whole amount back to `purchased`. Same effect as the prior
-    // 3-arg refundCredits(userId, amount, action).
-    await refundCredits(userId, 0, res.creditsSpent, action);
+    // Overflow spend drains the granted (monthly) bucket FIRST, then purchased. Refund to
+    // the SAME buckets: refunding the whole amount to `purchased` would permanently INFLATE
+    // it (granted is hard-reset every month, purchased persists) → free credits each month
+    // (bug H3). Clamp to [0, creditsSpent] so a corrupt split can never make refundCredits
+    // throw on a negative purchased remainder.
+    const fromGranted = Math.max(0, Math.min(res.creditsFromGranted ?? 0, res.creditsSpent));
+    const fromPurchased = res.creditsSpent - fromGranted;
+    await refundCredits(userId, fromGranted, fromPurchased, action);
   } else if (res.reservedMinutes != null) {
     await refundMinutes(userId, res.reservedMinutes);
   } else {

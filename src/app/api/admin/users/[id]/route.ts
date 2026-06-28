@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { markUserPaid, type PaidPlan } from "@/lib/paid-term";
+import { grantOnPaidActivation } from "@/lib/entitlements";
 
 const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
 const VALID_ROLES = new Set(["ADMIN", "USER"]);
@@ -48,6 +49,13 @@ export async function PATCH(
         from: fromDate,
         billingPeriod: days >= 365 ? "annual" : "monthly",
       });
+      // Force a fresh monthly credit grant on this manual paid activation, ignoring the
+      // 30-day window (same as the Stripe webhook): a prior trial-expiry downgrade may have
+      // stamped grantedResetAt=now with FREE allowance 0, which would otherwise block the
+      // grant (H4). CREDITS_LIVE-gated inside the helper → no-op when off (byte-identical).
+      await grantOnPaidActivation(id, paidPlan).catch((e) =>
+        console.error("[admin/users/PATCH] grantOnPaidActivation (markPaid) failed:", e)
+      );
       const updated = await prisma.user.findUnique({ where: { id }, select: USER_SELECT });
       return NextResponse.json(updated);
     }
@@ -85,6 +93,12 @@ export async function PATCH(
     if (plan !== undefined) {
       await extendVideoExpiryForPlan(id, plan).catch(err => {
         console.error("[admin/users/PATCH] extendVideoExpiryForPlan failed:", err);
+      });
+      // A manual plan-change to PRO/BUSINESS grants the monthly credit allowance too (helper
+      // no-ops for FREE and when CREDITS_LIVE is off → byte-identical). Forces past the
+      // 30-day window so a trial-expired user promoted within the month still gets credits (H4).
+      await grantOnPaidActivation(id, plan).catch(err => {
+        console.error("[admin/users/PATCH] grantOnPaidActivation failed:", err);
       });
     }
 
