@@ -61,7 +61,7 @@ export async function GET(req: Request) {
       planConfig,
       proSubCount,
       businessSubCount,
-      minuteReserveEvents,
+      chargedClips,
       imageSpendRows,
       creditPurchaseRows,
       paidPayments,
@@ -78,10 +78,12 @@ export async function GET(req: Request) {
       prisma.user.count({ where: { subStatus: "active", plan: "PRO" } }),
       prisma.user.count({ where: { subStatus: "active", plan: "BUSINESS" } }),
 
-      // Managed minutes — TelemetryEvent name="minute_reserve" in window
-      prisma.telemetryEvent.findMany({
-        where: { name: "minute_reserve", createdAt: { gte: from } },
-        select: { userId: true, properties: true, createdAt: true },
+      // Managed render minutes — ChargedClip rows in window. (Under MINUTE_QUOTA=1 the
+      // reserve moved to the render route, so the old `minute_reserve` telemetry no longer
+      // fires; ChargedClip.chargedMinutes is the minutes-model charge record per video.)
+      prisma.chargedClip.findMany({
+        where: { createdAt: { gte: from }, chargedMinutes: { not: null } },
+        select: { userId: true, chargedMinutes: true, createdAt: true },
       }),
 
       // AI-image spends in window
@@ -133,24 +135,11 @@ export async function GET(req: Request) {
       }),
     ]);
 
-    // ── Managed minutes — parse properties JSON ───────────────────────────────
+    // ── Managed minutes — sum ChargedClip.chargedMinutes (minutes billed per video) ──
     let managedMinutes = 0;
     const perUserMinutes = new Map<string, number>();
-    for (const row of minuteReserveEvents) {
-      let mins = 0;
-      if (row.properties) {
-        try {
-          const parsed = JSON.parse(row.properties) as Record<string, unknown>;
-          const v = parsed.minutes;
-          if (typeof v === "number" && Number.isFinite(v)) mins = v;
-          else if (typeof v === "string") {
-            const n = parseFloat(v);
-            if (Number.isFinite(n)) mins = n;
-          }
-        } catch {
-          // skip bad rows
-        }
-      }
+    for (const row of chargedClips) {
+      const mins = row.chargedMinutes ?? 0;
       managedMinutes += mins;
       if (row.userId) {
         perUserMinutes.set(row.userId, (perUserMinutes.get(row.userId) ?? 0) + mins);
@@ -238,22 +227,9 @@ export async function GET(req: Request) {
     // ── Daily trend ───────────────────────────────────────────────────────────
     // Build a date-keyed map for revenue (MRR prorated per day) + cogs
     const dailyMinutes = new Map<string, number>();
-    for (const row of minuteReserveEvents) {
+    for (const row of chargedClips) {
       const label = dateLabel(row.createdAt);
-      let mins = 0;
-      if (row.properties) {
-        try {
-          const parsed = JSON.parse(row.properties) as Record<string, unknown>;
-          const v = parsed.minutes;
-          if (typeof v === "number" && Number.isFinite(v)) mins = v;
-          else if (typeof v === "string") {
-            const n = parseFloat(v);
-            if (Number.isFinite(n)) mins = n;
-          }
-        } catch {
-          // skip bad rows
-        }
-      }
+      const mins = row.chargedMinutes ?? 0;
       dailyMinutes.set(label, (dailyMinutes.get(label) ?? 0) + mins);
     }
 
