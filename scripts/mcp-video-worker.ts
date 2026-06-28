@@ -5,6 +5,7 @@ import { prisma } from "../src/lib/prisma";
 import { claimNextQueuedJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
+import { hydrateServerGeminiKeyEnv } from "../src/lib/server-keys";
 
 const POLL_MS = Number(process.env.MCP_WORKER_POLL_MS ?? 4000);
 const ORPHAN_MAX_REQUEUES = Number(process.env.MCP_WORKER_ORPHAN_MAX_REQUEUES ?? 2);
@@ -34,6 +35,13 @@ async function main() {
     console.error("[mcp-worker] DATABASE_URL not set — refusing to start");
     process.exit(1);
   }
+
+  // Managed Gemini: this standalone worker doesn't run Next's instrumentation, and the
+  // platform key now lives in SiteConfig (set via /admin) rather than .env — so hydrate
+  // it into process.env.GEMINI_SERVER_KEY before the orchestrator makes any Gemini call,
+  // otherwise managed MCP jobs would fall back to BYOK and dead-end on KEY_REQUIRED.
+  if (await hydrateServerGeminiKeyEnv()) console.log("[mcp-worker] loaded server Gemini key from DB");
+
   // Recovery: with a single worker, any 'processing' job at startup was orphaned by a
   // previous deploy/restart. Requeue safe stages instead of failing the user's MCP job.
   const recovered = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: ORPHAN_MAX_REQUEUES });
