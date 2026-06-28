@@ -196,7 +196,7 @@ export function CreditsBillingSection() {
 
       {/* Pack cards */}
       <p className="text-xs mt-2" style={{ color: "var(--ui-text-muted)" }}>
-        เติมเครดิตเพื่อใช้ AI สร้างภาพและคลิปวิดีโอ · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้ออยู่ถาวร ไม่หายแม้เปลี่ยนแผน</span>
+        เติมเครดิตเพื่อเติมนาทีเมื่อใช้เกินโควต้าแพ็ก (2 เครดิต = 1 นาที) · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้ออยู่ถาวร ไม่หายแม้เปลี่ยนแผน</span>
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {PACKS.map((pack) => {

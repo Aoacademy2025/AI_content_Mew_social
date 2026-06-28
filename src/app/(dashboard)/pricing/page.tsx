@@ -396,7 +396,7 @@ function PricingContent() {
       {/* credit packs — flag-gated, compact */}
       {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && (
         <div className="mx-auto mt-10 max-w-2xl">
-          <p className="mb-4 text-center text-[12px] font-semibold uppercase tracking-[.12em] text-violet-300" style={HEAD}>เครดิต AI เสริม</p>
+          <p className="mb-4 text-center text-[12px] font-semibold uppercase tracking-[.12em] text-violet-300" style={HEAD}>เครดิตเติมนาที</p>
           <div className="grid gap-3 sm:grid-cols-3">
             {CREDIT_PACKS_DISPLAY.map((pack) => {
               const bonusPctRaw = pack.credits > pack.baht ? Math.round(((pack.credits - pack.baht) / pack.baht) * 100) : 0;
@@ -419,7 +419,7 @@ function PricingContent() {
               );
             })}
           </div>
-          <p className="mt-3 text-center text-[11px] text-[#7a7f9c]">1 เครดิต = ฿1 · ใช้สำหรับ AI สร้างภาพ / วิดีโอ / นาทีเสริม</p>
+          <p className="mt-3 text-center text-[11px] text-[#7a7f9c]">1 เครดิต = ฿1 · ใช้เติมนาทีเมื่อใช้เกินโควต้าแพ็ก</p>
         </div>
       )}
 
