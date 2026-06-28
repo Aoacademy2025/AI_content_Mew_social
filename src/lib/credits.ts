@@ -351,9 +351,14 @@ export async function ensureMonthlyGrant(userId: string): Promise<void> {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { plan: true },
+    select: { plan: true, trialEndsAt: true },
   });
   if (!user) return;
+
+  // Trial users carry plan=PRO but credits are a PAID benefit (closes the trial-farm
+  // hole). ensureMonthlyGrant is also called from /api/credits/balance for ANY user,
+  // so guard here, not just on the paid webhook path.
+  if (user.trialEndsAt && user.trialEndsAt.getTime() > Date.now()) return;
 
   const allowance = MONTHLY_GRANT[user.plan] ?? 0;
   if (allowance <= 0) return; // FREE or unknown plan — no allowance

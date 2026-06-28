@@ -168,6 +168,21 @@ async function main() {
     console.error(`\n${failures} FAILED (${passed} passed)`);
     process.exit(1);
   }
+  // ── Test: active-trial user (plan=PRO) gets NO grant (trial = paid benefit) ──
+  // ensureMonthlyGrant is also called from /api/credits/balance for ANY user, so a
+  // trial-PRO opening the credits UI must NOT be granted PRO's 50 (closes trial-farm).
+  const trialId = "earn-trial-1";
+  await prisma.user.create({
+    data: {
+      id: trialId, name: "Earn Trial", email: "earn-trial@example.com", plan: "PRO",
+      trialStartedAt: new Date(Date.now() - 24 * 3600 * 1000),
+      trialEndsAt: new Date(Date.now() + 5 * 24 * 3600 * 1000),
+    },
+  });
+  process.env.CREDITS_LIVE = "1"; // ensure flag ON so we actually exercise the grant path
+  await ensureMonthlyGrant(trialId);
+  ok((await getBalance(trialId)).granted === 0, "active-trial PRO → NO monthly grant (trial = no credits)");
+
   console.log(`\nALL ${passed} CREDIT-EARN CHECKS PASSED`);
 }
 
