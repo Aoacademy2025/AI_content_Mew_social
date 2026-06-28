@@ -87,3 +87,38 @@ export async function reserveAiAudioMinutes(
 export async function refundAiAudioMinutes(userId: string, minutes: number): Promise<void> {
   await prisma.$executeRaw`UPDATE "User" SET "aiAudioMinutesUsed" = MAX(0, "aiAudioMinutesUsed" - ${minutes}) WHERE "id" = ${userId}`;
 }
+
+/** Read-only peek of the AI-audio ceiling — for gating BEFORE a TTS/transcribe
+ *  call whose output minutes aren't known yet. Allowed while under the ceiling;
+ *  `recordAiAudioMinutes` charges the actual minutes after success (so overshoot
+ *  is bounded to ≤1 generation). `enforce:false` (BYOK) → always allowed, no read. */
+export async function checkAiAudioCeiling(
+  userId: string,
+  opts: { enforce: boolean }
+): Promise<AiAudioReserveResult> {
+  if (!opts.enforce) {
+    return { allowed: true, used: 0, ceiling: Number.POSITIVE_INFINITY, remaining: Number.POSITIVE_INFINITY };
+  }
+  const s = await syncMinuteWindow(userId);
+  if (!s) return { allowed: false, used: 0, ceiling: 0, remaining: 0, message: "ไม่พบผู้ใช้" };
+  const ceiling = aiAudioCeilingFor(s.minutesLimit);
+  const used = s.aiAudioMinutesUsed;
+  const allowed = used < ceiling;
+  return { allowed, used, ceiling, remaining: Math.max(0, ceiling - used), message: allowed ? undefined : ceilingMessage(s.plan, ceiling) };
+}
+
+/** Charge the ACTUAL audio-minutes after a successful TTS/transcribe call.
+ *  Unconditional increment (the ceiling block is the peek's job) so a generation
+ *  that started under the ceiling is always recorded. `enforce:false` / non-positive
+ *  → no-op. Pairs with checkAiAudioCeiling. */
+export async function recordAiAudioMinutes(
+  userId: string,
+  minutes: number,
+  opts: { enforce: boolean }
+): Promise<void> {
+  if (!opts.enforce || !(minutes > 0)) return;
+  await prisma.user.update({
+    where: { id: userId },
+    data: { aiAudioMinutesUsed: { increment: minutes } },
+  });
+}

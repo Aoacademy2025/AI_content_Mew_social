@@ -17,8 +17,8 @@ Why not meter side-channels into minutes: it creates "ทำคลิป 2 น�
 ## Layers
 - **L1 — Google Cloud billing+quota cap on `GEMINI_SERVER_KEY`** (Mew, external, do regardless). Absolute backstop.
 - **L2a — AI-audio-minute ceiling** (keystone): `minutesLimit × AI_AUDIO_CEILING_MULT` (default 2), shared 30-day window, atomic reserve. ✅ DONE
-- **L2b — per-user inbound rate-limit / daily cap** on all Gemini-spending routes (one shared helper). ⬜ TODO
-- **L4 — input/array caps** (cap `scenes[]`, script length, `whisperWords[]`) to kill per-request amplification. ⬜ TODO
+- **L2b — per-user inbound rate-limit / daily cap** on all Gemini-spending routes (one shared helper). ⬜ DEFERRED → fast-follow (thumbnail-ownership done)
+- **L4 — input/array caps** (cap `scenes[]`, script length, `whisperWords[]`) to kill per-request amplification. ✅ DONE
 
 ## Status
 
@@ -28,18 +28,17 @@ Why not meter side-channels into minutes: it creates "ทำคลิป 2 น�
 - `src/lib/ai-spend-limits.ts`: `aiAudioCeilingFor`, `aiAudioCeilingMult` (env `AI_AUDIO_CEILING_MULT`), `reserveAiAudioMinutes(userId, minutes, {enforce})` (atomic, mirrors reserveMinutes; `enforce:false`=BYOK no-op no-DB-write), `refundAiAudioMinutes` (clamp 0).
 - `scripts/verify-ai-audio-ceiling.ts`: 22 checks (ceiling math, block-at-ceiling, refund, trial-cap 15→30, window-reset, flag-off noop). Regression: minute-meter/credits/enforcement/reset/credit-overflow all green.
 
-### ⬜ L4 — input caps (pure + wire)
-- `extract-keywords`: cap `scenes[]` length (the CRITICAL amplifier: batches of 15 each re-embed full script ×3).
-- `analyze-script`, `split-phrases`: cap `script` length (~12k, match siblings).
-- `align-scenes`: cap `scenes[]` + `whisperWords[]` length.
+### ✅ L4 — input caps (DONE, `verify-ai-input-caps` 12/12)
+- `checkAiInputCaps` wired into `extract-keywords` (caps `scenes[]` — the CRITICAL amplifier), `analyze-script`, `split-phrases` (cap `script`), `align-scenes` (cap `scenes[]`+`whisperWords[]`).
 
-### ⬜ L2a wiring (integration — managed mode only)
-- `tts-gemini/route.ts`: peek ceiling before generating; after success, `reserveAiAudioMinutes(actual audio-min)`; refund on fail. Cover the **preview** sub-path (currently returns before any quota) + cache preview by fixed text.
-- `transcribe/route.ts`: same, by audio-input minutes.
-- Enforce only when `MANAGED_GEMINI==="1"` (BYOK → enforce:false).
+### ✅ L2a wiring (DONE, tsc clean) — managed mode only (`geminiMode==="managed"`)
+- `tts-gemini/route.ts`: preview path peek (`checkAiAudioCeiling`) on cache-MISS + record actual minutes; non-preview peek before generation; record actual audio-min at BOTH fail-open + success returns. BYOK → no-op (byte-identical).
+- `transcribe/route.ts`: `reserveAiAudioMinutes` up-front by input-audio minutes (atomic). refund-on-failure = fast-follow (avatar/upload-only, rare).
 
-### ⬜ L2b — rate-limit
-- Shared per-user limiter (DB-backed, single-box) keyed on user.id, applied after auth before `resolveGeminiKey`, on all Gemini routes. Tiered: tight on TTS/transcribe, looser on text. Also fix `thumbnail` mode=suggest to require an owned `videoId`.
+### ⬜ L2b — rate-limit (DEFERRED → fast-follow)
+- L2a (ceiling) + L4 (input caps) + L1 (billing cap) already bound catastrophic cost → broad rate-limit is hardening/stability, deferred.
+- ✅ DONE now: `thumbnail` mode=suggest requires an OWNED `videoId` (closes the no-resource loop-burn vector).
+- TODO fast-follow: shared per-user limiter (DB-backed, single-box) keyed on user.id on all Gemini routes (burst/RPM protection + cheap-text-endpoint frequency) + transcribe refund-on-failure + preview cache by fixed text.
 
 ## Go-live note
 Deploy bundle **flag-OFF = safe now** (BYOK, user pays). These guards gate only the `MANAGED_GEMINI=1` flip. Flip order unchanged (see [[managed-gemini-cost-abuse-2026-06-28]] memory): GEMINI_SERVER_KEY + 4 flags together + rebuild.

@@ -217,6 +217,10 @@ export async function POST(req: Request) {
 
     // ── MODE: suggest ──
     if (mode === "suggest") {
+      // Require an OWNED video — closes the no-resource loop-burn vector: without
+      // this a caller could POST {mode:"suggest"} with no videoId and spend server
+      // Gemini in a loop (videoId reads are already userId-scoped above = IDOR-safe).
+      if (!video) return NextResponse.json({ error: "videoId required" }, { status: 400 });
       const user = await prisma.user.findUnique({
         where: { id: authUser.id },
         select: { geminiKey: true, plan: true },

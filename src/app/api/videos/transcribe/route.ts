@@ -11,6 +11,7 @@ import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
 import { isSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -841,9 +842,12 @@ export async function POST(req: Request) {
     });
 
     let resolvedGeminiKey: string | null = null;
+    let geminiMode: "managed" | "byok" = "byok";
     if (user) {
       try {
-        resolvedGeminiKey = resolveGeminiKey(user).key;
+        const resolved = resolveGeminiKey(user);
+        resolvedGeminiKey = resolved.key;
+        geminiMode = resolved.mode;
       } catch (e) {
         if (!(e instanceof KeyRequiredError)) throw e;
         // No key available → resolvedGeminiKey stays null
@@ -913,6 +917,13 @@ export async function POST(req: Request) {
     let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
 
     if (useGeminiTranscribe) {
+      // AI-audio ceiling (managed): transcribe spends server Gemini on the input
+      // audio duration. Reserve up front (atomic) so an at-ceiling user is blocked
+      // before the spend — bounds the loopable transcribe endpoint. (refund-on-failure
+      // is a fast-follow; transcribe is avatar/upload-only and rarely fails.)
+      const aiMinutes = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 60_000 : 1;
+      const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, { enforce: geminiMode === "managed" });
+      if (!ai.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });
       // ── Gemini Audio Transcribe with timestamps ──
       console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {

@@ -24,7 +24,7 @@ function ok(cond: boolean, msg: string) {
 }
 
 async function main() {
-  const { aiAudioCeilingFor, reserveAiAudioMinutes, refundAiAudioMinutes } = await import("../src/lib/ai-spend-limits");
+  const { aiAudioCeilingFor, reserveAiAudioMinutes, refundAiAudioMinutes, checkAiAudioCeiling, recordAiAudioMinutes } = await import("../src/lib/ai-spend-limits");
   const { prisma } = await import("../src/lib/prisma");
 
   // ── Part 1: pure ceiling math (default multiplier = 2) ─────────────────────
@@ -107,6 +107,43 @@ async function main() {
   const w1 = await reserveAiAudioMinutes("ace-stale", 5, { enforce: true });
   ok(w1.allowed === true, "stale window: reserve 5 allowed (counter reset)");
   ok((await aiUsed("ace-stale")) === 5, "stale window: counter reset to 0 then +5 (not 165)");
+
+  // ── checkAiAudioCeiling (peek, read-only) + recordAiAudioMinutes (post-hoc) ──
+  // Route pattern: peek BEFORE generating (block if at ceiling), record ACTUAL
+  // audio-minutes AFTER success (record allows overshoot by ≤1 generation).
+  await prisma.user.create({
+    data: {
+      id: "ace-peek", name: "Ace Peek", email: "ace-peek@example.com",
+      plan: "PRO", minutesLimit: 80, minutesUsed: 0, aiAudioMinutesUsed: 0,
+      usagePeriodStartedAt: now, trialEndsAt: null, usageLimit: 100, usageCount: 0,
+    },
+  });
+
+  // enforce:false → always allowed, no DB read/write
+  const pOff = await checkAiAudioCeiling("ace-peek", { enforce: false });
+  ok(pOff.allowed === true, "peek enforce:false → allowed (BYOK)");
+
+  // peek does NOT mutate
+  const p1 = await checkAiAudioCeiling("ace-peek", { enforce: true });
+  ok(p1.allowed === true && p1.ceiling === 160, "peek under ceiling → allowed");
+  ok((await aiUsed("ace-peek")) === 0, "peek did NOT mutate counter");
+
+  // record increments unconditionally (post-hoc charge)
+  await recordAiAudioMinutes("ace-peek", 1.5, { enforce: true });
+  ok((await aiUsed("ace-peek")) === 1.5, "record 1.5 → counter 1.5 (Float)");
+
+  // record enforce:false → no-op; record 0/neg → no-op
+  await recordAiAudioMinutes("ace-peek", 99, { enforce: false });
+  await recordAiAudioMinutes("ace-peek", 0, { enforce: true });
+  await recordAiAudioMinutes("ace-peek", -5, { enforce: true });
+  ok((await aiUsed("ace-peek")) === 1.5, "record no-op for enforce:false / 0 / negative");
+
+  // at/over ceiling → peek blocks; record still allows overshoot (no block)
+  await recordAiAudioMinutes("ace-peek", 158.5, { enforce: true }); // now 160 = ceiling
+  const p2 = await checkAiAudioCeiling("ace-peek", { enforce: true });
+  ok(p2.allowed === false, "peek at ceiling (160) → blocked");
+  await recordAiAudioMinutes("ace-peek", 10, { enforce: true });
+  ok((await aiUsed("ace-peek")) === 170, "record overshoots past ceiling (170) — no block on record");
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);
   process.exit(failures === 0 ? 0 : 1);

@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
+import { checkAiAudioCeiling, recordAiAudioMinutes } from "@/lib/ai-spend-limits";
 import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
@@ -334,6 +335,10 @@ export async function POST(req: Request) {
       properties: { mode: geminiMode, plan: user.plan },
     }).catch(() => {});
 
+    // Managed mode = server Gemini key = OUR spend → enforce the AI-audio ceiling.
+    // BYOK (enforceAi=false) → peek always-allows + record is a no-op (byte-identical).
+    const enforceAi = geminiMode === "managed";
+
     if (preview === true) {
       const previewText = normalizeVoicePreviewText(text);
       const cache = getVoicePreviewCachePath({
@@ -346,9 +351,14 @@ export async function POST(req: Request) {
       const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
       if (cached) return NextResponse.json({ ...cached, preview: true });
 
+      // Cache MISS = fresh server-key spend. Gate behind the ceiling so randomized
+      // preview text can't loop-burn Gemini (the audit's CRITICAL preview hole).
+      const previewCeil = await checkAiAudioCeiling(authUser.id, { enforce: enforceAi });
+      if (!previewCeil.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: previewCeil.message }, { status: 429 });
       const r = await callGeminiTts(apiKey, previewText, selectedVoice);
       if (!r.ok) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
       fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
+      await recordAiAudioMinutes(authUser.id, pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000, { enforce: enforceAi });
       return NextResponse.json({
         voiceUrl: cache.voiceUrl,
         audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
@@ -363,6 +373,13 @@ export async function POST(req: Request) {
       if (!quota.allowed) {
         return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
       }
+    }
+
+    // AI-audio ceiling (managed): bounds server-Gemini TTS spend independently of
+    // render minutes (TTS is a separate, loopable endpoint). Charged after success.
+    if (enforceAi) {
+      const ceil = await checkAiAudioCeiling(authUser.id, { enforce: true });
+      if (!ceil.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ceil.message }, { status: 429 });
     }
 
     // IRON RULE: fullText is the one string both TTS and subtitles see.
@@ -452,6 +469,7 @@ export async function POST(req: Request) {
           properties: { minutes, remaining: reserved.remaining, plan: user.plan },
         }).catch(() => {});
       }
+      await recordAiAudioMinutes(authUser.id, failOpenDurationMs / 60_000, { enforce: enforceAi });
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl,
@@ -481,6 +499,7 @@ export async function POST(req: Request) {
         properties: { minutes, remaining: reserved.remaining, plan: user.plan },
       }).catch(() => {});
     }
+    await recordAiAudioMinutes(authUser.id, audioDurationMs / 60_000, { enforce: enforceAi });
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
     console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
