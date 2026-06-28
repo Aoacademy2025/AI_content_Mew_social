@@ -923,7 +923,10 @@ export async function POST(req: Request) {
       // is a fast-follow; transcribe is avatar/upload-only and rarely fails.)
       const aiMinutes = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 60_000 : 1;
       const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, { enforce: geminiMode === "managed" });
-      if (!ai.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });
+      if (!ai.allowed) {
+        try { fs.unlinkSync(mp3Path); } catch {} // don't orphan the extracted mp3 on the ceiling-block path
+        return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });
+      }
       // ── Gemini Audio Transcribe with timestamps ──
       console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {
