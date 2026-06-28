@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
 
 const SYSTEM_PROMPT = `คุณคือ Professional Content Creator และ Social Media Strategist
 ผู้เชี่ยวชาญด้านการ แบ่งสคริปต์ให้กลายเป็นฉากวิดีโอ short-form ที่ไหลลื่น เห็นภาพทันที
@@ -154,6 +155,9 @@ export async function POST(req: Request) {
     if (!script) {
       return NextResponse.json({ error: "Script is required" }, { status: 400 });
     }
+
+    const inputCaps = checkAiInputCaps({ script });
+    if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },

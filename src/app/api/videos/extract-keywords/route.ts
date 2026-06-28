@@ -5,6 +5,7 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import {
   contentProfilePromptBlock,
   detectContentProfile,
@@ -245,9 +246,10 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
 
-  // Cap script length server-side (matches split-script's 12k guard) to bound LLM cost / memory.
-  if (typeof script === "string" && script.length > 12_000)
-    return NextResponse.json({ error: "สคริปต์ยาวเกินไป (เกิน 12,000 ตัวอักษร)" }, { status: 400 });
+  // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
+  // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
+  const inputCaps = checkAiInputCaps({ script, scenes });
+  if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },

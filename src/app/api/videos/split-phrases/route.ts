@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -44,6 +45,8 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { script: rawScript, audioDurationMs } = body ?? {};
   if (!rawScript?.trim()) return NextResponse.json({ error: "script required" }, { status: 400 });
+  const inputCaps = checkAiInputCaps({ script: rawScript });
+  if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
   // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
   // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line

@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -20,6 +21,8 @@ export async function POST(req: Request) {
   if (!scenes?.length || !whisperWords?.length) {
     return NextResponse.json({ error: "scenes and whisperWords required" }, { status: 400 });
   }
+  const inputCaps = checkAiInputCaps({ scenes, words: whisperWords });
+  if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { geminiKey: true, plan: true } });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });

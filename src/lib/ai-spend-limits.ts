@@ -1,0 +1,89 @@
+// ai-spend-limits.ts — managed-Gemini cost guard (L2a)
+//
+// When MANAGED_GEMINI=1 the server pays for every Gemini call. The render-minute
+// reserve only caps *render compute* (Remotion/ffmpeg spend 0 Gemini) — the
+// expensive Gemini spend (TTS audio out, transcribe audio in) happens in
+// separate, client-callable, loopable endpoints that bypass the render reserve.
+//
+// This module bounds that spend with an INVISIBLE monthly ceiling of
+// `minutesLimit × AI_AUDIO_CEILING_MULT` audio-minutes (TTS + transcribe
+// combined), shared across the same 30-day usage window as render minutes.
+// Normal users (a couple of re-rolls/previews per clip) never reach it; an
+// abuser is bounded to ~ceiling × ฿0.53/min ≈ heavy-normal cost.
+
+import { prisma } from "@/lib/prisma";
+import { syncMinuteWindow } from "@/lib/minute-limits";
+
+const DEFAULT_MULT = 2;
+
+/** Configured ceiling multiplier (env AI_AUDIO_CEILING_MULT, default 2). */
+export function aiAudioCeilingMult(): number {
+  const raw = Number(process.env.AI_AUDIO_CEILING_MULT);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MULT;
+}
+
+/** Monthly AI-audio-minute ceiling for a plan's render-minute limit.
+ *  Rounded to nearest whole minute (matches minute-system rounding). */
+export function aiAudioCeilingFor(minutesLimit: number, mult: number = aiAudioCeilingMult()): number {
+  const m = Number.isFinite(minutesLimit) && minutesLimit > 0 ? minutesLimit : 0;
+  return Math.round(m * mult);
+}
+
+export type AiAudioReserveResult = {
+  allowed: boolean;
+  used: number;
+  ceiling: number;
+  remaining: number;
+  message?: string;
+};
+
+function ceilingMessage(plan: string, ceiling: number): string {
+  const name = plan === "BUSINESS" ? "Business" : plan === "PRO" ? "Pro" : "Free";
+  return `ใช้เสียง AI (สร้างเสียง/ถอดเสียง) ครบเพดานรอบนี้แล้ว (${name}: ${ceiling} นาที/30 วัน) — เรนเดอร์วิดีโอที่ทำไว้ หรือรอรอบถัดไป`;
+}
+
+/** Reserve `minutes` of AI audio (TTS generated / audio transcribed) against the
+ *  monthly ceiling. Mirrors reserveMinutes (atomic conditional updateMany).
+ *  `enforce` is the managed-mode flag — when false (BYOK) this is a no-op that
+ *  always allows and touches NO DB row (flag-off byte-identical). */
+export async function reserveAiAudioMinutes(
+  userId: string,
+  minutes: number,
+  opts: { enforce: boolean }
+): Promise<AiAudioReserveResult> {
+  if (!opts.enforce) {
+    return { allowed: true, used: 0, ceiling: Number.POSITIVE_INFINITY, remaining: Number.POSITIVE_INFINITY };
+  }
+
+  const s = await syncMinuteWindow(userId);
+  if (!s) return { allowed: false, used: 0, ceiling: 0, remaining: 0, message: "ไม่พบผู้ใช้" };
+
+  const ceiling = aiAudioCeilingFor(s.minutesLimit);
+  const used = s.aiAudioMinutesUsed;
+  if (used + minutes > ceiling) {
+    return { allowed: false, used, ceiling, remaining: Math.max(0, ceiling - used), message: ceilingMessage(s.plan, ceiling) };
+  }
+
+  // Atomic conditional reserve — same pattern as reserveMinutes.
+  const reserved = await prisma.user.updateMany({
+    where: { id: userId, aiAudioMinutesUsed: { lte: ceiling - minutes } },
+    data: { aiAudioMinutesUsed: { increment: minutes } },
+  });
+
+  if (reserved.count !== 1) {
+    // Lost the race — re-read and report current state.
+    const latest = await syncMinuteWindow(userId);
+    const lu = latest?.aiAudioMinutesUsed ?? used;
+    const lc = latest ? aiAudioCeilingFor(latest.minutesLimit) : ceiling;
+    return { allowed: false, used: lu, ceiling: lc, remaining: Math.max(0, lc - lu), message: ceilingMessage(latest?.plan ?? s.plan, lc) };
+  }
+
+  const newUsed = used + minutes;
+  return { allowed: true, used: newUsed, ceiling, remaining: Math.max(0, ceiling - newUsed) };
+}
+
+/** Give back AI-audio minutes (e.g. a TTS/transcribe call failed after reserve).
+ *  Clamps at 0 — never goes negative. */
+export async function refundAiAudioMinutes(userId: string, minutes: number): Promise<void> {
+  await prisma.$executeRaw`UPDATE "User" SET "aiAudioMinutesUsed" = MAX(0, "aiAudioMinutesUsed" - ${minutes}) WHERE "id" = ${userId}`;
+}

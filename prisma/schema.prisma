@@ -49,6 +49,7 @@ model User {
   trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
   minutesUsed   Float    @default(0)
   minutesLimit  Int      @default(0)
+  aiAudioMinutesUsed Float @default(0) // managed-Gemini side-channel audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
   geminiKeyMode String   @default("byok")
   resetToken    String?
   resetExpires  DateTime?

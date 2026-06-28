@@ -26,17 +26,22 @@ function minuteQuotaMessage(plan: string, limit: number): string {
   return `แพ็กเกจ ${name} จำกัด ${limit} นาทีต่อ 30 วัน รอบนี้ใช้ครบแล้ว`;
 }
 
-async function syncMinuteWindow(userId: string): Promise<{
+/** Sync + return the user's current 30-day minute window (resetting it when
+ *  expired). Also owns the reset of `aiAudioMinutesUsed` (the managed-Gemini
+ *  side-channel counter) so it shares the SAME window as render minutes.
+ *  Exported for the AI-audio-ceiling guard (ai-spend-limits.ts). */
+export async function syncMinuteWindow(userId: string): Promise<{
   plan: string;
   minutesUsed: number;
   minutesLimit: number;
+  aiAudioMinutesUsed: number;
   usagePeriodStartedAt: Date;
 } | null> {
   const now = new Date();
   await syncUserEntitlement(userId, now);
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { plan: true, minutesUsed: true, minutesLimit: true, usagePeriodStartedAt: true, trialEndsAt: true },
+    select: { plan: true, minutesUsed: true, minutesLimit: true, aiAudioMinutesUsed: true, usagePeriodStartedAt: true, trialEndsAt: true },
   });
   if (!user) return null;
 
@@ -47,15 +52,16 @@ async function syncMinuteWindow(userId: string): Promise<{
   const shouldReset = isWindowExpired(user.usagePeriodStartedAt, now);
   const usagePeriodStartedAt = shouldReset ? now : user.usagePeriodStartedAt!;
   const minutesUsed = shouldReset ? 0 : user.minutesUsed;
+  const aiAudioMinutesUsed = shouldReset ? 0 : user.aiAudioMinutesUsed;
 
   if (shouldReset || user.minutesLimit !== minutesLimit) {
     await prisma.user.update({
       where: { id: userId },
-      data: { minutesUsed, minutesLimit, usagePeriodStartedAt },
+      data: { minutesUsed, minutesLimit, usagePeriodStartedAt, aiAudioMinutesUsed },
     });
   }
 
-  return { plan: user.plan, minutesUsed, minutesLimit, usagePeriodStartedAt };
+  return { plan: user.plan, minutesUsed, minutesLimit, aiAudioMinutesUsed, usagePeriodStartedAt };
 }
 
 export async function checkMinuteQuota(
