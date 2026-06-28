@@ -68,6 +68,9 @@ async function setConfig(key: SettingKey, value: string) {
   };
   const envKey = envMap[key];
   if (envKey) process.env[envKey] = value;
+  // The platform Gemini key also feeds the SYNC managed resolver (GEMINI_SERVER_KEY),
+  // not only the loanword cron — patch it too so an admin save takes effect with no restart.
+  if (key === "server_gemini_key") process.env.GEMINI_SERVER_KEY = value;
 }
 
 export async function GET() {
