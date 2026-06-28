@@ -122,3 +122,44 @@ export async function recordAiAudioMinutes(
     data: { aiAudioMinutesUsed: { increment: minutes } },
   });
 }
+
+// TTS audio length isn't known until AFTER generation, so the route can't reserve
+// the exact minutes the way transcribe does (it knows the input duration). Instead
+// it reserves an ESTIMATE from the input text up front — atomically — then reconciles
+// to the real duration. Thai speech runs ~13-16 chars/sec (see tts-timing.ts); we
+// estimate at a slightly conservative 14 cps so the reserve tends to meet-or-exceed
+// the real duration (the reconcile refunds any surplus) and concurrent overshoot
+// stays bounded. Whitespace isn't spoken, so it's stripped (matches the route's
+// chars-per-sec logging). Floored at a small minimum so even a near-empty/preview
+// call still holds a real, race-safe slice of the ceiling.
+const TTS_ESTIMATE_CHARS_PER_SEC = 14;
+const MIN_TTS_RESERVE_MINUTES = 0.25;
+
+/** Estimate the audio-minutes a Gemini TTS call will produce from its input text,
+ *  for the up-front atomic ceiling reserve. Always ≥ MIN_TTS_RESERVE_MINUTES. */
+export function estimateTtsAudioMinutes(text: string): number {
+  const chars = (typeof text === "string" ? text : "").replace(/\s+/g, "").length;
+  const minutes = chars / (TTS_ESTIMATE_CHARS_PER_SEC * 60);
+  return Math.max(minutes, MIN_TTS_RESERVE_MINUTES);
+}
+
+/** Reconcile an up-front AI-audio RESERVE to the ACTUAL minutes a TTS call produced.
+ *  Pairs with `reserveAiAudioMinutes(estimate)`: if the audio ran LONGER than the
+ *  estimate, record the extra (unconditional, like recordAiAudioMinutes — a call
+ *  that started under the ceiling is always fully charged); if it ran SHORTER,
+ *  refund the surplus so the counter lands on the real spend. `enforce:false`
+ *  (BYOK) → no-op, no DB touch (flag-off byte-identical). */
+export async function reconcileAiAudioMinutes(
+  userId: string,
+  reservedMinutes: number,
+  actualMinutes: number,
+  opts: { enforce: boolean }
+): Promise<void> {
+  if (!opts.enforce) return;
+  const delta = actualMinutes - reservedMinutes;
+  if (delta > 0) {
+    await recordAiAudioMinutes(userId, delta, opts);
+  } else if (delta < 0) {
+    await refundAiAudioMinutes(userId, -delta);
+  }
+}
