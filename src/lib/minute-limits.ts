@@ -28,20 +28,23 @@ function minuteQuotaMessage(plan: string, limit: number): string {
 
 /** Sync + return the user's current 30-day minute window (resetting it when
  *  expired). Also owns the reset of `aiAudioMinutesUsed` (the managed-Gemini
- *  side-channel counter) so it shares the SAME window as render minutes.
- *  Exported for the AI-audio-ceiling guard (ai-spend-limits.ts). */
+ *  audio side-channel) and `aiTextCallsUsed` (the managed-Gemini text-LLM
+ *  call-frequency side-channel) so they share the SAME window as render minutes.
+ *  Exported for the AI-audio-ceiling guard (ai-spend-limits.ts) and the
+ *  AI-text-call guard (ai-text-limits.ts). */
 export async function syncMinuteWindow(userId: string): Promise<{
   plan: string;
   minutesUsed: number;
   minutesLimit: number;
   aiAudioMinutesUsed: number;
+  aiTextCallsUsed: number;
   usagePeriodStartedAt: Date;
 } | null> {
   const now = new Date();
   await syncUserEntitlement(userId, now);
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { plan: true, minutesUsed: true, minutesLimit: true, aiAudioMinutesUsed: true, usagePeriodStartedAt: true, trialEndsAt: true },
+    select: { plan: true, minutesUsed: true, minutesLimit: true, aiAudioMinutesUsed: true, aiTextCallsUsed: true, usagePeriodStartedAt: true, trialEndsAt: true },
   });
   if (!user) return null;
 
@@ -53,15 +56,16 @@ export async function syncMinuteWindow(userId: string): Promise<{
   const usagePeriodStartedAt = shouldReset ? now : user.usagePeriodStartedAt!;
   const minutesUsed = shouldReset ? 0 : user.minutesUsed;
   const aiAudioMinutesUsed = shouldReset ? 0 : user.aiAudioMinutesUsed;
+  const aiTextCallsUsed = shouldReset ? 0 : user.aiTextCallsUsed;
 
   if (shouldReset || user.minutesLimit !== minutesLimit) {
     await prisma.user.update({
       where: { id: userId },
-      data: { minutesUsed, minutesLimit, usagePeriodStartedAt, aiAudioMinutesUsed },
+      data: { minutesUsed, minutesLimit, usagePeriodStartedAt, aiAudioMinutesUsed, aiTextCallsUsed },
     });
   }
 
-  return { plan: user.plan, minutesUsed, minutesLimit, aiAudioMinutesUsed, usagePeriodStartedAt };
+  return { plan: user.plan, minutesUsed, minutesLimit, aiAudioMinutesUsed, aiTextCallsUsed, usagePeriodStartedAt };
 }
 
 export async function checkMinuteQuota(

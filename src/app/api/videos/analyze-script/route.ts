@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
 const SYSTEM_PROMPT = `คุณคือ Professional Content Creator และ Social Media Strategist
 ผู้เชี่ยวชาญด้านการ แบ่งสคริปต์ให้กลายเป็นฉากวิดีโอ short-form ที่ไหลลื่น เห็นภาพทันที
@@ -169,13 +170,22 @@ export async function POST(req: Request) {
     }
 
     let apiKey: string;
+    let geminiMode: "managed" | "byok";
     try {
-      apiKey = resolveGeminiKey(user).key;
+      const resolved = resolveGeminiKey(user);
+      apiKey = resolved.key;
+      geminiMode = resolved.mode;
     } catch (e) {
       if (e instanceof KeyRequiredError) {
         return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
       }
       throw e;
+    }
+
+    // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+    if (!textReserve.allowed) {
+      return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
     }
     const { geminiGenerateText } = await import("@/lib/gemini");
 

@@ -6,6 +6,7 @@ import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import axios from "axios";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
 export async function POST(req: Request) {
   try {
@@ -24,13 +25,22 @@ export async function POST(req: Request) {
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
     let apiKey: string;
+    let geminiMode: "managed" | "byok";
     try {
-      apiKey = resolveGeminiKey(user).key;
+      const resolved = resolveGeminiKey(user);
+      apiKey = resolved.key;
+      geminiMode = resolved.mode;
     } catch (e) {
       if (e instanceof KeyRequiredError) {
         return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
       }
       throw e;
+    }
+
+    // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+    if (!textReserve.allowed) {
+      return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
     }
 
     let style = null;
