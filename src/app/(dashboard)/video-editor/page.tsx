@@ -48,6 +48,7 @@ import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { shouldApplyLoadedPreset } from "@/lib/avatar-flow";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
@@ -331,19 +332,27 @@ export default function VideoEditorPage() {
   // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
   // loadedPresetFor guards against clobbering user edits when the same avatarId re-triggers.
   const loadedPresetFor = useRef<string | null>(null);
+  const avatarTouchedRef = useRef(false);          // user dragged a position control this avatar
+  const avatarHasPresetRef = useRef(false);        // a saved preset existed for the current avatarId
   useEffect(() => {
     if (!avatarId || !avatarValid) return;
-    if (loadedPresetFor.current === avatarId) return;
+    if (!shouldApplyLoadedPreset({ loadedFor: loadedPresetFor.current, avatarId, userTouched: avatarTouchedRef.current })) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`);
-        if (!res.ok) return;
-        const { layout } = await res.json();
-        if (cancelled || !layout) return;
-        setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
-        loadedPresetFor.current = avatarId;
+        if (cancelled) return;
+        if (res.ok) {
+          const { layout } = await res.json();
+          if (!cancelled && layout && !avatarTouchedRef.current) {
+            setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
+            avatarHasPresetRef.current = true;
+          } else if (!layout) {
+            avatarHasPresetRef.current = false;
+          }
+        }
       } catch { /* keep current values */ }
+      finally { if (!cancelled) loadedPresetFor.current = avatarId; }  // one-shot per id, even on no-preset
     })();
     return () => { cancelled = true; };
   }, [avatarId, avatarValid]);
@@ -723,6 +732,7 @@ export default function VideoEditorPage() {
   // Auto-load avatar preview when avatarId changes (debounced)
   useEffect(() => {
     if (!avatarId || avatarId.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); return; }
+    avatarTouchedRef.current = false;   // new avatar id → allow its preset to load
     const t = setTimeout(() => { void loadAvatarInfo(avatarId); }, 600);
     return () => clearTimeout(t);
   }, [avatarId, loadAvatarInfo]);
@@ -2439,6 +2449,14 @@ export default function VideoEditorPage() {
       toast.error("บันทึกไม่สำเร็จ");
     } finally { setAvatarLayoutSaving(false); }
   }
+
+  // Touched-marking wrapped setters — passed to OrderPanel sliders so that any
+  // user interaction marks the layout as user-touched, preventing the preset-load
+  // effect from clobbering the user's live edit. The raw setters (setAvatarScale etc.)
+  // are kept for preset-load, reset, and draft-load paths which must NOT mark touched.
+  const setAvatarScaleTouched   = (v: number) => { avatarTouchedRef.current = true; setAvatarScale(v); };
+  const setAvatarOffsetXTouched = (v: number) => { avatarTouchedRef.current = true; setAvatarOffsetX(v); };
+  const setAvatarOffsetYTouched = (v: number) => { avatarTouchedRef.current = true; setAvatarOffsetY(v); };
 
   async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
     const isDirect = avatarInputMode === "direct";
@@ -4478,7 +4496,7 @@ export default function VideoEditorPage() {
               chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
               setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
               setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-              setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+              setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
               onSaveAvatarLayout={onSaveAvatarLayout} avatarLayoutSaving={avatarLayoutSaving}
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
@@ -4533,7 +4551,7 @@ export default function VideoEditorPage() {
                 chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
                 setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
                 setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-                setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+                setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
                 projectName={projectName} onSaveTemplate={() => {
                   const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
@@ -4600,7 +4618,7 @@ export default function VideoEditorPage() {
             chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
             setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
             setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-            setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+            setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
             projectName={projectName} onSaveTemplate={() => {
               const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
