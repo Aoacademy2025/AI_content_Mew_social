@@ -839,6 +839,11 @@ export function OrderPanel(p: OrderPanelProps) {
                             </div>
                           )}
                           <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)" }} />
+                          {p.avatarPreviewUrl && !p.avatarGreenUrl && (
+                            <div className="absolute bottom-1 left-1 right-1 bg-black/80 text-[7px] text-amber-300/90 px-1.5 py-0.5 rounded text-center pointer-events-none leading-snug">
+                              รูปตัวอย่าง · พื้นหลังจะถูกลบให้ตอน render
+                            </div>
+                          )}
                         </div>
                         {/* Sliders */}
                         <div className="space-y-2">
