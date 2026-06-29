@@ -322,6 +322,23 @@ export default function VideoEditorPage() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
+
+  // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
+  useEffect(() => {
+    if (!avatarId || (avatarStatus !== "ok" && avatarStatus !== "unverified")) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`);
+        if (!res.ok) return;
+        const { layout } = await res.json();
+        if (cancelled || !layout) return;
+        setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
+      } catch { /* keep current values */ }
+    })();
+    return () => { cancelled = true; };
+  }, [avatarId, avatarStatus]);
+
   const audioRef = useRef<HTMLAudioElement>(null);
 
   // ── Split mode ────────────────────────────────────────────────────────
@@ -2391,6 +2408,19 @@ export default function VideoEditorPage() {
     setAvatarGreenUrl(avatarVideoUrl);
     setStep("avatar", "done", "Avatar พร้อม");
     return avatarVideoUrl;
+  }
+
+  const [avatarLayoutSaving, setAvatarLayoutSaving] = useState(false);
+  async function onSaveAvatarLayout(): Promise<void> {
+    if (!avatarId) return;
+    setAvatarLayoutSaving(true);
+    try {
+      await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+      });
+    } finally { setAvatarLayoutSaving(false); }
   }
 
   async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
@@ -4492,6 +4522,8 @@ export default function VideoEditorPage() {
                   localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
+                onSaveAvatarLayout={onSaveAvatarLayout}
+                avatarLayoutSaving={avatarLayoutSaving}
                 onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               />
             </div>
@@ -4557,6 +4589,8 @@ export default function VideoEditorPage() {
               localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
+            onSaveAvatarLayout={onSaveAvatarLayout}
+            avatarLayoutSaving={avatarLayoutSaving}
             onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
           />
         </div>
