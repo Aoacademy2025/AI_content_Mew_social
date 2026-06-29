@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { isPaid } from "@/lib/plan-limits";
 import { getHeyGenAvatarList, HeyGenAuthError } from "@/lib/heygen-avatars";
+import { loadStaleAvatars, saveStaleAvatars } from "@/lib/heygen-avatars-store";
 
 // GET /api/heygen/avatars - Fetch available avatar models from HeyGen
 export async function GET() {
@@ -43,9 +44,13 @@ export async function GET() {
     // Decrypt API key
     const apiKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-    // Cached, retried fetch (shared with avatar-info) — no more 10s/no-retry fragility.
-    const { avatars: raw } = await getHeyGenAvatarList(authUser.id, apiKey);
-    const avatars = raw.map((avatar: any) => ({
+    // Cached + retried + durable-stale fallback: if HeyGen's list endpoint is slow/unreachable we
+    // serve the last successful list (flagged stale) instead of 500ing with an empty picker.
+    const list = await getHeyGenAvatarList(authUser.id, apiKey, {
+      loadStale: loadStaleAvatars,
+      saveStale: saveStaleAvatars,
+    });
+    const avatars = list.avatars.map((avatar: any) => ({
       avatar_id: avatar.avatar_id,
       avatar_name: avatar.avatar_name,
       preview_image_url: avatar.preview_image_url || avatar.preview_video_url,
@@ -53,7 +58,7 @@ export async function GET() {
       is_public: avatar.is_public || false,
     }));
 
-    return NextResponse.json({ avatars }, { status: 200 });
+    return NextResponse.json({ avatars, stale: list.stale ?? false }, { status: 200 });
   } catch (error: any) {
     if (error instanceof HeyGenAuthError) {
       return NextResponse.json({ error: "Invalid HeyGen API key" }, { status: 401 });
