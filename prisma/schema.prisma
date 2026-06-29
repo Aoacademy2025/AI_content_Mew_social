@@ -31,6 +31,8 @@ model User {
   flickrKey          String?
   avatar             String?
   heygenAvatarId     String?
+  heygenAvatarsCache    String?   // durable fallback: last successful HeyGen avatar list (JSON {k,avatars,talkingPhotos}); served stale when HeyGen is slow so the picker/preview keep working
+  heygenAvatarsCachedAt DateTime? // when heygenAvatarsCache was last refreshed (for max-age on the stale fallback)
   elevenlabsVoiceId  String?
   ttsProvider        String?  @default("elevenlabs")
   geminiVoiceName    String?  @default("Aoede")

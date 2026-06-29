@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { getHeyGenAvatarList, HeyGenAuthError } from "@/lib/heygen-avatars";
+import { loadStaleAvatars, saveStaleAvatars } from "@/lib/heygen-avatars-store";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -26,10 +27,12 @@ export async function GET(req: Request) {
   // slow HeyGen, and the explicit key-error on 401/403.
   let avatars: any[];
   let talkingPhotos: any[];
+  let stale = false;
   try {
-    const list = await getHeyGenAvatarList(authUser.id, heygenKey, { refresh });
+    const list = await getHeyGenAvatarList(authUser.id, heygenKey, { refresh, loadStale: loadStaleAvatars, saveStale: saveStaleAvatars });
     avatars = list.avatars;
     talkingPhotos = list.talkingPhotos;
+    stale = list.stale ?? false;
   } catch (err) {
     if (err instanceof HeyGenAuthError) {
       console.warn(`[avatar-info] HeyGen ${err.status} — key len=${heygenKey.length}`);
@@ -48,6 +51,7 @@ export async function GET(req: Request) {
       previewImageUrl: found.preview_image_url,
       previewVideoUrl: found.preview_video_url,
       name: found.avatar_name,
+      stale,
     });
   }
   const photo = talkingPhotos.find((t) => t.talking_photo_id === avatarId);
@@ -56,6 +60,7 @@ export async function GET(req: Request) {
       previewImageUrl: photo.preview_image_url ?? "",
       previewVideoUrl: "",
       name: photo.talking_photo_name ?? "Photo Avatar",
+      stale,
     });
   }
 
