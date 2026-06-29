@@ -328,8 +328,11 @@ export default function VideoEditorPage() {
   const avatarValid = useMemo(() => avatarStatus === "ok" || avatarStatus === "unverified", [avatarStatus]);
 
   // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
+  // loadedPresetFor guards against clobbering user edits when the same avatarId re-triggers.
+  const loadedPresetFor = useRef<string | null>(null);
   useEffect(() => {
     if (!avatarId || !avatarValid) return;
+    if (loadedPresetFor.current === avatarId) return;
     let cancelled = false;
     (async () => {
       try {
@@ -338,6 +341,7 @@ export default function VideoEditorPage() {
         const { layout } = await res.json();
         if (cancelled || !layout) return;
         setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
+        loadedPresetFor.current = avatarId;
       } catch { /* keep current values */ }
     })();
     return () => { cancelled = true; };
@@ -2300,7 +2304,7 @@ export default function VideoEditorPage() {
 
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
-  const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+  const HEYGEN_FRAMING = { scale: 1.0, offsetX: 0, offsetY: 0 } as const;
 
   // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
   type AvatarPollData = {
@@ -2419,11 +2423,18 @@ export default function VideoEditorPage() {
     if (!avatarId) return;
     setAvatarLayoutSaving(true);
     try {
-      await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
+      const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
       });
+      if (res.ok) {
+        toast.success("บันทึกตำแหน่ง avatar แล้ว");
+      } else {
+        toast.error("บันทึกไม่สำเร็จ");
+      }
+    } catch {
+      toast.error("บันทึกไม่สำเร็จ");
     } finally { setAvatarLayoutSaving(false); }
   }
 

@@ -56,8 +56,12 @@ assert(fromPreset.scale === 1.5 && fromPreset.offsetX === 0.3 && fromPreset.offs
 const fromDefault = resolveAvatarLayout({}, null);
 assert(fromDefault.scale === DEFAULT_AVATAR_LAYOUT.scale && fromDefault.offsetX === DEFAULT_AVATAR_LAYOUT.offsetX && fromDefault.offsetY === DEFAULT_AVATAR_LAYOUT.offsetY, "resolveAvatarLayout: no args + no preset → DEFAULT_AVATAR_LAYOUT");
 
-// partial explicit: only one field set → explicit wins (that field used, rest default 1/0/0)
+// partial explicit: only scale set → scale wins, offsetX/Y come from preset (not zeroed)
 const partialExplicit = resolveAvatarLayout({ avatarScale: 1.8 }, presetA);
-assert(partialExplicit.scale === 1.8 && partialExplicit.offsetX === 0 && partialExplicit.offsetY === 0, "resolveAvatarLayout: partial explicit (only scale) → explicit path, others fallback to default");
+assert(partialExplicit.scale === 1.8 && partialExplicit.offsetX === 0.3 && partialExplicit.offsetY === -0.2, "resolveAvatarLayout: partial explicit (only scale) → scale wins, other axes from preset");
+
+// explicit 0 for offsetX — must NOT fall through to preset (0 != null, so 0 wins)
+const zeroOffset = resolveAvatarLayout({ avatarOffsetX: 0 }, { scale: 1.5, offsetX: 99, offsetY: 99 });
+assert(zeroOffset.scale === 1.5 && zeroOffset.offsetX === 0 && zeroOffset.offsetY === 99, "resolveAvatarLayout: explicit 0 wins for offsetX (!=null check); scale+Y from preset");
 
 console.log(`\n${passed} assertions passed ✅`);

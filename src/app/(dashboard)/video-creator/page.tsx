@@ -386,9 +386,9 @@ export default function ShortVideoPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [avatarId, setAvatarId] = useState("");
-  const [avatarScale, setAvatarScale] = useState(2.02);
+  const [avatarScale, setAvatarScale] = useState(1.0);
   const [avatarOffsetX, setAvatarOffsetX] = useState(0.0);
-  const [avatarOffsetY, setAvatarOffsetY] = useState(0.13);
+  const [avatarOffsetY, setAvatarOffsetY] = useState(0);
   const [useAvatar, setUseAvatar] = useState(true);
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
   const [avatarName, setAvatarName] = useState("");
@@ -3458,7 +3458,7 @@ export default function ShortVideoPage() {
                         <Slider value={[value]} onValueChange={([v]) => onChange(v)} min={min} max={max} step={step} />
                       </div>
                     ))}
-                    <button onClick={() => { setAvatarOffsetX(0); setAvatarOffsetY(0.13); setAvatarScale(2.02); }}
+                    <button onClick={() => { setAvatarOffsetX(0); setAvatarOffsetY(0); setAvatarScale(1.0); }}
                       className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white/45 transition-colors hover:text-white/70"
                       style={{ background: "var(--sv-input)", border: "1px solid var(--sv-border2)" }}>
                       <RotateCcw className="h-3.5 w-3.5" /> Reset
