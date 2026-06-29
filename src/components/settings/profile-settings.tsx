@@ -55,8 +55,16 @@ export function ProfileSettings({ user }: ProfileSettingsProps) {
     try {
       const res = await fetch("/api/user/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
       if (!res.ok) throw new Error();
+      // Persist a pending profile picture too — the prominent "Save Changes" button must save
+      // the uploaded photo as well, not just the name. Previously only the separate "Save Photo"
+      // button persisted it, so users who clicked the main button lost their upload on reload.
+      if (pendingAvatar) {
+        const ar = await fetch("/api/user/avatar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatar: pendingAvatar }) });
+        if (!ar.ok) { const d = await ar.json().catch(() => ({})); throw new Error(d.error || "บันทึกรูปโปรไฟล์ไม่สำเร็จ"); }
+        setAvatar(pendingAvatar); setPendingAvatar(null);
+      }
       toast.success("Profile updated");
-    } catch { toast.error("Failed to update profile"); }
+    } catch (err: any) { toast.error(err?.message || "Failed to update profile"); }
     finally { setLoading(false); }
   }
 
