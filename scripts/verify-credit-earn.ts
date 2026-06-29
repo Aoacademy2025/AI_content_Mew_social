@@ -162,6 +162,82 @@ async function main() {
   ok(downOffBal.granted === 50, "flag-off downgrade → granted UNCHANGED (reset skipped, 50)");
   ok(downOffBal.purchased === 8, "flag-off downgrade → purchased untouched (8)");
 
+  // ════════════════════════════════════════════════════════════════════════
+  // H4 regression: trial-expired → subscribe WITHIN 30 days must get the full grant.
+  // Root cause: the trial-expiry downgrade calls resetMonthlyGranted(userId,"FREE"),
+  // which stamps grantedResetAt=now even though FREE allowance=0. If the user then
+  // subscribes within the 30-day window, ensureMonthlyGrant sees withinWindow=true →
+  // SKIPS the grant → the paying subscriber gets 0 credits for ~the first month.
+  // FIX: paid activation calls grantOnPaidActivation → resetMonthlyGranted IGNORING the
+  // window, so the new plan's allowance lands immediately. Flag-gated on CREDITS_LIVE.
+  // ════════════════════════════════════════════════════════════════════════
+  const { grantOnPaidActivation } = await import("../src/lib/entitlements");
+
+  const h4Id = "earn-h4-trialthenpay";
+  await prisma.user.create({
+    data: { id: h4Id, name: "H4", email: "earn-h4@example.com", plan: "FREE" },
+  });
+  await grantCredits(h4Id, 9, "purchase", "seed-purchased-h4"); // paid credits must survive
+  process.env.CREDITS_LIVE = "1";
+  // Simulate the trial-expiry downgrade reset: granted→0, grantedResetAt stamped NOW.
+  await resetMonthlyGranted(h4Id, "FREE");
+  {
+    const row = await prisma.creditBalance.findUnique({ where: { userId: h4Id } });
+    ok(row?.granted === 0, "H4 setup: post-downgrade granted = 0");
+    ok(row?.grantedResetAt != null, "H4 setup: grantedResetAt stamped (within window) by FREE reset");
+  }
+
+  // The user subscribes within 30 days → activatePlan sets plan=PRO.
+  await prisma.user.update({ where: { id: h4Id }, data: { plan: "PRO" } });
+
+  // PROOF the bug exists: ensureMonthlyGrant ALONE skips (withinWindow) → still 0.
+  await ensureMonthlyGrant(h4Id);
+  ok((await getBalance(h4Id)).granted === 0,
+    "H4: ensureMonthlyGrant ALONE skips the within-window grant → granted still 0 (the bug)");
+
+  // THE FIX: grantOnPaidActivation forces the grant, ignoring the window.
+  await grantOnPaidActivation(h4Id, "PRO");
+  const h4Bal = await getBalance(h4Id);
+  ok(h4Bal.granted === 50, "H4: grantOnPaidActivation forces full PRO grant (50) within window");
+  ok(h4Bal.purchased === 9, "H4: purchased (paid) credits preserved (9)");
+  ok(h4Bal.total === 59, "H4: total = 50 + 9 = 59");
+
+  // ── H4: BUSINESS activation grants 150 ────────────────────────────────────
+  const h4bId = "earn-h4-biz";
+  await prisma.user.create({
+    data: { id: h4bId, name: "H4 Biz", email: "earn-h4-biz@example.com", plan: "FREE" },
+  });
+  await resetMonthlyGranted(h4bId, "FREE"); // within-window FREE stamp
+  await prisma.user.update({ where: { id: h4bId }, data: { plan: "BUSINESS" } });
+  await grantOnPaidActivation(h4bId, "BUSINESS");
+  ok((await getBalance(h4bId)).granted === 150, "H4: BUSINESS activation grants 150");
+
+  // ── H4: flag-off → grantOnPaidActivation is a NO-OP (byte-identical) ───────
+  const h4offId = "earn-h4-off";
+  await prisma.user.create({
+    data: { id: h4offId, name: "H4 Off", email: "earn-h4-off@example.com", plan: "FREE" },
+  });
+  process.env.CREDITS_LIVE = "1";
+  await resetMonthlyGranted(h4offId, "FREE");
+  await prisma.creditBalance.update({ where: { userId: h4offId }, data: { granted: 7 } });
+  await prisma.user.update({ where: { id: h4offId }, data: { plan: "PRO" } });
+  delete process.env.CREDITS_LIVE; // flag OFF for the activation
+  await grantOnPaidActivation(h4offId, "PRO");
+  ok((await getBalance(h4offId)).granted === 7,
+    "H4: flag-off → grantOnPaidActivation leaves granted UNCHANGED (7, no-op)");
+  process.env.CREDITS_LIVE = "1";
+
+  // ── H4: non-paid plan (FREE) → grantOnPaidActivation is a NO-OP ────────────
+  const h4freeId = "earn-h4-free";
+  await prisma.user.create({
+    data: { id: h4freeId, name: "H4 Free", email: "earn-h4-free@example.com", plan: "FREE" },
+  });
+  await grantOnPaidActivation(h4freeId, "FREE");
+  {
+    const row = await prisma.creditBalance.findUnique({ where: { userId: h4freeId } });
+    ok(row == null || row.granted === 0, "H4: FREE plan → no grant (no-op, no spurious ledger row)");
+  }
+
   await prisma.$disconnect();
 
   if (failures) {

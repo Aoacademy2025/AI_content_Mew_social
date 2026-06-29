@@ -7,6 +7,7 @@ import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { grantCreditsOnce, ensureMonthlyGrant } from "@/lib/credits";
+import { grantOnPaidActivation } from "@/lib/entitlements";
 
 export const config = { api: { bodyParser: false } };
 
@@ -101,10 +102,12 @@ async function handleCheckoutSession(s: any) {
       } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
     }
   }
-  // CREDITS_LIVE-gated initial grant — fire-and-forget, flag-off = no-op
-  if (process.env.CREDITS_LIVE === "1") {
-    ensureMonthlyGrant(userId).catch(() => {});
-  }
+  // Initial paid grant — FORCE a fresh grant ignoring the 30-day window (NOT
+  // ensureMonthlyGrant): a trial-expiry downgrade stamps grantedResetAt=now with FREE
+  // allowance 0, so a within-30-days trial→paid subscriber would be skipped by the window
+  // check and get 0 credits (bug H4). grantOnPaidActivation is CREDITS_LIVE-gated internally
+  // (flag-off = no-op → byte-identical). Fire-and-forget.
+  grantOnPaidActivation(userId, plan).catch(() => {});
   console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
 }
 

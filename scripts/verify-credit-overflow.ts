@@ -112,6 +112,122 @@ async function main() {
   ok(rowE?.chargedMinutes === 3, "3-arg call → chargedMinutes === 3");
   ok(rowE?.creditsSpent === null, "3-arg call → creditsSpent === null (backward-compat)");
 
+  // ════════════════════════════════════════════════════════════════════════
+  // H3 regression: an overflow refund MUST restore the EXACT buckets it drained.
+  // The bug: reserveMinutesOrCredits spent via spendCredits (drains granted first,
+  // then purchased) but DISCARDED the {fromGranted,fromPurchased} split, keeping only
+  // the total; refundReservation then refunded the whole amount to `purchased`. Since
+  // `granted` is hard-reset every month but `purchased` persists, that permanently
+  // INFLATED purchased → free credits every month. These tests pin the fix: the split
+  // is threaded through reserve → refund, so bucket-spent === bucket-refunded.
+  // ════════════════════════════════════════════════════════════════════════
+  const { spendCredits, resetMonthlyGranted } = await import("../src/lib/credits");
+  const { reserveMinutesOrCredits, refundReservation } = await import("../src/lib/minute-credits");
+
+  // ── H3-A: spendCredits drains granted FIRST and reports the bucket split ───
+  const hUser = "user-h3-granted-first";
+  await grantCredits(hUser, 50, "grant", "seed-granted");
+  await grantCredits(hUser, 10, "purchase", "seed-purchased-h");
+  const spendA = await spendCredits(hUser, 8, "render-overflow:jobA");
+  ok(spendA.ok === true, "H3-A: spend 8 of (granted 50 / purchased 10) succeeds");
+  if (spendA.ok) {
+    ok(spendA.fromGranted === 8, "H3-A: fromGranted = 8 (granted drained first)");
+    ok(spendA.fromPurchased === 0, "H3-A: fromPurchased = 0 (purchased untouched)");
+  }
+  const balHA = await getBalance(hUser);
+  ok(balHA.granted === 42, "H3-A: granted 50 - 8 = 42");
+  ok(balHA.purchased === 10, "H3-A: purchased still 10");
+
+  // ── H3-B: refundReservation with the split restores GRANTED, not purchased ─
+  await refundReservation(
+    hUser,
+    { reservedMinutes: null, creditsSpent: 8, creditsFromGranted: 8 },
+    "render-refund:jobA",
+  );
+  const balHB = await getBalance(hUser);
+  ok(balHB.granted === 50, "H3-B: refund restores granted back to 50 (NOT purchased)");
+  ok(balHB.purchased === 10, "H3-B: purchased UNCHANGED at 10 (no inflation)");
+
+  // ── H3-C: monthly reset after the refund shows NO inflation ───────────────
+  await resetMonthlyGranted(hUser, "PRO");
+  const balHC = await getBalance(hUser);
+  ok(balHC.granted === 50, "H3-C: monthly reset → granted = 50");
+  ok(balHC.purchased === 10, "H3-C: monthly reset → purchased STILL 10 (bug would show 18)");
+  ok(balHC.total === 60, "H3-C: total = 60 (no free credits leaked)");
+
+  // ── H3-D: full overflow path via reserveMinutesOrCredits returns the split ─
+  // Out-of-minutes FREE user with granted credits. reserveMinutes fails → overflow
+  // spends minutes×2 credits, draining granted first; the returned split is what the
+  // route now threads to refund so the GRANTED bucket (not purchased) is restored.
+  const oUser = "user-h3-overflow";
+  await prisma.user.create({
+    data: { id: oUser, name: "Overflow", email: "h3-overflow@example.com", plan: "FREE" },
+  });
+  await grantCredits(oUser, 50, "grant", "seed-granted-o");
+  await grantCredits(oUser, 10, "purchase", "seed-purchased-o");
+  // Exhaust the minute window (used >> any plan limit; window not expired → no reset).
+  await prisma.user.update({
+    where: { id: oUser },
+    data: { minutesUsed: 9999, usagePeriodStartedAt: new Date() },
+  });
+  const reserveO = await reserveMinutesOrCredits(oUser, 4, { creditsLive: true, ref: "jobO" });
+  ok(reserveO.allowed === true, "H3-D: out-of-minutes reserve overflows to credits (allowed)");
+  ok(reserveO.allowed && reserveO.via === "credits", "H3-D: via = 'credits'");
+  if (reserveO.allowed && reserveO.via === "credits") {
+    ok(reserveO.creditsSpent === 8, "H3-D: creditsSpent = 4 min × 2 = 8");
+    ok(reserveO.fromGranted === 8, "H3-D: fromGranted = 8 (granted drained first)");
+    ok(reserveO.fromPurchased === 0, "H3-D: fromPurchased = 0");
+    await refundReservation(
+      oUser,
+      { reservedMinutes: null, creditsSpent: reserveO.creditsSpent, creditsFromGranted: reserveO.fromGranted },
+      "render-refund:jobO",
+    );
+  }
+  const balO = await getBalance(oUser);
+  ok(balO.granted === 50, "H3-D: after refund granted restored to 50 (overflow drained+restored granted)");
+  ok(balO.purchased === 10, "H3-D: purchased UNCHANGED at 10 (not inflated)");
+
+  // ── H3-E: mixed-bucket overflow (granted < cost) splits across both ────────
+  const mUser = "user-h3-mixed";
+  await prisma.user.create({
+    data: { id: mUser, name: "Mixed", email: "h3-mixed@example.com", plan: "FREE" },
+  });
+  await grantCredits(mUser, 5, "grant", "seed-granted-m");
+  await grantCredits(mUser, 20, "purchase", "seed-purchased-m");
+  await prisma.user.update({
+    where: { id: mUser },
+    data: { minutesUsed: 9999, usagePeriodStartedAt: new Date() },
+  });
+  const reserveM = await reserveMinutesOrCredits(mUser, 4, { creditsLive: true, ref: "jobM" });
+  ok(reserveM.allowed && reserveM.via === "credits", "H3-E: mixed overflow via credits");
+  if (reserveM.allowed && reserveM.via === "credits") {
+    ok(reserveM.creditsSpent === 8, "H3-E: cost = 8");
+    ok(reserveM.fromGranted === 5, "H3-E: fromGranted = 5 (all of granted)");
+    ok(reserveM.fromPurchased === 3, "H3-E: fromPurchased = 3 (remainder from purchased)");
+    await refundReservation(
+      mUser,
+      { reservedMinutes: null, creditsSpent: reserveM.creditsSpent, creditsFromGranted: reserveM.fromGranted },
+      "render-refund:jobM",
+    );
+  }
+  const balM = await getBalance(mUser);
+  ok(balM.granted === 5, "H3-E: granted restored to 5 (exact)");
+  ok(balM.purchased === 20, "H3-E: purchased restored to 20 (exact, no inflation)");
+
+  // ── H3-F: backward-compat — creditsFromGranted omitted → all-purchased ─────
+  // An in-flight job enqueued BEFORE this fix has no split persisted. refundReservation
+  // must not crash; it falls back to the prior behavior (refund the lump to purchased).
+  const lUser = "user-h3-legacy";
+  await grantCredits(lUser, 1, "purchase", "seed-legacy");
+  await refundReservation(
+    lUser,
+    { reservedMinutes: null, creditsSpent: 6, creditsFromGranted: null },
+    "render-refund:legacy",
+  );
+  const balL = await getBalance(lUser);
+  ok(balL.purchased === 7, "H3-F: legacy (no split) → all 6 refunded to purchased (1 + 6 = 7)");
+  ok(balL.granted === 0, "H3-F: legacy refund leaves granted = 0");
+
   await prisma.$disconnect();
 
   if (failures) {
