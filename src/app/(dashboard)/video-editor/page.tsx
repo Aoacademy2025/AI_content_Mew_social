@@ -323,9 +323,13 @@ export default function VideoEditorPage() {
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
 
+  // Collapse ok+unverified into a single boolean so the load-preset effect fires only on
+  // the invalid→valid edge, not on the unverified→ok transition (which would clobber edits).
+  const avatarValid = useMemo(() => avatarStatus === "ok" || avatarStatus === "unverified", [avatarStatus]);
+
   // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
   useEffect(() => {
-    if (!avatarId || (avatarStatus !== "ok" && avatarStatus !== "unverified")) return;
+    if (!avatarId || !avatarValid) return;
     let cancelled = false;
     (async () => {
       try {
@@ -337,7 +341,7 @@ export default function VideoEditorPage() {
       } catch { /* keep current values */ }
     })();
     return () => { cancelled = true; };
-  }, [avatarId, avatarStatus]);
+  }, [avatarId, avatarValid]);
 
   const audioRef = useRef<HTMLAudioElement>(null);
 
