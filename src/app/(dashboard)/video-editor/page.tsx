@@ -2514,13 +2514,15 @@ export default function VideoEditorPage() {
   }
 
   // After the avatar green is ready: pause for first-time positioning, or composite straight through.
-  async function compositeOrPause(bgUrl: string, avUrl: string, tailUrl?: string): Promise<void> {
+  // Returns true when it took the pause path (so callers can skip success toasts).
+  async function compositeOrPause(bgUrl: string, avUrl: string, tailUrl?: string): Promise<boolean> {
     if (shouldPauseForPositioning({ useAvatar, isDirect: avatarInputMode === "direct", hasSavedPreset: avatarHasPresetRef.current })) {
       setAwaitingPosition(true);
       setStep("composite", "idle", "รอจัดตำแหน่ง avatar — กด \"ต่อ → ประกอบ\"");
-      return; // pipeline stops here; user resumes via compositeWithCurrentLayout()
+      return true; // pipeline stops here; user resumes via compositeWithCurrentLayout()
     }
     await runComposite(bgUrl, avUrl, tailUrl);
+    return false;
   }
 
   // Composite-only using the already-generated green (no HeyGen re-gen). Used by both the
@@ -2610,8 +2612,8 @@ export default function VideoEditorPage() {
         tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
         if (abortRef.current) return;
       }
-      await compositeOrPause(pipe.current.renderedVideoUrl, avUrl, tailUrl);
-      if (abortRef.current) return;
+      const paused = await compositeOrPause(pipe.current.renderedVideoUrl, avUrl, tailUrl);
+      if (abortRef.current || paused) return;
       toast.success(captionsRef.current.length > 0
         ? "Avatar preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ"
         : "Avatar preview พร้อมแล้ว");
@@ -2841,6 +2843,7 @@ export default function VideoEditorPage() {
       const renderedUrl = await runRender(cfg);
       if (abortRef.current) return;
 
+      let paused = false;
       if (useAvatar) {
         const avUrl = await runAvatar(vUrl);
         if (abortRef.current) return;
@@ -2849,11 +2852,11 @@ export default function VideoEditorPage() {
           tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
           if (abortRef.current) return;
         }
-        await compositeOrPause(renderedUrl, avUrl, tailUrl);
-        if (abortRef.current) return;
+        paused = await compositeOrPause(renderedUrl, avUrl, tailUrl);
+        if (abortRef.current || paused) return;
       }
 
-      if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
+      if (!abortRef.current && !paused) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -4521,6 +4524,7 @@ export default function VideoEditorPage() {
               setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
               setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
               onSaveAvatarLayout={onSaveAvatarLayout} avatarLayoutSaving={avatarLayoutSaving}
+              awaitingPosition={awaitingPosition} onComposite={() => { void compositeWithCurrentLayout(); }} compositing={running}
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
