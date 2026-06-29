@@ -222,9 +222,16 @@ function SettingsContent() {
   const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string; effectivePlan?: string } | null>(null);
   const [tab, setTab] = useState("profile");
   const [paymentPopup, setPaymentPopup] = useState<"success" | "cancelled" | null>(null);
+  // managed mode: server supplies the Gemini key → hide BYOK-Gemini "Get/Enable" links
+  // (kept in sync with ApiKeySettings, which hides the Gemini key field in the same mode)
+  const [managed, setManaged] = useState(false);
 
   useEffect(() => {
     fetch("/api/user/me").then(r => r.json()).then(setMeUser).catch(() => {});
+    fetch("/api/user/api-keys/status", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.managed) setManaged(true); })
+      .catch(() => {});
   }, []);
   const [supportOpen, setSupportOpen] = useState(false);
   useEffect(() => {
@@ -454,27 +461,29 @@ function SettingsContent() {
                   </p>
                 </div>
               </div>
-              <div className="flex flex-col items-end gap-1.5">
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
-                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
-                  style={{
-                    background: "hsl(0 0% 100% / 0.03)",
-                    border: "1px solid hsl(0 0% 100% / 0.08)",
-                    color: "var(--ui-text-secondary)",
-                  }}>
-                  ① Get Gemini Key <ExternalLink className="h-3 w-3" />
-                </a>
-                <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
-                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
-                  style={{
-                    background: "hsl(38 92% 50% / 0.08)",
-                    border: "1px solid hsl(38 92% 50% / 0.3)",
-                    color: "hsl(38 100% 70%)",
-                  }}>
-                  ② Enable Gemini API <ExternalLink className="h-3 w-3" />
-                </a>
-                <p className="text-[10px] text-white/30 text-right max-w-[180px]">ต้องทำทั้ง 2 ขั้น ไม่งั้นเจอ 403</p>
-              </div>
+              {!managed && (
+                <div className="flex flex-col items-end gap-1.5">
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
+                    className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
+                    style={{
+                      background: "hsl(0 0% 100% / 0.03)",
+                      border: "1px solid hsl(0 0% 100% / 0.08)",
+                      color: "var(--ui-text-secondary)",
+                    }}>
+                    ① Get Gemini Key <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
+                    className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all hover:bg-white/5"
+                    style={{
+                      background: "hsl(38 92% 50% / 0.08)",
+                      border: "1px solid hsl(38 92% 50% / 0.3)",
+                      color: "hsl(38 100% 70%)",
+                    }}>
+                    ② Enable Gemini API <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <p className="text-[10px] text-white/30 text-right max-w-[180px]">ต้องทำทั้ง 2 ขั้น ไม่งั้นเจอ 403</p>
+                </div>
+              )}
             </div>
             <ApiKeySettings />
           </div>

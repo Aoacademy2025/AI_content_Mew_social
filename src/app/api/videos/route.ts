@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { isGalleryClipFileMissing } from "@/lib/gallery-clip-cleanup";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
 import {
   deleteLowResPreviewForVideoUrl,
@@ -69,9 +70,9 @@ export async function GET() {
         deleteFileIfLocal(v.thumbnail);
         continue;
       }
-      // File missing on disk?
-      const hasFile = localFileExists(v.videoUrl) || localFileExists(v.avatarVideoUrl);
-      if (!hasFile) {
+      // Primary playable file missing on disk? (A remote avatarVideoUrl must NOT mask a
+      // swept-away local render — see isGalleryClipFileMissing.)
+      if (isGalleryClipFileMissing(v, localFileExists)) {
         brokenIds.push(v.id);
         continue;
       }

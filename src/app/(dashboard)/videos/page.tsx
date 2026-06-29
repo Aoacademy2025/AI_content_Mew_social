@@ -310,6 +310,10 @@ function VideoCard({
   const previewSrc = video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
   const posterHue = posterHueFor(video.id);
+  // A thumbnail file can be swept off disk while the record survives — fall back to the
+  // gradient placeholder on load error instead of showing a broken-image icon.
+  const [thumbFailed, setThumbFailed] = useState(false);
+  const showThumb = !!video.thumbnail && !thumbFailed;
 
   return (
     <div
@@ -317,12 +321,13 @@ function VideoCard({
       style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
     >
       {/* Thumbnail / background */}
-      {video.thumbnail ? (
+      {showThumb ? (
         <img
-          src={video.thumbnail}
+          src={video.thumbnail!}
           alt={title}
           loading="lazy"
           decoding="async"
+          onError={() => setThumbFailed(true)}
           className="absolute inset-0 h-full w-full object-cover"
         />
       ) : previewSrc ? (
@@ -361,7 +366,7 @@ function VideoCard({
       )}
 
       {/* Gradient overlay (bottom) — only on media cards */}
-      {(video.thumbnail || previewSrc) && (
+      {(showThumb || previewSrc) && (
         <div className="absolute inset-0 bg-linear-to-t from-black/80 via-black/10 to-transparent" />
       )}
 
