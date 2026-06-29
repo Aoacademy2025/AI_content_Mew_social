@@ -15,6 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { createVideoJob } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
+import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
 
@@ -151,6 +152,14 @@ const handler = createMcpHandler(
             u,
           );
           if (avatar.kind === "error") return avatar.payload;
+          // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
+          const avatarLayout =
+            avatar.kind === "ok"
+              ? resolveAvatarLayout(
+                  { avatarScale: args.avatarScale, avatarOffsetX: args.avatarOffsetX, avatarOffsetY: args.avatarOffsetY },
+                  await getAvatarPreset(p.userId, avatar.avatarId),
+                )
+              : null;
           const q = await checkClipQuota(p.userId);
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
@@ -162,9 +171,9 @@ const handler = createMcpHandler(
               p.userId,
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
-                ...(avatar.kind === "ok"
+                ...(avatar.kind === "ok" && avatarLayout
                   ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
-                      avatarScale: avatar.scale, avatarOffsetX: avatar.offsetX, avatarOffsetY: avatar.offsetY }
+                      avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
                   : {}),
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
                 ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
