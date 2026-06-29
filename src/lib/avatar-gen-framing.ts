@@ -4,6 +4,9 @@
 // Lives here so the editor, MCP, and the API route share ONE value and can't drift — the
 // C1 bug was three callers each hardcoding their own scale while the route default was dead.
 // offset is a HeyGen frame fraction: positive y = down, so a small negative y lifts the avatar.
-// VALUE finalized empirically in Task 2 (render-on-green across real avatars).
+// VALUE finalized via render-on-green QA (2026-06-30) on avatar 83f8… (duckyhero, Beta key):
+// at scale 1.0/y 0 the avatar rendered small + low; 1.6/-0.12 frames a whole, centered
+// presenter (head ~25% from top, uncut) — clearly bigger than before while staying conservative
+// enough to generalize. Per-avatar variance is handled by the composite preset + first-time pause.
 export type GenFraming = { scale: number; offsetX: number; offsetY: number };
-export const HEYGEN_GEN_FRAMING: GenFraming = { scale: 1.5, offsetX: 0, offsetY: -0.08 };
+export const HEYGEN_GEN_FRAMING: GenFraming = { scale: 1.6, offsetX: 0, offsetY: -0.12 };
