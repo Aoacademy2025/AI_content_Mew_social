@@ -2,6 +2,7 @@
 // avatarId resolution (arg → user default), and intro/tail clamps.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-mcp-avatar-input.ts
 import { resolveAvatarRequest, clampSecs } from "../src/lib/mcp/avatar-steps";
+import { resolveAvatarLayout, DEFAULT_AVATAR_LAYOUT } from "../src/lib/avatar-preset";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -39,5 +40,28 @@ const lay = resolveAvatarRequest({ avatarMode: "full" }, withKey);
 assert(lay.kind === "ok" && lay.scale === 1 && lay.offsetX === 0 && lay.offsetY === 0, "default composite layer = scale 1 / 0 / 0");
 const lay2 = resolveAvatarRequest({ avatarMode: "full", avatarScale: 1.4, avatarOffsetY: 0.2, avatarOffsetX: 9 }, withKey);
 assert(lay2.kind === "ok" && lay2.scale === 1.4 && lay2.offsetY === 0.2 && lay2.offsetX === 2, "scale/offset accepted + clamped (offsetX 9→2)");
+
+// --- resolveAvatarLayout ---
+const presetA = { scale: 1.5, offsetX: 0.3, offsetY: -0.2 };
+
+// (a) explicit layout passes through (ignores preset)
+const explicitLayout = resolveAvatarLayout({ avatarScale: 1.2, avatarOffsetX: 0.5, avatarOffsetY: 0.1 }, presetA);
+assert(explicitLayout.scale === 1.2 && explicitLayout.offsetX === 0.5 && explicitLayout.offsetY === 0.1, "resolveAvatarLayout: explicit args win over preset");
+
+// (b) no explicit + preset → preset values returned
+const fromPreset = resolveAvatarLayout({}, presetA);
+assert(fromPreset.scale === 1.5 && fromPreset.offsetX === 0.3 && fromPreset.offsetY === -0.2, "resolveAvatarLayout: no args + preset → preset");
+
+// (c) no explicit + null preset → DEFAULT_AVATAR_LAYOUT
+const fromDefault = resolveAvatarLayout({}, null);
+assert(fromDefault.scale === DEFAULT_AVATAR_LAYOUT.scale && fromDefault.offsetX === DEFAULT_AVATAR_LAYOUT.offsetX && fromDefault.offsetY === DEFAULT_AVATAR_LAYOUT.offsetY, "resolveAvatarLayout: no args + no preset → DEFAULT_AVATAR_LAYOUT");
+
+// partial explicit: only scale set → scale wins, offsetX/Y come from preset (not zeroed)
+const partialExplicit = resolveAvatarLayout({ avatarScale: 1.8 }, presetA);
+assert(partialExplicit.scale === 1.8 && partialExplicit.offsetX === 0.3 && partialExplicit.offsetY === -0.2, "resolveAvatarLayout: partial explicit (only scale) → scale wins, other axes from preset");
+
+// explicit 0 for offsetX — must NOT fall through to preset (0 != null, so 0 wins)
+const zeroOffset = resolveAvatarLayout({ avatarOffsetX: 0 }, { scale: 1.5, offsetX: 99, offsetY: 99 });
+assert(zeroOffset.scale === 1.5 && zeroOffset.offsetX === 0 && zeroOffset.offsetY === 99, "resolveAvatarLayout: explicit 0 wins for offsetX (!=null check); scale+Y from preset");
 
 console.log(`\n${passed} assertions passed ✅`);

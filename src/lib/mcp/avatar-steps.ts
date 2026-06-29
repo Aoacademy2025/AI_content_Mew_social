@@ -3,7 +3,7 @@ import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
-export const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+export const HEYGEN_FRAMING = { scale: 1.0, offsetX: 0, offsetY: 0 } as const;
 // Composite layer default (how the avatar overlays the bg frame). scale 1 = fill frame.
 export const DEFAULT_AVATAR_LAYER = { scale: 1, offsetX: 0, offsetY: 0 } as const;
 

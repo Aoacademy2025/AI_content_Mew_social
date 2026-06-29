@@ -322,6 +322,31 @@ export default function VideoEditorPage() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
+
+  // Collapse ok+unverified into a single boolean so the load-preset effect fires only on
+  // the invalid→valid edge, not on the unverified→ok transition (which would clobber edits).
+  const avatarValid = useMemo(() => avatarStatus === "ok" || avatarStatus === "unverified", [avatarStatus]);
+
+  // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
+  // loadedPresetFor guards against clobbering user edits when the same avatarId re-triggers.
+  const loadedPresetFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!avatarId || !avatarValid) return;
+    if (loadedPresetFor.current === avatarId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`);
+        if (!res.ok) return;
+        const { layout } = await res.json();
+        if (cancelled || !layout) return;
+        setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
+        loadedPresetFor.current = avatarId;
+      } catch { /* keep current values */ }
+    })();
+    return () => { cancelled = true; };
+  }, [avatarId, avatarValid]);
+
   const audioRef = useRef<HTMLAudioElement>(null);
 
   // ── Split mode ────────────────────────────────────────────────────────
@@ -2279,7 +2304,7 @@ export default function VideoEditorPage() {
 
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
-  const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+  const HEYGEN_FRAMING = { scale: 1.0, offsetX: 0, offsetY: 0 } as const;
 
   // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
   type AvatarPollData = {
@@ -2391,6 +2416,26 @@ export default function VideoEditorPage() {
     setAvatarGreenUrl(avatarVideoUrl);
     setStep("avatar", "done", "Avatar พร้อม");
     return avatarVideoUrl;
+  }
+
+  const [avatarLayoutSaving, setAvatarLayoutSaving] = useState(false);
+  async function onSaveAvatarLayout(): Promise<void> {
+    if (!avatarId) return;
+    setAvatarLayoutSaving(true);
+    try {
+      const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+      });
+      if (res.ok) {
+        toast.success("บันทึกตำแหน่ง avatar แล้ว");
+      } else {
+        toast.error("บันทึกไม่สำเร็จ");
+      }
+    } catch {
+      toast.error("บันทึกไม่สำเร็จ");
+    } finally { setAvatarLayoutSaving(false); }
   }
 
   async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
@@ -4492,6 +4537,8 @@ export default function VideoEditorPage() {
                   localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
+                onSaveAvatarLayout={onSaveAvatarLayout}
+                avatarLayoutSaving={avatarLayoutSaving}
                 onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               />
             </div>
@@ -4557,6 +4604,8 @@ export default function VideoEditorPage() {
               localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
+            onSaveAvatarLayout={onSaveAvatarLayout}
+            avatarLayoutSaving={avatarLayoutSaving}
             onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
           />
         </div>

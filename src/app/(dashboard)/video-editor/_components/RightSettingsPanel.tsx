@@ -1,6 +1,7 @@
 "use client";
 
 import { useDeferredValue, useEffect, useRef } from "react";
+import { normalizedBox } from "@/lib/avatar-layout";
 import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,8 @@ export interface RightPanelProps {
   setAvatarBookendSecs: (v: number) => void; setAvatarTailSecs: (v: number) => void;
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void;
   setAvatarOffsetY: (v: number) => void;
+  onSaveAvatarLayout: () => Promise<void>;
+  avatarLayoutSaving: boolean;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
   projectName: string; onSaveTemplate: () => void;
   onPlanError?: (msg: string) => void;
@@ -568,24 +571,29 @@ export function RightSettingsPanel(p: RightPanelProps) {
                         }}>
                         {[25,50,75].map(p2 => <div key={`v${p2}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${p2}%`, width: 1, background: p2===50?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.04)" }} />)}
                         {[25,50,75].map(p2 => <div key={`h${p2}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: `${p2}%`, height: 1, background: p2===50?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.04)" }} />)}
-                        {/* เลเยอร์ avatar = สูตรเดียวกับ ffmpeg composite: width = scale×เฟรม, center เลื่อน (px/200)×ครึ่งเฟรม */}
-                        <div className="absolute pointer-events-none rounded"
-                          style={{
-                            width: `${p.avatarScale * 100}%`,
-                            aspectRatio: "9/16",
-                            left: `${50 + (p.avatarOffsetX / 200) * 50}%`,
-                            top: `${50 + (p.avatarOffsetY / 200) * 50}%`,
-                            transform: "translate(-50%, -50%)",
-                            background: p.avatarGreenUrl ? "transparent" : "rgba(124,58,237,0.2)",
-                            border: "1px solid rgba(99,179,237,0.5)",
-                          }}>
-                          {p.avatarGreenUrl && (
-                            <video src={p.avatarGreenUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
-                          )}
-                          {!p.avatarGreenUrl && <User className="w-4 h-4 text-violet-400/40 m-auto mt-2" />}
-                        </div>
-                        <div className="absolute w-2 h-2 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none"
-                          style={{ left: `${50 + (p.avatarOffsetX / 200) * 50}%`, top: `${50 + (p.avatarOffsetY / 200) * 50}%`, transform: "translate(-50%, -50%)" }} />
+                        {/* เลเยอร์ avatar — geometry from shared normalizedBox (same formula as ffmpeg composite) */}
+                        {(() => {
+                          const box = normalizedBox({ scale: p.avatarScale, offsetX: p.avatarOffsetX, offsetY: p.avatarOffsetY });
+                          return <>
+                            <div className="absolute pointer-events-none rounded"
+                              style={{
+                                width: `${box.widthPct}%`,
+                                aspectRatio: "9/16",
+                                left: `${box.centerXPct}%`,
+                                top: `${box.centerYPct}%`,
+                                transform: "translate(-50%, -50%)",
+                                background: p.avatarGreenUrl ? "transparent" : "rgba(124,58,237,0.2)",
+                                border: "1px solid rgba(99,179,237,0.5)",
+                              }}>
+                              {p.avatarGreenUrl && (
+                                <video src={p.avatarGreenUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
+                              )}
+                              {!p.avatarGreenUrl && <User className="w-4 h-4 text-violet-400/40 m-auto mt-2" />}
+                            </div>
+                            <div className="absolute w-2 h-2 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none"
+                              style={{ left: `${box.centerXPct}%`, top: `${box.centerYPct}%`, transform: "translate(-50%, -50%)" }} />
+                          </>;
+                        })()}
                         <div className="absolute top-1 left-1 bg-black/75 text-[7px] text-white/70 px-1 py-0.5 rounded font-mono pointer-events-none leading-snug">
                           X:{p.avatarOffsetX}<br />Y:{p.avatarOffsetY}
                         </div>
@@ -606,10 +614,16 @@ export function RightSettingsPanel(p: RightPanelProps) {
                               className="w-full accent-cyan-400 h-1" />
                           </div>
                         ))}
-                        <button onClick={() => { p.setAvatarOffsetX(0); p.setAvatarOffsetY(0); p.setAvatarScale(1); }}
-                          className="text-[9px] text-slate-600 hover:text-slate-400 transition-colors w-full text-center">
-                          ↺ Reset
-                        </button>
+                        <div className="flex gap-2">
+                          <button onClick={() => { p.setAvatarOffsetX(0); p.setAvatarOffsetY(0); p.setAvatarScale(1); }}
+                            className="text-[9px] text-slate-600 hover:text-slate-400 transition-colors flex-1 text-center">
+                            ↺ Reset
+                          </button>
+                          <button onClick={() => { void p.onSaveAvatarLayout(); }} disabled={p.avatarLayoutSaving}
+                            className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 transition-colors flex-1 text-center">
+                            {p.avatarLayoutSaving ? "กำลังบันทึก…" : "💾 Save ตำแหน่ง"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>}
