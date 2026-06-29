@@ -6,12 +6,12 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 
-// Conservative framing so the FULL avatar (head + arms) always enters on green; the user
-// then positions/scales it in the editor (composite layoutGeometry). NOT a per-avatar value.
-// Validated 2026-06-29: 2.02 over-zooms/cuts some custom photo-avatars; 1.0 = HeyGen natural framing.
-const HEYGEN_GEN_SCALE = 1.0;
-const HEYGEN_GEN_OFFSET_Y = 0.0;
+// Single source of truth lives in avatar-gen-framing.ts; these consts are kept so the
+// destructuring defaults at line ~116-118 are unchanged and easy to read.
+const HEYGEN_GEN_SCALE = HEYGEN_GEN_FRAMING.scale;
+const HEYGEN_GEN_OFFSET_Y = HEYGEN_GEN_FRAMING.offsetY;
 
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";

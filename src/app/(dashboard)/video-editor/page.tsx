@@ -47,6 +47,7 @@ import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
@@ -2304,7 +2305,8 @@ export default function VideoEditorPage() {
 
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
-  const HEYGEN_FRAMING = { scale: 1.0, offsetX: 0, offsetY: 0 } as const;
+  // Single source of truth lives in avatar-gen-framing.ts (imported at top of file).
+  const HEYGEN_FRAMING = HEYGEN_GEN_FRAMING;
 
   // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
   type AvatarPollData = {
