@@ -36,7 +36,7 @@ interface PaymentRecord {
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ElementType }> = {
   PAID:     { label: "ชำระแล้ว",  color: "text-emerald-400", bg: "hsl(142 60% 50% / 0.15)", icon: Check },
   PENDING:  { label: "รอชำระ",    color: "text-amber-400",   bg: "hsl(38 92% 55% / 0.15)",  icon: Clock },
-  FAILED:   { label: "ไม่สำเร็จ", color: "text-red-400",     bg: "hsl(0 75% 60% / 0.15)",   icon: XCircle },
+  FAILED:   { label: "ยกเลิก/หมดอายุ", color: "text-zinc-400", bg: "hsl(0 0% 50% / 0.12)", icon: XCircle },
   REFUNDED: { label: "คืนเงิน",   color: "text-zinc-400",    bg: "hsl(0 0% 50% / 0.12)",    icon: ArrowRight },
 };
 
