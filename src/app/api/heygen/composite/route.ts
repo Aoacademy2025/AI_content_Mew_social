@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordChargedClip } from "@/lib/clip-charge";
+import { clampAvatarLayout, layoutGeometry, type AvatarLayout } from "@/lib/avatar-layout";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -39,31 +40,6 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
-// เลเยอร์ avatar บนเฟรม: scale = สัดส่วนต่อเฟรม (1 = เต็มเฟรม = พฤติกรรมเดิม),
-// offset เป็นหน่วย px ของ UI (-200..200; 200 = เลื่อนครึ่งเฟรม) — สูตรเดียวกับ preview ใน editor
-type AvatarLayout = { scale: number; offsetX: number; offsetY: number };
-
-// คืน null เมื่อไม่ได้ส่งมา/เป็นค่า default → ใช้เส้นทาง full-cover เดิมเป๊ะ
-// (client รุ่นเก่าและ video-creator ไม่ส่ง avatarLayout จึงไม่ได้รับผลกระทบ)
-function parseAvatarLayout(raw: unknown): AvatarLayout | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const scale = Number(o.scale), offsetX = Number(o.offsetX), offsetY = Number(o.offsetY);
-  if (!Number.isFinite(scale) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
-  const s = Math.min(4, Math.max(0.05, scale));
-  const x = Math.min(400, Math.max(-400, offsetX));
-  const y = Math.min(400, Math.max(-400, offsetY));
-  if (Math.abs(s - 1) < 0.001 && Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return null;
-  return { scale: s, offsetX: x, offsetY: y };
-}
-
-function layoutGeometry(layout: AvatarLayout) {
-  const w = Math.round((1080 * layout.scale) / 2) * 2;
-  const h = Math.round((1920 * layout.scale) / 2) * 2;
-  const x = Math.round((1080 - w) / 2 + (1080 * layout.offsetX) / 400);
-  const y = Math.round((1920 - h) / 2 + (1920 * layout.offsetY) / 400);
-  return { w, h, x, y };
-}
 
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -487,7 +463,7 @@ export async function POST(req: Request) {
     avatarLayout = null,
   } = body ?? {};
 
-  const layout = parseAvatarLayout(avatarLayout);
+  const layout = clampAvatarLayout(avatarLayout);
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
