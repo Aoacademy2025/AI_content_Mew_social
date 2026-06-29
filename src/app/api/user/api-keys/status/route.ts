@@ -19,11 +19,17 @@ export async function GET() {
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     const present = (v: string | null) => !!(v && v.length > 0);
+    const isManagedMode = process.env.MANAGED_GEMINI === "1";
     const status = computeKeyStatus({
       gemini: present(user.geminiKey), pexels: present(user.pexelsKey), pixabay: present(user.pixabayKey),
       elevenlabs: present(user.elevenlabsKey), heygen: present(user.heygenKey),
+    }, isManagedMode);
+    return NextResponse.json({
+      ...status,
+      onboardingDismissed: user.onboardingDismissedAt != null,
+      ...(isManagedMode ? { managed: true } : {}),
+      ...(process.env.MINUTE_QUOTA === "1" ? { minuteQuota: true } : {}),
     });
-    return NextResponse.json({ ...status, onboardingDismissed: user.onboardingDismissedAt != null });
   } catch (error) {
     return apiError({ route: "user/api-keys/status", error });
   }

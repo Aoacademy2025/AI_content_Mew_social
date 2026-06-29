@@ -42,7 +42,7 @@ export async function PUT(req: Request) {
     const { geminiKey, heygenKey, elevenlabsKey, pexelsKey, pixabayKey, kieKey, unsplashKey, flickrKey } = await req.json();
 
     const updateData: Record<string, string | null> = {};
-    if (geminiKey     !== undefined) updateData.geminiKey     = geminiKey     ? encrypt(geminiKey)     : null;
+    if (geminiKey     !== undefined && process.env.MANAGED_GEMINI !== "1") updateData.geminiKey = geminiKey ? encrypt(geminiKey) : null;
     if (heygenKey     !== undefined) updateData.heygenKey     = heygenKey     ? encrypt(heygenKey)     : null;
     if (elevenlabsKey !== undefined) updateData.elevenlabsKey = elevenlabsKey ? encrypt(elevenlabsKey) : null;
     if (pexelsKey     !== undefined) updateData.pexelsKey     = pexelsKey     ? encrypt(pexelsKey)     : null;

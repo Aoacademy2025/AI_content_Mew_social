@@ -9,6 +9,7 @@ import {
 import Link from "next/link";
 import { PremiumBackdrop, CornerBrackets } from "@/components/layout/premium-page";
 import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding";
+import { QuotaStatus } from "@/components/quota-status";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -139,6 +140,11 @@ export default function DashboardPage() {
 
         {/* Key setup checklist + first-login wizard */}
         <DashboardOnboarding />
+
+        {/* Minute / clip balance chip — self-fetches, shows minutes when plan includes them */}
+        <div className="pp-fade-up mb-4" style={{ animationDelay: "160ms" }}>
+          <QuotaStatus variant="chip" />
+        </div>
 
         {/* Quick actions — premium CTA row */}
         <div className="pp-fade-up grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8" style={{ animationDelay: "120ms" }}>

@@ -47,6 +47,11 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt DateTime?  // set once; never cleared (one-trial-per-user guard)
   trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
+  minutesUsed   Float    @default(0)
+  minutesLimit  Int      @default(0)
+  aiAudioMinutesUsed Float @default(0) // managed-Gemini side-channel audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
+  aiTextCallsUsed Float @default(0) // managed-Gemini text-LLM call count (keywords/ranker/content/analyze/split) per usage window; ceiling = minutesLimit × AI_TEXT_CALLS_MULT
+  geminiKeyMode String   @default("byok")
   resetToken    String?
   resetExpires  DateTime?
   createdAt     DateTime  @default(now())
@@ -361,6 +366,15 @@ model Payment {
   paidAt            DateTime?
 }
 
+// Idempotency ledger for Stripe webhooks. Stripe delivers events "at least once"; we record
+// each processed event.id and skip duplicates so plan activation / renewal extension can't run
+// twice for the same event. Additive table — flag-independent.
+model StripeWebhookEvent {
+  id          String   @id // Stripe event.id (evt_...)
+  type        String
+  processedAt DateTime @default(now())
+}
+
 model TelemetryEvent {
   id          String   @id @default(cuid())
   userId      String?
@@ -441,12 +455,34 @@ model GeneratedImage {
 // src/lib/clip-charge.ts canonicalRenderUrl). Additive table — no FK/cascade,
 // safe to `prisma db push`.
 model ChargedClip {
-  id        String   @id @default(cuid())
-  userId    String
-  outputUrl String // the base render's output, e.g. /api/renders/render-….mp4
-  createdAt DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  outputUrl      String // the base render's output, e.g. /api/renders/render-….mp4
+  chargedMinutes Int?   // minutes charged for this video; null = legacy/clips-mode
+  creditsSpent   Int?   // credits charged for a credit-funded (overflow) render; null = minute/clip-funded
+  createdAt      DateTime @default(now())
 
   @@index([userId, outputUrl])
+}
+
+model CreditBalance {
+  userId         String    @id
+  granted        Int       @default(0)
+  purchased      Int       @default(0)
+  grantedResetAt DateTime?
+  updatedAt      DateTime  @updatedAt
+}
+
+model CreditLedger {
+  id           String   @id @default(cuid())
+  userId       String
+  delta        Int
+  kind         String   // grant | purchase | spend | expire
+  action       String?
+  balanceAfter Int
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
 
 model RenderJob {
@@ -464,6 +500,9 @@ model RenderJob {
   heartbeatAt     DateTime?
   cancelRequested Boolean   @default(false)
   reservedQuota   Boolean   @default(false) // true iff THIS job reserved a clip for its video
+  reservedMinutes Int?      // minutes reserved for a queued job; for exact refund
+  creditsSpent    Int?      // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
+  creditsFromGranted Int?   // of creditsSpent, the portion drained from the granted (monthly) bucket; the rest came from purchased — for an EXACT per-bucket refund (granted-back-to-granted, not inflated into purchased)
   error           String?   // JSON, PR-5 error taxonomy
   idempotencyKey  String?   @unique
   scopeKey        String?   // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)

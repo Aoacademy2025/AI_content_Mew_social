@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { randomBytes } from "crypto";
 import { resolveOffthreadCacheBytes } from "@/lib/offthread-cache";
 import type { RenderResult } from "@/lib/render/types";
 import type { CancelSignal } from "@remotion/renderer";
@@ -44,6 +45,8 @@ export type ResolvedRenderInput = {
   customWidth?: number;
   customHeight?: number;
   fps: number;
+  /** Show HERO watermark overlay on this render (FREE-tier only, default false) */
+  watermark?: boolean;
   requestedJpegQuality?: unknown;
   // bundle + output locations
   entryPoint: string;
@@ -199,6 +202,7 @@ export async function runRender(
     bundlePublicDir,
     rendersDir,
     bundleCache,
+    watermark,
   } = payload;
 
   let lastProgress = -1;
@@ -303,7 +307,7 @@ export async function runRender(
   const inputProps = isSubtitleOverlay
     ? resolvedSubtitleConfig
     : isShortVideo
-    ? resolvedShortConfig
+    ? { ...resolvedShortConfig, watermark: watermark ?? false }
     : isAvatarMode
     ? {
         avatarVideoUrl,
@@ -314,7 +318,7 @@ export async function runRender(
         fontSizeOverride: fontSizeOverride ?? 0,
         fontWeightOverride: fontWeightOverride ?? 0,
       }
-    : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData };
+    : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData, watermark: watermark ?? false };
 
   const selectCurrentComposition = () =>
     selectComposition({
@@ -350,7 +354,10 @@ export async function runRender(
     composition = applyCompositionOverrides(await selectCurrentComposition());
   }
 
-  const filename = `render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
+  // Render outputs are served world-readable by /api/renders, so the filename is the
+  // only thing protecting a paid user's private video — use 128-bit crypto randomness
+  // (was 6 base36 chars, trivially guessable within the render's time window).
+  const filename = `render-${Date.now()}-${randomBytes(16).toString("hex")}.mp4`;
   const outputLocation = path.join(rendersDir, filename);
 
   const renderSlotLimit = getRenderJobConcurrencyLimit();

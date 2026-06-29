@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
@@ -43,6 +46,8 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { script: rawScript, audioDurationMs } = body ?? {};
   if (!rawScript?.trim()) return NextResponse.json({ error: "script required" }, { status: 400 });
+  const inputCaps = checkAiInputCaps({ script: rawScript });
+  if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
   // Pre-process: normalize ellipsis and quotes so LLM gets clean split points
   // Replace "..." with newline (treat as breath/pause), strip leading/trailing quotes per line
@@ -65,10 +70,27 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { geminiKey: true },
+    select: { geminiKey: true, plan: true },
   });
-  const apiKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
-  if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
+  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  let apiKey: string;
+  let geminiMode: "managed" | "byok";
+  try {
+    const resolved = resolveGeminiKey(user);
+    apiKey = resolved.key;
+    geminiMode = resolved.mode;
+  } catch (e) {
+    if (e instanceof KeyRequiredError) {
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+    }
+    throw e;
+  }
+
+  // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+  const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+  if (!textReserve.allowed) {
+    return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
+  }
 
   // ── Gemini prompt: dramatic pacing, NEVER rules, examples ──────────────────
   const geminiPrompt = `You are a Thai subtitle splitter for TikTok/Reels short-form video.

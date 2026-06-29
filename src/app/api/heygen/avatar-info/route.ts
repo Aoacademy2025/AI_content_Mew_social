@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { getHeyGenAvatarList, HeyGenAuthError } from "@/lib/heygen-avatars";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
 
-// GET /api/heygen/avatar-info?avatarId=xxx
-// Returns: { previewImageUrl, previewVideoUrl, name }
+// GET /api/heygen/avatar-info?avatarId=xxx[&refresh=1]
+// Returns: { previewImageUrl, previewVideoUrl, name }  ·  refresh=1 bypasses the cache (reload button)
 export async function GET(req: Request) {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -14,76 +15,32 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const avatarId = searchParams.get("avatarId");
   if (!avatarId) return NextResponse.json({ error: "avatarId required" }, { status: 400 });
+  const refresh = searchParams.get("refresh") === "1";
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-  let res: Response | undefined;
-  let lastError: Error | null = null;
-
-  // Retry logic: HeyGen can be slow/flaky
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      res = await fetch("https://api.heygen.com/v2/avatars", {
-        headers: { "X-Api-Key": heygenKey, accept: "application/json" },
-        signal: AbortSignal.timeout(35000),
-      });
-      break; // Success, exit retry loop
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < 3) {
-        // Wait before retrying (exponential backoff)
-        await new Promise(r => setTimeout(r, Math.pow(2, attempt - 1) * 500));
-        continue;
-      }
-      // All retries exhausted
-      console.error("[avatar-info] All retries exhausted:", lastError?.message);
-      return NextResponse.json({
-        previewImageUrl: "", name: "", unverified: true,
-        note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
-      });
+  // Cached per-user list fetch (retry/timeout/backoff live in the helper). Failures are NOT cached,
+  // so a reload after a slow HeyGen response re-fetches. Preserve the graceful "unverified" UX on a
+  // slow HeyGen, and the explicit key-error on 401/403.
+  let avatars: any[];
+  let talkingPhotos: any[];
+  try {
+    const list = await getHeyGenAvatarList(authUser.id, heygenKey, { refresh });
+    avatars = list.avatars;
+    talkingPhotos = list.talkingPhotos;
+  } catch (err) {
+    if (err instanceof HeyGenAuthError) {
+      console.warn(`[avatar-info] HeyGen ${err.status} — key len=${heygenKey.length}`);
+      return NextResponse.json({ error: "HeyGen key ไม่ถูกต้อง/หมดสิทธิ์", missingKey: "heygen" }, { status: err.status });
     }
-  }
-  if (!res) {
-    console.error("[avatar-info] No response after retries:", lastError?.message);
+    console.error("[avatar-info] list fetch failed:", err instanceof Error ? err.message : err);
     return NextResponse.json({
       previewImageUrl: "", name: "", unverified: true,
       note: "HeyGen ตอบช้า — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
     });
   }
-  console.log(`[avatar-info] Got response status: ${res.status}`);
-  if (res.status === 401 || res.status === 403) {
-    const body = await res.text().catch(() => "");
-    console.warn(`[avatar-info] HeyGen ${res.status} — key len=${heygenKey.length}, body=${body.slice(0, 200)}`);
-    return NextResponse.json({ error: "HeyGen key ไม่ถูกต้อง/หมดสิทธิ์", missingKey: "heygen" }, { status: res.status });
-  }
-  if (!res.ok) return NextResponse.json({ error: `HeyGen API error ${res.status}` }, { status: 502 });
-
-  let data: any;
-  try {
-    data = await res.json();
-  } catch (err) {
-    console.error("[avatar-info] Failed to parse HeyGen response as JSON:", err);
-    return NextResponse.json({
-      previewImageUrl: "", name: "", unverified: true,
-      note: "HeyGen ตอบ corrupt — ยืนยัน ID ไม่ได้ แต่ลอง render ได้",
-    });
-  }
-  const avatars: Array<{
-    avatar_id: string;
-    avatar_name: string;
-    preview_image_url: string;
-    preview_video_url: string;
-  }> = data.data?.avatars ?? [];
-  // /v2/avatars also returns "talking_photos" (photo/instant avatars) under a
-  // different shape — a valid Avatar ID can live there too. Search both so we
-  // don't false-flag a working custom/photo avatar as "not found".
-  const talkingPhotos: Array<{
-    talking_photo_id: string;
-    talking_photo_name?: string;
-    preview_image_url?: string;
-  }> = data.data?.talking_photos ?? [];
 
   const found = avatars.find((a) => a.avatar_id === avatarId);
   if (found) {

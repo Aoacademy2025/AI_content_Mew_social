@@ -363,6 +363,8 @@ export default function ShortVideoPage() {
   const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [running, setRunning] = useState(false);
+  // Bumped after a render or burn completes so QuotaStatus re-fetches the updated balance
+  const [quotaRefresh, setQuotaRefresh] = useState(0);
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -478,6 +480,9 @@ export default function ShortVideoPage() {
   const [renderProgressTick, setRenderProgressTick] = useState(0);
   const renderProgress = renderProgressRef.current;
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+  // Credits overflow (NEXT_PUBLIC_CREDITS_LIVE): true when the render wall is hit AND
+  // credits are also empty (canBuyCredits) → render a [ซื้อเครดิต] CTA in the error UI.
+  const [outOfMinutes, setOutOfMinutes] = useState(false);
 
   function setRenderProgress(v: number) {
     renderProgressRef.current = v;
@@ -486,6 +491,8 @@ export default function ShortVideoPage() {
 
   // Key onboarding wizard (proactive pre-check)
   const [keyWizardOpen, setKeyWizardOpen] = useState(false);
+  const [managed, setManaged] = useState(false);
+  const [minuteQuota, setMinuteQuota] = useState(false);
 
   // Missing API key modal
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runGenerate" | "runAvatarPipeline" } | null>(null);
@@ -704,6 +711,47 @@ export default function ShortVideoPage() {
     });
   }
 
+  // Credit overflow is build-baked OFF unless NEXT_PUBLIC_CREDITS_LIVE==="1". With it unset
+  // this is the literal `false`, so every guarded branch below is dead → page byte-identical.
+  const CREDITS_LIVE_CLIENT = process.env.NEXT_PUBLIC_CREDITS_LIVE === "1";
+
+  /** Start a Stripe checkout for a credit pack and redirect to it. */
+  async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
+    try {
+      const res = await fetch("/api/payments/credits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pack }),
+      });
+      const data = await res.json();
+      if (data?.url) window.location.href = data.url as string;
+      else toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    } catch {
+      toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    }
+  }
+
+  /**
+   * Post-render receipt for a credit-funded (overflow) render: shows how many credits
+   * were spent + the remaining balance (fetched separately, since the queue render path
+   * carries no balance), plus a low-balance nudge. No-op unless credits are live and
+   * the render actually spent credits.
+   */
+  async function fireCreditReceipt(creditsSpent: number | null | undefined) {
+    if (!CREDITS_LIVE_CLIENT) return;
+    const spent = Number(creditsSpent);
+    if (!Number.isFinite(spent) || spent <= 0) return;
+    let left: number | null = null;
+    try {
+      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
+      left = typeof b?.total === "number" ? b.total : null;
+    } catch { /* balance fetch is best-effort — still show the spend */ }
+    toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);
+    if (left != null && left < 20) {
+      toast("เครดิตใกล้หมด เติมเลยไหม?", { action: { label: "ซื้อเครดิต", onClick: () => buyCredits() } });
+    }
+  }
+
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
@@ -711,8 +759,13 @@ export default function ShortVideoPage() {
       const status = (err.data as any)._status as number | undefined;
       // PR-1 structured errors จาก /api/videos/render: { error: { code, message, userAction } }
       const structuredErr = typeof err.data.error === "object" && err.data.error !== null
-        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        ? (err.data.error as { code?: string; message?: string; userAction?: string; canBuyCredits?: boolean })
         : null;
+      // Out of minutes AND credits (overflow live) → show the buy-credits CTA. Gated on
+      // NEXT_PUBLIC_CREDITS_LIVE so this branch is dead (and the page byte-identical) when off.
+      if (CREDITS_LIVE_CLIENT && structuredErr?.code === "quota_exceeded" && structuredErr.canBuyCredits) {
+        setOutOfMinutes(true);
+      }
       if (structuredErr?.message) {
         return [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ");
       }
@@ -804,7 +857,11 @@ export default function ShortVideoPage() {
     assertOk("Keywords", kwRes, kwData);
     const kws: string[] = kwData.keywords ?? [];
     if (kws.length === 0) {
-      throw new Error("ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google");
+      throw new Error(
+        managed
+          ? "ไม่สามารถดึง keywords ได้ — ลองใหม่อีกครั้งหรือแจ้งทีมงาน"
+          : "ไม่สามารถดึง keywords ได้ กรุณาตรวจสอบ Gemini API Key หรือโควต้า Google"
+      );
     }
     pipe.current.keywords = kws;
     pipe.current.keywordAlternatives = kwData.keywordAlternatives ?? [];
@@ -1093,7 +1150,10 @@ export default function ShortVideoPage() {
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Remotion rendering...");
     setRenderProgressError(null);
+    if (CREDITS_LIVE_CLIENT) setOutOfMinutes(false); // clear any prior wall CTA
     setPreRenderUrl("");
+    // Credits spent on THIS render (from the completion status); fed to the receipt on success.
+    let creditsSpentThisRender: number | null = null;
     // Reset ref immediately (synchronous) so popup always opens at 0%
     renderProgressRef.current = 0;
     setRenderPopupOpen(false);
@@ -1148,10 +1208,11 @@ export default function ShortVideoPage() {
           }
           return;
         }
-        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null };
+        const progressData = await progressRes.json() as { progress?: number; videoUrl?: string | null; error?: string | null; creditsSpent?: number | null };
         if (pollStopped) return; // stopped while parsing
         // Only resolve from progress file if we have a confirmed jobId — prevents resolving with stale videoUrl from a previous render
         if (progressData?.videoUrl && resolveRenderUrl && currentJobId) {
+          if (CREDITS_LIVE_CLIENT && progressData.creditsSpent != null) creditsSpentThisRender = progressData.creditsSpent;
           resolveRenderUrl(progressData.videoUrl);
           resolveRenderUrl = null;
           return;
@@ -1224,6 +1285,8 @@ export default function ShortVideoPage() {
         setStep("render", "done", immediateUrl);
         setRenderProgressError(null);
         setRenderProgress(100);
+        setQuotaRefresh(n => n + 1);
+        if (CREDITS_LIVE_CLIENT) void fireCreditReceipt((renderData as { creditsSpent?: number | null }).creditsSpent);
         return immediateUrl;
       }
 
@@ -1246,6 +1309,7 @@ export default function ShortVideoPage() {
             const statusData = await statusRes.json();
             if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
             if (statusData.status === "done" && statusData.videoUrl) {
+              if (CREDITS_LIVE_CLIENT && statusData.creditsSpent != null) creditsSpentThisRender = statusData.creditsSpent;
               clearInterval(statusInterval);
               resolveRenderUrl = null;
               resolve(statusData.videoUrl as string);
@@ -1280,6 +1344,8 @@ export default function ShortVideoPage() {
       setStep("render", "done", url);
       setRenderProgressError(null);
       setRenderProgress(100);
+      setQuotaRefresh(n => n + 1);
+      if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisRender);
       return url;
     } catch (err) {
       // Silently discard results from superseded jobs — a newer render has taken over
@@ -1291,6 +1357,11 @@ export default function ShortVideoPage() {
       if (!renderFailedMessage) {
         const msg = friendlyError(err);
         markRenderError(msg);
+      }
+      // Mark timeout errors so outer catches skip the "ไม่ถูกหักนาที" refund toast
+      // (server job may still be running and may have charged minutes).
+      if (err instanceof Error && err.message.startsWith("Render ใช้เวลานานผิดปกติ")) {
+        (err as Error & { isStale?: boolean }).isStale = true;
       }
       throw err;
     } finally {
@@ -1641,6 +1712,8 @@ export default function ShortVideoPage() {
       const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
       if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
       const st = await res.json();
+      setManaged(!!st.managed);
+      if (st.minuteQuota) setMinuteQuota(true);
       if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
     } catch { return true; }
     return true;
@@ -1659,15 +1732,11 @@ export default function ShortVideoPage() {
     }
 
     // Step 2: Check keys for the chosen provider — show key modal if missing
+    // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keys = await keysRes.json();
-        const hasLLMKey = !!keys.geminiKey;
-        if (!hasLLMKey) {
-          setMissingKey({ type: "gemini", retryStep: "runAll" });
-          return;
-        }
         // Stock key check
         if (stockSource === "kie-image" && !keys.kieKey) {
           setMissingKey({ type: "kie", retryStep: "runAll" });
@@ -2001,6 +2070,13 @@ export default function ShortVideoPage() {
         const msg = friendlyError(err);
         toast.error(msg);
         markError(msg);
+        // Refund reassurance — show only when the user has a minute/credit quota so they know
+        // they weren't charged. Gated on flags; dead branch when both are off (flag-off = no-op).
+        // Skip when render timed out (server job may still be running and may have charged minutes).
+        const isStale = (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
       }
     } finally {
       abortRef.current = false;
@@ -2380,6 +2456,17 @@ export default function ShortVideoPage() {
             ) : (
               <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.3)" }}>กรุณารอจนเสร็จ อย่าปิดหน้านี้</p>
             )}
+            {/* Out-of-minutes-AND-credits wall → buy-credits CTA (NEXT_PUBLIC_CREDITS_LIVE). */}
+            {CREDITS_LIVE_CLIENT && outOfMinutes && (
+              <button
+                type="button"
+                onClick={() => buyCredits()}
+                className="px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+                style={{ background: "hsl(258 90% 66%)", color: "#fff", border: "1px solid hsl(258 90% 70%)" }}
+              >
+                ซื้อเครดิต
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -2427,6 +2514,7 @@ export default function ShortVideoPage() {
           open={true}
           onClose={() => setKeyWizardOpen(false)}
           onComplete={() => setKeyWizardOpen(false)}
+          managed={managed}
         />
       )}
 
@@ -2504,7 +2592,7 @@ export default function ShortVideoPage() {
                 </div>
               )}
               {/* Clip quota — fail-soft: renders nothing while loading or on error */}
-              <QuotaStatus variant="chip" />
+              <QuotaStatus variant="chip" refreshKey={quotaRefresh} />
             </div>
           </div>
 

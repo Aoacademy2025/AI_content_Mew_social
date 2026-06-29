@@ -1,0 +1,24 @@
+import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/clerk-auth";
+import { getBalance, ensureMonthlyGrant } from "@/lib/credits";
+import { apiError } from "@/lib/api-error";
+
+// GET /api/credits/balance — returns the authenticated user's credit balance.
+// When CREDITS_LIVE is not "1", returns a zero shape with live:false so the UI can hide.
+export async function GET() {
+  try {
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    if (process.env.CREDITS_LIVE !== "1") {
+      return NextResponse.json({ granted: 0, purchased: 0, total: 0, live: false });
+    }
+
+    await ensureMonthlyGrant(authUser.id);
+    const balance = await getBalance(authUser.id);
+
+    return NextResponse.json({ ...balance, live: true });
+  } catch (error) {
+    return apiError({ route: "GET /api/credits/balance", error });
+  }
+}

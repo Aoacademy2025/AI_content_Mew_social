@@ -3,14 +3,14 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { X, ExternalLink, ChevronDown, Loader2, Sparkles } from "lucide-react";
-import { REQUIRED_KEYS, ADVANCED_KEYS, KEY_TIERS, type KeyId } from "@/lib/key-tiers";
+import { requiredKeysFor, ADVANCED_KEYS, KEY_TIERS, type KeyId } from "@/lib/key-tiers";
 import { ApiKeyField } from "./ApiKeyField";
 
 type TestResult = { ok: boolean; message: string } | null;
 
 export function KeyOnboardingWizard({
-  open, onClose, onComplete, startKeyId,
-}: { open: boolean; onClose: () => void; onComplete: () => void; startKeyId?: KeyId }) {
+  open, onClose, onComplete, startKeyId, managed = false,
+}: { open: boolean; onClose: () => void; onComplete: () => void; startKeyId?: KeyId; managed?: boolean }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, TestResult>>({});
   const [testing, setTesting] = useState<string | null>(null);
@@ -86,7 +86,7 @@ export function KeyOnboardingWizard({
 
         <div className="mt-5 space-y-5">
           <div className="text-xs font-semibold uppercase tracking-wide text-sky-200">จำเป็น</div>
-          {REQUIRED_KEYS.map((def) => (
+          {requiredKeysFor(managed).map((def) => (
             <ApiKeyField key={def.id} def={def} value={values[def.id] ?? ""} isSaved={false}
               onChange={(v) => setValue(def.id, v)} onTest={() => test(def.id, def.testKeyType)}
               testResult={results[def.id] ?? null} testing={testing === def.id} />
@@ -112,10 +112,12 @@ export function KeyOnboardingWizard({
             {saving && <Loader2 className="h-4 w-4 animate-spin" />} บันทึกแล้วเริ่มเลย
           </button>
         </div>
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
-          className="mt-3 inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300">
-          ขอ Gemini key ฟรี <ExternalLink className="h-3 w-3" />
-        </a>
+        {!managed && (
+          <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
+            className="mt-3 inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300">
+            ขอ Gemini key ฟรี <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
       </div>
     </div>
   );

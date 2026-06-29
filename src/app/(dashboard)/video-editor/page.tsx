@@ -84,6 +84,7 @@ type RenderProgressPayload = {
   updatedAt?: number | null;
   queuedAt?: number | null;
   renderQueueWaitMs?: number | null;
+  creditsSpent?: number | null; // credits charged for a credit-funded (overflow) render; present only when CREDITS_LIVE
 };
 
 type RenderActivity = {
@@ -181,6 +182,8 @@ export default function VideoEditorPage() {
   const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
+  // Bumped after render or burn completes so QuotaStatus re-fetches the updated balance
+  const [quotaRefresh, setQuotaRefresh] = useState(0);
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -370,6 +373,9 @@ export default function VideoEditorPage() {
   const renderProgressRef = useRef(0);
   const [, setRenderProgressTick] = useState(0);
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
+  // Credits overflow (NEXT_PUBLIC_CREDITS_LIVE): true when the render wall is hit AND
+  // credits are also empty (canBuyCredits) → render a [ซื้อเครดิต] CTA in the error UI.
+  const [outOfMinutes, setOutOfMinutes] = useState(false);
   const [renderActivity, setRenderActivity] = useState<RenderActivity>({
     phase: "idle",
     label: "",
@@ -409,6 +415,8 @@ export default function VideoEditorPage() {
 
   // ── Key onboarding wizard (proactive pre-check) ───────────────────────
   const [keyWizardOpen, setKeyWizardOpen] = useState(false);
+  const [managed, setManaged] = useState(false);
+  const [minuteQuota, setMinuteQuota] = useState(false);
 
   // ── Missing key modal ─────────────────────────────────────────────────
   const [missingKey, setMissingKey] = useState<{ type: RequiredKeyType; retryStep: keyof StepState | "runAll" | "runAvatarPipeline" } | null>(null);
@@ -419,7 +427,12 @@ export default function VideoEditorPage() {
   useEffect(() => {
     let cancelled = false;
     fetchMe()
-      .then(d => { if (!cancelled && d?.plan) setUserPlan(d.plan); })
+      .then(d => {
+        if (!cancelled) {
+          if (d?.plan) setUserPlan(d.plan);
+          if (d?.minuteQuota) setMinuteQuota(true);
+        }
+      })
       .catch(() => { /* keep PRO default — server still backstops at render */ });
     return () => { cancelled = true; };
   }, []);
@@ -639,11 +652,11 @@ export default function VideoEditorPage() {
 
   // Fetch the HeyGen avatar thumbnail + name for the current Avatar ID. Shared by
   // the debounced auto-load effect and the manual "โหลด avatar" button.
-  const loadAvatarInfo = useCallback(async (id: string) => {
+  const loadAvatarInfo = useCallback(async (id: string, refresh = false) => {
     if (!id || id.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); setAvatarStatus("idle"); return; }
     setAvatarStatus("loading");
     try {
-      const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}`);
+      const r = await fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(id)}${refresh ? "&refresh=1" : ""}`);
       if (!r.ok) {
         const d = await r.json().catch(() => null);
         setAvatarPreviewUrl(""); setAvatarName("");
@@ -1220,7 +1233,7 @@ export default function VideoEditorPage() {
         title: `อัปเกรดเป็น ${PLAN_LABEL[next]} — รองรับคลิปยาวขึ้น`,
         message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานแผน ${PLAN_LABEL[plan] ?? plan} (${capMin} นาที/คลิป) — ${PLAN_LABEL[next]} รองรับสูงสุด ${nextCapMin} นาที/คลิป`,
         benefits: next === "BUSINESS"
-          ? ["300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
+          ? [minuteQuota ? "150 นาที/เดือน · ~150 คลิป" : "300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
           : undefined,
       };
     }
@@ -1272,6 +1285,47 @@ export default function VideoEditorPage() {
     return true;
   }
 
+  // Credit overflow is build-baked OFF unless NEXT_PUBLIC_CREDITS_LIVE==="1". With it unset
+  // this is the literal `false`, so every guarded branch below is dead → page byte-identical.
+  const CREDITS_LIVE_CLIENT = process.env.NEXT_PUBLIC_CREDITS_LIVE === "1";
+
+  /** Start a Stripe checkout for a credit pack and redirect to it. */
+  async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
+    try {
+      const res = await fetch("/api/payments/credits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pack }),
+      });
+      const data = await res.json();
+      if (data?.url) window.location.href = data.url as string;
+      else toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    } catch {
+      toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
+    }
+  }
+
+  /**
+   * Post-render receipt for a credit-funded (overflow) render: shows how many credits
+   * were spent + the remaining balance (fetched separately, since the queue render path
+   * carries no balance), plus a low-balance nudge. No-op unless credits are live and
+   * the render actually spent credits.
+   */
+  async function fireCreditReceipt(creditsSpent: number | null | undefined) {
+    if (!CREDITS_LIVE_CLIENT) return;
+    const spent = Number(creditsSpent);
+    if (!Number.isFinite(spent) || spent <= 0) return;
+    let left: number | null = null;
+    try {
+      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
+      left = typeof b?.total === "number" ? b.total : null;
+    } catch { /* balance fetch is best-effort — still show the spend */ }
+    toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);
+    if (left != null && left < 20) {
+      toast("เครดิตใกล้หมด เติมเลยไหม?", { action: { label: "ซื้อเครดิต", onClick: () => buyCredits() } });
+    }
+  }
+
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (err instanceof Error && err.name === "AbortError") return "ยกเลิกโดยผู้ใช้";
@@ -1281,8 +1335,13 @@ export default function VideoEditorPage() {
       const status = (err.data as any)._status as number | undefined;
       // PR-1 structured errors: { error: { code, message, userAction } } — เช่น quota_exceeded
       const structuredErr = typeof err.data.error === "object" && err.data.error !== null
-        ? (err.data.error as { code?: string; message?: string; userAction?: string })
+        ? (err.data.error as { code?: string; message?: string; userAction?: string; canBuyCredits?: boolean })
         : null;
+      // Out of minutes AND credits (overflow live) → show the buy-credits CTA. Gated on
+      // NEXT_PUBLIC_CREDITS_LIVE so this branch is dead (and the page byte-identical) when off.
+      if (CREDITS_LIVE_CLIENT && structuredErr?.code === "quota_exceeded" && structuredErr.canBuyCredits) {
+        setOutOfMinutes(true);
+      }
       const errMsg = structuredErr
         ? [structuredErr.message, structuredErr.userAction].filter(Boolean).join(" — ")
         : String(err.data.error ?? "");
@@ -1318,7 +1377,7 @@ export default function VideoEditorPage() {
       action = { label: "เติมเครดิต kie.ai", url: "https://kie.ai/api-key" };
     } else if (lower.includes("generative language api") || lower.includes("permission_denied") || lower.includes("service_disabled")) {
       action = { label: "เปิด API ที่ Cloud Console", url: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" };
-    } else if (lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
+    } else if (!managed && lower.includes("gemini") && (lower.includes("ไม่ถูกต้อง") || lower.includes("401") || lower.includes("invalid"))) {
       action = { label: "สร้าง Key ใหม่", url: "https://aistudio.google.com/apikey" };
     } else if (lower.includes("โควต้าฟรี") || lower.includes("ผูกบัตร google") || lower.includes("quota")) {
       action = { label: "ไปที่ Settings", url: "/settings?tab=api-keys" };
@@ -2003,7 +2062,10 @@ export default function VideoEditorPage() {
   async function runRender(config: unknown): Promise<string> {
     setStep("render", "running", "Rendering...");
     setRenderProgressError(null);
+    if (CREDITS_LIVE_CLIENT) setOutOfMinutes(false); // clear any prior wall CTA
     renderProgressRef.current = 0;
+    // Credits spent on THIS render (from the completion status); fed to the receipt on success.
+    let creditsSpentThisRender: number | null = null;
     const renderActivityStartedAt = Date.now();
     setRenderActivity({
       phase: "preparing",
@@ -2081,7 +2143,10 @@ export default function VideoEditorPage() {
         pipe.current.renderedVideoNoSubUrl = immediateUrl;
         clearDerivedPreviewOutputs({ clearComposite: true });
         setPreRenderUrl(immediateUrl); setVideoUrl(immediateUrl);
-        setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return immediateUrl;
+        setStep("render", "done", immediateUrl); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        setQuotaRefresh(n => n + 1);
+        if (CREDITS_LIVE_CLIENT) void fireCreditReceipt((data as { creditsSpent?: number | null }).creditsSpent);
+        return immediateUrl;
       }
       if (!jobId) throw new Error("Render server did not return jobId");
       activeJobIdRef.current = jobId;
@@ -2100,8 +2165,11 @@ export default function VideoEditorPage() {
           if (tick > 0 && tick % 5 === 0) {
             const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
             if (sr.ok) {
-              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
-              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string; creditsSpent?: number | null };
+              if (sd.status === "done" && sd.videoUrl) {
+                if (CREDITS_LIVE_CLIENT && sd.creditsSpent != null) creditsSpentThisRender = sd.creditsSpent;
+                return { status: "done", value: sd.videoUrl };
+              }
               if (sd.status === "error") return { status: "failed", error: sd.error ?? "Render failed" };
               if (sd.status === "not_found") {
                 statusNotFoundCount++;
@@ -2117,7 +2185,10 @@ export default function VideoEditorPage() {
           const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
           if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
           const d = await r.json() as RenderProgressPayload;
-          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.videoUrl) {
+            if (CREDITS_LIVE_CLIENT && d.creditsSpent != null) creditsSpentThisRender = d.creditsSpent;
+            return { status: "done", value: d.videoUrl };
+          }
           if (d.error) return { status: "failed", error: d.error };
           const p = Number(d.progress);
           if (d.queued || d.stage === "queued") {
@@ -2177,14 +2248,20 @@ export default function VideoEditorPage() {
         captions: captionsRef.current.map(c => ({ ...c })),
       };
       setStyleIsDirty(false);
-      setStep("render", "done", url); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null }); return url;
+      setStep("render", "done", url); setRenderProgress(100); setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+      setQuotaRefresh(n => n + 1);
+      if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisRender);
+      return url;
     } catch (err) {
       if (err instanceof Error && err.message === "__SUPERSEDED__") throw err;
       try { const u = new URL(window.location.href); u.searchParams.delete("jobId"); window.history.replaceState({}, "", u.toString()); } catch {}
       // stale/transient-limit: งานฝั่ง server อาจยังทำงานอยู่ — แนะนำให้เช็ค Gallery แล้วค่อยลองใหม่
-      const finalErr = err instanceof PollStaleError || err instanceof PollTransientLimitError
-        ? new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง")
-        : err;
+      let finalErr: Error | unknown = err;
+      if (err instanceof PollStaleError || err instanceof PollTransientLimitError) {
+        const e2 = new Error("Render ไม่คืบหน้า/เซิร์ฟเวอร์ไม่ตอบสนองนานเกิน 10 นาที — วิดีโออาจยังเรนเดอร์อยู่ ลองเช็คผลใน Gallery แล้วค่อยกด Render ใหม่อีกครั้ง");
+        (e2 as Error & { isStale?: boolean }).isStale = true;
+        finalErr = e2;
+      }
       if (!(finalErr instanceof Error && finalErr.name === "AbortError")) {
         const msg = friendlyError(finalErr);
         setRenderProgressError(msg); setStep("render", "error", msg);
@@ -2266,7 +2343,24 @@ export default function VideoEditorPage() {
       if (abortRef.current) throw new Error("__SUPERSEDED__");
       if (document.visibilityState === "hidden") {
         await new Promise<void>(resolve => {
-          const h = () => { if (abortRef.current || document.visibilityState === "visible") { document.removeEventListener("visibilitychange", h); resolve(); } };
+          let poll: ReturnType<typeof setInterval> | undefined;
+          const h = () => {
+            if (abortRef.current || document.visibilityState === "visible") {
+              document.removeEventListener("visibilitychange", h);
+              clearInterval(poll);
+              resolve();
+            }
+          };
+          // Also resolve if the run is aborted/unmounted while the tab stays hidden —
+          // otherwise no visibilitychange ever fires and this listener + the suspended
+          // async frame would linger until the user next toggles tab visibility.
+          poll = setInterval(() => {
+            if (abortRef.current) {
+              document.removeEventListener("visibilitychange", h);
+              clearInterval(poll);
+              resolve();
+            }
+          }, 1000);
           document.addEventListener("visibilitychange", h);
         });
       }
@@ -2515,6 +2609,8 @@ export default function VideoEditorPage() {
       const res = await fetch("/api/user/api-keys/status", { cache: "no-store" });
       if (!res.ok) return true; // fail-open — let the existing reactive modal handle it
       const st = await res.json();
+      setManaged(!!st.managed);
+      if (st.minuteQuota) setMinuteQuota(true);
       if (!st.tier1Complete) { setKeyWizardOpen(true); return false; }
     } catch { return true; }
     return true;
@@ -2536,15 +2632,11 @@ export default function VideoEditorPage() {
     }
 
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
+    // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
         const keysData = await keysRes.json();
-        // Gemini ต้องการสำหรับ extract-keywords, transcribe, config
-        if (!keysData.geminiKey) {
-          setMissingKey({ type: "gemini", retryStep: "runAll" });
-          return;
-        }
         // ElevenLabs TTS ต้องการ key (ข้ามถ้าใช้ Direct URL mode)
         const needsTts = !(avatarInputMode === "direct" && !!avatarDirectUrl.trim());
         if (needsTts && ttsProvider === "elevenlabs" && !keysData.elevenlabsKey) {
@@ -2677,7 +2769,15 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
+      if (!handleMissingKey(err, "runAll")) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -2760,7 +2860,15 @@ export default function VideoEditorPage() {
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
-      if (!handleMissingKey(err, "runAll")) showErrorToast(err);
+      if (!handleMissingKey(err, "runAll")) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -2779,7 +2887,15 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (!handlePlanError(err)) showErrorToast(err);
+      if (!handlePlanError(err)) {
+        showErrorToast(err);
+        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+        // Skip when poll timed out (server job may still be running and may have charged minutes).
+        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+        }
+      }
     } finally {
       runningRef.current = false; setRunning(false);
     }
@@ -2797,7 +2913,10 @@ export default function VideoEditorPage() {
     const hasSubtitlesToBurn = hasBurnableCaptions(captionsRef.current);
     setStep("burnSubtitles", "running", hasSubtitlesToBurn ? "Burning subtitles..." : "Exporting without subtitles...");
     setRenderProgressError(null);
+    if (CREDITS_LIVE_CLIENT) setOutOfMinutes(false); // clear any prior wall CTA
     renderProgressRef.current = 0;
+    // Credits spent on THIS burn-render (from the completion status); fed to the receipt on success.
+    let creditsSpentThisBurn: number | null = null;
     const burnActivityStartedAt = Date.now();
     setRenderActivity({
       phase: "burning",
@@ -2834,6 +2953,7 @@ export default function VideoEditorPage() {
         setStep("burnSubtitles", "done", url);
         setRenderProgress(100);
         setRenderActivity({ phase: "idle", label: "", queuePosition: null, startedAt: null });
+        setQuotaRefresh(n => n + 1);
         saveToGallery({
           videoUrl: url,
           videoUrlNoSub: pipe.current.renderedVideoNoSubUrl,
@@ -2845,6 +2965,7 @@ export default function VideoEditorPage() {
             ? "Burn Subtitles เสร็จแล้ว! วิดีโอมีซับพร้อม Download"
             : "Export วิดีโอไม่มีซับเสร็จแล้ว พร้อม Download");
         }
+        if (CREDITS_LIVE_CLIENT) void fireCreditReceipt(creditsSpentThisBurn);
       };
 
       if (!hasSubtitlesToBurn) {
@@ -2903,12 +3024,13 @@ export default function VideoEditorPage() {
         body: JSON.stringify({ subtitleOverlayConfig, jobScopeId: `video-editor-${draftId}` }),
         signal: abortControllerRef.current?.signal,
       });
-      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown };
+      const data = await res.json() as { jobId?: string; videoUrl?: string; error?: unknown; creditsSpent?: number | null };
       // โยน ApiCallError เพื่อให้ catch ด้านล่างส่ง 403 quota_exceeded ไปเปิด Upgrade modal
       // (มีปุ่มไปหน้า /pricing) แทน toast ข้อความ error ทั่วไป
       assertOk("Burn", res, data as Record<string, unknown>);
 
       if (data.videoUrl) {
+        if (CREDITS_LIVE_CLIENT && data.creditsSpent != null) creditsSpentThisBurn = data.creditsSpent;
         finalizeBurn(data.videoUrl);
         return;
       }
@@ -2929,8 +3051,11 @@ export default function VideoEditorPage() {
           if (tick > 0 && tick % 5 === 0) {
             const sr = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
             if (sr.ok) {
-              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string };
-              if (sd.status === "done" && sd.videoUrl) return { status: "done", value: sd.videoUrl };
+              const sd = await sr.json() as { status?: string; videoUrl?: string; error?: string; creditsSpent?: number | null };
+              if (sd.status === "done" && sd.videoUrl) {
+                if (CREDITS_LIVE_CLIENT && sd.creditsSpent != null) creditsSpentThisBurn = sd.creditsSpent;
+                return { status: "done", value: sd.videoUrl };
+              }
               if (sd.status === "error") return { status: "failed", error: sd.error ?? "Burn subtitles failed" };
             }
           }
@@ -2940,7 +3065,10 @@ export default function VideoEditorPage() {
           const r = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store", signal: pollAbort.signal });
           if (!r.ok) throw new Error(`render-progress HTTP ${r.status}`);
           const d = await r.json() as RenderProgressPayload;
-          if (d.videoUrl) return { status: "done", value: d.videoUrl };
+          if (d.videoUrl) {
+            if (CREDITS_LIVE_CLIENT && d.creditsSpent != null) creditsSpentThisBurn = d.creditsSpent;
+            return { status: "done", value: d.videoUrl };
+          }
           if (d.error) return { status: "failed", error: d.error };
           const p = Number(d.progress);
           if (d.queued || d.stage === "queued") {
@@ -2984,6 +3112,14 @@ export default function VideoEditorPage() {
       // โควต้าคลิปหมด (403 quota_exceeded) → เปิด Upgrade modal พร้อมลิงก์หน้า Pricing แทน toast
       if (handlePlanError(err)) throw err;
       if (toastOnError) toast.error(msg);
+      // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+      // Exclude PollStaleError/PollTransientLimitError: the server burn may have completed and
+      // charged minutes even though the client timed out polling — showing "ไม่ถูกหักนาที" would
+      // be false reassurance. The error message already tells the user to check Gallery.
+      const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError;
+      if (toastOnError && !isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+        toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
+      }
       throw err;
     } finally {
       pollAbort.abort();
@@ -3847,7 +3983,7 @@ export default function VideoEditorPage() {
           {/* Pipeline status — ย่อได้ เพื่อคืนพื้นที่ให้ลิสต์ซับ */}
           <div className={cn("border-t border-[#1e1e28] p-3 flex-shrink-0", processOpen && "overflow-y-auto max-h-[55%]")}>
             {/* Clip quota — fail-soft: renders nothing while loading or on error */}
-            {processOpen && <QuotaStatus variant="chip" className="mb-2 w-full justify-center" />}
+            {processOpen && <QuotaStatus variant="chip" className="mb-2 w-full justify-center" refreshKey={quotaRefresh} />}
             <button onClick={() => setProcessOpen(v => !v)} className="w-full flex items-center gap-2 text-left group/proc">
               <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider group-hover/proc:text-slate-400 transition-colors">Process</span>
               {!processOpen && running && (
@@ -3986,6 +4122,16 @@ export default function VideoEditorPage() {
               })()}
             </div>
             {renderProgressError && <div className="mt-2 text-[11px] text-red-400 bg-red-500/10 rounded-lg px-2 py-1.5 leading-snug">{renderProgressError}</div>}
+            {/* Out-of-minutes-AND-credits wall → buy-credits CTA (NEXT_PUBLIC_CREDITS_LIVE). */}
+            {CREDITS_LIVE_CLIENT && outOfMinutes && (
+              <button
+                type="button"
+                onClick={() => buyCredits()}
+                className="mt-2 w-full rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-violet-500"
+              >
+                ซื้อเครดิต
+              </button>
+            )}
             {renderActivity.phase !== "idle" && (
               <div className="mt-2 rounded-lg border border-[#2a2a36] bg-[#12121a] px-2.5 py-2">
                 <div className="flex items-center gap-2">
@@ -4277,7 +4423,7 @@ export default function VideoEditorPage() {
               avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
               avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
               avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName}
-              onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+              onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
               avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
               avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
               setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -4331,7 +4477,7 @@ export default function VideoEditorPage() {
                 useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
                 avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
                 avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+                avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
                 avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
                 avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
                 setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -4396,7 +4542,7 @@ export default function VideoEditorPage() {
             useAvatar={useAvatar} avatarId={avatarId} avatarTiming={avatarTiming}
             avatarBookendSecs={avatarBookendSecs} avatarTailSecs={avatarTailSecs}
             avatarScale={avatarScale} avatarOffsetX={avatarOffsetX} avatarOffsetY={avatarOffsetY}
-            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId)} avatarStatus={avatarStatus}
+            avatarPreviewUrl={avatarPreviewUrl} avatarName={avatarName} onReloadAvatar={() => loadAvatarInfo(avatarId, true)} avatarStatus={avatarStatus}
             avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
             avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
             setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
@@ -4736,6 +4882,7 @@ export default function VideoEditorPage() {
           open={true}
           onClose={() => setKeyWizardOpen(false)}
           onComplete={() => setKeyWizardOpen(false)}
+          managed={managed}
         />
       )}
 
@@ -4745,6 +4892,7 @@ export default function VideoEditorPage() {
         title={upgradeModal.title}
         benefits={upgradeModal.benefits}
         hideCta={upgradeModal.hideCta}
+        minuteQuota={minuteQuota}
         onClose={() => setUpgradeModal({ open: false })}
       />
 

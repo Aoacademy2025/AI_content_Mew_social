@@ -96,5 +96,15 @@ export async function register() {
     } catch (e) {
       console.error("[instrumentation] Failed to load Stripe config from DB:", e);
     }
+
+    // Managed Gemini: hydrate the platform key set via /admin into the env the SYNC
+    // resolver reads (GEMINI_SERVER_KEY) — so the key is UI-managed (no SSH / no
+    // secret in chat) and the same key also powers the loanword cron.
+    try {
+      const { hydrateServerGeminiKeyEnv } = await import("@/lib/server-keys");
+      if (await hydrateServerGeminiKeyEnv()) console.log("[instrumentation] Loaded server Gemini key from DB");
+    } catch (e) {
+      console.error("[instrumentation] Failed to load server Gemini key from DB:", e);
+    }
   }
 }

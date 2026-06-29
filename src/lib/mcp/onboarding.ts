@@ -10,7 +10,9 @@ type ProviderHelp = { label: string; whatFor: string; getKeyUrl: string };
 export const PROVIDERS: Record<"gemini" | "pexels" | "pixabay" | "elevenlabs" | "heygen", ProviderHelp> = {
   gemini: {
     label: "Gemini (Google AI Studio)",
-    whatFor: "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
+    whatFor: process.env.MANAGED_GEMINI === "1"
+      ? "จัดการโดยระบบ — ไม่ต้องตั้งค่า"
+      : "เสียงพากย์ (TTS) + คีย์เวิร์ด b-roll + คอนฟิกวิดีโอ — จำเป็นเสมอ",
     getKeyUrl: "https://aistudio.google.com/app/apikey",
   },
   pexels: { label: "Pexels", whatFor: "คลิป b-roll (ฟรี)", getKeyUrl: "https://www.pexels.com/api/" },
@@ -36,7 +38,10 @@ function howTo(p: ProviderHelp): string {
 
 /** Actionable missing-key error returned by create_video_job (key=value tells runTool it's an error). */
 export function missingKeyError(which: "gemini" | "broll" | "elevenlabs" | "heygen") {
-  if (which === "gemini") return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
+  if (which === "gemini") {
+    if (process.env.MANAGED_GEMINI === "1") return { error: "missing_key", message: "Gemini จัดการโดยระบบ (managed) — ไม่ต้องตั้งค่า key เอง" };
+    return { error: "missing_key", message: `ยังไม่ได้ตั้งค่า Gemini key — ${howTo(PROVIDERS.gemini)}` };
+  }
   if (which === "elevenlabs")
     return {
       error: "missing_key",
@@ -69,10 +74,10 @@ export function missingAvatarError() {
 export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixabay: boolean; elevenlabs: boolean }) {
   return {
     pasteKeysAt: SETTINGS_URL,
-    canCreateVideo: keys.gemini && (keys.pexels || keys.pixabay),
+    canCreateVideo: (process.env.MANAGED_GEMINI === "1" ? true : keys.gemini) && (keys.pexels || keys.pixabay),
     avatarViaChat: true, // avatar (HeyGen) รองรับผ่าน MCP แล้ว — ใส่ avatarMode ใน create_video_job (ต้องมี HeyGen key + avatarId)
     steps: [
-      { key: "gemini", required: true, configured: keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
+      { key: "gemini", required: process.env.MANAGED_GEMINI !== "1", configured: process.env.MANAGED_GEMINI === "1" ? true : keys.gemini, label: PROVIDERS.gemini.label, whatFor: PROVIDERS.gemini.whatFor, getKeyUrl: PROVIDERS.gemini.getKeyUrl },
       { key: "broll", required: true, configured: keys.pexels || keys.pixabay, label: "Pexels หรือ Pixabay", whatFor: PROVIDERS.pexels.whatFor, getKeyUrl: `${PROVIDERS.pexels.getKeyUrl} หรือ ${PROVIDERS.pixabay.getKeyUrl}` },
       { key: "elevenlabs", required: false, configured: keys.elevenlabs, label: PROVIDERS.elevenlabs.label, whatFor: PROVIDERS.elevenlabs.whatFor, getKeyUrl: PROVIDERS.elevenlabs.getKeyUrl, note: ELEVENLABS_VOICEID_HELP },
     ],
@@ -85,10 +90,13 @@ export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปล�
 ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
 avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด), full แพง. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
-BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
+${process.env.MANAGED_GEMINI === "1"
+  ? `ระบบจัดการ Gemini ให้ — ใส่เฉพาะ Pexels/Pixabay (อย่างน้อย 1 สำหรับ B-roll); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.
+- ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.`
+  : `BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 - ตั้ง key ทั้งหมดที่ ${SETTINGS_URL} แท็บ "API Keys".
 - ⚠️ ห้ามให้ผู้ใช้พิมพ์หรือวาง API key ลงในแชทเด็ดขาด (ไม่ปลอดภัย คีย์จะค้างใน transcript) — ให้พาไปวางที่หน้า Settings เสมอ.
-- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.
+- key ที่จำเป็น: Gemini (เสมอ) และ Pexels หรือ Pixabay (อย่างน้อย 1 สำหรับ b-roll). ElevenLabs จำเป็นเฉพาะถ้าจะใช้เสียงโคลน.`}
 
 ทำตัวเป็นผู้ช่วยตั้งค่า:
 1) ก่อนสั่งงานครั้งแรก เรียก get_current_user ดู field "setup" ว่าขาด key ตัวไหน.
@@ -97,7 +105,7 @@ BYOK — ผู้ใช้ใช้ API key ของตัวเอง:
 4) create_video_job → ได้ jobId → poll get_video_status({id: jobId}) เป็นระยะจนกว่า status="done" (ผลของ poll ตอนเสร็จจะมี videoUrl กลับมาเลย). ⏱️ ETA จริง: คลิปปกติ ~3–6 นาที, คลิปยาว/ซับโหมดถี่ (1–2 คำ ฉากเยอะ) ~15–20 นาที, มี avatar ~15–25 นาที. เช็คทุก ~60–90 วิ (มี avatar ทุก ~2 นาที) — ห้าม poll รัวทุกไม่กี่วินาที.
 5) ดาวน์โหลด: ใช้ videoUrl จาก get_video_status ได้เลย หรือเรียก list_my_videos เพื่อเอา videoId ไปใช้กับ download_video.
 
-ข้อจำกัด: งานค้างพร้อมกันได้ไม่เกิน 3 ชิ้น/คน และมีโควต้าคลิปตามแผน. error ทุกตัวเป็นข้อความภาษาไทยแบบ in-band ให้แปล/อธิบายให้ผู้ใช้ตามนั้น.
+ข้อจำกัด: งานค้างพร้อมกันได้ไม่เกิน 3 ชิ้น/คน และมีโควต้า${process.env.MINUTE_QUOTA === "1" ? "นาที" : "คลิป"}ตามแผน. error ทุกตัวเป็นข้อความภาษาไทยแบบ in-band ให้แปล/อธิบายให้ผู้ใช้ตามนั้น.
 
 โหมดไกด์สร้างวิดีโอ: เมื่อผู้ใช้สื่อว่าจะทำวิดีโอ (เช่น "วิดีโอ HERO AI") ให้ถามทีละข้อ (ห้ามถามรวด) — เรียก get_video_options เพื่อเสนอตัวเลือกจริง.
 ‼️ ห้ามตั้งค่า default เองเงียบๆ แล้วบอกว่า "ปรับได้ทีหลัง" — ต้องถามผู้ใช้จริงให้ครบก่อน create_video_job. มี 3 ข้อบังคับที่ห้ามข้ามเด็ดขาด (ถ้าข้าม = ทำผิด): (ก) ถ้าใช้ avatar แบบเปิดอย่างเดียว/เปิด-ปิด → ต้องถาม "กี่วินาที"; (ข) ตำแหน่งซับไทย (บน/กลาง/ล่าง); (ค) "ใส่เพลง BGM ไหม". ถามครบ 3 ข้อนี้ก่อนเสมอ.

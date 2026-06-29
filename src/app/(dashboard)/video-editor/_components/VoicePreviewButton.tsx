@@ -12,6 +12,7 @@ type PreviewResponse = {
   voiceUrl?: string;
   error?: string;
   missingKey?: string;
+  code?: string;
 };
 
 export function VoicePreviewButton({
@@ -90,7 +91,7 @@ export function VoicePreviewButton({
         return;
       }
       if (!res.ok || !data.voiceUrl) {
-        if (data.missingKey === "gemini") toast.error("เพิ่ม Gemini API key ใน Settings ก่อน");
+        if (data.missingKey === "gemini" || data.code === "KEY_REQUIRED") toast.error("เพิ่ม Gemini API key ใน Settings ก่อน");
         else if (data.missingKey === "elevenlabs") toast.error("เพิ่ม ElevenLabs API key ใน Settings ก่อน");
         else toast.error(data.error ?? "สร้างเสียงตัวอย่างไม่สำเร็จ");
         return;

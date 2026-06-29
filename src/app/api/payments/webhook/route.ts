@@ -6,14 +6,22 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import { grantCreditsOnce, ensureMonthlyGrant } from "@/lib/credits";
+import { grantOnPaidActivation } from "@/lib/entitlements";
 
 export const config = { api: { bodyParser: false } };
 
-/** Set/extend a user's plan access. planExpiresAt extends from the later of now or current expiry. */
+/** Set/extend a user's plan access. planExpiresAt extends from the later of now or current expiry,
+ *  EXCEPT when the current expiry is just an unconverted trial end — then we measure from now so a
+ *  mid-trial buyer doesn't get the leftover trial days gifted on top of the purchased term. */
 async function activatePlan(userId: string, plan: string, periodDays: number) {
   const now = new Date();
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { planExpiresAt: true } });
-  const base = user?.planExpiresAt && user.planExpiresAt > now ? user.planExpiresAt : now;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { planExpiresAt: true, trialEndsAt: true, subStatus: true },
+  });
+  const onUnconvertedTrial = !!user?.trialEndsAt && user.trialEndsAt > now && user.subStatus !== "active";
+  const base = (!onUnconvertedTrial && user?.planExpiresAt && user.planExpiresAt > now) ? user.planExpiresAt : now;
   const newExpiry = new Date(base.getTime() + periodDays * 24 * 60 * 60 * 1000);
   await prisma.user.update({
     where: { id: userId },
@@ -26,6 +34,81 @@ async function activatePlan(userId: string, plan: string, periodDays: number) {
 // Stripe moved invoice.subscription under parent.subscription_details in recent API versions — handle both.
 function invoiceSubId(inv: any): string | null {
   return inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
+}
+
+/** Process a finished Checkout session — credit pack OR plan. Shared by `checkout.session.completed`
+ *  AND `checkout.session.async_payment_succeeded`: PromptPay / bank (delayed) methods fire `completed`
+ *  while still unpaid and confirm later via the async event, so activation is gated on
+ *  `payment_status === "paid"` and is idempotent (Payment-PAID belt + unique guards). */
+async function handleCheckoutSession(s: any) {
+  // ── Credit-pack purchase ──────────────────────────────────────────────
+  if (s.metadata?.type === "credits" && s.metadata.userId) {
+    if (process.env.CREDITS_LIVE !== "1") { console.log("[webhook] CREDITS_LIVE off — skipping credit grant for", s.id); return; }
+    if (s.payment_status !== "paid") { console.warn("[webhook] credit session not yet paid, status:", s.payment_status, s.id); return; }
+    const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true } });
+    if (!creditUser) { console.error("[webhook] credit grant: user not found", s.metadata.userId, s.id); return; }
+    const credits = parseInt(s.metadata.credits ?? "0", 10);
+    if (!credits || credits <= 0) { console.error("[webhook] bad credit metadata", s.id); return; }
+    await grantCreditsOnce(s.metadata.userId, credits, "purchase", "pack:" + s.id)
+      .catch((e) => console.error("[webhook] credit grant:", e));
+    return;
+  }
+
+  // ── Plan purchase ─────────────────────────────────────────────────────
+  const { userId, plan, period, periodDays } = s.metadata ?? {};
+  if (!(userId && plan)) return;
+  // Activate ONLY when truly paid — a PromptPay/bank one-time session fires `completed` while
+  // unpaid/processing; the real confirmation arrives as async_payment_succeeded (payment_status=paid).
+  if (s.payment_status !== "paid") {
+    console.warn("[webhook] plan session not yet paid, status:", s.payment_status, s.id);
+    return;
+  }
+  // Idempotency belt: if this session's Payment is already PAID we activated it before
+  // (duplicate delivery / completed+async overlap) — do nothing.
+  const existing = await prisma.payment.findUnique({ where: { stripeSessionId: s.id }, select: { status: true } });
+  if (existing?.status === "PAID") { console.log("[webhook] session already activated, skip", s.id); return; }
+
+  const newExpiry = await activatePlan(userId, plan, parseInt(periodDays ?? "30", 10));
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      billingPeriod: period ?? null,
+      ...(s.mode === "subscription" && s.subscription
+        ? { stripeSubscriptionId: s.subscription, subStatus: "active" }
+        : {}),
+    },
+  });
+  await prisma.payment.update({
+    where: { stripeSessionId: s.id },
+    data: { status: "PAID", stripePaymentIntent: s.payment_intent ?? undefined, paidAt: new Date() },
+  }).catch(() => {});
+  await createNotification({
+    userId, type: "VIDEO_COMPLETED",
+    title: `ชำระเงินสำเร็จ — ${plan} Plan`,
+    body: `แพ็กเกจ ${plan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
+  }).catch(() => {});
+  const couponId = s.metadata?.couponId;
+  if (couponId) {
+    if (s.metadata?.founding === "1") {
+      // Founding seat was already counted at reservation — just confirm it (no re-increment)
+      await confirmSeat(s.id).catch(() => {});
+      await prisma.couponRedemption.create({ data: { couponId, userId } }).catch(() => {});
+      console.log(`[stripe-webhook] founding seat confirmed: ${userId} (coupon ${couponId})`);
+    } else {
+      try {
+        await prisma.couponRedemption.create({ data: { couponId, userId } });
+        await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
+        console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
+      } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
+    }
+  }
+  // Initial paid grant — FORCE a fresh grant ignoring the 30-day window (NOT
+  // ensureMonthlyGrant): a trial-expiry downgrade stamps grantedResetAt=now with FREE
+  // allowance 0, so a within-30-days trial→paid subscriber would be skipped by the window
+  // check and get 0 credits (bug H4). grantOnPaidActivation is CREDITS_LIVE-gated internally
+  // (flag-off = no-op → byte-identical). Fire-and-forget.
+  grantOnPaidActivation(userId, plan).catch(() => {});
+  console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
 }
 
 export async function POST(req: Request) {
@@ -42,47 +125,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  // ── Checkout completed (one-time OR first subscription payment) ──────────
-  if (event.type === "checkout.session.completed") {
+  // ── Idempotency: Stripe delivers events at least once. Claim this event.id atomically
+  //    (unique PK); if the insert fails it's a duplicate/already-processed → skip. ──────
+  try {
+    await prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
+  } catch {
+    console.log("[stripe-webhook] duplicate event, skip", event.id);
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
+
+  // ── Checkout finished (sync) OR delayed payment confirmed (PromptPay/bank async) ─────
+  if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+    await handleCheckoutSession(event.data.object as any);
+  }
+
+  // ── Delayed payment failed → mark the pending payment failed + free any founding seat ─
+  if (event.type === "checkout.session.async_payment_failed") {
     const s = event.data.object as any;
-    const { userId, plan, period, periodDays } = s.metadata ?? {};
-    if (userId && plan) {
-      const newExpiry = await activatePlan(userId, plan, parseInt(periodDays ?? "30", 10));
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          billingPeriod: period ?? null,
-          ...(s.mode === "subscription" && s.subscription
-            ? { stripeSubscriptionId: s.subscription, subStatus: "active" }
-            : {}),
-        },
-      });
-      await prisma.payment.update({
-        where: { stripeSessionId: s.id },
-        data: { status: "PAID", stripePaymentIntent: s.payment_intent ?? undefined, paidAt: new Date() },
-      }).catch(() => {});
-      await createNotification({
-        userId, type: "VIDEO_COMPLETED",
-        title: `ชำระเงินสำเร็จ — ${plan} Plan`,
-        body: `แพ็กเกจ ${plan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
-      }).catch(() => {});
-      const couponId = s.metadata?.couponId;
-      if (couponId) {
-        if (s.metadata?.founding === "1") {
-          // Founding seat was already counted at reservation — just confirm it (no re-increment)
-          await confirmSeat(s.id).catch(() => {});
-          await prisma.couponRedemption.create({ data: { couponId, userId } }).catch(() => {});
-          console.log(`[stripe-webhook] founding seat confirmed: ${userId} (coupon ${couponId})`);
-        } else {
-          try {
-            await prisma.couponRedemption.create({ data: { couponId, userId } });
-            await prisma.coupon.update({ where: { id: couponId }, data: { usedCount: { increment: 1 } } });
-            console.log(`[stripe-webhook] coupon ${couponId} redeemed by ${userId}`);
-          } catch { /* already recorded (unique guard) — webhook retry, ignore */ }
-        }
-      }
-      console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
-    }
+    await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
+    await releaseSeat(s.id).catch(() => {});
   }
 
   // ── Subscription renewal (skip the very first invoice — handled above) ───
@@ -98,6 +159,10 @@ export async function POST(req: Request) {
         const days = user.billingPeriod === "annual" ? 365 : 30;
         await activatePlan(user.id, user.plan, days);
         await prisma.user.update({ where: { id: user.id }, data: { subStatus: "active" } });
+        // Refresh monthly credit grant on renewal (CREDITS_LIVE-gated, fire-and-forget)
+        if (process.env.CREDITS_LIVE === "1") {
+          ensureMonthlyGrant(user.id).catch(() => {});
+        }
         console.log(`[stripe-webhook] renewed subscription for ${user.id} (+${days}d)`);
       }
     }
@@ -108,7 +173,12 @@ export async function POST(req: Request) {
     const sub = event.data.object as any;
     const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: sub.id }, select: { id: true } });
     if (user) {
-      await prisma.user.update({ where: { id: user.id }, data: { subStatus: "canceled", stripeSubscriptionId: null } });
+      // Also clear the scheduled-cancel flags — otherwise ReactivateBanner shows forever with a
+      // past date and its "ใช้ PRO ต่อ" button 400s (no stripeSubscriptionId left to reactivate).
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { subStatus: "canceled", stripeSubscriptionId: null, cancelAtPeriodEnd: false, cancelAt: null },
+      });
     }
   }
 

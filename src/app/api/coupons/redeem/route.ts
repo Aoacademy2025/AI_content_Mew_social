@@ -37,24 +37,41 @@ export async function POST(req: Request) {
       ? new Date(now.getTime() + coupon.durationDays * 24 * 60 * 60 * 1000)
       : null;
 
-    await prisma.$transaction([
-      prisma.couponRedemption.create({
-        data: { couponId: coupon.id, userId: authUser.id },
-      }),
-      prisma.coupon.update({
-        where: { id: coupon.id },
+    // Atomic cap claim FIRST (race-safe — mirrors founding claimSeat). The check above is a
+    // fast-path; this conditional updateMany is the real guard so two concurrent redeemers at
+    // usedCount === maxUses-1 can't both pass and push usedCount past maxUses.
+    if (coupon.maxUses > 0) {
+      const claim = await prisma.coupon.updateMany({
+        where: { id: coupon.id, usedCount: { lt: coupon.maxUses } },
         data: { usedCount: { increment: 1 } },
-      }),
-      prisma.user.update({
-        where: { id: authUser.id },
-        data: {
-          plan: coupon.plan,
-          planExpiresAt,
-          trialEndsAt: null, // redeeming supersedes any running trial
-          ...usageWindowForPlan(coupon.plan, now),
-        },
-      }),
-    ]);
+      });
+      if (claim.count !== 1)
+        return NextResponse.json({ error: "คูปองถูกใช้ครบจำนวนแล้ว" }, { status: 400 });
+    } else {
+      await prisma.coupon.update({ where: { id: coupon.id }, data: { usedCount: { increment: 1 } } });
+    }
+
+    // Record the redemption (unique-guarded on [couponId,userId]) + grant the plan. If a
+    // concurrent same-user request already inserted the redemption, roll back the seat we claimed.
+    try {
+      await prisma.$transaction([
+        prisma.couponRedemption.create({
+          data: { couponId: coupon.id, userId: authUser.id },
+        }),
+        prisma.user.update({
+          where: { id: authUser.id },
+          data: {
+            plan: coupon.plan,
+            planExpiresAt,
+            trialEndsAt: null, // redeeming supersedes any running trial
+            ...usageWindowForPlan(coupon.plan, now),
+          },
+        }),
+      ]);
+    } catch {
+      await prisma.coupon.update({ where: { id: coupon.id }, data: { usedCount: { decrement: 1 } } }).catch(() => {});
+      return NextResponse.json({ error: "คุณเคยใช้คูปองนี้แล้ว" }, { status: 400 });
+    }
 
     // Extend retention of existing (non-expired) videos to match new plan
     const extended = await extendVideoExpiryForPlan(authUser.id, coupon.plan);

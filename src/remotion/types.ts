@@ -28,6 +28,8 @@ export interface VideoCompositionProps {
   /** Hide scene title label (used when rendering BG video for HeyGen) */
   hideTitle?: boolean;
   fps?: number;
+  /** Show HERO watermark overlay (FREE-tier renders only) */
+  watermark?: boolean;
 }
 
 // ── Short Video types ──────────────────────────────────────────────────────
@@ -133,6 +135,8 @@ export interface ShortVideoConfig {
   /** Subtle Ken Burns motion (slow zoom) on b-roll so it isn't a static slideshow.
    *  Set by generate-config from env STOCK_KEN_BURNS; default off. */
   kenBurns?: boolean;
+  /** Show HERO watermark overlay (FREE-tier renders only) */
+  watermark?: boolean;
 }
 
 /** Parse "0-15" or "15-30" → { startSec, durationSec } */

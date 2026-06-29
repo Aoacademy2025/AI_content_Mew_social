@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
-import { limitsForPlan } from "@/lib/plan-limits";
+import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { resetMonthlyGranted } from "@/lib/credits";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,11 +48,36 @@ function hasActiveSubscription(user: Pick<EntitlementUser, "subStatus">): boolea
 
 function usageWindowForPlanValue(plan: string, from: Date) {
   const clips = limitsForPlan(plan).clips;
+  // Reset clip AND minute windows together (see usageWindowForPlan) — a downgrade that
+  // reset only clips left minutesUsed stranded above the new (lower) limit.
   return {
     usageCount: 0,
     usageLimit: Number.isFinite(clips) ? Number(clips) : 100,
     usagePeriodStartedAt: from,
+    minutesUsed: 0,
+    minutesLimit: minutesPerMonthForPlan(plan),
   };
+}
+
+/**
+ * Force a fresh monthly credit grant on PAID plan activation, IGNORING the 30-day grant
+ * window. The symmetric counterpart to the downgrade-reset inside syncUserEntitlement.
+ *
+ * Why force (NOT ensureMonthlyGrant): a trial-expiry downgrade calls
+ * `resetMonthlyGranted(userId, "FREE")`, which stamps `grantedResetAt = now` even though
+ * the FREE allowance is 0. If the user then SUBSCRIBES within 30 days, ensureMonthlyGrant
+ * sees `withinWindow === true` and SKIPS the grant → the paying subscriber gets 0 credits
+ * for ~the first month (bug H4). resetMonthlyGranted hard-sets `granted` to the new plan's
+ * allowance and re-stamps the window from now, so the credits land immediately.
+ *
+ * Flag-gated on CREDITS_LIVE (no-op when off → byte-identical). No-op for non-paid plans
+ * (FREE/unknown — nothing to grant; avoids a spurious monthly-reset:FREE ledger row).
+ * `purchased` (paid) credits are never touched (resetMonthlyGranted only sets `granted`).
+ */
+export async function grantOnPaidActivation(userId: string, plan: string): Promise<void> {
+  if (process.env.CREDITS_LIVE !== "1") return;
+  if (!isPaidPlan(plan)) return; // FREE / unknown — no monthly allowance to grant
+  await resetMonthlyGranted(userId, plan);
 }
 
 export function classifyEntitlement(user: EntitlementUser, now: Date = new Date()): EntitlementDecision {
@@ -160,11 +186,22 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   });
 
   if (res.count === 1) {
+    // Plan actually transitioned to FREE on THIS call (updateMany matched the
+    // PAID→expired guard exactly once). Reset the monthly `granted` bucket to the
+    // new plan's allowance (FREE→0) so leftover PRO/BUSINESS credits don't persist
+    // through a downgrade. CREDITS_LIVE-gated inside resetMonthlyGranted's callers,
+    // so we gate the call here too — flag-off makes this a no-op (byte-identical path).
+    // Lives inside `res.count === 1` so it fires ONCE per transition, never on a
+    // steady-state sync (which returns early at `action !== "DOWNGRADE"` above).
+    if (process.env.CREDITS_LIVE === "1") {
+      await resetMonthlyGranted(userId, "FREE").catch(() => {});
+    }
+    const minuteImpact = process.env.MINUTE_QUOTA === "1" ? " (เหลือ 5 นาที/เดือน)" : "";
     await createNotification({
       userId,
       type: "LIMIT_REACHED",
       title: decision.reason === "trial_expired" ? "ทดลอง PRO หมดอายุแล้ว" : "แพ็กเกจหมดอายุแล้ว",
-      body: "บัญชีของคุณกลับเป็น Free แล้ว อัปเกรดเพื่อใช้ฟีเจอร์ PRO ต่อ",
+      body: `บัญชีของคุณกลับเป็น Free แล้ว${minuteImpact} อัปเกรดเพื่อใช้ฟีเจอร์ PRO ต่อ`,
     }).catch(() => {});
   }
 

@@ -4,13 +4,10 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
-
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 async function getFfmpegPath(): Promise<string> {
   try {
@@ -187,10 +184,12 @@ export async function POST(req: Request) {
       thumbnailConfig: string | null;
     } | null = null;
     if (videoId) {
-      // Use raw query to access thumbnailConfig without needing prisma generate
+      // Use raw query to access thumbnailConfig without needing prisma generate.
+      // Scope by userId so a caller can only read their OWN video (prevents IDOR).
       const rows = (await prisma.$queryRawUnsafe(
-        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ?`,
+        `SELECT videoUrl, avatarVideoUrl, script, renderConfig, thumbnailConfig FROM Video WHERE id = ? AND userId = ?`,
         videoId,
+        authUser.id,
       )) as Array<{
         videoUrl: string | null;
         avatarVideoUrl: string | null;
@@ -199,6 +198,8 @@ export async function POST(req: Request) {
         thumbnailConfig: string | null;
       }>;
       video = rows[0] ?? null;
+      if (!video)
+        return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
 
     const videoSrc = bodyVideoUrl || video?.videoUrl || video?.avatarVideoUrl;
@@ -216,14 +217,23 @@ export async function POST(req: Request) {
 
     // ── MODE: suggest ──
     if (mode === "suggest") {
+      // Require an OWNED video — closes the no-resource loop-burn vector: without
+      // this a caller could POST {mode:"suggest"} with no videoId and spend server
+      // Gemini in a loop (videoId reads are already userId-scoped above = IDOR-safe).
+      if (!video) return NextResponse.json({ error: "videoId required" }, { status: 400 });
       const user = await prisma.user.findUnique({
         where: { id: authUser.id },
-        select: { geminiKey: true },
+        select: { geminiKey: true, plan: true },
       });
-      const geminiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
-
-      if (!geminiKey) {
-        return NextResponse.json({ error: "กรุณาเพิ่ม Gemini API key ใน Settings", missingKey: "gemini" }, { status: 400 });
+      if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+      let geminiKey: string;
+      try {
+        geminiKey = resolveGeminiKey(user).key;
+      } catch (e) {
+        if (e instanceof KeyRequiredError) {
+          return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+        }
+        throw e;
       }
 
       // Extract captions from renderConfig
@@ -309,12 +319,14 @@ export async function POST(req: Request) {
       const thumbConfig = mode === "render" && textLayers
         ? JSON.stringify({ seekTime: atSec, textLayers })
         : null;
-      // Use raw query to write thumbnailConfig without needing prisma generate
+      // Use raw query to write thumbnailConfig without needing prisma generate.
+      // Scope by userId so a caller can only write their OWN video (prevents IDOR).
       await prisma.$executeRawUnsafe(
-        `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ?`,
+        `UPDATE Video SET thumbnail = ?, thumbnailConfig = ?, updatedAt = datetime('now') WHERE id = ? AND userId = ?`,
         thumbnailUrl,
         thumbConfig,
         videoId,
+        authUser.id,
       ).catch(() => {});
     }
 

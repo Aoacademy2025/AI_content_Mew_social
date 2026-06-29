@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import {
   contentProfilePromptBlock,
   detectContentProfile,
@@ -14,10 +17,6 @@ import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
-
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 function preprocessScript(raw: string): string {
   return raw
@@ -248,16 +247,39 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
 
+  // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
+  // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
+  const inputCaps = checkAiInputCaps({ script, scenes });
+  if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
+
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { geminiKey: true },
+    select: { geminiKey: true, plan: true },
   });
+  if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  let apiKey: string;
+  let geminiMode: "managed" | "byok";
+  try {
+    const resolved = resolveGeminiKey(user);
+    apiKey = resolved.key;
+    geminiMode = resolved.mode;
+  } catch (e) {
+    if (e instanceof KeyRequiredError) {
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+    }
+    throw e;
+  }
 
-  const apiKey = user?.geminiKey ? decrypt(user.geminiKey) : null;
-  if (!apiKey) return NextResponse.json({ error: "Gemini key not set", missingKey: "gemini" }, { status: 400 });
+  // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+  // One reserve per request — this route fans out to N batched Gemini calls, but
+  // that per-request fan-out is the separate L4 blast-radius guard (ai-input-caps).
+  const textReserve = await reserveAiTextCall(userId, { enforce: geminiMode === "managed" });
+  if (!textReserve.allowed) {
+    return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
+  }
 
   async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
-    return await geminiGenerateText(apiKey!, prompt, maxTokens);
+    return await geminiGenerateText(apiKey, prompt, maxTokens);
   }
 
   function geminiErrorResponse(error: unknown) {

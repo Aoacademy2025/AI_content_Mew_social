@@ -14,12 +14,17 @@ const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 
 type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
 
+/** Minutes per plan threaded from server to avoid client-side DB access. */
+type MinutesPerPlan = { free: number; pro: number; business: number };
+
 export function PricingToggle({
   plans,
   founding = null,
+  minutesPerPlan,
 }: {
   plans: PlanConfig;
   founding?: FoundingStatus;
+  minutesPerPlan?: MinutesPerPlan;
 }) {
   const [period, setPeriod] = useState<Period>("yearly");
   const yearly = period === "yearly";
@@ -77,7 +82,7 @@ export function PricingToggle({
       )}
 
       <div className="grid gap-4 text-left md:grid-cols-3">
-        <Tier name={plans.free.name} amount="฿0" sub="เริ่มฟรี ไม่ต้องใช้บัตร" features={plans.free.features} cta="เริ่มใช้ฟรี" ghost badge={plans.free.badge ?? undefined} />
+        <Tier name={plans.free.name} amount="฿0" sub="เริ่มฟรี ไม่ต้องใช้บัตร" features={plans.free.features} cta="เริ่มใช้ฟรี" ghost badge={plans.free.badge ?? undefined} minutesPerMonth={minutesPerPlan?.free} />
         <Tier
           name={plans.pro.name}
           amount={proBlock.amount}
@@ -88,6 +93,7 @@ export function PricingToggle({
           cta={`เริ่มใช้ ${plans.pro.name}`}
           best
           badge={proDisplay.isFounding ? "Founding" : (plans.pro.badge ?? "แนะนำ")}
+          minutesPerMonth={minutesPerPlan?.pro}
         />
         <Tier
           name={plans.business.name}
@@ -99,6 +105,7 @@ export function PricingToggle({
           cta={`เลือก ${plans.business.name}`}
           ghost
           badge={bizDisplay.isFounding ? "Founding" : (plans.business.badge ?? undefined)}
+          minutesPerMonth={minutesPerPlan?.business}
         />
       </div>
 
@@ -115,7 +122,7 @@ export function PricingToggle({
 }
 
 function Tier({
-  name, amount, unit, sub, was, features, cta, best, ghost, badge,
+  name, amount, unit, sub, was, features, cta, best, ghost, badge, minutesPerMonth,
 }: {
   name: string;
   amount: string;
@@ -127,6 +134,7 @@ function Tier({
   best?: boolean;
   ghost?: boolean;
   badge?: string;
+  minutesPerMonth?: number;
 }) {
   const content = (
     <>
@@ -137,6 +145,12 @@ function Tier({
         {was && <span className="ml-2 text-[15px] text-[#7a7f9c] line-through">{was}</span>}
       </div>
       <div className="mt-1.5 min-h-[18px] text-center text-[12.5px] text-violet-300/90">{sub}</div>
+      {minutesPerMonth !== undefined && (
+        <div className="mt-2 text-center text-[12px] text-[#a7adcc]">
+          {minutesPerMonth} นาที/เดือน{" "}
+          <span className="text-[#6b7091]">(~{minutesPerMonth} คลิป @ ~1 นาที)</span>
+        </div>
+      )}
       <ul className="my-5 flex-1 space-y-1.5 text-[14.5px]">
         {features.map((f) => (
           <li key={f} className="flex gap-2 text-[#d5d9ee]">

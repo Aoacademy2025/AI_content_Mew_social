@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { getPlanConfig } from "@/lib/plan-config";
 import { getFoundingCoupon } from "@/lib/founding";
+import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { YouTubeLite } from "@/components/marketing/youtube-lite";
 import { ShowcaseClip } from "@/components/marketing/showcase-clip";
@@ -48,6 +49,9 @@ async function getFounding() {
   }
 }
 
+// Server-readable at module load; gates managed-Gemini framing across the sale page.
+const MANAGED = process.env.MANAGED_GEMINI === "1";
+
 // One consolidated capability grid (merged from the old "what" + "features").
 const FEATURES = [
   { icon: Bot, title: "AI Avatar พิธีกร", desc: "พูดทั้งคลิป · เปิด-ปิด · หรือไม่มีเลย (Faceless)" },
@@ -71,13 +75,13 @@ const OBJECTIONS = [
   { icon: Languages, pain: "AI ฝรั่งเสียงไทยแข็ง ซับเพี้ยน", fix: "ทำเพื่อภาษาไทยโดยเฉพาะ — เสียงไทยเป็นธรรมชาติ + ซับตรงเสียง ตัดคำถูก" },
   { icon: Wand2, pain: "กลัวคลิปออกมาดูเป็น AI ไม่เนียน", fix: "B-roll เปลี่ยนทุก 3–5 วิ ตามเนื้อหา + ซับจังหวะไวรัล ดูเหมือนตัดมือ" },
   { icon: FileText, pain: "คิดสคริปต์ได้ แต่ทำคลิปไม่เป็น", fix: "มีแค่สคริปต์ก็พอ ที่เหลือระบบจัดการ ไม่ต้องเป็นมือโปร" },
-  { icon: Wallet, pain: "จ้างตัดต่อแพง โพสต์ไม่ทัน", fix: "ทำเองวันละหลายคลิป เริ่ม ฿499/เดือน ไม่ต้องจ้างทีม" },
+  { icon: Wallet, pain: "จ้างตัดต่อแพง โพสต์ไม่ทัน", fix: "ทำเองวันละหลายคลิป เริ่ม ฿599/เดือน ไม่ต้องจ้างทีม" },
   { icon: MousePointerClick, pain: "ไม่เก่งเทคโนโลยี ใช้ยากไหม", fix: "เริ่มจากวางสคริปต์ กดไม่กี่ขั้น ระบบทำให้หมด ไม่ต้องเรียนรู้อะไรซับซ้อน" },
-  { icon: KeyRound, pain: "ต้องตั้ง API key เองยากไหม", fix: "ใช้คีย์ฟรีของคุณเอง (Gemini + Pexels/Pixabay) ตั้ง 5 นาที มีคู่มือพาทีละขั้น" },
+  { icon: KeyRound, pain: "ต้องตั้ง API key เองยากไหม", fix: MANAGED ? "ไม่ต้องตั้งค่า AI เอง — ระบบจัดการ Gemini ให้ · ใส่แค่ Pexels/Pixabay สำหรับ B-roll (ฟรี)" : "ใช้คีย์ฟรีของคุณเอง (Gemini + Pexels/Pixabay) ตั้ง 5 นาที มีคู่มือพาทีละขั้น" },
 ];
 
 const FAQS = [
-  { q: "ต้องใช้ API key ของตัวเองไหม?", a: "เริ่มด้วย Gemini key (ฟรี) ของคุณก็สร้างคลิปได้เลย — ส่วน AI Avatar / โคลนเสียง ค่อยใส่คีย์ HeyGen / ElevenLabs ของคุณเอง มีคู่มือพาตั้งทีละขั้น" },
+  { q: "ต้องใช้ API key ของตัวเองไหม?", a: MANAGED ? "AI หลักจัดการให้ — ไม่ต้องใส่ Gemini key เอง; Avatar / โคลนเสียง ค่อยใส่คีย์ HeyGen / ElevenLabs เพิ่มได้ มีคู่มือพา" : "เริ่มด้วย Gemini key (ฟรี) ของคุณก็สร้างคลิปได้เลย — ส่วน AI Avatar / โคลนเสียง ค่อยใส่คีย์ HeyGen / ElevenLabs ของคุณเอง มีคู่มือพาตั้งทีละขั้น" },
   { q: "รายปีจ่ายครั้งเดียวจริงไหม ตัดเงินอัตโนมัติหรือเปล่า?", a: "จ่ายครั้งเดียว ใช้ได้ 1 ปี ไม่มีตัดเงินอัตโนมัติ ครบปีค่อยต่อเองถ้าพอใจ" },
   { q: "จ่ายเงินยังไง?", a: "PromptPay หรือบัตรเครดิต/เดบิต" },
 ];
@@ -101,6 +105,9 @@ const SHOWCASE = [
 
 export default async function Home() {
   const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
+  const minutesPerPlan = process.env.MINUTE_QUOTA === "1"
+    ? { free: minutesPerMonthForPlan("FREE"), pro: minutesPerMonthForPlan("PRO"), business: minutesPerMonthForPlan("BUSINESS") }
+    : undefined;
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
@@ -291,7 +298,7 @@ export default async function Home() {
             <p className={EYEBROW} style={HEAD}>ราคา</p>
             <h2 className="mt-3 text-3xl font-bold sm:text-[40px]" style={HEAD}>เลือกแพ็กที่ใช่</h2>
           </Reveal>
-          <PricingToggle plans={plans} founding={founding} />
+          <PricingToggle plans={plans} founding={founding} minutesPerPlan={minutesPerPlan} />
         </div>
       </section>
 
@@ -331,7 +338,7 @@ export default async function Home() {
           <Link href="/register" className="mt-7 inline-flex items-center gap-2 rounded-full px-9 py-4 text-lg font-semibold text-white" style={{ ...HEAD, background: ACCENT, boxShadow: GLOW }}>
             เริ่มใช้ฟรี <ArrowRight className="h-5 w-5" />
           </Link>
-          <p className="mt-4 text-sm text-[#9ca0be]">PRO ฟรี 7 วัน · ไม่ใช้บัตร · ตั้งคีย์ฟรี 5 นาที มีคู่มือพา</p>
+          <p className="mt-4 text-sm text-[#9ca0be]">{MANAGED ? "PRO ฟรี 7 วัน · ไม่ใช้บัตร · เริ่มได้ทันที" : "PRO ฟรี 7 วัน · ไม่ใช้บัตร · ตั้งคีย์ฟรี 5 นาที มีคู่มือพา"}</p>
         </Reveal>
 
         {/* signature: giant glowing wordmark */}

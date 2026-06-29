@@ -30,6 +30,15 @@ const KEYS = [
   // Server-owned (platform) API key for internal automation — NOT a user's BYOK
   // key. Used by the loanword miner cron + other server-side Gemini calls.
   "server_gemini_key",
+  // Cost-rate config for the Cost & Margin admin dashboard (admin-editable ฿ rates)
+  "cost_render_per_minute",
+  "cost_image_gpt_1k",
+  "cost_image_nano_1k",
+  "cost_image_gpt_2k",
+  "cost_image_nano_2k",
+  "cost_video_seedance_5s",
+  "cost_infra_monthly",
+  "fx_baht_per_usd",
 ] as const;
 
 type SettingKey = typeof KEYS[number];
@@ -68,6 +77,9 @@ async function setConfig(key: SettingKey, value: string) {
   };
   const envKey = envMap[key];
   if (envKey) process.env[envKey] = value;
+  // The platform Gemini key also feeds the SYNC managed resolver (GEMINI_SERVER_KEY),
+  // not only the loanword cron — patch it too so an admin save takes effect with no restart.
+  if (key === "server_gemini_key") process.env.GEMINI_SERVER_KEY = value;
 }
 
 export async function GET() {

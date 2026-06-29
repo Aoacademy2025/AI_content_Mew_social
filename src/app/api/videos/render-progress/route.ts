@@ -38,7 +38,27 @@ export async function GET(req: Request) {
       progress: job.progress,
       videoUrl: job.videoUrl ?? null,
       error: job.error ?? undefined,
+      // Surface the credit-overflow receipt amount ONLY when credits are live, so
+      // the response is byte-identical when CREDITS_LIVE is off. getRenderJob reads
+      // the full RenderJob row, so job.creditsSpent is already present (no select change).
+      ...(process.env.CREDITS_LIVE === "1" ? { creditsSpent: job.creditsSpent ?? null } : {}),
     });
+  }
+
+  // Ownership (legacy branch): the prod queue branch above already checks job.userId.
+  // For the dev/fallback file path, cross-check the persisted render job's userId
+  // (set by the render route) so one user can't read another's progress by jobId.
+  if (jobId) {
+    try {
+      const jobFile = path.join(process.cwd(), ".tmp", "render-jobs", `${jobId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+      const job = JSON.parse(fs.readFileSync(jobFile, "utf-8")) as { userId?: string };
+      if (job?.userId && job.userId !== authUser.id) {
+        return NextResponse.json({
+          progress: 0, videoUrl: null, error: null, queued: false, queuePosition: null,
+          stage: null, updatedAt: null, queuedAt: null, renderQueueWaitMs: null,
+        });
+      }
+    } catch { /* no job file → legacy/old job, fall through */ }
   }
 
   const renderTmpDir = process.env.RENDER_TMP_ROOT

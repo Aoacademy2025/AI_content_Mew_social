@@ -9,6 +9,9 @@ import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
+import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -835,11 +838,23 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { geminiKey: true, ttsProvider: true },
+      select: { geminiKey: true, plan: true, ttsProvider: true },
     });
 
-    const useGeminiTranscribe = !!user?.geminiKey;
-    console.log(`[transcribe] hasGemini=${!!user?.geminiKey} → ${useGeminiTranscribe ? "Gemini" : "LocalWhisper"}`);
+    let resolvedGeminiKey: string | null = null;
+    let geminiMode: "managed" | "byok" = "byok";
+    if (user) {
+      try {
+        const resolved = resolveGeminiKey(user);
+        resolvedGeminiKey = resolved.key;
+        geminiMode = resolved.mode;
+      } catch (e) {
+        if (!(e instanceof KeyRequiredError)) throw e;
+        // No key available → resolvedGeminiKey stays null
+      }
+    }
+    const useGeminiTranscribe = !!resolvedGeminiKey;
+    console.log(`[transcribe] hasGemini=${!!resolvedGeminiKey} → ${useGeminiTranscribe ? "Gemini" : "no-key"}`);
 
     // Resolve local file path or download remote
     const ts = Date.now();
@@ -862,6 +877,9 @@ export async function POST(req: Request) {
       if (localPath && fs.existsSync(localPath)) {
         inputPath = localPath;
       } else {
+        // SSRF guard: this remote branch fetches a user-supplied URL — block internal/private targets.
+        if (!(await isSafeFetchUrl(audioUrl)))
+          return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
         const audioRes = await fetch(audioUrl);
         if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${audioUrl}` }, { status: 400 });
         inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
@@ -899,10 +917,20 @@ export async function POST(req: Request) {
     let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
 
     if (useGeminiTranscribe) {
+      // AI-audio ceiling (managed): transcribe spends server Gemini on the input
+      // audio duration. Reserve up front (atomic) so an at-ceiling user is blocked
+      // before the spend — bounds the loopable transcribe endpoint. (refund-on-failure
+      // is a fast-follow; transcribe is avatar/upload-only and rarely fails.)
+      const aiMinutes = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 60_000 : 1;
+      const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, { enforce: geminiMode === "managed" });
+      if (!ai.allowed) {
+        try { fs.unlinkSync(mp3Path); } catch {} // don't orphan the extracted mp3 on the ceiling-block path
+        return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });
+      }
       // ── Gemini Audio Transcribe with timestamps ──
       console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {
-        const geminiKey = Buffer.from(user!.geminiKey!, "base64").toString("utf-8");
+        const geminiKey = resolvedGeminiKey!;
         const audioBuffer = fs.readFileSync(mp3Path);
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
@@ -999,6 +1027,9 @@ export async function POST(req: Request) {
         const status = (e as { status?: number })?.status;
         const body = (e as { body?: string })?.body;
         if (status === 401) {
+          if (process.env.MANAGED_GEMINI === "1") {
+            return NextResponse.json({ error: "ระบบ AI ขัดข้องชั่วคราว — กรุณาลองใหม่อีกครั้งหรือแจ้งทีมงาน" }, { status: 503 });
+          }
           return NextResponse.json({ error: "Gemini API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", missingKey: "gemini" }, { status: 401 });
         }
         const info = getGeminiErrorInfo(body ?? e, status ?? 503);
@@ -1011,11 +1042,11 @@ export async function POST(req: Request) {
       }
     } else {
       try { fs.unlinkSync(mp3Path); } catch {}
-      return NextResponse.json({ error: "Gemini API Key is required for transcription. Please add your Gemini key in Settings.", missingKey: "gemini" }, { status: 401 });
+      return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
     }
 
-    // LLM key for subtitle splitting
-    const apiKey = user?.geminiKey ? Buffer.from(user.geminiKey, "base64").toString("utf-8") : null;
+    // LLM key for subtitle splitting (same resolved key)
+    const apiKey = resolvedGeminiKey;
     console.log(`[transcribe] LLM split provider: Gemini apiKey=${apiKey ? "ok" : "MISSING"}`);
 
     const isThai = /[฀-๿]/.test(fullText) || (typeof script === "string" && /[฀-๿]/.test(script));

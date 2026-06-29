@@ -26,6 +26,10 @@ const POLL_MS = Number(process.env.RENDER_WORKER_POLL_MS) || 3000;
 const STALL_MS = Number(process.env.RENDER_STALL_MS) || 120_000; // no progress for 2 min ⇒ stuck
 const WALLCLOCK_MS = Number(process.env.RENDER_WALLCLOCK_MS) || 45 * 60_000; // hard cap per job
 const WATCHDOG_MS = 10_000;
+// Sweep RUNNING jobs only once their heartbeat is stale by MORE than the stall watchdog
+// could take to cancel + tear down. If this were ≤ STALL_MS the idle sweeper could requeue
+// a render the watchdog is still cancelling (or a healthy-but-slow one) → double-render.
+const SWEEP_STALE_MS = STALL_MS + WATCHDOG_MS * 3; // 120s + 30s = 150s (was a flat 90s < STALL_MS)
 
 let draining = false;
 let current: { id: string; cancel: () => void } | null = null;
@@ -117,7 +121,10 @@ async function runOne(job: ClaimedJob): Promise<void> {
     // BURN of it is free (isBurnAlreadyPaid in the route). Only base RENDER jobs (a BURN
     // reuses the render's charge and never records). Fail-open: recordChargedClip swallows
     // its own errors — a bookkeeping write must never affect the worker.
-    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl);
+    // Pass reservedMinutes so a minutes-mode job (MINUTE_QUOTA on at enqueue) records the
+    // SAME chargedMinutes as the in-process render path; clips-mode rows have it null →
+    // 2-arg-equivalent (chargedMinutes stays null), byte-identical to flag-off.
+    if (job.type === "RENDER") await recordChargedClip(job.userId, result.videoUrl, job.reservedMinutes ?? undefined, job.creditsSpent ?? undefined);
     console.log(`[render-worker] done ${job.id} → ${result.videoUrl}`);
   } catch (e) {
     // runRender's finally releases its bundle ref; Remotion tears down its own
@@ -150,7 +157,7 @@ async function loop(): Promise<void> {
       // claimed on the very next iteration). Fail-open: a sweep error must never
       // crash the claim loop.
       try {
-        const swept = await sweepDeadRenderJobs(90_000);
+        const swept = await sweepDeadRenderJobs(SWEEP_STALE_MS);
         if (swept > 0) console.log(`[render-worker] swept ${swept} dead RenderJob(s)`);
       } catch (sweepErr) {
         console.error("[render-worker] sweepDeadRenderJobs error (non-fatal):", sweepErr);

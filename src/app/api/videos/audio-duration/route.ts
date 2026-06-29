@@ -59,6 +59,11 @@ export async function POST(req: Request) {
   if (!audioUrl) return NextResponse.json({ error: "audioUrl required" }, { status: 400 });
 
   const filePath = path.join(process.cwd(), "public", audioUrl.replace(/^\/api\/renders\//, "/renders/"));
+  // Containment guard: reject any audioUrl that escapes the public webroot (path traversal).
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedPath = path.resolve(filePath);
+  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep))
+    return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
   if (!fs.existsSync(filePath)) return NextResponse.json({ error: `File not found: ${audioUrl}` }, { status: 404 });
 
   try {

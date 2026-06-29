@@ -17,6 +17,7 @@ import { ManageSubscriptionButton } from "@/components/settings/manage-subscript
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
 import { McpAccessSettings } from "@/components/settings/mcp-access-settings";
 import { QuotaStatus } from "@/components/quota-status";
+import { CreditsBillingSection } from "@/components/settings/credits-billing-section";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
 
@@ -127,6 +128,9 @@ function BillingTab() {
 
       <ReactivateBanner />
       <ManageSubscriptionButton />
+
+      {/* Credits section — visible only when NEXT_PUBLIC_CREDITS_LIVE === "1" */}
+      {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && <CreditsBillingSection />}
 
       {/* Payment history */}
       <div className="space-y-3">

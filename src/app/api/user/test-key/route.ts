@@ -222,7 +222,13 @@ export async function POST(req: Request) {
 
     let result: { ok: boolean; message: string };
     switch (keyType) {
-      case "gemini":     result = await testGemini(key);     break;
+      case "gemini":
+        if (process.env.MANAGED_GEMINI === "1") {
+          result = { ok: true, message: "ใช้ Gemini ผ่านระบบ (managed) — ไม่ต้องตั้งค่า key เอง" };
+        } else {
+          result = await testGemini(key);
+        }
+        break;
       case "heygen":     result = await testHeyGen(key);     break;
       case "elevenlabs": result = await testElevenLabs(key); break;
       case "pexels":     result = await testPexels(key);     break;

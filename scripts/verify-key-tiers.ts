@@ -27,5 +27,31 @@ const st = computeKeyStatus({ gemini: true, pixabay: true });
 check("computeKeyStatus defaults missing to false", st.pexels === false && st.elevenlabs === false && st.heygen === false);
 check("computeKeyStatus tier1Complete true", st.tier1Complete === true);
 
+// ── managed-mode assertions ──────────────────────────────────────────────────
+// Test 1: managed=true, no user gemini key, has pexels → gemini=true, tier1Complete=true
+const m1 = computeKeyStatus({ pexels: true }, true);
+check("managed: gemini=true when managed+no user key", m1.gemini === true);
+check("managed: tier1Complete=true when managed+pexels", m1.tier1Complete === true);
+
+// Test 2: flag off (false) → gemini=false, tier1Complete=false (unchanged behaviour)
+const m2 = computeKeyStatus({ pexels: true }, false);
+check("flag-off: gemini=false (BYOK, not managed)", m2.gemini === false);
+check("flag-off: tier1Complete=false (no gemini key)", m2.tier1Complete === false);
+
+// Test 3: BYOK own gemini key — unchanged
+const m3 = computeKeyStatus({ gemini: true, pexels: true }, false);
+check("byok: gemini=true (own key)", m3.gemini === true);
+check("byok: tier1Complete=true (own gemini+pexels)", m3.tier1Complete === true);
+
+// Test 4: managed=true, no stock key → gemini=true BUT tier1Complete=false (still blocked)
+const m4 = computeKeyStatus({}, true);
+check("managed-no-stock: gemini=true", m4.gemini === true);
+check("managed-no-stock: tier1Complete=false (no stock)", m4.tier1Complete === false);
+
+// Test 5: no second arg (default false) → behaves exactly as before
+const m5 = computeKeyStatus({ gemini: true });
+check("no-second-arg: gemini=true (own key, default)", m5.gemini === true);
+check("no-second-arg: tier1Complete=false (no stock, default)", m5.tier1Complete === false);
+
 console.log(failures === 0 ? "\n✅ ALL KEY-TIERS CHECKS PASSED" : `\n❌ ${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

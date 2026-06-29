@@ -1,4 +1,4 @@
-import { AbsoluteFill, Sequence, Img, useVideoConfig, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, Sequence, Img, staticFile, useVideoConfig, useCurrentFrame, interpolate } from "remotion";
 import { Caption } from "./Caption";
 import { parseTime } from "./types";
 import type { VideoCompositionProps, SceneEffect } from "./types";
@@ -82,7 +82,10 @@ function AnimatedImage({ src, effect, durationFrames }: { src: string; effect?: 
     }
     case "fade-in": {
       transform = `scale(1.05)`;
-      opacity = interpolate(frame, [0, Math.round(d * 0.4)], [0, 1], { extrapolateRight: "clamp" });
+      // Math.max(1, …): a 1-frame scene makes Math.round(d*0.4)===0, giving the range
+      // [0,0] which Remotion's interpolate rejects ("inputRange must be strictly
+      // monotonically non-decreasing") → it would throw and abort the whole render.
+      opacity = interpolate(frame, [0, Math.max(1, Math.round(d * 0.4))], [0, 1], { extrapolateRight: "clamp" });
       break;
     }
     case "pulse": {
@@ -116,7 +119,7 @@ function AnimatedImage({ src, effect, durationFrames }: { src: string; effect?: 
   );
 }
 
-export function VideoComposition({ scenes, captionSegments }: VideoCompositionProps) {
+export function VideoComposition({ scenes, captionSegments, watermark }: VideoCompositionProps) {
   const { fps } = useVideoConfig();
 
   return (
@@ -166,6 +169,21 @@ export function VideoComposition({ scenes, captionSegments }: VideoCompositionPr
           </Sequence>
         );
       })}
+
+      {watermark && (
+        <Img
+          src={staticFile("watermark.png")}
+          style={{
+            position: "absolute",
+            bottom: "4%",
+            right: "4%",
+            width: "14%",
+            opacity: 0.9,
+            mixBlendMode: "screen",
+            pointerEvents: "none",
+          }}
+        />
+      )}
     </AbsoluteFill>
   );
 }

@@ -49,10 +49,34 @@ function statusFromParsed(parsed: unknown, fallback = 500): number {
   return Number.isFinite(direct) && direct > 0 ? direct : fallback;
 }
 
-export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): GeminiErrorInfo {
+/** Platform-framed message shown to managed users when a failure is a
+ *  user-key-fault kind (invalid_key / billing / permission / api_disabled).
+ *  In managed mode those are platform problems, not the user's key. */
+const MANAGED_PLATFORM_MSG =
+  "ระบบ AI ขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง หรือแจ้งทีมงานหากยังเป็นอยู่";
+
+
+export function getGeminiErrorInfo(
+  error: unknown,
+  opts?: { managed?: boolean },
+  fallbackStatus?: number,
+): GeminiErrorInfo;
+/** @deprecated Use getGeminiErrorInfo(error, opts?, fallbackStatus?) instead */
+export function getGeminiErrorInfo(error: unknown, fallbackStatus?: number): GeminiErrorInfo;
+export function getGeminiErrorInfo(
+  error: unknown,
+  optsOrFallback?: { managed?: boolean } | number,
+  fallbackStatus = 500,
+): GeminiErrorInfo {
+  // Handle legacy positional call: getGeminiErrorInfo(err, 404)
+  const managed =
+    typeof optsOrFallback === "object" ? (optsOrFallback?.managed ?? false) : false;
+  const resolvedFallback =
+    typeof optsOrFallback === "number" ? optsOrFallback : fallbackStatus;
+
   const raw = flattenErrorMessage(error);
   const parsed = tryParseJsonObject(raw);
-  const status = statusFromParsed(parsed, fallbackStatus);
+  const status = statusFromParsed(parsed, resolvedFallback);
   const haystack = `${raw} ${flattenErrorMessage(parsed)}`.toLowerCase();
 
   if (status === 401 || /api_key_invalid|invalid api key|key not valid|invalid key/.test(haystack)) {
@@ -60,7 +84,9 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
       kind: "invalid_key",
       status: 401,
       retryable: false,
-      userMessage: "Gemini API Key ไม่ถูกต้อง กรุณาสร้าง key ใหม่แล้วบันทึกใน Settings",
+      userMessage: managed
+        ? MANAGED_PLATFORM_MSG
+        : "Gemini API Key ไม่ถูกต้อง กรุณาสร้าง key ใหม่แล้วบันทึกใน Settings",
       technicalMessage: raw,
     };
   }
@@ -70,7 +96,9 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
       kind: "api_disabled",
       status: 403,
       retryable: false,
-      userMessage: "ยังไม่ได้เปิด Gemini API ใน Google Cloud กรุณากด Enable แล้วลองใหม่",
+      userMessage: managed
+        ? MANAGED_PLATFORM_MSG
+        : "ยังไม่ได้เปิด Gemini API ใน Google Cloud กรุณากด Enable แล้วลองใหม่",
       technicalMessage: raw,
     };
   }
@@ -80,7 +108,9 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
       kind: "billing",
       status: status === 429 ? 429 : 403,
       retryable: false,
-      userMessage: "Gemini key นี้ยังไม่ได้ผูกบัตร Google หรือยังเปิดการชำระเงินไม่สมบูรณ์",
+      userMessage: managed
+        ? MANAGED_PLATFORM_MSG
+        : "Gemini key นี้ยังไม่ได้ผูกบัตร Google หรือยังเปิดการชำระเงินไม่สมบูรณ์",
       technicalMessage: raw,
     };
   }
@@ -90,7 +120,9 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
       kind: "quota",
       status: 429,
       retryable: true,
-      userMessage: "Gemini โควต้าฟรีเต็มแล้ว กรุณารอรอบรีเซ็ต หรือผูกบัตร Google เพื่อเพิ่มโควต้า",
+      userMessage: managed
+        ? "ระบบ AI กำลังใช้งานหนาแน่น กรุณาลองใหม่อีกครั้งสักครู่"
+        : "Gemini โควต้าฟรีเต็มแล้ว กรุณารอรอบรีเซ็ต หรือผูกบัตร Google เพื่อเพิ่มโควต้า",
       technicalMessage: raw,
     };
   }
@@ -120,7 +152,9 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
       kind: "permission",
       status: 403,
       retryable: false,
-      userMessage: "Gemini key นี้ยังไม่มีสิทธิ์ใช้งาน กรุณาตรวจสอบ project หรือสร้าง key ใหม่",
+      userMessage: managed
+        ? MANAGED_PLATFORM_MSG
+        : "Gemini key นี้ยังไม่มีสิทธิ์ใช้งาน กรุณาตรวจสอบ project หรือสร้าง key ใหม่",
       technicalMessage: raw,
     };
   }
@@ -133,6 +167,7 @@ export function getGeminiErrorInfo(error: unknown, fallbackStatus = 500): Gemini
     technicalMessage: raw,
   };
 }
+
 
 // Google 429 bodies carry RetryInfo, e.g. {"retryDelay":"18s"} — honoring it
 // matters once a clip is many sequential TTS calls (free-tier RPM windows are

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import axios from "axios";
 import { apiError } from "@/lib/api-error";
 import { isPaid } from "@/lib/plan-limits";
+import { getHeyGenAvatarList, HeyGenAuthError } from "@/lib/heygen-avatars";
 
 // GET /api/heygen/avatars - Fetch available avatar models from HeyGen
 export async function GET() {
@@ -43,19 +43,9 @@ export async function GET() {
     // Decrypt API key
     const apiKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
 
-    // Fetch avatars from HeyGen API
-    const response = await axios.get(
-      "https://api.heygen.com/v2/avatars",
-      {
-        headers: {
-          "X-Api-Key": apiKey,
-          accept: "application/json",
-        },
-        timeout: 10000,
-      }
-    );
-
-    const avatars = response.data.data.avatars.map((avatar: any) => ({
+    // Cached, retried fetch (shared with avatar-info) — no more 10s/no-retry fragility.
+    const { avatars: raw } = await getHeyGenAvatarList(authUser.id, apiKey);
+    const avatars = raw.map((avatar: any) => ({
       avatar_id: avatar.avatar_id,
       avatar_name: avatar.avatar_name,
       preview_image_url: avatar.preview_image_url || avatar.preview_video_url,
@@ -65,20 +55,12 @@ export async function GET() {
 
     return NextResponse.json({ avatars }, { status: 200 });
   } catch (error: any) {
-    console.error("HeyGen avatars error:", error);
-
-    if (error.response?.status === 401) {
-      return NextResponse.json(
-        { error: "Invalid HeyGen API key" },
-        { status: 401 }
-      );
+    if (error instanceof HeyGenAuthError) {
+      return NextResponse.json({ error: "Invalid HeyGen API key" }, { status: 401 });
     }
-
+    console.error("HeyGen avatars error:", error?.message ?? error);
     return NextResponse.json(
-      {
-        error: "Failed to fetch avatars",
-        details: error.message,
-      },
+      { error: "Failed to fetch avatars", details: error?.message },
       { status: 500 }
     );
   }

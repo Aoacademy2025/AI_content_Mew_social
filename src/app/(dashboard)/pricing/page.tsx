@@ -12,6 +12,16 @@ import { cn } from "@/lib/utils";
 import { PremiumBackdrop } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
+import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { PLAN_RANK } from "@/lib/plan-change";
+
+// Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
+// Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
+const CREDIT_PACKS_DISPLAY = [
+  { id: "starter", label: "Starter", baht: 199, credits: 200 },
+  { id: "popular", label: "Popular", baht: 499, credits: 540 },
+  { id: "pro",     label: "Pro",     baht: 999, credits: 1150 },
+] as const;
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 type BillingPeriod = "monthly" | "annual";
@@ -23,7 +33,7 @@ const GLOW = "0 0 30px rgba(139,92,246,.45)";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
-type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null } | null;
+type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; subStatus?: string | null; minuteQuota?: boolean; minutesUsed?: number; minutesLimit?: number } | null;
 
 const TIER_META: { key: PlanKey; cfgKey: keyof PlanConfig; icon: React.ElementType; highlight?: boolean }[] = [
   { key: "FREE", cfgKey: "free", icon: Zap },
@@ -56,10 +66,15 @@ function PricingContent() {
   useEffect(() => {
     fetch("/api/plans").then((r) => r.json()).then(setPlanConfig).catch(() => {});
     fetch("/api/user/me")
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((d) => setMe(d))
-      .catch(() => setMe(null))
-      .finally(() => setUserChecked(true));
+      // Only treat a real 401 as "signed out". A transient/non-401 failure must NOT collapse a
+      // logged-in user to the signed-out CTA set (which would bounce them to /register on checkout).
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        if (r.status === 401) return null;
+        throw new Error(`me ${r.status}`);
+      })
+      .then((d) => { setMe(d); setUserChecked(true); })
+      .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
     fetch("/api/founding/status").then((r) => r.json()).then(setFounding).catch(() => {});
   }, []);
 
@@ -68,7 +83,9 @@ function PricingContent() {
   const onTrial = currentPlan === "PRO" && daysLeft > 0;
   const usageLimit = me?.usageLimit ?? 0;
   const usageCount = me?.usageCount ?? 0;
-  const usagePct = usageLimit > 0 ? Math.min(100, Math.round((usageCount / usageLimit) * 100)) : 0;
+  const usagePct = me?.minuteQuota
+    ? ((me.minutesLimit ?? 0) > 0 ? Math.min(100, Math.round(((me.minutesUsed ?? 0) / (me.minutesLimit ?? 1)) * 100)) : 0)
+    : (usageLimit > 0 ? Math.min(100, Math.round((usageCount / usageLimit) * 100)) : 0);
 
   async function handleUpgrade(planKey: "PRO" | "BUSINESS") {
     if (userChecked && !currentPlan) {
@@ -80,7 +97,9 @@ function PricingContent() {
       const res = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planKey, period, method, couponCode: appliedCoupon?.code }),
+        // Monthly is card-only (the method toggle is hidden in monthly mode, so the promptpay default
+        // would otherwise build an invalid monthly+promptpay session). Server coerces too.
+        body: JSON.stringify({ plan: planKey, period, method: period === "monthly" ? "card" : method, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -136,15 +155,22 @@ function PricingContent() {
                   <Clock className="h-4 w-4 text-amber-300" strokeWidth={2.5} aria-hidden />
                   ทดลอง PRO เหลือ <span className="text-amber-300">{daysLeft} วัน</span>
                 </span>
-                {usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาทีเดือนนี้</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>)}
               </div>
-              {usageLimit > 0 && (
+              {(me?.minuteQuota ? (me.minutesLimit ?? 0) > 0 : usageLimit > 0) && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div className="h-full rounded-full" style={{ width: `${usagePct}%`, background: ACCENT }} />
                 </div>
               )}
-              <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
-                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">2 คลิป/เดือน</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
+              {me?.minuteQuota && (
+                <p className="mt-2 text-[13px] font-semibold text-amber-300">
+                  โควต้าทดลอง: 15 นาที ใน 7 วัน
+                </p>
+              )}
+              <p className="mt-2 text-[13px] leading-relaxed text-[#a7adcc]">
+                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">{me?.minuteQuota ? "5 นาที/เดือน · ~5 คลิป" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
                 <b className="text-violet-200"> อัปเกรดเพื่อใช้ต่อไม่สะดุด</b>
               </p>
             </>
@@ -152,22 +178,27 @@ function PricingContent() {
             <>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[15px] font-semibold text-white" style={HEAD}>คุณกำลังใช้แผน Free</span>
-                {usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาทีเดือนนี้</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] text-[#a7adcc]">ใช้ไป {usageCount}/{usageLimit} คลิปเดือนนี้</span>)}
               </div>
-              {usageLimit > 0 && (
+              {(me?.minuteQuota ? (me.minutesLimit ?? 0) > 0 : usageLimit > 0) && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div className="h-full rounded-full" style={{ width: `${usagePct}%`, background: ACCENT }} />
                 </div>
               )}
               <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
-                อัปเกรด PRO ปลดล็อก <b className="text-white/80">100 คลิป/เดือน</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
+                อัปเกรด PRO ปลดล็อก <b className="text-white/80">{me?.minuteQuota ? "80 นาที/เดือน · ~80 คลิป" : "100 คลิป/เดือน"}</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
               </p>
             </>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="inline-flex items-center gap-2 text-[15px] font-semibold text-white" style={HEAD}>
                 <ShieldCheck className="h-4 w-4 text-violet-300" strokeWidth={2.5} aria-hidden />
-                คุณอยู่แผน {currentPlan} 🎉 {usageLimit > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {usageCount}/{usageLimit} คลิป</span>}
+                คุณอยู่แผน {currentPlan} 🎉{" "}
+                {me?.minuteQuota
+                  ? ((me.minutesLimit ?? 0) > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {me.minutesUsed}/{me.minutesLimit} นาที</span>)
+                  : (usageLimit > 0 && <span className="text-[13px] font-normal text-[#a7adcc]">· ใช้ไป {usageCount}/{usageLimit} คลิป</span>)}
               </span>
               <Link href="/settings?tab=billing" className="text-[13px] font-medium text-violet-300 hover:text-violet-200">จัดการบิล →</Link>
             </div>
@@ -234,11 +265,26 @@ function PricingContent() {
           const name = data?.name ?? key;
           const tagline = data?.tagline ?? "";
           const badge = key === "PRO" ? (data?.badge ?? "แนะนำ") : data?.badge ?? null;
-          const isCurrent = !!currentPlan && currentPlan === key;
+          // A trial user holds PRO but hasn't paid — they MUST still be able to subscribe, so the
+          // PRO card is NOT treated as "current" for them (otherwise the button is disabled and
+          // there is no way to convert a trial into a paid plan in-product).
+          const isTrialPlan = onTrial && key === "PRO";
+          const isCurrent = !!currentPlan && currentPlan === key && !isTrialPlan;
           const isPaid = key !== "FREE";
           const isLoading = loading === key;
           const isSignedOut = userChecked && !currentPlan;
           const pb = isPaid ? priceBlock(price) : null;
+
+          // Tier-aware gating (no more equality-only check that let BUSINESS pay for PRO).
+          const hasActiveSub = me?.subStatus === "active";
+          // A trial user has no committed paid tier → treat as FREE so they can buy any plan.
+          const currentRank = (currentPlan && !isTrialPlan) ? (PLAN_RANK[currentPlan] ?? 0) : 0;
+          const cardRank = PLAN_RANK[key];
+          // Active subscriber: ALL plan changes go through the billing portal (Stripe swaps/prorates
+          // the existing sub instead of minting a duplicate). One-time/manual paid user: block paying
+          // for a strictly LOWER tier (downgrade-by-pay).
+          const isManageViaPortal = isPaid && !isCurrent && !!hasActiveSub;
+          const isDowngradeLocked = isPaid && !isCurrent && !hasActiveSub && cardRank < currentRank;
 
           const card = (
             <div className={cn(
@@ -254,6 +300,7 @@ function PricingContent() {
                   <Icon className="h-5 w-5 text-violet-300" strokeWidth={2.3} aria-hidden />
                 </div>
                 {isCurrent && <span className="rounded-full border border-violet-300/25 bg-violet-300/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-violet-100">แผนปัจจุบัน</span>}
+                {isTrialPlan && <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-200">ทดลองอยู่ · {daysLeft} วัน</span>}
               </div>
 
               <h3 className="text-xl font-bold" style={HEAD}>{name}</h3>
@@ -274,6 +321,14 @@ function PricingContent() {
                 )}
               </div>
 
+              {/* minutes per plan — additive info, only shown when MINUTE_QUOTA is enabled */}
+              {me?.minuteQuota && (
+                <p className="mt-2 text-[12px] text-[#a7adcc]">
+                  {minutesPerMonthForPlan(key)} นาที/เดือน
+                  <span className="ml-1 text-[#6b7091]">(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
+                </p>
+              )}
+
               <ul className="my-5 flex-1 space-y-2 text-[14px]">
                 {features.map((f) => (
                   <li key={f} className="flex items-start gap-2 text-[#d5d9ee]">
@@ -283,23 +338,46 @@ function PricingContent() {
                 ))}
               </ul>
 
-              {isPaid ? (
-                <button
-                  onClick={() => handleUpgrade(key as "PRO" | "BUSINESS")}
-                  disabled={isCurrent || isLoading || !userChecked}
-                  className={cn("inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed",
-                    highlight ? "text-white" : "border border-white/12 text-white hover:bg-white/5",
-                    isCurrent && "!border-white/10 !bg-white/5 text-white/55")}
-                  style={highlight && !isCurrent ? { background: ACCENT, boxShadow: GLOW } : undefined}
-                >
-                  {!userChecked || isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : isCurrent ? (<><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</>) : (<>{isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
-                </button>
+              {!userChecked ? (
+                // Pre-load placeholder — avoids a CTA flash that could mis-route a click before we
+                // know who the user is (the FREE card used to flash "ใช้แผน Free" → /dashboard).
+                <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+              ) : isPaid ? (
+                isCurrent ? (
+                  <div className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/55"><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
+                ) : isManageViaPortal ? (
+                  <Link href="/settings?tab=billing" className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                    จัดการแผนผ่านบิล <ArrowRight className="h-4 w-4" strokeWidth={2.5} />
+                  </Link>
+                ) : isDowngradeLocked ? (
+                  <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">รวมอยู่ในแผนของคุณ</div>
+                ) : (
+                  <button
+                    onClick={() => handleUpgrade(key as "PRO" | "BUSINESS")}
+                    disabled={isLoading}
+                    className={cn("inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed",
+                      highlight ? "text-white" : "border border-white/12 text-white hover:bg-white/5")}
+                    style={highlight ? { background: ACCENT, boxShadow: GLOW } : undefined}
+                  >
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : (<>{isTrialPlan ? `สมัคร ${name} เลย` : isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
+                  </button>
+                )
               ) : isCurrent ? (
                 <div className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-violet-300/20 bg-violet-300/10 px-4 py-3 text-sm font-semibold text-violet-100"><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
-              ) : (
-                <Link href={isSignedOut ? "/register" : "/dashboard"} className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
-                  {isSignedOut ? "ทดลอง PRO ฟรี 7 วัน" : "ใช้แผน Free"}
+              ) : isSignedOut ? (
+                <Link href="/register" className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                  ทดลอง PRO ฟรี 7 วัน
                 </Link>
+              ) : hasActiveSub ? (
+                // FREE card for an active subscriber — the real "downgrade" is cancel-in-portal.
+                <Link href="/settings?tab=billing" className="inline-flex w-full items-center justify-center rounded-full border border-white/12 px-4 py-3 text-sm font-semibold text-white/80 transition-colors hover:bg-white/5">
+                  จัดการ / ยกเลิกแผน
+                </Link>
+              ) : (
+                // Logged-in trial / one-time / manual paid user: Free is their fallback, no action.
+                <div className="inline-flex w-full items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/40">รวมอยู่ในแผนของคุณ</div>
               )}
             </div>
           );
@@ -314,6 +392,36 @@ function PricingContent() {
           <span key={c} className="rounded-full border border-violet-400/25 bg-violet-400/10 px-3.5 py-1.5 text-[13px] text-violet-200">{c}</span>
         ))}
       </div>
+
+      {/* credit packs — flag-gated, compact */}
+      {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && (
+        <div className="mx-auto mt-10 max-w-2xl">
+          <p className="mb-4 text-center text-[12px] font-semibold uppercase tracking-[.12em] text-violet-300" style={HEAD}>เครดิตเติมนาที</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {CREDIT_PACKS_DISPLAY.map((pack) => {
+              const bonusPctRaw = pack.credits > pack.baht ? Math.round(((pack.credits - pack.baht) / pack.baht) * 100) : 0;
+              const bonusPct = bonusPctRaw >= 2 ? bonusPctRaw : undefined;
+              return (
+                <div key={pack.id} className={`relative rounded-[16px] border p-4 text-left ${pack.id === "popular" ? "border-violet-400/40 bg-violet-500/10" : "border-white/10 bg-white/[0.03]"}`}>
+                  {pack.id === "popular" && (
+                    <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-0.5 text-[10px] font-bold text-white" style={{ background: "linear-gradient(120deg,#8b5cf6,#a78bfa)" }}>ยอดนิยม</span>
+                  )}
+                  <p className="text-[14px] font-bold text-white" style={HEAD}>{pack.label}</p>
+                  <p className="mt-0.5 text-[20px] font-bold text-white" style={HEAD}>฿{pack.baht.toLocaleString()}</p>
+                  <p className="mt-0.5 text-[12px] text-[#a7adcc]">
+                    {pack.credits} เครดิต
+                    {bonusPct ? <span className="ml-1 text-violet-300">+{bonusPct}%</span> : null}
+                  </p>
+                  <Link href="/settings?tab=billing" className="mt-3 block rounded-full border border-violet-400/25 py-1.5 text-center text-[12px] font-semibold text-violet-200 transition hover:bg-violet-400/10">
+                    ซื้อเครดิต →
+                  </Link>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-center text-[11px] text-[#7a7f9c]">1 เครดิต = ฿1 · ใช้เติมนาทีเมื่อใช้เกินโควต้าแพ็ก</p>
+        </div>
+      )}
 
       {/* mini FAQ */}
       <div className="mx-auto mt-12 max-w-2xl">
