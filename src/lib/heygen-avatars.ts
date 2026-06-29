@@ -30,6 +30,59 @@ const MAX_ATTEMPTS = 3;
 const PER_ATTEMPT_TIMEOUT_MS = 35_000;
 const HEYGEN_AVATARS_URL = "https://api.heygen.com/v2/avatars";
 
+// ── Single-avatar lookup (preview/verify by ID) ─────────────────────────────
+// Fetch ONE avatar's details (~0.8s) instead of the whole /v2/avatars list (which is
+// intermittently 30-100s+). Used by avatar-info so the preview shows fast when a user
+// enters an avatar ID, even while the full list endpoint is slow.
+const HEYGEN_DETAILS_TIMEOUT_MS = 15_000;
+
+export type HeyGenAvatarDetails = { name: string; previewImageUrl: string; previewVideoUrl: string };
+
+type DetailsFetchResult = { status: number; ok: boolean; data: any };
+
+async function fetchAvatarDetail(url: string, heygenKey: string): Promise<DetailsFetchResult> {
+  const res = await fetch(url, {
+    headers: { "X-Api-Key": heygenKey, accept: "application/json" },
+    signal: AbortSignal.timeout(HEYGEN_DETAILS_TIMEOUT_MS),
+  });
+  let body: any = null;
+  try { body = await res.json(); } catch { /* non-JSON / empty */ }
+  return { status: res.status, ok: res.ok, data: body?.data ?? body };
+}
+
+/**
+ * Look up a single avatar's preview/name by ID via `/v2/avatar/{id}/details`, falling back to
+ * `/v2/photo_avatar/{id}` for photo avatars. Returns null when the ID isn't found in either (the
+ * caller degrades to "unverified — can still render", NEVER a hard block). Throws HeyGenAuthError
+ * on 401/403 so a bad/expired key surfaces. `opts.fetcher` is the test injection point.
+ */
+export async function getHeyGenAvatarDetails(
+  avatarId: string,
+  heygenKey: string,
+  opts: { fetcher?: (url: string, key: string) => Promise<DetailsFetchResult> } = {},
+): Promise<HeyGenAvatarDetails | null> {
+  const fetcher = opts.fetcher ?? fetchAvatarDetail;
+  const id = encodeURIComponent(avatarId);
+  const urls = [
+    `https://api.heygen.com/v2/avatar/${id}/details`,
+    `https://api.heygen.com/v2/photo_avatar/${id}`,
+  ];
+  for (const url of urls) {
+    const r = await fetcher(url, heygenKey);
+    if (r.status === 401 || r.status === 403) throw new HeyGenAuthError(r.status);
+    if (r.status === 404) continue; // not this kind — try the next endpoint
+    const d = r.data;
+    if (r.ok && d && (d.preview_image_url || d.preview_video_url || d.name || d.avatar_name || d.talking_photo_name)) {
+      return {
+        name: d.name ?? d.avatar_name ?? d.talking_photo_name ?? "Avatar",
+        previewImageUrl: d.preview_image_url ?? "",
+        previewVideoUrl: d.preview_video_url ?? "",
+      };
+    }
+  }
+  return null;
+}
+
 type CacheEntry = { at: number; data: HeyGenAvatarList };
 const cache = new Map<string, CacheEntry>();
 
