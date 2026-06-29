@@ -147,8 +147,7 @@ function Tier({
       <div className="mt-1.5 min-h-[18px] text-center text-[12.5px] text-violet-300/90">{sub}</div>
       {minutesPerMonth !== undefined && (
         <div className="mt-2 text-center text-[12px] text-[#a7adcc]">
-          {minutesPerMonth} นาที/เดือน{" "}
-          <span className="text-[#6b7091]">(~{minutesPerMonth} คลิป @ ~1 นาที)</span>
+          {minutesPerMonth} นาที/เดือน
         </div>
       )}
       <ul className="my-5 flex-1 space-y-1.5 text-[14.5px]">

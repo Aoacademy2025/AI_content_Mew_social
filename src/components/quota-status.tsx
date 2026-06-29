@@ -87,7 +87,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
               : "bg-white/5 border border-white/8 text-white/45",
             className
           )}
-          title={`แผน ${quota.plan} · เหลือ ${mins.remaining}/${mins.limit} นาที · ใช้คลิปไป ${quota.used}/${quota.limit} · รีเซ็ต ${resetStr}`}
+          title={`แผน ${quota.plan} · เหลือ ${mins.remaining}/${mins.limit} นาที · รีเซ็ต ${resetStr}`}
           aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที รีเซ็ต ${resetStr}`}
         >
           {low && (
@@ -97,8 +97,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             <span className={cn("font-semibold", low ? "text-amber-200" : "text-white/70")}>
               {mins.remaining}/{mins.limit}
             </span>{" "}
-            นาที{" "}
-            <span className="opacity-60">(~{mins.limit} คลิป)</span>
+            นาที
           </span>
         </div>
       );
@@ -165,7 +164,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             : "bg-white/4 border border-white/7",
           className
         )}
-        aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · ใช้คลิปไป ${quota.used}/${quota.limit} รีเซ็ต ${resetStr}`}
+        aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · รีเซ็ต ${resetStr}`}
       >
         {/* Plan badge */}
         <span className="text-[10px] font-bold tracking-widest px-2 py-0.5 rounded-full" style={planBadgeStyle}>
@@ -180,8 +179,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             <strong className={low ? "text-amber-200" : "text-white/80"}>
               {mins.remaining}/{mins.limit}
             </strong>{" "}
-            นาที{" "}
-            <span className="opacity-60">(~{mins.limit} คลิป)</span>
+            นาที
           </span>
         </span>
 

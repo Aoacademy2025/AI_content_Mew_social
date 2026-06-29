@@ -22,7 +22,7 @@ interface UpgradeModalProps {
 // from minutesPerMonthForPlan("PRO") = 80
 function getDefaultBenefits(minuteQuota?: boolean): string[] {
   return [
-    minuteQuota ? "80 นาที/เดือน · ~80 คลิป" : "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
+    minuteQuota ? "80 นาที/เดือน" : "100 คลิป/เดือน ไม่จำกัดจำนวนต่อวัน",
     "Avatar, ElevenLabs TTS, Background Removal",
     "Music, Subtitle styles ทุกรูปแบบ",
     "Video Editor ขั้นสูงครบฟีเจอร์",
