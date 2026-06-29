@@ -48,7 +48,7 @@ import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
-import { shouldApplyLoadedPreset } from "@/lib/avatar-flow";
+import { shouldApplyLoadedPreset, shouldPauseForPositioning } from "@/lib/avatar-flow";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
@@ -324,6 +324,9 @@ export default function VideoEditorPage() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
+  // True when the pipeline has paused after avatar gen, waiting for the user to position
+  // the avatar and hit "continue" before running the composite step.
+  const [awaitingPosition, setAwaitingPosition] = useState(false);
 
   // Collapse ok+unverified into a single boolean so the load-preset effect fires only on
   // the invalid→valid edge, not on the unverified→ok transition (which would clobber edits).
@@ -347,7 +350,7 @@ export default function VideoEditorPage() {
           if (!cancelled && layout && !avatarTouchedRef.current) {
             setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
             avatarHasPresetRef.current = true;
-          } else if (!layout) {
+          } else if (!cancelled && !layout) {
             avatarHasPresetRef.current = false;
           }
         }
@@ -2510,6 +2513,26 @@ export default function VideoEditorPage() {
     return finalUrl;
   }
 
+  // After the avatar green is ready: pause for first-time positioning, or composite straight through.
+  async function compositeOrPause(bgUrl: string, avUrl: string, tailUrl?: string): Promise<void> {
+    if (shouldPauseForPositioning({ useAvatar, isDirect: avatarInputMode === "direct", hasSavedPreset: avatarHasPresetRef.current })) {
+      setAwaitingPosition(true);
+      setStep("composite", "idle", "รอจัดตำแหน่ง avatar — กด \"ต่อ → ประกอบ\"");
+      return; // pipeline stops here; user resumes via compositeWithCurrentLayout()
+    }
+    await runComposite(bgUrl, avUrl, tailUrl);
+  }
+
+  // Composite-only using the already-generated green (no HeyGen re-gen). Used by both the
+  // pause "continue" button and the "re-position → re-composite" button.
+  async function compositeWithCurrentLayout(): Promise<void> {
+    if (!pipe.current.renderedVideoUrl || !avatarGreenUrl) { toast.error("ต้อง Render avatar ก่อน"); return; }
+    setAwaitingPosition(false);
+    const tailUrl = avatarTiming === "bookend-both" ? (avatarTailGreenUrl || undefined) : undefined;
+    try { await runComposite(pipe.current.renderedVideoUrl, avatarGreenUrl, tailUrl); }
+    catch (err) { if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err); }
+  }
+
   async function runAvatarTail(audioUrl: string): Promise<string> {
     setStep("avatarTail", "running", `Trimming tail audio ${avatarTailSecs}s...`);
     setAvatarTailGreenUrl("");
@@ -2587,7 +2610,7 @@ export default function VideoEditorPage() {
         tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
         if (abortRef.current) return;
       }
-      await runComposite(pipe.current.renderedVideoUrl, avUrl, tailUrl);
+      await compositeOrPause(pipe.current.renderedVideoUrl, avUrl, tailUrl);
       if (abortRef.current) return;
       toast.success(captionsRef.current.length > 0
         ? "Avatar preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ"
@@ -2826,7 +2849,7 @@ export default function VideoEditorPage() {
           tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
           if (abortRef.current) return;
         }
-        await runComposite(renderedUrl, avUrl, tailUrl);
+        await compositeOrPause(renderedUrl, avUrl, tailUrl);
         if (abortRef.current) return;
       }
 
