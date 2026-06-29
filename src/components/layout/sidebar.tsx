@@ -69,6 +69,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const [supportOpen, setSupportOpen] = useState(false);
   const [usageCount, setUsageCount] = useState<number>(0);
   const [usageLimit, setUsageLimit] = useState<number>(2);
+  // Minute-quota mode (MINUTE_QUOTA flag): show นาที instead of คลิป
+  const [minuteQuota, setMinuteQuota] = useState(false);
+  const [minutesUsed, setMinutesUsed] = useState<number>(0);
+  const [minutesLimit, setMinutesLimit] = useState<number>(0);
   const [updatesUnread, setUpdatesUnread] = useState(0);
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
 
@@ -81,10 +85,18 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         if (data.role) setRole(data.role as "ADMIN" | "USER");
         if (typeof data.usageCount === "number") setUsageCount(data.usageCount);
         if (typeof data.usageLimit === "number") setUsageLimit(data.usageLimit);
+        if (data.minuteQuota === true) setMinuteQuota(true);
+        if (typeof data.minutesUsed === "number") setMinutesUsed(data.minutesUsed);
+        if (typeof data.minutesLimit === "number") setMinutesLimit(data.minutesLimit);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
   }, []);
+
+  // Unified usage figures: minutes when minute-quota is on, else clips
+  const usedNow = minuteQuota ? minutesUsed : usageCount;
+  const limitNow = minuteQuota ? minutesLimit : usageLimit;
+  const usageUnitLabel = minuteQuota ? "นาที" : "คลิป";
 
   useEffect(() => {
     if (!sessionLoaded) return;
@@ -275,18 +287,18 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
                       <span className="text-[9px] font-bold tracking-widest uppercase" style={{ color: "rgba(167,139,250,0.7)" }}>Free Plan</span>
                     </div>
                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(139,92,246,0.15)", color: "rgba(167,139,250,0.9)", border: "1px solid rgba(139,92,246,0.3)" }}>
-                      {usageCount}/{usageLimit} คลิป
+                      {usedNow}/{limitNow} {usageUnitLabel}
                     </span>
                   </div>
                   {/* progress bar */}
                   <div className="h-0.75 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
                     <div className="h-full rounded-full transition-all duration-500"
                       style={{
-                        width: `${Math.min(100, (usageCount / usageLimit) * 100)}%`,
-                        background: usageCount >= usageLimit
+                        width: `${Math.min(100, limitNow > 0 ? (usedNow / limitNow) * 100 : 0)}%`,
+                        background: usedNow >= limitNow
                           ? "linear-gradient(90deg, hsl(0 80% 55%), hsl(20 90% 55%))"
                           : "linear-gradient(90deg, hsl(252 83% 65%), hsl(190 100% 55%))",
-                        boxShadow: usageCount >= usageLimit ? "0 0 8px rgba(239,68,68,0.6)" : "0 0 8px rgba(139,92,246,0.8)",
+                        boxShadow: usedNow >= limitNow ? "0 0 8px rgba(239,68,68,0.6)" : "0 0 8px rgba(139,92,246,0.8)",
                       }} />
                   </div>
                   {/* cta */}

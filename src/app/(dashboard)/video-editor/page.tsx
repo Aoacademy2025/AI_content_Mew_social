@@ -1258,7 +1258,7 @@ export default function VideoEditorPage() {
         title: `อัปเกรดเป็น ${PLAN_LABEL[next]} — รองรับคลิปยาวขึ้น`,
         message: `คลิปนี้ยาว ~${mins} นาที เกินเพดานแผน ${PLAN_LABEL[plan] ?? plan} (${capMin} นาที/คลิป) — ${PLAN_LABEL[next]} รองรับสูงสุด ${nextCapMin} นาที/คลิป`,
         benefits: next === "BUSINESS"
-          ? [minuteQuota ? "150 นาที/เดือน · ~150 คลิป" : "300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
+          ? [minuteQuota ? "150 นาที/เดือน" : "300 คลิป/เดือน ไม่จำกัดต่อวัน", `ความยาวสูงสุด ${nextCapMin} นาที/คลิป`, "เก็บวิดีโอ 14 วัน", "Priority Support ภายใน 24 ชม."]
           : undefined,
       };
     }

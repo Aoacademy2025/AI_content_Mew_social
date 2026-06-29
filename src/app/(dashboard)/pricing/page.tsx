@@ -170,7 +170,7 @@ function PricingContent() {
                 </p>
               )}
               <p className="mt-2 text-[13px] leading-relaxed text-[#a7adcc]">
-                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">{me?.minuteQuota ? "5 นาที/เดือน · ~5 คลิป" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
+                หลังหมดทดลองจะกลับเป็น Free — เหลือ <b className="text-white/80">{me?.minuteQuota ? "5 นาที/เดือน" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
                 <b className="text-violet-200"> อัปเกรดเพื่อใช้ต่อไม่สะดุด</b>
               </p>
             </>
@@ -188,7 +188,7 @@ function PricingContent() {
                 </div>
               )}
               <p className="mt-3 text-[13px] leading-relaxed text-[#a7adcc]">
-                อัปเกรด PRO ปลดล็อก <b className="text-white/80">{me?.minuteQuota ? "80 นาที/เดือน · ~80 คลิป" : "100 คลิป/เดือน"}</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
+                อัปเกรด PRO ปลดล็อก <b className="text-white/80">{me?.minuteQuota ? "80 นาที/เดือน" : "100 คลิป/เดือน"}</b> · AI Avatar · เสียงโคลน · ซับไวรัล · ตัดต่อในเว็บ
               </p>
             </>
           ) : (
@@ -325,7 +325,6 @@ function PricingContent() {
               {me?.minuteQuota && (
                 <p className="mt-2 text-[12px] text-[#a7adcc]">
                   {minutesPerMonthForPlan(key)} นาที/เดือน
-                  <span className="ml-1 text-[#6b7091]">(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
                 </p>
               )}
 
