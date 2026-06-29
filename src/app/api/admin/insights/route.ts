@@ -696,6 +696,7 @@ export async function GET(req: Request) {
       new Set(videos.filter((video) => video.status === "COMPLETED").map((video) => video.userId)).size;
 
     const activation = {
+      managed: process.env.MANAGED_GEMINI === "1",
       signups: allUsers.length,
       hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,

@@ -190,6 +190,7 @@ type ActivationData = {
   hasStockKey: number;
   paidTotal: number;
   paidWithoutGeminiKey: number;
+  managed?: boolean;
   openedEditor: number;
   startedPipeline: number;
   completedFirstVideo: number;
@@ -413,7 +414,7 @@ export default function AdminInsightsPage() {
     return [
       { label: "สมัคร", count: activation.signups, cause: "" },
       { label: "เปิด editor", count: activation.openedEditor, cause: "สมัครแล้วไม่เข้าใช้ — onboarding / อีเมลต้อนรับ" },
-      { label: "กดเริ่มสร้าง", count: activation.startedPipeline, cause: "เข้าแล้วไม่กดเริ่ม — UX หรือยังไม่ตั้งคีย์" },
+      { label: "กดเริ่มสร้าง", count: activation.startedPipeline, cause: activation.managed ? "เข้าแล้วไม่กดเริ่ม — UX / onboarding" : "เข้าแล้วไม่กดเริ่ม — UX หรือยังไม่ตั้งคีย์" },
       { label: "ได้วิดีโอเสร็จ", count: activation.completedFirstVideo, cause: "เริ่มแล้วไม่จบ — เช็คความเร็วระบบ (p95) ด้านล่าง" },
       { label: "ทำซ้ำ ≥2", count: activation.repeatCreators, cause: "ทำครั้งเดียวแล้วหาย — คุณภาพ / ความคุ้มค่า" },
     ];
@@ -529,7 +530,7 @@ export default function AdminInsightsPage() {
                       )}
                     </p>
                   </div>
-                  {activation.paidWithoutGeminiKey > 0 && (
+                  {!activation.managed && activation.paidWithoutGeminiKey > 0 && (
                     <div className="rounded-md border border-rose-400/25 bg-rose-500/10 p-3 sm:max-w-xs">
                       <div className="flex items-center gap-1.5 text-sm font-semibold text-rose-200">
                         🔴 {formatNumber(activation.paidWithoutGeminiKey)}/{formatNumber(activation.paidTotal)} ลูกค้าจ่ายเงินยังไม่ตั้งคีย์
@@ -598,14 +599,23 @@ export default function AdminInsightsPage() {
                 </div>
 
                 <div className="mt-4 grid gap-3 border-t border-white/10 pt-4 sm:grid-cols-3">
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center gap-1 text-xs text-slate-500">Gemini key (บังคับ) <InfoTip label="BYOK key" /></div>
-                    <div className="mt-1 text-lg font-semibold text-white">{formatNumber(activation.hasGeminiKey)}/{formatNumber(activation.signups)} <span className="text-sm font-normal text-slate-500">ตั้งแล้ว</span></div>
-                  </div>
-                  <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3">
-                    <div className="text-xs text-rose-300/80">ลูกค้าจ่ายเงินยังไม่ตั้งคีย์</div>
-                    <div className="mt-1 text-lg font-semibold text-rose-200">{formatNumber(activation.paidWithoutGeminiKey)}/{formatNumber(activation.paidTotal)}</div>
-                  </div>
+                  {activation.managed ? (
+                    <div className="rounded-md border border-emerald-400/20 bg-emerald-500/[0.07] p-3">
+                      <div className="text-xs text-emerald-300/80">Gemini — ระบบจัดการ (managed)</div>
+                      <div className="mt-1 text-lg font-semibold text-emerald-200">ไม่ต้องตั้ง key <span className="text-sm font-normal text-slate-500">· ต้นทุน/กำไรดู Cost &amp; Margin ด้านบน</span></div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="flex items-center gap-1 text-xs text-slate-500">Gemini key (บังคับ) <InfoTip label="BYOK key" /></div>
+                        <div className="mt-1 text-lg font-semibold text-white">{formatNumber(activation.hasGeminiKey)}/{formatNumber(activation.signups)} <span className="text-sm font-normal text-slate-500">ตั้งแล้ว</span></div>
+                      </div>
+                      <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3">
+                        <div className="text-xs text-rose-300/80">ลูกค้าจ่ายเงินยังไม่ตั้งคีย์</div>
+                        <div className="mt-1 text-lg font-semibold text-rose-200">{formatNumber(activation.paidWithoutGeminiKey)}/{formatNumber(activation.paidTotal)}</div>
+                      </div>
+                    </>
+                  )}
                   <div className="rounded-md border border-white/10 bg-black/20 p-3">
                     <div className="text-xs text-slate-500">Stock key (Pexels/Pixabay)</div>
                     <div className="mt-1 text-lg font-semibold text-white">{formatNumber(activation.hasStockKey)}/{formatNumber(activation.signups)} <span className="text-sm font-normal text-slate-500">ตั้งแล้ว</span></div>
