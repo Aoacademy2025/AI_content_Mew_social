@@ -45,7 +45,7 @@ async function main() {
     const comp = calls.find((c) => c.path === "/api/heygen/composite")!;
     assert(comp.body.bgVideoUrl === "BASE" && comp.body.avatarTiming === "full" && !comp.body.tailAvatarVideoUrl, "full → composite bg=BASE, timing=full, no tail");
     const gen0 = calls.find((c) => c.path === "/api/heygen/generate-with-bg")!;
-    assert(gen0.body.scale === 2.02, "generate uses HeyGen framing scale 2.02");
+    assert(gen0.body.scale === 1.0, "generate uses HeyGen framing scale 1.0 (whole/uncut)");
     const comp0 = calls.find((c) => c.path === "/api/heygen/composite")!;
     assert(comp0.body.avatarLayout.scale === 1 && comp0.body.avatarLayout.offsetX === 0 && comp0.body.avatarLayout.offsetY === 0, "composite layer = 1/0/0 by default");
   }
@@ -72,14 +72,14 @@ async function main() {
     assert(r.tailAvatarUrl !== undefined, "bookend-both → returns tailAvatarUrl");
   }
 
-  // tunable layout: composite uses passed layout, generate still uses 2.02
+  // tunable layout: composite uses passed layout, generate still uses the fixed gen framing (1.0)
   {
     const { caller, calls } = mock({});
     await runAvatarComposite(caller, { baseUrl:"BASE", ttsAudioUrl:"TTS", avatarMode:"full", avatarId:"av", introSecs:5, tailSecs:5, layout:{scale:1.4,offsetX:0,offsetY:0.2}, sleep: noSleep });
     const comp = calls.find((c) => c.path === "/api/heygen/composite")!;
     assert(comp.body.avatarLayout.scale === 1.4 && comp.body.avatarLayout.offsetY === 0.2, "composite uses passed layout");
     const gen = calls.find((c) => c.path === "/api/heygen/generate-with-bg")!;
-    assert(gen.body.scale === 2.02, "generate still uses 2.02 regardless of composite layout");
+    assert(gen.body.scale === 1.0, "generate still uses 1.0 regardless of composite layout");
   }
 
   // pollAvatar: completed → url; failed → throw
