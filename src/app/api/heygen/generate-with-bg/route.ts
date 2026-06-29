@@ -7,6 +7,12 @@ import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
 
+// Conservative framing so the FULL avatar (head + arms) always enters on green; the user
+// then positions/scales it in the editor (composite layoutGeometry). NOT a per-avatar value.
+// Validated 2026-06-29: 2.02 over-zooms/cuts some custom photo-avatars; 1.0 = HeyGen natural framing.
+const HEYGEN_GEN_SCALE = 1.0;
+const HEYGEN_GEN_OFFSET_Y = 0.0;
+
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `win32-${process.arch}`, "ffmpeg.exe");
@@ -107,9 +113,9 @@ async function handleGenerateWithBg(req: Request) {
     greenScreen = false,
     removeBg = false,
     bgColor = "#000000",
-    scale = 2.02,
+    scale = HEYGEN_GEN_SCALE,
     offsetX = 0.0,
-    offsetY = 0.28,
+    offsetY = HEYGEN_GEN_OFFSET_Y,
   } = body ?? {};
 
   if (!text && !audioUrl) return NextResponse.json({ error: "text or audioUrl required" }, { status: 400 });
@@ -127,7 +133,7 @@ async function handleGenerateWithBg(req: Request) {
     return Math.max(-1, Math.min(1, n / 400));
   };
   const hgOffsetX = safeOffset(offsetX, 0.0);
-  const hgOffsetY = safeOffset(offsetY, 0.13);
+  const hgOffsetY = safeOffset(offsetY, HEYGEN_GEN_OFFSET_Y);
   if (hgOffsetX !== Number(offsetX) || hgOffsetY !== Number(offsetY)) {
     console.warn(`[generate-with-bg] offset adjusted for HeyGen range: (${offsetX}, ${offsetY}) → (${hgOffsetX}, ${hgOffsetY})`);
   }
