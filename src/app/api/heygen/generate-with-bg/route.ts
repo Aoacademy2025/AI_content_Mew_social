@@ -114,7 +114,7 @@ async function handleGenerateWithBg(req: Request) {
     removeBg = false,
     bgColor = "#000000",
     scale = HEYGEN_GEN_SCALE,
-    offsetX = 0.0,
+    offsetX = HEYGEN_GEN_FRAMING.offsetX,
     offsetY = HEYGEN_GEN_OFFSET_Y,
   } = body ?? {};
 
@@ -132,7 +132,7 @@ async function handleGenerateWithBg(req: Request) {
     if (Math.abs(n) <= 1) return n;
     return Math.max(-1, Math.min(1, n / 400));
   };
-  const hgOffsetX = safeOffset(offsetX, 0.0);
+  const hgOffsetX = safeOffset(offsetX, HEYGEN_GEN_FRAMING.offsetX);
   const hgOffsetY = safeOffset(offsetY, HEYGEN_GEN_OFFSET_Y);
   if (hgOffsetX !== Number(offsetX) || hgOffsetY !== Number(offsetY)) {
     console.warn(`[generate-with-bg] offset adjusted for HeyGen range: (${offsetX}, ${offsetY}) → (${hgOffsetX}, ${hgOffsetY})`);

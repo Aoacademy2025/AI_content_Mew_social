@@ -2445,6 +2445,7 @@ export default function VideoEditorPage() {
       });
       if (res.ok) {
         toast.success("บันทึกตำแหน่ง avatar แล้ว");
+        avatarHasPresetRef.current = true;
       } else {
         toast.error("บันทึกไม่สำเร็จ");
       }
@@ -2529,10 +2530,15 @@ export default function VideoEditorPage() {
   // pause "continue" button and the "re-position → re-composite" button.
   async function compositeWithCurrentLayout(): Promise<void> {
     if (!pipe.current.renderedVideoUrl || !avatarGreenUrl) { toast.error("ต้อง Render avatar ก่อน"); return; }
+    if (runningRef.current) return;
+    runningRef.current = true; setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
     setAwaitingPosition(false);
     const tailUrl = avatarTiming === "bookend-both" ? (avatarTailGreenUrl || undefined) : undefined;
     try { await runComposite(pipe.current.renderedVideoUrl, avatarGreenUrl, tailUrl); }
     catch (err) { if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err); }
+    finally { runningRef.current = false; setRunning(false); }
   }
 
   async function runAvatarTail(audioUrl: string): Promise<string> {
