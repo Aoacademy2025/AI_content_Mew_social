@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -1303,8 +1304,9 @@ export async function POST(req: Request) {
   }
 
   let llmKey: string | null = null;
+  let llmMode: "managed" | "byok" | null = null;
   if (user) {
-    try { llmKey = resolveGeminiKey(user).key; }
+    try { const resolved = resolveGeminiKey(user); llmKey = resolved.key; llmMode = resolved.mode; }
     catch (e) { if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
   }
 
@@ -1797,7 +1799,19 @@ export async function POST(req: Request) {
   if (isPerSubtitleMode && llmKey && subtitleTexts?.length === keywords.length) {
     const candidateTitles = candidatesByKeyword.map(cs => cs.map(c => c.title));
     const hasAnyCandidates = candidateTitles.some(t => t.length > 0);
-    if (hasAnyCandidates) {
+    // H1: bound managed-key text-LLM call frequency. At cap → skip the LLM ranker
+    // and use deterministic relevance ranking (graceful — never blocks the fetch).
+    // BYOK (enforce:false) → no-op, byte-identical to before.
+    const rankReserve = hasAnyCandidates
+      ? await reserveAiTextCall(userId, { enforce: llmMode === "managed" })
+      : { allowed: true };
+    if (hasAnyCandidates && !rankReserve.allowed) {
+      console.warn(`[fetch-stock] AI text-call ceiling reached — using deterministic relevance ranking instead of LLM`);
+      bestIdxByKeyword = candidatesByKeyword.map((cs, i) =>
+        bestRelevantCandidateIndex(cs, keywords[i] ?? "", subtitleTexts[i] ?? "", relTerms),
+      );
+      stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
+    } else if (hasAnyCandidates) {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {

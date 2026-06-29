@@ -6,6 +6,7 @@ import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import {
   contentProfilePromptBlock,
   detectContentProfile,
@@ -257,13 +258,24 @@ export async function POST(req: Request) {
   });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
   let apiKey: string;
+  let geminiMode: "managed" | "byok";
   try {
-    apiKey = resolveGeminiKey(user).key;
+    const resolved = resolveGeminiKey(user);
+    apiKey = resolved.key;
+    geminiMode = resolved.mode;
   } catch (e) {
     if (e instanceof KeyRequiredError) {
       return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
     }
     throw e;
+  }
+
+  // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+  // One reserve per request — this route fans out to N batched Gemini calls, but
+  // that per-request fan-out is the separate L4 blast-radius guard (ai-input-caps).
+  const textReserve = await reserveAiTextCall(userId, { enforce: geminiMode === "managed" });
+  if (!textReserve.allowed) {
+    return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
   }
 
   async function callLLM(prompt: string, maxTokens: number, jsonMode = true): Promise<string> {
