@@ -24,7 +24,7 @@ function ok(cond: boolean, msg: string) {
 }
 
 async function main() {
-  const { aiAudioCeilingFor, reserveAiAudioMinutes, refundAiAudioMinutes, checkAiAudioCeiling, recordAiAudioMinutes } = await import("../src/lib/ai-spend-limits");
+  const { aiAudioCeilingFor, reserveAiAudioMinutes, refundAiAudioMinutes, checkAiAudioCeiling, recordAiAudioMinutes, reconcileAiAudioMinutes, estimateTtsAudioMinutes } = await import("../src/lib/ai-spend-limits");
   const { prisma } = await import("../src/lib/prisma");
 
   // ── Part 1: pure ceiling math (default multiplier = 2) ─────────────────────
@@ -144,6 +144,73 @@ async function main() {
   ok(p2.allowed === false, "peek at ceiling (160) → blocked");
   await recordAiAudioMinutes("ace-peek", 10, { enforce: true });
   ok((await aiUsed("ace-peek")) === 170, "record overshoots past ceiling (170) — no block on record");
+
+  // ── estimateTtsAudioMinutes (H2): text length → reservable audio-minutes ─────
+  // tts-gemini doesn't know the audio length until AFTER generation, so it
+  // reserves an ESTIMATE from the input text up front (atomic), then reconciles.
+  ok(estimateTtsAudioMinutes("") === 0.25, "estimate: empty text → minimum reserve 0.25");
+  ok(estimateTtsAudioMinutes("   \n\t  ") === 0.25, "estimate: whitespace-only → minimum 0.25");
+  // 840 non-space chars @ 14 chars/sec = 60s = 1.0 min
+  ok(Math.abs(estimateTtsAudioMinutes("ก".repeat(840)) - 1) < 1e-9, "estimate: 840 chars → 1.0 min (14 cps)");
+  ok(Math.abs(estimateTtsAudioMinutes("ก ".repeat(840)) - 1) < 1e-9, "estimate: whitespace ignored (spaces don't speak)");
+  ok(estimateTtsAudioMinutes("ก".repeat(2000)) > estimateTtsAudioMinutes("ก".repeat(1000)), "estimate: longer text → more minutes (monotonic)");
+
+  // ── reconcileAiAudioMinutes (H2): settle a reserve to the real audio length ──
+  await prisma.user.create({
+    data: {
+      id: "ace-reco", name: "Ace Reco", email: "ace-reco@example.com",
+      plan: "PRO", minutesLimit: 80, minutesUsed: 0, aiAudioMinutesUsed: 0,
+      usagePeriodStartedAt: now, trialEndsAt: null, usageLimit: 100, usageCount: 0,
+    },
+  });
+  await reserveAiAudioMinutes("ace-reco", 5, { enforce: true });        // reserve estimate → counter 5
+  await reconcileAiAudioMinutes("ace-reco", 5, 3, { enforce: true });   // actual 3 < reserved 5 → refund 2
+  ok((await aiUsed("ace-reco")) === 3, "reconcile: actual<reserve → refund surplus (5→3)");
+  await reconcileAiAudioMinutes("ace-reco", 3, 4.5, { enforce: true }); // actual 4.5 > reserved 3 → record +1.5
+  ok((await aiUsed("ace-reco")) === 4.5, "reconcile: actual>reserve → record delta (3→4.5)");
+  await reconcileAiAudioMinutes("ace-reco", 4.5, 4.5, { enforce: true });
+  ok((await aiUsed("ace-reco")) === 4.5, "reconcile: actual==reserve → no change");
+  await reconcileAiAudioMinutes("ace-reco", 4.5, 99, { enforce: false }); // BYOK → no DB touch
+  ok((await aiUsed("ace-reco")) === 4.5, "reconcile: enforce:false → no-op (byte-identical)");
+
+  // ── ATOMICITY under concurrency: the actual H2 fix ──────────────────────────
+  // A read-only peek-then-write (checkAiAudioCeiling → recordAiAudioMinutes) lets
+  // N racing TTS calls all see "under ceiling" and overshoot; the atomic
+  // conditional reserve admits only those that fit. (No global render queue, so
+  // concurrent re-rolls/previews from one user really do race.)
+  await prisma.user.create({
+    data: {
+      id: "ace-race", name: "Ace Race", email: "ace-race@example.com",
+      plan: "PRO", minutesLimit: 80, minutesUsed: 0, aiAudioMinutesUsed: 0,
+      usagePeriodStartedAt: now, trialEndsAt: null, usageLimit: 100, usageCount: 0,
+    },
+  });
+  // First, characterize the HOLE the fix closes: the read-only peek allows ALL racers.
+  const peeks = await Promise.all(
+    Array.from({ length: 5 }, () => checkAiAudioCeiling("ace-race", { enforce: true })),
+  );
+  ok(peeks.every((p) => p.allowed), "race: read-only peek allows ALL 5 racers (the non-atomic hole)");
+  // Now the fix: 5 concurrent reserves of 100 vs ceiling 160. A peek passes all 5
+  // (→500, 3× over). The atomic reserve admits exactly ONE (100≤160; a 2nd = 200>160).
+  const racers = await Promise.all(
+    Array.from({ length: 5 }, () => reserveAiAudioMinutes("ace-race", 100, { enforce: true })),
+  );
+  ok(racers.filter((r) => r.allowed).length === 1, "race: atomic reserve admits exactly 1 of 5 (100 of 160)");
+  ok((await aiUsed("ace-race")) === 100, "race: counter = 100 (never overshoots ceiling 160)");
+
+  // Tighter tiling: 4 racers ×60 vs ceiling 160 — 60+60 fit (120), a 3rd (180) cannot.
+  await prisma.user.create({
+    data: {
+      id: "ace-race2", name: "Ace Race2", email: "ace-race2@example.com",
+      plan: "PRO", minutesLimit: 80, minutesUsed: 0, aiAudioMinutesUsed: 0,
+      usagePeriodStartedAt: now, trialEndsAt: null, usageLimit: 100, usageCount: 0,
+    },
+  });
+  const racers2 = await Promise.all(
+    Array.from({ length: 4 }, () => reserveAiAudioMinutes("ace-race2", 60, { enforce: true })),
+  );
+  ok(racers2.filter((r) => r.allowed).length === 2, "race2: 4 racers ×60 vs ceiling 160 → exactly 2 admitted");
+  ok((await aiUsed("ace-race2")) === 120, "race2: counter = 120 ≤ 160 (atomic tiling, no overshoot)");
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);
   process.exit(failures === 0 ? 0 : 1);

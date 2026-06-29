@@ -5,7 +5,12 @@ import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
-import { checkAiAudioCeiling, recordAiAudioMinutes } from "@/lib/ai-spend-limits";
+import {
+  reserveAiAudioMinutes,
+  refundAiAudioMinutes,
+  reconcileAiAudioMinutes,
+  estimateTtsAudioMinutes,
+} from "@/lib/ai-spend-limits";
 import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
@@ -299,6 +304,15 @@ function detectSilences(wavPath: string): Promise<{ midpoints: number[]; interva
 //   pass failed and we fell back to a single uninstrumented call — the editor
 //   then uses the transcribe fallback as before.
 export async function POST(req: Request) {
+  // AI-audio ceiling reserve tracking (managed mode). The route reserves an
+  // estimate up front (atomic) and settles it (reconcile on success / refund on
+  // failure). These outer vars let the top-level catch refund a still-held
+  // reserve if generation throws — so a failed call never leaks ceiling minutes
+  // (parity with the old "charge only after success"). All no-ops under BYOK.
+  let aiReserveUserId: string | null = null;
+  let aiReservedMin = 0;
+  let aiReserveEnforce = false;
+  let aiReserveSettled = true;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -336,8 +350,31 @@ export async function POST(req: Request) {
     }).catch(() => {});
 
     // Managed mode = server Gemini key = OUR spend → enforce the AI-audio ceiling.
-    // BYOK (enforceAi=false) → peek always-allows + record is a no-op (byte-identical).
+    // BYOK (enforceAi=false) → reserve always-allows with NO DB touch + reconcile is
+    // a no-op (byte-identical).
     const enforceAi = geminiMode === "managed";
+
+    // Settle helpers for the up-front AI-audio reserve. markReserved arms the
+    // outer-scope refund tracking; settleReconcile adjusts the held reserve to the
+    // real audio length on success; settleRefund gives the whole reserve back on a
+    // failure return. enforceAi=false → reconcile is a no-op and refund is skipped,
+    // so BYOK touches the DB exactly as before (byte-identical).
+    const markReserved = (minutes: number) => {
+      aiReserveUserId = authUser.id;
+      aiReservedMin = minutes;
+      aiReserveEnforce = enforceAi;
+      aiReserveSettled = false;
+    };
+    const settleRefund = async () => {
+      if (!aiReserveSettled && aiReserveEnforce && aiReservedMin > 0) {
+        await refundAiAudioMinutes(authUser.id, aiReservedMin).catch(() => {});
+      }
+      aiReserveSettled = true;
+    };
+    const settleReconcile = async (actualMinutes: number) => {
+      await reconcileAiAudioMinutes(authUser.id, aiReservedMin, actualMinutes, { enforce: enforceAi });
+      aiReserveSettled = true;
+    };
 
     if (preview === true) {
       const previewText = normalizeVoicePreviewText(text);
@@ -351,14 +388,20 @@ export async function POST(req: Request) {
       const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
       if (cached) return NextResponse.json({ ...cached, preview: true });
 
-      // Cache MISS = fresh server-key spend. Gate behind the ceiling so randomized
-      // preview text can't loop-burn Gemini (the audit's CRITICAL preview hole).
-      const previewCeil = await checkAiAudioCeiling(authUser.id, { enforce: enforceAi });
-      if (!previewCeil.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: previewCeil.message }, { status: 429 });
+      // Cache MISS = fresh server-key spend. Reserve an ESTIMATE up front (atomic)
+      // so randomized preview text can't loop-burn Gemini past the ceiling via a
+      // read-only peek (the audit's CRITICAL preview hole) — concurrent previews
+      // now each consume a real slice of the ceiling. Reconciled to the real audio
+      // length after success; refunded on failure. enforceAi=false (BYOK) → no DB
+      // touch (byte-identical).
+      const previewEstMin = estimateTtsAudioMinutes(previewText);
+      const previewReserve = await reserveAiAudioMinutes(authUser.id, previewEstMin, { enforce: enforceAi });
+      if (!previewReserve.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: previewReserve.message }, { status: 429 });
+      markReserved(previewEstMin);
       const r = await callGeminiTts(apiKey, previewText, selectedVoice);
-      if (!r.ok) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
+      if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
-      await recordAiAudioMinutes(authUser.id, pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000, { enforce: enforceAi });
+      await settleReconcile(pcmDurationMs(r.pcm.length, r.sampleRate) / 60_000);
       return NextResponse.json({
         voiceUrl: cache.voiceUrl,
         audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
@@ -375,16 +418,22 @@ export async function POST(req: Request) {
       }
     }
 
-    // AI-audio ceiling (managed): bounds server-Gemini TTS spend independently of
-    // render minutes (TTS is a separate, loopable endpoint). Charged after success.
-    if (enforceAi) {
-      const ceil = await checkAiAudioCeiling(authUser.id, { enforce: true });
-      if (!ceil.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ceil.message }, { status: 429 });
-    }
-
     // IRON RULE: fullText is the one string both TTS and subtitles see.
     // Chunks are exact contiguous slices of it (concat === fullText).
     const fullText: string = (text as string).trim();
+
+    // AI-audio ceiling (managed): bounds server-Gemini TTS spend independently of
+    // render minutes (TTS is a separate, loopable endpoint, and there is NO global
+    // render queue so concurrent re-rolls really race). Reserve an ESTIMATE from the
+    // script up front — ATOMICALLY — so racing calls can't all pass a read-only peek
+    // and overshoot the ceiling (transcribe already reserves atomically). Reconciled
+    // to the real audio length after generation; refunded in full on any failure.
+    // enforceAi=false (BYOK) → no DB touch (byte-identical).
+    const estMin = estimateTtsAudioMinutes(fullText);
+    const aiReserve = await reserveAiAudioMinutes(authUser.id, estMin, { enforce: enforceAi });
+    if (!aiReserve.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: aiReserve.message }, { status: 429 });
+    markReserved(estMin);
+
     const chunks = splitScriptForTts(fullText);
     const deadline = Date.now() + SEGMENTED_BUDGET_MS;
     console.log(`[tts-gemini] script ${fullText.length} chars → ${chunks.length} segment(s)`);
@@ -401,7 +450,7 @@ export async function POST(req: Request) {
       if (!r.ok) {
         // A 1-chunk clip has no fallback that differs from what just failed —
         // surface the mapped error exactly like the old single-call route.
-        if (chunks.length === 1) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
+        if (chunks.length === 1) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
         failOpen = `segment ${i + 1}/${chunks.length} failed (${r.status})`;
         pcms = null;
         break;
@@ -449,7 +498,7 @@ export async function POST(req: Request) {
     if (!pcms) {
       console.warn(`[tts-gemini] fail-open → single call (${failOpen})`);
       const r = await callGeminiTts(apiKey, fullText, selectedVoice);
-      if (!r.ok) return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed");
+      if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
       // Reserve minutes AFTER audio is produced (managed users only).
       // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
@@ -459,6 +508,7 @@ export async function POST(req: Request) {
         const minutes = Math.max(1, Math.ceil(failOpenDurationMs / 60_000));
         const reserved = await reserveMinutes(authUser.id, minutes);
         if (!reserved.allowed) {
+          await settleRefund();
           return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
         }
         // Telemetry: minute burn (fire-and-forget)
@@ -469,7 +519,7 @@ export async function POST(req: Request) {
           properties: { minutes, remaining: reserved.remaining, plan: user.plan },
         }).catch(() => {});
       }
-      await recordAiAudioMinutes(authUser.id, failOpenDurationMs / 60_000, { enforce: enforceAi });
+      await settleReconcile(failOpenDurationMs / 60_000);
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl,
@@ -489,6 +539,7 @@ export async function POST(req: Request) {
       const minutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
       const reserved = await reserveMinutes(authUser.id, minutes);
       if (!reserved.allowed) {
+        await settleRefund();
         return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
       }
       // Telemetry: minute burn (fire-and-forget)
@@ -499,7 +550,7 @@ export async function POST(req: Request) {
         properties: { minutes, remaining: reserved.remaining, plan: user.plan },
       }).catch(() => {});
     }
-    await recordAiAudioMinutes(authUser.id, audioDurationMs / 60_000, { enforce: enforceAi });
+    await settleReconcile(audioDurationMs / 60_000);
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
     console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
@@ -509,6 +560,11 @@ export async function POST(req: Request) {
       timing: { provider: "gemini" as const, segments, chars: null, silences: sil.midpoints, silenceIntervals: sil.intervals },
     });
   } catch (error) {
+    // Generation threw after the up-front reserve → refund it so a crash never
+    // leaks ceiling minutes (managed only; BYOK never held a reserve).
+    if (!aiReserveSettled && aiReserveEnforce && aiReserveUserId && aiReservedMin > 0) {
+      await refundAiAudioMinutes(aiReserveUserId, aiReservedMin).catch(() => {});
+    }
     console.error("[tts-gemini] top-level error:", error);
     return apiError({ route: "POST /api/videos/tts-gemini", error, notifyUser: true });
   }
