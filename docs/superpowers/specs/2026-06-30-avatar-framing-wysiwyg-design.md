@@ -71,10 +71,26 @@ The per-avatar preset-load effect (`page.tsx:333-348`) overwrites the live edito
 - Before any green exists, show the thumbnail **dimmed** with a clear label: positioning is approximate until the first render. The existing pre-gen note ("รูปตัวอย่าง · พื้นหลังจะถูกลบตอน render") is extended to set this expectation.
 - Persist `avatarGreenUrl` so reopening a draft keeps showing the real green (it's already saved in drafts at `loadDraftInto:942`); ensure the position box prefers it over the thumbnail after reload.
 
-### Component 3.3 — "Re-position → re-composite" (no re-gen)
-- Add an action in the position panel: **"ปรับตำแหน่ง → ประกอบใหม่"** that re-runs **composite only**, reusing the cached green avatar video + cached background (b-roll+voice) render. Seconds, no HeyGen credit.
-- Reuses `runComposite(bgVideoUrl, avatarUrl)` (`page.tsx:2441`) with current `avatarScale/OffsetX/OffsetY` and the cached urls (`avatarGreenUrl` in state; background from the pipeline cache `pipe.current.*` — exact field confirmed in the plan).
-- Guard: only enabled when both a green avatar video and a background render exist.
+### Component 3.3 — Pause-before-composite (first-time per avatar) + free re-composite
+The web render pipeline gains a **pause point between avatar gen and composite**, used only for first-time setup of an avatar:
+
+- **No saved preset for this (user, avatarId):** after the bg render + avatar gen complete, the pipeline **stops before composite** and surfaces the **real green video** in the position box. The user positions/scales against the real avatar, then clicks **"ต่อ → ประกอบ"** → composite runs (seconds, free) → the produced output already matches what they positioned. Saving the position writes the preset.
+- **Saved preset exists:** **no pause** — the pipeline runs straight through (gen → composite using the saved preset) → avatar correct immediately. The product's "one script → finished video" automation holds for all but the first clip of each avatar.
+- **After the first composite (either path):** the position panel keeps a **"ปรับตำแหน่ง → ประกอบใหม่"** action that re-runs **composite only**, reusing the cached green + bg. Unlimited cheap iteration, no re-gen.
+
+Timing note: the pause necessarily lands **after** the 15-25 min gen (positioning needs the real green, which only exists post-gen). Flow is "render → wait for gen → position → continue (seconds)", not "position then long render".
+
+Implementation reuses `runComposite(bgVideoUrl, avatarUrl)` (`page.tsx:2441`) with current `avatarScale/OffsetX/OffsetY` and cached urls (`avatarGreenUrl` in state; bg from the pipeline cache `pipe.current.*` — exact field confirmed in the plan). The pause is a pipeline-state gate between the existing discrete `avatar` and `composite` steps. Re-composite is enabled only when both a green avatar video and a bg render exist.
+
+### Component 3.6 — MCP / chat path (no pause; consumes the preset)
+The MCP path **cannot pause** (no interactive UI). It already **loads and applies the saved preset** — verified wired at `src/app/api/[transport]/route.ts:155-162`:
+```js
+const avatarLayout = resolveAvatarLayout(
+  { avatarScale: args.avatarScale, ... },     // caller-supplied wins per-axis
+  await getAvatarPreset(p.userId, avatar.avatarId),  // else the saved preset
+);                                             // else DEFAULT_AVATAR_LAYER
+```
+So MCP behavior is unchanged by this work *except*: the **B gen-default change must include `src/lib/mcp/avatar-steps.ts:6`** (`HEYGEN_FRAMING`) so MCP-gen'd green is framed identically to web → the same preset applies correctly across both surfaces. Relationship: **web = set the preset (with first-time pause); preset = portable result; MCP = consume it (or the tuned default).** A pure-chat user with no preset gets the good default (B); MCP may advise setting position once in the web editor for an exact fit (optional copy, low priority).
 
 ### Component 3.4 — Preset load without clobbering live edits
 - The preset-load effect (`page.tsx:333-348`) must not overwrite a layout the user has already touched this session. Options (decide in plan): only apply the preset before the first user interaction with the position controls; or set `loadedPresetFor` on *all* exit paths (including no-preset) so it is a true one-shot per avatarId.
@@ -89,17 +105,21 @@ The per-avatar preset-load effect (`page.tsx:333-348`) overwrites the live edito
 
 **Gen count = 1 per clip.** Positioning iteration = free (composite only).
 
-### New avatar (no preset)
+### New avatar (no preset) — pipeline **pauses** for one-time setup
 1. Enter script + avatar ID. Position box shows thumbnail dimmed + "ปรับตำแหน่งจริงได้หลัง render รอบแรก".
-2. Render → b-roll/voice + avatar **gen #1** → composite with tuned default (B) → preview = real result.
-3. Real green now shown in the box. If good → done. If not → drag sliders → "ปรับตำแหน่ง → ประกอบใหม่" (composite only, free, repeatable).
-4. Happy → 💾 Save ตำแหน่ง → preset stored for this avatar.
+2. Render → b-roll/voice + avatar **gen #1** (15-25 min) → **⏸️ pauses before composite**, showing the **real green avatar**.
+3. User positions/scales against the real avatar → 💾 Save ตำแหน่ง → **"ต่อ → ประกอบ"** → composite (seconds, free) → output matches the chosen position.
+4. Want to tweak more → drag → "ปรับตำแหน่ง → ประกอบใหม่" (composite only, free, repeatable).
 5. Burn & Download.
 
-### Same avatar, later clips (preset exists)
+### Same avatar, later clips (preset exists) — **no pause**, fully automatic
 1. New script + same avatar → preset auto-loads.
-2. Render → **gen once** → composite uses saved preset → avatar correct immediately.
+2. Render → **gen once** → composite uses saved preset → avatar correct immediately (no pause).
 3. Burn & Download.
+
+### MCP / chat (any clip) — **no pause**
+1. `create_video_job` → server pipeline runs straight through → composite uses the saved preset (or tuned default if none).
+2. Poll `get_video_status` → done. (No interactive positioning; users set the preset once via the web editor.)
 
 **One limitation (accepted):** the very first clip of a new avatar needs one render before faithful fine-tuning is possible (true pre-render WYSIWYG would require an extra sample gen = approach A, rejected for cost). The tuned default (B) covers this so the first render is usually already good.
 
@@ -110,7 +130,7 @@ The per-avatar preset-load effect (`page.tsx:333-348`) overwrites the live edito
 | File | Change |
 |---|---|
 | `src/lib/avatar-gen-framing.ts` (new, optional) | Single source for gen scale/offset |
-| `src/app/(dashboard)/video-editor/page.tsx` | gen constant; preset-load clobber guard; re-composite action wiring; prefer green over thumbnail |
+| `src/app/(dashboard)/video-editor/page.tsx` | gen constant; preset-load clobber guard; **pause-before-composite gate (first-time, no-preset)** + re-composite action; prefer green over thumbnail |
 | `src/lib/mcp/avatar-steps.ts` | gen constant (keep MCP in sync) |
 | `src/app/api/heygen/generate-with-bg/route.ts` | gen default in sync |
 | `src/app/(dashboard)/video-editor/_components/OrderPanel.tsx` | dimmed-thumbnail + honest label; "re-composite" button; enable/disable logic |
@@ -132,6 +152,6 @@ No schema change. Deploy = `git pull` + `prisma db push` (additive) + build + re
 - Manual e2e (Mew, chrome-devtools): new-avatar flow → render → re-composite cheap iterate → Save → second clip uses preset.
 
 ## 8. Rollout
-1. **B first (quick win):** tune gen default constants + render-on-green QA → deploy. Immediately improves default framing for everyone. Fix duckyhero's stale preset.
-2. **Then 3.2-3.4:** honest preview + re-composite button + clobber guard → deploy.
+1. **B first (quick win):** tune gen default constants (all callers incl. MCP `avatar-steps.ts:6`) + render-on-green QA → deploy. Immediately improves default framing for web + MCP. Fix duckyhero's stale preset.
+2. **Then 3.2-3.4 + 3.6:** honest preview + pause-before-composite (first-time) + re-composite button + clobber guard → deploy. (3.6/MCP needs only the B constant — already wired to consume the preset.)
 - Deploy only when no in-flight RenderJob/VideoJob (Mew's rule). Single deploy channel.
