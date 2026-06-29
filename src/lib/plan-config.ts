@@ -19,21 +19,21 @@ const DEFAULTS: Record<string, string> = {
   free_badge: "",
   free_tagline: "ทดลองฟรี ก่อนตัดสินใจ",
   free_features:
-    "ทดลอง PRO ฟรี 7 วัน|5 นาที/เดือน · ยาวสุด 2 นาที|ซับไทย + B-roll อัตโนมัติ|เก็บวิดีโอ 3 วัน",
+    "ทดลอง PRO ฟรี 7 วัน|5 นาที/เดือน · ~5 คลิป · ยาวสุด 2 นาที|ซับไทย + B-roll อัตโนมัติ|เก็บวิดีโอ 3 วัน",
 
   pro_price: "599",
   pro_name: "Pro",
   pro_badge: "แนะนำ",
   pro_tagline: "คุ้มสุดสำหรับครีเอเตอร์ที่โพสต์ประจำ",
   pro_features:
-    "80 นาที/เดือน · ยาวสุด 6 นาที|AI Avatar พิธีกร (HeyGen) — หรือทำ Faceless|เสียง AI ไทย + ใช้เสียงโคลนจาก ElevenLabs|ซับไทยตรงเสียงเป๊ะ (ยาว / keyword ไวรัล)|B-roll เปลี่ยนทุก 3–5 วิ + เพลง + Sound FX|ตัดต่อในเว็บ + ลบพื้นหลัง + ฟอนต์พรีเมียม|สั่งสร้างผ่านแชท Claude (MCP)|เก็บวิดีโอ 7 วัน",
+    "80 นาที/เดือน · ~80 คลิป · ยาวสุด 6 นาที|AI Avatar พิธีกร (HeyGen) — หรือทำ Faceless|เสียง AI ไทย + ใช้เสียงโคลนจาก ElevenLabs|ซับไทยตรงเสียงเป๊ะ (ยาว / keyword ไวรัล)|B-roll เปลี่ยนทุก 3–5 วิ + เพลง + Sound FX|ตัดต่อในเว็บ + ลบพื้นหลัง + ฟอนต์พรีเมียม|สั่งสร้างผ่านแชท Claude (MCP)|เก็บวิดีโอ 7 วัน",
 
   business_price: "990",
   business_name: "Business",
   business_badge: "",
   business_tagline: "สำหรับทีม/เอเจนซีที่ผลิตเยอะ",
   business_features:
-    "ทุกอย่างใน PRO|150 นาที/เดือน (เกือบ 2 เท่าของ PRO)|คลิปยาวสุด 10 นาที|เก็บวิดีโอ 14 วัน|Priority Support ตอบไวกว่า",
+    "ทุกอย่างใน PRO|150 นาที/เดือน · ~150 คลิป (เกือบ 2 เท่าของ PRO)|คลิปยาวสุด 10 นาที|เก็บวิดีโอ 14 วัน|Priority Support ตอบไวกว่า",
 };
 
 async function getCfg(key: string, fallback: string): Promise<string> {
