@@ -4168,14 +4168,13 @@ export default function VideoEditorPage() {
                 const isBurnDone = isDone && k === "burnSubtitles" && !!burnedUrl;
                 const isClickable = isDone || isError;
 
-                // Direct-URL mode supplies the avatar video itself — there's
-                // nothing to "generate", so the Avatar/Tail/Composite steps have no
-                // standalone Run action (they run as part of the main pipeline).
-                const isDirectAvatar = avatarInputMode === "direct";
+                // Avatar/Tail/Composite steps trigger the smart avatar action (onAvatarPrimary):
+                // composite-only when a green already exists for the same inputs, else gen — for
+                // both gen and direct-URL avatars.
                 // Determine the run action for this step
                 const stepRunAction: (() => void) | null = !running ? (() => {
                   if (k === "burnSubtitles") return () => runBurnSubtitles();
-                  if (k === "avatar" || k === "avatarTail" || k === "composite") return (useAvatar && !isDirectAvatar) ? () => runAvatarPipeline() : null;
+                  if (k === "avatar" || k === "avatarTail" || k === "composite") return useAvatar ? () => onAvatarPrimary() : null;
                   if (k === "render") return pipe.current.config ? () => runRenderOnly() : () => runFrom("render");
                   if (k === "tts" && avatarInputMode === "direct" && avatarDirectUrl.trim()) return null;
                   return () => runFrom(k as keyof StepState);
@@ -4187,7 +4186,7 @@ export default function VideoEditorPage() {
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
                   k !== "burnSubtitles" || (burnHasBase && !running)
                 ) && (
-                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || (useAvatar && !isDirectAvatar)
+                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || useAvatar
                 );
                 const showRerunBtn = !running && (isDone || isError) && stepRunAction !== null;
 
