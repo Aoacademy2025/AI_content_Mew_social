@@ -2932,7 +2932,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -3042,14 +3042,14 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (!handlePlanError(err)) {
-        showErrorToast(err);
-        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-        // Skip when poll timed out (server job may still be running and may have charged minutes).
-        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
-        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
-          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
-        }
+      if (handlePlanError(err)) return;
+      if (handleMissingKey(err, "runAvatarPipeline")) return;
+      showErrorToast(err);
+      // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+      // Skip when poll timed out (server job may still be running and may have charged minutes).
+      const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+      if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+        toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
       }
     } finally {
       runningRef.current = false; setRunning(false);
