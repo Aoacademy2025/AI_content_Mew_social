@@ -58,7 +58,7 @@ export interface OrderPanelProps {
   setAvatarBookendSecs: (v: number) => void; setAvatarTailSecs: (v: number) => void;
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void; setAvatarOffsetY: (v: number) => void;
   onSaveAvatarLayout: () => Promise<void>; avatarLayoutSaving: boolean;
-  awaitingPosition: boolean; onComposite: () => void; compositing: boolean;
+  onComposite: () => void; compositing: boolean;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
   onPlanError?: (msg: string) => void;
   stockSource: StockSource;
@@ -864,13 +864,7 @@ export function OrderPanel(p: OrderPanelProps) {
                           <div className="flex gap-2">
                             <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0);p.setAvatarScale(1);}} className="text-[9px] text-slate-600 hover:text-slate-400 flex-1 text-center">↺ Reset</button>
                             <button onClick={()=>{ void p.onSaveAvatarLayout(); }} disabled={p.avatarLayoutSaving} className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 flex-1 text-center">{p.avatarLayoutSaving ? "กำลังบันทึก…" : "💾 Save ตำแหน่ง"}</button>
-                            {p.awaitingPosition && (
-                              <button onClick={() => p.onComposite()} disabled={p.compositing}
-                                className="text-[9px] font-semibold text-emerald-300 hover:text-emerald-200 disabled:opacity-50 flex-1 text-center">
-                                {p.compositing ? "กำลังประกอบ…" : "▶ ต่อ → ประกอบ"}
-                              </button>
-                            )}
-                            {!p.awaitingPosition && p.avatarGreenUrl && (
+                            {p.avatarGreenUrl && (
                               <button onClick={() => p.onComposite()} disabled={p.compositing}
                                 className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 flex-1 text-center">
                                 {p.compositing ? "กำลังประกอบ…" : "↻ ปรับตำแหน่ง → ประกอบใหม่"}

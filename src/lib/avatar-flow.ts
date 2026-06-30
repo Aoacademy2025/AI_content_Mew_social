@@ -12,13 +12,6 @@ export function shouldApplyLoadedPreset(input: { loadedFor: string | null; avata
   return true;
 }
 
-/** Pause the web render before composite the FIRST time an avatar is used, so the user can
- *  position against the real green video. Skip when no avatar, a direct-URL avatar (no gen
- *  framing to fix), or a saved preset already exists (run straight through = automation). */
-export function shouldPauseForPositioning(input: { useAvatar: boolean; isDirect: boolean; hasSavedPreset: boolean }): boolean {
-  return input.useAvatar && !input.isDirect && !input.hasSavedPreset;
-}
-
 /** The inputs that determine the HeyGen GENERATION output. If any of these changes, the
  *  existing green is stale and HeyGen must re-render (costs credit). Scale/offset/chroma are
  *  deliberately ABSENT — they're composite-layer (free ffmpeg), so adjusting them can never

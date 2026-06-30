@@ -48,7 +48,7 @@ import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
-import { shouldApplyLoadedPreset, shouldPauseForPositioning, avatarGenSignature, nextAvatarAction } from "@/lib/avatar-flow";
+import { shouldApplyLoadedPreset, avatarGenSignature, nextAvatarAction } from "@/lib/avatar-flow";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
@@ -324,9 +324,6 @@ export default function VideoEditorPage() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
-  // True when the pipeline has paused after avatar gen, waiting for the user to position
-  // the avatar and hit "continue" before running the composite step.
-  const [awaitingPosition, setAwaitingPosition] = useState(false);
   // Signature of the inputs the CURRENT avatarGreenUrl was generated from. Lets the primary
   // button re-composite for free when only scale/offset/chroma changed, and re-pay HeyGen only
   // when a gen-input (avatar / voice / script / timing) actually changed. null = no green / unknown.
@@ -2530,18 +2527,6 @@ export default function VideoEditorPage() {
     return finalUrl;
   }
 
-  // After the avatar green is ready: pause for first-time positioning, or composite straight through.
-  // Returns true when it took the pause path (so callers can skip success toasts).
-  async function compositeOrPause(bgUrl: string, avUrl: string, tailUrl?: string): Promise<boolean> {
-    if (shouldPauseForPositioning({ useAvatar, isDirect: avatarInputMode === "direct", hasSavedPreset: avatarHasPresetRef.current })) {
-      setAwaitingPosition(true);
-      setStep("composite", "idle", "รอจัดตำแหน่ง avatar — กด \"ต่อ → ประกอบ\"");
-      return true; // pipeline stops here; user resumes via compositeWithCurrentLayout()
-    }
-    await runComposite(bgUrl, avUrl, tailUrl);
-    return false;
-  }
-
   // Composite-only using the already-generated green (no HeyGen re-gen). Used by both the
   // pause "continue" button and the "re-position → re-composite" button.
   async function compositeWithCurrentLayout(): Promise<void> {
@@ -2550,7 +2535,6 @@ export default function VideoEditorPage() {
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
-    setAwaitingPosition(false);
     const tailUrl = avatarTiming === "bookend-both" ? (avatarTailGreenUrl || undefined) : undefined;
     try { await runComposite(pipe.current.renderedVideoUrl, avatarGreenUrl, tailUrl); }
     catch (err) { if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err); }
@@ -2580,6 +2564,25 @@ export default function VideoEditorPage() {
     if (nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() }) === "composite")
       void compositeWithCurrentLayout();
     else void runAvatarPipeline();
+  }
+
+  // After a base render, ensure the avatar is composited. Gen (HeyGen) only when a gen-input
+  // changed since the last green (or no green yet); otherwise composite the existing green for
+  // free. Direct mode's runAvatar sets green from the URL (no HeyGen). No pause — ever.
+  async function autoCompositeAfterRender(renderedUrl: string, audioUrl: string): Promise<void> {
+    const action = nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() });
+    let avUrl = avatarGreenUrl;
+    let tailUrl = avatarTiming === "bookend-both" && avatarInputMode !== "direct" ? (avatarTailGreenUrl || undefined) : undefined;
+    if (action === "gen") {
+      avUrl = await runAvatar(audioUrl);
+      if (abortRef.current) return;
+      if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+        tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
+        if (abortRef.current) return;
+      }
+      setLastGenSig(currentAvatarGenSig());
+    }
+    await runComposite(renderedUrl, avUrl, tailUrl);
   }
 
   async function runAvatarTail(audioUrl: string): Promise<string> {
@@ -2662,8 +2665,8 @@ export default function VideoEditorPage() {
       // Remember what these greens were generated from. A later click that changed only
       // scale/offset/chroma keeps the same signature → the primary button composites for free.
       setLastGenSig(currentAvatarGenSig());
-      const paused = await compositeOrPause(pipe.current.renderedVideoUrl, avUrl, tailUrl);
-      if (abortRef.current || paused) return;
+      await runComposite(pipe.current.renderedVideoUrl, avUrl, tailUrl);
+      if (abortRef.current) return;
       toast.success(captionsRef.current.length > 0
         ? "Avatar preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ"
         : "Avatar preview พร้อมแล้ว");
@@ -2893,20 +2896,12 @@ export default function VideoEditorPage() {
       const renderedUrl = await runRender(cfg);
       if (abortRef.current) return;
 
-      let paused = false;
       if (useAvatar) {
-        const avUrl = await runAvatar(vUrl);
+        await autoCompositeAfterRender(renderedUrl, vUrl);
         if (abortRef.current) return;
-        let tailUrl: string | undefined;
-        if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
-          tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
-          if (abortRef.current) return;
-        }
-        paused = await compositeOrPause(renderedUrl, avUrl, tailUrl);
-        if (abortRef.current || paused) return;
       }
 
-      if (!abortRef.current && !paused) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
+      if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
       if (handlePlanError(err)) return;
@@ -4574,7 +4569,7 @@ export default function VideoEditorPage() {
               setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
               setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
               onSaveAvatarLayout={onSaveAvatarLayout} avatarLayoutSaving={avatarLayoutSaving}
-              awaitingPosition={awaitingPosition} onComposite={() => { void compositeWithCurrentLayout(); }} compositing={running}
+              onComposite={() => { void compositeWithCurrentLayout(); }} compositing={running}
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
