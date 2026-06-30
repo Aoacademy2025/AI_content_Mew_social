@@ -59,6 +59,7 @@ export interface RightPanelProps {
   onSaveAvatarLayout: () => Promise<void>;
   avatarLayoutSaving: boolean;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
+  onAvatarPrimary: () => void; avatarPrimaryLabel: string; avatarPrimaryIsGen: boolean;
   projectName: string; onSaveTemplate: () => void;
   onPlanError?: (msg: string) => void;
 }
@@ -672,18 +673,27 @@ export function RightSettingsPanel(p: RightPanelProps) {
                       {p.avatarGreenUrl && (
                         <div className="text-[10px] text-emerald-400 truncate">✓ Avatar: {p.avatarGreenUrl.split("/").pop()}</div>
                       )}
-                      <button onClick={p.runAvatarPipeline}
+                      <button onClick={p.onAvatarPrimary}
                         disabled={p.running || !p.pipeRenderedVideoUrl}
                         className={cn("w-full py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all",
                           p.running || !p.pipeRenderedVideoUrl
                             ? "bg-[#1a1a22] border border-[#2a2a36] text-slate-600 cursor-not-allowed"
                             : "bg-violet-600 hover:bg-violet-500 text-white shadow-[0_0_12px_rgba(124,58,237,0.3)]")}>
                         <User className="w-3 h-3" />
-                        {p.steps.avatar === "running" ? "กำลัง Gen Avatar (ต้น)..." : p.steps.avatarTail === "running" ? "กำลัง Gen Avatar (ท้าย)..." : p.steps.composite === "running" ? "กำลัง Composite..." : "สร้าง Avatar + Composite"}
+                        {p.steps.avatar === "running" ? "กำลัง Gen Avatar (ต้น)..." : p.steps.avatarTail === "running" ? "กำลัง Gen Avatar (ท้าย)..." : p.steps.composite === "running" ? "กำลัง Composite..." : p.avatarPrimaryLabel}
                       </button>
-                      {!p.pipeRenderedVideoUrl && (
+                      {!p.pipeRenderedVideoUrl ? (
                         <div className="text-[10px] text-slate-600 text-center">ต้อง Render วิดีโอก่อน</div>
-                      )}
+                      ) : p.avatarGreenUrl && !p.avatarPrimaryIsGen ? (
+                        // Green already made + only position/chroma differs → primary composites for free.
+                        // Offer an explicit, low-key way to spend credit on a fresh gen if they really want one.
+                        <button onClick={p.runAvatarPipeline} disabled={p.running}
+                          className="w-full text-[9px] text-slate-500 hover:text-slate-300 disabled:opacity-50 text-center">
+                          เจน Avatar ใหม่ (ใช้เครดิต HeyGen)
+                        </button>
+                      ) : p.avatarGreenUrl && p.avatarPrimaryIsGen ? (
+                        <div className="text-[9px] text-amber-400/80 text-center">⚠️ เนื้อหาเปลี่ยน — กดแล้วจะเจน HeyGen ใหม่ (ใช้เครดิต)</div>
+                      ) : null}
                     </>
                   )}
                   {p.avatarInputMode === "direct" && (

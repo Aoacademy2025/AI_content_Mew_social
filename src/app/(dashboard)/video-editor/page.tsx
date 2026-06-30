@@ -48,7 +48,7 @@ import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
-import { shouldApplyLoadedPreset, shouldPauseForPositioning } from "@/lib/avatar-flow";
+import { shouldApplyLoadedPreset, shouldPauseForPositioning, avatarGenSignature, nextAvatarAction } from "@/lib/avatar-flow";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
@@ -327,6 +327,10 @@ export default function VideoEditorPage() {
   // True when the pipeline has paused after avatar gen, waiting for the user to position
   // the avatar and hit "continue" before running the composite step.
   const [awaitingPosition, setAwaitingPosition] = useState(false);
+  // Signature of the inputs the CURRENT avatarGreenUrl was generated from. Lets the primary
+  // button re-composite for free when only scale/offset/chroma changed, and re-pay HeyGen only
+  // when a gen-input (avatar / voice / script / timing) actually changed. null = no green / unknown.
+  const [lastGenSig, setLastGenSig] = useState<string | null>(null);
 
   // Collapse ok+unverified into a single boolean so the load-preset effect fires only on
   // the invalid→valid edge, not on the unverified→ok transition (which would clobber edits).
@@ -873,6 +877,7 @@ export default function VideoEditorPage() {
     setChromaBlend(0.04);
     setAvatarGreenUrl("");
     setAvatarTailGreenUrl("");
+    setLastGenSig(null);
 
     // Pipeline steps + logs
     setSteps({ ...DEFAULT_STEPS });
@@ -955,6 +960,17 @@ export default function VideoEditorPage() {
     if (d.chromaBlend !== undefined) setChromaBlend(d.chromaBlend);
     if (d.avatarGreenUrl !== undefined) setAvatarGreenUrl(d.avatarGreenUrl);
     if (d.avatarTailGreenUrl !== undefined) setAvatarTailGreenUrl(d.avatarTailGreenUrl);
+    // Treat a restored green as already-generated from the draft's inputs, so the primary
+    // button re-composites (free) instead of re-paying HeyGen the first time after reload.
+    setLastGenSig(d.avatarGreenUrl ? avatarGenSignature({
+      inputMode: d.avatarInputMode || "generate",
+      avatarId: d.avatarId ?? "",
+      directUrl: (d.avatarDirectUrl ?? "").trim(),
+      voiceUrl: d.voiceUrl ?? "",
+      timing: d.avatarTiming || "full",
+      bookendSecs: d.avatarBookendSecs ?? 5,
+      tailSecs: d.avatarTailSecs ?? 5,
+    }) : null);
 
     // Pipeline cache — restore so steps can re-run from any point
     pipe.current.voiceUrl = d.voiceUrl ?? "";
@@ -2541,6 +2557,31 @@ export default function VideoEditorPage() {
     finally { runningRef.current = false; setRunning(false); }
   }
 
+  // The gen signature of the CURRENT inputs (what generating right now would produce). Shared
+  // by the primary-button decision and the "remember after gen" write in runAvatarPipeline.
+  const currentAvatarGenSig = () => avatarGenSignature({
+    inputMode: avatarInputMode, avatarId, directUrl: avatarDirectUrl.trim(),
+    voiceUrl: pipe.current.voiceUrl ?? "", timing: avatarTiming,
+    bookendSecs: avatarBookendSecs, tailSecs: avatarTailSecs,
+  });
+  // Primary avatar button: composite-only (free) when a green already exists for the SAME
+  // gen-inputs; re-gen (HeyGen, costs credit) only when a gen-input actually changed.
+  // Scale/offset/chroma are NOT in the signature → adjusting them never re-gens (the bug fix).
+  const avatarPrimaryAction: "gen" | "composite" = nextAvatarAction({
+    hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig(),
+  });
+  const avatarPrimaryIsGen = avatarPrimaryAction === "gen";
+  const avatarPrimaryLabel = !avatarGreenUrl
+    ? "สร้าง Avatar + ประกอบ"
+    : avatarPrimaryIsGen
+      ? "อัปเดต Avatar (เจนใหม่) + ประกอบ"
+      : "▶ ปรับตำแหน่ง → ประกอบ";
+  function onAvatarPrimary(): void {
+    if (nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() }) === "composite")
+      void compositeWithCurrentLayout();
+    else void runAvatarPipeline();
+  }
+
   async function runAvatarTail(audioUrl: string): Promise<string> {
     setStep("avatarTail", "running", `Trimming tail audio ${avatarTailSecs}s...`);
     setAvatarTailGreenUrl("");
@@ -2618,6 +2659,9 @@ export default function VideoEditorPage() {
         tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
         if (abortRef.current) return;
       }
+      // Remember what these greens were generated from. A later click that changed only
+      // scale/offset/chroma keeps the same signature → the primary button composites for free.
+      setLastGenSig(currentAvatarGenSig());
       const paused = await compositeOrPause(pipe.current.renderedVideoUrl, avUrl, tailUrl);
       if (abortRef.current || paused) return;
       toast.success(captionsRef.current.length > 0
@@ -4586,6 +4630,7 @@ export default function VideoEditorPage() {
                 setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
                 setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+                onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
                 projectName={projectName} onSaveTemplate={() => {
                   const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
                   localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
@@ -4653,6 +4698,7 @@ export default function VideoEditorPage() {
             setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
             setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+            onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
             projectName={projectName} onSaveTemplate={() => {
               const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
               localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
