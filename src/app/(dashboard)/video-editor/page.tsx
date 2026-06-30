@@ -390,6 +390,9 @@ export default function VideoEditorPage() {
   // ── Avatar Direct URL mode ────────────────────────────────────────────
   const [avatarInputMode, setAvatarInputMode] = useState<"generate" | "direct">("generate");
   const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
+  // Direct upload composite: "chromakey" = remove green, overlay on b-roll; "full" = use the
+  // uploaded clip's own background full-frame (no chroma), just add subtitles.
+  const [directCompositeMode, setDirectCompositeMode] = useState<"chromakey" | "full">("chromakey");
   const [chromaSimilarity, setChromaSimilarity] = useState(0.28);
   const [chromaBlend, setChromaBlend] = useState(0.04);
 
@@ -2482,17 +2485,28 @@ export default function VideoEditorPage() {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
       body: isDirect
-        ? JSON.stringify({
-            avatarVideoUrl: avatarUrl,
-            bgVideoUrl,
-            mode: "chromakey",
-            noScale: true,
-            chromaColor: "0x00ff00",
-            chromaSimilarity,
-            chromaBlend,
-            // The rendered background already contains the direct-avatar voice plus BGM.
-            audioFromAvatar: false,
-          })
+        ? JSON.stringify(
+            directCompositeMode === "full"
+              ? {
+                  avatarVideoUrl: avatarUrl,
+                  bgVideoUrl,
+                  // Full-video mode: overlay the uploaded clip full-frame (no chroma) — its own
+                  // background shows; subtitles burn on top. Audio comes from the clip.
+                  mode: "direct",
+                  audioFromAvatar: true,
+                }
+              : {
+                  avatarVideoUrl: avatarUrl,
+                  bgVideoUrl,
+                  mode: "chromakey",
+                  noScale: true,
+                  chromaColor: "0x00ff00",
+                  chromaSimilarity,
+                  chromaBlend,
+                  // The rendered background already contains the direct-avatar voice plus BGM.
+                  audioFromAvatar: false,
+                }
+          )
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
             ...(avatarTiming === "bookend-both" && tailAvatarUrl ? { tailAvatarVideoUrl: tailAvatarUrl } : {}),
@@ -4567,6 +4581,7 @@ export default function VideoEditorPage() {
               avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
               avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
               setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
+              directCompositeMode={directCompositeMode} setDirectCompositeMode={setDirectCompositeMode}
               chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
               chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
               setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}

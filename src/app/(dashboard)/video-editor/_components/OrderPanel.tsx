@@ -50,6 +50,7 @@ export interface OrderPanelProps {
   onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error" | "unverified";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
+  directCompositeMode: "chromakey" | "full"; setDirectCompositeMode: (m: "chromakey" | "full") => void;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
   chromaSimilarity: number; setChromaSimilarity: (v: number) => void;
   chromaBlend: number; setChromaBlend: (v: number) => void;
@@ -878,7 +879,15 @@ export function OrderPanel(p: OrderPanelProps) {
                   </>
                 ) : (
                   <div className="space-y-2">
-                    <div className="text-[10px] text-slate-500 bg-violet-500/5 border border-violet-500/15 rounded-lg px-2.5 py-2 leading-relaxed">วิดีโอ green screen + เสียง — chromakey อัตโนมัติหลัง Render</div>
+                    <div className="flex gap-1.5">
+                      {([["chromakey","Green Screen (ตัดเขียว)"],["full","วิดีโอเต็มจอ (ใส่ซับ)"]] as const).map(([m, label]) => (
+                        <button key={m} onClick={() => p.setDirectCompositeMode(m)}
+                          className={`flex-1 py-1.5 rounded-lg border text-[10px] font-bold transition-all ${p.directCompositeMode === m ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500"}`}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-[10px] text-slate-500 bg-violet-500/5 border border-violet-500/15 rounded-lg px-2.5 py-2 leading-relaxed">{p.directCompositeMode === "full" ? "วิดีโอเต็มจอ — ใช้พื้นหลังในคลิป + ใส่ซับ อัตโนมัติหลัง Render" : "วิดีโอ green screen — ตัดเขียววางบน b-roll อัตโนมัติหลัง Render"}</div>
                     <div className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">URL or Upload File</div>
                     <div className="relative flex items-center">
                       <input value={p.avatarDirectUrl} onChange={e => p.setAvatarDirectUrl(e.target.value)} placeholder="https://... หรือ URL วิดีโอ green screen"
