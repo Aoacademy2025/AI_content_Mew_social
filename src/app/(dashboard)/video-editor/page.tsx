@@ -956,6 +956,7 @@ export default function VideoEditorPage() {
     }
     if (d.avatarInputMode) setAvatarInputMode(d.avatarInputMode);
     if (d.avatarDirectUrl !== undefined) setAvatarDirectUrl(d.avatarDirectUrl);
+    if (d.directCompositeMode) setDirectCompositeMode(d.directCompositeMode); // N5: persist direct green/full toggle
     if (d.chromaSimilarity !== undefined) setChromaSimilarity(d.chromaSimilarity);
     if (d.chromaBlend !== undefined) setChromaBlend(d.chromaBlend);
     if (d.avatarGreenUrl !== undefined) setAvatarGreenUrl(d.avatarGreenUrl);
@@ -1135,7 +1136,7 @@ export default function VideoEditorPage() {
       avatarTiming, avatarBookendSecs, avatarTailSecs,
       avatarScale, avatarOffsetX, avatarOffsetY,
       avatarLayoutV2: true,
-      avatarInputMode, avatarDirectUrl,
+      avatarInputMode, avatarDirectUrl, directCompositeMode,
       chromaSimilarity, chromaBlend,
       avatarGreenUrl, avatarTailGreenUrl,
     };
@@ -2480,6 +2481,14 @@ export default function VideoEditorPage() {
 
   async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
     const isDirect = avatarInputMode === "direct";
+    // Guard: bookend-both needs the clip ≥ intro+outro, else the tail segment is empty and
+    // the route's ffmpeg 500s. Fail with a clear message instead of a raw 500.
+    if (!isDirect && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+      }
+    }
     setStep("composite", "running", isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey + composite...");
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2551,7 +2560,11 @@ export default function VideoEditorPage() {
     abortControllerRef.current = new AbortController();
     const tailUrl = avatarTiming === "bookend-both" ? (avatarTailGreenUrl || undefined) : undefined;
     try { await runComposite(pipe.current.renderedVideoUrl, avatarGreenUrl, tailUrl); }
-    catch (err) { if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err); }
+    catch (err) {
+      if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return; // user Stop → cancel cleanly, not a red error
+      if (stepsRef.current.composite === "running") setStep("composite", "error", friendlyError(err)); // B2
+      if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err);
+    }
     finally { runningRef.current = false; setRunning(false); }
   }
 
@@ -2584,6 +2597,14 @@ export default function VideoEditorPage() {
   // changed since the last green (or no green yet); otherwise composite the existing green for
   // free. Direct mode's runAvatar sets green from the URL (no HeyGen). No pause — ever.
   async function autoCompositeAfterRender(renderedUrl: string, audioUrl: string): Promise<void> {
+    // Pre-gen guard: bookend-both needs the clip ≥ intro+outro. Catch it here (audio duration is
+    // known after render) so we don't burn 2 HeyGen gens on a clip that can't composite.
+    if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+      }
+    }
     const action = nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() });
     let avUrl = avatarGreenUrl;
     let tailUrl = avatarTiming === "bookend-both" && avatarInputMode !== "direct" ? (avatarTailGreenUrl || undefined) : undefined;
@@ -2591,7 +2612,7 @@ export default function VideoEditorPage() {
       avUrl = await runAvatar(audioUrl);
       if (abortRef.current) return;
       if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
-        tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
+        tailUrl = await runAvatarTail(audioUrl); // B1: regen tail fresh on every gen (no stale reuse)
         if (abortRef.current) return;
       }
       setLastGenSig(currentAvatarGenSig());
@@ -2659,6 +2680,15 @@ export default function VideoEditorPage() {
     // paying for HeyGen if the clip exceeds the plan cap (direct mode has no known
     // duration, so it passes through and relies on the server backstop).
     if (!isDirect && !checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
+    // Same short-clip guard as autoCompositeAfterRender — block bookend-both before paying for
+    // 2 HeyGen gens when the clip is shorter than intro+outro (else the tail segment is empty).
+    if (!isDirect && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        toast.error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+        return;
+      }
+    }
     if (runningRef.current) return;
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
@@ -2673,7 +2703,7 @@ export default function VideoEditorPage() {
       if (abortRef.current) return;
       let tailUrl: string | undefined;
       if (!isDirect && avatarTiming === "bookend-both") {
-        tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
+        tailUrl = await runAvatarTail(audioUrl); // B1: regen tail fresh on every gen (no stale reuse)
         if (abortRef.current) return;
       }
       // Remember what these greens were generated from. A later click that changed only
@@ -2918,6 +2948,11 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      // B2: clear any avatar/composite spinner left "running" so it doesn't spin forever.
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
       if (handlePlanError(err)) return;
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
@@ -2932,7 +2967,7 @@ export default function VideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -3009,6 +3044,11 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      // B2: clear any avatar/composite spinner left "running" so it doesn't spin forever.
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
       if (handlePlanError(err)) return;
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
@@ -3035,6 +3075,7 @@ export default function VideoEditorPage() {
       const renderedUrl = await runRender(pipe.current.config);
       if (abortRef.current) return;
       if (useAvatar) {
+        if (avatarInputMode !== "direct" && !pipe.current.voiceUrl) { toast.error("ต้องสร้างเสียง TTS ก่อน (กด Render เต็มรอบ)"); return; } // S4
         const audioUrl = avatarInputMode === "direct" ? avatarDirectUrl.trim() : (pipe.current.voiceUrl ?? "");
         await autoCompositeAfterRender(renderedUrl, audioUrl);
         if (abortRef.current) return;
@@ -3042,6 +3083,11 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      // B2: clear any avatar/composite spinner left "running".
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
       if (handlePlanError(err)) return;
       if (handleMissingKey(err, "runAvatarPipeline")) return;
       showErrorToast(err);

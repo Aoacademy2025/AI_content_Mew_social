@@ -199,6 +199,7 @@ export interface EditorDraft {
   avatarLayoutV2?: boolean;
   avatarInputMode?: "generate" | "direct";
   avatarDirectUrl?: string;
+  directCompositeMode?: "chromakey" | "full";
   chromaSimilarity?: number;
   chromaBlend?: number;
   avatarGreenUrl?: string;
