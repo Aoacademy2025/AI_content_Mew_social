@@ -185,6 +185,11 @@ export async function claimNextRenderJob(): Promise<RenderJobRow | null> {
         startedAt: new Date(),
         heartbeatAt: new Date(),
         attempts: { increment: 1 },
+        progress: 0,
+        phase: null,
+        error: null,
+        cancelRequested: false,
+        finishedAt: null,
       },
     });
     if (res.count === 1) {
@@ -228,7 +233,16 @@ export async function requestCancel(id: string): Promise<void> {
 export async function finishRenderJob(id: string, videoUrl: string): Promise<void> {
   await prisma.renderJob.update({
     where: { id },
-    data: { status: "DONE", progress: 100, videoUrl, finishedAt: new Date() },
+    data: {
+      status: "DONE",
+      progress: 100,
+      phase: "done",
+      videoUrl,
+      error: null,
+      heartbeatAt: null,
+      cancelRequested: false,
+      finishedAt: new Date(),
+    },
   });
 }
 
@@ -254,7 +268,16 @@ export async function failRenderJob(
   if (canRetry) {
     await prisma.renderJob.update({
       where: { id },
-      data: { status: "QUEUED", error: errStr, heartbeatAt: null, startedAt: null },
+      data: {
+        status: "QUEUED",
+        progress: 0,
+        phase: null,
+        error: null,
+        heartbeatAt: null,
+        startedAt: null,
+        finishedAt: null,
+        cancelRequested: false,
+      },
     });
     return;
   }
@@ -295,6 +318,11 @@ export async function requeueForShutdown(id: string): Promise<void> {
       status: "QUEUED",
       startedAt: null,
       heartbeatAt: null,
+      progress: 0,
+      phase: null,
+      error: null,
+      finishedAt: null,
+      cancelRequested: false,
       attempts: Math.max(0, job.attempts - 1), // undo the claim's increment
     },
   });

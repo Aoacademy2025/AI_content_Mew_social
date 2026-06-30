@@ -17,6 +17,7 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
+import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import {
   activeRenderCancel,
@@ -34,16 +35,6 @@ function getRenderTmpDir(): string {
     process.env.RENDER_TMP_ROOT
       ? path.resolve(process.env.RENDER_TMP_ROOT)
       : path.join(process.cwd(), ".tmp", "remotion");
-  try {
-    fs.mkdirSync(base, { recursive: true });
-  } catch {}
-  return base;
-}
-
-function getRemotionBundlePublicDir(): string {
-  // Remotion inputs are absolute /api/renders and /api/stocks URLs, not staticFile().
-  // Use an empty public dir so bundle() does not duplicate public/renders into cache.
-  const base = path.join(process.cwd(), ".tmp", "remotion-public");
   try {
     fs.mkdirSync(base, { recursive: true });
   } catch {}
@@ -825,7 +816,7 @@ export async function POST(req: Request) {
       fps,
       requestedJpegQuality,
       entryPoint,
-      bundlePublicDir: getRemotionBundlePublicDir(),
+      bundlePublicDir: prepareRemotionBundlePublicDir(),
       rendersDir,
       watermark,
       // Shared bundle cache — process-level, on the caller, passed by reference so
