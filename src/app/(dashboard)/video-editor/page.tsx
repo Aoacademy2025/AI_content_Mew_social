@@ -3018,8 +3018,13 @@ export default function VideoEditorPage() {
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     try {
-      await runRender(pipe.current.config);
+      const renderedUrl = await runRender(pipe.current.config);
       if (abortRef.current) return;
+      if (useAvatar) {
+        const audioUrl = avatarInputMode === "direct" ? avatarDirectUrl.trim() : (pipe.current.voiceUrl ?? "");
+        await autoCompositeAfterRender(renderedUrl, audioUrl);
+        if (abortRef.current) return;
+      }
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
