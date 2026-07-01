@@ -17,7 +17,7 @@ import { NotificationBell } from "@/components/layout/notification-bell";
 import { FadeSwap } from "@/components/ui/fade-swap";
 
 const navLinks = [
-  { title: "Docs", href: "/docs" },
+  { title: "วิธีใช้งาน", href: "/docs" },
 ];
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {

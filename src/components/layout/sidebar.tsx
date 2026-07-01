@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
   Palette, FileText, Settings, Users, Film, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -46,6 +46,7 @@ const userNavItems: SidebarNavItem[] = [
   { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
   { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard },
   { title: "Gallery",       href: "/videos",      icon: Video },
+  { title: "วิธีใช้งาน",     href: "/docs",        icon: BookOpen },
   { title: "อัปเดต",       href: "/updates",     icon: Megaphone },
   { title: "Pricing",       href: "/pricing",     icon: CreditCard },
   { title: "Settings",      href: "/settings",    icon: Settings },
