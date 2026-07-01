@@ -1,9 +1,11 @@
 import type { DocEntry, DocMeta } from "./types";
 import * as gettingStarted from "./getting-started";
+import * as setupApiKeys from "./setup-api-keys";
 
 // เพิ่มหัวข้อใหม่ = import ที่นี่ แล้วใส่ใน modules[]
 const modules = [
   gettingStarted,
+  setupApiKeys,
 ];
 
 export const docs: DocEntry[] = modules
