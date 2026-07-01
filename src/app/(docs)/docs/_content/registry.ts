@@ -4,6 +4,7 @@ import * as setupApiKeys from "./setup-api-keys";
 import * as createVideo from "./create-video";
 import * as subtitles from "./subtitles";
 import * as avatar from "./avatar";
+import * as minutesCredits from "./minutes-credits";
 
 // เพิ่มหัวข้อใหม่ = import ที่นี่ แล้วใส่ใน modules[]
 const modules = [
@@ -12,6 +13,7 @@ const modules = [
   createVideo,
   subtitles,
   avatar,
+  minutesCredits,
 ];
 
 export const docs: DocEntry[] = modules
