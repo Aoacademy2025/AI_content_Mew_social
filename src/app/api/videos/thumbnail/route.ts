@@ -5,6 +5,9 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
@@ -227,13 +230,25 @@ export async function POST(req: Request) {
       });
       if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
       let geminiKey: string;
+      let geminiMode: "managed" | "byok";
       try {
-        geminiKey = resolveGeminiKey(user).key;
+        const resolved = resolveGeminiKey(user);
+        geminiKey = resolved.key;
+        geminiMode = resolved.mode;
       } catch (e) {
         if (e instanceof KeyRequiredError) {
           return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
         }
         throw e;
+      }
+
+      // L4 input cap + H1 managed-Gemini text-call ceiling (BYOK → no-op, byte-identical).
+      // Without these a caller could loop suggest on an owned videoId to burn the server key.
+      const capCheck = checkAiInputCaps({ script });
+      if (!capCheck.ok) return NextResponse.json({ error: capCheck.message }, { status: 400 });
+      const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+      if (!textReserve.allowed) {
+        return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
       }
 
       // Extract captions from renderConfig
@@ -294,13 +309,25 @@ export async function POST(req: Request) {
     if (!sourceVideoSrc) {
       if (!videoSrc)
         return NextResponse.json({ error: "No video URL available" }, { status: 400 });
+      const isRemote = /^https?:\/\//i.test(videoSrc);
       const p = videoSrc.startsWith("/") ? path.join(process.cwd(), "public", videoSrc.replace(/^\/api\/renders\//, "/renders/")) : videoSrc;
-      if (!videoSrc.startsWith("http") && !fs.existsSync(p))
+      if (videoSrc.startsWith("/")) {
+        // Contain local webroot paths so a "/../.." can't escape public/ into .env / prisma/dev.db.
+        const publicDir = path.resolve(process.cwd(), "public");
+        if (path.resolve(p) !== publicDir && !path.resolve(p).startsWith(publicDir + path.sep))
+          return NextResponse.json({ error: "Invalid video URL" }, { status: 400 });
+      }
+      if (!isRemote && !fs.existsSync(p))
         return NextResponse.json({ error: "Video file not found" }, { status: 404 });
       sourceVideoSrc = p;
     }
 
-    // Capture frame via ffmpeg
+    // Capture frame via ffmpeg. A remote URL is handed to ffmpeg -i (which fetches it) → SSRF-guard
+    // so it can't reach internal/private hosts.
+    if (/^https?:\/\//i.test(sourceVideoSrc!)) {
+      try { await assertSafeFetchUrl(sourceVideoSrc!); }
+      catch { return NextResponse.json({ error: "URL ไม่ปลอดภัยหรือไม่รองรับ" }, { status: 400 }); }
+    }
     const framePath = path.join(rendersDir, `thumb-frame-${Date.now()}.jpg`);
     await captureFrame(sourceVideoSrc!, atSec, framePath);
 
