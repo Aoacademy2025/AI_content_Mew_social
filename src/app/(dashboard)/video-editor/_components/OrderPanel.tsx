@@ -831,15 +831,21 @@ export function OrderPanel(p: OrderPanelProps) {
                             X: {p.avatarOffsetX}<br />Y: {p.avatarOffsetY}<br />SCALE: {p.avatarScale.toFixed(2)}
                           </div>
                           {/* เลเยอร์ avatar = สูตรเดียวกับ ffmpeg composite: width = scale×เฟรม, center เลื่อน (px/200)×ครึ่งเฟรม */}
-                          {(p.avatarPreviewUrl || p.avatarGreenUrl) && (
+                          {p.avatarGreenUrl ? (
+                            /* Green = full-frame avatar (gen framing 1.0); the saved scale/offset is
+                               calibrated for it, so this preview matches the final render (WYSIWYG). */
                             <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*100}%`, aspectRatio:"9/16", left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
-                              {p.avatarGreenUrl ? (
-                                <video src={p.avatarGreenUrl} className="w-full h-full object-cover" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
-                              ) : (
-                                <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center top", opacity: 0.5 }} />
-                              )}
+                              <video src={p.avatarGreenUrl} className="w-full h-full object-cover" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
                             </div>
-                          )}
+                          ) : p.avatarPreviewUrl ? (
+                            /* Before the first render only HeyGen's headshot thumbnail exists. Its framing
+                               differs from the full-frame green video, so applying the green-calibrated scale
+                               (e.g. 2.06×) would massively over-zoom the already-tight headshot (reported "zoom"
+                               bug). Show it at neutral size — the amber note explains position is set after Render. */
+                            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                              <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center top", opacity: 0.5 }} />
+                            </div>
+                          ) : null}
                           <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)" }} />
                           {p.avatarPreviewUrl && !p.avatarGreenUrl && (
                             <div className="absolute bottom-1 left-1 right-1 bg-black/80 text-[7px] text-amber-300/90 px-1.5 py-0.5 rounded text-center pointer-events-none leading-snug">
