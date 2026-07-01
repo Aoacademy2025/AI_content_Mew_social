@@ -1,5 +1,3 @@
-"use client";
-
 import { Rocket } from "lucide-react";
 import type { DocMeta } from "./types";
 import { Section, Step, Callout } from "../_components/ui";
@@ -16,7 +14,7 @@ export const meta: DocMeta = {
 export default function GettingStartedDoc() {
   return (
     <div className="space-y-5">
-      <Section title="HERO AI ทำอะไรได้" icon={Rocket}>
+      <Section title="HERO AI ทำอะไรได้" icon={<Rocket className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}>
         <p>เปลี่ยน <strong>สคริปต์</strong> เป็นวิดีโอสั้นอัตโนมัติ: เสียงพากย์ + B-roll เปลี่ยนทุก 3–5 วิ + ซับไทยตรงเสียง + พิธีกร AI (avatar) ถ้าต้องการ</p>
         <p>ขั้นตอนหลัก: <strong>Style → Content → Video</strong></p>
       </Section>

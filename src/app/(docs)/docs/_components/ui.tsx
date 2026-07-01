@@ -4,14 +4,14 @@ import { AlertTriangle, Info, CheckCircle2, Lightbulb } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** การ์ดหัวข้อย่อยภายในหน้า — สะอาด ใช้ token */
-export function Section({ title, icon: Icon, children }: { title: string; icon?: React.ElementType; children: React.ReactNode }) {
+export function Section({ title, icon, children }: { title: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="premium-card p-5 md:p-6">
       <div className="mb-3 flex items-center gap-2.5">
-        {Icon && (
+        {icon && (
           <span className="flex h-8 w-8 items-center justify-center rounded-lg"
             style={{ background: "hsl(262 83% 58% / 0.12)", border: "1px solid hsl(262 83% 58% / 0.28)" }}>
-            <Icon className="h-4 w-4 text-violet-300" strokeWidth={2.25} />
+            {icon}
           </span>
         )}
         <h2 className="text-[16px] font-bold tracking-tight" style={{ color: "var(--ui-text-primary)" }}>{title}</h2>

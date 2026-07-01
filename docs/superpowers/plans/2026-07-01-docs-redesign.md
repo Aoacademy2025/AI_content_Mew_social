@@ -686,8 +686,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Tasks 5–10: Content docs
 
-> **รูปแบบเดียวกันทุก task:** สร้างไฟล์ `_content/<slug>.tsx` (`"use client"` + `export const meta: DocMeta` + default component ที่ประกอบจาก `Section/Step/PipelineRow/ApiRow/Callout/KeyLink/Tips/Tip` ของ `ui.tsx`) แล้ว **เพิ่ม import ใน `registry.ts`** (`import * as X from "./<slug>"` + ใส่ใน `modules[]`).
-> เนื้อหาเขียนเป็นภาษาไทย โทนอ่านง่าย ตาม Global Constraints. Verify: `npx tsc --noEmit` + เปิด `/docs/<slug>` ดูเรนเดอร์ + หัวข้อโผล่ใน sidebar. Commit ต่อ task.
+> ⚠️ **แก้ไข (พบระหว่าง Task 4's `npm run build`, ดู `.superpowers/sdd/progress.md` Minor findings):** อย่าใส่ `"use client"` ที่ `_content/<slug>.tsx` แบบเหมารวมอีกต่อไป — `[slug]/page.tsx` เป็น Server Component ที่อ่าน `meta.slug`/`meta.category`/`meta.title` ผ่าน `registry.ts`; ถ้าไฟล์เนื้อหามี `"use client"`, RSC จะแทนที่ **ทุก** export (รวม `meta`) ด้วย client-reference stub ทำให้ build พังที่ `generateStaticParams` (`meta.slug` เป็น `undefined`). **ค่าเริ่มต้นใหม่: ไม่ต้องใส่ `"use client"`** (`Section/Step/PipelineRow/ApiRow/Callout/KeyLink/Tips/Tip` ใน `ui.tsx` เป็น presentational ล้วน ไม่ต้องใช้ client) — ใส่เฉพาะไฟล์ที่เรียก hook จริง (เช่น Task 5 ที่ต้องใช้ `useDocsContext()`) และให้แยกเฉพาะส่วนที่ใช้ hook ออกเป็น nested Client Component เล็กๆ (ไฟล์เพิ่ม เช่น `setup-api-keys-gemini-section.tsx`) โดยไฟล์หลัก (`export const meta` + default component) ยังคงเป็น Server Component. ถ้าไฟล์ไหนต้องส่ง icon component reference เข้า `Section`, ห้ามส่ง `icon={SomeIcon}` ตรงๆ — ต้อง render เป็น JSX ก่อน: `icon={<SomeIcon className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}` (ตามที่ Task 4 แก้ไว้ใน `getting-started.tsx`).
+>
+> **รูปแบบเดียวกันทุก task:** สร้างไฟล์ `_content/<slug>.tsx` (`export const meta: DocMeta` + default component ที่ประกอบจาก `Section/Step/PipelineRow/ApiRow/Callout/KeyLink/Tips/Tip` ของ `ui.tsx` — **ไม่ใส่ `"use client"`** เว้นแต่ต้องใช้ hook ดูคำเตือนด้านบน) แล้ว **เพิ่ม import ใน `registry.ts`** (`import * as X from "./<slug>"` + ใส่ใน `modules[]`).
+> เนื้อหาเขียนเป็นภาษาไทย โทนอ่านง่าย ตาม Global Constraints. Verify: `npx tsc --noEmit` + เปิด `/docs/<slug>` ดูเรนเดอร์ + หัวข้อโผล่ใน sidebar. **แนะนำเพิ่ม: รัน `npm run build` ต่อไฟล์แรกที่ใช้ hook (Task 5) เพื่อยืนยัน pattern การแยก client-subcomponent ใช้ได้จริงก่อนทำ task ถัดๆไป.** Commit ต่อ task.
 
 ### Task 5: setup-api-keys
 
