@@ -16,11 +16,11 @@ export default function MinutesCreditsDoc() {
   return (
     <div className="space-y-5">
       <Section title="แผน & โควตานาที" icon={<Clock className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}>
-        <p>แต่ละแผนมีโควตานาทีเรนเดอร์และจำนวนคลิปต่อ 30 วัน ดังนี้</p>
+        <p>แต่ละแผนมีโควตา<strong>นาทีเรนเดอร์</strong>ต่อ 30 วัน (จำนวนคลิปเป็นค่าประมาณที่ ~1 นาที/คลิป) ดังนี้</p>
         <ul className="space-y-1.5">
-          <li><strong>FREE</strong> — 5 นาที / 2 คลิป ต่อ 30 วัน</li>
-          <li><strong>PRO</strong> — 80 นาที / 100 คลิป ต่อ 30 วัน</li>
-          <li><strong>BUSINESS</strong> — 150 นาที / 300 คลิป ต่อ 30 วัน</li>
+          <li><strong>FREE</strong> — 5 นาที (~5 คลิป) ต่อ 30 วัน</li>
+          <li><strong>PRO</strong> — 80 นาที (~80 คลิป) ต่อ 30 วัน</li>
+          <li><strong>BUSINESS</strong> — 150 นาที (~150 คลิป) ต่อ 30 วัน</li>
         </ul>
         <p>
           การนับนาที: ระบบปัดความยาวคลิปเข้าใกล้จำนวนเต็มที่สุด (ปัดขึ้นหรือลง) โดยนับ<strong>ขั้นต่ำ 1 นาที/คลิป</strong> เสมอ แม้คลิปจะสั้นกว่านั้น
