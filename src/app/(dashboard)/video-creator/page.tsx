@@ -13,6 +13,7 @@ import {
   Music2, Upload, X, Check,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 import { QuotaStatus } from "@/components/quota-status";
@@ -386,7 +387,7 @@ export default function ShortVideoPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [avatarId, setAvatarId] = useState("");
-  const [avatarScale, setAvatarScale] = useState(1.0);
+  const [avatarScale, setAvatarScale] = useState(HEYGEN_GEN_FRAMING.scale);
   const [avatarOffsetX, setAvatarOffsetX] = useState(0.0);
   const [avatarOffsetY, setAvatarOffsetY] = useState(0);
   const [useAvatar, setUseAvatar] = useState(true);

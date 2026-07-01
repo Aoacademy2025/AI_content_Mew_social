@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -75,8 +76,8 @@ async function generateVideo(opts: GenerateOpts): Promise<string> {
         type: "avatar",
         avatar_id: avatarId,
         avatar_style: "normal",
-        offset: { x: 0.0, y: 0.28 },
-        scale: 2.02,
+        offset: { x: HEYGEN_GEN_FRAMING.offsetX, y: HEYGEN_GEN_FRAMING.offsetY },
+        scale: HEYGEN_GEN_FRAMING.scale,
         matting: true,
       },
       voice: { type: "audio", audio_asset_id: audioAssetId },
