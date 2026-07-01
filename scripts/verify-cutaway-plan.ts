@@ -68,5 +68,16 @@ assert(buildEnableExpr([]) === "", "empty ranges => empty expr");
   assert(buildEnableExpr([{ start: 5, end: 3 }]) === "", "buildEnableExpr drops backwards range");
 }
 
+// 9) buildEnableExpr hardening: malformed/hostile input never injects and never throws
+{
+  const bad = (x: unknown) => buildEnableExpr(x as { start: number; end: number }[]);
+  assert(bad("evil'); drop") === "", "non-array input => empty expr (no throw)");
+  assert(bad(null) === "" && bad(undefined) === "", "null/undefined => empty expr");
+  assert(bad([{ start: "0)'", end: 5 }]) === "", "non-numeric start dropped (no injection)");
+  assert(bad([{ start: 5, end: Infinity }]) === "", "Infinity end dropped");
+  assert(buildEnableExpr([{ start: -3, end: 5 }]) === "", "negative start dropped");
+  assert(buildEnableExpr([{ start: 0, end: 5 }]) === "between(t,0.000,5.000)", "valid range still works");
+}
+
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

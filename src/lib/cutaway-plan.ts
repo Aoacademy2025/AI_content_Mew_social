@@ -31,10 +31,14 @@ export function planCutaway(windows: { startMs: number; endMs: number }[]): Cuta
 /**
  * ffmpeg overlay `enable=` expression, true during the given ranges (seconds).
  * '+' is logical OR in ffmpeg expressions. Empty => "" (caller draws always).
+ * Defense-in-depth: this output is interpolated into an ffmpeg filter string, so accept
+ * ONLY finite, non-negative numbers with end > start. `Number.isFinite` does not coerce
+ * (drops strings/NaN/Infinity), and `toFixed(3)` emits only [-0-9.], so the result can
+ * never contain filter-graph metacharacters. Non-array input => no ranges (never throws).
  */
 export function buildEnableExpr(rangesSec: { start: number; end: number }[]): string {
-  return (rangesSec ?? [])
-    .filter((r) => r && Number.isFinite(r.start) && Number.isFinite(r.end) && r.end > r.start)
+  return (Array.isArray(rangesSec) ? rangesSec : [])
+    .filter((r) => r && Number.isFinite(r.start) && Number.isFinite(r.end) && r.start >= 0 && r.end > r.start)
     .map((r) => `between(t,${r.start.toFixed(3)},${r.end.toFixed(3)})`)
     .join("+");
 }
