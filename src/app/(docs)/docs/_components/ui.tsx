@@ -91,7 +91,7 @@ export function Callout({ kind = "info", children }: { kind?: CalloutKind; child
 /** ลิงก์ไปตั้งค่า key ที่ /settings (in-app) */
 export function KeyLink({ children = "ไปที่ Settings → API Keys" }: { children?: React.ReactNode }) {
   return (
-    <a href="/settings?tab=keys" className="font-semibold text-violet-300 underline-offset-2 hover:underline">{children}</a>
+    <a href="/settings?tab=api-keys" className="font-semibold text-violet-300 underline-offset-2 hover:underline">{children}</a>
   );
 }
 

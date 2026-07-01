@@ -25,15 +25,16 @@ export default function SetupApiKeysDoc() {
       >
         <p>คีย์ต่อไปนี้ยังต้องไปขอเองแล้วนำมาวางที่หน้า Settings — ใช้สำหรับฟีเจอร์ที่ระบบไม่ได้จัดการให้</p>
 
+        <Callout kind="warn">
+          <strong>จำเป็น:</strong> ต้องมี Pexels หรือ Pixabay อย่างน้อย 1 ตัว (สำหรับ B-roll)
+        </Callout>
         <ApiRow
           name="Pexels"
-          required
           desc="ดึงคลิป B-roll สต็อกมาประกอบวิดีโอ"
           link="https://www.pexels.com/api/"
         />
         <ApiRow
           name="Pixabay"
-          required
           desc="ดึงคลิป B-roll สต็อกมาประกอบวิดีโอ"
           link="https://pixabay.com/api/docs/"
         />
