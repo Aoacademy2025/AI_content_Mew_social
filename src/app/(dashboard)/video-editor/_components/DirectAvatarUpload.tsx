@@ -37,7 +37,7 @@ function uploadErrorMessage(status: number, data: UploadResponse) {
   return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
 }
 
-export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string) => void; onPlanError?: (msg: string) => void }) {
+export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { onUrl: (url: string) => void; onPlanError?: (msg: string) => void; requirePortrait?: boolean }) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -50,8 +50,8 @@ export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string
       toast.error("ไฟล์ใหญ่เกิน 2 GB");
       return;
     }
-    if (!(await isPortraitVideoFile(file))) {
-      onPlanError?.("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
+    if (requirePortrait && !(await isPortraitVideoFile(file))) {
+      toast.error("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
       return;
     }
     setUploading(true);

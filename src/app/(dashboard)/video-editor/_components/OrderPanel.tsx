@@ -909,7 +909,8 @@ export function OrderPanel(p: OrderPanelProps) {
                         className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-300 outline-none pr-7" />
                       {p.avatarDirectUrl && <button onClick={() => p.setAvatarDirectUrl("")} className="absolute right-2 text-slate-600 hover:text-slate-400"><X className="h-3 w-3" /></button>}
                     </div>
-                    <DirectAvatarUpload onUrl={p.setAvatarDirectUrl} onPlanError={(msg) => p.onPlanError?.(msg)} />
+                    <DirectAvatarUpload onUrl={p.setAvatarDirectUrl} onPlanError={(msg) => p.onPlanError?.(msg)}
+                      requirePortrait={p.directCompositeMode === "cutaway"} />
                     {p.avatarDirectUrl.trim() && <video src={p.avatarDirectUrl.trim()} controls className="w-full rounded-lg" style={{ maxHeight: 180, background: "#000" }} />}
                   </div>
                 )}
