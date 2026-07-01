@@ -50,7 +50,7 @@ export interface OrderPanelProps {
   onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error" | "unverified";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
-  directCompositeMode: "chromakey" | "full"; setDirectCompositeMode: (m: "chromakey" | "full") => void;
+  directCompositeMode: "chromakey" | "full" | "cutaway"; setDirectCompositeMode: (m: "chromakey" | "full") => void;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
   chromaSimilarity: number; setChromaSimilarity: (v: number) => void;
   chromaBlend: number; setChromaBlend: (v: number) => void;

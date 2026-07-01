@@ -47,6 +47,7 @@ import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
+import { planCutaway } from "@/lib/cutaway-plan";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { shouldApplyLoadedPreset, avatarGenSignature, nextAvatarAction } from "@/lib/avatar-flow";
 
@@ -392,7 +393,7 @@ export default function VideoEditorPage() {
   const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
   // Direct upload composite: "chromakey" = remove green, overlay on b-roll; "full" = use the
   // uploaded clip's own background full-frame (no chroma), just add subtitles.
-  const [directCompositeMode, setDirectCompositeMode] = useState<"chromakey" | "full">("chromakey");
+  const [directCompositeMode, setDirectCompositeMode] = useState<"chromakey" | "full" | "cutaway">("chromakey");
   const [chromaSimilarity, setChromaSimilarity] = useState(0.28);
   const [chromaBlend, setChromaBlend] = useState(0.04);
 
@@ -2495,26 +2496,38 @@ export default function VideoEditorPage() {
       signal: abortControllerRef.current?.signal,
       body: isDirect
         ? JSON.stringify(
-            directCompositeMode === "full"
+            directCompositeMode === "cutaway"
               ? {
                   avatarVideoUrl: avatarUrl,
                   bgVideoUrl,
-                  // Full-video mode: overlay the uploaded clip full-frame (no chroma) — its own
-                  // background shows; subtitles burn on top. Audio comes from the clip.
-                  mode: "direct",
+                  // Clip is the base; b-roll base shows through during non-person windows.
+                  mode: "cutaway",
                   audioFromAvatar: true,
+                  personRanges: planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
+                    start: r.startMs / 1000,
+                    end: r.endMs / 1000,
+                  })),
                 }
-              : {
-                  avatarVideoUrl: avatarUrl,
-                  bgVideoUrl,
-                  mode: "chromakey",
-                  noScale: true,
-                  chromaColor: "0x00ff00",
-                  chromaSimilarity,
-                  chromaBlend,
-                  // The rendered background already contains the direct-avatar voice plus BGM.
-                  audioFromAvatar: false,
-                }
+              : directCompositeMode === "full"
+                ? {
+                    avatarVideoUrl: avatarUrl,
+                    bgVideoUrl,
+                    // Full-video mode: overlay the uploaded clip full-frame (no chroma) — its own
+                    // background shows; subtitles burn on top. Audio comes from the clip.
+                    mode: "direct",
+                    audioFromAvatar: true,
+                  }
+                : {
+                    avatarVideoUrl: avatarUrl,
+                    bgVideoUrl,
+                    mode: "chromakey",
+                    noScale: true,
+                    chromaColor: "0x00ff00",
+                    chromaSimilarity,
+                    chromaBlend,
+                    // The rendered background already contains the direct-avatar voice plus BGM.
+                    audioFromAvatar: false,
+                  },
           )
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
