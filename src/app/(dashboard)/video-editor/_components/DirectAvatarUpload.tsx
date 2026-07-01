@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { isPortraitVideoFile } from "@/lib/video-orientation";
 
 const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
 
@@ -47,6 +48,10 @@ export function DirectAvatarUpload({ onUrl, onPlanError }: { onUrl: (url: string
     }
     if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
       toast.error("ไฟล์ใหญ่เกิน 2 GB");
+      return;
+    }
+    if (!(await isPortraitVideoFile(file))) {
+      onPlanError?.("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
       return;
     }
     setUploading(true);
