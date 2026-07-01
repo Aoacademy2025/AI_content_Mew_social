@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordChargedClip } from "@/lib/clip-charge";
 import { clampAvatarLayout, layoutGeometry, type AvatarLayout } from "@/lib/avatar-layout";
+import { buildEnableExpr } from "@/lib/cutaway-plan";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -77,6 +78,40 @@ async function directComposite(bgPath: string, avatarPath: string, outPath: stri
     outPath,
   ]);
   console.log("[direct-composite] done");
+}
+
+// ─────────────────────────────────────────────
+// Mode: cutaway — uploaded clip is the base video; the content-matched b-roll (bg)
+// peeks through during NON-person windows. Overlay the clip only during person ranges
+// (enable=between). Audio always from the clip (input 1). No green screen needed.
+// ─────────────────────────────────────────────
+async function cutawayComposite(
+  bgPath: string,
+  avatarPath: string,
+  outPath: string,
+  personRangesSec: { start: number; end: number }[],
+): Promise<void> {
+  const ffmpeg = getFfmpegPath();
+  const enableExpr = buildEnableExpr(personRangesSec);
+  const overlay = enableExpr
+    ? `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`
+    : `[bg][fg]overlay=0:0:format=auto[out]`; // no ranges => behave like full (fail-open)
+  const filter = [
+    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
+    overlay,
+  ].join(";");
+  console.log("[cutaway-composite] filter:", filter);
+  await runFfmpeg(ffmpeg, [
+    "-y", "-i", bgPath, "-i", avatarPath,
+    "-filter_complex", filter,
+    "-map", "[out]", "-map", "1:a?",
+    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+    "-c:a", "aac", "-b:a", "128k",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    outPath,
+  ]);
+  console.log("[cutaway-composite] done");
 }
 
 // ─────────────────────────────────────────────
@@ -461,6 +496,7 @@ export async function POST(req: Request) {
     rembgModel = "u2net",
     audioFromAvatar = false,
     avatarLayout = null,
+    personRanges = [],
   } = body ?? {};
 
   const layout = clampAvatarLayout(avatarLayout);
@@ -522,6 +558,8 @@ export async function POST(req: Request) {
     // Standard composite (full / bookend / bookend-both legacy)
     if (mode === "direct") {
       await directComposite(bgTmp, avatarTmp, outPath);
+    } else if (mode === "cutaway") {
+      await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges);
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {
