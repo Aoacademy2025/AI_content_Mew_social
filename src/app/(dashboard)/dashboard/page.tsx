@@ -151,7 +151,7 @@ export default function DashboardPage() {
           {[
             { label: "Video Editor", desc: "Timeline editor", href: "/video-editor", Icon: Clapperboard, color: "190 100% 50%" },
             { label: "Gallery",      desc: "ดู renders เก่า",   href: "/videos",       Icon: Video,        color: "142 70% 45%" },
-            { label: "Docs",         desc: "วิธีใช้งาน",        href: "/docs",         Icon: BookOpen,     color: "35 90% 55%" },
+            { label: "วิธีใช้งาน",     desc: "คู่มือ & สอนใช้ทีละขั้น", href: "/docs",         Icon: BookOpen,     color: "262 83% 58%" },
           ].map(({ label, desc, href, Icon, color }) => (
             <Link key={href} href={href} className="pp-card pp-card-interactive overflow-hidden relative group">
               <span aria-hidden className="pp-card-border" />
