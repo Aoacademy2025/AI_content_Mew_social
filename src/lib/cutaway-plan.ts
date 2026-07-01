@@ -8,8 +8,9 @@ export type CutawayPlan = { person: CutawayRange[]; broll: CutawayRange[] };
 
 /**
  * window 0 (hook) = person; then every odd-index window is b-roll. Guarantees:
- * hook is always the person, no two consecutive b-roll windows, ~50% b-roll.
- * Fewer than 2 valid windows => all person (skip cutaway entirely).
+ * hook is always the person, no two consecutive b-roll windows. B-roll ratio is
+ * ~40–50% for clips with >= 4 windows; short clips intentionally get fewer cutaways
+ * (n=3 => 33%, n=2 => 50%). Fewer than 2 valid windows => all person (skip cutaway).
  */
 export function planCutaway(windows: { startMs: number; endMs: number }[]): CutawayPlan {
   const person: CutawayRange[] = [];
