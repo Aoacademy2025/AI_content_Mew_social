@@ -7,6 +7,7 @@ import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
 export async function POST(req: Request) {
   try {
@@ -144,6 +145,7 @@ Focus on ACTIONABLE instructions that AI can follow to replicate this exact writ
 async function extractContentFromUrl(url: string): Promise<string> {
   try {
     new URL(url);
+    await assertSafeFetchUrl(url); // SSRF guard before fetching a user-supplied URL
     const response = await axios.get(url, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
       timeout: 10000,
