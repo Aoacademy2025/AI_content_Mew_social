@@ -24,6 +24,12 @@ export async function POST(req: Request) {
     });
 
     if (!coupon) return NextResponse.json({ error: "รหัสคูปองไม่ถูกต้อง" }, { status: 404 });
+    // Only GRANT coupons may be redeemed here. DISCOUNT coupons are Stripe promotion codes
+    // applied at checkout (the FOUNDING_CODE block above is one specific instance of this rule).
+    // Without this generic guard, any public DISCOUNT marketing code would mint a free plan
+    // grant with NO payment — the redeem path grants coupon.plan directly.
+    if (coupon.type !== "GRANT")
+      return NextResponse.json({ error: "โค้ดส่วนลดนี้ใช้ที่หน้าราคาตอนชำระเงิน ไม่ใช่ช่องกรอกคูปองนี้" }, { status: 400 });
     if (coupon.expiresAt && coupon.expiresAt < new Date())
       return NextResponse.json({ error: "คูปองหมดอายุแล้ว" }, { status: 400 });
     if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses)
