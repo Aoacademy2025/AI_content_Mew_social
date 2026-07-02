@@ -1,21 +1,22 @@
 "use client";
 
 /**
- * Editor v2 shell (P0/P2) — โครงตามดีไซน์ handoff (จอ 5a/4a/5b/4b, Design System v1.1)
- * เนื้อแต่ละเฟสมาใน P3/P5/P6 · ตอนนี้ main = kit preview ชั่วคราวไว้ QA design system บน prod
+ * Editor v2 shell — เฟสตั้งค่า (สเต็ป 1–2 = จอ 5a/4a) · จอเรนเดอร์ (5b) มาใน P5,
+ * เฟสแต่งซับ (4b) มาใน P6. editorPhase: 'setup' | 'rendering' | 'post' (ตอนนี้มีแต่ setup)
  */
 
 import { useState } from "react";
-import { Type, Music, ImagePlus } from "lucide-react";
-import { color, font, radius } from "./tokens";
+import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
-import {
-  BtnPrimary, BtnSecondary, BtnGhost, BtnDashed, BtnDanger,
-  Card, GlassPanel, IconTile, Chip, Segmented, Toggle, TextInput, GroupLabel,
-  StepIndicator,
-} from "./ui";
+import { StepIndicator } from "./ui";
+import { useV2Project } from "./useV2Project";
+import { Step1Script } from "./Step1Script";
+import { Step2Elements } from "./Step2Elements";
 
 export function EditorV2Shell() {
+  const p = useV2Project();
+  const [step, setStep] = useState<0 | 1>(0);
+
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -35,11 +36,14 @@ export function EditorV2Shell() {
           </div>
           <div className="leading-tight">
             <div style={{ font: `500 13.5px ${font.heading}` }}>New Project</div>
-            <div style={{ fontSize: 10.5, color: color.textFaint }}>ยังไม่ได้บันทึก</div>
+            <div style={{ fontSize: 10.5, color: color.textFaint }}>
+              v2 preview · ยังไม่บันทึกอัตโนมัติ ·{" "}
+              <a href="/video-editor?ui=v1" style={{ color: color.link }}>กลับ UI ปัจจุบัน</a>
+            </div>
           </div>
         </div>
 
-        <StepIndicator active={0} />
+        <StepIndicator active={step} done={step === 1 ? [0] : []} />
 
         <div
           className="h-[30px] w-[30px] rounded-full"
@@ -48,110 +52,9 @@ export function EditorV2Shell() {
         />
       </header>
 
-      {/* Content — P3 (จอ 5a) มาแทนที่ตรงนี้; ระหว่างนี้ = kit preview ชั่วคราว */}
-      <main className="flex-1 overflow-y-auto p-7">
-        <KitPreview />
-      </main>
-    </div>
-  );
-}
-
-/** ชั่วคราว (ลบตอน P3 ลง): โชว์ทุก component ของ kit ไว้ QA บน prod ผ่าน ?ui=v2 */
-function KitPreview() {
-  const [seg, setSeg] = useState<"gemini" | "elevenlabs">("gemini");
-  const [len, setLen] = useState<"1" | "2" | "3">("1");
-  const [on, setOn] = useState(true);
-  const [chip, setChip] = useState(0);
-
-  return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-7">
-      <div>
-        <div style={{ font: `500 19px ${font.heading}` }}>Editor v2 — Design Kit (P2)</div>
-        <div style={{ fontSize: 11.5, color: color.textSecondary, marginTop: 4 }}>
-          พรีวิวชั่วคราวสำหรับ QA · จอจริงมาใน P3 · กลับ UI ปัจจุบัน{" "}
-          <a href="/video-editor?ui=v1" style={{ color: color.link }}>?ui=v1</a>
-        </div>
-      </div>
-
-      <section className="flex flex-col gap-3">
-        <GroupLabel>ปุ่ม 4 ระดับ + อันตราย</GroupLabel>
-        <div className="flex flex-wrap items-center gap-3">
-          <BtnPrimary>เรนเดอร์วิดีโอ</BtnPrimary>
-          <BtnSecondary>ดูตัวอย่าง</BtnSecondary>
-          <BtnGhost>แก้ไข</BtnGhost>
-          <BtnDashed>+ เพิ่มเซ็กเมนต์</BtnDashed>
-          <BtnDanger>ลบโปรเจกต์</BtnDanger>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <GroupLabel>การ์ดเซ็กเมนต์ — เลือกอยู่ vs ปกติ</GroupLabel>
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <Card selected>
-            <div className="flex justify-between" style={{ fontSize: 11 }}>
-              <span style={{ color: color.primary300, fontWeight: 600 }}>HOOK</span>
-              <span style={{ color: color.textFaint }}>0:00–0:04</span>
-            </div>
-            <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 6 }}>
-              แดดเมืองไทยโหดขนาดนี้ ยังกล้าออกจากบ้าน...
-            </div>
-          </Card>
-          <Card>
-            <div className="flex justify-between" style={{ fontSize: 11 }}>
-              <span style={{ color: color.textSecondary, fontWeight: 600 }}>เนื้อหา 1</span>
-              <span style={{ color: color.textFaint }}>0:04–0:16</span>
-            </div>
-            <div style={{ fontSize: 12.5, lineHeight: 1.55, marginTop: 6, color: color.textSecondary }}>
-              ตัวนี้ SPF50+ PA++++ เนื้อบางเบามาก...
-            </div>
-          </Card>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <GroupLabel>Segmented · ชิป · สวิตช์</GroupLabel>
-        <div className="flex flex-wrap items-center gap-4">
-          <Segmented
-            value={seg}
-            onChange={setSeg}
-            options={[{ value: "gemini", label: "Gemini" }, { value: "elevenlabs", label: "ElevenLabs" }]}
-          />
-          <Segmented
-            value={len}
-            onChange={setLen}
-            options={[{ value: "1", label: "1 ประโยค" }, { value: "2", label: "2" }, { value: "3", label: "3" }]}
-          />
-          <Toggle on={on} onChange={setOn} ariaLabel="ตัวอย่างสวิตช์" />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {["เพลงแนะนำ", "Chill Lo-fi", "เลือกจากคลัง", "ไม่ใส่เพลง"].map((label, i) => (
-            <Chip key={label} selected={chip === i} onClick={() => setChip(i)}>{label}</Chip>
-          ))}
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <GroupLabel>ช่องกรอก · icon tile</GroupLabel>
-        <div className="flex flex-wrap items-center gap-3">
-          <TextInput defaultValue="ครีมกันแดดรีวิว EP.4" style={{ width: 240 }} />
-          <IconTile><Type size={16} strokeWidth={1.6} /></IconTile>
-          <IconTile><Music size={16} strokeWidth={1.6} /></IconTile>
-          <IconTile><ImagePlus size={16} strokeWidth={1.6} /></IconTile>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <GroupLabel>Glass panel (เฉพาะชั้นลอย)</GroupLabel>
-        <div
-          className="flex items-center justify-center p-8"
-          style={{ borderRadius: radius.cardLg, background: "radial-gradient(ellipse at center, rgba(139,92,246,.14), transparent 70%)" }}
-        >
-          <GlassPanel className="flex flex-col items-center gap-2 px-10 py-7">
-            <div style={{ font: `600 16px ${font.heading}` }}>กำลังสร้างวิดีโอของคุณ</div>
-            <div style={{ fontSize: 11.5, color: color.textSecondary }}>ตัวอย่างแผงเรนเดอร์ (จอ 5b มาใน P5)</div>
-          </GlassPanel>
-        </div>
-      </section>
+      {step === 0
+        ? <Step1Script p={p} onNext={() => setStep(1)} />
+        : <Step2Elements p={p} onBack={() => setStep(0)} />}
     </div>
   );
 }
