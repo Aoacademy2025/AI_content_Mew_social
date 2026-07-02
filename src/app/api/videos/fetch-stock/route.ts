@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { geminiGenerateText } from "@/lib/gemini";
+import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { fetchWithBudget } from "@/lib/fetch-budget";
@@ -89,9 +89,11 @@ type CandidateVideo = FoundVideo & {
   title: string;
   query: string;
   provider: StockProvider;
+  /** poster/thumbnail URL (Pexels `image`, Pixabay `videos.medium.thumbnail`) — vision re-rank */
+  thumb?: string;
 };
 
-type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string };
+type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string; thumb?: string };
 
 type CandidateFit = {
   index: number;
@@ -205,6 +207,7 @@ interface PexelsVideo {
   width: number;
   height: number;
   url: string;   // e.g. https://www.pexels.com/video/woman-cooking-soup-1234567/
+  image?: string; // poster frame — used by the vision re-rank
   video_files: PexelsVideoFile[];
 }
 
@@ -350,7 +353,7 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5,
   const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
     { provider: "pixabay", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
   const data = await res.json();
-  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number }; large?: { url: string; width?: number; height?: number } }; tags?: string }) => {
+  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number; thumbnail?: string }; large?: { url: string; width?: number; height?: number; thumbnail?: string } }; tags?: string }) => {
     // #8 soft resolution floor: prefer medium (avoids 4K, respects #63), but fall up
     // to large when medium is sub-720p and large stays ≤1920 — keeps soft/upscaled
     // clips out without reintroducing the 4K download #63 removed.
@@ -362,6 +365,7 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5,
       width: v.width,
       height: v.height,
       tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
+      thumb: h.videos?.medium?.thumbnail ?? h.videos?.large?.thumbnail,
     };
   }).filter((v: PixabayVideo) =>
     // PORTRAIT-ONLY belt (2026-07-03, same rationale as pickBestFile): drop variants that
@@ -1089,6 +1093,107 @@ function getImageProviderOrder(query: string): ImageProvider[] {
 // Batched in chunks of RANK_BATCH_SIZE to handle long scripts reliably.
 const RANK_BATCH_SIZE = 30;
 
+// ── VISION re-rank (2026-07-03) ──────────────────────────────────────────────
+// The text ranker judges clips by title/tags — it never SEES them, which is the
+// root of "บีโรลไม่ตรงเนื้อหา" feedback (stock titles are thin/wrong). This pass
+// sends the top-N candidates' REAL thumbnails to Gemini Flash (1 call per fetch,
+// ~258 tokens/image ≈ ฿0.05-0.15/clip) and picks by what the footage actually
+// shows. Kill-switch: BROLL_VISION_RERANK=0. Every failure path falls back to
+// the existing text ranker → deterministic ranking (fail-open, never blocks).
+const VISION_RERANK_ON = process.env.BROLL_VISION_RERANK !== "0";
+const VISION_TOP_N = 4;          // thumbnails considered per subtitle
+const VISION_MAX_IMAGES = 60;    // total per call — long clips beyond this keep text ranking
+const VISION_THUMB_TIMEOUT_MS = 5_000;
+const VISION_THUMB_MAX_BYTES = 400_000;
+
+async function fetchThumbBase64(url: string): Promise<{ mimeType: string; dataBase64: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(VISION_THUMB_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+    if (!mimeType.startsWith("image/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength === 0 || buf.byteLength > VISION_THUMB_MAX_BYTES) return null;
+    return { mimeType, dataBase64: buf.toString("base64") };
+  } catch { return null; }
+}
+
+/**
+ * Returns bestIdxByKeyword like llmRankCandidates, with -1 for any subtitle the
+ * vision pass could not judge (no thumbs / over budget / unparseable) — the
+ * caller merges those from the text-ranking result.
+ */
+async function visionRerankCandidates(
+  keywords: string[],
+  subtitleTexts: string[],
+  candidatesByKeyword: CandidateVideo[][],
+  llmKey: string,
+  terms: RelevanceTerms,
+): Promise<number[]> {
+  // Pick top-N judgeable candidates per subtitle by the existing soft ranking.
+  const perKeyword: { ki: number; entries: { candIdx: number; thumb: string }[] }[] = [];
+  let imageBudget = VISION_MAX_IMAGES;
+  for (let ki = 0; ki < keywords.length && imageBudget > 0; ki++) {
+    const cands = candidatesByKeyword[ki] ?? [];
+    if (!cands.length) continue;
+    const order = orderCandidateIndices(cands, -1, keywords[ki] ?? "", subtitleTexts[ki] ?? "", terms, true);
+    const entries: { candIdx: number; thumb: string }[] = [];
+    for (const fit of order) {
+      const c = cands[fit.index];
+      if (c?.thumb && entries.length < VISION_TOP_N) entries.push({ candIdx: fit.index, thumb: c.thumb });
+    }
+    if (entries.length >= 2 && imageBudget >= entries.length) {
+      imageBudget -= entries.length;
+      perKeyword.push({ ki, entries });
+    }
+  }
+  if (!perKeyword.length) return keywords.map(() => -1);
+
+  // Download thumbnails (parallel, failures drop the entry).
+  const fetched = await Promise.all(perKeyword.map(async (group) => ({
+    ...group,
+    images: await Promise.all(group.entries.map(async (e) => ({ ...e, img: await fetchThumbBase64(e.thumb) }))),
+  })));
+
+  const images: { mimeType: string; dataBase64: string }[] = [];
+  const promptGroups: string[] = [];
+  const letterOf = (i: number) => String.fromCharCode(65 + i); // A, B, C…
+  const groupMap: { ki: number; candIdxs: number[] }[] = [];
+  for (const group of fetched) {
+    const ok = group.images.filter((e) => e.img);
+    if (ok.length < 2) continue;
+    const candIdxs: number[] = [];
+    const labels: string[] = [];
+    for (let i = 0; i < ok.length; i++) {
+      images.push(ok[i].img!);
+      candIdxs.push(ok[i].candIdx);
+      labels.push(`${letterOf(i)}=image#${images.length}`);
+    }
+    promptGroups.push(`S${group.ki}: subtitle="${(subtitleTexts[group.ki] ?? keywords[group.ki] ?? "").slice(0, 160)}" options: ${labels.join(", ")}`);
+    groupMap.push({ ki: group.ki, candIdxs });
+  }
+  if (!groupMap.length) return keywords.map(() => -1);
+
+  const prompt = `You are a B-roll editor. Images are numbered in the order attached (image#1, image#2, …).
+For EACH subtitle below, look at its option images and pick the letter whose footage VISUALLY matches the subtitle's content best.
+Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.
+Output ONLY a JSON object mapping subtitle keys to a letter, e.g. {"S0":"B","S3":"A"}. Use "NONE" only if every option is truly unrelated.
+
+${promptGroups.join("\n")}`;
+
+  const raw = await geminiGenerateVision(llmKey, prompt, images, Math.max(200, groupMap.length * 10 + 80));
+  const jsonText = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+  const parsed = JSON.parse(jsonText) as Record<string, string>;
+
+  const out = keywords.map(() => -1);
+  for (const g of groupMap) {
+    const pick = String(parsed[`S${g.ki}`] ?? "").trim().toUpperCase();
+    const li = pick.charCodeAt(0) - 65;
+    if (pick.length === 1 && li >= 0 && li < g.candIdxs.length) out[g.ki] = g.candIdxs[li];
+  }
+  return out;
+}
+
 async function llmRankBatch(
   keywords: string[],
   subtitleTexts: string[],
@@ -1395,6 +1500,8 @@ export async function POST(req: Request) {
     page2CandidateHits: 0,
     llmRankingUsed: false,
     llmRankingFailed: false,
+    visionRankingUsed: false,
+    visionRankingFailed: false,
     llmRejectedCount: 0,
     candidateRejectedCount: 0,
     profileFallbackUsedCount: 0,
@@ -1606,6 +1713,7 @@ export async function POST(req: Request) {
         title: slugToTitle(v.url ?? ""),
         query,
         provider: "pexels",
+        ...(v.image ? { thumb: v.image } : {}),
       });
     }
     for (const pv of pixabayVideos) {
@@ -1620,6 +1728,7 @@ export async function POST(req: Request) {
         title,
         query,
         provider: "pixabay",
+        ...(pv.thumb ? { thumb: pv.thumb } : {}),
       });
     }
 
@@ -1819,6 +1928,28 @@ export async function POST(req: Request) {
       );
       stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
     } else if (hasAnyCandidates) {
+      // VISION pass first (sees actual thumbnails; 1 call, replaces the text call in the
+      // happy path). Unjudged subtitles get deterministic soft ranking; a thrown vision
+      // pass falls through to the text ranker below — today's behavior, unchanged.
+      let visionDone = false;
+      if (VISION_RERANK_ON) {
+        try {
+          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms);
+          const judged = v.filter((idx) => idx >= 0).length;
+          if (judged > 0) {
+            bestIdxByKeyword = v.map((idx, i) =>
+              idx >= 0 ? idx : bestRelevantCandidateIndex(candidatesByKeyword[i] ?? [], keywords[i] ?? "", subtitleTexts[i] ?? "", relTerms),
+            );
+            stockTelemetry.visionRankingUsed = true;
+            visionDone = true;
+            console.log(`[fetch-stock] VISION re-rank judged ${judged}/${keywords.length} subtitles`);
+          }
+        } catch (e) {
+          stockTelemetry.visionRankingFailed = true;
+          console.warn(`[fetch-stock] vision re-rank failed — falling back to text ranking:`, e);
+        }
+      }
+      if (visionDone) { /* vision picked — skip text ranker */ } else {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
@@ -1841,6 +1972,7 @@ export async function POST(req: Request) {
         );
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
       }
+      } // end text-ranker fallback (vision-happy-path skips it)
     }
   } else if (isPerSubtitleMode) {
     // No LLM key or subtitle texts mismatch — pick best soft-relevant candidate instead of index 0.
