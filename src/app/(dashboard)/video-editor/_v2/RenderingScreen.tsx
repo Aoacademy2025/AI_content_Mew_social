@@ -20,20 +20,30 @@ const CHECKLIST: { key: string; label: string; steps: string[]; optional?: boole
   { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar"], optional: true },
 ];
 
-function checklistIndex(currentStep: string | null): number {
+function checklistIndex(list: { steps: string[] }[], currentStep: string | null): number {
   if (!currentStep) return 0;
-  const i = CHECKLIST.findIndex((c) => c.steps.includes(currentStep));
-  // step แปลก ๆ (composite ฯลฯ) → ถือว่าอยู่ท้าย pipeline
-  return i === -1 ? CHECKLIST.length - 1 : i;
+  const i = list.findIndex((c) => c.steps.includes(currentStep));
+  // step แปลก ๆ → ถือว่าอยู่ท้าย pipeline
+  return i === -1 ? list.length - 1 : i;
 }
 
-export function RenderingScreen({ job, hasAvatar, onCancel }: {
+// เช็กลิสต์โหมดอัปคลิปเอง (cutaway): ไม่มีเสียงพากย์ · ปิดท้ายด้วยการวางคลิปสลับบีโรล
+const UPLOAD_CHECKLIST: { key: string; label: string; steps: string[]; optional?: boolean }[] = [
+  { key: "subs", label: "ถอดซับไทยจากเสียงในคลิป", steps: ["captions"] },
+  { key: "broll", label: "กำลังหาบีโรลให้เข้ากับเนื้อหา", steps: ["keywords", "stock"] },
+  { key: "assemble", label: "ประกอบม้วนบีโรล", steps: ["config", "render"] },
+  { key: "cutaway", label: "วางคลิปของคุณสลับกับบีโรล", steps: ["composite"] },
+];
+
+export function RenderingScreen({ job, hasAvatar, uploadMode = false, onCancel }: {
   job: V2JobState;
   hasAvatar: boolean;
+  uploadMode?: boolean;
   onCancel: () => void;
 }) {
-  const items = CHECKLIST.filter((c) => !c.optional || hasAvatar);
-  const activeIdx = checklistIndex(job.currentStep);
+  const baseList = uploadMode ? UPLOAD_CHECKLIST : CHECKLIST;
+  const items = baseList.filter((c) => !c.optional || hasAvatar);
+  const activeIdx = checklistIndex(items, job.currentStep);
   const pct = Math.max(0, Math.min(100, job.progress));
   const queued = job.currentStep === null && pct === 0;
   const etaLabel = hasAvatar ? "~15–25 นาที (มีพิธีกร AI)" : "~3–6 นาที";

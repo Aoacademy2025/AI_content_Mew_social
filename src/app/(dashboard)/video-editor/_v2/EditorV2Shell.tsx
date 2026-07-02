@@ -77,7 +77,7 @@ export function EditorV2Shell() {
       </header>
 
       {isRendering ? (
-        <RenderingScreen job={job} hasAvatar={p.useAvatar && !!p.avatarId} onCancel={handleCancel} />
+        <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
         <PostPhase job={job} onNewProject={() => { reset(); setStep(0); }} />
       ) : job.phase === "failed" ? (

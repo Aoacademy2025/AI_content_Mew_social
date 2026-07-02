@@ -88,7 +88,17 @@ export function useV2Job(p: V2Project) {
   const submit = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
     setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
     try {
-      const body: Record<string, unknown> = {
+      // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
+      const body: Record<string, unknown> = p.mode === "upload" ? {
+        mode: "upload",
+        clipUrl: p.clipUrl,
+        stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
+        ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+        ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+        ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+        subtitleMode: "sentence",
+        subtitlePosition: "bottom",
+      } : {
         script: p.script,
         voiceProvider: p.voiceEngine,
         ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),

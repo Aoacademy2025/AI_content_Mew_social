@@ -53,6 +53,14 @@ function makeStubCaller(log: CallLog[]) {
       if (path === "/api/videos/generate-config") return { config: { scenes: [], voiceUrl: "/api/voices/test.m4a" } } as T;
       if (path === "/api/videos/render") { renderCount++; return { jobId: `render-${renderCount}` } as T; }
       if (path === "/api/videos") return { id: "gallery-vid-1" } as T;
+      if (path === "/api/videos/transcribe") {
+        return { captions: [
+          { text: "สวัสดีค่ะ วันนี้รีวิวครีมกันแดด", startMs: 0, endMs: 2500, tag: "hook" },
+          { text: "เนื้อบางเบา ซึมไว", startMs: 2500, endMs: 5000, tag: "body" },
+          { text: "กดติดตามไว้เลย", startMs: 5000, endMs: 7000, tag: "cta" },
+        ], audioDurationMs: 7000 } as T;
+      }
+      if (path === "/api/heygen/composite") return { videoUrl: "/api/renders/composite-cutaway-1.mp4" } as T;
       throw new Error(`stub caller: unexpected POST ${path}`);
     },
     async patch<T>(path: string, body: unknown): Promise<T> {
@@ -177,6 +185,33 @@ async function main() {
     ok(done?.status === "canceled", `D: status stays canceled, no failJob overwrite (got ${done?.status})`);
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/fetch-stock"), "D: no step started after cancel (stock never called)");
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/render"), "D: no render after cancel");
+  }
+
+  // ── E. upload/cutaway branch: no TTS, composite cutaway, v2 preview output ──
+  {
+    const log: CallLog[] = [];
+    let refunds = 0;
+    const job = await createVideoJob("u-preview", { script: "", mode: "upload", clipUrl: "/api/renders/my-clip.mp4", previewMode: true });
+    await runOrchestrator(job.id, "u-preview", {
+      caller: makeStubCaller(log),
+      refundOneClip: async () => { refunds++; },
+      sleep: async () => {},
+    });
+    const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(done?.status === "done", `E: upload job done (got ${done?.status} err=${done?.errorMessage ?? "-"})`);
+    ok(!log.some((c) => c.path === "/api/videos/tts-gemini" || c.path === "/api/videos/tts"), "E: NO TTS call (voice from clip)");
+    ok(log.some((c) => c.path === "/api/videos/transcribe"), "E: transcribe called on the clip");
+    const compCall = log.find((c) => c.path === "/api/heygen/composite");
+    const compBody = compCall?.body as { mode?: string; avatarVideoUrl?: string; bgVideoUrl?: string; personRanges?: { start: number; end: number }[] } | undefined;
+    ok(compBody?.mode === "cutaway", "E: composite mode = cutaway");
+    ok(compBody?.avatarVideoUrl === "/api/renders/my-clip.mp4", "E: clip is the composite foreground");
+    ok(compBody?.bgVideoUrl === "/renders/out-1.mp4", "E: b-roll reel is the composite background");
+    ok(Array.isArray(compBody?.personRanges) && compBody.personRanges.length > 0, "E: personRanges present");
+    ok(refunds === 0, "E: no refund (preview charge stands)");
+    ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos"), "E: no gallery row (comes at web burn)");
+    const out = parseVideoJobOutput(done?.outputJson ?? null);
+    ok(out?.version === 2 && out.videoUrl === "/api/renders/composite-cutaway-1.mp4", `E: v2 output = composite url (got ${out?.videoUrl})`);
+    ok((out?.preview?.captions?.length ?? 0) === 3, "E: transcribed captions in output");
   }
 
   // ── C. parser tolerance ────────────────────────────────────────────────────
