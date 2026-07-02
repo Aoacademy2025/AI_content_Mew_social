@@ -58,3 +58,51 @@ export async function geminiGenerateText(
   // Unreachable — the loop always returns or throws — TS needs a tail.
   throw providerError("transient", "gemini", "gemini retries exhausted");
 }
+
+/**
+ * Multimodal generation (text + inline images) — same model/retry/error path as
+ * geminiGenerateText. Used by the b-roll VISION re-rank (thumbnails → best match).
+ * Images are small JPEG/WebP thumbnails (~258 tokens each on Flash).
+ */
+export async function geminiGenerateVision(
+  apiKey: string,
+  prompt: string,
+  images: { mimeType: string; dataBase64: string }[],
+  maxOutputTokens = 1024,
+): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
+  const parts = [
+    { text: prompt },
+    ...images.map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.dataBase64 } })),
+  ];
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: "user", parts }],
+        config: {
+          maxOutputTokens,
+          temperature: 0,
+          thinkingConfig: { thinkingBudget: 0 },
+          abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
+        },
+      });
+      return response.text ?? "";
+    } catch (e) {
+      const info = getGeminiErrorInfo(e, { managed: process.env.MANAGED_GEMINI === "1" });
+      if (info.retryable && attempt < MAX_ATTEMPTS) {
+        const delayMs = 1000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 500);
+        console.warn(`[gemini] vision ${info.kind} (attempt ${attempt}/${MAX_ATTEMPTS}) — retry in ${delayMs}ms`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw providerError(
+        codeFromGeminiInfo(info.kind, info.status, info.retryable),
+        "gemini",
+        info.technicalMessage || (e instanceof Error ? e.message : String(e)),
+        { status: info.status, userAction: info.userMessage },
+      );
+    }
+  }
+  throw providerError("transient", "gemini", "gemini vision retries exhausted");
+}
