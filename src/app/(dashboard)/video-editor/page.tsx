@@ -59,6 +59,8 @@ import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-jo
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { useAudioPeaks } from "./_components/useAudioPeaks";
+import { useEditorV2 } from "./_v2/useEditorV2Flag";
+import { EditorV2Shell } from "./_v2/EditorV2Shell";
 import { WaveformCanvas } from "./_components/WaveformCanvas";
 import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
 
@@ -161,7 +163,14 @@ function hasBurnableCaptions(captions: Caption[]) {
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Editor v2 rollout switch — env default + per-person override (?ui=v2 / ?ui=v1).
+// Flag ปิด + ไม่มี override = LegacyVideoEditorPage ตรง ๆ พฤติกรรมเดิมทุกอย่าง
 export default function VideoEditorPage() {
+  const v2 = useEditorV2();
+  return v2 ? <EditorV2Shell /> : <LegacyVideoEditorPage />;
+}
+
+function LegacyVideoEditorPage() {
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
