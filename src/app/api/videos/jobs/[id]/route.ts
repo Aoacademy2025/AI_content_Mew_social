@@ -29,9 +29,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   }
 }
 
-// DELETE /api/videos/jobs/[id] — cancel a job that is still QUEUED (atomic guard).
-// A processing job cannot be safely canceled yet (the worker is mid-pipeline);
-// the UI's ยกเลิก disables once processing starts. Larger cancel = later phase.
+// DELETE /api/videos/jobs/[id] — cancel a QUEUED or PROCESSING job (atomic guard).
+// Queued → never starts. Processing → the worker honors the flag at the next step
+// boundary (cooperative cancel; the current step finishes, nothing further starts).
 export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser();
@@ -39,11 +39,11 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
 
     const { id } = await ctx.params;
     const res = await prisma.videoJob.updateMany({
-      where: { id, userId: user.id, status: "queued" },
+      where: { id, userId: user.id, status: { in: ["queued", "processing"] } },
       data: { status: "canceled", finishedAt: new Date(), errorMessage: "canceled by user (editor v2)" },
     });
     if (res.count !== 1) {
-      return NextResponse.json({ error: "not_cancelable", message: "งานเริ่มทำไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+      return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
