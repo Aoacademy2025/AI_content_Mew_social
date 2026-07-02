@@ -12,6 +12,8 @@ import {
 import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { buildBrollWindows } from "@/lib/broll-windows";
+import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
@@ -113,14 +115,46 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);
+    // Sentence-mode PARITY with the web editor: the editor first calls /api/videos/split-script
+    // (an LLM that cuts on natural breath points — keeps a number and its unit together, never
+    // splits mid-phrase) and feeds those cards into captionsFromTtsTiming. Without it the MCP
+    // path fell back to the greedy char-cap splitter, so cards broke mid-phrase and the renderer's
+    // word-break wrapped them awkwardly ("ตัดคำ/เว้นบรรทัดเพี้ยน"). Text-only over the exact TTS
+    // text (timing stays 100% TTS-derived), server-validated verbatim; ANY failure → viralCards
+    // null → byte-identical to the old deterministic cards (fail-open). Only sentence mode uses
+    // these cards — word modes re-split capRes.words below, so skip the extra call there.
+    const wantsSentenceCards = !input.subtitleMode || input.subtitleMode === "sentence";
+    const timingForCards = tts.timing as TtsTiming | null;
+    const fullTextForCards = (timingForCards?.segments ?? []).map((s) => s.text).join("");
+    let viralCards: ScriptCard[] | null = null;
+    if (wantsSentenceCards && fullTextForCards.length >= 120) {
+      try {
+        const sc = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
+          text: fullTextForCards,
+          maxCardChars: maxCardCharsFor(),
+        });
+        viralCards = Array.isArray(sc.cards) ? sc.cards : null;
+      } catch { /* fail-open → deterministic sentence cards */ }
+    }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor());
+    const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
     const baseCaptions = capRes.captions as OrchCaption[];
     const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
       ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
       : baseCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
+
+    // B-roll cadence PARITY with the web editor: group captions into ~4s windows so the
+    // background holds one clip per window instead of cutting on every caption (the strobing
+    // "พื้นหลังไม่เนียน / แล้วตัด"). Gated on the SAME flag as web so both surfaces stay in
+    // lockstep. In window mode generate-config places one clip per window (ignoring
+    // sceneClipCounts); subtitle timing is untouched.
+    const brollWindowMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
+    const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
+    const brollWindows = brollWindowMode
+      ? buildBrollWindows(captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), brollWindowSec)
+      : [];
 
     // 3. Keywords
     await step("keywords", 40);
@@ -137,10 +171,19 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 5. Config
     await step("config", 65);
-    const sceneClipCounts = captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []);
+    // Window mode → empty sceneClipCounts so generate-config takes the window branch (one clip
+    // per window) instead of per-caption cycling; brollWindows below carries the spans (mirrors
+    // web page.tsx runConfig). Otherwise keep the legacy 1-clip-per-caption path.
+    const sceneClipCounts = brollWindows.length > 0
+      ? []
+      : (captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []));
     const cfgRes = await caller.post<{ config: Record<string, unknown> }>(
       "/api/videos/generate-config",
-      buildConfigPayload(captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text), kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? []),
+      buildConfigPayload(
+        captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
+        kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
+        brollWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+      ),
     );
 
     // 6. Base render (no burned subs) → poll
