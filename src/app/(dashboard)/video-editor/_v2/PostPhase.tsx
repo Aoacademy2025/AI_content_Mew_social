@@ -19,6 +19,7 @@ import {
   type V2SubConfig, type V2Caption,
 } from "./subtitle-style";
 import type { V2JobState } from "./useV2Job";
+import { TimelinePanel } from "./TimelinePanel";
 
 type ExportState =
   | { phase: "idle" }
@@ -62,6 +63,40 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [timeMs, setTimeMs] = useState(0);
   const pollStop = useRef(false);
+
+  // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
+  const historyRef = useRef<V2Caption[][]>([]);
+  const committedRef = useRef<V2Caption[]>(preview?.captions ?? []);
+  const [historyLen, setHistoryLen] = useState(0);
+  function handleCaptionsChange(next: V2Caption[], commit: boolean) {
+    setCaptions(next);
+    if (commit) {
+      historyRef.current.push(committedRef.current.map((c) => ({ ...c })));
+      if (historyRef.current.length > 50) historyRef.current.shift();
+      committedRef.current = next.map((c) => ({ ...c }));
+      setHistoryLen(historyRef.current.length);
+    }
+  }
+  function undoCaptions() {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    committedRef.current = prev.map((c) => ({ ...c }));
+    setCaptions(prev);
+    setHistoryLen(historyRef.current.length);
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "TEXTAREA" || tag === "INPUT") return; // ให้ undo ของช่องพิมพ์ทำงานปกติ
+        e.preventDefault();
+        undoCaptions();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => () => { pollStop.current = true; }, []);
 
@@ -440,10 +475,26 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           </section>
 
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
-            ใช้กับ: ทั้งคลิป · ปรับรายการ์ด + เอฟเฟกต์เพิ่มเติม มากับเวอร์ชันถัดไป
+            ใช้กับ: ทั้งคลิป · ปรับรายการ์ด มากับเวอร์ชันถัดไป
           </span>
         </aside>
       </div>
+
+      {/* Timeline 4 แทร็ก (P6b) — ซับลากขอบแก้เวลาได้, แทร็กอื่นคลิก jump */}
+      <TimelinePanel
+        captions={captions}
+        onCaptionsChange={handleCaptionsChange}
+        onUndo={undoCaptions}
+        canUndo={historyLen > 0}
+        selected={selected}
+        onSelect={setSelected}
+        videoRef={videoRef}
+        timeMs={timeMs}
+        durationMs={Math.max(preview?.audioDurationMs ?? 0, captions.length ? captions[captions.length - 1].endMs : 0)}
+        config={(preview?.config as Record<string, unknown>) ?? null}
+        hasAvatar={!!(preview?.avatarModel && preview.avatarModel !== "none")}
+        avatarIntroMs={5000}
+      />
     </div>
   );
 }
