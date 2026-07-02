@@ -10,6 +10,7 @@ import Link from "next/link";
 import { PremiumBackdrop, CornerBrackets } from "@/components/layout/premium-page";
 import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding";
 import { QuotaStatus } from "@/components/quota-status";
+import { V2JobBadge } from "@/components/v2-job-badge";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -82,6 +83,9 @@ export default function DashboardPage() {
 
       {/* ── Content ───────────────────────────────────────────────────── */}
       <div className="relative z-10 mx-auto max-w-6xl px-4 md:px-6 pt-3 md:pt-4 pb-12">
+
+        {/* Editor v2 background job (renders nothing unless a v2 job exists) */}
+        <V2JobBadge />
 
         {/* Eyebrow */}
         <div className="pp-fade-up flex items-center gap-2 mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300/70"

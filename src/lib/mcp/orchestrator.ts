@@ -13,6 +13,7 @@ import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { buildBrollWindows } from "@/lib/broll-windows";
+import { planCutaway } from "@/lib/cutaway-plan";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 
 export interface OrchestratorDeps {
@@ -41,6 +42,13 @@ interface CreateInput {
   kieModel?: string;
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
+  /**
+   * Editor v2 "ใช้คลิปที่ถ่ายเอง" (cutaway, launch-coupled): clip แนวตั้งของผู้ใช้
+   * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
+   * previewMode เสมอ (ยิงจากเว็บเท่านั้น; MCP ไม่ส่ง). Route gates on CLIP_CUTAWAY flag.
+   */
+  mode?: "script" | "upload";
+  clipUrl?: string;
   /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
@@ -130,6 +138,97 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       } catch {
         if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
       }
+    }
+
+    // ── EDITOR V2 UPLOAD → CUTAWAY (P6.5, previewMode-only) ───────────────────
+    // ข้ามเสียง/อวตาร/เพลงตามดีไซน์: ถอดซับจากเสียงในคลิป → b-roll windows →
+    // base reel → composite mode:"cutaway" (เสียงมาจากคลิปเสมอ) → จบที่ preview.
+    if (input.mode === "upload") {
+      if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
+
+      await step("captions", 20);
+      const tx = await caller.post<{ captions?: OrchCaption[]; audioDurationMs?: number }>(
+        "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
+      );
+      const upCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
+      if (!upCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
+      const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
+        ? Math.round(tx.audioDurationMs)
+        : Math.max(...upCaps.map((c) => c.endMs));
+
+      const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
+      const upWindows = buildBrollWindows(upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), upWindowSec);
+
+      await step("keywords", 40);
+      const upKw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
+        "/api/videos/extract-keywords",
+        {
+          ...buildKeywordsPayload(upCaps.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs),
+          ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
+        },
+      );
+
+      await step("stock", 55);
+      const upAiGen = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+      const upTotalDur = (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
+      const upStock = await caller.post<{ results: unknown[] }>(
+        "/api/videos/fetch-stock",
+        {
+          ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec),
+          ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+          ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+        },
+        upAiGen ? { retries: 0 } : undefined,
+      );
+
+      await step("config", 65);
+      const upScc = upWindows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
+      const upCfg = await caller.post<{ config: Record<string, unknown> }>(
+        "/api/videos/generate-config",
+        buildConfigPayload(
+          upCaps, upStock.results ?? [], input.clipUrl, upDurMs, upCaps.map((c) => c.text),
+          upKw.keywordsPerScene ?? 5, upScc, upKw.sceneDurations ?? [],
+          upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        ),
+      );
+
+      await step("render", 75);
+      const upBaseConfig = { ...upCfg.config, keywordPopups: [] as unknown[] };
+      const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
+        shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+      });
+      const upReelUrl = await pollRender(caller, upR.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.12)).catch(() => {}); }, { sleep });
+      // preview: การจองที่ base render คือค่าใช้จ่ายเดียว (เหมือน script preview) — ไม่ refund
+
+      await step("composite", 90);
+      const plan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
+      const personRanges = plan.person.map((r) => ({ start: r.startMs / 1000, end: r.endMs / 1000 }));
+      const comp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+        mode: "cutaway",
+        avatarVideoUrl: input.clipUrl,
+        bgVideoUrl: upReelUrl,
+        personRanges,
+      });
+
+      const upFinalDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, upFinalDuration]);
+      emitStage(phaseName, "done", upFinalDuration);
+      console.log(`[mcp-worker] job ${jobId} UPLOAD-CUTAWAY total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s scenes=${upCaps.length} windows=${upWindows.length}`);
+
+      await finishJob(jobId, {
+        version: 2,
+        mode: "preview",
+        videoUrl: comp.videoUrl,
+        preview: {
+          captions: upCaps,
+          config: upBaseConfig,
+          voiceUrl: input.clipUrl,
+          audioDurationMs: upDurMs,
+          avatarModel: "upload-cutaway",
+          avatarVideoUrl: input.clipUrl,
+        },
+      });
+      return;
     }
 
     // 1. TTS

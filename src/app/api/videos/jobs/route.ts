@@ -20,6 +20,7 @@ import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 // (ChargedClip once-per-video, same as today's web flow).
 
 type Body = {
+  mode?: unknown; clipUrl?: unknown;
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
@@ -50,8 +51,21 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
 
+    // โหมดอัปคลิปเอง (cutaway) — gate ด้วย flag เดียวกับปุ่มใน UI (flip พร้อม EDITOR_V2 วัน launch)
+    const uploadMode = body.mode === "upload";
+    const clipUrl = uploadMode ? str(body.clipUrl, 500) : undefined;
+    if (uploadMode) {
+      if (process.env.NEXT_PUBLIC_CLIP_CUTAWAY !== "1") {
+        return NextResponse.json({ error: "not_enabled", message: "โหมดใช้คลิปที่ถ่ายเองยังไม่เปิดใช้งาน" }, { status: 403 });
+      }
+      // รับเฉพาะไฟล์ที่อัปโหลดเข้าระบบเราเอง (จาก /api/videos/upload-avatar) — กัน SSRF
+      if (!clipUrl || !(clipUrl.startsWith("/api/") || clipUrl.startsWith("/renders/") || clipUrl.startsWith("/uploads/"))) {
+        return NextResponse.json({ error: "invalid_clip", message: "อัปโหลดคลิปก่อนเรนเดอร์" }, { status: 400 });
+      }
+    }
+
     const script = typeof body.script === "string" ? body.script.trim() : "";
-    if (!script || script.length > 20000) {
+    if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
 
@@ -60,7 +74,8 @@ export async function POST(req: Request) {
     const geminiVoiceName = str(body.geminiVoiceName, 60);
 
     // Key guards — same checks as MCP create_video_job, same wording surface (web shows toasts)
-    const useEleven = voiceProvider === "elevenlabs" || (!voiceProvider && user.ttsProvider === "elevenlabs");
+    // upload mode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียง (Gemini ยังจำเป็น: transcribe/keywords)
+    const useEleven = !uploadMode && (voiceProvider === "elevenlabs" || (!voiceProvider && user.ttsProvider === "elevenlabs"));
     if (useEleven && !user.elevenlabsKey) {
       return NextResponse.json({ error: "missing_key", missingKey: "elevenlabs", message: "ต้องใส่ ElevenLabs API key ก่อน (Settings → API Keys)" }, { status: 400 });
     }
@@ -77,7 +92,8 @@ export async function POST(req: Request) {
     }
 
     // Avatar (optional) — same resolver as MCP; layout falls back to the saved preset.
-    const avatarModeRaw = typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode) ? body.avatarMode : undefined;
+    // upload mode = ไม่มีอวตารตามดีไซน์
+    const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode) ? body.avatarMode : undefined;
     const avatar = resolveAvatarRequest(
       {
         avatarMode: avatarModeRaw as "none" | "full" | "bookend" | "bookend-both" | undefined,
@@ -121,7 +137,8 @@ export async function POST(req: Request) {
       const job = await createVideoJob(
         user.id,
         {
-          script,
+          script: uploadMode ? "" : script,
+          ...(uploadMode ? { mode: "upload", clipUrl } : {}),
           previewMode: true,
           ...(voiceProvider ? { voiceProvider } : {}),
           ...(voiceId ? { voiceId } : {}),
@@ -130,7 +147,7 @@ export async function POST(req: Request) {
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
-          ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
+          ...(!uploadMode && bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
           ...(stockSource ? { stockSource } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(kieModel ? { kieModel } : {}),

@@ -6,7 +6,9 @@
  */
 
 import { useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { PenLine, Clapperboard, GripVertical } from "lucide-react";
+import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
 import { estimateClipSecV2, countWordsV2 } from "./estimate";
@@ -78,7 +80,43 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
           />
         </div>
 
-        {/* กล่องสคริปต์ */}
+        {/* โหมดอัปคลิปเอง (cutaway) */}
+        {p.mode === "upload" ? (
+          <div
+            className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-6"
+            style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
+          >
+            {p.clipUrl ? (
+              <>
+                <video
+                  src={p.clipUrl}
+                  controls
+                  playsInline
+                  className="max-h-[46vh]"
+                  style={{ borderRadius: 12, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    if (v.videoWidth > v.videoHeight) {
+                      toast.error("ต้องเป็นคลิปแนวตั้ง (9:16) — คลิปแนวนอนยังไม่รองรับ");
+                      p.setClipUrl("");
+                    }
+                  }}
+                />
+                <button onClick={() => p.setClipUrl("")} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+                  เปลี่ยนคลิป
+                </button>
+              </>
+            ) : (
+              <div className="w-full max-w-[420px]">
+                <DirectAvatarUpload onUrl={(u) => p.setClipUrl(u)} />
+                <p style={{ fontSize: 11, color: color.textFaint, marginTop: 10, lineHeight: 1.7, textAlign: "center" }}>
+                  อัปคลิปแนวตั้งที่มีเสียงพูดของคุณ — ระบบจะถอดซับไทยจากเสียง
+                  แล้วแทรกบีโรลให้อัตโนมัติ (เสียงเดิมต่อเนื่องทั้งคลิป)
+                </p>
+              </div>
+            )}
+          </div>
+        ) : (
         <div
           className="flex min-h-0 flex-1 flex-col"
           style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
@@ -103,6 +141,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             </span>
           </div>
         </div>
+        )}
       </div>
 
       {/* ── Right rail 372px ── */}
@@ -112,10 +151,10 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
       >
         <div className="px-5 pt-5 pb-3">
           <div style={{ font: `500 13.5px ${font.heading}` }}>
-            {lines.length ? "ระบบแบ่งเซ็กเมนต์ให้แล้ว" : "เซ็กเมนต์จะขึ้นที่นี่"}
+            {p.mode === "upload" ? "โหมดใช้คลิปของคุณ" : lines.length ? "ระบบแบ่งเซ็กเมนต์ให้แล้ว" : "เซ็กเมนต์จะขึ้นที่นี่"}
           </div>
           <div style={{ fontSize: 11, color: color.textFaint, marginTop: 2 }}>
-            ลากการ์ดเพื่อสลับลำดับ
+            {p.mode === "upload" ? "ซับ + บีโรลจะถูกสร้างจากเสียงในคลิปหลังกดเรนเดอร์" : "ลากการ์ดเพื่อสลับลำดับ"}
           </div>
         </div>
 
@@ -157,7 +196,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
               className="flex flex-1 items-center justify-center text-center"
               style={{ fontSize: 12, color: color.textFaintest, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 120 }}
             >
-              เริ่มพิมพ์สคริปต์ทางซ้าย<br />ระบบจะแบ่งเซ็กเมนต์ให้อัตโนมัติ
+              {p.mode === "upload"
+                ? <>อัปโหลดคลิปทางซ้าย<br />แล้วกด &quot;ถัดไป&quot; เพื่อเลือกบีโรล</>
+                : <>เริ่มพิมพ์สคริปต์ทางซ้าย<br />ระบบจะแบ่งเซ็กเมนต์ให้อัตโนมัติ</>}
             </div>
           )}
         </div>
@@ -166,8 +207,8 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
         <div className="px-5 pb-5 pt-2">
           <BtnPrimary
             className="w-full"
-            disabled={!lines.length}
-            style={!lines.length ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+            disabled={p.mode === "upload" ? !p.clipUrl : !lines.length}
+            style={(p.mode === "upload" ? !p.clipUrl : !lines.length) ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
             onClick={onNext}
           >
             ถัดไป: เลือกองค์ประกอบ →

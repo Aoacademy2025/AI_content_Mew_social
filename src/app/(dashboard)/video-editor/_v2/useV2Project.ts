@@ -7,7 +7,7 @@ import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageMod
 const DRAFT_KEY = "editor-v2-project";
 
 interface V2Draft {
-  mode?: V2Mode; script?: string; brollSource?: V2BrollSource;
+  mode?: V2Mode; script?: string; clipUrl?: string; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
   musicTrack?: string | null; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
@@ -54,6 +54,8 @@ export function useV2Project() {
   // ── Step 1 ──
   const [mode, setMode] = useState<V2Mode>(d.mode ?? "script");
   const [script, setScript] = useState(d.script ?? "");
+  /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
+  const [clipUrl, setClipUrl] = useState(d.clipUrl ?? "");
 
   // ── Step 2 ──
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
@@ -106,7 +108,7 @@ export function useV2Project() {
     const t = setTimeout(() => {
       try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({
-          mode, script, brollSource, voiceEngine, geminiVoiceName, voiceId,
+          mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
           musicTrack, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
           kieModel, autoMixProviders,
@@ -114,7 +116,7 @@ export function useV2Project() {
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
-  }, [mode, script, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, useAvatar, avatarId,
+  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId
@@ -131,6 +133,7 @@ export function useV2Project() {
   return {
     mode, setMode,
     script, setScript,
+    clipUrl, setClipUrl,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,
