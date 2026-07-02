@@ -59,6 +59,11 @@ import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-jo
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { useAudioPeaks } from "./_components/useAudioPeaks";
+import { useEditorV2 } from "./_v2/useEditorV2Flag";
+import { EditorV2Shell } from "./_v2/EditorV2Shell";
+import { useBgm } from "./_hooks/useBgm";
+import { useCreditsQuota, CREDITS_LIVE_CLIENT } from "./_hooks/useCreditsQuota";
+import { useDraftAutosave } from "./_hooks/useDraftAutosave";
 import { WaveformCanvas } from "./_components/WaveformCanvas";
 import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
 
@@ -161,7 +166,14 @@ function hasBurnableCaptions(captions: Caption[]) {
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Editor v2 rollout switch — env default + per-person override (?ui=v2 / ?ui=v1).
+// Flag ปิด + ไม่มี override = LegacyVideoEditorPage ตรง ๆ พฤติกรรมเดิมทุกอย่าง
 export default function VideoEditorPage() {
+  const v2 = useEditorV2();
+  return v2 ? <EditorV2Shell /> : <LegacyVideoEditorPage />;
+}
+
+function LegacyVideoEditorPage() {
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
@@ -185,8 +197,11 @@ export default function VideoEditorPage() {
   const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
-  // Bumped after render or burn completes so QuotaStatus re-fetches the updated balance
-  const [quotaRefresh, setQuotaRefresh] = useState(0);
+  // Quota chip refresh + credit-overflow state/actions — extracted to _hooks/useCreditsQuota (P1)
+  const {
+    quotaRefresh, setQuotaRefresh, outOfMinutes, setOutOfMinutes,
+    buyCredits, fireCreditReceipt,
+  } = useCreditsQuota();
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -398,27 +413,16 @@ export default function VideoEditorPage() {
   const [chromaBlend, setChromaBlend] = useState(0.04);
 
   // ── BGM ───────────────────────────────────────────────────────────────
-  const [bgmEnabled, setBgmEnabled] = useState(false);
-  const [bgmFile, setBgmFile] = useState("");
-  const [bgmVolume, setBgmVolume] = useState(0.12);
-  const [bgmUploading, setBgmUploading] = useState(false);
-
-  // BGM is "on" exactly when a track is selected — the UI no longer has a separate
-  // enable toggle. Deriving it here keeps every bgmEnabled consumer (render patch,
-  // save config, status chip, draft) working unchanged.
-  useEffect(() => { setBgmEnabled(!!bgmFile); }, [bgmFile]);
-  interface SystemTrack { id: string; title: string; filename: string; }
-  interface UserMusicTrack { id: string; title: string; filename: string; sizeBytes?: number | null; }
-  const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
-  const [userTracks, setUserTracks] = useState<UserMusicTrack[]>([]);
+  // Extracted to _hooks/useBgm (P1) — includes the /api/music fetch-on-mount.
+  const {
+    bgmEnabled, setBgmEnabled, bgmFile, setBgmFile, bgmVolume, setBgmVolume,
+    bgmUploading, setBgmUploading, systemTracks, userTracks, setUserTracks,
+  } = useBgm();
 
   // ── Render progress ───────────────────────────────────────────────────
   const renderProgressRef = useRef(0);
   const [, setRenderProgressTick] = useState(0);
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
-  // Credits overflow (NEXT_PUBLIC_CREDITS_LIVE): true when the render wall is hit AND
-  // credits are also empty (canBuyCredits) → render a [ซื้อเครดิต] CTA in the error UI.
-  const [outOfMinutes, setOutOfMinutes] = useState(false);
   const [renderActivity, setRenderActivity] = useState<RenderActivity>({
     phase: "idle",
     label: "",
@@ -637,10 +641,7 @@ export default function VideoEditorPage() {
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
-    fetch("/api/music").then(r => r.json()).then(d => {
-      if (d.tracks) setSystemTracks(d.tracks);
-      if (d.userTracks) setUserTracks(d.userTracks);
-    }).catch(() => {});
+    // (/api/music fetch moved into useBgm)
 
     // If jobId is in URL from a previous render session, cancel that job and clear the URL.
     // Refresh = stop render immediately — no auto-resume.
@@ -1150,13 +1151,8 @@ export default function VideoEditorPage() {
   }
 
   // ── Autosave (Tier-1 resume) ──────────────────────────────────────────────
-  // The draft already captures everything needed to resume (render URLs,
-  // captions, style, pipeline cache) — it was just never saved unless the user
-  // clicked "บันทึก draft". So accidentally leaving lost everything. Now we
-  // autosave a draft (silently) ~4s after any meaningful change, and once more
-  // on unload, so closing/refreshing/นเว็บหลุด no longer loses work — reopen the
-  // editor and load the draft to continue (e.g. Burn). Only saves once there is
-  // real progress, so we never spam empty drafts.
+  // Mechanism (4s debounce + unload latest-closure ref) → _hooks/useDraftAutosave (P1).
+  // Serialization (saveDraftNow) stays here — reads ~40 state values; later P1 chunk.
   function hasResumableProgress() {
     return (
       script.trim().length > 0 &&
@@ -1167,20 +1163,12 @@ export default function VideoEditorPage() {
         captionsRef.current.length > 0)
     );
   }
-  useEffect(() => {
-    if (!hasResumableProgress()) return;
-    const t = setTimeout(() => { try { saveDraftNow({ silent: true }); } catch {} }, 4000);
-    return () => clearTimeout(t);
-    // Re-armed on any meaningful editor change. pipe.current (a ref) isn't a dep,
-    // but every stage transition calls setStep → `steps` changes → this re-runs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
-      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize]);
-
-  // Latest-closure ref so the once-registered beforeunload handler can run the
-  // CURRENT autosave (a stale closure would persist mount-time empty state).
-  const autosaveRef = useRef<() => void>(() => {});
-  autosaveRef.current = () => { try { if (hasResumableProgress()) saveDraftNow({ silent: true }); } catch {} };
+  const autosaveRef = useDraftAutosave({
+    hasResumableProgress,
+    save: () => saveDraftNow({ silent: true }),
+    deps: [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
+      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize],
+  });
 
   // Warn before leaving while a step is running or a render exists that hasn't
   // been burned/exported yet (the state where Mew lost work). Re-evaluated on
@@ -1342,46 +1330,7 @@ export default function VideoEditorPage() {
     return true;
   }
 
-  // Credit overflow is build-baked OFF unless NEXT_PUBLIC_CREDITS_LIVE==="1". With it unset
-  // this is the literal `false`, so every guarded branch below is dead → page byte-identical.
-  const CREDITS_LIVE_CLIENT = process.env.NEXT_PUBLIC_CREDITS_LIVE === "1";
-
-  /** Start a Stripe checkout for a credit pack and redirect to it. */
-  async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
-    try {
-      const res = await fetch("/api/payments/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pack }),
-      });
-      const data = await res.json();
-      if (data?.url) window.location.href = data.url as string;
-      else toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
-    } catch {
-      toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
-    }
-  }
-
-  /**
-   * Post-render receipt for a credit-funded (overflow) render: shows how many credits
-   * were spent + the remaining balance (fetched separately, since the queue render path
-   * carries no balance), plus a low-balance nudge. No-op unless credits are live and
-   * the render actually spent credits.
-   */
-  async function fireCreditReceipt(creditsSpent: number | null | undefined) {
-    if (!CREDITS_LIVE_CLIENT) return;
-    const spent = Number(creditsSpent);
-    if (!Number.isFinite(spent) || spent <= 0) return;
-    let left: number | null = null;
-    try {
-      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
-      left = typeof b?.total === "number" ? b.total : null;
-    } catch { /* balance fetch is best-effort — still show the spend */ }
-    toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);
-    if (left != null && left < 20) {
-      toast("เครดิตใกล้หมด เติมเลยไหม?", { action: { label: "ซื้อเครดิต", onClick: () => buyCredits() } });
-    }
-  }
+  // buyCredits / fireCreditReceipt / CREDITS_LIVE_CLIENT → _hooks/useCreditsQuota (P1)
 
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
