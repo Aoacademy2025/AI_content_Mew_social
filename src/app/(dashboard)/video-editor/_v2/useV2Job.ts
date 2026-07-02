@@ -39,13 +39,14 @@ export function useV2Job(p: V2Project) {
     id: string; status: string; currentStep: string | null; progress: number;
     errorMessage: string | null; output?: ParsedVideoJobOutput | null;
   }) => {
+    // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
+    // วิดีโอ+ซับยังอยู่ (บั๊กที่ Mew เจอตอน QA 07-03). ลบเฉพาะตอนผู้ใช้สั่งเอง (reset:
+    // เริ่มโปรเจกต์ใหม่ / กลับไปตั้งค่า) หรือ Burn เสร็จใน P6.
     if (d.status === "done") {
       stopPolling();
-      try { localStorage.removeItem(STORAGE_KEY); } catch {}
       setJob({ phase: "done", jobId: d.id, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      try { localStorage.removeItem(STORAGE_KEY); } catch {}
       setJob({ phase: "failed", jobId: d.id, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null });
     } else {
       setJob({ phase: "rendering", jobId: d.id, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null });
