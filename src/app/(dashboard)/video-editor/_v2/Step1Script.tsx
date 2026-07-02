@@ -9,7 +9,7 @@ import { useMemo, useRef, useState } from "react";
 import { PenLine, Clapperboard, GripVertical } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
-import { estimateScriptDurationSec } from "../_lib/estimate-duration";
+import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
 
 const CLIP_CUTAWAY_ON = process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1";
@@ -28,17 +28,15 @@ function segLabel(i: number, total: number) {
 
 export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void }) {
   const lines = useMemo(() => p.script.split("\n").filter(l => l.trim().length > 0), [p.script]);
-  const totalSec = useMemo(() => estimateScriptDurationSec(p.script), [p.script]);
-  const wordCount = useMemo(
-    () => p.script.replace(/[฀-๿]+/g, (m) => ` ${"x ".repeat(Math.ceil(m.length / 4))}`).split(/\s+/).filter(Boolean).length,
-    [p.script],
-  );
+  // นับจากข้อความที่ clean แล้ว (ตรงกับที่ TTS จะอ่านจริง) — สูตรความยาว calibrate ใน estimate.ts
+  const totalSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const wordCount = useMemo(() => countWordsV2(p.script), [p.script]);
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
 
   // เวลาโดยประมาณต่อเซ็กเมนต์ — แบ่งตามสัดส่วนความยาวตัวอักษรของแต่ละบรรทัด
   const segTimes = useMemo(() => {
-    const weights = lines.map(l => Math.max(1, estimateScriptDurationSec(l)));
+    const weights = lines.map(l => Math.max(1, estimateClipSecV2(l)));
     const sum = weights.reduce((a, b) => a + b, 0) || 1;
     let acc = 0;
     return lines.map((_, i) => {
@@ -101,7 +99,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             style={{ borderTop: `1px solid ${color.cardBorder}` }}
           >
             <span style={{ fontSize: 11, color: color.textFaint }}>
-              {wordCount} คำ · {lines.length} เซ็กเมนต์ · ~{fmtTime(totalSec)} นาที
+              {wordCount} คำ · {lines.length} เซ็กเมนต์ · คลิปยาว ~{fmtTime(totalSec)} นาที
             </span>
           </div>
         </div>

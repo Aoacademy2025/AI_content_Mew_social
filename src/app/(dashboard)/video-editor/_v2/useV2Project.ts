@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { fetchMe } from "@/lib/use-me";
 
 /**
  * Editor v2 project state (เฟสตั้งค่า สเต็ป 1–2) — ตาม state model ในแผน:
@@ -31,7 +32,9 @@ export function useV2Project() {
   const [script, setScript] = useState("");
 
   // ── Step 2 ──
-  const [brollSource, setBrollSource] = useState<V2BrollSource>("automix");
+  // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
+  const [brollSource, setBrollSource] = useState<V2BrollSource>("stock");
+  const [isAdmin, setIsAdmin] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>("gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [voiceId, setVoiceId] = useState("");
@@ -55,6 +58,7 @@ export function useV2Project() {
     fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(d => {
       if (d) setUsage(d);
     }).catch(() => {});
+    fetchMe().then(d => setIsAdmin(d?.role === "ADMIN")).catch(() => {});
   }, []);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId
@@ -78,7 +82,7 @@ export function useV2Project() {
     musicTrack, setMusicTrack,
     useAvatar, setUseAvatar,
     avatarId, setAvatarId,
-    usage, avatarInfo,
+    usage, avatarInfo, isAdmin,
   };
 }
 
