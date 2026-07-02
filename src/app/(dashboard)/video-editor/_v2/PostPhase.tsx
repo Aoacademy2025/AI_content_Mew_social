@@ -12,7 +12,9 @@ import { CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
-  V2_STYLES, V2_FONTS, V2_TEXT_COLORS, V2_ACCENT_COLORS,
+  V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
+  V2_TEXT_COLORS, V2_ACCENT_COLORS,
+  LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   DEFAULT_V2_SUB, buildV2BurnConfig,
   type V2SubConfig, type V2Caption,
 } from "./subtitle-style";
@@ -28,6 +30,25 @@ type ExportState =
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// พรีวิวโดยประมาณต่อกลุ่ม preset (ตัว render จริงตอน burn ใช้ Remotion composition เดิมของ v1)
+const BOX_PRESETS = new Set(["box", "box-rounded", "box-white", "box-yellow", "news", "karaoke-box", "pastel"]);
+const OUTLINE_PRESETS = new Set(["outline-only", "sharp-outline"]);
+function previewStyleFor(cfg: V2SubConfig): React.CSSProperties {
+  const s: React.CSSProperties & { WebkitTextStroke?: string; WebkitBoxDecorationBreak?: string; boxDecorationBreak?: string } = {};
+  if (BOX_PRESETS.has(cfg.preset)) {
+    const lightBox = cfg.preset === "box-white" || cfg.preset === "pastel";
+    s.background = lightBox ? "rgba(255,255,255,.92)" : cfg.preset === "box-yellow" ? "rgba(255,229,0,.92)" : "rgba(0,0,0,.55)";
+    if (lightBox || cfg.preset === "box-yellow") s.color = "#111";
+    s.borderRadius = 8;
+    s.padding = "2px 8px";
+    s.boxDecorationBreak = "clone";
+    s.WebkitBoxDecorationBreak = "clone";
+  }
+  if (cfg.outline || OUTLINE_PRESETS.has(cfg.preset)) s.WebkitTextStroke = `${Math.max(1, cfg.outlineSize)}px #000`;
+  if (cfg.shadow && !BOX_PRESETS.has(cfg.preset)) s.textShadow = "0 2px 6px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9)";
+  return s;
 }
 
 export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject: () => void }) {
@@ -196,7 +217,7 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
 
         {/* ── กลาง: preview + ซับสด ── */}
         <main className="flex min-w-0 flex-1 items-center justify-center p-4" style={{ background: color.bg0 }}>
-          <div className="relative" style={{ height: "min(72vh, 640px)", aspectRatio: "9/16" }}>
+          <div className="relative" style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}>
             <video
               ref={videoRef}
               src={baseUrl}
@@ -218,14 +239,11 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
                   style={{
                     fontFamily: `'${cfg.fontFamily}', 'Noto Sans Thai', sans-serif`,
                     fontWeight: cfg.bold ? 800 : 400,
-                    fontSize: 20,
+                    // สเกลตามเฟรมจริง: 1080px = 100cqw → px บนจอ = fontSize × ความกว้าง/1080
+                    fontSize: `${((cfg.fontSize / 1080) * 100).toFixed(2)}cqw`,
                     lineHeight: 1.35,
-                    color: activeCap.tag === "hook" ? cfg.accentColor : cfg.textColor,
-                    ...(cfg.style === "clean"
-                      ? { background: "rgba(0,0,0,.55)", borderRadius: 8, padding: "2px 8px", boxDecorationBreak: "clone" as const, WebkitBoxDecorationBreak: "clone" as const }
-                      : cfg.style === "outline"
-                        ? { WebkitTextStroke: "1.6px #000" }
-                        : { textShadow: "0 2px 6px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9)" }),
+                    color: activeCap.tag === "hook" && cfg.preset !== "karaoke-box" ? cfg.accentColor : cfg.textColor,
+                    ...(previewStyleFor(cfg)),
                   }}
                 >
                   {activeCap.text}
@@ -243,39 +261,90 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
         {/* ── ขวา 330px: คุมซับ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <section className="flex flex-col gap-2">
-            <GroupLabel>สไตล์ซับ</GroupLabel>
+            <GroupLabel>สไตล์แนะนำ</GroupLabel>
             <div className="grid grid-cols-2 gap-2">
-              {V2_STYLES.map((s) => (
+              {V2_QUICK_STYLES.map((s) => {
+                const active = cfg.preset === s.preset && cfg.effect === s.effect;
+                return (
+                  <button
+                    key={s.key}
+                    onClick={() => setCfg((c) => ({ ...c, preset: s.preset, effect: s.effect }))}
+                    className="flex flex-col items-start gap-1 text-left"
+                    style={{
+                      borderRadius: radius.card, padding: "10px 12px",
+                      background: active ? color.selectedBg : color.cardBg,
+                      border: `1px solid ${active ? color.selectedBorder : color.cardBorder}`,
+                      cursor: "pointer", transition: "all 150ms ease",
+                    }}
+                  >
+                    <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{s.label}</span>
+                    <span style={{ fontSize: 10, color: active ? color.primary300 : color.textFaint }}>
+                      {active ? "กำลังใช้" : s.desc}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <GroupLabel>สไตล์ทั้งหมด ({PRESETS_DATA.length})</GroupLabel>
+            <div className="grid grid-cols-3 gap-1.5">
+              {PRESETS_DATA.map((p) => (
                 <button
-                  key={s.key}
-                  onClick={() => set("style", s.key)}
-                  className="flex flex-col items-start gap-1 text-left"
+                  key={p.value}
+                  onClick={() => set("preset", p.value)}
                   style={{
-                    borderRadius: radius.card, padding: "10px 12px",
-                    background: cfg.style === s.key ? color.selectedBg : color.cardBg,
-                    border: `1px solid ${cfg.style === s.key ? color.selectedBorder : color.cardBorder}`,
+                    borderRadius: 9, padding: "7px 4px", fontSize: 10.5,
+                    background: cfg.preset === p.value ? color.selectedBg : color.cardBg,
+                    border: `1px solid ${cfg.preset === p.value ? color.selectedBorder : color.cardBorder}`,
+                    color: cfg.preset === p.value ? color.primary300 : color.textSecondary,
                     cursor: "pointer", transition: "all 150ms ease",
+                    fontFamily: font.body,
                   }}
                 >
-                  <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{s.label}</span>
-                  <span style={{ fontSize: 10, color: cfg.style === s.key ? color.primary300 : color.textFaint }}>
-                    {cfg.style === s.key ? "กำลังใช้" : s.desc}
-                  </span>
+                  {p.label}
                 </button>
               ))}
             </div>
           </section>
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>ฟอนต์ · น้ำหนัก</GroupLabel>
+            <GroupLabel>เอฟเฟกต์ตัวอักษร</GroupLabel>
+            {LOCKED_EFFECT_PRESETS.includes(cfg.preset) ? (
+              <span style={{ fontSize: 10.5, color: color.textFaintest }}>สไตล์ &quot;{PRESETS_DATA.find((p) => p.value === cfg.preset)?.label}&quot; กำหนดเอฟเฟกต์ในตัว</span>
+            ) : (
+              <div className="grid grid-cols-3 gap-1.5">
+                {EFFECTS_DATA.map((ef) => (
+                  <button
+                    key={ef.value}
+                    onClick={() => set("effect", ef.value)}
+                    title={ef.desc}
+                    style={{
+                      borderRadius: 9, padding: "7px 4px", fontSize: 10.5,
+                      background: cfg.effect === ef.value ? color.selectedBg : color.cardBg,
+                      border: `1px solid ${cfg.effect === ef.value ? color.selectedBorder : color.cardBorder}`,
+                      color: cfg.effect === ef.value ? color.primary300 : color.textSecondary,
+                      cursor: "pointer", transition: "all 150ms ease", fontFamily: font.body,
+                    }}
+                  >
+                    {ef.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <GroupLabel>ฟอนต์ · น้ำหนัก · ขนาด ({cfg.fontSize}px)</GroupLabel>
             <div className="flex items-center gap-2">
               <select
                 value={cfg.fontFamily}
                 onChange={(e) => set("fontFamily", e.target.value)}
-                className="flex-1"
+                className="flex-1 min-w-0"
                 style={{ padding: "8px 10px", borderRadius: radius.control, fontSize: 12.5, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontFamily: font.body }}
               >
-                {V2_FONTS.map((f) => <option key={f} value={f} style={{ background: color.bg1 }}>{f}</option>)}
+                {FONTS_LIST.map((f) => <option key={f.value} value={f.value} style={{ background: color.bg1 }}>{f.label}</option>)}
               </select>
               <Segmented
                 value={cfg.bold ? "bold" : "regular"}
@@ -283,40 +352,73 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
                 options={[{ value: "bold", label: "หนา" }, { value: "regular", label: "บาง" }]}
               />
             </div>
+            <input
+              type="range"
+              min={30}
+              max={160}
+              value={cfg.fontSize}
+              onChange={(e) => set("fontSize", Number(e.target.value))}
+              style={{ accentColor: color.primary500 }}
+            />
           </section>
 
-          <section className="flex flex-col gap-2">
-            <GroupLabel>สีตัวอักษร</GroupLabel>
-            <div className="flex gap-2.5">
-              {V2_TEXT_COLORS.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => set("textColor", c)}
-                  aria-label={c}
-                  className="h-[19px] w-[19px] rounded-full"
-                  style={{
-                    background: c, cursor: "pointer",
-                    border: c === "#FFFFFF" || c === "#000000" ? "1px solid rgba(255,255,255,.25)" : "none",
-                    outline: cfg.textColor === c ? `1.5px solid ${color.primary500}` : "none",
-                    outlineOffset: 2,
-                  }}
-                />
-              ))}
-            </div>
-          </section>
+          {!LOCKED_COLOR_PRESETS.includes(cfg.preset) && (
+            <section className="flex flex-col gap-2">
+              <GroupLabel>สีตัวอักษร</GroupLabel>
+              <div className="flex items-center gap-2.5">
+                {V2_TEXT_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => set("textColor", c)}
+                    aria-label={c}
+                    className="h-[19px] w-[19px] rounded-full"
+                    style={{
+                      background: c, cursor: "pointer",
+                      border: c === "#FFFFFF" || c === "#000000" ? "1px solid rgba(255,255,255,.25)" : "none",
+                      outline: cfg.textColor === c ? `1.5px solid ${color.primary500}` : "none",
+                      outlineOffset: 2,
+                    }}
+                  />
+                ))}
+                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_TEXT_COLORS.includes(cfg.textColor as typeof V2_TEXT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
+                  <input type="color" value={cfg.textColor} onChange={(e) => set("textColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีกำหนดเอง" />
+                </label>
+              </div>
+            </section>
+          )}
+
+          {!LOCKED_ACCENT_PRESETS.includes(cfg.preset) && (
+            <section className="flex flex-col gap-2">
+              <GroupLabel>สีเน้น HOOK · CTA</GroupLabel>
+              <div className="flex items-center gap-2.5">
+                {V2_ACCENT_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => set("accentColor", c)}
+                    aria-label={c}
+                    className="h-[19px] w-[19px] rounded-full"
+                    style={{ background: c, cursor: "pointer", outline: cfg.accentColor === c ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}
+                  />
+                ))}
+                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_ACCENT_COLORS.includes(cfg.accentColor as typeof V2_ACCENT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
+                  <input type="color" value={cfg.accentColor} onChange={(e) => set("accentColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีเน้นกำหนดเอง" />
+                </label>
+              </div>
+            </section>
+          )}
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>สีเน้น HOOK · CTA</GroupLabel>
-            <div className="flex gap-2.5">
-              {V2_ACCENT_COLORS.map((c) => (
-                <button
-                  key={c}
-                  onClick={() => set("accentColor", c)}
-                  aria-label={c}
-                  className="h-[19px] w-[19px] rounded-full"
-                  style={{ background: c, cursor: "pointer", outline: cfg.accentColor === c ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}
-                />
-              ))}
+            <GroupLabel>เงา · เส้นขอบ</GroupLabel>
+            <div className="flex items-center gap-4" style={{ fontSize: 12, color: color.textSecondary }}>
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input type="checkbox" checked={cfg.shadow} onChange={(e) => set("shadow", e.target.checked)} style={{ accentColor: color.primary500 }} /> เงา
+              </label>
+              <label className="flex cursor-pointer items-center gap-1.5">
+                <input type="checkbox" checked={cfg.outline} onChange={(e) => set("outline", e.target.checked)} style={{ accentColor: color.primary500 }} /> เส้นขอบ
+              </label>
+              {cfg.outline && (
+                <input type="range" min={1} max={8} value={cfg.outlineSize} onChange={(e) => set("outlineSize", Number(e.target.value))} className="flex-1" style={{ accentColor: color.primary500 }} />
+              )}
             </div>
           </section>
 
