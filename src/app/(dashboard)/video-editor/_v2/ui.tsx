@@ -275,7 +275,12 @@ export const V2_STEPS = [
   { num: "03", label: "แต่งซับ" },
 ] as const;
 
-export function StepIndicator({ active = 0, done = [] as number[] }) {
+export function StepIndicator({ active = 0, done = [] as number[], onStepClick }: {
+  active?: number;
+  done?: number[];
+  /** คลิกย้อนกลับสเต็ปที่ผ่านแล้ว (done) — สเต็ปข้างหน้าคลิกไม่ได้ */
+  onStepClick?: (i: number) => void;
+}) {
   return (
     <div
       style={{
@@ -286,14 +291,23 @@ export function StepIndicator({ active = 0, done = [] as number[] }) {
       {V2_STEPS.map((s, i) => {
         const isActive = i === active;
         const isDone = done.includes(i);
+        const clickable = !!onStepClick && isDone && !isActive;
         return (
-          <div
+          <button
             key={s.num}
+            type="button"
+            disabled={!clickable}
+            onClick={() => clickable && onStepClick(i)}
+            title={clickable ? `กลับไป ${s.label}` : undefined}
             style={{
               display: "flex", alignItems: "center", gap: 6, borderRadius: radius.pill,
-              padding: "4px 12px",
-              background: isActive ? color.gradientPrimary : undefined,
+              padding: "4px 12px", border: "none",
+              background: isActive ? color.gradientPrimary : "none",
+              cursor: clickable ? "pointer" : "default",
+              transition: fx.transition,
             }}
+            onMouseEnter={(e) => { if (clickable) e.currentTarget.style.background = "rgba(255,255,255,.07)"; }}
+            onMouseLeave={(e) => { if (clickable) e.currentTarget.style.background = "none"; }}
           >
             {isDone ? (
               <Check size={12} strokeWidth={2.5} color={color.success} />
@@ -305,7 +319,7 @@ export function StepIndicator({ active = 0, done = [] as number[] }) {
             <span style={{ font: `500 12px ${font.heading}`, color: isActive ? "#fff" : isDone ? color.textSecondary : color.textFaintest }}>
               {s.label}
             </span>
-          </div>
+          </button>
         );
       })}
     </div>

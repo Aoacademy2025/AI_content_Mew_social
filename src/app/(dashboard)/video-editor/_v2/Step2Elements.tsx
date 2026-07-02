@@ -34,7 +34,7 @@ function fmtTime(sec: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void }) {
+export function Step2Elements({ p }: { p: V2Project }) {
   const bgm = useBgm();
   const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const estMin = Math.max(1, Math.ceil(estSec / 60));
@@ -50,9 +50,7 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
     <div className="flex min-h-0 flex-1">
       {/* ── เนื้อหาซ้าย: 4 กลุ่ม ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-y-auto px-7 py-6">
-        <button onClick={onBack} className="self-start" style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-          ← กลับไปแก้สคริปต์
-        </button>
+        {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
@@ -122,37 +120,42 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
               <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
             </span>
           </Card>
-          <Advanced note="เลือกเสียง Gemini ทั้งหมด · ElevenLabs Voice ID">
-            {p.voiceEngine === "gemini" && (
-              <select
-                value={p.geminiVoiceName}
-                onChange={(e) => p.setGeminiVoiceName(e.target.value)}
-                className="mt-2 w-full max-w-[280px]"
-                style={{
-                  padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
-                  background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
-                  color: color.text, fontFamily: font.body,
-                }}
-              >
-                {GEMINI_VOICES.map(v => (
-                  <option key={v.id} value={v.id} style={{ background: color.bg1 }}>
-                    {v.label} — {v.gender} · {v.style}
-                  </option>
-                ))}
-              </select>
-            )}
-            {p.voiceEngine === "elevenlabs" && (
-              <input
-                value={p.voiceId}
-                onChange={(e) => p.setVoiceId(e.target.value)}
-                placeholder="วาง ElevenLabs Voice ID"
-                className="mt-2 w-full max-w-[280px]"
-                style={{
-                  padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
-                  background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
-                  color: color.text, fontFamily: font.body, outline: "none",
-                }}
-              />
+          <Advanced note="ปรับความเร็ว/อารมณ์เสียง">
+            {p.voiceEngine === "gemini" ? (
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง Gemini</span>
+                <select
+                  value={p.geminiVoiceName}
+                  onChange={(e) => p.setGeminiVoiceName(e.target.value)}
+                  className="w-full max-w-[280px]"
+                  style={{
+                    padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                    background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                    color: color.text, fontFamily: font.body,
+                  }}
+                >
+                  {GEMINI_VOICES.map(v => (
+                    <option key={v.id} value={v.id} style={{ background: color.bg1 }}>
+                      {v.label} — {v.gender} · {v.style}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>ElevenLabs Voice ID</span>
+                <input
+                  value={p.voiceId}
+                  onChange={(e) => p.setVoiceId(e.target.value)}
+                  placeholder="วาง ElevenLabs Voice ID"
+                  className="w-full max-w-[280px]"
+                  style={{
+                    padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                    background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                    color: color.text, fontFamily: font.body, outline: "none",
+                  }}
+                />
+              </label>
             )}
           </Advanced>
         </Group>
@@ -348,11 +351,11 @@ function Advanced({ note, children }: { note: string; children?: React.ReactNode
         ตั้งค่าขั้นสูง
       </button>
       {open && (
-        <div className="mt-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
-          <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7 }}>
-            จะอยู่ตรงนี้: {note} <span style={{ color: color.textFaintest }}>(เชื่อมจริงใน P4/P6)</span>
-          </span>
+        <div className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
           {children}
+          <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7, display: "block" }}>
+            {children ? "กำลังตามมา: " : "จะอยู่ตรงนี้: "}{note} (เชื่อมจริงใน P4/P6)
+          </span>
         </div>
       )}
     </div>
