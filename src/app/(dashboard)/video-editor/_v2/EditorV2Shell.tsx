@@ -43,7 +43,11 @@ export function EditorV2Shell() {
           </div>
         </div>
 
-        <StepIndicator active={step} done={step === 1 ? [0] : []} />
+        <StepIndicator
+          active={step}
+          done={step === 1 ? [0] : []}
+          onStepClick={(i) => { if (i < step) setStep(i as 0 | 1); }}
+        />
 
         <div
           className="h-[30px] w-[30px] rounded-full"
@@ -54,7 +58,7 @@ export function EditorV2Shell() {
 
       {step === 0
         ? <Step1Script p={p} onNext={() => setStep(1)} />
-        : <Step2Elements p={p} onBack={() => setStep(0)} />}
+        : <Step2Elements p={p} />}
     </div>
   );
 }
