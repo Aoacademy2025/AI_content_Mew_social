@@ -16,8 +16,10 @@ import {
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   DEFAULT_V2_SUB, buildV2BurnConfig,
-  type V2SubConfig, type V2Caption,
+  mergeCaptionWithNext, splitCaption, groupCaptionsBy,
+  type V2SubConfig, type V2Caption, type V2CardOverrides,
 } from "./subtitle-style";
+import { loanwordSpans } from "@/lib/thai-loanwords";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 
@@ -60,6 +62,12 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
+  // ความยาวการ์ด (1/2/3 ประโยค) — จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
+  const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
+  const [cardLen, setCardLen] = useState<1 | 2 | 3>(1);
+  // ปรับสี scope รายการ์ด
+  const [scope, setScope] = useState<"all" | "card">("all");
+  const [overrides, setOverrides] = useState<V2CardOverrides>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [timeMs, setTimeMs] = useState(0);
   const pollStop = useRef(false);
@@ -110,11 +118,41 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
     setCfg((c) => ({ ...c, [k]: v }));
   }
 
+  /** สี text/accent เคารพ scope: ทั้งคลิป = config กลาง · การ์ดนี้ = override รายใบ */
+  function setColorScoped(key: "textColor" | "accentColor", v: string) {
+    if (scope === "card") {
+      setOverrides((o) => ({ ...o, [selected]: { ...o[selected], [key]: v } }));
+    } else {
+      set(key, v);
+    }
+  }
+  const activeOverride = overrides[selected] ?? {};
+
+  function applyCardLen(n: 1 | 2 | 3) {
+    setCardLen(n);
+    setOverrides({});
+    handleCaptionsChange(groupCaptionsBy(originalCapsRef.current, n), true);
+    setSelected(0);
+  }
+
+  function mergeSelected() {
+    if (selected >= captions.length - 1) { toast("การ์ดสุดท้าย — ไม่มีใบถัดไปให้รวม"); return; }
+    setOverrides({});
+    handleCaptionsChange(mergeCaptionWithNext(captions, selected), true);
+  }
+
+  function splitSelected() {
+    const next = splitCaption(captions, selected, loanwordSpans(captions[selected]?.text ?? ""));
+    if (next === captions) { toast("การ์ดสั้นเกินไปหรือหาจุดตัดไม่ได้"); return; }
+    setOverrides({});
+    handleCaptionsChange(next, true);
+  }
+
   async function exportVideo() {
     if (!baseUrl || !captions.length || exp.phase === "burning" || exp.phase === "saving") return;
     setExp({ phase: "burning", progress: 0 });
     try {
-      const overlay = buildV2BurnConfig(baseUrl, captions, preview?.audioDurationMs ?? 0, cfg);
+      const overlay = buildV2BurnConfig(baseUrl, captions, preview?.audioDurationMs ?? 0, cfg, 30, overrides);
       const res = await fetch("/api/videos/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -245,9 +283,14 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
               </Card>
             </div>
           ))}
-          <span style={{ fontSize: 10, color: color.textFaintest, textAlign: "center", padding: "4px 0" }}>
-            รวม/แยกการ์ด + timeline มาใน P6b
-          </span>
+          <div className="mt-auto flex gap-2 pt-2">
+            <button onClick={mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
+              รวมกับใบถัดไป
+            </button>
+            <button onClick={splitSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
+              แยกการ์ด
+            </button>
+          </div>
         </aside>
 
         {/* ── กลาง: preview + ซับสด ── */}
@@ -277,7 +320,9 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
                     // สเกลตามเฟรมจริง: 1080px = 100cqw → px บนจอ = fontSize × ความกว้าง/1080
                     fontSize: `${((cfg.fontSize / 1080) * 100).toFixed(2)}cqw`,
                     lineHeight: 1.35,
-                    color: activeCap.tag === "hook" && cfg.preset !== "karaoke-box" ? cfg.accentColor : cfg.textColor,
+                    color: activeCap.tag === "hook" && cfg.preset !== "karaoke-box"
+                      ? (overrides[activeIdx]?.accentColor ?? cfg.accentColor)
+                      : (overrides[activeIdx]?.textColor ?? cfg.textColor),
                     ...(previewStyleFor(cfg)),
                   }}
                 >
@@ -295,6 +340,16 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
 
         {/* ── ขวา 330px: คุมซับ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          <section className="flex flex-col gap-2">
+            <GroupLabel>ความยาวการ์ดซับ</GroupLabel>
+            <Segmented
+              value={String(cardLen)}
+              onChange={(v) => applyCardLen(Number(v) as 1 | 2 | 3)}
+              options={[{ value: "1", label: "1 ประโยค" }, { value: "2", label: "2" }, { value: "3", label: "3" }]}
+            />
+            <span style={{ fontSize: 9.5, color: color.textFaintest }}>เปลี่ยนแล้วจะล้างการรวม/แยก/สีรายการ์ดที่แก้ไว้</span>
+          </section>
+
           <section className="flex flex-col gap-2">
             <GroupLabel>สไตล์แนะนำ</GroupLabel>
             <div className="grid grid-cols-2 gap-2">
@@ -397,50 +452,67 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
             />
           </section>
 
-          {!LOCKED_COLOR_PRESETS.includes(cfg.preset) && (
+          {(!LOCKED_COLOR_PRESETS.includes(cfg.preset) || !LOCKED_ACCENT_PRESETS.includes(cfg.preset)) && (
             <section className="flex flex-col gap-2">
-              <GroupLabel>สีตัวอักษร</GroupLabel>
+              <GroupLabel>ใช้สีกับ</GroupLabel>
+              <Segmented
+                value={scope}
+                onChange={(v) => setScope(v as "all" | "card")}
+                options={[{ value: "all", label: "ทั้งคลิป" }, { value: "card", label: `การ์ดที่เลือก (#${selected + 1})` }]}
+              />
+            </section>
+          )}
+
+          {!LOCKED_COLOR_PRESETS.includes(cfg.preset) && (() => {
+            const effective = scope === "card" ? (activeOverride.textColor ?? cfg.textColor) : cfg.textColor;
+            return (
+            <section className="flex flex-col gap-2">
+              <GroupLabel>สีตัวอักษร{scope === "card" ? ` · การ์ด #${selected + 1}` : ""}</GroupLabel>
               <div className="flex items-center gap-2.5">
                 {V2_TEXT_COLORS.map((c) => (
                   <button
                     key={c}
-                    onClick={() => set("textColor", c)}
+                    onClick={() => setColorScoped("textColor", c)}
                     aria-label={c}
                     className="h-[19px] w-[19px] rounded-full"
                     style={{
                       background: c, cursor: "pointer",
                       border: c === "#FFFFFF" || c === "#000000" ? "1px solid rgba(255,255,255,.25)" : "none",
-                      outline: cfg.textColor === c ? `1.5px solid ${color.primary500}` : "none",
+                      outline: effective === c ? `1.5px solid ${color.primary500}` : "none",
                       outlineOffset: 2,
                     }}
                   />
                 ))}
-                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_TEXT_COLORS.includes(cfg.textColor as typeof V2_TEXT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
-                  <input type="color" value={cfg.textColor} onChange={(e) => set("textColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีกำหนดเอง" />
+                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_TEXT_COLORS.includes(effective as typeof V2_TEXT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
+                  <input type="color" value={effective} onChange={(e) => setColorScoped("textColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีกำหนดเอง" />
                 </label>
               </div>
             </section>
-          )}
+            );
+          })()}
 
-          {!LOCKED_ACCENT_PRESETS.includes(cfg.preset) && (
+          {!LOCKED_ACCENT_PRESETS.includes(cfg.preset) && (() => {
+            const effective = scope === "card" ? (activeOverride.accentColor ?? cfg.accentColor) : cfg.accentColor;
+            return (
             <section className="flex flex-col gap-2">
-              <GroupLabel>สีเน้น HOOK · CTA</GroupLabel>
+              <GroupLabel>สีเน้น HOOK · CTA{scope === "card" ? ` · การ์ด #${selected + 1}` : ""}</GroupLabel>
               <div className="flex items-center gap-2.5">
                 {V2_ACCENT_COLORS.map((c) => (
                   <button
                     key={c}
-                    onClick={() => set("accentColor", c)}
+                    onClick={() => setColorScoped("accentColor", c)}
                     aria-label={c}
                     className="h-[19px] w-[19px] rounded-full"
-                    style={{ background: c, cursor: "pointer", outline: cfg.accentColor === c ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}
+                    style={{ background: c, cursor: "pointer", outline: effective === c ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}
                   />
                 ))}
-                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_ACCENT_COLORS.includes(cfg.accentColor as typeof V2_ACCENT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
-                  <input type="color" value={cfg.accentColor} onChange={(e) => set("accentColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีเน้นกำหนดเอง" />
+                <label className="relative h-[19px] w-[19px] cursor-pointer rounded-full" style={{ background: "conic-gradient(red,yellow,lime,cyan,blue,magenta,red)", outline: !V2_ACCENT_COLORS.includes(effective as typeof V2_ACCENT_COLORS[number]) ? `1.5px solid ${color.primary500}` : "none", outlineOffset: 2 }}>
+                  <input type="color" value={effective} onChange={(e) => setColorScoped("accentColor", e.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="สีเน้นกำหนดเอง" />
                 </label>
               </div>
             </section>
-          )}
+            );
+          })()}
 
           <section className="flex flex-col gap-2">
             <GroupLabel>เงา · เส้นขอบ</GroupLabel>

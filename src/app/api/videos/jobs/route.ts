@@ -23,6 +23,7 @@ type Body = {
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
+  targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown;
 };
 
@@ -104,6 +105,14 @@ export async function POST(req: Request) {
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;
 
+    // ขั้นสูง (P6c): จำนวนคลิป + ตัวเลือก AI-gen (Beta fields ผ่านได้เฉพาะเมื่อ source เป็น Beta
+    // ซึ่งผ่าน admin gate ด้านบนแล้ว)
+    const targetClipCount = num(body.targetClipCount, 1, 60);
+    const kieModel = stockSource ? str(body.kieModel, 60) : undefined;
+    const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
+      ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
+      : undefined;
+
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;
     const bgmFile = str(body.bgmFile, 300);
@@ -123,6 +132,9 @@ export async function POST(req: Request) {
             : {}),
           ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
           ...(stockSource ? { stockSource } : {}),
+          ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
+          ...(kieModel ? { kieModel } : {}),
+          ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },

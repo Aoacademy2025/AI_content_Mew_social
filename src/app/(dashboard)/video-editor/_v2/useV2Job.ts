@@ -97,8 +97,13 @@ export function useV2Job(p: V2Project) {
         ...(p.musicTrack ? { bgmFile: `/music/${p.musicTrack}` } : {}),
         // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
         stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
-        // อวตาร default = bookend (โผล่ช่วงเปิด 5 วิ — ประหยัด HeyGen); โหมดอื่นมากับขั้นสูง (P6)
-        ...(p.useAvatar && p.avatarId ? { avatarMode: "bookend", avatarId: p.avatarId } : {}),
+        // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
+        ...(p.useAvatar && p.avatarId
+          ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
+          : {}),
+        ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+        ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+        ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
         subtitleMode: "sentence",
         subtitlePosition: "bottom",
       };

@@ -35,6 +35,12 @@ interface CreateInput {
    * Validated + admin-gated at the web route; MCP never sends it → DEFAULT_STOCK_SOURCE.
    */
   stockSource?: string;
+  /** จำนวนคลิปบีโรลกำหนดเอง (Editor v2 ขั้นสูง) — absent = auto */
+  targetClipCount?: number;
+  /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
+  kieModel?: string;
+  /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
+  autoMixProviders?: string[];
   /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
@@ -179,7 +185,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 3. Keywords
     await step("keywords", 40);
     const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
-      "/api/videos/extract-keywords", buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs),
+      "/api/videos/extract-keywords",
+      {
+        ...buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs),
+        // v2 ขั้นสูง: จำนวนคลิปกำหนดเอง (extract-keywords รองรับ field นี้จาก web เดิมอยู่แล้ว)
+        ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
+      },
     );
 
     // 4. Stock
@@ -189,7 +200,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
     const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
     const stock = await caller.post<{ results: unknown[] }>(
-      "/api/videos/fetch-stock", buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+      "/api/videos/fetch-stock",
+      {
+        ...buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+        // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
+        ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+        ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+      },
       aiGenSource ? { retries: 0 } : undefined,
     );
 
