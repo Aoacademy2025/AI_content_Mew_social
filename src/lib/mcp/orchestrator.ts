@@ -28,6 +28,15 @@ interface CreateInput {
   bgmFile?: string; bgmVolume?: number;
   subtitleMode?: "sentence" | "1" | "2" | "3" | "4";
   subtitlePosition?: "top" | "middle" | "bottom";
+  /** Per-job Gemini voice override (Editor v2) — falls back to user.geminiVoiceName. */
+  geminiVoiceName?: string;
+  /**
+   * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
+   * composite if any) WITHOUT burning subtitles; persist captions/config in
+   * outputJson v2 so the web editor resumes at the subtitle phase and burns there.
+   * MCP clients never send this — the full path below is byte-identical without it.
+   */
+  previewMode?: boolean;
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
@@ -110,7 +119,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await step("tts", 10);
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
-      : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: user.geminiVoiceName ?? "Aoede" });
+      : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
     const audioDurationMs = tts.audioDurationMs ?? 0;
 
     // 2. Captions (in-process, reuse the pure editor helper)
@@ -196,7 +205,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
     // reservation NOW so a finished video nets exactly 1 clip, and a burn-stage failure (the
     // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
-    await refund(userId).catch(() => {});
+    // PREVIEW MODE: no burn follows in this job, so the base reservation must STAND as the
+    // single charge (same as the web editor's preview render today) — skip the refund.
+    if (!input.previewMode) await refund(userId).catch(() => {});
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
     let finalBase = baseUrl;
@@ -217,6 +228,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       finalBase = av.compositeUrl;
       avatarModel = input.avatarId;
       avatarVideoUrl = av.avatarUrl;
+    }
+
+    // PREVIEW MODE (Editor v2): stop here — no burn, no gallery Video row (the web burn
+    // step creates it, exactly like today's web flow; also avoids PROCESSING ghost rows).
+    // outputJson v2 carries everything the editor's subtitle phase needs.
+    if (input.previewMode) {
+      const previewDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, previewDuration]);
+      emitStage(phaseName, "done", previewDuration);
+      const totalPreviewS = (Date.now() - jobStartedAt) / 1000;
+      console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+      await finishJob(jobId, {
+        version: 2,
+        mode: "preview",
+        videoUrl: finalBase,
+        preview: {
+          captions,
+          config: baseConfig,
+          voiceUrl: tts.voiceUrl,
+          audioDurationMs: durMs,
+          avatarModel,
+          avatarVideoUrl,
+        },
+      });
+      return;
     }
 
     // 7. Create Video row (PROCESSING)
