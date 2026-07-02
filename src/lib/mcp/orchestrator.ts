@@ -31,6 +31,11 @@ interface CreateInput {
   /** Per-job Gemini voice override (Editor v2) — falls back to user.geminiVoiceName. */
   geminiVoiceName?: string;
   /**
+   * B-roll source override (Editor v2): "both" (stock, default) | "kie-image" | "auto-mix".
+   * Validated + admin-gated at the web route; MCP never sends it → DEFAULT_STOCK_SOURCE.
+   */
+  stockSource?: string;
+  /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
    * outputJson v2 so the web editor resumes at the subtitle phase and burns there.
@@ -175,7 +180,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await step("stock", 55);
     const totalDur = (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     const stock = await caller.post<{ results: unknown[] }>(
-      "/api/videos/fetch-stock", buildStockPayload(kw.keywords ?? [], totalDur, DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+      "/api/videos/fetch-stock", buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
     );
 
     // 5. Config

@@ -95,6 +95,8 @@ export function useV2Job(p: V2Project) {
         ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
         // เพลง: system track → path ตรง (resolver ฝั่ง server รองรับ) · null = ไม่ใส่เพลง
         ...(p.musicTrack ? { bgmFile: `/music/${p.musicTrack}` } : {}),
+        // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
+        stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
         // อวตาร default = bookend (โผล่ช่วงเปิด 5 วิ — ประหยัด HeyGen); โหมดอื่นมากับขั้นสูง (P6)
         ...(p.useAvatar && p.avatarId ? { avatarMode: "bookend", avatarId: p.avatarId } : {}),
         subtitleMode: "sentence",
