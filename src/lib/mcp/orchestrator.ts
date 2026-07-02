@@ -78,7 +78,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   // step() logs the phase that just ended (worker log, for audits) + emits its `done`
   // telemetry, then advances and emits the new phase's `started`. Render/burn progress
   // callbacks keep calling setJobStep directly so they don't spam this.
+  const JOB_CANCELED = "__job_canceled__";
   async function step(name: string, progress: number) {
+    // Cooperative cancel (incident 07-03: kie runaway had no stop lever): the cancel
+    // route marks processing jobs `canceled`; we honor it at every step boundary —
+    // the current step finishes, nothing further starts, no failJob overwrite.
+    const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+    if (current?.status === "canceled") throw new Error(JOB_CANCELED);
     const now = Date.now();
     const ended = now - phaseStartedAt;
     timings.push([phaseName, ended]);
@@ -179,8 +185,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 4. Stock
     await step("stock", 55);
     const totalDur = (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
+    // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
+    // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
+    const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
     const stock = await caller.post<{ results: unknown[] }>(
       "/api/videos/fetch-stock", buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+      aiGenSource ? { retries: 0 } : undefined,
     );
 
     // 5. Config
@@ -286,6 +296,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
+    if (message === "__job_canceled__") {
+      console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
+      return; // status is already 'canceled'; don't overwrite with failed
+    }
     emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
     await failJob(jobId, message);
   }

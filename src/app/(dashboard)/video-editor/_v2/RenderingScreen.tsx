@@ -101,9 +101,8 @@ export function RenderingScreen({ job, hasAvatar, onCancel }: {
           </span>
           <BtnGhost
             onClick={onCancel}
-            disabled={!queued}
-            title={queued ? "ยกเลิกงานในคิว" : "งานเริ่มทำแล้ว — ยกเลิกไม่ได้"}
-            style={!queued ? { opacity: 0.4, cursor: "not-allowed", padding: "8px 16px" } : { padding: "8px 16px" }}
+            title={queued ? "ยกเลิกงานในคิว" : "หยุดหลังจบขั้นตอนปัจจุบัน"}
+            style={{ padding: "8px 16px" }}
           >
             ยกเลิก
           </BtnGhost>

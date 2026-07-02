@@ -153,6 +153,29 @@ async function main() {
     ok(out?.preview === undefined, "B: no preview payload");
   }
 
+  // ── D. cooperative cancel: canceled mid-run → stops at next step boundary ──
+  {
+    const log: CallLog[] = [];
+    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
+    const base = makeStubCaller(log);
+    const cancelingCaller = {
+      ...base,
+      post: async <T,>(path: string, body: unknown): Promise<T> => {
+        const r = await base.post<T>(path, body);
+        // user hits ยกเลิก while keywords are running → status flips to canceled
+        if (path === "/api/videos/extract-keywords") {
+          await prisma.videoJob.update({ where: { id: job.id }, data: { status: "canceled" } });
+        }
+        return r;
+      },
+    };
+    await runOrchestrator(job.id, "u-preview", { caller: cancelingCaller, refundOneClip: async () => {}, sleep: async () => {} });
+    const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(done?.status === "canceled", `D: status stays canceled, no failJob overwrite (got ${done?.status})`);
+    ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/fetch-stock"), "D: no step started after cancel (stock never called)");
+    ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/render"), "D: no render after cancel");
+  }
+
   // ── C. parser tolerance ────────────────────────────────────────────────────
   {
     const { parseVideoJobOutput: parse } = await import("../src/lib/mcp/video-job");
