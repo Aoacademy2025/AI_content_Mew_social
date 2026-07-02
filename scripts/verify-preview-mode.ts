@@ -91,7 +91,7 @@ async function main() {
     const log: CallLog[] = [];
     let refunds = 0;
     // voiceProvider explicit — mirrors the web route (user rows default ttsProvider="elevenlabs")
-    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck", stockSource: "kie-image" });
+    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck", stockSource: "kie-image", targetClipCount: 7, kieModel: "gpt-image-2-text-to-image" });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
@@ -112,6 +112,9 @@ async function main() {
     ok((ttsCall?.body as { voiceName?: string })?.voiceName === "Puck", "A: per-job geminiVoiceName override reaches TTS");
     const stockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
     ok((stockCall?.body as { stockSource?: string })?.stockSource === "kie-image", "A: stockSource override reaches fetch-stock");
+    ok((stockCall?.body as { kieModel?: string })?.kieModel === "gpt-image-2-text-to-image", "A: kieModel reaches fetch-stock");
+    const kwCall = log.find((c) => c.path === "/api/videos/extract-keywords");
+    ok((kwCall?.body as { targetClipCount?: number })?.targetClipCount === 7, "A: targetClipCount reaches extract-keywords");
 
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 2, `A: output version 2 (got ${out?.version})`);

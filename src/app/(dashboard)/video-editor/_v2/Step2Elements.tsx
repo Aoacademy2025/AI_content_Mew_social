@@ -13,6 +13,7 @@ import {
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
@@ -89,7 +90,64 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               );
             })}
           </div>
-          <Advanced note="แหล่งภาพ Auto Mix · โมเดลภาพ AI · จำนวนคลิป (auto/กำหนดเอง)" />
+          <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
+            <div className="flex flex-col gap-3">
+              <label className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
+                จำนวนคลิปบีโรล:
+                <Segmented
+                  value={p.targetClipCount > 0 ? "custom" : "auto"}
+                  onChange={(v) => p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || 8))}
+                  options={[{ value: "auto", label: "Auto" }, { value: "custom", label: "กำหนดเอง" }]}
+                />
+                {p.targetClipCount > 0 && (
+                  <input
+                    type="number" min={1} max={60} value={p.targetClipCount}
+                    onChange={(e) => p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+                    className="w-[64px]"
+                    style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
+                  />
+                )}
+              </label>
+              {p.isAdmin && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
+                <label className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>โมเดลภาพ AI (Beta)</span>
+                  <select
+                    value={p.kieModel}
+                    onChange={(e) => p.setKieModel(e.target.value as typeof p.kieModel)}
+                    className="w-full max-w-[280px]"
+                    style={{ padding: "8px 10px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
+                  >
+                    <option value="" style={{ background: color.bg1 }}>ค่าเริ่มต้นของระบบ</option>
+                    {KIE_IMAGE_MODEL_OPTIONS.map((m) => (
+                      <option key={m.value} value={m.value} style={{ background: color.bg1 }}>{m.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {p.isAdmin && p.brollSource === "automix" && (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>แหล่งภาพ Auto Mix (Beta)</span>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+                    {AUTO_MIX_PROVIDER_OPTIONS.map((o) => (
+                      <label key={o.value} className="flex cursor-pointer items-center gap-1.5" style={{ fontSize: 11, color: color.textSecondary }}>
+                        <input
+                          type="checkbox"
+                          checked={p.autoMixProviders.includes(o.value)}
+                          onChange={(e) => p.setAutoMixProviders(
+                            e.target.checked
+                              ? [...p.autoMixProviders, o.value]
+                              : p.autoMixProviders.filter((x) => x !== o.value),
+                          )}
+                          style={{ accentColor: color.primary500 }}
+                        />
+                        {o.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Advanced>
         </Group>
 
         {/* 2 · เสียงพากย์ */}
@@ -204,7 +262,44 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <UserX size={14} strokeWidth={1.6} /> วิดีโอเสียง + บีโรล ไม่มีพิธีกร
             </div>
           )}
-          <Advanced note="Avatar ID · โหมด Full/Intro/Intro+Outro · วินาที intro/outro · ตำแหน่ง/สเกล (WYSIWYG)" />
+          <Advanced note="Avatar ID อื่น · ตำแหน่ง/สเกล WYSIWYG (ใช้ preset ที่บันทึกไว้ไปก่อน)">
+            {p.useAvatar && (
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>โหมดพิธีกร (HeyGen คิดเงินตามวินาทีที่เจน)</span>
+                  <Segmented
+                    value={p.avatarMode}
+                    onChange={p.setAvatarMode}
+                    options={[
+                      { value: "bookend", label: "เปิดคลิป" },
+                      { value: "bookend-both", label: "เปิด+ปิด" },
+                      { value: "full", label: "ทั้งคลิป" },
+                    ]}
+                  />
+                </label>
+                {p.avatarMode !== "full" && (
+                  <div className="flex items-center gap-3" style={{ fontSize: 11.5, color: color.textSecondary }}>
+                    <label className="flex items-center gap-1.5">
+                      เปิด
+                      <input type="number" min={1} max={30} value={p.avatarIntroSecs}
+                        onChange={(e) => p.setAvatarIntroSecs(Math.max(1, Math.min(30, Number(e.target.value) || 5)))}
+                        className="w-[52px]" style={{ padding: "5px 7px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }} />
+                      วิ
+                    </label>
+                    {p.avatarMode === "bookend-both" && (
+                      <label className="flex items-center gap-1.5">
+                        ปิด
+                        <input type="number" min={1} max={30} value={p.avatarTailSecs}
+                          onChange={(e) => p.setAvatarTailSecs(Math.max(1, Math.min(30, Number(e.target.value) || 5)))}
+                          className="w-[52px]" style={{ padding: "5px 7px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }} />
+                        วิ
+                      </label>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </Advanced>
         </Group>
       </div>
 

@@ -59,6 +59,68 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
 
 export type V2Caption = VideoJobPreviewData["captions"][number];
 
+/** override สี/สีเน้นรายการ์ด (key = index ของการ์ด) */
+export type V2CardOverrides = Record<number, { textColor?: string; accentColor?: string }>;
+
+// ── การ์ด: รวม / แยก / จัดกลุ่มความยาว ─────────────────────────────────────
+
+/** รวมการ์ด i เข้ากับใบถัดไป (ข้อความต่อกัน เวลาคลุมทั้งคู่) */
+export function mergeCaptionWithNext(caps: V2Caption[], i: number): V2Caption[] {
+  if (i < 0 || i >= caps.length - 1) return caps;
+  const merged: V2Caption = {
+    ...caps[i],
+    text: `${caps[i].text.trimEnd()} ${caps[i + 1].text.trimStart()}`,
+    endMs: caps[i + 1].endMs,
+  };
+  return [...caps.slice(0, i), merged, ...caps.slice(i + 2)];
+}
+
+/**
+ * แยกการ์ด i เป็น 2 ใบ ณ ขอบคำใกล้กึ่งกลางข้อความ (กันตัดกลางคำทับศัพท์ด้วย
+ * loanwordSpans ชุดเดียวกับ pipeline) เวลาแบ่งตามสัดส่วนตัวอักษร
+ */
+export function splitCaption(caps: V2Caption[], i: number, loanSpans: { start: number; end: number }[]): V2Caption[] {
+  const c = caps[i];
+  if (!c || c.text.trim().length < 4) return caps;
+  const text = c.text;
+  const mid = text.length / 2;
+  // จุดตัด candidate: ขอบคำจาก Intl.Segmenter ที่ไม่อยู่ในช่วง loanword
+  const candidates: number[] = [];
+  try {
+    const seg = new Intl.Segmenter("th", { granularity: "word" });
+    let pos = 0;
+    for (const s of seg.segment(text)) {
+      pos = s.index;
+      if (pos > 0 && pos < text.length && !loanSpans.some((sp) => pos > sp.start && pos < sp.end)) candidates.push(pos);
+    }
+  } catch { /* Segmenter ไม่มี → ใช้ช่องว่าง */ }
+  for (let p = 1; p < text.length; p++) if (text[p] === " ") candidates.push(p);
+  if (!candidates.length) return caps;
+  const cut = candidates.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a));
+  const leftText = text.slice(0, cut).trim();
+  const rightText = text.slice(cut).trim();
+  if (!leftText || !rightText) return caps;
+  const cutMs = c.startMs + Math.round(((c.endMs - c.startMs) * cut) / text.length);
+  const left: V2Caption = { ...c, text: leftText, endMs: cutMs };
+  const right: V2Caption = { ...c, text: rightText, startMs: cutMs };
+  return [...caps.slice(0, i), left, right, ...caps.slice(i + 1)];
+}
+
+/** จัดกลุ่มการ์ดจากชุดต้นฉบับทีละ n ใบ (ความยาวการ์ด 1/2/3 ประโยค) */
+export function groupCaptionsBy(original: V2Caption[], n: number): V2Caption[] {
+  if (n <= 1) return original.map((c) => ({ ...c }));
+  const out: V2Caption[] = [];
+  for (let i = 0; i < original.length; i += n) {
+    const chunk = original.slice(i, i + n);
+    out.push({
+      ...chunk[0],
+      text: chunk.map((c) => c.text.trim()).join(" "),
+      endMs: chunk[chunk.length - 1].endMs,
+    });
+  }
+  return out;
+}
+
 /** subtitleOverlayConfig — key ครบเท่ากับ burn ของ v1 (page.tsx burnSubtitlesCore) */
 export function buildV2BurnConfig(
   baseVideoUrl: string,
@@ -66,22 +128,26 @@ export function buildV2BurnConfig(
   audioDurationMs: number,
   cfg: V2SubConfig,
   fps = 30,
+  overrides: V2CardOverrides = {},
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
   const durationInFrames = Math.max(Math.round((durMs / 1000) * fps), fps);
   const fontWeight = cfg.bold ? 900 : 400;
   let frameCursor = 0;
-  const keywordPopups = captions.flatMap((c) => {
+  const keywordPopups = captions.flatMap((c, idx) => {
     if (frameCursor >= durationInFrames) return [];
+    const ov = overrides[idx] ?? {};
+    const textColor = ov.textColor ?? cfg.textColor;
+    const accentColor = ov.accentColor ?? cfg.accentColor;
     const popup = {
       text: c.text,
       start: Math.round((c.startMs / 1000) * fps),
       end: Math.round((c.endMs / 1000) * fps),
       tag: c.tag ?? "body",
       isHighlight: c.tag === "hook",
-      color: cfg.preset === "karaoke-box" ? cfg.textColor : c.tag === "hook" ? cfg.accentColor : cfg.textColor,
-      accentColor: cfg.accentColor,
+      color: cfg.preset === "karaoke-box" ? textColor : c.tag === "hook" ? accentColor : textColor,
+      accentColor,
       fontWeight,
       topPercent: cfg.verticalPos,
       size: cfg.fontSize,
