@@ -7,15 +7,16 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle } from "lucide-react";
-import { color, font, radius } from "./tokens";
+import { XCircle } from "lucide-react";
+import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
-import { StepIndicator, BtnPrimary, BtnGhost } from "./ui";
+import { StepIndicator, BtnPrimary } from "./ui";
 import { useV2Project } from "./useV2Project";
 import { useV2Job, type V2JobState } from "./useV2Job";
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
+import { PostPhase } from "./PostPhase";
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -78,7 +79,7 @@ export function EditorV2Shell() {
       {isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.useAvatar && !!p.avatarId} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
-        <DoneView job={job} onNew={() => { reset(); setStep(0); }} />
+        <PostPhase job={job} onNewProject={() => { reset(); setStep(0); }} />
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />
       ) : step === 0 ? (
@@ -87,35 +88,6 @@ export function EditorV2Shell() {
         <Step2Elements p={p} onRender={handleRender} />
       )}
     </div>
-  );
-}
-
-/** Done placeholder — เฟสแต่งซับเต็มรูปแบบ (การ์ดซับ/สไตล์/timeline + Burn) มาใน P6 */
-function DoneView({ job, onNew }: { job: V2JobState; onNew: () => void }) {
-  const captionCount = job.output?.preview?.captions?.length ?? 0;
-  return (
-    <main className="flex flex-1 items-center justify-center p-6">
-      <div className="flex max-w-[760px] flex-col items-center gap-4">
-        <div className="flex items-center gap-2">
-          <CheckCircle2 size={18} color={color.success} />
-          <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
-        </div>
-        {job.output?.videoUrl && (
-          <video
-            src={job.output.videoUrl}
-            controls
-            playsInline
-            className="max-h-[52vh]"
-            style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
-          />
-        )}
-        <div className="text-center" style={{ fontSize: 11.5, color: color.textSecondary, lineHeight: 1.7 }}>
-          วิดีโอนี้ยังไม่ฝังซับ · ระบบเตรียมซับไว้แล้ว {captionCount} การ์ด<br />
-          จอแต่งซับ + Timeline (สเต็ป 3) กำลังมาใน P6 — ระหว่างนี้ดูพรีวิว/เช็คเสียง-บีโรลได้เลย
-        </div>
-        <BtnGhost onClick={onNew}>เริ่มโปรเจกต์ใหม่</BtnGhost>
-      </div>
-    </main>
   );
 }
 
