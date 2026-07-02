@@ -91,7 +91,7 @@ async function main() {
     const log: CallLog[] = [];
     let refunds = 0;
     // voiceProvider explicit — mirrors the web route (user rows default ttsProvider="elevenlabs")
-    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck" });
+    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck", stockSource: "kie-image" });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
@@ -110,6 +110,8 @@ async function main() {
 
     const ttsCall = log.find((c) => c.path === "/api/videos/tts-gemini");
     ok((ttsCall?.body as { voiceName?: string })?.voiceName === "Puck", "A: per-job geminiVoiceName override reaches TTS");
+    const stockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
+    ok((stockCall?.body as { stockSource?: string })?.stockSource === "kie-image", "A: stockSource override reaches fetch-stock");
 
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 2, `A: output version 2 (got ${out?.version})`);
@@ -140,6 +142,9 @@ async function main() {
     ok(log.some((c) => c.method === "POST" && c.path === "/api/videos"), "B: gallery Video row created");
     ok(log.some((c) => c.method === "PATCH" && c.path === "/api/videos/gallery-vid-1"), "B: gallery PATCH → COMPLETED");
     ok(refunds === 1, `B: exactly one refund (base reservation) — got ${refunds}`);
+
+    const stockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
+    ok((stockCall?.body as { stockSource?: string })?.stockSource === "both", "B: MCP default stockSource unchanged (both)");
 
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 1, `B: output stays v1 (got ${out?.version})`);

@@ -22,9 +22,13 @@ import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 type Body = {
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
-  bgmFile?: unknown; bgmVolume?: unknown;
+  bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown;
 };
+
+// b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
+// gate SERVER-SIDE (the UI disables the cards, but that's not security).
+const STOCK_SOURCES = new Set(["stock", "kie-image", "auto-mix"]);
 
 const SUB_MODES = new Set(["sentence", "1", "2", "3", "4"]);
 const SUB_POSITIONS = new Set(["top", "middle", "bottom"]);
@@ -93,6 +97,13 @@ export async function POST(req: Request) {
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: ["queued", "processing"] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
+    // B-roll source: "stock" (default) → orchestrator default "both"; Beta sources admin-only
+    const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    if (requestedSource !== "stock" && user.role !== "ADMIN") {
+      return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
+    }
+    const stockSource = requestedSource === "stock" ? undefined : requestedSource;
+
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;
     const bgmFile = str(body.bgmFile, 300);
@@ -111,6 +122,7 @@ export async function POST(req: Request) {
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
           ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
+          ...(stockSource ? { stockSource } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },
