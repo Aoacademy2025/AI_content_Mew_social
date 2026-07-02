@@ -56,6 +56,7 @@ const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
 const BROLL_WINDOW_SEC = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
 import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
+import { preprocessScript } from "./_lib/preprocess-script";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { useAudioPeaks } from "./_components/useAudioPeaks";
@@ -1420,25 +1421,7 @@ function LegacyVideoEditorPage() {
     return text.split(/\n+/).map(s => s.trim()).filter(Boolean);
   }
 
-  function preprocessScript(raw: string) {
-    return raw
-      // ตัดวงเล็บและเนื้อหาข้างใน — ไม่ควรอ่านออกเสียง เช่น (Artificial Intelligence), (อ่านว่า xxx)
-      .replace(/\([^)]{1,80}\)/g, "")
-      // ตัดวงเล็บเหลี่ยมและเนื้อหาข้างใน เช่น [หมายเหตุ], [ดนตรี]
-      .replace(/\[[^\]]{1,80}\]/g, "")
-      // ตัด hashtag เช่น #AI #tech
-      .replace(/#\S+/g, "")
-      // ตัด URL
-      .replace(/https?:\/\/\S+/g, "")
-      // ตัด emoji
-      .replace(/[\u{1F300}-\u{1FFFF}]/gu, "")
-      // ตัด stage direction เช่น *หยุดพัก*, _เน้น_
-      .replace(/\*[^*]{1,50}\*/g, "")
-      .replace(/_[^_]{1,50}_/g, "")
-      .replace(/\r?\n/g, " ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-  }
+  // preprocessScript → _lib/preprocess-script (shared with v2; + {braces}/punctuation-run hardening 07-03)
 
   // ── Step runners (same logic as video-creator) ─────────────────────────
 

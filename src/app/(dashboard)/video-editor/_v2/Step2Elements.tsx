@@ -6,24 +6,26 @@
  * ปุ่มเรนเดอร์จริง = P4 (VideoJob preview mode) — ตอนนี้เป็น stub แจ้งชัด
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2,
+  Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { color, font, radius } from "./tokens";
-import { BtnPrimary, Card, Chip, IconTile, Segmented, GroupLabel } from "./ui";
+import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
-import { estimateScriptDurationSec } from "../_lib/estimate-duration";
+import { estimateClipSecV2 } from "./estimate";
 import { useBgm } from "../_hooks/useBgm";
 import type { V2Project, V2BrollSource } from "./useV2Project";
 
-const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; pro?: boolean }[] = [
-  { value: "automix", title: "AutoMix", desc: "วิดีโอ + ภาพ ผสมอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} />, badge: "แนะนำ" },
-  { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
-  { value: "kie-image", title: "ภาพ AI", desc: "เจนภาพตามเนื้อหา", icon: <ImagePlus size={16} strokeWidth={1.6} /> },
-  { value: "kie-video", title: "วิดีโอ AI", desc: "เจนวิดีโอตามเนื้อหา", icon: <Sparkles size={16} strokeWidth={1.6} />, pro: true },
+// ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
+const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
+  { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} />, badge: "ฟรี · แนะนำ" },
+  { value: "kie-image", title: "ภาพ AI", desc: "เจนภาพตามเนื้อหา", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
+  { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
+  { value: "automix", title: "AutoMix", desc: "วิดีโอ + ภาพ ผสมอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
 ];
 
 function fmtTime(sec: number) {
@@ -34,7 +36,7 @@ function fmtTime(sec: number) {
 
 export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void }) {
   const bgm = useBgm();
-  const estSec = useMemo(() => estimateScriptDurationSec(p.script), [p.script]);
+  const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const estMin = Math.max(1, Math.ceil(estSec / 60));
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
 
@@ -55,31 +57,38 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
-            {BROLL_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                onClick={() => p.setBrollSource(o.value)}
-                className="relative flex flex-col items-start gap-2 text-left"
-                style={{
-                  borderRadius: radius.card, padding: "12px 14px",
-                  background: p.brollSource === o.value ? color.selectedBg : color.cardBg,
-                  border: `1px solid ${p.brollSource === o.value ? color.selectedBorder : color.cardBorder}`,
-                  cursor: "pointer", transition: "all 150ms ease",
-                }}
-              >
-                {o.badge && (
-                  <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{o.badge}</span>
-                )}
-                {o.pro && (
-                  <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.textSecondary, border: `1px solid ${color.cardBorder}` }}>PRO</span>
-                )}
-                <IconTile size={32}>{o.icon}</IconTile>
-                <span className="flex flex-col">
-                  <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{o.title}</span>
-                  <span style={{ fontSize: 10.5, color: color.textFaint }}>{o.desc}</span>
-                </span>
-              </button>
-            ))}
+            {BROLL_OPTIONS.map((o) => {
+              // Beta = เปิดเฉพาะ admin · วิดีโอ AI ยังไม่เปิดให้ใคร
+              const locked = o.comingSoon || (o.beta && !p.isAdmin);
+              return (
+                <button
+                  key={o.value}
+                  disabled={locked}
+                  onClick={() => !locked && p.setBrollSource(o.value)}
+                  className="relative flex flex-col items-start gap-2 text-left"
+                  style={{
+                    borderRadius: radius.card, padding: "12px 14px",
+                    background: p.brollSource === o.value ? color.selectedBg : color.cardBg,
+                    border: `1px solid ${p.brollSource === o.value ? color.selectedBorder : color.cardBorder}`,
+                    cursor: locked ? "not-allowed" : "pointer",
+                    opacity: locked ? 0.55 : 1,
+                    transition: "all 150ms ease",
+                  }}
+                >
+                  {o.badge && (
+                    <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{o.badge}</span>
+                  )}
+                  {o.beta && (
+                    <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: `1px solid rgba(251,191,36,.35)` }}>Beta</span>
+                  )}
+                  <IconTile size={32}>{o.icon}</IconTile>
+                  <span className="flex flex-col">
+                    <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{o.title}</span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>{o.desc}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
           <Advanced note="แหล่งภาพ Auto Mix · โมเดลภาพ AI · จำนวนคลิป (auto/กำหนดเอง)" />
         </Group>
@@ -108,7 +117,10 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
                   : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
-            <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
+            {/* ปุ่มมี w-full+mt-2 ภายใน — คุมความกว้างเองกัน layout ระเบิด */}
+            <span className="w-[132px] shrink-0" style={{ marginTop: -8 }}>
+              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
+            </span>
           </Card>
           <Advanced note="เลือกเสียง Gemini ทั้งหมด · ElevenLabs Voice ID">
             {p.voiceEngine === "gemini" && (
@@ -146,25 +158,8 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
         </Group>
 
         {/* 3 · เพลงประกอบ */}
-        <Group title="เพลงประกอบ" desc="เพลงเบา ๆ ใต้เสียงพูด (ลดเสียงอัตโนมัติ)">
-          <div className="flex flex-wrap gap-2">
-            {bgm.systemTracks.slice(0, 6).map((t, i) => (
-              <Chip
-                key={t.id}
-                selected={p.musicTrack === t.filename}
-                onClick={() => p.setMusicTrack(t.filename)}
-              >
-                {t.title}{i === 0 ? " · แนะนำ" : ""}
-              </Chip>
-            ))}
-            <Chip
-              selected={p.musicTrack === null}
-              onClick={() => p.setMusicTrack(null)}
-              style={{ borderStyle: "dashed" }}
-            >
-              ไม่ใส่เพลง
-            </Chip>
-          </div>
+        <Group title="เพลงประกอบ" desc="เพลงเบา ๆ ใต้เสียงพูด (ลดเสียงอัตโนมัติ) · กดไอคอนเพื่อฟังตัวอย่าง">
+          <MusicChips p={p} tracks={bgm.systemTracks.slice(0, 6)} />
           <Advanced note="อัปโหลดเพลงของคุณ · คลังทั้งหมด · ระดับเสียง" />
         </Group>
 
@@ -230,7 +225,7 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
         {/* สรุปการตั้งค่า */}
         <div style={{ borderRadius: radius.card, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}>
           <div className="px-4 pt-3 pb-1"><GroupLabel>สรุปการตั้งค่า</GroupLabel></div>
-          <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · ~${fmtTime(estSec)}`} />
+          <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
           <SummaryRow label="บีโรล" value={BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-"} />
           <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : "ElevenLabs"} />
           <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (bgm.systemTracks.find(t => t.filename === p.musicTrack)?.title ?? "ยังไม่เลือก")} />
@@ -241,12 +236,88 @@ export function Step2Elements({ p, onBack }: { p: V2Project; onBack: () => void 
         <div className="flex flex-col gap-2">
           <BtnPrimary className="w-full" onClick={renderStub}>เรนเดอร์วิดีโอ</BtnPrimary>
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
-            ~{estMin} นาที
-            {p.usage?.minutes ? ` · ใช้ ${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
+            คลิปยาว ~{fmtTime(estSec)}
+            {p.usage?.minutes ? ` · ใช้ ~${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
             {" "}· แก้ทุกอย่างได้ทีหลัง
           </span>
         </div>
       </aside>
+    </div>
+  );
+}
+
+/** ชิปเพลง + ปุ่มฟังตัวอย่างในตัว (logic เดียวกับ toggleMusicPreview ของ OrderPanel, URL = /api/music/<filename>) */
+function MusicChips({ p, tracks }: { p: V2Project; tracks: { id: string; title: string; filename: string }[] }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [previewing, setPreviewing] = useState("");
+
+  function stopPreview() {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPreviewing("");
+  }
+  useEffect(() => () => stopPreview(), []);
+
+  async function togglePreview(filename: string) {
+    if (previewing === filename) { stopPreview(); return; }
+    stopPreview();
+    const audio = new Audio(`/api/music/${filename}`);
+    audio.volume = 0.5;
+    audio.preload = "auto";
+    audioRef.current = audio;
+    setPreviewing(filename);
+    audio.onended = () => { if (audioRef.current === audio) stopPreview(); };
+    audio.onerror = () => { if (audioRef.current === audio) { stopPreview(); toast.error("เล่นเพลงตัวอย่างไม่สำเร็จ"); } };
+    try { await audio.play(); } catch { if (audioRef.current === audio) { stopPreview(); toast.error("เบราว์เซอร์ไม่อนุญาตให้เล่นเสียง ลองกดอีกครั้ง"); } }
+  }
+
+  const chipStyle = (selected: boolean, dashed = false): React.CSSProperties => ({
+    display: "inline-flex", alignItems: "center", gap: 8,
+    padding: "6px 10px 6px 14px", borderRadius: radius.pill,
+    background: selected ? color.selectedBg : "rgba(255,255,255,.04)",
+    border: `1px ${dashed ? "dashed" : "solid"} ${selected ? color.selectedBorder : color.cardBorder}`,
+    color: selected ? color.primary300 : color.textSecondary,
+    font: `${selected ? 500 : 400} 12.5px ${font.body}`,
+    cursor: "pointer", transition: "all 150ms ease",
+  });
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {tracks.map((t, i) => (
+        <span
+          key={t.id}
+          role="button"
+          tabIndex={0}
+          onClick={() => p.setMusicTrack(t.filename)}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") p.setMusicTrack(t.filename); }}
+          style={chipStyle(p.musicTrack === t.filename)}
+        >
+          {t.title}{i === 0 ? " · แนะนำ" : ""}
+          <span
+            role="button"
+            aria-label={previewing === t.filename ? "หยุดตัวอย่าง" : "ฟังตัวอย่าง"}
+            onClick={(e) => { e.stopPropagation(); void togglePreview(t.filename); }}
+            className="flex h-[18px] w-[18px] items-center justify-center rounded-full"
+            style={{
+              background: previewing === t.filename ? "rgba(52,211,153,.15)" : "rgba(255,255,255,.07)",
+              color: previewing === t.filename ? color.success : color.textSecondary,
+            }}
+          >
+            {previewing === t.filename
+              ? <Pause size={9} strokeWidth={2} />
+              : <Play size={9} strokeWidth={2} style={{ marginLeft: 1 }} />}
+          </span>
+        </span>
+      ))}
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={() => { stopPreview(); p.setMusicTrack(null); }}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { stopPreview(); p.setMusicTrack(null); } }}
+        style={{ ...chipStyle(p.musicTrack === null, true), padding: "6px 14px" }}
+      >
+        ไม่ใส่เพลง
+      </span>
     </div>
   );
 }
