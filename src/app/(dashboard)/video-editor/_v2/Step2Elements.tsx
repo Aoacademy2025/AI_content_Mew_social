@@ -34,16 +34,17 @@ function fmtTime(sec: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function Step2Elements({ p }: { p: V2Project }) {
+export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
   const bgm = useBgm();
   const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const estMin = Math.max(1, Math.ceil(estSec / 60));
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+  const [submitting, setSubmitting] = useState(false);
 
-  function renderStub() {
-    toast("การเรนเดอร์ผ่าน Editor v2 กำลังมาใน P4", {
-      description: "ตอนนี้เรนเดอร์ได้ที่ UI ปัจจุบัน (?ui=v1) — การตั้งค่าหน้านี้ยังไม่ถูกบันทึก",
-    });
+  async function handleRender() {
+    if (submitting) return;
+    setSubmitting(true);
+    try { await onRender(); } finally { setSubmitting(false); }
   }
 
   return (
@@ -237,7 +238,14 @@ export function Step2Elements({ p }: { p: V2Project }) {
 
         {/* CTA เดียว */}
         <div className="flex flex-col gap-2">
-          <BtnPrimary className="w-full" onClick={renderStub}>เรนเดอร์วิดีโอ</BtnPrimary>
+          <BtnPrimary
+            className="w-full"
+            onClick={() => void handleRender()}
+            disabled={submitting}
+            style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
+          >
+            {submitting ? "กำลังส่งงาน…" : "เรนเดอร์วิดีโอ"}
+          </BtnPrimary>
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             คลิปยาว ~{fmtTime(estSec)}
             {p.usage?.minutes ? ` · ใช้ ~${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
