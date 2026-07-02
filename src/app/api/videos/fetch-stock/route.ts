@@ -241,8 +241,13 @@ async function searchPexels(query: string, apiKey: string, minDuration = 3, perP
   return (data.videos ?? []) as PexelsVideo[];
 }
 
-// Pick best video file: prefer HD portrait ≤1080p, fallback to any
-// Cap at 1920px on the long side — 4K files (2160p) are too large to download reliably
+// Pick best video file: HD portrait ≤1080p preferred, any portrait accepted.
+// Cap at 1920px on the long side — 4K files (2160p) are too large to download reliably.
+// PORTRAIT-ONLY (2026-07-03): a hit with no portrait mp4 is SKIPPED (return null) instead
+// of falling back to a landscape file — the 9:16 renderer center-crops landscape and loses
+// the subject (เหรียญหลุดเฟรมเหลือแต่กำแพงขาว). Pools are deep (up to 80 hits/keyword), so
+// skipping rogue landscape hits beats shipping a broken crop. Resolution caps unchanged
+// (#63 no-4K + HD preference stay — that's the download/normalize-speed protection).
 function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   const files = video.video_files.filter(f => f.file_type === "video/mp4");
   const under1080 = (f: PexelsVideoFile) => Math.max(f.width, f.height) <= 1920;
@@ -251,9 +256,7 @@ function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
     ?? portrait.filter(under1080)[0];
   if (hdPortrait) return hdPortrait;
   if (portrait[0]) return portrait[0]; // fallback: any portrait even if large
-  const hd = files.filter(under1080).find(f => f.quality === "hd") ?? files.filter(under1080)[0];
-  if (hd) return hd;
-  return files[0] ?? null;
+  return null; // no portrait file → skip this hit (never crop landscape into 9:16)
 }
 
 function safeUnlink(filePath: string) {
@@ -360,7 +363,11 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5,
       height: v.height,
       tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
     };
-  }).filter((v: PixabayVideo) => v.videoUrl);
+  }).filter((v: PixabayVideo) =>
+    // PORTRAIT-ONLY belt (2026-07-03, same rationale as pickBestFile): drop variants that
+    // are provably landscape; keep unknown-dimension hits (orientation=vertical search).
+    v.videoUrl && !(Number(v.width) > 0 && Number(v.height) > 0 && Number(v.width) > Number(v.height)),
+  );
 }
 
 
