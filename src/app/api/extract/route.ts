@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import * as cheerio from "cheerio";
 import axios from "axios";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
 // POST /api/extract - Extract text content from URL
 export async function POST(req: Request) {
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
 // Extract content from web pages using Cheerio
 async function extractWebContent(url: string): Promise<string> {
   try {
+    await assertSafeFetchUrl(url); // SSRF guard before fetching a user-supplied URL
     const response = await axios.get(url, {
       headers: {
         "User-Agent":

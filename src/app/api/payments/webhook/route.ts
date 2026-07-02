@@ -117,6 +117,15 @@ export async function POST(req: Request) {
   const sig = req.headers.get("stripe-signature") ?? "";
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? "";
 
+  // Fail CLOSED on a missing/blank signing secret. stripe-node's constructEvent does NOT reject
+  // an empty secret — it verifies against HMAC(payload, "") which a forged request can reproduce,
+  // so an unset/blank secret would let any unauthenticated POST mint a paid plan. ensureStripeConfig
+  // above loads the secret from SiteConfig; if that row is missing/blank we refuse rather than fall open.
+  if (!webhookSecret || webhookSecret.length < 10) {
+    console.error("[stripe-webhook] STRIPE_WEBHOOK_SECRET missing/blank — refusing to process webhook");
+    return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
+  }
+
   let event: ReturnType<typeof stripe.webhooks.constructEvent>;
   try {
     event = stripe.webhooks.constructEvent(body, sig, webhookSecret);

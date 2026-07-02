@@ -20,7 +20,8 @@
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
     "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
     "verify:subtitle-invariant": "tsx scripts/verify-subtitle-invariant.ts",
-    "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts"
+    "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts",
+    "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

@@ -7,6 +7,7 @@ import { geminiGenerateText } from "@/lib/gemini";
 import axios from "axios";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
 export async function POST(req: Request) {
   try {
@@ -51,6 +52,7 @@ export async function POST(req: Request) {
     let textContent = sourceText;
     if (sourceUrl && !sourceText) {
       try {
+        await assertSafeFetchUrl(sourceUrl); // SSRF guard: block internal/private targets
         const urlResponse = await axios.get(sourceUrl, { timeout: 10000 });
         textContent = urlResponse.data;
       } catch {

@@ -323,7 +323,7 @@ export default function DashboardPage() {
                 </p>
                 <p className="text-[12px] text-white/55 mt-0.5">
                   {isPro
-                    ? "300 clips/month • วิดีโอ 10 นาที • 90-day storage • Priority support"
+                    ? "150 นาที/เดือน • วิดีโอ 10 นาที/คลิป • เก็บวิดีโอ 14 วัน • Priority support"
                     : "Unlimited styles, content และ avatar videos"}
                 </p>
               </div>
