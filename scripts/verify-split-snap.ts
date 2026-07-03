@@ -76,29 +76,34 @@ const SCRIPT = "รู้มั้ยว่าทำไมคนส่วนใ�
     { startMs: 6500, endMs: 10000 },
   ];
 
+  // snapCaptionsToSilences takes SilenceInterval[] (since 06-17). A bare midpoint
+  // is a degenerate interval {m,m} → onset & midpoint both collapse to m, i.e.
+  // exactly the legacy point-based behaviour these checks were written against.
+  const at = (...ms: number[]) => ms.map((m) => ({ startMs: m, endMs: m }));
+
   // silence midpoints near (not at) the boundaries
-  const snapped = snapCaptionsToSilences(caps(), [3400, 6100]);
+  const snapped = snapCaptionsToSilences(caps(), at(3400, 6100));
   check("snap: boundary 1 moved to 3400", snapped[0].endMs === 3400 && snapped[1].startMs === 3400);
   check("snap: boundary 2 moved to 6100", snapped[1].endMs === 6100 && snapped[2].startMs === 6100);
   check("snap: outer edges untouched", snapped[0].startMs === 0 && snapped[2].endMs === 10000);
 
   // beyond the ±1.5s window → no movement
-  const far = snapCaptionsToSilences(caps(), [4800]);
+  const far = snapCaptionsToSilences(caps(), at(4800));
   check("snap: silence outside window ignored", far[0].endMs === 3000 && far[1].startMs === 3000);
 
   // snap that would crush a card below 240ms → refused
   const crush = snapCaptionsToSilences(
     [{ startMs: 0, endMs: 3000 }, { startMs: 3000, endMs: 3300 }],
-    [3200],
+    at(3200),
   );
   check("snap: refuses to crush a card", crush[1].startMs === 3000, JSON.stringify(crush));
 
   // no silences / single card → untouched
   check("snap: no silences → unchanged", snapCaptionsToSilences(caps(), [])[0].endMs === 3000);
-  check("snap: single card → unchanged", snapCaptionsToSilences([{ startMs: 0, endMs: 5000 }], [2500])[0].endMs === 5000);
+  check("snap: single card → unchanged", snapCaptionsToSilences([{ startMs: 0, endMs: 5000 }], at(2500))[0].endMs === 5000);
 
   // monotonicity holds after snapping
-  const m = snapCaptionsToSilences(caps(), [3400, 6100, 9000]);
+  const m = snapCaptionsToSilences(caps(), at(3400, 6100, 9000));
   check("snap: stays monotonic", m.every((c, i) => c.endMs > c.startMs && (i === 0 || c.startMs >= m[i - 1].endMs)));
 }
 
