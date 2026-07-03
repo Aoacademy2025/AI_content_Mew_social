@@ -6,11 +6,11 @@
  * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline 4 แทร็ก = P6b
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
+import { ArrowDownToLine, CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
-import { BtnPrimary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
+import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
   V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
@@ -24,6 +24,8 @@ import { loanwordSpans } from "@/lib/thai-loanwords";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
+import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
+import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 
 type ExportState =
   | { phase: "idle" }
@@ -37,9 +39,11 @@ function fmtMs(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject: () => void }) {
+export function PostPhase({ job, script, onExported, onNewProject }: {
+  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+}) {
   const preview = job.output?.preview ?? null;
-  const baseUrl = job.output?.videoUrl ?? "";
+  const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
@@ -56,6 +60,41 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
+  const [adjustingAvatar, setAdjustingAvatar] = useState(false);
+  // ปรับได้เมื่องานนี้มีอวตาร + worker เก็บข้อมูล re-composite ไว้ (งานเก่าก่อนฟีเจอร์นี้ = ซ่อน)
+  // bookend-both ต้องมี tailAvatarUrl ด้วย ไม่งั้น composite split ขาดท่อน
+  const canAdjustAvatar = !!(
+    preview?.avatarModel && preview.avatarModel !== "none" &&
+    preview.avatarVideoUrl && preview.compositeBaseUrl && preview.avatarMode &&
+    (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
+  );
+
+  // การ์ดที่ "กำลังพูด" ตาม preview (แยกจาก selected = การ์ดที่เลือกแก้)
+  const activeIdx = useMemo(() => findActiveCaptionIdx(captions, timeMs), [captions, timeMs]);
+  const [follow, setFollow] = useState(true);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const lastAutoScrollAt = useRef(0);
+
+  // auto-scroll ตามการ์ด active — หยุดชั่วคราวถ้ากำลังพิมพ์แก้ซับ (กันเลื่อนหนี)
+  useEffect(() => {
+    if (!follow || !playing || editingIdx !== null || activeIdx < 0) return;
+    const el = cardRefs.current[activeIdx];
+    if (!el) return;
+    lastAutoScrollAt.current = Date.now();
+    el.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }, [activeIdx, follow, playing, editingIdx]);
+
+  function onListScroll() {
+    // programmatic scroll ใช้ behavior:"auto" (จบใน frame เดียว) — event ของมันตกใน window นี้เสมอ ที่เหลือ = ผู้ใช้เลื่อนเอง
+    if (Date.now() - lastAutoScrollAt.current < 700) return;
+    if (playing && follow) setFollow(false);
+  }
+
+  function resumeFollow() {
+    setFollow(true);
+    const el = activeIdx >= 0 ? cardRefs.current[activeIdx] : null;
+    if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "auto" }); }
+  }
 
   // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
   const historyRef = useRef<V2Caption[][]>([]);
@@ -197,12 +236,14 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           videoUrl: burnedUrl,
           audioUrl: preview?.voiceUrl ?? null,
           thumbnail: null,
-          script: null,
+          // ชื่อใน Gallery มาจาก script (v1 ก็ทำแบบนี้) — โหมดอัปคลิปใช้ fullText ที่ถอดได้
+          script: script.trim() || preview?.fullText || null,
           sceneCount: captions.length,
           status: "COMPLETED",
         }),
       }).catch(() => {}); // gallery save best-effort — ไฟล์ burn สำเร็จแล้ว
 
+      onExported(); // งานนี้จบแล้ว — กลับเข้ามาใหม่ต้องเริ่มสด (spec ข้อ 5)
       setExp({ phase: "done", url: burnedUrl });
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
@@ -217,10 +258,12 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
         <video src={exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-center gap-3">
           <a href={exp.url} download>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          <BtnGhost onClick={() => setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
       </main>
@@ -236,18 +279,20 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
           <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
         </span>
-        <div className="flex items-center gap-3">
-          <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-            เรนเดอร์ใหม่
-          </button>
-          <BtnPrimary
-            onClick={() => void exportVideo()}
-            disabled={exp.phase === "burning" || exp.phase === "saving"}
-            style={{ padding: "9px 20px", ...(exp.phase === "burning" || exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
-          >
-            {exp.phase === "burning" ? `กำลังฝังซับ ${exp.progress}%` : exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
-          </BtnPrimary>
-        </div>
+        {!adjustingAvatar && (
+          <div className="flex items-center gap-3">
+            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+              เรนเดอร์ใหม่
+            </button>
+            <BtnPrimary
+              onClick={() => void exportVideo()}
+              disabled={exp.phase === "burning" || exp.phase === "saving"}
+              style={{ padding: "9px 20px", ...(exp.phase === "burning" || exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
+            >
+              {exp.phase === "burning" ? `กำลังฝังซับ ${exp.progress}%` : exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
+            </BtnPrimary>
+          </div>
+        )}
       </div>
       {exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
@@ -257,11 +302,19 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
 
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
-        <aside className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+        <aside onScroll={onListScroll} className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <GroupLabel>การ์ดซับ ({captions.length})</GroupLabel>
           {captions.map((c, i) => (
-            <div key={`${i}-${c.startMs}`} onClick={() => { setSelected(i); const v = videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }} style={{ cursor: "pointer" }}>
-              <Card selected={i === selected}>
+            <div
+              key={`${i}-${c.startMs}`}
+              ref={(el) => { cardRefs.current[i] = el; }}
+              onClick={() => { setSelected(i); setFollow(true); const v = videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
+              style={{ cursor: "pointer" }}
+            >
+              <Card
+                selected={i === selected}
+                style={i === activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+              >
                 <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
                   <span style={{ color: i === selected ? color.primary300 : color.textFaint }}>
                     {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
@@ -292,6 +345,20 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
               </Card>
             </div>
           ))}
+          {!follow && (
+            <button
+              onClick={resumeFollow}
+              className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
+              style={{
+                padding: "5px 12px", borderRadius: radius.pill,
+                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                color: color.primary300, fontSize: 11, cursor: "pointer",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
+            </button>
+          )}
           <div className="mt-auto flex gap-2 pt-2">
             <button onClick={mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
               รวมกับใบถัดไป
@@ -327,6 +394,25 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
               playing={playing}
               onVerticalPos={(p) => set("verticalPos", p)}
             />
+            {adjustingAvatar && canAdjustAvatar && preview && (
+              <AvatarAdjustOverlay
+                avatarId={preview.avatarModel!}
+                avatarMode={preview.avatarMode!}
+                introSecs={preview.avatarIntroSecs ?? 5}
+                tailSecs={preview.avatarTailSecs ?? 5}
+                avatarVideoUrl={preview.avatarVideoUrl!}
+                tailAvatarUrl={preview.tailAvatarUrl ?? null}
+                bgVideoUrl={preview.compositeBaseUrl!}
+                jobId={job.jobId}
+                onClose={() => setAdjustingAvatar(false)}
+                onDone={(url) => {
+                  setBaseUrl(url);
+                  setAdjustingAvatar(false);
+                  const v = videoRef.current;
+                  if (v) { v.load(); v.currentTime = 0; }
+                }}
+              />
+            )}
             {(exp.phase === "burning" || exp.phase === "saving") && (
               <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(10,10,16,.55)", borderRadius: radius.cardLg }}>
                 <Loader2 size={22} className="animate-spin" color={color.primary300} />
@@ -337,6 +423,27 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
 
         {/* ── ขวา 330px: คุมซับ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          {canAdjustAvatar && (
+            <section className="flex flex-col gap-2">
+              <GroupLabel>อวตาร</GroupLabel>
+              <button
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (v) { v.pause(); v.currentTime = 0; }
+                  setAdjustingAvatar(true);
+                }}
+                className="flex items-center justify-center gap-2"
+                style={{
+                  padding: "9px 0", borderRadius: radius.control, background: "none",
+                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  fontSize: 12, cursor: "pointer",
+                }}
+              >
+                ปรับตำแหน่งอวตาร (ฟรี — ไม่เรียก HeyGen ใหม่)
+              </button>
+            </section>
+          )}
+
           <section className="flex flex-col gap-2">
             <GroupLabel>ความยาวการ์ดซับ</GroupLabel>
             <Segmented
@@ -566,6 +673,7 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
         config={(preview?.config as Record<string, unknown>) ?? null}
         hasAvatar={!!(preview?.avatarModel && preview.avatarModel !== "none")}
         avatarIntroMs={5000}
+        voiceUrl={preview?.voiceUrl ?? null}
       />
     </div>
   );

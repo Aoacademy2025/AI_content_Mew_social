@@ -11,6 +11,9 @@ import { useMemo, useRef, useState } from "react";
 import { Play, Pause, Magnet, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
+import { useAudioPeaks } from "../_components/useAudioPeaks";
+import { WaveformCanvas } from "../_components/WaveformCanvas";
+import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 
 const TRACK_H = 26;
 const LABEL_W = 92;
@@ -46,6 +49,7 @@ export function TimelinePanel({
   selected, onSelect,
   videoRef, timeMs, durationMs,
   config, hasAvatar, avatarIntroMs,
+  voiceUrl,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -59,18 +63,28 @@ export function TimelinePanel({
   config: Record<string, unknown> | null;
   hasAvatar: boolean;
   avatarIntroMs: number;
+  voiceUrl: string | null;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
   const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ idx: number; edge: "l" | "r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const scrubbingRef = useRef(false);
 
   const durMs = Math.max(durationMs, 1000);
   const widthPx = (durMs / 1000) * pxPerSec;
   const toPx = (ms: number) => (ms / 1000) * pxPerSec;
   const bgmFile = (config as { bgmFile?: string } | null)?.bgmFile;
   const brollSpans = useMemo(() => brollSpansFromConfig(config, durMs), [config, durMs]);
+
+  // Waveform เสียงพากย์ (fail-open: โหลด/decode ไม่ได้ = ไม่มีเลน, snap ตกกลับแบบเดิม)
+  const { peaks, durationMs: waveDurMs } = useAudioPeaks(voiceUrl);
+  const waveMs = waveDurMs || durMs;
+  const audioSnapPoints = useMemo(
+    () => (peaks?.length ? snapPointsFromPeaks(peaks, waveMs / peaks.length) : []),
+    [peaks, waveMs],
+  );
 
   function seekTo(ms: number) {
     const v = videoRef.current;
@@ -83,9 +97,12 @@ export function TimelinePanel({
     if (v.paused) { void v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
   }
 
-  /** จุด snap: ขอบการ์ดข้างเคียง + วินาทีเต็ม */
+  /** จุด snap: จุดเปลี่ยนเสียงพูด (ก่อน) > ขอบการ์ดข้างเคียง > วินาทีเต็ม */
   function snapMs(raw: number, idx: number): number {
     if (!snap) return raw;
+    if (audioSnapPoints.length && audioSnapPoints.some((p) => Math.abs(p - raw) <= SNAP_MS)) {
+      return snapToNearest(raw, audioSnapPoints, SNAP_MS);
+    }
     const points: number[] = [0, durMs];
     captions.forEach((c, i) => { if (i !== idx) { points.push(c.startMs, c.endMs); } });
     for (let s = 0; s <= durMs; s += 1000) points.push(s);
@@ -147,7 +164,7 @@ export function TimelinePanel({
   });
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ height: 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
+    <div className="flex shrink-0 flex-col" style={{ height: peaks && peaks.length > 0 ? 226 : 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
       {/* Transport 38px */}
       <div className="flex h-[38px] shrink-0 items-center gap-3 px-3" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
         <button onClick={togglePlay} className="flex h-[24px] w-[24px] items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }} aria-label="เล่น/หยุด">
@@ -172,20 +189,45 @@ export function TimelinePanel({
       {/* Tracks */}
       <div ref={scrollRef} className="flex-1 overflow-x-auto overflow-y-hidden">
         <div className="relative" style={{ width: widthPx + LABEL_W + 16, minWidth: "100%" }}>
-          {/* ruler คลิกเพื่อ seek */}
+          {/* ruler ลาก scrub ได้ (คลิก = jump, ลากค้าง = playhead วิ่งตาม) */}
           <div
-            className="relative ml-[92px] h-[16px] cursor-pointer"
-            onClick={(e) => {
+            className="relative ml-[92px] h-[24px] cursor-pointer"
+            style={{ touchAction: "none" }}
+            onPointerDown={(e) => {
+              scrubbingRef.current = true;
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
             }}
+            onPointerMove={(e) => {
+              if (!scrubbingRef.current) return;
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
+            }}
+            onPointerUp={(e) => {
+              scrubbingRef.current = false;
+              try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+            }}
+            onPointerCancel={() => { scrubbingRef.current = false; }}
           >
             {Array.from({ length: Math.floor(durMs / 1000) + 1 }, (_, s) => s).filter((s) => s % (pxPerSec < 18 ? 5 : 1) === 0).map((s) => (
-              <span key={s} className="absolute top-0" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
+              <span key={s} className="absolute top-0 select-none" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
                 {fmt(s * 1000)}
               </span>
             ))}
           </div>
+
+          {/* เสียงพูด (waveform) — ไว้เทียบขอบซับกับ wave ตอนตัดต่อ */}
+          {peaks && peaks.length > 0 && (
+            <div className="relative flex items-center" style={{ height: 34 }}>
+              {trackLabel("เสียงพูด", color.trackVoice)}
+              <div className="relative flex-1 overflow-hidden" style={{ height: 34 }}>
+                <div className="absolute left-0 top-0">
+                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} color={`${color.trackVoice}66`} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* อวตาร */}
           {hasAvatar && (
@@ -244,7 +286,7 @@ export function TimelinePanel({
           )}
 
           {/* Playhead */}
-          <div className="pointer-events-none absolute bottom-0 top-[16px]" style={{ left: LABEL_W + toPx(timeMs) }}>
+          <div className="pointer-events-none absolute bottom-0 top-[24px]" style={{ left: LABEL_W + toPx(timeMs) }}>
             <div className="h-full w-[1px]" style={{ background: "#fff" }} />
             <div style={{ position: "absolute", top: -1, left: -4, width: 9, height: 8, background: "#fff", clipPath: "polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%)" }} />
           </div>

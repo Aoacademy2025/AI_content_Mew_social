@@ -103,8 +103,8 @@ export function useV2Job(p: V2Project) {
         voiceProvider: p.voiceEngine,
         ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
         ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
-        // เพลง: system track → path ตรง (resolver ฝั่ง server รองรับ) · null = ไม่ใส่เพลง
-        ...(p.musicTrack ? { bgmFile: `/music/${p.musicTrack}` } : {}),
+        // เพลง: system → /music/<f> (resolver เดิม) · ของผู้ใช้ → /api/music/<f> (แบบ v1)
+        ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}` } : {}),
         // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
         stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
         // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
@@ -163,5 +163,11 @@ export function useV2Job(p: V2Project) {
     setJob(IDLE);
   }, [stopPolling]);
 
-  return { job, submit, cancel, reset };
+  /** Export สำเร็จ = งานนี้จบแล้ว: ลืม jobId (ออกจากหน้าแล้วกลับมา → เริ่ม step 1 สด)
+   *  แต่ไม่แตะ state ในหน้า — user ยังแก้ซับต่อ/ส่งออกซ้ำได้จนกว่าจะออก (spec ข้อ 5) */
+  const markExported = useCallback(() => {
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  }, []);
+
+  return { job, submit, cancel, reset, markExported };
 }

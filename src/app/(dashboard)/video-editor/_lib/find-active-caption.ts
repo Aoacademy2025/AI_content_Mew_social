@@ -1,5 +1,3 @@
-import type { Caption } from "../_components/types";
-
 /**
  * Binary search for the caption active at `captionMs` (caption-time ms).
  *
@@ -13,7 +11,10 @@ import type { Caption } from "../_components/types";
  * Returns the index with startMs <= captionMs < endMs, or -1 (gaps, before
  * first, after last) — identical results to the old findIndex.
  */
-export function findActiveCaptionIdx(captions: readonly Caption[], captionMs: number): number {
+export function findActiveCaptionIdx(
+  captions: readonly { startMs: number; endMs: number }[],
+  captionMs: number,
+): number {
   let lo = 0;
   let hi = captions.length - 1;
   let best = -1; // last caption whose startMs <= captionMs
