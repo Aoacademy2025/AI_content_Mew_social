@@ -69,6 +69,10 @@ export function useV2Project() {
   const [brollSource, setBrollSource] = useState<V2BrollSource>(d.brollSource ?? "stock");
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
+  /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
+   *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
+   *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
+  const [managedKieOn, setManagedKieOn] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>(d.voiceEngine ?? "gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState(d.geminiVoiceName ?? "Aoede");
   const [voiceId, setVoiceId] = useState(d.voiceId ?? "");
@@ -131,6 +135,7 @@ export function useV2Project() {
       const paid = !!m?.kiePaidUnlocked;
       setIsAdmin(admin);
       setIsPaidManagedKie(paid);
+      setManagedKieOn(!!m?.managedKieOn);
       // Preset default/enforcement (non-admins only — admins use the raw controls):
       //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
       //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
@@ -202,7 +207,7 @@ export function useV2Project() {
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie,
+    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
   };
 }
 

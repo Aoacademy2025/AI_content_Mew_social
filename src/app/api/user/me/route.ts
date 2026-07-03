@@ -6,6 +6,7 @@ import { limitsForPlan } from "@/lib/plan-limits";
 import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { checkMinuteQuota } from "@/lib/minute-limits";
+import { managedKieLaunchOn } from "@/lib/kie-image-guards";
 
 export async function GET() {
   try {
@@ -49,14 +50,16 @@ export async function GET() {
         minutesLimit: mq.used + mq.remaining,
       };
     }
+    // Managed-kie launch state (both server flags on) — independent of plan/admin.
+    // Task 7 badge: lets the client tell "not launched yet" (เร็ว ๆ นี้) apart from
+    // "launched but not paid" (อัปเกรดเพื่อใช้ภาพ AI) for locked AI-image UI.
+    const managedKieOn = managedKieLaunchOn();
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
     // paid-user signal specifically. Mirrors the server gate in fetch-stock.
     const kiePaidUnlocked =
-      process.env.MANAGED_KIE === "1" &&
-      process.env.CREDITS_LIVE === "1" &&
-      ((user as any).plan === "PRO" || (user as any).plan === "BUSINESS");
+      managedKieOn && ((user as any).plan === "PRO" || (user as any).plan === "BUSINESS");
 
     return NextResponse.json({
       ...user,
@@ -66,6 +69,7 @@ export async function GET() {
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
       usageResetAt: usage?.resetAt ?? null,
       kiePaidUnlocked,
+      managedKieOn,
       ...minuteFields,
     });
   } catch (error) {

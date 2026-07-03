@@ -477,20 +477,26 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 }
 
 /** Mix Preset (D5.1) — 3 ปุ่มเลือกสัดส่วน AI ในบีโรล (แทนบล็อก checkbox ของ admin สำหรับ
- *  ผู้ใช้ทั่วไป). FREE (ไม่ paid) เลือกได้แค่ "ฟรีล้วน"; อีก 2 ปุ่มถูก disable + tooltip
- *  "อัปเกรดเพื่อใช้ภาพ AI". เลือก preset → p.setMixPreset ขับ brollSource/providers/weights. */
+ *  ผู้ใช้ทั่วไป). FREE (ไม่ paid) เลือกได้แค่ "ฟรีล้วน"; อีก 2 ปุ่มถูก disable.
+ *  Task 7 badge: ก่อนเปิดตัวฟีเจอร์ (managedKieOn=false) locked-copy = "เร็ว ๆ นี้" (ไม่ใช่
+ *  ข้อความชวนอัปเกรด เพราะผู้ใช้ paid ก็ยังใช้ไม่ได้ — ฟีเจอร์ยังไม่เปิด ไม่ใช่เพราะเขาไม่จ่าย);
+ *  หลังเปิดตัว (managedKieOn=true) แต่ยังไม่ paid → กลับไปใช้ "อัปเกรดเพื่อใช้ภาพ AI" เดิม.
+ *  เลือก preset → p.setMixPreset ขับ brollSource/providers/weights. */
 function MixPresetButtons({ p }: { p: V2Project }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       {MIX_PRESETS.map((pr) => {
         // FREE/feature-off users: only "ฟรีล้วน" is selectable (AI presets locked).
+        // Formula unchanged from pre-Task-7 — only the LOCKED-STATE COPY branches below.
         const locked = pr.key !== "free" && !p.isPaidManagedKie;
+        // Sub-reason for the lock, copy-only: not launched yet vs. launched-but-not-paid.
+        const comingSoon = locked && !p.managedKieOn;
         const selected = p.mixPreset === pr.key;
         return (
           <button
             key={pr.key}
             disabled={locked}
-            title={locked ? "อัปเกรดเพื่อใช้ภาพ AI" : undefined}
+            title={locked ? (comingSoon ? "เร็ว ๆ นี้ — กำลังเตรียมเปิดให้ใช้งาน" : "อัปเกรดเพื่อใช้ภาพ AI") : undefined}
             onClick={() => { if (!locked) p.setMixPreset(pr.key); }}
             className="relative flex flex-col items-start gap-1.5 text-left"
             style={{
@@ -502,7 +508,9 @@ function MixPresetButtons({ p }: { p: V2Project }) {
               transition: "all 150ms ease",
             }}
           >
-            {pr.badge && (
+            {comingSoon ? (
+              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: "1px solid rgba(251,191,36,.35)" }}>เร็ว ๆ นี้</span>
+            ) : pr.badge && (
               <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{pr.badge}</span>
             )}
             <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{pr.label}</span>

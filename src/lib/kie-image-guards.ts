@@ -39,6 +39,18 @@ export function resolveKieImageAccess(opts: {
 }
 
 /**
+ * Launch-state signal ONLY (both server flags on), independent of plan/admin —
+ * lets the client distinguish "feature not launched yet" (เร็ว ๆ นี้) from
+ * "launched but you haven't paid" (อัปเกรดเพื่อใช้ภาพ AI) when rendering locked
+ * AI-image UI (Task 7 badge). Deliberately does NOT fold in the plan check (that
+ * stays in resolveKieImageAccess) and does NOT reveal whether KIE_API_KEY is
+ * configured — this is a presentation-only signal, not an access decision.
+ */
+export function managedKieLaunchOn(): boolean {
+  return process.env.MANAGED_KIE === "1" && process.env.CREDITS_LIVE === "1";
+}
+
+/**
  * Whether the managed-key guardrails (per-job cap, hourly rate limit, prompt cap)
  * apply to this request. They apply to ANY generation that runs on the shared
  * server `KIE_API_KEY` — including admins (who are still UNCHARGED; only the caps
