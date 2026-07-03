@@ -136,4 +136,4 @@ Insert at the `EditorV2Shell.tsx:30` seam: `handleRender()` opens a Receipt dial
 
 ## Status
 
-interviewed 2026-07-03 (grilling session, PR #144) | approved: 2026-07-03 | executed: in-progress | delivered: -
+interviewed 2026-07-03 (grilling session, PR #144) | approved: 2026-07-03 | executed: 2026-07-03 (6/6 tasks, final review READY TO MERGE, security pass clean) | delivered: PR pending merge — see delivery report. Post-#144-merge follow-up: amend D3 prices in docs/pricing-ai-gen-decisions-2026-07-03.md + ADR 0002 (flux 2cr / gpt 3cr default / nano-banana-2 4cr; nano-banana-pro → admin-only) + CONTEXT.md wording check.
