@@ -37,6 +37,7 @@ import {
   capKiePrompt,
   resolveKieImageAccess,
   shouldGuardKieImages,
+  mergeCapClampReason,
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
@@ -1731,10 +1732,14 @@ export async function POST(req: Request) {
           PER_SUBTITLE_DOWNLOAD_LIMIT,
         );
     // Managed-key generations (admin or paid) are bounded by the per-job cap. When
-    // the clamp actually reduces the requested count, surface "cap" so the client can
-    // tell the user some windows fell back / were dropped (not silently fewer clips).
+    // the clamp reduces the requested count, surface "cap" so the client can tell the
+    // user some windows were dropped (not silently fewer clips). CRITICAL: track the
+    // clamp in a SEPARATE local — it must NOT be written into the shared in-loop
+    // `aiSkippedReason`, whose first job is to short-circuit the gate. Setting it here
+    // would bail every item in the already-clamped batch (0 clips). Merged in after
+    // the loop via mergeCapClampReason.
     const clipsToGenerate = guardImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
-    if (guardImages && clipsToGenerateRaw > clipsToGenerate) aiSkippedReason = "cap";
+    const capClampHit = guardImages && clipsToGenerateRaw > clipsToGenerate;
     console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
@@ -1795,7 +1800,10 @@ export async function POST(req: Request) {
     stockTelemetry.servedClipCount = results.length;
     await recordFetchStockTelemetry("done");
     console.log(`[fetch-stock] kie.ai generated ${results.length} clips`);
-    return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
+    // Merge the pre-loop clamp signal (capClampHit) with any in-loop guard reason —
+    // in-loop reason wins; otherwise "cap" if the batch was clamped.
+    const directReason = mergeCapClampReason(aiSkippedReason, capClampHit);
+    return NextResponse.json({ results, ...(directReason ? { aiSkippedReason: directReason } : {}) });
   }
 
   const usedIds = new Set<number>();

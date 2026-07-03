@@ -20,12 +20,14 @@ import {
 import {
   resolveKieImageAccess,
   shouldGuardKieImages,
+  mergeCapClampReason,
   kieMaxImagesPerJob,
   kieImageRatePerHour,
   tryConsumeKieImageRate,
   capKiePrompt,
   __resetKieImageRateForTest,
   KIE_PROMPT_MAX_CHARS,
+  type AiSkipReason,
 } from "../src/lib/kie-image-guards";
 
 let passed = 0;
@@ -116,6 +118,60 @@ async function runManagedJob(opts: {
     generated++;
   }
   return { generated, charged, skipped };
+}
+
+// ── Faithful replica of the DIRECT kie-image path: pre-loop clamp + in-loop gate ──
+// Reproduces the exact ordering that regressed: the requested count is clamped to
+// KIE_MAX_IMAGES_PER_JOB up front, and each of the clamped items runs through the
+// in-loop gate (attemptImageSpend), whose FIRST guard is `if (aiSkippedReason) bail`.
+// The clamp signal is tracked in a SEPARATE `capClampHit` and merged into the reason
+// AFTER the loop — it must NOT seed `aiSkippedReason`, or the whole batch bails.
+// `feedClampToGate` deliberately reproduces the bug (seeds aiSkippedReason from the
+// clamp) so the test proves it distinguishes correct behavior from the regression.
+async function runDirectKieImageJob(opts: {
+  userId: string;
+  plan: string;
+  isAdmin: boolean;
+  usesManagedKey: boolean;
+  managedKieOn: boolean;
+  creditsLive: boolean;
+  requested: number;
+  feedClampToGate?: boolean;
+}): Promise<{ generated: number; reason: AiSkipReason }> {
+  const isPaidPlan = opts.plan === "PRO" || opts.plan === "BUSINESS";
+  const { chargeImages } = resolveKieImageAccess({
+    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan,
+  });
+  const guardImages = shouldGuardKieImages({ usesManagedKey: opts.usesManagedKey, chargeImages });
+  const maxPerJob = kieMaxImagesPerJob();
+  const cost = creditCostFor("image-gpt-1k");
+
+  const batchSize = guardImages ? Math.min(opts.requested, maxPerJob) : opts.requested;
+  const capClampHit = guardImages && opts.requested > batchSize;
+  // CORRECT path seeds null; the buggy path (feedClampToGate) seeds "cap" → bails all.
+  let aiSkippedReason: AiSkipReason = opts.feedClampToGate && capClampHit ? "cap" : null;
+  let aiGenCount = 0;
+
+  // Exact mirror of fetch-stock attemptImageSpend (guard-then-meter).
+  async function attempt(): Promise<boolean> {
+    if (guardImages) {
+      if (aiSkippedReason) return false;
+      if (aiGenCount >= maxPerJob) { aiSkippedReason = "cap"; return false; }
+      if (!tryConsumeKieImageRate(opts.userId)) { aiSkippedReason = "rate"; return false; }
+    }
+    if (chargeImages) {
+      aiGenCount++;
+      const spend = await spendCredits(opts.userId, cost, SPEND_ACTION);
+      if (!spend.ok) { aiSkippedReason = "credits"; aiGenCount--; return false; }
+      return true;
+    }
+    if (guardImages) aiGenCount++;
+    return true;
+  }
+
+  let generated = 0;
+  for (let i = 0; i < batchSize; i++) if (await attempt()) generated++;
+  return { generated, reason: mergeCapClampReason(aiSkippedReason, capClampHit) };
 }
 
 async function main() {
@@ -263,6 +319,45 @@ async function main() {
   const paidPoorJob = await runManagedJob({ userId: u9, plan: "PRO", isAdmin: false, usesManagedKey: true, managedKieOn: true, creditsLive: true, attempts: 25 });
   assert(paidPoorJob.generated === 10 && paidPoorJob.skipped === "credits",
     'paid on managed: stops at credit exhaustion (10 gen) before the cap');
+
+  // ── 9d. mergeCapClampReason (pure) ─────────────────────────────────────────
+  assert(mergeCapClampReason(null, false) === null, 'merge: no clamp, no in-loop reason → null');
+  assert(mergeCapClampReason(null, true) === "cap", 'merge: clamp only → "cap"');
+  assert(mergeCapClampReason("credits", true) === "credits", 'merge: in-loop "credits" wins over clamp');
+  assert(mergeCapClampReason("rate", false) === "rate", 'merge: in-loop "rate" passes through');
+
+  // ── 9e. REGRESSION: direct-path clamp must NOT bail the whole batch ─────────
+  // request 30 on the direct kie-image path, admin on managed key (guarded, uncharged).
+  // Correct: clamp to 20, generate ALL 20, reason "cap". Regression bug generated 0.
+  __resetKieImageRateForTest();
+  const directOk = await runDirectKieImageJob({ userId: "direct-admin-ok", plan: "PRO", isAdmin: true, usesManagedKey: true, managedKieOn: true, creditsLive: true, requested: 30 });
+  assert(directOk.generated === 20 && directOk.reason === "cap",
+    `direct clamp: request 30 → exactly 20 generated + reason "cap" (got ${directOk.generated}/${directOk.reason})`);
+
+  // Same job with the clamp fed into the in-loop gate = the exact regression → 0 clips.
+  __resetKieImageRateForTest();
+  const directBug = await runDirectKieImageJob({ userId: "direct-admin-bug", plan: "PRO", isAdmin: true, usesManagedKey: true, managedKieOn: true, creditsLive: true, requested: 30, feedClampToGate: true });
+  assert(directBug.generated === 0,
+    'direct clamp REGRESSION reproduced: seeding the gate from the clamp generates 0 (guards against reintroduction)');
+
+  // Paid on the direct path, request 30, plenty of credits → 20 generated + charged, "cap".
+  __resetKieImageRateForTest();
+  const u10 = "direct-paid-ok";
+  await grantCredits(u10, 1000, "grant");
+  const directPaid = await runDirectKieImageJob({ userId: u10, plan: "PRO", isAdmin: false, usesManagedKey: true, managedKieOn: true, creditsLive: true, requested: 30 });
+  assert(directPaid.generated === 20 && directPaid.reason === "cap", 'direct clamp (paid): 20 generated, reason "cap"');
+  const b10 = await getBalance(u10);
+  assert(b10.total === 1000 - 20 * 3, 'direct clamp (paid): exactly 20×3 charged, not 0');
+
+  // Under-cap request on the direct path → no clamp, no "cap", all generate.
+  __resetKieImageRateForTest();
+  const directSmall = await runDirectKieImageJob({ userId: "direct-admin-small", plan: "PRO", isAdmin: true, usesManagedKey: true, managedKieOn: true, creditsLive: true, requested: 5 });
+  assert(directSmall.generated === 5 && directSmall.reason === null, 'direct under-cap: 5 generated, no "cap" signal');
+
+  // Flag-off direct path → unguarded, no clamp, all generate, no reason.
+  __resetKieImageRateForTest();
+  const directFlagOff = await runDirectKieImageJob({ userId: "direct-flagoff", plan: "PRO", isAdmin: false, usesManagedKey: false, managedKieOn: false, creditsLive: true, requested: 30 });
+  assert(directFlagOff.generated === 30 && directFlagOff.reason === null, 'direct flag-off: all 30 generated, unguarded, no cap');
 
   // ── 10. Guardrails ─────────────────────────────────────────────────────────
   assert(kieMaxImagesPerJob() === 20, 'per-job cap default = 20');

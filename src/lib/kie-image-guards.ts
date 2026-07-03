@@ -52,6 +52,23 @@ export function shouldGuardKieImages(opts: { usesManagedKey: boolean; chargeImag
   return opts.usesManagedKey || opts.chargeImages;
 }
 
+export type AiSkipReason = "credits" | "rate" | "cap" | null;
+
+/**
+ * Merge the direct kie-image path's PRE-LOOP cap-clamp signal with any reason a
+ * guard set DURING the generation loop, for the response only.
+ *
+ * INVARIANT (why this exists): the pre-loop clamp of the requested count down to
+ * KIE_MAX_IMAGES_PER_JOB must NOT be written into the shared in-loop
+ * `aiSkippedReason` — the loop gate bails every item once that field is set, which
+ * would make the clamped batch generate 0 images. So the clamp is tracked in a
+ * separate `capClampHit` boolean and merged in here, AFTER the loop, and only when
+ * no in-loop guard already set a more specific reason (credits/rate/cap).
+ */
+export function mergeCapClampReason(inLoopReason: AiSkipReason, capClampHit: boolean): AiSkipReason {
+  return inLoopReason ?? (capClampHit ? "cap" : null);
+}
+
 const DEFAULT_MAX_IMAGES_PER_JOB = 20;
 const DEFAULT_RATE_PER_HOUR = 60;
 
