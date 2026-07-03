@@ -38,6 +38,7 @@ interface Breakdown {
 }
 
 interface ImageCounts {
+  flux1k: number;
   gpt1k: number;
   nano1k: number;
   gpt2k: number;
@@ -363,12 +364,12 @@ export default function CostMarginPanel() {
                     </div>
                   </div>
                   <div className="space-y-0.5">
-                    <div className="text-xs text-slate-500">รูป AI (GPT-4o 1K / 4K)</div>
+                    <div className="text-xs text-slate-500">รูป AI (GPT-Image-2 มาตรฐาน)</div>
                     <div className="text-lg font-semibold text-white">
                       {fmtNum(u.images.gpt1k + u.images.gpt2k)} รูป
                     </div>
                     <div className="text-xs text-slate-600">
-                      Nano: {fmtNum(u.images.nano1k + u.images.nano2k)}
+                      Flux (ประหยัด): {fmtNum(u.images.flux1k)} · Nano (ขั้นสูง): {fmtNum(u.images.nano1k + u.images.nano2k)}
                     </div>
                   </div>
                   <div className="space-y-0.5">

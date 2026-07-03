@@ -56,56 +56,56 @@ No model met COGS ≤฿0.5 (full table + kie.ai sources: `.superpowers/sdd/task
 
 ## Task 2: default image model → gpt-image-2
 
-- [ ] `fetch-stock/route.ts:772` — `DEFAULT_KIE_IMAGE_MODEL` → `"gpt-image-2-text-to-image"`.
-- [ ] Client defaults: `video-creator/page.tsx` `kieModel` initial state (~:415) and v2 `useV2Project.ts:85` — switch initial value to gpt-image-2; verify the option labels in `KIE_IMAGE_MODEL_OPTIONS` (`video-creator/page.tsx:27-40`) and v2 picker (`Step2Elements.tsx:128`) list gpt-image-2 first/default.
-- [ ] Check admin cost panel defaults reference the right bucket (`admin/costs/route.ts` `imageModelBucket`).
-- [ ] `npm run build` passes.
+- [x] `fetch-stock/route.ts:772` — `DEFAULT_KIE_IMAGE_MODEL` → `"gpt-image-2-text-to-image"`.
+- [x] Client defaults: `video-creator/page.tsx` `kieModel` initial state (~:415) and v2 `useV2Project.ts:85` — switch initial value to gpt-image-2; verify the option labels in `KIE_IMAGE_MODEL_OPTIONS` (`video-creator/page.tsx:27-40`) and v2 picker (`Step2Elements.tsx:128`) list gpt-image-2 first/default.
+- [x] Check admin cost panel defaults reference the right bucket (`admin/costs/route.ts` `imageModelBucket`). — fixed in Task 6 (flux bucket was missing)
+- [x] `npm run build` passes.
 
 ## Task 3: managed kie key + credit spender + guardrails + paid un-gate (CORE, money path)
 
 **Server key (D2):**
-- [ ] New env `KIE_API_KEY`. In `fetch-stock/route.ts` key resolution: when `MANAGED_KIE==="1"` and `KIE_API_KEY` set → use it for kie calls for **paid users (PRO/BUSINESS)**; admins may still fall back to their BYOK key if env unset. Flag off → today's BYOK-admin behavior exactly.
-- [ ] Never log or echo the key; server-side only (route already is).
+- [x] New env `KIE_API_KEY`. In `fetch-stock/route.ts` key resolution: when `MANAGED_KIE==="1"` and `KIE_API_KEY` set → use it for kie calls for **paid users (PRO/BUSINESS)**; admins may still fall back to their BYOK key if env unset. Flag off → today's BYOK-admin behavior exactly.
+- [x] Never log or echo the key; server-side only (route already is).
 
 **Model → cost-key mapping (D3):**
-- [ ] Add to `src/lib/credits.ts`: `image-flux-1k: 2` in `CREDIT_COST`, and export `costKeyForKieModel(modelId: string): string | null` mapping: `flux-2/pro-text-to-image` → `image-flux-1k`; `gpt-image-2-text-to-image` → `image-gpt-1k`; `nano-banana-2` → `image-nano-1k`; all other models (incl. `nano-banana-pro`) → `null` (= admin-only, no charge, unchanged behavior). Fix the stale comment at `admin/costs/route.ts:24` to point at the real export.
+- [x] Add to `src/lib/credits.ts`: `image-flux-1k: 2` in `CREDIT_COST`, and export `costKeyForKieModel(modelId: string): string | null` mapping: `flux-2/pro-text-to-image` → `image-flux-1k`; `gpt-image-2-text-to-image` → `image-gpt-1k`; `nano-banana-2` → `image-nano-1k`; all other models (incl. `nano-banana-pro`) → `null` (= admin-only, no charge, unchanged behavior). Fix the stale comment at `admin/costs/route.ts:24` to point at the real export.
 
 **Credit spend (spend-before-generate):**
-- [ ] In the kie image path of `fetch-stock` (both direct kie-image source and AutoMix AI slots): when `MANAGED_KIE==="1"` and user is non-admin paid — before each `kieCreateTask`, `spendCredits(userId, creditCostFor(key), "image-gen:<model>")`. On `{ok:false}` → skip AI for the remaining windows and fall back to stock (existing fallback machinery), surface `aiSkippedReason: "credits"` in the response. On kie generation failure after spend → `refundCredits` with the exact bucket split.
-- [ ] Admins keep free generation (unchanged) — spend only applies to non-admin users on the managed key.
-- [ ] Un-gate: `fetch-stock/route.ts:1359` — allow when `MANAGED_KIE==="1"` && plan ∈ {PRO, BUSINESS} && `CREDITS_LIVE==="1"`; FREE stays 403 for kie sources. Mirror on clients: `video-creator/page.tsx:412-413` (`kieImageEnabled`), v2 `Step2Elements.tsx:79` locked logic — locked becomes `o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie)` (prop plumbed from a flag+plan check).
-- [ ] Non-admin users see ONLY the 3 priced models in pickers (flux-2/pro / gpt-image-2 / nano-banana-2) with credit price labels: `"ประหยัด · 2 เครดิต/ภาพ"`, `"มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ"`, `"ขั้นสูง · 4 เครดิต/ภาพ"`. Admins see all 8 (incl. nano-banana-pro).
+- [x] In the kie image path of `fetch-stock` (both direct kie-image source and AutoMix AI slots): when `MANAGED_KIE==="1"` and user is non-admin paid — before each `kieCreateTask`, `spendCredits(userId, creditCostFor(key), "image-gen:<model>")`. On `{ok:false}` → skip AI for the remaining windows and fall back to stock (existing fallback machinery), surface `aiSkippedReason: "credits"` in the response. On kie generation failure after spend → `refundCredits` with the exact bucket split.
+- [x] Admins keep free generation (unchanged) — spend only applies to non-admin users on the managed key.
+- [x] Un-gate: `fetch-stock/route.ts:1359` — allow when `MANAGED_KIE==="1"` && plan ∈ {PRO, BUSINESS} && `CREDITS_LIVE==="1"`; FREE stays 403 for kie sources. Mirror on clients: `video-creator/page.tsx:412-413` (`kieImageEnabled`), v2 `Step2Elements.tsx:79` locked logic — locked becomes `o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie)` (prop plumbed from a flag+plan check).
+- [x] Non-admin users see ONLY the 3 priced models in pickers (flux-2/pro / gpt-image-2 / nano-banana-2) with credit price labels: `"ประหยัด · 2 เครดิต/ภาพ"`, `"มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ"`, `"ขั้นสูง · 4 เครดิต/ภาพ"`. Admins see all 8 (incl. nano-banana-pro).
 
 **Guardrails (ADR 0002 — mirror managed-Gemini):**
-- [ ] Per-user rate limit on kie createTask calls (reuse the managed-Gemini limiter lib/pattern; find it under `src/lib/` — added in PR-era 2026-06-28 `managed-gemini-cost-guards`). Default: 60 images/hour/user, env-tunable `KIE_IMAGE_RATE_PER_HOUR`.
-- [ ] Per-job cap: max AI images per job = `KIE_MAX_IMAGES_PER_JOB` (default 20); windows beyond the cap fall back to stock.
-- [ ] Input caps: prompt length cap before sending to kie (reuse existing prompt-building path's limits if present; else cap at 2,000 chars).
+- [x] Per-user rate limit on kie createTask calls (reuse the managed-Gemini limiter lib/pattern; find it under `src/lib/` — added in PR-era 2026-06-28 `managed-gemini-cost-guards`). Default: 60 images/hour/user, env-tunable `KIE_IMAGE_RATE_PER_HOUR`.
+- [x] Per-job cap: max AI images per job = `KIE_MAX_IMAGES_PER_JOB` (default 20); windows beyond the cap fall back to stock.
+- [x] Input caps: prompt length cap before sending to kie (reuse existing prompt-building path's limits if present; else cap at 2,000 chars).
 
 **Verification:**
-- [ ] `scripts/verify-image-credit-spend.ts` (throwaway SQLite): spend happy path (granted-first), insufficient → skip+no charge, kie-failure → exact-bucket refund, admin bypass, FREE 403, flag-off no-spend.
-- [ ] Flag-off diff proof: with `MANAGED_KIE` unset, route behavior byte-identical (reviewer must check).
+- [x] `scripts/verify-image-credit-spend.ts` (throwaway SQLite): spend happy path (granted-first), insufficient → skip+no charge, kie-failure → exact-bucket refund, admin bypass, FREE 403, flag-off no-spend.
+- [x] Flag-off diff proof: with `MANAGED_KIE` unset, route behavior byte-identical (reviewer must check).
 
 ## Task 4: Mix Preset — 3 ปุ่ม (Editor v2 only; D5.1)
 
 Legacy video-creator + MCP keep today's provider toggles/env weights (unchanged).
 
-- [ ] New request field `autoMixWeights?: {video:number, photo:number, ai:number}` sent from v2 (`useV2Job.ts` body). Server (`fetch-stock/route.ts:1465-1468`): prefer request weights over env **only when** `MANAGED_KIE==="1"` and values are sane (ints 0–9); ai weight forced to 0 server-side for FREE/unauthorized-for-kie users. Env defaults remain the fallback.
-- [ ] Replace the admin-only provider-checkbox block in `Step2Elements.tsx:144-165` for non-admins with 3 preset buttons (admins keep the full checkbox + model picker under Advanced):
+- [x] New request field `autoMixWeights?: {video:number, photo:number, ai:number}` sent from v2 (`useV2Job.ts` body). Server (`fetch-stock/route.ts:1465-1468`): prefer request weights over env **only when** `MANAGED_KIE==="1"` and values are sane (ints 0–9); ai weight forced to 0 server-side for FREE/unauthorized-for-kie users. Env defaults remain the fallback.
+- [x] Replace the admin-only provider-checkbox block in `Step2Elements.tsx:144-165` for non-admins with 3 preset buttons (admins keep the full checkbox + model picker under Advanced):
   - **ฟรีล้วน** — weights `{video:3, photo:2, ai:0}` — label: `ฟรีล้วน`, sub: `สต็อกฟรีทั้งหมด · 0 เครดิต`
   - **ผสม AI แนะนำ** — weights `{video:3, photo:2, ai:1}` — label: `ผสม AI แนะนำ`, sub: `สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป`, badge: `แนะนำ`
   - **AI เต็มที่** — weights `{video:0, photo:0, ai:1}` — label: `AI เต็มที่`, sub: `ภาพ AI ทุกช่วง · ~25–45 เครดิต/คลิป`
-- [ ] Defaults: PRO/BUSINESS → `ผสม AI แนะนำ`; FREE → `ฟรีล้วน` (others disabled with tooltip `อัปเกรดเพื่อใช้ภาพ AI`). Preset choice persists in v2 project state (`useV2Project.ts`).
-- [ ] Preset drives `stockSource`/`autoMixProviders` consistently (preset ≠ ฟรีล้วน implies automix incl. `kie-ai` provider).
-- [ ] Export a pure helper `estimatePresetCredits(estSec, preset, perImageCredits)` in `_v2/estimate.ts`: windows ≈ `ceil(estSec/4)`, AI share = `ai/(video+photo+ai)`, credits = `ceil(windows × share) × perImageCredits`. Unit-verifiable; used by Task 5.
-- [ ] Verify: `npm run build`; manual: preset switch changes request body (worker checks via code trace, Mew QAs visually post-deploy).
+- [x] Defaults: PRO/BUSINESS → `ผสม AI แนะนำ`; FREE → `ฟรีล้วน` (others disabled with tooltip `อัปเกรดเพื่อใช้ภาพ AI`). Preset choice persists in v2 project state (`useV2Project.ts`).
+- [x] Preset drives `stockSource`/`autoMixProviders` consistently (preset ≠ ฟรีล้วน implies automix incl. `kie-ai` provider).
+- [x] Export a pure helper `estimatePresetCredits(estSec, preset, perImageCredits)` in `_v2/estimate.ts`: windows ≈ `ceil(estSec/4)`, AI share = `ai/(video+photo+ai)`, credits = `ceil(windows × share) × perImageCredits`. Unit-verifiable; used by Task 5.
+- [x] Verify: `npm run build`; manual: preset switch changes request body (worker checks via code trace, Mew QAs visually post-deploy).
 
 ## Task 5: Render Receipt (D5) — mandatory pre-render summary, Editor v2
 
 Insert at the `EditorV2Shell.tsx:30` seam: `handleRender()` opens a Receipt dialog; `submit()` fires only on confirm. Client-side gate: `NEXT_PUBLIC_CREDITS_LIVE==="1"` (else current direct-submit behavior).
 
-- [ ] Data: estimated minutes = `minutesFromSeconds(estimateClipSecV2(script))` (reuse both existing helpers — import, don't duplicate); remaining minutes + credit balance from the existing usage/balance endpoints (`GET /api/credits/balance` exists per overflow plan; the minutes-usage API from the quota-chip work — worker locates both, reuse, don't create new endpoints unless truly absent).
-- [ ] AI credit estimate from Task 4's `estimatePresetCredits` + the selected model's `creditCostFor` price (plumb price via the existing plans/config props — do NOT hardcode).
-- [ ] Receipt content (exact copy; ตัวเลขแทนที่ placeholder):
+- [x] Data: estimated minutes = `minutesFromSeconds(estimateClipSecV2(script))` (reuse both existing helpers — import, don't duplicate); remaining minutes + credit balance from the existing usage/balance endpoints (`GET /api/credits/balance` exists per overflow plan; the minutes-usage API from the quota-chip work — worker locates both, reuse, don't create new endpoints unless truly absent).
+- [x] AI credit estimate from Task 4's `estimatePresetCredits` + the selected model's `creditCostFor` price (plumb price via the existing plans/config props — do NOT hardcode).
+- [x] Receipt content (exact copy; ตัวเลขแทนที่ placeholder):
   - Title: `สรุปก่อนเรนเดอร์`
   - Minutes line: `นาทีที่จะใช้ (ประมาณ): {X} นาที — รวมในแพ็กเกจ (เหลือ {Y} จาก {Z} นาที)`
   - AI line (hide เมื่อ preset = ฟรีล้วน): `ภาพ AI (ประมาณ): ~{N} เครดิต · หักตามจำนวนที่เจนสำเร็จจริง`
@@ -114,8 +114,8 @@ Insert at the `EditorV2Shell.tsx:30` seam: `handleRender()` opens a Receipt dial
   - Avatar line (show เมื่อ avatar mode ≠ none): `อวตาร HeyGen: คิดค่าใช้จ่ายผ่านคีย์ HeyGen ของคุณ (ไม่หักเครดิต/นาทีเพิ่ม)`
   - Disclaimer: `ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง`
   - Buttons: primary `เริ่มเรนเดอร์` · secondary `กลับไปแก้ไข`
-- [ ] Server unchanged: overflow auto-spend stays (`minute-credits.ts`), receipt = disclosure layer. Post-render `fireCreditReceipt` toast stays as the "actual" receipt.
-- [ ] Verify: `npm run build`; component renders all 4 conditional lines correctly (worker adds a lightweight render test or verify script if the repo has a component-test precedent; otherwise code-trace + reviewer check).
+- [x] Server unchanged: overflow auto-spend stays (`minute-credits.ts`), receipt = disclosure layer. Post-render `fireCreditReceipt` toast stays as the "actual" receipt.
+- [x] Verify: `npm run build`; component renders all 4 conditional lines correctly (worker adds a lightweight render test or verify script if the repo has a component-test precedent; otherwise code-trace + reviewer check).
 
 ## Task 6: alignment sweep
 

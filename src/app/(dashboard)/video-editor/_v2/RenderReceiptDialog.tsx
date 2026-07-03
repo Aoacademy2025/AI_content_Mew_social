@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle } from "lucide-react";
-import { color, font, radius } from "./tokens";
+import { color, font } from "./tokens";
 import { GlassPanel, BtnPrimary, BtnSecondary, GroupLabel } from "./ui";
 import { buildReceipt } from "./receipt";
 import { estimateClipSecV2 } from "./estimate";

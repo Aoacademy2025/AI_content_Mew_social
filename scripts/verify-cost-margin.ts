@@ -33,14 +33,14 @@ async function main() {
   // ── computeCogs ─────────────────────────────────────────────────────────────
   const cogs = computeCogs({
     managedMinutes: 100,
-    imageCounts: { gpt1k: 10, nano1k: 5, gpt2k: 0, nano2k: 0 },
+    imageCounts: { flux1k: 0, gpt1k: 10, nano1k: 5, gpt2k: 0, nano2k: 0 },
     rates: COST_DEFAULTS,
   });
   assert(near(cogs.tts, 70), `computeCogs: tts = 70 (got ${cogs.tts})`);
-  // 10*1.05 + 5*1.4 = 10.5 + 7 = 17.5
-  assert(near(cogs.image, 17.5), `computeCogs: image = 17.5 (got ${cogs.image})`);
+  // 10*1.08 + 5*1.44 = 10.8 + 7.2 = 18.0
+  assert(near(cogs.image, 18.0), `computeCogs: image = 18.0 (got ${cogs.image})`);
   assert(cogs.video === 0, `computeCogs: video = 0 (got ${cogs.video})`);
-  assert(near(cogs.total, 87.5), `computeCogs: total = 87.5 (got ${cogs.total})`);
+  assert(near(cogs.total, 88.0), `computeCogs: total = 88.0 (got ${cogs.total})`);
 
   // ── computeMargins ─────────────────────────────────────────────────────────
   const margins = computeMargins({
@@ -85,8 +85,9 @@ async function main() {
 
   const rates = await getCostRates();
   assert(rates.renderPerMinute === 0.7, `getCostRates: renderPerMinute = 0.7 (got ${rates.renderPerMinute})`);
-  assert(rates.imageGpt1k === 1.05, `getCostRates: imageGpt1k = 1.05 (got ${rates.imageGpt1k})`);
-  assert(rates.imageNano1k === 1.4, `getCostRates: imageNano1k = 1.4 (got ${rates.imageNano1k})`);
+  assert(rates.imageFlux1k === 0.9, `getCostRates: imageFlux1k = 0.9 (got ${rates.imageFlux1k})`);
+  assert(rates.imageGpt1k === 1.08, `getCostRates: imageGpt1k = 1.08 (got ${rates.imageGpt1k})`);
+  assert(rates.imageNano1k === 1.44, `getCostRates: imageNano1k = 1.44 (got ${rates.imageNano1k})`);
   assert(rates.imageGpt2k === 1.75, `getCostRates: imageGpt2k = 1.75 (got ${rates.imageGpt2k})`);
   assert(rates.imageNano2k === 2.1, `getCostRates: imageNano2k = 2.1 (got ${rates.imageNano2k})`);
   assert(rates.videoSeedance5s === 3.06, `getCostRates: videoSeedance5s = 3.06 (got ${rates.videoSeedance5s})`);
