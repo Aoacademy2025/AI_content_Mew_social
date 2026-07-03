@@ -312,6 +312,225 @@ function segmentCharWeights(text: string, pauseWeight: number): Float64Array {
   return w;
 }
 
+// ---------------------------------------------------------------------------
+// Silence-anchored realignment (Gemini only)
+// ---------------------------------------------------------------------------
+//
+// The char-proportional clock has exact time only at CHUNK edges (800 chars ≈
+// 50-60s), so a real mid-chunk pause — breathing, sentence gap, a "…" longer
+// than the fixed ellipsis weight — shifts every following subtitle early/late
+// until the chunk end re-anchors it. But the audio's real pauses are already
+// known: the route runs ffmpeg silencedetect and ships the intervals in
+// timing.silenceIntervals. Here we use them as INTERNAL anchors of the clock
+// itself: the text between pauses ("speech mass" = weighted char count) is
+// matched to the audio's speech-run durations with a global monotonic DP, and
+// the clock is rebuilt piecewise per run. Global matching is the point — the
+// reverted #81 splitter failed because it located each pause independently via
+// the (already drifted) clock; the DP instead chooses ALL anchors at once so a
+// consistent shift costs nothing and a wrong assignment costs a lot.
+//
+// Fail-open is absolute: any degenerate input, an alignment whose cost is too
+// high, or TTS_SILENCE_REALIGN=0 → the legacy proportional clock, float for
+// float. ElevenLabs (real per-char timing) never reaches this code.
+
+const REALIGN_MIN_SILENCE_MS = 80;    // intervals shorter than this are noise
+const REALIGN_SEG_MARGIN_MS = 120;    // silence this close to a segment edge = lead-in/tail quiet, not an anchor
+const REALIGN_BARE_BOUNDARY_PENALTY_MS = 300; // prefer anchors after whitespace/punctuation
+const REALIGN_MAX_COST_RATIO = 0.35;  // total |expected−actual| per speech-ms above this → fail open
+const REALIGN_MAX_DP_OPS = 40_000_000;
+
+function silenceRealignEnabled(): boolean {
+  const raw = process.env.TTS_SILENCE_REALIGN;
+  return raw === undefined || raw === "" || (raw !== "0" && raw !== "false");
+}
+
+function usableSilenceIntervals(timing: TtsTiming): SilenceInterval[] | null {
+  if (!silenceRealignEnabled()) return null;
+  const raw = timing.silenceIntervals;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const ok = raw
+    .filter((s) => Number.isFinite(s?.startMs) && Number.isFinite(s?.endMs) && s.endMs - s.startMs >= REALIGN_MIN_SILENCE_MS)
+    .map((s) => ({ startMs: s.startMs, endMs: s.endMs }))
+    .sort((a, b) => a.startMs - b.startMs);
+  return ok.length > 0 ? ok : null;
+}
+
+// Spread chars [from, to) of the segment across [runStartMs, runEndMs) by the
+// same weights the legacy clock uses. Zero-weight spans (whitespace runs) sit
+// at runStartMs; trailing whitespace lands at runEndMs via cumulative weight.
+function fillSpanProportional(
+  startMsAt: Float64Array,
+  charBase: number,
+  w: Float64Array,
+  from: number,
+  to: number,
+  runStartMs: number,
+  runEndMs: number,
+): void {
+  let weightTotal = 0;
+  for (let i = from; i < to; i++) weightTotal += w[i - charBase];
+  let weightSeen = 0;
+  for (let i = from; i < to; i++) {
+    startMsAt[i] = runStartMs + (weightTotal > 0 ? (weightSeen / weightTotal) * (runEndMs - runStartMs) : 0);
+    weightSeen += w[i - charBase];
+  }
+}
+
+// Realign one segment's clock to its real pauses. Returns false (nothing
+// written) whenever the alignment isn't trustworthy — caller falls back to the
+// legacy proportional fill for this segment only.
+function fillSegmentSilenceAnchored(
+  startMsAt: Float64Array,
+  fullText: string,
+  charBase: number,
+  seg: TtsSegment,
+  boundaries: number[],
+  silences: SilenceInterval[],
+  pauseWeight: number,
+): boolean {
+  const len = seg.text.length;
+  if (len === 0) return false;
+  const segStartMs = seg.startMs;
+  const segEndMs = seg.startMs + seg.durationMs;
+
+  // Silences clipped to this segment. Ones hugging an edge shrink the speech
+  // window (breath-in before the first word / quiet tail / chunk-seam pause);
+  // the rest are internal anchors.
+  const inSeg: SilenceInterval[] = [];
+  for (const s of silences) {
+    const a = Math.max(s.startMs, segStartMs);
+    const b = Math.min(s.endMs, segEndMs);
+    if (b - a >= REALIGN_MIN_SILENCE_MS) inSeg.push({ startMs: a, endMs: b });
+  }
+  let winStart = segStartMs;
+  let winEnd = segEndMs;
+  let lo = 0;
+  let hi = inSeg.length - 1;
+  while (lo < inSeg.length && inSeg[lo].startMs <= winStart + REALIGN_SEG_MARGIN_MS) {
+    winStart = Math.max(winStart, inSeg[lo].endMs);
+    lo++;
+  }
+  while (hi >= lo && inSeg[hi].endMs >= winEnd - REALIGN_SEG_MARGIN_MS) {
+    winEnd = Math.min(winEnd, inSeg[hi].startMs);
+    hi--;
+  }
+  const internal = inSeg.slice(lo, hi + 1).filter((s) => s.startMs > winStart && s.endMs < winEnd);
+  if (winEnd - winStart < 300) return false;
+
+  const w = segmentCharWeights(seg.text, pauseWeight);
+  const pre = new Float64Array(len + 1);
+  for (let i = 0; i < len; i++) pre[i + 1] = pre[i] + w[i];
+  const totalMass = pre[len];
+  if (totalMass <= 0) return false;
+
+  // No internal pause → the whole window is one run (still fixes late speech
+  // onset after a leading silence).
+  if (internal.length === 0) {
+    fillSpanProportional(startMsAt, charBase, w, charBase, charBase + len, winStart, winEnd);
+    return true;
+  }
+
+  // Anchor candidates: word starts strictly inside the segment (from the SAME
+  // loanword-aware boundary set as everything else — a pause anchor can never
+  // split a Thai word). Whitespace positions are excluded so trailing spaces
+  // stay with the run BEFORE the pause and the anchored word starts exactly at
+  // speech onset.
+  let cands: { pos: number; mass: number; penalty: number }[] = [];
+  for (const b of boundaries) {
+    if (b <= charBase || b >= charBase + len) continue;
+    if (/\s/.test(fullText[b])) continue;
+    const prevCh = fullText[b - 1];
+    const preferred = /[\s.!?…,;:ๆฯ)"'»\]]/.test(prevCh);
+    cands.push({ pos: b, mass: pre[b - charBase], penalty: preferred ? 0 : REALIGN_BARE_BOUNDARY_PENALTY_MS });
+  }
+  if (cands.length === 0) return false;
+
+  const runs: { startMs: number; endMs: number }[] = [];
+  let t = winStart;
+  for (const s of internal) {
+    runs.push({ startMs: t, endMs: s.startMs });
+    t = s.endMs;
+  }
+  runs.push({ startMs: t, endMs: winEnd });
+  const durs = runs.map((r) => Math.max(0, r.endMs - r.startMs));
+  const totalSpeech = durs.reduce((a, b) => a + b, 0);
+  if (totalSpeech <= 0) return false;
+
+  const K = internal.length;
+  if (K * cands.length * cands.length > REALIGN_MAX_DP_OPS) {
+    const preferredOnly = cands.filter((c) => c.penalty === 0);
+    if (preferredOnly.length > 0) cands = preferredOnly;
+    while (K * cands.length * cands.length > REALIGN_MAX_DP_OPS && cands.length > 2) {
+      cands = cands.filter((_, i) => i % 2 === 0);
+    }
+  }
+  const C = cands.length;
+
+  // DP over anchors: DP[i][j] = min cost with anchor i (end of run i) at
+  // candidate j, anchors non-decreasing (equal = a zero-mass run, i.e. two
+  // detected silences separated only by breath noise act as one long pause).
+  // Run cost compares expected duration (mass at the segment's average rate)
+  // against the actual run duration on a LOG-RATIO scale — speech-rate wobble
+  // is multiplicative (±10% of a 6s run is fine; 6s vs 2s is not), so a
+  // relative measure keeps long runs from dominating the assignment the way an
+  // absolute |expected − actual| does. The +250ms floor stops 0.3s runs from
+  // blowing up the ratio on detection noise. Scale ×1200 keeps the numbers in
+  // ms-like territory so the bare-boundary penalty stays meaningful.
+  const runCost = (mass: number, d: number) => {
+    const e = (mass / totalMass) * totalSpeech;
+    return 1200 * Math.abs(Math.log((e + 250) / (d + 250)));
+  };
+  let prevRow = new Float64Array(C);
+  let curRow = new Float64Array(C);
+  const parent = new Int32Array(K * C);
+  for (let j = 0; j < C; j++) prevRow[j] = runCost(cands[j].mass, durs[0]) + cands[j].penalty;
+  for (let i = 1; i < K; i++) {
+    for (let j = 0; j < C; j++) {
+      let bestJ = 0;
+      let bestVal = Infinity;
+      for (let jp = 0; jp <= j; jp++) {
+        const v = prevRow[jp] + runCost(cands[j].mass - cands[jp].mass, durs[i]);
+        if (v < bestVal) { bestVal = v; bestJ = jp; }
+      }
+      curRow[j] = bestVal + cands[j].penalty;
+      parent[i * C + j] = bestJ;
+    }
+    const tmp = prevRow; prevRow = curRow; curRow = tmp;
+  }
+  let bestLast = -1;
+  let bestTotal = Infinity;
+  for (let j = 0; j < C; j++) {
+    const v = prevRow[j] + runCost(totalMass - cands[j].mass, durs[K]);
+    if (v < bestTotal) { bestTotal = v; bestLast = j; }
+  }
+  if (bestLast < 0 || !Number.isFinite(bestTotal)) return false;
+
+  const anchorIdx = new Array<number>(K);
+  anchorIdx[K - 1] = bestLast;
+  for (let i = K - 1; i > 0; i--) anchorIdx[i - 1] = parent[i * C + anchorIdx[i]];
+  const anchors = anchorIdx.map((j) => cands[j].pos);
+
+  // Acceptance in plain ms (the DP objective is log-scaled): total
+  // |expected − actual| of the CHOSEN assignment per speech-ms. Above the
+  // ratio the alignment story doesn't fit this audio — fail open to legacy.
+  let devMs = 0;
+  let prevMass = 0;
+  for (let i = 0; i <= K; i++) {
+    const mass = i < K ? cands[anchorIdx[i]].mass : totalMass;
+    devMs += Math.abs(((mass - prevMass) / totalMass) * totalSpeech - durs[i]);
+    prevMass = mass;
+  }
+  if (devMs / totalSpeech > REALIGN_MAX_COST_RATIO) return false;
+
+  let from = charBase;
+  for (let i = 0; i < runs.length; i++) {
+    const to = i < anchors.length ? anchors[i] : charBase + len;
+    if (to > from) fillSpanProportional(startMsAt, charBase, w, from, to, runs[i].startMs, runs[i].endMs);
+    from = Math.max(from, to);
+  }
+  return true;
+}
+
 // Spaces get zero duration: within a segment, time is distributed over
 // non-space chars only (same weighting the transcribe interpolator uses),
 // with extra weight at ellipsis pauses (see ellipsisPauseWeight).
@@ -341,16 +560,31 @@ function buildCharClock(timing: TtsTiming, fullText: string): CharClock {
   // startMsAt[i] = time at the boundary BEFORE char i; length fullText.length+1
   const startMsAt = new Float64Array(fullText.length + 1);
   const pauseWeight = ellipsisPauseWeight();
+  // Real-pause anchoring (Gemini only): rebuild each segment's clock around the
+  // detected silences; any segment where that isn't trustworthy falls back to
+  // the legacy proportional spread below, float for float.
+  const silAnchors = timing.provider === "gemini" ? usableSilenceIntervals(timing) : null;
+  const silBoundaries = silAnchors ? wordBoundaries(fullText) : null;
   let charBase = 0;
   let totalMs = 0;
   for (const seg of timing.segments) {
-    const w = segmentCharWeights(seg.text, pauseWeight);
-    let weightTotal = 0;
-    for (let i = 0; i < w.length; i++) weightTotal += w[i];
-    let weightSeen = 0;
-    for (let i = 0; i < seg.text.length; i++) {
-      startMsAt[charBase + i] = seg.startMs + (weightTotal > 0 ? (weightSeen / weightTotal) * seg.durationMs : 0);
-      weightSeen += w[i];
+    let anchored = false;
+    if (silAnchors && silBoundaries && silBoundaries.length > 0) {
+      try {
+        anchored = fillSegmentSilenceAnchored(startMsAt, fullText, charBase, seg, silBoundaries, silAnchors, pauseWeight);
+      } catch {
+        anchored = false;
+      }
+    }
+    if (!anchored) {
+      const w = segmentCharWeights(seg.text, pauseWeight);
+      let weightTotal = 0;
+      for (let i = 0; i < w.length; i++) weightTotal += w[i];
+      let weightSeen = 0;
+      for (let i = 0; i < seg.text.length; i++) {
+        startMsAt[charBase + i] = seg.startMs + (weightTotal > 0 ? (weightSeen / weightTotal) * seg.durationMs : 0);
+        weightSeen += w[i];
+      }
     }
     charBase += seg.text.length;
     totalMs = Math.max(totalMs, seg.startMs + seg.durationMs);
