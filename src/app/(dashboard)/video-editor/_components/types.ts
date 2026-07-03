@@ -40,9 +40,9 @@ export type KieImageModel =
   | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
   | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
 export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2 (ค่าเริ่มต้น)" },
   { value: "nano-banana-pro", label: "Nano Banana Pro" },
   { value: "nano-banana-2", label: "Nano Banana 2" },
-  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
   { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
   { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
   { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },

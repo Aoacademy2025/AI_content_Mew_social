@@ -285,7 +285,7 @@ function LegacyVideoEditorPage() {
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
-  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [kieModel, setKieModel] = useState<KieImageModel>("gpt-image-2-text-to-image");
   const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(DEFAULT_AUTO_MIX_PROVIDERS);
   // AI Image-to-Video (kie.ai) และ Auto Mix เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
   const [kieImageEnabled, setKieImageEnabled] = useState(false);

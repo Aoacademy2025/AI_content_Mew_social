@@ -335,7 +335,7 @@ export function OrderPanel(p: OrderPanelProps) {
                     Image Model (9:16)
                   </label>
                   <select
-                    value={p.kieModel ?? "nano-banana-pro"}
+                    value={p.kieModel ?? "gpt-image-2-text-to-image"}
                     onChange={(e) => p.setKieModel?.(e.target.value as KieImageModel)}
                     className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400/40"
                     style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}

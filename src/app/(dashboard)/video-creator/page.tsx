@@ -29,9 +29,9 @@ type KieImageModel =
   | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
   | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
 const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2 (ค่าเริ่มต้น)" },
   { value: "nano-banana-pro", label: "Nano Banana Pro" },
   { value: "nano-banana-2", label: "Nano Banana 2" },
-  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
   { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
   { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
   { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },
@@ -412,7 +412,7 @@ export default function ShortVideoPage() {
   // "kie-image" = AI Image-to-Video, "auto-mix" = วิดีโอ + ภาพ fallback — เปิดเฉพาะ ADMIN (user ทั่วไปเห็นปุ่มแต่กดไม่ได้)
   const [stockSource, setStockSource] = useState<"pexels" | "pixabay" | "both" | "kie-image" | "auto-mix">("both");
   // โมเดล text-to-image ของ kie.ai (เมื่อ stockSource === "kie-image" หรือ "auto-mix") — ขนาดภาพ fix ที่ 9:16 เสมอ
-  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [kieModel, setKieModel] = useState<KieImageModel>("gpt-image-2-text-to-image");
   const [kieModelOpen, setKieModelOpen] = useState(false);
   const kieModelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {

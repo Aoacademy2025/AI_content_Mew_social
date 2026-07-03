@@ -769,7 +769,7 @@ const KIE_IMAGE_MODELS = [
   "qwen2/text-to-image",
 ] as const;
 type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
-const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "nano-banana-pro";
+const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "gpt-image-2-text-to-image";
 
 function isKieImageModel(value: unknown): value is KieImageModel {
   return typeof value === "string" && (KIE_IMAGE_MODELS as readonly string[]).includes(value);
