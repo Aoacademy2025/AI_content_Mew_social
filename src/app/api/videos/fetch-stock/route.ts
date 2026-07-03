@@ -24,6 +24,19 @@ import {
   type RelevanceTerms,
 } from "@/lib/relevance-spec";
 import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
+import {
+  spendCredits,
+  refundCredits,
+  creditCostFor,
+  costKeyForKieModel,
+  ensureMonthlyGrant,
+} from "@/lib/credits";
+import {
+  kieMaxImagesPerJob,
+  tryConsumeKieImageRate,
+  capKiePrompt,
+  resolveKieImageAccess,
+} from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { execFile } from "child_process";
@@ -1355,25 +1368,52 @@ export async function POST(req: Request) {
     select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
   });
 
-  // AI Image-to-Video (kie.ai) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
-  if (useKieImage && user?.role !== "ADMIN") {
+  // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
+  // Flag OFF → byte-identical to before: kie sources are ADMIN-only and use the
+  // user's own BYOK key (never charged). Flag ON + CREDITS_LIVE → PRO/BUSINESS
+  // users are un-gated and generate on the server's managed KIE_API_KEY, metered
+  // to their credits (spend-before-generate below). FREE always stays 403.
+  const managedKieOn = process.env.MANAGED_KIE === "1";
+  const creditsLive = process.env.CREDITS_LIVE === "1";
+  const isAdmin = user?.role === "ADMIN";
+  const isPaidPlan = user?.plan === "PRO" || user?.plan === "BUSINESS";
+  const kieEnvKey = process.env.KIE_API_KEY || null;
+  // Access + metering decision (single source of truth — tested in
+  // scripts/verify-image-credit-spend.ts). Paid users may reach kie sources only
+  // under the full managed+credits flag set; only non-admin paid users are charged.
+  const { kiePaidUnlocked, chargeImages } = resolveKieImageAccess({
+    managedKieOn, creditsLive, isAdmin, isPaidPlan,
+  });
+
+  // AI Image-to-Video (kie.ai) — admins always; paid users only when un-gated.
+  if (useKieImage && !isAdmin && !kiePaidUnlocked) {
     return NextResponse.json({ error: "AI Image-to-Video (kie.ai) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
-  // Auto Mix (video + image fallback ผ่าน Ken Burns) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
-  if (useAutoMix && user?.role !== "ADMIN") {
+  // Auto Mix (video + image fallback ผ่าน Ken Burns) — same gate as kie image.
+  if (useAutoMix && !isAdmin && !kiePaidUnlocked) {
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
   const kieKey = user?.kieKey ? Buffer.from(user.kieKey, "base64").toString("utf-8") : null;
+  // Token actually sent to kie.ai. Flag off → BYOK key (today). Flag on: admins
+  // use the managed key when set (else fall back to their BYOK key); paid users
+  // use the managed key only. Never logged. Managed key is server-side env only.
+  const kieToken: string | null = !managedKieOn
+    ? kieKey
+    : isAdmin
+      ? (kieEnvKey ?? kieKey)
+      : isPaidPlan
+        ? kieEnvKey
+        : kieKey;
   const unsplashKey = user?.unsplashKey ? Buffer.from(user.unsplashKey, "base64").toString("utf-8") : null;
   const flickrKey = user?.flickrKey ? Buffer.from(user.flickrKey, "base64").toString("utf-8") : null;
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;
-  const canUseKieImage = useKieImage && !!kieKey;
+  const canUseKieImage = useKieImage && !!kieToken;
   // Auto Mix: fallback ภาพใช้ตัวไหนก็ได้ที่มี key — ไม่บังคับ ไม่ error ถ้าไม่มี (แค่ skip fallback)
   // Wikimedia/NASA/Met ไม่ต้องใช้ key — เปิดใช้ได้เสมอเมื่อ Auto Mix
   // Pexels/Pixabay photo ใช้ key เดียวกับ video search — ใช้ได้ทันทีถ้ามี key อยู่แล้ว
@@ -1386,7 +1426,7 @@ export async function POST(req: Request) {
   const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
   const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
   const canUseMetFallback = useAutoMix && isAutoMixProviderAllowed("met");
-  const canUseKieFallback = useAutoMix && !!kieKey && isAutoMixProviderAllowed("kie-ai");
+  const canUseKieFallback = useAutoMix && !!kieToken && isAutoMixProviderAllowed("kie-ai");
 
   if (useKieImage && !canUseKieImage) {
     return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
@@ -1421,6 +1461,63 @@ export async function POST(req: Request) {
     try { const resolved = resolveGeminiKey(user); llmKey = resolved.key; llmMode = resolved.mode; }
     catch (e) { if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
   }
+
+  // ── Managed-kie credit metering (money path) ──────────────────────────────
+  // Non-admin paid users are restricted to the 3 priced models server-side; if a
+  // client somehow requests an unpriced/admin-only model, coerce to the default
+  // priced model so we never hand out free unpriced generation.
+  const effectiveKieModel: KieImageModel =
+    chargeImages && costKeyForKieModel(resolvedKieModel) === null
+      ? DEFAULT_KIE_IMAGE_MODEL
+      : resolvedKieModel;
+  const imageCostKey = costKeyForKieModel(effectiveKieModel);
+  const imageCost = imageCostKey ? creditCostFor(imageCostKey) : 0;
+  const imageSpendAction = "ai-image";
+  const imageRefundAction = "ai-image-refund";
+  const maxImagesPerJob = kieMaxImagesPerJob();
+  // Captured non-null id (narrowing from the early !authUser 401 guard is not
+  // preserved into the nested spend/refund closures below).
+  const spenderUserId = authUser.id;
+
+  // Ensure the paid user's current-period monthly credit allowance is granted
+  // before the first spend (idempotent; itself CREDITS_LIVE-gated).
+  if (chargeImages) {
+    try { await ensureMonthlyGrant(spenderUserId); } catch { /* non-fatal */ }
+  }
+
+  // Signal surfaced in the response when AI generation was skipped mid-job:
+  //   "credits" = out of credits · "rate" = hourly rate ceiling · "cap" = per-job cap.
+  let aiSkippedReason: "credits" | "rate" | "cap" | null = null;
+  let aiChargedCount = 0; // successful spends this job (= kie createTask attempts)
+
+  type ImageSpendGate =
+    | { proceed: true; charged: false }
+    | { proceed: true; charged: true; fromGranted: number; fromPurchased: number }
+    | { proceed: false };
+
+  // Spend-before-generate. Admins / flag-off → free (charged:false). Non-admin
+  // paid → atomic granted-first spend, guarded by per-job cap + hourly rate. Once
+  // any guard trips, aiSkippedReason halts all remaining AI attempts this job.
+  async function attemptImageSpend(): Promise<ImageSpendGate> {
+    if (!chargeImages) return { proceed: true, charged: false };
+    if (aiSkippedReason) return { proceed: false };
+    if (aiChargedCount >= maxImagesPerJob) { aiSkippedReason = "cap"; return { proceed: false }; }
+    if (!tryConsumeKieImageRate(spenderUserId)) { aiSkippedReason = "rate"; return { proceed: false }; }
+    aiChargedCount++; // reserve the slot synchronously (precise cap under concurrency)
+    const spend = await spendCredits(spenderUserId, imageCost, imageSpendAction);
+    if (!spend.ok) { aiSkippedReason = "credits"; aiChargedCount--; return { proceed: false }; }
+    return { proceed: true, charged: true, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+  }
+
+  // Refund the exact buckets a prior spend drained (kie generation failed AFTER
+  // the charge). The createTask attempt still counted toward the per-job cap.
+  async function refundImageSpend(g: { fromGranted: number; fromPurchased: number }): Promise<void> {
+    await refundCredits(spenderUserId, g.fromGranted, g.fromPurchased, imageRefundAction);
+  }
+
+  // Prompt sent to kie is length-capped only on the managed charge path (flag-off
+  // prompts untouched — byte-identical).
+  const promptFor = (raw: string): string => (chargeImages ? capKiePrompt(raw) : raw);
 
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
@@ -1611,7 +1708,7 @@ export async function POST(req: Request) {
     // Cost cap: on the per-subtitle AUTO path, pay for ~ceil(duration/cadence) images
     // (e.g. 21s → ~6), NOT one per caption. Manual clip counts (overrideClipCount set by
     // the user, perSubtitleMode false) bypass the cadence cap via isAuto=false.
-    const clipsToGenerate = brollWindowMode
+    const clipsToGenerateRaw = brollWindowMode
       ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
       : aiGenPieceCount(
           totalDurationSec,
@@ -1619,7 +1716,9 @@ export async function POST(req: Request) {
           isPerSubtitleMode,
           PER_SUBTITLE_DOWNLOAD_LIMIT,
         );
-    console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
+    // Managed non-admin paid users are additionally bounded by the per-job cap.
+    const clipsToGenerate = chargeImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
+    console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
       keywords.slice(0, clipsToGenerate).map((keyword, i) => ({ keyword, i })),
@@ -1629,13 +1728,17 @@ export async function POST(req: Request) {
         const id = KIE_ID_OFFSET + i;
         const imageFile = `${userPrefix}${id}.src.jpg`;
         const imagePath = path.join(rendersDir, imageFile);
+        // Spend-before-generate. Skipped (credits/rate/cap) → no generation.
+        const gate = await attemptImageSpend();
+        if (!gate.proceed) return;
+        let success = false;
         try {
           if (download) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const genPrompt = buildKieImagePrompt(keyword, { visualDirection, terms: relTerms });
-              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieKey!, resolvedKieModel, imagePath, outPath);
+              const genPrompt = promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }));
+              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieToken!, effectiveKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
                 return;
@@ -1649,18 +1752,23 @@ export async function POST(req: Request) {
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
+              success = true;
             } catch (e) {
               stockTelemetry.downloadFailCount++;
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, buildKieImagePrompt(keyword, { visualDirection, terms: relTerms })), kieKey!);
-            const imageUrl = await kiePollResult(imageTaskId, kieKey!);
+            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }))), kieToken!);
+            const imageUrl = await kiePollResult(imageTaskId, kieToken!);
             results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
+            success = true;
           }
         } catch (e) {
           stockTelemetry.noCandidateKeywords++;
           console.error(`[fetch-stock] kie.ai generation failed for "${query}":`, e);
+        } finally {
+          // Refund the exact buckets if we charged but produced no usable clip.
+          if (gate.charged && !success) await refundImageSpend(gate);
         }
       },
     );
@@ -1670,7 +1778,7 @@ export async function POST(req: Request) {
     stockTelemetry.servedClipCount = results.length;
     await recordFetchStockTelemetry("done");
     console.log(`[fetch-stock] kie.ai generated ${results.length} clips`);
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
   }
 
   const usedIds = new Set<number>();
@@ -2236,14 +2344,18 @@ export async function POST(req: Request) {
         // paid AI credit it wasn't budgeted for — keeps the plan's video/photo/ai cost
         // split honest. min-hold tolerates a smaller pool, so a missing piece is fine.
         if (kind === "ai" && canUseKieFallback) {
+          // Spend-before-generate for the AutoMix AI slot (skip → piece dropped).
+          const gate = await attemptImageSpend();
+          if (!gate.proceed) return;
           const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
+          let success = false;
           try {
-            const genPrompt = buildKieImagePrompt(kw, { visualDirection, terms: relTerms });
-            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieKey!, resolvedKieModel, imagePath, outPath);
+            const genPrompt = promptFor(buildKieImagePrompt(kw, { visualDirection, terms: relTerms }));
+            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieToken!, effectiveKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
@@ -2254,6 +2366,7 @@ export async function POST(req: Request) {
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
+              success = true;
             }
           } catch (e) {
             console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
@@ -2262,6 +2375,9 @@ export async function POST(req: Request) {
             if (msg.includes("credit") || msg.includes("insufficient") || msg.includes("balance") || msg.includes("top up")) {
               kieCreditExhausted = true;
             }
+          } finally {
+            // Refund the exact buckets if we charged but produced no usable clip.
+            if (gate.charged && !success) await refundImageSpend(gate);
           }
         }
       });
@@ -2307,7 +2423,7 @@ export async function POST(req: Request) {
     // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
     // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
     await recordFetchStockTelemetry("done", { emptyResult: results.length === 0, selectionDebugSample });
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
   }
 
   // ── Download phase ──
@@ -2395,7 +2511,7 @@ export async function POST(req: Request) {
   stockTelemetry.servedClipCount = results.length;
   await recordFetchStockTelemetry("done", { selectionDebugSample });
   console.log(`[fetch-stock] downloaded ${results.length} clips`);
-  return NextResponse.json({ results });
+  return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
 }
 
 // DELETE /api/videos/fetch-stock — no-op, files are kept
