@@ -52,6 +52,7 @@ function makeStubCaller(log: CallLog[]) {
       if (path === "/api/videos/fetch-stock") return { results: [{ videoUrl: "stock1.mp4", keyword: "sunscreen" }] } as T;
       if (path === "/api/videos/generate-config") return { config: { scenes: [], voiceUrl: "/api/voices/test.m4a" } } as T;
       if (path === "/api/videos/render") { renderCount++; return { jobId: `render-${renderCount}` } as T; }
+      if (path.startsWith("/api/videos/render-cancel")) return {} as T;
       if (path === "/api/videos") return { id: "gallery-vid-1" } as T;
       if (path === "/api/videos/transcribe") {
         return { captions: [
@@ -185,6 +186,41 @@ async function main() {
     ok(done?.status === "canceled", `D: status stays canceled, no failJob overwrite (got ${done?.status})`);
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/fetch-stock"), "D: no step started after cancel (stock never called)");
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos/render"), "D: no render after cancel");
+  }
+
+  // ── F. cancel mid-RENDER (QA 07-03 Flow 4.2): the render step is the only one whose
+  // cost is already committed (the render route reserved minutes at request time).
+  // Cancel during the poll must (1) cancel the in-flight render job — its route's
+  // cancelled path refunds the reservation — and (2) keep status=canceled (before the
+  // fix, the render ran to completion and finishJob flipped the job back to done). ──
+  {
+    const log: CallLog[] = [];
+    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
+    const base = makeStubCaller(log);
+    let progressPolls = 0;
+    const midRenderCancelCaller = {
+      ...base,
+      get: async <T,>(path: string): Promise<T> => {
+        if (path.startsWith("/api/videos/render-progress")) {
+          log.push({ method: "GET", path });
+          progressPolls++;
+          if (progressPolls === 1) {
+            // user hits ยกเลิก while the base render is at 50%
+            await prisma.videoJob.update({ where: { id: job.id }, data: { status: "canceled" } });
+            return { progress: 50, videoUrl: null, error: null, stage: "rendering" } as T;
+          }
+          // without the fix the render "finishes" and the charge stands
+          return { progress: 100, videoUrl: "/renders/out-leak.mp4", error: null, stage: "done" } as T;
+        }
+        return base.get<T>(path);
+      },
+    };
+    await runOrchestrator(job.id, "u-preview", { caller: midRenderCancelCaller, refundOneClip: async () => {}, sleep: async () => {} });
+    const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(done?.status === "canceled", `F: status stays canceled, not overwritten by finishJob (got ${done?.status})`);
+    ok(log.some((c) => c.method === "POST" && c.path.startsWith("/api/videos/render-cancel") && c.path.includes("jobId=render-1")),
+      "F: in-flight render job cancelled → its route refunds the reservation");
+    ok(done?.outputJson === null, "F: no output persisted after cancel");
   }
 
   // ── E. upload/cutaway branch: no TTS, composite cutaway, v2 preview output ──

@@ -109,6 +109,19 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     emitStage(name, "started");
     await setJobStep(jobId, name, progress);
   }
+  // Cancel mid-RENDER (QA 07-03 Flow 4.2): the render step is the only one whose cost is
+  // already committed — /api/videos/render reserves minutes/credits at request time — and
+  // it's the longest, so step-boundary checks alone let a canceled job render to completion
+  // with the charge standing (never refunded; finishJob even flipped the job back to done).
+  // Checked every poll tick: on cancel, kill the in-flight render via its cancel route —
+  // the render route's own cancelled path refunds the reservation bucket-aware
+  // (refundReservedClip) — then throw so the poll aborts and the job stops cleanly.
+  const cancelInFlightRender = (renderJobId: string) => async () => {
+    const cur = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+    if (cur?.status !== "canceled") return;
+    await caller.post(`/api/videos/render-cancel?jobId=${encodeURIComponent(renderJobId)}`, {}).catch(() => {});
+    throw new Error(JOB_CANCELED);
+  };
 
   try {
     const job = await prisma.videoJob.findUnique({ where: { id: jobId } });
@@ -197,7 +210,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
       });
-      const upReelUrl = await pollRender(caller, upR.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.12)).catch(() => {}); }, { sleep });
+      const upReelUrl = await pollRender(caller, upR.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.12)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(upR.jobId) });
       // preview: การจองที่ base render คือค่าใช้จ่ายเดียว (เหมือน script preview) — ไม่ refund
 
       await step("composite", 90);
@@ -332,7 +345,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
     });
-    const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
+    const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r1.jobId) });
     // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
     // reservation NOW so a finished video nets exactly 1 clip, and a burn-stage failure (the
     // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
@@ -401,7 +414,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await step("burn", 88);
     const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
     const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop) });
-    const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep });
+    const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
     await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });

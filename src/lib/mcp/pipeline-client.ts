@@ -75,7 +75,7 @@ export async function pollRender(
   caller: PipelineCaller,
   jobId: string,
   onProgress?: (pct: number, stage: string | null) => void,
-  opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void>; checkCanceled?: () => Promise<void> } = {},
 ): Promise<string> {
   const interval = opts.intervalMs ?? 2000;
   const timeout = opts.timeoutMs ?? 15 * 60 * 1000;
@@ -83,6 +83,9 @@ export async function pollRender(
   const start = Date.now();
   let consecutiveErrors = 0;
   while (Date.now() - start < timeout) {
+    // Cooperative cancel from the owning VideoJob — the hook throws to abort the poll.
+    // OUTSIDE the try below so it can never be swallowed as a transient poll error.
+    await opts.checkCanceled?.();
     try {
       const p = await caller.get<{ progress: number; videoUrl: string | null; error: string | null; stage: string | null }>(
         `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`,
