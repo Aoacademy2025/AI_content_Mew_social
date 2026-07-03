@@ -6,9 +6,9 @@
  * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline 4 แทร็ก = P6b
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
+import { ArrowDownToLine, CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
@@ -24,6 +24,7 @@ import { loanwordSpans } from "@/lib/thai-loanwords";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
+import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 
 type ExportState =
   | { phase: "idle" }
@@ -58,6 +59,33 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
+
+  // การ์ดที่ "กำลังพูด" ตาม preview (แยกจาก selected = การ์ดที่เลือกแก้)
+  const activeIdx = useMemo(() => findActiveCaptionIdx(captions, timeMs), [captions, timeMs]);
+  const [follow, setFollow] = useState(true);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const lastAutoScrollAt = useRef(0);
+
+  // auto-scroll ตามการ์ด active — หยุดชั่วคราวถ้ากำลังพิมพ์แก้ซับ (กันเลื่อนหนี)
+  useEffect(() => {
+    if (!follow || !playing || editingIdx !== null || activeIdx < 0) return;
+    const el = cardRefs.current[activeIdx];
+    if (!el) return;
+    lastAutoScrollAt.current = Date.now();
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeIdx, follow, playing, editingIdx]);
+
+  function onListScroll() {
+    // smooth scrollIntoView ยิง scroll event ต่อเนื่องช่วงสั้น ๆ — ช่วงนั้นไม่นับเป็นผู้ใช้เลื่อนเอง
+    if (Date.now() - lastAutoScrollAt.current < 700) return;
+    if (playing && follow) setFollow(false);
+  }
+
+  function resumeFollow() {
+    setFollow(true);
+    const el = activeIdx >= 0 ? cardRefs.current[activeIdx] : null;
+    if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+  }
 
   // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
   const historyRef = useRef<V2Caption[][]>([]);
@@ -263,11 +291,19 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
 
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
-        <aside className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+        <aside onScroll={onListScroll} className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <GroupLabel>การ์ดซับ ({captions.length})</GroupLabel>
           {captions.map((c, i) => (
-            <div key={`${i}-${c.startMs}`} onClick={() => { setSelected(i); const v = videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }} style={{ cursor: "pointer" }}>
-              <Card selected={i === selected}>
+            <div
+              key={`${i}-${c.startMs}`}
+              ref={(el) => { cardRefs.current[i] = el; }}
+              onClick={() => { setSelected(i); setFollow(true); const v = videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
+              style={{ cursor: "pointer" }}
+            >
+              <Card
+                selected={i === selected}
+                style={i === activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+              >
                 <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
                   <span style={{ color: i === selected ? color.primary300 : color.textFaint }}>
                     {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
@@ -298,6 +334,20 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
               </Card>
             </div>
           ))}
+          {!follow && (
+            <button
+              onClick={resumeFollow}
+              className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
+              style={{
+                padding: "5px 12px", borderRadius: radius.pill,
+                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                color: color.primary300, fontSize: 11, cursor: "pointer",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
+            </button>
+          )}
           <div className="mt-auto flex gap-2 pt-2">
             <button onClick={mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
               รวมกับใบถัดไป
