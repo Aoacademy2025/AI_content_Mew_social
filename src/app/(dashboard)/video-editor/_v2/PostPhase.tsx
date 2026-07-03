@@ -72,11 +72,11 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
     const el = cardRefs.current[activeIdx];
     if (!el) return;
     lastAutoScrollAt.current = Date.now();
-    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    el.scrollIntoView({ block: "nearest", behavior: "auto" });
   }, [activeIdx, follow, playing, editingIdx]);
 
   function onListScroll() {
-    // smooth scrollIntoView ยิง scroll event ต่อเนื่องช่วงสั้น ๆ — ช่วงนั้นไม่นับเป็นผู้ใช้เลื่อนเอง
+    // programmatic scroll ใช้ behavior:"auto" (จบใน frame เดียว) — event ของมันตกใน window นี้เสมอ ที่เหลือ = ผู้ใช้เลื่อนเอง
     if (Date.now() - lastAutoScrollAt.current < 700) return;
     if (playing && follow) setFollow(false);
   }
@@ -84,7 +84,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
   function resumeFollow() {
     setFollow(true);
     const el = activeIdx >= 0 ? cardRefs.current[activeIdx] : null;
-    if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+    if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "auto" }); }
   }
 
   // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
