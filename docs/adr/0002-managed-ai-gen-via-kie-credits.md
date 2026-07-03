@@ -29,8 +29,12 @@ and retention, not to be a second profit engine — so friction matters more tha
 Managed generation through kie.ai's unified API, metered in integer credits, priced at
 roughly ×2–3 over COGS:
 
-- **Images** (launch): budget open-source-class model = 1 credit · `gpt-image-2` = 3 credits
-  (default — ranked best quality in real use) · `nano-banana-pro` = 4 credits.
+- **Images** (launch) — *amended 2026-07-03 after pricing the kie catalog (no model met the
+  ≤฿0.5 COGS premise; the wired models cluster ฿0.9–3.24/image at 1K, ฿36/USD)*:
+  budget `flux-2/pro` = 2 credits (COGS ฿0.90) · `gpt-image-2` = 3 credits (default —
+  ranked best quality in real use; COGS ฿1.08) · `nano-banana-2` = 4 credits (COGS ฿1.44).
+  `nano-banana-pro` (COGS ฿3.24 — too thin at any locked price) is admin-only, not a paid tier.
+  *(Original: budget 1 credit · nano-banana-pro 4 credits — superseded.)*
 - **Video** (own phase, after benchmark): Seedance 1.5 pro only, 5-second clips only
   (b-roll windows are 3–5 s, so 10/15 s variants have nowhere to live), 10 credits/clip.
 - BYOK remains a possible later escape hatch for power users, not the default path.
@@ -40,7 +44,7 @@ roughly ×2–3 over COGS:
 
 ## Consequences
 
-- We carry real COGS per generation (≈฿0.35–1.4/image, ≈฿3/video-clip) against credit
+- We carry real COGS per generation (฿0.90–1.44/image on the paid tiers, ≈฿3/video-clip) against credit
   revenue; abuse guardrails must mirror the managed-Gemini pattern (provider-side spend cap,
   per-user rate limits, per-job input caps) before the gate opens.
 - Server sizing is unaffected by generation: kie runs it. The KVM8 upgrade exists for

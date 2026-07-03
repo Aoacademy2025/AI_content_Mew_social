@@ -16,7 +16,7 @@
 |---|---|---|
 | D1 | บทบาทของ AI gen | **ตัวดึง sub/retention ไม่ใช่เครื่องยนต์รายได้ที่สอง** — ตั้งราคาเพื่อ adoption, margin ×2-3 พอ, รายได้หลัก = subscription |
 | D2 | Image gen go-live | **Managed** (server kie key = key ที่ admin ใช้อยู่, ย้ายเข้า env) + guardrail แบบ managed-Gemini (เพดาน spend ฝั่ง kie + rate-limit/user + เพดานรูป/job). BYOK เก็บเป็น escape hatch ทีหลัง |
-| D3 | โมเดลภาพ + ราคา | 3 ระดับ user-facing: **ถูก 1cr** (โมเดล open-source class บน kie — [verify] เลือกตัวที่ COGS ≤฿0.35-0.5) · **gpt-image-2 3cr = DEFAULT** (มิว rank คุณภาพที่ 1 จากใช้จริง — ต้องสลับ default ในโค้ดจาก nano) · **nano-banana-pro 4cr** (ขั้นสูง). อีก 6 โมเดล = admin-only ต่อไป. **ไม่มีราคาเศษ 0.5cr** (ledger เป็นจำนวนเต็ม) |
+| D3 | โมเดลภาพ + ราคา | **AMENDED 2026-07-03 (Mew ratified — verify ราคาจริง kie แล้ว ไม่มีโมเดลไหน COGS ≤฿0.5, ทุกตัว ฿0.9–3.24):** 3 ระดับ user-facing: **ประหยัด flux-2/pro 2cr** (COGS ฿0.90, ×2.2 — key `image-flux-1k`) · **มาตรฐาน gpt-image-2 3cr = DEFAULT** (COGS ฿1.08, ×2.8; มิว rank คุณภาพที่ 1 จากใช้จริง) · **ขั้นสูง nano-banana-2 4cr** (COGS ฿1.44, ×2.78). **nano-banana-pro (COGS ฿3.24 — margin บางเกินทุกราคาที่ล็อกได้) ถอยเป็น admin-only** พร้อมอีก 4 โมเดล. **ไม่มีราคาเศษ 0.5cr** (ledger เป็นจำนวนเต็ม). ~~เดิม: ถูก 1cr / nano-banana-pro 4cr~~ — ตารางราคาเต็มใน PR #146 |
 | D4 | โมเดลวิดีโอ + ราคา | เปิดตัวด้วย **Seedance 1.5 pro ตัวเดียว, 5วิ เท่านั้น, 10cr/คลิป** (ตัด 10/15วิ — window 3-5วิ ไม่มีที่วาง). ตัวถูก (Wan/Seedance-lite class ~5cr) = ทดสอบใน benchmark ไว้รอเฟสถัดไป ถ้าคุณภาพผ่านตามิว |
 | D5 | เห็นก่อนจ่าย | **Render Receipt บังคับทุกเรนเดอร์ step 2** ไม่ว่า b-roll แบบไหน: นาทีที่ใช้+คงเหลือ (แสดงเป็น "รวมในแพ็กเกจ" ไม่ใช่ "จ่าย") · เครดิต AI gen ที่จะหัก · เคสนาทีหมด→แจ้ง overflow 2cr/นาที ก่อนหัก (เลิกหักเงียบ) · อวตารระบุ "คิดผ่าน HeyGen ของคุณ" · ติดป้ายประมาณการ, ยอดจริงจากเสียง TTS จริง |
 | D5.1 | AutoMix UX | **Mix preset 3 ปุ่ม** แทน slider: ฟรีล้วน (0cr) / ผสม AI แนะนำ (3:2:1, ~6-9cr/คลิป) / AI เต็มที่ (~25-40cr). **Default ของ PRO/BIZ = ผสม AI แนะนำ** (เครดิตแถมมีไว้ให้ลอง). เฟสถัดไป: **อัปเกรดรายช่อง**บน timeline (คลิกช่อง b-roll → เจนภาพ 3cr / วิดีโอ 10cr แทนช่องนั้น — re-render base ต้องไม่คิดนาทีซ้ำ ใช้แพทเทิร์น ChargedClip) |
@@ -32,11 +32,11 @@
 ## [verify] / งานที่ต้องทำต่อ (เรียงตาม D6)
 
 1. ~~KVM8 upgrade~~ → ตาม runbook `/private/tmp/heroai-runbook-2026-06-28-deploy-imagegen-kvm8.md` + editor v2 launch runbook
-2. **เช็คแคตตาล็อก kie**: โมเดลภาพถูกสุดที่คุณภาพรับได้ + COGS ≤฿0.5 → ผูก cost key `image-budget-1k = 1cr`
-3. **สลับ default image model** nano-banana-pro → gpt-image-2 (โค้ด + admin UI)
-4. **ย้าย kie key จาก BYOK admin → server env** + guardrails (spend cap ฝั่ง kie dashboard, rate-limit, cap รูป/job) + ปลด gate admin→paid
-5. **Render Receipt** ใน editor v2 step 2 (นาที + เครดิต + overflow warning)
-6. **Mix preset 3 ปุ่ม** + default "ผสม AI แนะนำ" สำหรับ paid
+2. ~~เช็คแคตตาล็อก kie~~ ✅ 2026-07-03 — ผล = D3 amended (ไม่มีตัวไหน ≤฿0.5; budget = flux-2/pro 2cr key `image-flux-1k`)
+3. ~~สลับ default image model~~ ✅ PR #146
+4. ~~ย้าย kie key → server env + guardrails + ปลด gate~~ ✅ PR #146 — เหลือ manual ก่อนเปิด `MANAGED_KIE=1`: ใส่ `KIE_API_KEY` ใน prod `.env` + ตั้ง spend cap ใน kie dashboard
+5. ~~Render Receipt~~ ✅ PR #146
+6. ~~Mix preset 3 ปุ่ม~~ ✅ PR #146 (+ badge "เร็ว ๆ นี้" ตอน flag ปิด — launch แบบ staged ตามแผนมิว 07-03: deploy ก่อนโดยไม่เปิด AI, flip v2+cutaway ใช้จริง 1-2 สัปดาห์ แล้วค่อยเปิด image gen)
 7. **Benchmark วิดีโอ**: Seedance 1.5 pro ~10 คลิป (เวลาเฉลี่ย/แย่สุด, fail rate, 9:16) + โมเดลถูก 1 ตัวเทียบ — เกิน ~3 นาที/คลิป = ต้องคิด UX ใหม่
 8. **สร้าง video gen path** (net-new: kie video model + stitch เข้า window) + `video-seedance-5s = 10cr`
 9. เฟสถัดไป: อัปเกรดรายช่องบน timeline + budget video tier (ถ้า benchmark ผ่าน) + Affiliate tracking
