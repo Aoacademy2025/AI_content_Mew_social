@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Move, RotateCcw } from "lucide-react";
-import { color, font, radius } from "./tokens";
+import { color, radius } from "./tokens";
 import { BtnPrimary, BtnGhost, GroupLabel } from "./ui";
 import { normalizedBox, type AvatarLayout } from "@/lib/avatar-layout";
 
@@ -69,13 +69,16 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   async function apply() {
     if (busy) return;
     setBusy(true);
+    let presetSaved = false;
     try {
       // 1) save preset ก่อน — ต่อให้ composite พังก็ยังได้ประโยชน์รอบหน้า (spec: error handling)
-      await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
+      const pres = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(layout),
       });
+      if (!pres.ok) throw new Error("บันทึกตำแหน่งไม่สำเร็จ — ลองใหม่อีกครั้ง");
+      presetSaved = true;
 
       // 2) re-composite ฟรีบน base เดิม (ไม่เรียก HeyGen ใหม่)
       const res = await fetch("/api/heygen/composite", {
@@ -107,20 +110,22 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
       toast.success("ปรับตำแหน่งอวตารแล้ว — บันทึกเป็นค่าเริ่มต้นของอวตารนี้ให้ด้วย");
       onDone(d.videoUrl as string);
     } catch (e) {
-      toast.error(`${e instanceof Error ? e.message : "re-composite ไม่สำเร็จ"} — ตำแหน่งถูกบันทึกไว้แล้ว จะถูกใช้ในการเรนเดอร์ครั้งหน้า`);
+      const msg = e instanceof Error ? e.message : "re-composite ไม่สำเร็จ";
+      toast.error(presetSaved ? `${msg} — ตำแหน่งถูกบันทึกไว้แล้ว จะถูกใช้ในการเรนเดอร์ครั้งหน้า` : msg);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="absolute inset-0 z-20 flex flex-col" style={{ borderRadius: radius.cardLg, overflow: "hidden" }}>
-      {/* พื้นที่ลาก — ทับ preview ทั้งกรอบ */}
-      <div ref={frameRef} className="relative flex-1" style={{ background: "rgba(10,10,16,.35)" }}>
+    <div className="absolute inset-0 z-20" style={{ borderRadius: radius.cardLg, overflow: "hidden" }}>
+      {/* กรอบลาก = พื้นที่วิดีโอเต็ม 1:1 — normalizedBox คิด % จาก canvas เต็ม (สูตรเดียวกับ ffmpeg) ห้ามให้แถบคุมกินความสูงกรอบนี้ */}
+      <div ref={frameRef} className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }}>
         <div
           onPointerDown={onBoxPointerDown}
           onPointerMove={onBoxPointerMove}
           onPointerUp={onBoxPointerUp}
+          onPointerCancel={onBoxPointerUp}
           className="absolute flex items-center justify-center"
           style={{
             left: `${box.centerXPct}%`, top: `${box.centerYPct}%`,
@@ -144,7 +149,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
       </div>
 
       {/* แถบคุมล่าง */}
-      <div className="flex items-center gap-3 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
+      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
         <GroupLabel>ขนาด</GroupLabel>
         <input
           type="range" min={0.1} max={2.5} step={0.05} value={layout.scale}
