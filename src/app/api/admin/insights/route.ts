@@ -784,7 +784,6 @@ export async function GET(req: Request) {
       paidTotal: cohorts.payingTotal,
       trialActive: cohorts.trialActive,
       compedPaid: cohorts.compedPaid,
-      paidWithoutGeminiKey: allUsers.filter((u) => paidUserIds.has(u.id) && !nonEmpty(u.geminiKey)).length,
       openedEditor: openedUserRows.length,
       startedPipeline: startedUserRows.length,
       completedFirstVideo: completedByUser.length,

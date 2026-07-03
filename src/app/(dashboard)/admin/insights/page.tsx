@@ -59,9 +59,9 @@ type InsightSummary = {
 
 type ActivationData = {
   signups: number; internalTeam: number; hasGeminiKey: number; hasStockKey: number;
-  paidTotal: number; trialActive: number; compedPaid: number; paidWithoutGeminiKey: number; managed?: boolean;
+  paidTotal: number; trialActive: number; compedPaid: number; managed?: boolean;
   openedEditor: number; startedPipeline: number; completedFirstVideo: number; repeatCreators: number;
-  windowSignups: number; windowCompletedUsers: number; prevWindowCompletedUsers: number;
+  windowCompletedUsers: number; prevWindowCompletedUsers: number;
 };
 
 type RenderStats = {
