@@ -3,6 +3,45 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/lib/video-reconcile";
+import { computeRevenueCohorts } from "@/lib/revenue-cohorts";
+import { getPlanConfig } from "@/lib/plan-config";
+
+type RenderJobRow = {
+  type: string;
+  status: string;
+  parentJobId: string | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+};
+
+// Render throughput from the RenderJob table (the source of truth for editor-v2 / worker renders).
+// Replaces the old telemetry panel that read render_server_* events from the legacy sync route the
+// background-render flow bypasses — hence it showed 0/0 while renders were clearly happening.
+function summarizeRenderJobs(rows: RenderJobRow[]) {
+  const render = rows.filter((r) => r.type === "RENDER");
+  const burn = rows.filter((r) => r.type === "BURN");
+  const doneRender = render.filter((r) => r.status === "DONE");
+  const failedRender = render.filter((r) => r.status === "FAILED");
+  const durations = doneRender
+    .map((r) => (r.startedAt && r.finishedAt ? r.finishedAt.getTime() - r.startedAt.getTime() : NaN))
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  const settled = doneRender.length + failedRender.length;
+  return {
+    total: render.length,
+    done: doneRender.length,
+    failed: failedRender.length,
+    running: render.filter((r) => r.status === "RUNNING").length,
+    queued: render.filter((r) => r.status === "QUEUED").length,
+    cancelled: render.filter((r) => r.status === "CANCELLED").length,
+    web: render.filter((r) => !r.parentJobId).length,
+    mcp: render.filter((r) => r.parentJobId).length,
+    successPct: pct(doneRender.length, settled),
+    p50Ms: percentile(durations, 50),
+    p95Ms: percentile(durations, 95),
+    burnTotal: burn.length,
+    burnDone: burn.filter((r) => r.status === "DONE").length,
+  };
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -13,11 +52,13 @@ type FunnelStep = {
   step?: string;
 };
 
+// The funnel is the ONE linear path every render walks. `transcribe` is intentionally excluded:
+// it only runs for avatar/upload sources (TTS-timed clips skip it), so it's a branch, not a step —
+// counting it made later steps exceed the previous one (the "111% conversion" bug).
 const EDITOR_FUNNEL: FunnelStep[] = [
   { key: "editor_opened", label: "เปิดหน้าตัดต่อ", event: "editor_opened" },
   { key: "script_ready", label: "เริ่มจากสคริปต์", event: "editor_script_ready" },
   { key: "tts_done", label: "สร้างเสียงเสร็จ", step: "tts" },
-  { key: "transcribe_done", label: "ถอดซับเสร็จ", step: "transcribe" },
   { key: "stock_done", label: "ได้ B-roll", step: "fetchStock" },
   { key: "config_done", label: "จัดคลิปเสร็จ", step: "config" },
   { key: "render_done", label: "เรนเดอร์เสร็จ", step: "render" },
@@ -207,7 +248,12 @@ function durationValues(rows: TelemetryRow[]) {
 
 function telemetryIssueLabel(row: TelemetryRow) {
   const props = parseProps(row);
-  return String(props.message ?? props.reason ?? row.status ?? row.name).slice(0, 160);
+  const msg = String(props.message ?? props.reason ?? "").trim();
+  if (msg) return msg.slice(0, 160);
+  // No message — describe by event name (+ source) instead of a bare "error"/status word,
+  // so the row is at least traceable ("frontend_error · client" beats a lone "error").
+  const label = [row.name, row.source ? `· ${row.source}` : ""].filter(Boolean).join(" ").trim();
+  return (label || row.status || "ไม่ระบุสาเหตุ").slice(0, 160);
 }
 
 function benignTelemetryReason(row: TelemetryRow): string | null {
@@ -305,11 +351,14 @@ function summarizeEditorFunnel(rows: TelemetryRow[]) {
     previousCount: 0,
   })).map((step, index, all) => {
     const previousCount = index === 0 ? step.count : all[index - 1].count;
+    // Clamp to 100: even off the transcribe branch, independent session counts can momentarily
+    // exceed the prior step; a funnel step is never truly >100% conversion.
+    const conversionPct = index === 0 ? 100 : Math.min(100, pct(step.count, previousCount));
     return {
       ...step,
       previousCount,
-      conversionPct: index === 0 ? 100 : pct(step.count, previousCount),
-      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - pct(step.count, previousCount)),
+      conversionPct,
+      dropOffPct: index === 0 ? 0 : Math.max(0, 100 - conversionPct),
     };
   });
 
@@ -479,7 +528,12 @@ function summarize(
       p95Ms: p95,
       successPct: pct(data.done, data.started),
     };
-  }).sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0));
+  })
+    // Drop phantom rows: steps that emitted only stray duration events but no lifecycle
+    // (started/done/error/skipped all 0) — e.g. "preview"/"avatar_upload" showing "0% success"
+    // next to a real p95, which reads as broken.
+    .filter((s) => s.started > 0 || s.done > 0 || s.error > 0 || s.skipped > 0)
+    .sort((a, b) => (b.p95Ms ?? 0) - (a.p95Ms ?? 0));
 
   const errors = summarizeIssueGroups(errorRows);
   const byokErrors = summarizeIssueGroups(byokErrorRows, byokErrorReason);
@@ -647,6 +701,7 @@ export async function GET(req: Request) {
     const [
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
       allUsers, openedUserRows, startedUserRows, completedByUser, currentJobs,
+      planConfig, renderJobRows, paidRows,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -678,8 +733,15 @@ export async function GET(req: Request) {
         take: 5_000,
       }),
       getProcessingReconcilePlan({ staleAfterMinutes: 20, failAfterHours: 3, limit: 100 }),
-      // P1 Activation: lifecycle ทั้งหมด (ไม่ขึ้นกับ window) — สมัคร → ตั้งคีย์ → เปิด → เริ่ม → ได้วิดีโอ → ซ้ำ
-      prisma.user.findMany({ select: { plan: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true } }),
+      // P1 Activation: lifecycle ทั้งหมด (ไม่ขึ้นกับ window) — สมัคร → ตั้งคีย์ → เปิด → เริ่ม → ได้วิดีโอ → ซ้ำ.
+      // Now also selects the billing fields so we classify real payers vs trial (classifyEntitlement).
+      prisma.user.findMany({
+        select: {
+          id: true, email: true, plan: true, role: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true,
+          subStatus: true, billingPeriod: true, planExpiresAt: true,
+          trialStartedAt: true, trialEndsAt: true, stripeSubscriptionId: true,
+        },
+      }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_script_ready", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
       prisma.video.groupBy({ by: ["userId"], where: { status: "COMPLETED" }, _count: { _all: true } }),
@@ -688,20 +750,41 @@ export async function GET(req: Request) {
         where: { createdAt: { gte: since } },
         select: { status: true, currentStep: true, errorMessage: true, startedAt: true, finishedAt: true },
       }),
+      getPlanConfig(),
+      // Render throughput (window) from RenderJob — the source of truth for editor-v2/worker renders.
+      prisma.renderJob.findMany({
+        where: { createdAt: { gte: since } },
+        select: { type: true, status: true, parentJobId: true, startedAt: true, finishedAt: true },
+      }),
+      // Cash ground truth — distinct users who ever completed a PAID payment.
+      prisma.payment.findMany({ where: { status: "PAID" }, select: { userId: true }, distinct: ["userId"] }),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
-    const isPaid = (plan: string) => plan === "PRO" || plan === "BUSINESS";
     const completedUsersIn = (videos: VideoRow[]) =>
       new Set(videos.filter((video) => video.status === "COMPLETED").map((video) => video.userId)).size;
+
+    // Real revenue cohorts (reuses the users we already fetched — no extra query). "Paying" is
+    // anchored on CASH (a PAID payment), so trials and comped/coupon access never count as paying.
+    const paidUserIds = new Set(paidRows.map((r) => r.userId));
+    const cohorts = computeRevenueCohorts(
+      allUsers,
+      paidUserIds,
+      { pro: planConfig.pro.price, business: planConfig.business.price },
+      now,
+    );
 
     const activation = {
       managed: process.env.MANAGED_GEMINI === "1",
       signups: allUsers.length,
+      internalTeam: cohorts.internalTeam,
       hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
-      paidTotal: allUsers.filter((u) => isPaid(u.plan)).length,
-      paidWithoutGeminiKey: allUsers.filter((u) => isPaid(u.plan) && !nonEmpty(u.geminiKey)).length,
+      // Real paying customers = cash + currently entitled (was: any plan=PRO/BUSINESS, which swept in trials + comps).
+      paidTotal: cohorts.payingTotal,
+      trialActive: cohorts.trialActive,
+      compedPaid: cohorts.compedPaid,
+      paidWithoutGeminiKey: allUsers.filter((u) => paidUserIds.has(u.id) && !nonEmpty(u.geminiKey)).length,
       openedEditor: openedUserRows.length,
       startedPipeline: startedUserRows.length,
       completedFirstVideo: completedByUser.length,
@@ -710,6 +793,7 @@ export async function GET(req: Request) {
       windowCompletedUsers: completedUsersIn(currentVideos),
       prevWindowCompletedUsers: completedUsersIn(previousVideos),
     };
+    const renderStats = summarizeRenderJobs(renderJobRows);
 
     const failedJobs = currentJobs.filter((j) => j.status === "failed");
     const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "noise"; count: number; sample: string }>();
@@ -736,6 +820,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
       activation,
+      renderStats,
       jobOutcomes,
       current: summarize(currentRows, currentVideos, processingPlan.summary),
       previous: summarize(previousRows, previousVideos),
