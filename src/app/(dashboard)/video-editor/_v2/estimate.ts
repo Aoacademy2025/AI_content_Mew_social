@@ -28,3 +28,26 @@ export function countWordsV2(text: string): number {
   const engWords = cleaned.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
   return Math.round(thaiChars / 4) + engWords;
 }
+
+/**
+ * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
+ * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
+ *
+ * b-roll แบ่งเป็น "windows" ~4 วิ/ช่วง (ตรงกับ NEXT_PUBLIC_BROLL_WINDOW_SEC=4 ของ
+ * pipeline); สัดส่วนที่เป็นภาพ AI = ai / (video+photo+ai) (กัน div-by-zero: ถ้าน้ำหนัก
+ * รวมเป็น 0 → share = 0); เครดิต = ceil(windows × share) × เครดิตต่อภาพ.
+ *
+ * @param estSec           ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
+ * @param preset           น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
+ * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป (ตามโมเดล kie ที่ใช้)
+ */
+export function estimatePresetCredits(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  perImageCredits: number,
+): number {
+  const windows = Math.ceil(estSec / 4);
+  const totalWeight = preset.video + preset.photo + preset.ai;
+  const aiShare = totalWeight === 0 ? 0 : preset.ai / totalWeight;
+  return Math.ceil(windows * aiShare) * perImageCredits;
+}

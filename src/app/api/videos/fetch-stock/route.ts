@@ -41,6 +41,7 @@ import {
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
+import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -1303,6 +1304,7 @@ export async function POST(req: Request) {
     stockSource = "both",
     kieModel,
     autoMixProviders,
+    autoMixWeights,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     brollWindowMode = false,
@@ -1321,6 +1323,7 @@ export async function POST(req: Request) {
     stockSource?: string;
     kieModel?: string;
     autoMixProviders?: string[];
+    autoMixWeights?: unknown;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     brollWindowMode?: boolean;
@@ -1574,11 +1577,23 @@ export async function POST(req: Request) {
     const anyPhotoUsable =
       canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback ||
       canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback;
-    const weights = {
-      video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
-      photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
-      ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
-    };
+    // Editor v2 "mix preset" (D5.1): honor request-supplied autoMixWeights over the env
+    // defaults ONLY under MANAGED_KIE and only when they are sane ints 0–9. The ai weight
+    // is force-zeroed for users NOT authorized for kie spend — same gate as the 403 above
+    // (isAdmin || kiePaidUnlocked). Flag off / field absent / invalid → reqWeights is null
+    // and the else branch is BYTE-IDENTICAL to the pre-preset env-only behavior.
+    const reqWeights = managedKieOn ? parseAutoMixWeights(autoMixWeights) : null;
+    const weights = reqWeights
+      ? {
+          video: autoMixUsesVideo ? reqWeights.video : 0,
+          photo: anyPhotoUsable ? reqWeights.photo : 0,
+          ai: (canUseKieFallback && (isAdmin || kiePaidUnlocked)) ? reqWeights.ai : 0,
+        }
+      : {
+          video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
+          photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
+          ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
+        };
     const pieceCount = brollWindowMode
       ? keywords.length
       : aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);

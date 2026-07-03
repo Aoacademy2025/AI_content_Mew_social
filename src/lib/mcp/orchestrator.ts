@@ -42,6 +42,9 @@ interface CreateInput {
   kieModel?: string;
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
+  /** Editor v2 mix-preset weights (D5.1) — validated at the web route; fetch-stock
+   *  honors them only under MANAGED_KIE and force-zeros ai for unauthorized users. */
+  autoMixWeights?: { video: number; photo: number; ai: number };
   /**
    * Editor v2 "ใช้คลิปที่ถ่ายเอง" (cutaway, launch-coupled): clip แนวตั้งของผู้ใช้
    * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
@@ -190,6 +193,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+          ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
         },
         upAiGen ? { retries: 0 } : undefined,
       );
@@ -318,6 +322,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+        ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
       },
       aiGenSource ? { retries: 0 } : undefined,
     );

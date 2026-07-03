@@ -21,6 +21,17 @@ import { estimateClipSecV2 } from "./estimate";
 import { useBgm } from "../_hooks/useBgm";
 import { MusicLibraryModal } from "./MusicLibraryModal";
 import type { V2Project, V2BrollSource } from "./useV2Project";
+import type { MixPreset } from "./mix-presets";
+
+// Mix Preset (D5.1) — non-admin b-roll AI mix. Copy = brief verbatim (ห้ามแปลใหม่).
+const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
+  { key: "free", label: "ฟรีล้วน", sub: "สต็อกฟรีทั้งหมด · 0 เครดิต" },
+  { key: "recommended", label: "ผสม AI แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
+  { key: "full", label: "AI เต็มที่", sub: "ภาพ AI ทุกช่วง · ~25–45 เครดิต/คลิป" },
+];
+const MIX_PRESET_LABEL: Record<MixPreset, string> = {
+  free: "ฟรีล้วน", recommended: "ผสม AI แนะนำ", full: "AI เต็มที่",
+};
 
 // ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
 const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
@@ -73,6 +84,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
+          {/* Non-admins get the 3 mix presets (D5.1); admins keep the raw source cards +
+              provider checkboxes + model picker (in Advanced) unchanged. */}
+          {p.isAdmin ? (
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
             {BROLL_OPTIONS.map((o) => {
               // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
@@ -107,6 +121,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               );
             })}
           </div>
+          ) : (
+            <MixPresetButtons p={p} />
+          )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
@@ -423,14 +440,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           {p.mode === "upload" ? (
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
-              <SummaryRow label="บีโรล" value={`${BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-"} · แทรก cutaway`} />
+              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
-              <SummaryRow label="บีโรล" value={BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-"} />
+              <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
               <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
@@ -455,6 +472,44 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           </span>
         </div>
       </aside>
+    </div>
+  );
+}
+
+/** Mix Preset (D5.1) — 3 ปุ่มเลือกสัดส่วน AI ในบีโรล (แทนบล็อก checkbox ของ admin สำหรับ
+ *  ผู้ใช้ทั่วไป). FREE (ไม่ paid) เลือกได้แค่ "ฟรีล้วน"; อีก 2 ปุ่มถูก disable + tooltip
+ *  "อัปเกรดเพื่อใช้ภาพ AI". เลือก preset → p.setMixPreset ขับ brollSource/providers/weights. */
+function MixPresetButtons({ p }: { p: V2Project }) {
+  return (
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+      {MIX_PRESETS.map((pr) => {
+        // FREE/feature-off users: only "ฟรีล้วน" is selectable (AI presets locked).
+        const locked = pr.key !== "free" && !p.isPaidManagedKie;
+        const selected = p.mixPreset === pr.key;
+        return (
+          <button
+            key={pr.key}
+            disabled={locked}
+            title={locked ? "อัปเกรดเพื่อใช้ภาพ AI" : undefined}
+            onClick={() => { if (!locked) p.setMixPreset(pr.key); }}
+            className="relative flex flex-col items-start gap-1.5 text-left"
+            style={{
+              borderRadius: radius.card, padding: "12px 14px",
+              background: selected ? color.selectedBg : color.cardBg,
+              border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
+              cursor: locked ? "not-allowed" : "pointer",
+              opacity: locked ? 0.55 : 1,
+              transition: "all 150ms ease",
+            }}
+          >
+            {pr.badge && (
+              <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{pr.badge}</span>
+            )}
+            <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{pr.label}</span>
+            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{pr.sub}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
