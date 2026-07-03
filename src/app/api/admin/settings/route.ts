@@ -32,6 +32,7 @@ const KEYS = [
   "server_gemini_key",
   // Cost-rate config for the Cost & Margin admin dashboard (admin-editable ฿ rates)
   "cost_render_per_minute",
+  "cost_image_flux_1k",
   "cost_image_gpt_1k",
   "cost_image_nano_1k",
   "cost_image_gpt_2k",

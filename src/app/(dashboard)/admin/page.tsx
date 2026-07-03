@@ -350,6 +350,7 @@ export default function AdminDashboardPage() {
 
   // Cost-rate editor state
   const [costRenderPerMinute, setCostRenderPerMinute] = useState("");
+  const [costImageFlux1k, setCostImageFlux1k] = useState("");
   const [costImageGpt1k, setCostImageGpt1k] = useState("");
   const [costImageNano1k, setCostImageNano1k] = useState("");
   const [costImageGpt2k, setCostImageGpt2k] = useState("");
@@ -388,6 +389,7 @@ export default function AdminDashboardPage() {
       if (d.server_gemini_key) setServerGeminiKey(d.server_gemini_key);
       // Cost rates
       if (d.cost_render_per_minute) setCostRenderPerMinute(d.cost_render_per_minute);
+      if (d.cost_image_flux_1k) setCostImageFlux1k(d.cost_image_flux_1k);
       if (d.cost_image_gpt_1k) setCostImageGpt1k(d.cost_image_gpt_1k);
       if (d.cost_image_nano_1k) setCostImageNano1k(d.cost_image_nano_1k);
       if (d.cost_image_gpt_2k) setCostImageGpt2k(d.cost_image_gpt_2k);
@@ -406,6 +408,7 @@ export default function AdminDashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cost_render_per_minute: costRenderPerMinute,
+          cost_image_flux_1k: costImageFlux1k,
           cost_image_gpt_1k: costImageGpt1k,
           cost_image_nano_1k: costImageNano1k,
           cost_image_gpt_2k: costImageGpt2k,
@@ -1573,33 +1576,46 @@ export default function AdminDashboardPage() {
             </div>
             <div>
               <label className="text-xs text-zinc-400 mb-1 block">
-                AI Image GPT-4o 1K — ฿/รูป
+                AI Image Flux-2/Pro (ประหยัด) — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageFlux1k}
+                onChange={e => setCostImageFlux1k(e.target.value)}
+                placeholder="0.90"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                AI Image GPT-Image-2 (มาตรฐาน) — ฿/รูป
               </label>
               <input
                 type="number"
                 step="0.0001"
                 value={costImageGpt1k}
                 onChange={e => setCostImageGpt1k(e.target.value)}
-                placeholder="0.60"
+                placeholder="1.08"
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
               />
             </div>
             <div>
               <label className="text-xs text-zinc-400 mb-1 block">
-                AI Image Nano 1K — ฿/รูป
+                AI Image Nano-Banana-2 (ขั้นสูง) — ฿/รูป
               </label>
               <input
                 type="number"
                 step="0.0001"
                 value={costImageNano1k}
                 onChange={e => setCostImageNano1k(e.target.value)}
-                placeholder="0.15"
+                placeholder="1.44"
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
               />
             </div>
             <div>
               <label className="text-xs text-zinc-400 mb-1 block">
-                AI Image GPT-4o 4K — ฿/รูป
+                AI Image GPT-4o 4K (สำรอง — ยังไม่ใช้งาน) — ฿/รูป
               </label>
               <input
                 type="number"
@@ -1612,7 +1628,7 @@ export default function AdminDashboardPage() {
             </div>
             <div>
               <label className="text-xs text-zinc-400 mb-1 block">
-                AI Image Nano 4K — ฿/รูป
+                AI Image Nano 4K (สำรอง — ยังไม่ใช้งาน) — ฿/รูป
               </label>
               <input
                 type="number"

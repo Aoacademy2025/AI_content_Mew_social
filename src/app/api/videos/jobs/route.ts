@@ -6,6 +6,8 @@ import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
+import { resolveKieImageAccess } from "@/lib/kie-image-guards";
+import { parseAutoMixWeights } from "@/lib/automix-weights";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -24,7 +26,7 @@ type Body = {
   script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
-  targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown;
+  targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown;
 };
 
@@ -114,9 +116,20 @@ export async function POST(req: Request) {
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: ["queued", "processing"] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
-    // B-roll source: "stock" (default) → orchestrator default "both"; Beta sources admin-only
+    // B-roll source: "stock" (default) → orchestrator default "both". AI sources
+    // (kie-image / auto-mix) are open to admins AND paid users un-gated for kie spend
+    // — mirror of the fetch-stock authorization (resolveKieImageAccess), so the v2
+    // background path matches the money path. FREE / flag-off stay blocked here (and
+    // fetch-stock re-checks + force-zeros ai as the authoritative boundary).
     const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
-    if (requestedSource !== "stock" && user.role !== "ADMIN") {
+    const isAdmin = user.role === "ADMIN";
+    const { kiePaidUnlocked } = resolveKieImageAccess({
+      managedKieOn: process.env.MANAGED_KIE === "1",
+      creditsLive: process.env.CREDITS_LIVE === "1",
+      isAdmin,
+      isPaidPlan: user.plan === "PRO" || user.plan === "BUSINESS",
+    });
+    if (requestedSource !== "stock" && !isAdmin && !kiePaidUnlocked) {
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;
@@ -127,6 +140,11 @@ export async function POST(req: Request) {
     const kieModel = stockSource ? str(body.kieModel, 60) : undefined;
     const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
       ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
+      : undefined;
+    // Mix-preset weights (D5.1): only well-formed {video,photo,ai} ints 0–9 are stored;
+    // fetch-stock re-validates + gates them behind MANAGED_KIE authoritatively.
+    const autoMixWeights = requestedSource === "auto-mix"
+      ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
       : undefined;
 
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
@@ -152,6 +170,7 @@ export async function POST(req: Request) {
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(kieModel ? { kieModel } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
+          ...(autoMixWeights ? { autoMixWeights } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },

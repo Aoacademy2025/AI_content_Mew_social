@@ -5,7 +5,7 @@
  * preview mode P4a/P4b) + done/failed placeholder (เฟสแต่งซับเต็มรูปแบบ = P6)
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { XCircle } from "lucide-react";
 import { color, font } from "./tokens";
@@ -17,19 +17,47 @@ import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
 import { PostPhase } from "./PostPhase";
+import { RenderReceiptDialog } from "./RenderReceiptDialog";
+import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 
 export function EditorV2Shell() {
   const p = useV2Project();
   const [step, setStep] = useState<0 | 1>(0);
   const { job, submit, cancel, reset, markExported } = useV2Job(p);
 
+  // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
+  // is on; with it off handleRender submits directly (byte-identical to before).
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
+
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
   const indicatorDone = job.phase === "done" ? [0, 1] : (isRendering || step === 1) ? [0] : [];
 
   async function handleRender() {
-    const r = await submit();
-    if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
+    if (!CREDITS_LIVE_CLIENT) {
+      const r = await submit();
+      if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
+      return;
+    }
+    setReceiptOpen(true);
+  }
+
+  // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
+  // can't fire submit twice before React re-renders the disabled button.
+  async function handleConfirmRender() {
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
+    setConfirmSubmitting(true);
+    try {
+      const r = await submit();
+      if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
+    } finally {
+      confirmingRef.current = false;
+      setConfirmSubmitting(false);
+      setReceiptOpen(false); // ok → shell already swapped to RenderingScreen; fail → back to Step2
+    }
   }
 
   async function handleCancel() {
@@ -86,6 +114,16 @@ export function EditorV2Shell() {
         <Step1Script p={p} onNext={() => setStep(1)} />
       ) : (
         <Step2Elements p={p} onRender={handleRender} />
+      )}
+
+      {CREDITS_LIVE_CLIENT && (
+        <RenderReceiptDialog
+          p={p}
+          open={receiptOpen}
+          submitting={confirmSubmitting}
+          onConfirm={() => void handleConfirmRender()}
+          onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
+        />
       )}
     </div>
   );

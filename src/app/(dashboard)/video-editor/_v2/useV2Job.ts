@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
+import { PRESET_WEIGHTS } from "./mix-presets";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -96,6 +97,10 @@ export function useV2Job(p: V2Project) {
         ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
         ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
         ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+        // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
+        // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
+        // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
+        ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
         subtitleMode: "sentence",
         subtitlePosition: "bottom",
       } : {
@@ -114,6 +119,10 @@ export function useV2Job(p: V2Project) {
         ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
         ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
         ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+        // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
+        // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
+        // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
+        ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
         subtitleMode: "sentence",
         subtitlePosition: "bottom",
       };

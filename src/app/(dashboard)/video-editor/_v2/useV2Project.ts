@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
+import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 
 const DRAFT_KEY = "editor-v2-project";
 
@@ -11,7 +12,7 @@ interface V2Draft {
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
-  kieModel?: string; autoMixProviders?: AutoMixImageProvider[];
+  kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
 }
 
 function loadDraft(): V2Draft {
@@ -67,6 +68,11 @@ export function useV2Project() {
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
   const [brollSource, setBrollSource] = useState<V2BrollSource>(d.brollSource ?? "stock");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
+  /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
+   *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
+   *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
+  const [managedKieOn, setManagedKieOn] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>(d.voiceEngine ?? "gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState(d.geminiVoiceName ?? "Aoede");
   const [voiceId, setVoiceId] = useState(d.voiceId ?? "");
@@ -84,6 +90,19 @@ export function useV2Project() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(d.avatarTailSecs ?? 5);
   const [kieModel, setKieModel] = useState<KieImageModel | "">((d.kieModel as KieImageModel | undefined) ?? "");
   const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS);
+  // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
+  // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
+  // once plan is known). Draft value wins if the user already chose one. ──
+  const [mixPreset, setMixPresetState] = useState<MixPreset>(d.mixPreset ?? "free");
+  /** เลือก preset → ขับ mixPreset + brollSource + autoMixProviders ให้สอดคล้องกัน
+   *  (preset ≠ ฟรีล้วน ⇒ automix + provider set รวม kie-ai). weights ที่ส่งไป server
+   *  มาจาก PRESET_WEIGHTS ใน useV2Job. */
+  const setMixPreset = useCallback((preset: MixPreset) => {
+    setMixPresetState(preset);
+    setBrollSource(presetBrollSource(preset));
+    const provs = PRESET_PROVIDERS[preset];
+    if (provs) setAutoMixProviders(provs);
+  }, []);
 
   // ── Read-only wiring ──
   const [usage, setUsage] = useState<V2Usage | null>(null);
@@ -109,7 +128,23 @@ export function useV2Project() {
     fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(u => {
       if (u) setUsage(u);
     }).catch(() => {});
-    fetchMe().then(m => setIsAdmin(m?.role === "ADMIN")).catch(() => {});
+    fetchMe().then(m => {
+      const admin = m?.role === "ADMIN";
+      // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
+      // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
+      const paid = !!m?.kiePaidUnlocked;
+      setIsAdmin(admin);
+      setIsPaidManagedKie(paid);
+      setManagedKieOn(!!m?.managedKieOn);
+      // Preset default/enforcement (non-admins only — admins use the raw controls):
+      //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
+      //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
+      // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
+      if (!admin) {
+        if (!paid) setMixPreset("free");
+        else if (!draftRef.current.mixPreset) setMixPreset("recommended");
+      }
+    }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -121,13 +156,13 @@ export function useV2Project() {
           mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
           musicTrack, musicTrackKind, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-          kieModel, autoMixProviders,
+          kieModel, autoMixProviders, mixPreset,
         } satisfies V2Draft));
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
   }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders]);
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
@@ -171,7 +206,8 @@ export function useV2Project() {
     avatarTailSecs, setAvatarTailSecs,
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
-    usage, avatarInfo, elevenVoices, isAdmin,
+    mixPreset, setMixPreset,
+    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
   };
 }
 

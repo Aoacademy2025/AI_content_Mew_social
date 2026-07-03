@@ -20,11 +20,14 @@ const PACK_CREDIT_TO_BAHT: Record<number, number> = {
   1150: 999,
 };
 
-// AI-image spend delta → image model bucket
-// MUST stay in sync with CREDIT_COST / costKeyForKieModel in src/lib/credits.ts.
-// Today only 3 (gpt-1k) and 4 (nano-1k) are reachable; 5/6 reserved.
-// If CREDIT_COST image values change, update here or spends silently drop from COGS.
-function imageModelBucket(absDelta: number): "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
+// AI-image spend delta → image model bucket.
+// MUST stay in sync with CREDIT_COST and costKeyForKieModel() in src/lib/credit-costs.ts
+// (which maps kie model → cost-key → credit delta). Reachable non-admin-paid deltas
+// under managed-kie: 2 (flux-1k), 3 (gpt-1k), 4 (nano-1k). 5/6 reserved (no live model
+// maps to them yet — costKeyForKieModel returns null for every other kie model, so
+// those deltas are unreachable on the managed-kie money path today).
+function imageModelBucket(absDelta: number): "flux1k" | "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
+  if (absDelta === 2) return "flux1k";
   if (absDelta === 3) return "gpt1k";
   if (absDelta === 4) return "nano1k";
   if (absDelta === 5) return "gpt2k";
@@ -147,14 +150,14 @@ export async function GET(req: Request) {
     }
 
     // ── AI-image counts ───────────────────────────────────────────────────────
-    const imageCounts = { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
-    const perUserImages = new Map<string, { gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+    const perUserImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
     for (const row of imageSpendRows) {
       const bucket = imageModelBucket(Math.abs(row.delta));
       if (!bucket) continue;
       imageCounts[bucket]++;
       if (row.userId) {
-        const u = perUserImages.get(row.userId) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const u = perUserImages.get(row.userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
         u[bucket]++;
         perUserImages.set(row.userId, u);
       }
@@ -216,9 +219,9 @@ export async function GET(req: Request) {
     const topUsers = Array.from(allUserIds)
       .map((userId) => {
         const mins = perUserMinutes.get(userId) ?? 0;
-        const imgs = perUserImages.get(userId) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const imgs = perUserImages.get(userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
         const userCogs = computeCogs({ managedMinutes: mins, imageCounts: imgs, rates });
-        const images = imgs.gpt1k + imgs.nano1k + imgs.gpt2k + imgs.nano2k;
+        const images = imgs.flux1k + imgs.gpt1k + imgs.nano1k + imgs.gpt2k + imgs.nano2k;
         return { userId, cogs: userCogs.total, minutes: mins, images };
       })
       .sort((a, b) => b.cogs - a.cogs)
@@ -233,12 +236,12 @@ export async function GET(req: Request) {
       dailyMinutes.set(label, (dailyMinutes.get(label) ?? 0) + mins);
     }
 
-    const dailyImages = new Map<string, { gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const dailyImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
     for (const row of imageSpendRows) {
       const bucket = imageModelBucket(Math.abs(row.delta));
       if (!bucket) continue;
       const label = dateLabel(row.createdAt);
-      const d = dailyImages.get(label) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const d = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
       d[bucket]++;
       dailyImages.set(label, d);
     }
@@ -251,7 +254,7 @@ export async function GET(req: Request) {
       const d = new Date(from.getTime() + i * DAY_MS);
       const label = dateLabel(d);
       const dayMins = dailyMinutes.get(label) ?? 0;
-      const dayImgs = dailyImages.get(label) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const dayImgs = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
       const dayCogs = computeCogs({ managedMinutes: dayMins, imageCounts: dayImgs, rates });
       trend.push({ date: label, revenue: dailyMrr, cogs: dayCogs.total });
     }

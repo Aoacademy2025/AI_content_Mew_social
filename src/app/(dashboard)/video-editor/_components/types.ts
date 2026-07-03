@@ -40,14 +40,21 @@ export type KieImageModel =
   | "seedream/5-lite-text-to-image" | "seedream/4.5-text-to-image"
   | "flux-2/pro-text-to-image" | "grok-imagine/text-to-image" | "qwen2/text-to-image";
 export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "GPT Image 2 (ค่าเริ่มต้น)" },
   { value: "nano-banana-pro", label: "Nano Banana Pro" },
   { value: "nano-banana-2", label: "Nano Banana 2" },
-  { value: "gpt-image-2-text-to-image", label: "GPT Image 2" },
   { value: "seedream/5-lite-text-to-image", label: "Seedream 5 Lite" },
   { value: "seedream/4.5-text-to-image", label: "Seedream 4.5" },
   { value: "flux-2/pro-text-to-image", label: "Flux 2 Pro" },
   { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
   { value: "qwen2/text-to-image", label: "Qwen2" },
+];
+// Non-admin paid users see ONLY the 3 priced models, labelled with credit cost.
+// Values map to credit-keys server-side (src/lib/credits.ts costKeyForKieModel).
+export const PRICED_KIE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ" },
+  { value: "flux-2/pro-text-to-image", label: "ประหยัด · 2 เครดิต/ภาพ" },
+  { value: "nano-banana-2", label: "ขั้นสูง · 4 เครดิต/ภาพ" },
 ];
 
 // แหล่งที่มาของ B-roll ที่ Auto Mix เลือกใช้ได้ — เลือกได้หลายตัว
