@@ -1,5 +1,10 @@
 import { cleanScriptLine } from "../_lib/preprocess-script";
 
+/** b-roll window length (วิ/ช่วง) — SAME knob the real window planner reads
+ *  (video-editor/page.tsx:56, mcp/orchestrator.ts). Default 4. Keeping the estimator on
+ *  this knob stops the Receipt's credit estimate from drifting from the actual planner. */
+const BROLL_WINDOW_SEC = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
+
 /**
  * v2 display estimates — นับจากข้อความที่ CLEAN แล้ว (ตรงกับสิ่งที่ TTS จะอ่านจริง)
  *
@@ -33,20 +38,23 @@ export function countWordsV2(text: string): number {
  * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
  * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
  *
- * b-roll แบ่งเป็น "windows" ~4 วิ/ช่วง (ตรงกับ NEXT_PUBLIC_BROLL_WINDOW_SEC=4 ของ
- * pipeline); สัดส่วนที่เป็นภาพ AI = ai / (video+photo+ai) (กัน div-by-zero: ถ้าน้ำหนัก
+ * b-roll แบ่งเป็น "windows" ตาม NEXT_PUBLIC_BROLL_WINDOW_SEC (default 4 — ตรงกับ window
+ * planner จริง); สัดส่วนที่เป็นภาพ AI = ai / (video+photo+ai) (กัน div-by-zero: ถ้าน้ำหนัก
  * รวมเป็น 0 → share = 0); เครดิต = ceil(windows × share) × เครดิตต่อภาพ.
  *
  * @param estSec           ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
  * @param preset           น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
  * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป (ตามโมเดล kie ที่ใช้)
+ * @param windowSec        ความยาว window (วิ) — default = NEXT_PUBLIC_BROLL_WINDOW_SEC (ทดสอบ override ได้)
  */
 export function estimatePresetCredits(
   estSec: number,
   preset: { video: number; photo: number; ai: number },
   perImageCredits: number,
+  windowSec: number = BROLL_WINDOW_SEC,
 ): number {
-  const windows = Math.ceil(estSec / 4);
+  const secPerWindow = windowSec > 0 ? windowSec : 4;
+  const windows = Math.ceil(estSec / secPerWindow);
   const totalWeight = preset.video + preset.photo + preset.ai;
   const aiShare = totalWeight === 0 ? 0 : preset.ai / totalWeight;
   return Math.ceil(windows * aiShare) * perImageCredits;
