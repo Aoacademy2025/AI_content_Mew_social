@@ -36,6 +36,7 @@ import {
   tryConsumeKieImageRate,
   capKiePrompt,
   resolveKieImageAccess,
+  shouldGuardKieImages,
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
@@ -1408,6 +1409,12 @@ export async function POST(req: Request) {
       : isPaidPlan
         ? kieEnvKey
         : kieKey;
+  // Does this request actually run on the shared server key? (admin or paid; NOT a
+  // user's BYOK key and NOT flag-off). Guardrails (rate/cap/prompt) apply to ANY
+  // managed-key generation — admins included (still uncharged) — so one unguarded
+  // admin can't loop the shared key. Mirrors the managed-Gemini precedent.
+  const usesManagedKey = managedKieOn && !!kieEnvKey && kieToken === kieEnvKey;
+  const guardImages = shouldGuardKieImages({ usesManagedKey, chargeImages });
   const unsplashKey = user?.unsplashKey ? Buffer.from(user.unsplashKey, "base64").toString("utf-8") : null;
   const flickrKey = user?.flickrKey ? Buffer.from(user.flickrKey, "base64").toString("utf-8") : null;
 
@@ -1488,25 +1495,32 @@ export async function POST(req: Request) {
   // Signal surfaced in the response when AI generation was skipped mid-job:
   //   "credits" = out of credits · "rate" = hourly rate ceiling · "cap" = per-job cap.
   let aiSkippedReason: "credits" | "rate" | "cap" | null = null;
-  let aiChargedCount = 0; // successful spends this job (= kie createTask attempts)
+  let aiGenCount = 0; // managed-key generation attempts this job (charged OR admin-free)
 
   type ImageSpendGate =
     | { proceed: true; charged: false }
     | { proceed: true; charged: true; fromGranted: number; fromPurchased: number }
     | { proceed: false };
 
-  // Spend-before-generate. Admins / flag-off → free (charged:false). Non-admin
-  // paid → atomic granted-first spend, guarded by per-job cap + hourly rate. Once
-  // any guard trips, aiSkippedReason halts all remaining AI attempts this job.
+  // Gate before each managed-key generation. Guardrails (per-job cap + hourly rate)
+  // apply to EVERY managed-key request — admins included (uncharged) — so one admin
+  // can't loop the shared key. Metering (spend) applies only to non-admin paid users.
+  // Once any guard trips, aiSkippedReason halts all remaining AI attempts this job.
   async function attemptImageSpend(): Promise<ImageSpendGate> {
-    if (!chargeImages) return { proceed: true, charged: false };
-    if (aiSkippedReason) return { proceed: false };
-    if (aiChargedCount >= maxImagesPerJob) { aiSkippedReason = "cap"; return { proceed: false }; }
-    if (!tryConsumeKieImageRate(spenderUserId)) { aiSkippedReason = "rate"; return { proceed: false }; }
-    aiChargedCount++; // reserve the slot synchronously (precise cap under concurrency)
-    const spend = await spendCredits(spenderUserId, imageCost, imageSpendAction);
-    if (!spend.ok) { aiSkippedReason = "credits"; aiChargedCount--; return { proceed: false }; }
-    return { proceed: true, charged: true, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+    if (guardImages) {
+      if (aiSkippedReason) return { proceed: false };
+      if (aiGenCount >= maxImagesPerJob) { aiSkippedReason = "cap"; return { proceed: false }; }
+      if (!tryConsumeKieImageRate(spenderUserId)) { aiSkippedReason = "rate"; return { proceed: false }; }
+    }
+    if (chargeImages) {
+      aiGenCount++; // reserve the slot synchronously (precise cap under concurrency)
+      const spend = await spendCredits(spenderUserId, imageCost, imageSpendAction);
+      if (!spend.ok) { aiSkippedReason = "credits"; aiGenCount--; return { proceed: false }; }
+      return { proceed: true, charged: true, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+    }
+    // Admin on the managed key: guarded above (cap/rate consumed) but never charged.
+    if (guardImages) aiGenCount++;
+    return { proceed: true, charged: false };
   }
 
   // Refund the exact buckets a prior spend drained (kie generation failed AFTER
@@ -1515,9 +1529,9 @@ export async function POST(req: Request) {
     await refundCredits(spenderUserId, g.fromGranted, g.fromPurchased, imageRefundAction);
   }
 
-  // Prompt sent to kie is length-capped only on the managed charge path (flag-off
-  // prompts untouched — byte-identical).
-  const promptFor = (raw: string): string => (chargeImages ? capKiePrompt(raw) : raw);
+  // Prompt sent to kie is length-capped on any managed-key request (admin or paid);
+  // flag-off / BYOK prompts untouched — byte-identical.
+  const promptFor = (raw: string): string => (guardImages ? capKiePrompt(raw) : raw);
 
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
@@ -1716,8 +1730,11 @@ export async function POST(req: Request) {
           isPerSubtitleMode,
           PER_SUBTITLE_DOWNLOAD_LIMIT,
         );
-    // Managed non-admin paid users are additionally bounded by the per-job cap.
-    const clipsToGenerate = chargeImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
+    // Managed-key generations (admin or paid) are bounded by the per-job cap. When
+    // the clamp actually reduces the requested count, surface "cap" so the client can
+    // tell the user some windows fell back / were dropped (not silently fewer clips).
+    const clipsToGenerate = guardImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
+    if (guardImages && clipsToGenerateRaw > clipsToGenerate) aiSkippedReason = "cap";
     console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(

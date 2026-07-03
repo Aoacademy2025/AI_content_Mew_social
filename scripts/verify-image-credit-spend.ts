@@ -19,6 +19,7 @@ import {
 } from "../src/lib/credits";
 import {
   resolveKieImageAccess,
+  shouldGuardKieImages,
   kieMaxImagesPerJob,
   kieImageRatePerHour,
   tryConsumeKieImageRate,
@@ -72,6 +73,49 @@ async function simulateGenerate(opts: {
   // Generation failed after charge → refund exact buckets.
   await refundCredits(opts.userId, spend.fromGranted, spend.fromPurchased, REFUND_ACTION);
   return { charged: true, cost, skipped: null, refunded: true };
+}
+
+// ── Faithful replica of the route's attemptImageSpend loop over a whole job ──
+// Guardrails apply on the managed key (admin OR paid); metering only for non-admin
+// paid. Mirrors fetch-stock: aiGenCount caps managed-key generations; once a guard
+// trips, the rest of the job is skipped.
+async function runManagedJob(opts: {
+  userId: string;
+  plan: string;
+  isAdmin: boolean;
+  usesManagedKey: boolean;
+  managedKieOn: boolean;
+  creditsLive: boolean;
+  attempts: number;
+}): Promise<{ generated: number; charged: number; skipped: "credits" | "rate" | "cap" | null }> {
+  const isPaidPlan = opts.plan === "PRO" || opts.plan === "BUSINESS";
+  const { chargeImages } = resolveKieImageAccess({
+    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan,
+  });
+  const guardImages = shouldGuardKieImages({ usesManagedKey: opts.usesManagedKey, chargeImages });
+  const maxPerJob = kieMaxImagesPerJob();
+  const cost = creditCostFor("image-gpt-1k"); // 3
+  let aiGenCount = 0;
+  let skipped: "credits" | "rate" | "cap" | null = null;
+  let generated = 0;
+  let charged = 0;
+  for (let i = 0; i < opts.attempts; i++) {
+    if (guardImages) {
+      if (skipped) break;
+      if (aiGenCount >= maxPerJob) { skipped = "cap"; break; }
+      if (!tryConsumeKieImageRate(opts.userId)) { skipped = "rate"; break; }
+    }
+    if (chargeImages) {
+      aiGenCount++;
+      const spend = await spendCredits(opts.userId, cost, SPEND_ACTION);
+      if (!spend.ok) { skipped = "credits"; aiGenCount--; break; }
+      generated++; charged++;
+      continue;
+    }
+    if (guardImages) aiGenCount++;
+    generated++;
+  }
+  return { generated, charged, skipped };
 }
 
 async function main() {
@@ -181,9 +225,49 @@ async function main() {
   const r7 = await simulateGenerate({ userId: u7, plan: "PRO", isAdmin: false, managedKieOn: true, creditsLive: true, model: "nano-banana-pro", kieSucceeds: true });
   assert(r7.charged && r7.cost === 3, 'paid unpriced model → coerced to default priced (3 credits), never free');
 
+  // ── 9b. Guard decision (shouldGuardKieImages) truth table ──────────────────
+  assert(!shouldGuardKieImages({ usesManagedKey: false, chargeImages: false }), 'flag-off/BYOK → NOT guarded (byte-identical)');
+  assert(shouldGuardKieImages({ usesManagedKey: true, chargeImages: false }), 'admin on managed key → guarded (uncharged)');
+  assert(shouldGuardKieImages({ usesManagedKey: true, chargeImages: true }), 'paid on managed key → guarded + charged');
+  assert(shouldGuardKieImages({ usesManagedKey: false, chargeImages: true }), 'charge implies guard (defensive)');
+
+  // ── 9c. Admin guardrail enforcement on the shared managed key ──────────────
+  __resetKieImageRateForTest();
+  // Admin on managed key, 25 attempts, ZERO credits → capped at 20, NEVER charged.
+  const adminJob = await runManagedJob({ userId: "job-admin-managed", plan: "PRO", isAdmin: true, usesManagedKey: true, managedKieOn: true, creditsLive: true, attempts: 25 });
+  assert(adminJob.generated === 20 && adminJob.charged === 0 && adminJob.skipped === "cap",
+    `admin on managed: per-job cap enforced (20 gen, 0 charged, skipped=cap) — got ${adminJob.generated}/${adminJob.charged}/${adminJob.skipped}`);
+  const adminBal = await getBalance("job-admin-managed");
+  assert(adminBal.total === 0, 'admin on managed: no credits spent (balance 0, never had any)');
+
+  // Admin on their OWN BYOK key (usesManagedKey false) → UNGUARDED, like today.
+  __resetKieImageRateForTest();
+  const adminByok = await runManagedJob({ userId: "job-admin-byok", plan: "PRO", isAdmin: true, usesManagedKey: false, managedKieOn: true, creditsLive: true, attempts: 25 });
+  assert(adminByok.generated === 25 && adminByok.charged === 0 && adminByok.skipped === null,
+    'admin on BYOK key: NOT capped (25 gen), not charged — unchanged from today');
+
+  // Paid on managed with plenty of credits, 25 attempts → capped at 20, all charged.
+  __resetKieImageRateForTest();
+  const u8 = "job-paid-cap";
+  await grantCredits(u8, 1000, "grant");
+  const paidCapJob = await runManagedJob({ userId: u8, plan: "PRO", isAdmin: false, usesManagedKey: true, managedKieOn: true, creditsLive: true, attempts: 25 });
+  assert(paidCapJob.generated === 20 && paidCapJob.charged === 20 && paidCapJob.skipped === "cap",
+    'paid on managed: cap enforced at 20, all 20 charged');
+  const b8 = await getBalance(u8);
+  assert(b8.total === 1000 - 20 * 3, 'paid on managed: exactly 20×3 credits spent');
+
+  // Paid on managed, limited credits → runs out mid-job (credits guard, under cap).
+  __resetKieImageRateForTest();
+  const u9 = "job-paid-poor";
+  await grantCredits(u9, 30, "grant"); // 10 gens @3 then insufficient
+  const paidPoorJob = await runManagedJob({ userId: u9, plan: "PRO", isAdmin: false, usesManagedKey: true, managedKieOn: true, creditsLive: true, attempts: 25 });
+  assert(paidPoorJob.generated === 10 && paidPoorJob.skipped === "credits",
+    'paid on managed: stops at credit exhaustion (10 gen) before the cap');
+
   // ── 10. Guardrails ─────────────────────────────────────────────────────────
   assert(kieMaxImagesPerJob() === 20, 'per-job cap default = 20');
   assert(kieImageRatePerHour() === 60, 'hourly rate default = 60');
+  __resetKieImageRateForTest();
 
   __resetKieImageRateForTest();
   const rateUser = "img-rate-user";

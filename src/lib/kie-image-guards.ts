@@ -38,6 +38,20 @@ export function resolveKieImageAccess(opts: {
   return { kiePaidUnlocked, chargeImages };
 }
 
+/**
+ * Whether the managed-key guardrails (per-job cap, hourly rate limit, prompt cap)
+ * apply to this request. They apply to ANY generation that runs on the shared
+ * server `KIE_API_KEY` — including admins (who are still UNCHARGED; only the caps
+ * apply, mirroring the managed-Gemini precedent where the ceiling/rate guards bound
+ * every managed-key call regardless of role). `usesManagedKey` = the resolved kie
+ * token is the server env key (not a user's BYOK key). Flag-off / BYOK → false →
+ * unguarded (byte-identical). Charged (non-admin paid) requests always run on the
+ * managed key, so `chargeImages` implies guarding too.
+ */
+export function shouldGuardKieImages(opts: { usesManagedKey: boolean; chargeImages: boolean }): boolean {
+  return opts.usesManagedKey || opts.chargeImages;
+}
+
 const DEFAULT_MAX_IMAGES_PER_JOB = 20;
 const DEFAULT_RATE_PER_HOUR = 60;
 
