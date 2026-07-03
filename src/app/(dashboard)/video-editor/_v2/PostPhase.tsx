@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowDownToLine, CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
+import { ArrowDownToLine, CheckCircle2, Download, Loader2, Move, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
@@ -434,13 +434,16 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
                 }}
                 className="flex items-center justify-center gap-2"
                 style={{
-                  padding: "9px 0", borderRadius: radius.control, background: "none",
-                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  padding: "9px 0", borderRadius: radius.control, background: "rgba(139,92,246,.10)",
+                  border: "1px solid rgba(139,92,246,.45)", color: color.primary300,
                   fontSize: 12, cursor: "pointer",
                 }}
               >
-                ปรับตำแหน่งอวตาร (ฟรี — ไม่เรียก HeyGen ใหม่)
+                <Move size={13} /> ปรับตำแหน่ง/ขนาดอวตาร (ฟรี)
               </button>
+              <span style={{ fontSize: 9.5, color: color.textFaintest }}>
+                ตำแหน่งที่บันทึกจะถูกใช้เป็นค่าเริ่มต้นของอวตารนี้ในการเรนเดอร์ครั้งถัดไปด้วย
+              </span>
             </section>
           )}
 
@@ -669,10 +672,13 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
         onSelect={setSelected}
         videoRef={videoRef}
         timeMs={timeMs}
+        onScrub={setTimeMs}
         durationMs={Math.max(preview?.audioDurationMs ?? 0, captions.length ? captions[captions.length - 1].endMs : 0)}
         config={(preview?.config as Record<string, unknown>) ?? null}
         hasAvatar={!!(preview?.avatarModel && preview.avatarModel !== "none")}
-        avatarIntroMs={5000}
+        avatarMode={preview?.avatarMode ?? null}
+        avatarIntroMs={(preview?.avatarIntroSecs ?? 5) * 1000}
+        avatarTailMs={(preview?.avatarTailSecs ?? 5) * 1000}
         voiceUrl={preview?.voiceUrl ?? null}
       />
     </div>

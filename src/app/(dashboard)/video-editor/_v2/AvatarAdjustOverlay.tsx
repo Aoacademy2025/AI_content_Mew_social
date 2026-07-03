@@ -148,24 +148,30 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
         )}
       </div>
 
-      {/* แถบคุมล่าง */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
-        <GroupLabel>ขนาด</GroupLabel>
-        <input
-          type="range" min={0.1} max={2.5} step={0.05} value={layout.scale}
-          disabled={busy}
-          onChange={(e) => setLayout((l) => ({ ...l, scale: Number(e.target.value) }))}
-          className="flex-1"
-          style={{ accentColor: color.primary500 }}
-        />
-        <span style={{ fontSize: 11, color: color.textSecondary, fontVariantNumeric: "tabular-nums", width: 38 }}>{layout.scale.toFixed(2)}×</span>
-        <button onClick={() => setLayout(DEFAULT_LAYOUT)} disabled={busy} title="รีเซ็ต" className="flex items-center gap-1" style={{ background: "none", border: "none", color: color.textSecondary, cursor: "pointer", fontSize: 11 }}>
-          <RotateCcw size={11} /> รีเซ็ต
-        </button>
-        <BtnGhost onClick={onClose} disabled={busy} style={{ padding: "8px 14px" }}>ยกเลิก</BtnGhost>
-        <BtnPrimary onClick={() => void apply()} disabled={busy} style={{ padding: "8px 16px", ...(busy ? { opacity: 0.7, cursor: "wait" } : {}) }}>
-          {busy ? "กำลังประมวลผล…" : "ใช้ตำแหน่งนี้"}
-        </BtnPrimary>
+      {/* แถบคุมล่าง — ต้องเป็น 2 แถวเสมอ: overlay กว้างเท่า preview 9:16 (~330-360px)
+          แถวเดียวล้นแล้วโดน overflow:hidden ของกรอบตัดปุ่มขวาสุดทิ้ง → ผู้ใช้เห็นแต่
+          "ยกเลิก" หาปุ่มบันทึกไม่เจอ (บั๊ก QA 07-04) */}
+      <div className="absolute bottom-0 left-0 right-0 flex flex-col gap-2 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
+        <div className="flex items-center gap-3">
+          <GroupLabel>ขนาด</GroupLabel>
+          <input
+            type="range" min={0.1} max={2.5} step={0.05} value={layout.scale}
+            disabled={busy}
+            onChange={(e) => setLayout((l) => ({ ...l, scale: Number(e.target.value) }))}
+            className="min-w-0 flex-1"
+            style={{ accentColor: color.primary500 }}
+          />
+          <span style={{ fontSize: 11, color: color.textSecondary, fontVariantNumeric: "tabular-nums", width: 38 }}>{layout.scale.toFixed(2)}×</span>
+          <button onClick={() => setLayout(DEFAULT_LAYOUT)} disabled={busy} title="รีเซ็ต" className="flex shrink-0 items-center gap-1" style={{ background: "none", border: "none", color: color.textSecondary, cursor: "pointer", fontSize: 11 }}>
+            <RotateCcw size={11} /> รีเซ็ต
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <BtnGhost onClick={onClose} disabled={busy} style={{ padding: "8px 14px" }}>ยกเลิก</BtnGhost>
+          <BtnPrimary onClick={() => void apply()} disabled={busy} style={{ flex: 1, padding: "8px 16px", ...(busy ? { opacity: 0.7, cursor: "wait" } : {}) }}>
+            {busy ? "กำลังประมวลผล…" : "บันทึกตำแหน่งนี้"}
+          </BtnPrimary>
+        </div>
       </div>
     </div>
   );

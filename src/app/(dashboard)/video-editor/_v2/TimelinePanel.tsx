@@ -47,8 +47,8 @@ function brollSpansFromConfig(config: Record<string, unknown> | null | undefined
 export function TimelinePanel({
   captions, onCaptionsChange, onUndo, canUndo,
   selected, onSelect,
-  videoRef, timeMs, durationMs,
-  config, hasAvatar, avatarIntroMs,
+  videoRef, timeMs, durationMs, onScrub,
+  config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs,
   voiceUrl,
 }: {
   captions: V2Caption[];
@@ -60,9 +60,13 @@ export function TimelinePanel({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   timeMs: number;
   durationMs: number;
+  /** optimistic seek: playhead/ซับตาม pointer ทันที ไม่รอ timeupdate (~4Hz) ของ <video> */
+  onScrub?: (ms: number) => void;
   config: Record<string, unknown> | null;
   hasAvatar: boolean;
+  avatarMode: string | null;
   avatarIntroMs: number;
+  avatarTailMs: number;
   voiceUrl: string | null;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
@@ -86,9 +90,24 @@ export function TimelinePanel({
     [peaks, waveMs],
   );
 
+  const pendingSeekRef = useRef<number | null>(null);
+
   function seekTo(ms: number) {
+    const clamped = Math.max(0, Math.min(durMs, ms));
+    onScrub?.(clamped); // playhead ตามทันที — <video> ค่อย seek ตาม
     const v = videoRef.current;
-    if (v) v.currentTime = Math.max(0, Math.min(durMs, ms)) / 1000;
+    if (!v) return;
+    // ระหว่าง seek เดิมยังไม่จบ อย่ายิงซ้ำรัว ๆ (แต่ละ seek ของ H.264 กินเวลาได้เป็น
+    // ร้อย ms) — เก็บเป้าไว้แล้วค่อย flush ตอน move ถัดไป/ปล่อยนิ้ว
+    if (v.seeking) { pendingSeekRef.current = clamped; return; }
+    pendingSeekRef.current = null;
+    v.currentTime = clamped / 1000;
+  }
+
+  function flushPendingSeek() {
+    const p = pendingSeekRef.current;
+    const v = videoRef.current;
+    if (p != null && v) { pendingSeekRef.current = null; v.currentTime = p / 1000; }
   }
 
   function togglePlay() {
@@ -186,30 +205,36 @@ export function TimelinePanel({
         </div>
       </div>
 
-      {/* Tracks */}
+      {/* Tracks — scrub ได้ทั้งพื้น: กด/ลากที่ว่างตรงไหนก็ได้ = ย้าย playhead (ไม่ใช่แค่
+          แถบ ruler 24px — บั๊ก QA 07-04 "เส้นขาวกดยากมาก") · คลิป/ขอบซับ (data-clip/
+          data-edge) ยังทำงานเดิมของมัน */}
       <div ref={scrollRef} className="flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="relative" style={{ width: widthPx + LABEL_W + 16, minWidth: "100%" }}>
-          {/* ruler ลาก scrub ได้ (คลิก = jump, ลากค้าง = playhead วิ่งตาม) */}
-          <div
-            className="relative ml-[92px] h-[24px] cursor-pointer"
-            style={{ touchAction: "none" }}
-            onPointerDown={(e) => {
-              scrubbingRef.current = true;
-              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
-            }}
-            onPointerMove={(e) => {
-              if (!scrubbingRef.current) return;
-              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
-            }}
-            onPointerUp={(e) => {
+        <div
+          className="relative"
+          style={{ width: widthPx + LABEL_W + 16, minWidth: "100%" }}
+          onPointerDown={(e) => {
+            if ((e.target as HTMLElement).closest("[data-clip],[data-edge]")) return;
+            scrubbingRef.current = true;
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            seekTo(((e.clientX - rect.left - LABEL_W) / pxPerSec) * 1000);
+          }}
+          onPointerMove={(e) => {
+            if (!scrubbingRef.current) return;
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            seekTo(((e.clientX - rect.left - LABEL_W) / pxPerSec) * 1000);
+          }}
+          onPointerUp={(e) => {
+            if (scrubbingRef.current) {
               scrubbingRef.current = false;
               try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
-            }}
-            onPointerCancel={() => { scrubbingRef.current = false; }}
-          >
+            }
+            flushPendingSeek(); // ปล่อยนิ้ว = วิดีโอต้องจบที่ตำแหน่งสุดท้ายเสมอ
+          }}
+          onPointerCancel={() => { scrubbingRef.current = false; flushPendingSeek(); }}
+        >
+          {/* ruler */}
+          <div className="relative ml-[92px] h-[24px] cursor-ew-resize" style={{ touchAction: "none" }}>
             {Array.from({ length: Math.floor(durMs / 1000) + 1 }, (_, s) => s).filter((s) => s % (pxPerSec < 18 ? 5 : 1) === 0).map((s) => (
               <span key={s} className="absolute top-0 select-none" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
                 {fmt(s * 1000)}
@@ -229,14 +254,29 @@ export function TimelinePanel({
             </div>
           )}
 
-          {/* อวตาร */}
+          {/* อวตาร — บล็อกตามโหมดจริง (เดิม hardcode "พิธีกรเปิด 5s" เสมอ แม้เลือกทั้งคลิป
+              — บั๊ก QA 07-04): full = เต็มคลิป · bookend = หัว · bookend-both = หัว+ท้าย ·
+              งานเก่าไม่มีโหมด = เต็มคลิปแบบไม่ระบุ */}
           {hasAvatar && (
             <div className="relative flex items-center" style={{ height: TRACK_H }}>
               {trackLabel("อวตาร", color.trackAvatar)}
               <div className="relative flex-1" style={{ height: TRACK_H }}>
-                <div style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
-                  พิธีกรเปิด {Math.round(avatarIntroMs / 1000)}s
-                </div>
+                {avatarMode === "bookend" || avatarMode === "bookend-both" ? (
+                  <>
+                    <div data-clip style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
+                      พิธีกรเปิด {Math.round(avatarIntroMs / 1000)}s
+                    </div>
+                    {avatarMode === "bookend-both" && (
+                      <div data-clip style={{ ...clipStyle(color.trackAvatar), left: toPx(Math.max(0, durMs - avatarTailMs)), width: Math.max(24, toPx(Math.min(avatarTailMs, durMs))) }} onClick={() => seekTo(Math.max(0, durMs - avatarTailMs))}>
+                        พิธีกรปิด {Math.round(avatarTailMs / 1000)}s
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div data-clip style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
+                    {avatarMode === "full" ? "พิธีกรทั้งคลิป" : "พิธีกร"}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -246,7 +286,7 @@ export function TimelinePanel({
             {trackLabel("บีโรล", color.trackBroll)}
             <div className="relative flex-1" style={{ height: TRACK_H }}>
               {brollSpans.map((s, i) => (
-                <div key={i} style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }} onClick={() => seekTo(s.startMs)} title={s.label}>
+                <div key={i} data-clip style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }} onClick={() => seekTo(s.startMs)} title={s.label}>
                   {s.label}
                 </div>
               ))}
@@ -260,14 +300,15 @@ export function TimelinePanel({
               {captions.map((c, i) => (
                 <div
                   key={i}
+                  data-clip
                   style={{ ...clipStyle(color.trackSub, i === selected), left: toPx(c.startMs), width: Math.max(14, toPx(c.endMs - c.startMs) - 2) }}
                   onClick={() => { onSelect(i); seekTo(c.startMs + 10); }}
                   title={c.text}
                 >
                   {/* ขอบลากซ้าย/ขวา */}
-                  <span onPointerDown={(e) => onEdgeDown(e, i, "l")} className="absolute bottom-0 left-0 top-0 w-[6px] cursor-ew-resize" style={{ borderLeft: i === selected ? `2px solid ${color.primary300}` : undefined }} />
+                  <span data-edge onPointerDown={(e) => onEdgeDown(e, i, "l")} className="absolute bottom-0 left-0 top-0 w-[6px] cursor-ew-resize" style={{ borderLeft: i === selected ? `2px solid ${color.primary300}` : undefined }} />
                   {c.text}
-                  <span onPointerDown={(e) => onEdgeDown(e, i, "r")} className="absolute bottom-0 right-0 top-0 w-[6px] cursor-ew-resize" style={{ borderRight: i === selected ? `2px solid ${color.primary300}` : undefined }} />
+                  <span data-edge onPointerDown={(e) => onEdgeDown(e, i, "r")} className="absolute bottom-0 right-0 top-0 w-[6px] cursor-ew-resize" style={{ borderRight: i === selected ? `2px solid ${color.primary300}` : undefined }} />
                 </div>
               ))}
             </div>
@@ -278,7 +319,7 @@ export function TimelinePanel({
             <div className="relative flex items-center" style={{ height: TRACK_H }}>
               {trackLabel("เพลง", color.trackMusic)}
               <div className="relative flex-1" style={{ height: TRACK_H }}>
-                <div style={{ ...clipStyle(color.trackMusic), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
+                <div data-clip style={{ ...clipStyle(color.trackMusic), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
                   ♪ ลดเสียงใต้เสียงพูดอัตโนมัติ
                 </div>
               </div>
