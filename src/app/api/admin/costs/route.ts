@@ -20,10 +20,13 @@ const PACK_CREDIT_TO_BAHT: Record<number, number> = {
   1150: 999,
 };
 
-// AI-image spend delta → image model bucket
-// MUST stay in sync with CREDIT_COST / costKeyForKieModel in src/lib/credits.ts.
-// Today only 3 (gpt-1k) and 4 (nano-1k) are reachable; 5/6 reserved.
-// If CREDIT_COST image values change, update here or spends silently drop from COGS.
+// AI-image spend delta → image model bucket.
+// MUST stay in sync with CREDIT_COST and costKeyForKieModel() in src/lib/credits.ts
+// (which maps kie model → cost-key → credit delta). Reachable non-admin-paid deltas
+// under managed-kie: 2 (flux-1k), 3 (gpt-1k), 4 (nano-1k). 5/6 reserved.
+// KNOWN GAP: delta 2 (image-flux-1k) is NOT bucketed here yet, so flux spends are
+// excluded from image COGS until computeCogs/ImageCounts grow a flux bucket. If
+// CREDIT_COST image values change, update here or spends silently drop from COGS.
 function imageModelBucket(absDelta: number): "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
   if (absDelta === 3) return "gpt1k";
   if (absDelta === 4) return "nano1k";
