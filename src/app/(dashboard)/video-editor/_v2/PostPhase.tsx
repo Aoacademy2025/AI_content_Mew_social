@@ -343,6 +343,7 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
               value={cardLen}
               onChange={(v) => applyCardLen(v as V2CardLen)}
               options={V2_CARD_LEN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              style={{ flexWrap: "wrap" }}
             />
             <span style={{ fontSize: 9.5, color: color.textFaintest }}>
               ≤N คำ = ซับสั้นเด้งเร็วแบบ TikTok · เปลี่ยนแล้วจะล้างการรวม/แยก/สีรายการ์ดที่แก้ไว้
