@@ -22,6 +22,17 @@ Glossary of domain terms. Definitions only — no implementation details.
 - **Burn / Export** — the final step that renders subtitles into the video file. The Post phase's single primary action.
 - **Cutaway Mode (เต็มจอ + B-roll)** — direct-upload mode where the user's own full-frame clip gets automatic subtitles and stock b-roll cutaways while the original voice continues.
 
+## Credit Economy
+
+- **Render Minute (นาที)** — the primary metering unit of a subscription: minutes of *output video* rendered per 30-day window (PRO 80, BUSINESS 150). Rounded to nearest whole minute, minimum 1. Not the same thing as a Credit.
+- **Credit (เครดิต)** — the single top-up currency, 1 credit = ฿1 of perceived value. Spent on things *beyond* the subscription's included minutes: overflow render minutes and AI generation. Never used for anything the plan already includes.
+- **Granted Credits** — the monthly credit allowance included with a paid plan (use-it-or-lose-it, resets each 30-day window). Spent before Purchased.
+- **Purchased Credits** — credits bought as one-time packs; roll over (~12 months).
+- **Overflow Minutes** — render minutes beyond the plan quota, paid from credits (2 credits/minute) instead of hard-walling the user. Must be disclosed on the Render Receipt before rendering, never charged silently.
+- **Render Receipt (สรุปก่อนเรนเดอร์)** — the mandatory pre-render summary shown before any render starts: minutes to be used vs plan quota (framed as "included"), incremental credits for AI generation, overflow-minute charges if quota is exhausted, and a note that avatar seconds bill through the user's own HeyGen key. Estimates are labeled as such; the actual charge comes from the real TTS duration.
+- **Mix Preset** — one of three named b-roll compositions the user picks in Setup: ฟรีล้วน (stock only, 0 credits), ผสม AI แนะนำ (the default for paid plans), AI เต็มที่. Replaces per-source percentage controls.
+- **Per-window Upgrade** — (later phase) replacing a single b-roll window with an AI-generated image or video clip, paid per window; re-rendering for an upgrade never re-charges minutes.
+
 ## Rollout
 
 - **Rollout Switch** — the two-layer mechanism controlling who sees Editor v2: an environment default for everyone plus a per-person override, so v2 can be QA'd on production before being enabled for all users.
