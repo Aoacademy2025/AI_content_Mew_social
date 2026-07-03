@@ -56,6 +56,12 @@ export interface VideoJobPreviewData {
   audioDurationMs: number;
   avatarModel?: string;
   avatarVideoUrl?: string | null;
+  /** per-word TTS timeline (script path only) — lets the editor regroup cards
+   *  by word count (1/2/3/4 คำ) with exact timing. Absent on cutaway/old jobs
+   *  → editor falls back to proportional split. */
+  words?: { word: string; startMs: number; endMs: number; startChar: number; endChar: number }[];
+  /** exact TTS-spoken text `words` char offsets index into */
+  fullText?: string;
 }
 
 export interface ParsedVideoJobOutput {

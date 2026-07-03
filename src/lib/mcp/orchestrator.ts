@@ -381,6 +381,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioDurationMs: durMs,
           avatarModel,
           avatarVideoUrl,
+          // word timeline สำหรับ "ความยาวการ์ด 1/2/3/4 คำ" ในจอแต่งซับ (regroup ฝั่ง
+          // editor ด้วย timing เป๊ะ ไม่ต้อง interpolate) — MCP path (non-preview) ไม่แตะ
+          words: capRes.words,
+          fullText: capRes.fullText,
         },
       });
       return;

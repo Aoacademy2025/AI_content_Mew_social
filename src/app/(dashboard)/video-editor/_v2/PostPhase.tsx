@@ -6,7 +6,7 @@
  * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline 4 แทร็ก = P6b
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
@@ -16,12 +16,14 @@ import {
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   DEFAULT_V2_SUB, buildV2BurnConfig,
-  mergeCaptionWithNext, splitCaption, groupCaptionsBy,
+  mergeCaptionWithNext, splitCaption, regroupCaptions,
+  V2_CARD_LEN_OPTIONS, type V2CardLen,
   type V2SubConfig, type V2Caption, type V2CardOverrides,
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
+import { V2CaptionOverlay } from "./V2CaptionOverlay";
 
 type ExportState =
   | { phase: "idle" }
@@ -35,25 +37,6 @@ function fmtMs(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-// พรีวิวโดยประมาณต่อกลุ่ม preset (ตัว render จริงตอน burn ใช้ Remotion composition เดิมของ v1)
-const BOX_PRESETS = new Set(["box", "box-rounded", "box-white", "box-yellow", "news", "karaoke-box", "pastel"]);
-const OUTLINE_PRESETS = new Set(["outline-only", "sharp-outline"]);
-function previewStyleFor(cfg: V2SubConfig): React.CSSProperties {
-  const s: React.CSSProperties & { WebkitTextStroke?: string; WebkitBoxDecorationBreak?: string; boxDecorationBreak?: string } = {};
-  if (BOX_PRESETS.has(cfg.preset)) {
-    const lightBox = cfg.preset === "box-white" || cfg.preset === "pastel";
-    s.background = lightBox ? "rgba(255,255,255,.92)" : cfg.preset === "box-yellow" ? "rgba(255,229,0,.92)" : "rgba(0,0,0,.55)";
-    if (lightBox || cfg.preset === "box-yellow") s.color = "#111";
-    s.borderRadius = 8;
-    s.padding = "2px 8px";
-    s.boxDecorationBreak = "clone";
-    s.WebkitBoxDecorationBreak = "clone";
-  }
-  if (cfg.outline || OUTLINE_PRESETS.has(cfg.preset)) s.WebkitTextStroke = `${Math.max(1, cfg.outlineSize)}px #000`;
-  if (cfg.shadow && !BOX_PRESETS.has(cfg.preset)) s.textShadow = "0 2px 6px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9)";
-  return s;
-}
-
 export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject: () => void }) {
   const preview = job.output?.preview ?? null;
   const baseUrl = job.output?.videoUrl ?? "";
@@ -62,14 +45,16 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
-  // ความยาวการ์ด (1/2/3 ประโยค) — จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
+  // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
+  // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
-  const [cardLen, setCardLen] = useState<1 | 2 | 3>(1);
+  const [cardLen, setCardLen] = useState<V2CardLen>("sentence");
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>({});
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [timeMs, setTimeMs] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
 
   // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
@@ -94,11 +79,27 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const typing = tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT";
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "TEXTAREA" || tag === "INPUT") return; // ให้ undo ของช่องพิมพ์ทำงานปกติ
+        if (typing) return; // ให้ undo ของช่องพิมพ์ทำงานปกติ
         e.preventDefault();
         undoCaptions();
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      // shortcuts แบบ editor ทั่วไป (v1 มี space อยู่แล้ว — page.tsx:630)
+      const v = videoRef.current;
+      if (!v) return;
+      if (e.key === " ") {
+        e.preventDefault();
+        if (v.paused || v.ended) void v.play(); else v.pause();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        v.currentTime = Math.max(0, v.currentTime - 1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        v.currentTime = Math.min(v.duration || Infinity, v.currentTime + 1);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -107,12 +108,6 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   }, []);
 
   useEffect(() => () => { pollStop.current = true; }, []);
-
-  const activeIdx = useMemo(
-    () => captions.findIndex((c) => timeMs >= c.startMs && timeMs < c.endMs),
-    [captions, timeMs],
-  );
-  const activeCap = activeIdx >= 0 ? captions[activeIdx] : null;
 
   function set<K extends keyof V2SubConfig>(k: K, v: V2SubConfig[K]) {
     setCfg((c) => ({ ...c, [k]: v }));
@@ -128,23 +123,37 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
   }
   const activeOverride = overrides[selected] ?? {};
 
-  function applyCardLen(n: 1 | 2 | 3) {
-    setCardLen(n);
+  function applyCardLen(len: V2CardLen) {
+    setCardLen(len);
     setOverrides({});
-    handleCaptionsChange(groupCaptionsBy(originalCapsRef.current, n), true);
+    handleCaptionsChange(regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText), true);
     setSelected(0);
+  }
+
+  /** เลื่อน key ของ override รายการ์ดตามการเปลี่ยนโครงการ์ด — ห้ามล้างทั้ง map
+   *  (QA 07-03: รวม/แยกการ์ด 2-3 เคยทำให้สีที่ตั้งไว้บนการ์ด 1 หายไปด้วย) */
+  function shiftOverrides(from: number, delta: number, dropIdx?: number) {
+    setOverrides((o) => {
+      const next: V2CardOverrides = {};
+      for (const [k, v] of Object.entries(o)) {
+        const idx = Number(k);
+        if (dropIdx !== undefined && idx === dropIdx) continue;
+        next[idx >= from ? idx + delta : idx] = v;
+      }
+      return next;
+    });
   }
 
   function mergeSelected() {
     if (selected >= captions.length - 1) { toast("การ์ดสุดท้าย — ไม่มีใบถัดไปให้รวม"); return; }
-    setOverrides({});
+    shiftOverrides(selected + 2, -1, selected + 1); // ใบที่ถูกกลืนทิ้ง override ของตัวเอง ที่เหลือเลื่อนซ้าย
     handleCaptionsChange(mergeCaptionWithNext(captions, selected), true);
   }
 
   function splitSelected() {
     const next = splitCaption(captions, selected, loanwordSpans(captions[selected]?.text ?? ""));
     if (next === captions) { toast("การ์ดสั้นเกินไปหรือหาจุดตัดไม่ได้"); return; }
-    setOverrides({});
+    shiftOverrides(selected + 1, +1); // ใบครึ่งซ้ายเก็บ override เดิม ใบใหม่ขวาเริ่มว่าง
     handleCaptionsChange(next, true);
   }
 
@@ -302,34 +311,22 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
               controls
               playsInline
               onTimeUpdate={(e) => setTimeMs(e.currentTarget.currentTime * 1000)}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
               className="h-full w-full object-cover"
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
             />
             {/* เส้นไกด์ตำแหน่งซับ */}
             <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
-            {/* ซับสด (approximation ของ renderer) */}
-            {activeCap && (
-              <div
-                className="pointer-events-none absolute left-1 right-1 text-center"
-                style={{ top: `${cfg.verticalPos}%`, transform: "translateY(-50%)" }}
-              >
-                <span
-                  style={{
-                    fontFamily: `'${cfg.fontFamily}', 'Noto Sans Thai', sans-serif`,
-                    fontWeight: cfg.bold ? 800 : 400,
-                    // สเกลตามเฟรมจริง: 1080px = 100cqw → px บนจอ = fontSize × ความกว้าง/1080
-                    fontSize: `${((cfg.fontSize / 1080) * 100).toFixed(2)}cqw`,
-                    lineHeight: 1.35,
-                    color: activeCap.tag === "hook" && cfg.preset !== "karaoke-box"
-                      ? (overrides[activeIdx]?.accentColor ?? cfg.accentColor)
-                      : (overrides[activeIdx]?.textColor ?? cfg.textColor),
-                    ...(previewStyleFor(cfg)),
-                  }}
-                >
-                  {activeCap.text}
-                </span>
-              </div>
-            )}
+            {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
+            <V2CaptionOverlay
+              captions={captions}
+              overrides={overrides}
+              cfg={cfg}
+              videoRef={videoRef}
+              playing={playing}
+              onVerticalPos={(p) => set("verticalPos", p)}
+            />
             {(exp.phase === "burning" || exp.phase === "saving") && (
               <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(10,10,16,.55)", borderRadius: radius.cardLg }}>
                 <Loader2 size={22} className="animate-spin" color={color.primary300} />
@@ -343,11 +340,13 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           <section className="flex flex-col gap-2">
             <GroupLabel>ความยาวการ์ดซับ</GroupLabel>
             <Segmented
-              value={String(cardLen)}
-              onChange={(v) => applyCardLen(Number(v) as 1 | 2 | 3)}
-              options={[{ value: "1", label: "1 ประโยค" }, { value: "2", label: "2" }, { value: "3", label: "3" }]}
+              value={cardLen}
+              onChange={(v) => applyCardLen(v as V2CardLen)}
+              options={V2_CARD_LEN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
             />
-            <span style={{ fontSize: 9.5, color: color.textFaintest }}>เปลี่ยนแล้วจะล้างการรวม/แยก/สีรายการ์ดที่แก้ไว้</span>
+            <span style={{ fontSize: 9.5, color: color.textFaintest }}>
+              ≤N คำ = ซับสั้นเด้งเร็วแบบ TikTok · เปลี่ยนแล้วจะล้างการรวม/แยก/สีรายการ์ดที่แก้ไว้
+            </span>
           </section>
 
           <section className="flex flex-col gap-2">
@@ -547,7 +546,7 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           </section>
 
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
-            ใช้กับ: ทั้งคลิป · ปรับรายการ์ด มากับเวอร์ชันถัดไป
+            ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>
         </aside>
       </div>
