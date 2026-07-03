@@ -22,7 +22,7 @@
 
 - **Flag-safety (HARD):** all new behavior behind `MANAGED_KIE === "1"` (server) — mirrors `MANAGED_GEMINI`. Flag off ⇒ byte-identical behavior to today (BYOK admin-only, no credit spend). Client surfaces additionally respect `NEXT_PUBLIC_CREDITS_LIVE` (already build-baked on prod).
 - **Money-path rigor:** never hardcode credit prices — always `creditCostFor(key)`. Spend-before-generate, refund-on-failure (exact buckets via `refundCredits(userId, fromGranted, fromPurchased, action)`).
-- **Prices are LOCKED (D3):** budget model = 1cr (`image-budget-1k`), `gpt-image-2` = 3cr (`image-gpt-1k`, already 3), `nano-banana-pro` = 4cr (`image-nano-1k`, already 4). No fractional credits. Other 5 models stay admin-only.
+- **Prices are LOCKED (D3 as amended 2026-07-03 after Task 1 — Mew confirmed):** ประหยัด = `flux-2/pro-text-to-image` = 2cr (new key `image-flux-1k: 2`, COGS ฿0.90) · มาตรฐาน/DEFAULT = `gpt-image-2-text-to-image` = 3cr (`image-gpt-1k`, already 3, COGS ฿1.08) · ขั้นสูง = `nano-banana-2` = 4cr (`image-nano-1k`, already 4, COGS ฿1.44). `nano-banana-pro` (COGS ฿3.24 — margin too thin at any locked price) moves to admin-only along with the other 4 models. No fractional credits.
 - **Don't touch:** `automix-plan.ts` core, subtitle timing paths, `tts-gemini` reserve logic.
 - **Branch:** `mew/ai-gen-image-golive` off `main` (after PR #144 merges — plan references its docs). Mew merges + deploys.
 - **Deploy note for Mew (record in final report):** new env `KIE_API_KEY` goes in prod `.env`; `ecosystem.config.js` env block shadows `.env` → check it doesn't define kie vars, and restart with `pm2 restart ai-content --update-env`. Also set a **spend cap in the kie.ai dashboard** (guardrail L1, manual).
@@ -50,6 +50,10 @@ Task order: 1 ∥ 2 first (independent), then 3 (needs task 1's model id), then 
 
 **Gate:** session model picks final model id; Mew's quality eyeball happens post-deploy with real generations (she already knows these models from admin use). If no wired model meets COGS bar, flag instead of guessing.
 
+### Task 1 Result (2026-07-03 — COMPLETE, Mew ratified the amended tiers)
+
+No model met COGS ≤฿0.5 (full table + kie.ai sources: `.superpowers/sdd/task-1-report.md`). All 8 wired models cluster ฿0.9–3.24 COGS. Resolution (Mew confirmed): budget tier repriced to 2cr on `flux-2/pro-text-to-image` (฿0.90, ×2.2); premium model swapped to `nano-banana-2` (฿1.44, ×2.78) keeping 4cr; `nano-banana-pro` → admin-only. Default unchanged: gpt-image-2 @ 3cr (×2.8). COGS rates for the admin cost panel (Task 6): flux $0.025 / gpt $0.03 / nano-2 $0.04 per 1K image.
+
 ## Task 2: default image model → gpt-image-2
 
 - [ ] `fetch-stock/route.ts:772` — `DEFAULT_KIE_IMAGE_MODEL` → `"gpt-image-2-text-to-image"`.
@@ -64,13 +68,13 @@ Task order: 1 ∥ 2 first (independent), then 3 (needs task 1's model id), then 
 - [ ] Never log or echo the key; server-side only (route already is).
 
 **Model → cost-key mapping (D3):**
-- [ ] Add to `src/lib/credits.ts`: `image-budget-1k: 1` in `CREDIT_COST`, and export `costKeyForKieModel(modelId: string): string | null` mapping: budget model (Task 1) → `image-budget-1k`; `gpt-image-2-text-to-image` → `image-gpt-1k`; `nano-banana-pro` → `image-nano-1k`; all other models → `null` (= admin-only, no charge, unchanged behavior). Fix the stale comment at `admin/costs/route.ts:24` to point at the real export.
+- [ ] Add to `src/lib/credits.ts`: `image-flux-1k: 2` in `CREDIT_COST`, and export `costKeyForKieModel(modelId: string): string | null` mapping: `flux-2/pro-text-to-image` → `image-flux-1k`; `gpt-image-2-text-to-image` → `image-gpt-1k`; `nano-banana-2` → `image-nano-1k`; all other models (incl. `nano-banana-pro`) → `null` (= admin-only, no charge, unchanged behavior). Fix the stale comment at `admin/costs/route.ts:24` to point at the real export.
 
 **Credit spend (spend-before-generate):**
 - [ ] In the kie image path of `fetch-stock` (both direct kie-image source and AutoMix AI slots): when `MANAGED_KIE==="1"` and user is non-admin paid — before each `kieCreateTask`, `spendCredits(userId, creditCostFor(key), "image-gen:<model>")`. On `{ok:false}` → skip AI for the remaining windows and fall back to stock (existing fallback machinery), surface `aiSkippedReason: "credits"` in the response. On kie generation failure after spend → `refundCredits` with the exact bucket split.
 - [ ] Admins keep free generation (unchanged) — spend only applies to non-admin users on the managed key.
 - [ ] Un-gate: `fetch-stock/route.ts:1359` — allow when `MANAGED_KIE==="1"` && plan ∈ {PRO, BUSINESS} && `CREDITS_LIVE==="1"`; FREE stays 403 for kie sources. Mirror on clients: `video-creator/page.tsx:412-413` (`kieImageEnabled`), v2 `Step2Elements.tsx:79` locked logic — locked becomes `o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie)` (prop plumbed from a flag+plan check).
-- [ ] Non-admin users see ONLY the 3 priced models in pickers (budget / gpt-image-2 / nano-banana-pro) with credit price labels: `"ประหยัด · 1 เครดิต/ภาพ"`, `"มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ"`, `"ขั้นสูง · 4 เครดิต/ภาพ"`. Admins see all 8.
+- [ ] Non-admin users see ONLY the 3 priced models in pickers (flux-2/pro / gpt-image-2 / nano-banana-2) with credit price labels: `"ประหยัด · 2 เครดิต/ภาพ"`, `"มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ"`, `"ขั้นสูง · 4 เครดิต/ภาพ"`. Admins see all 8 (incl. nano-banana-pro).
 
 **Guardrails (ADR 0002 — mirror managed-Gemini):**
 - [ ] Per-user rate limit on kie createTask calls (reuse the managed-Gemini limiter lib/pattern; find it under `src/lib/` — added in PR-era 2026-06-28 `managed-gemini-cost-guards`). Default: 60 images/hour/user, env-tunable `KIE_IMAGE_RATE_PER_HOUR`.
