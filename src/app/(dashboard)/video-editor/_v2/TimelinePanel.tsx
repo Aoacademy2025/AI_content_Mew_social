@@ -220,10 +220,10 @@ export function TimelinePanel({
           {/* เสียงพูด (waveform) — ไว้เทียบขอบซับกับ wave ตอนตัดต่อ */}
           {peaks && peaks.length > 0 && (
             <div className="relative flex items-center" style={{ height: 34 }}>
-              {trackLabel("เสียงพูด", "#8B7CF6")}
+              {trackLabel("เสียงพูด", color.trackVoice)}
               <div className="relative flex-1 overflow-hidden" style={{ height: 34 }}>
                 <div className="absolute left-0 top-0">
-                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} />
+                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} color={`${color.trackVoice}66`} />
                 </div>
               </div>
             </div>
