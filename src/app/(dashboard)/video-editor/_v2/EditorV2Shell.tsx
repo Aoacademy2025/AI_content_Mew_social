@@ -21,7 +21,7 @@ import { PostPhase } from "./PostPhase";
 export function EditorV2Shell() {
   const p = useV2Project();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, cancel, reset } = useV2Job(p);
+  const { job, submit, cancel, reset, markExported } = useV2Job(p);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
@@ -79,7 +79,7 @@ export function EditorV2Shell() {
       {isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
-        <PostPhase job={job} onNewProject={() => { reset(); setStep(0); }} />
+        <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />
       ) : step === 0 ? (

@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CheckCircle2, Download, Loader2, Pencil } from "lucide-react";
 import { color, font, radius } from "./tokens";
-import { BtnPrimary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
+import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
   V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
@@ -37,7 +37,9 @@ function fmtMs(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject: () => void }) {
+export function PostPhase({ job, script, onExported, onNewProject }: {
+  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+}) {
   const preview = job.output?.preview ?? null;
   const baseUrl = job.output?.videoUrl ?? "";
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
@@ -197,12 +199,14 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           videoUrl: burnedUrl,
           audioUrl: preview?.voiceUrl ?? null,
           thumbnail: null,
-          script: null,
+          // ชื่อใน Gallery มาจาก script (v1 ก็ทำแบบนี้) — โหมดอัปคลิปใช้ fullText ที่ถอดได้
+          script: script.trim() || preview?.fullText || null,
           sceneCount: captions.length,
           status: "COMPLETED",
         }),
       }).catch(() => {}); // gallery save best-effort — ไฟล์ burn สำเร็จแล้ว
 
+      onExported(); // งานนี้จบแล้ว — กลับเข้ามาใหม่ต้องเริ่มสด (spec ข้อ 5)
       setExp({ phase: "done", url: burnedUrl });
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
@@ -217,10 +221,12 @@ export function PostPhase({ job, onNewProject }: { job: V2JobState; onNewProject
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
         <video src={exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-center gap-3">
           <a href={exp.url} download>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
+          <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          <BtnGhost onClick={() => setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
       </main>
