@@ -20,7 +20,11 @@ export default function TroubleshootingDoc() {
         </Callout>
 
         <Callout kind="warn">
-          <strong>B-roll หาคลิปไม่เจอ / ขึ้น error</strong> — เช็คว่าใส่ Pexels หรือ Pixabay key แล้ว และตั้ง Stock Source เป็น Both
+          <strong>B-roll หาคลิปไม่เจอ / ขึ้น error</strong> — เช็คว่าใส่ Pexels หรือ Pixabay key แล้ว (ใส่ทั้งสองตัวยิ่งหาคลิปได้หลากหลาย)
+        </Callout>
+
+        <Callout kind="info">
+          <strong>ปิดแท็บระหว่างเรนเดอร์ งานหายไหม?</strong> — ไม่หาย เรนเดอร์ทำงานเบื้องหลัง เปิดหน้าเดิมกลับมาจะ resume ให้อัตโนมัติ (มีป้ายเตือนที่ Dashboard)
         </Callout>
 
         <Callout kind="warn">
