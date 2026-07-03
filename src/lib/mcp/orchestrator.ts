@@ -357,6 +357,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     let finalBase = baseUrl;
     let avatarModel = "none";
     let avatarVideoUrl: string | null = null;
+    let tailAvatarUrl: string | null = null;
     if (input.avatarMode) {
       // Defense-in-depth: the route only ever persists avatarMode together with a
       // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
@@ -372,6 +373,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       finalBase = av.compositeUrl;
       avatarModel = input.avatarId;
       avatarVideoUrl = av.avatarUrl;
+      tailAvatarUrl = av.tailAvatarUrl ?? null;
     }
 
     // PREVIEW MODE (Editor v2): stop here — no burn, no gallery Video row (the web burn
@@ -394,6 +396,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioDurationMs: durMs,
           avatarModel,
           avatarVideoUrl,
+          // ข้อมูล re-composite (จอแต่งซับปรับตำแหน่งอวตารได้โดยไม่เรียก HeyGen ใหม่)
+          avatarMode: input.avatarMode ?? null,
+          avatarIntroSecs: input.avatarIntroSecs ?? 5,
+          avatarTailSecs: input.avatarTailSecs ?? 5,
+          compositeBaseUrl: input.avatarMode ? baseUrl : null,
+          tailAvatarUrl,
           // word timeline สำหรับ "ความยาวการ์ด 1/2/3/4 คำ" ในจอแต่งซับ (regroup ฝั่ง
           // editor ด้วย timing เป๊ะ ไม่ต้อง interpolate) — MCP path (non-preview) ไม่แตะ
           words: capRes.words,

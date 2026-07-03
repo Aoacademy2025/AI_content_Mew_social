@@ -46,7 +46,8 @@ export async function finishJob(id: string, output: { videoUrl: string; videoId?
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────
 // v1 (MCP full pipeline, ORIGINAL shape): { videoUrl, videoId }
 // v2 preview (Editor v2 background render): { version: 2, mode: "preview", videoUrl,
-//   preview: { captions, config, voiceUrl, audioDurationMs, avatarModel, avatarVideoUrl } }
+//   preview: { captions, config, voiceUrl, audioDurationMs, avatarModel, avatarVideoUrl,
+//   avatarMode, avatarIntroSecs, avatarTailSecs, compositeBaseUrl, tailAvatarUrl } }
 // Readers MUST accept both — old rows never get migrated.
 
 export interface VideoJobPreviewData {
@@ -56,6 +57,14 @@ export interface VideoJobPreviewData {
   audioDurationMs: number;
   avatarModel?: string;
   avatarVideoUrl?: string | null;
+  /** ข้อมูลสำหรับ re-composite อวตารจากจอแต่งซับ (spec 07-03 ข้อ 1) — งานเก่าไม่มี = ซ่อนปุ่มปรับ */
+  avatarMode?: string | null;
+  avatarIntroSecs?: number;
+  avatarTailSecs?: number;
+  /** base render ก่อน composite อวตาร = bgVideoUrl ของ /api/heygen/composite */
+  compositeBaseUrl?: string | null;
+  /** อวตารท้ายคลิป (bookend-both) — จำเป็นตอน re-composite โหมดนั้น */
+  tailAvatarUrl?: string | null;
   /** per-word TTS timeline (script path only) — lets the editor regroup cards
    *  by word count (1/2/3/4 คำ) with exact timing. Absent on cutaway/old jobs
    *  → editor falls back to proportional split. */
