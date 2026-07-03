@@ -279,18 +279,20 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
           <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
           <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
         </span>
-        <div className="flex items-center gap-3">
-          <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-            เรนเดอร์ใหม่
-          </button>
-          <BtnPrimary
-            onClick={() => void exportVideo()}
-            disabled={exp.phase === "burning" || exp.phase === "saving"}
-            style={{ padding: "9px 20px", ...(exp.phase === "burning" || exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
-          >
-            {exp.phase === "burning" ? `กำลังฝังซับ ${exp.progress}%` : exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
-          </BtnPrimary>
-        </div>
+        {!adjustingAvatar && (
+          <div className="flex items-center gap-3">
+            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+              เรนเดอร์ใหม่
+            </button>
+            <BtnPrimary
+              onClick={() => void exportVideo()}
+              disabled={exp.phase === "burning" || exp.phase === "saving"}
+              style={{ padding: "9px 20px", ...(exp.phase === "burning" || exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
+            >
+              {exp.phase === "burning" ? `กำลังฝังซับ ${exp.progress}%` : exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
+            </BtnPrimary>
+          </div>
+        )}
       </div>
       {exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
