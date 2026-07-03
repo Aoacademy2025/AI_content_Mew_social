@@ -40,6 +40,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const estMin = Math.max(1, Math.ceil(estSec / 60));
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
+  // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
+  const elevenVoice = p.voiceEngine === "elevenlabs"
+    ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
+    : undefined;
   const [submitting, setSubmitting] = useState(false);
 
   async function handleRender() {
@@ -174,7 +178,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
               <span style={{ font: `500 13px ${font.heading}` }}>
-                {p.voiceEngine === "gemini" ? geminiVoice.label : "เสียงโคลนของฉัน"}
+                {p.voiceEngine === "gemini" ? geminiVoice.label : (elevenVoice?.name || "เสียงโคลนของฉัน")}
               </span>
               <span style={{ fontSize: 10.5, color: color.textFaint }}>
                 {p.voiceEngine === "gemini"
@@ -209,20 +213,49 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 </select>
               </label>
             ) : (
-              <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>ElevenLabs Voice ID</span>
-                <input
-                  value={p.voiceId}
-                  onChange={(e) => p.setVoiceId(e.target.value)}
-                  placeholder="วาง ElevenLabs Voice ID"
-                  className="w-full max-w-[280px]"
-                  style={{
-                    padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
-                    background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
-                    color: color.text, fontFamily: font.body, outline: "none",
-                  }}
-                />
-              </label>
+              <div className="flex flex-col gap-3">
+                {p.elevenVoices && p.elevenVoices.length > 0 && (
+                  <label className="flex flex-col gap-1.5">
+                    <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียงจากบัญชี ElevenLabs ของคุณ</span>
+                    <select
+                      value={elevenVoice ? elevenVoice.voice_id : ""}
+                      onChange={(e) => { if (e.target.value) p.setVoiceId(e.target.value); }}
+                      className="w-full max-w-[280px]"
+                      style={{
+                        padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                        background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                        color: color.text, fontFamily: font.body,
+                      }}
+                    >
+                      <option value="" style={{ background: color.bg1 }}>— เลือกจากรายชื่อ หรือวาง ID ด้านล่าง —</option>
+                      {p.elevenVoices.map(v => (
+                        <option key={v.voice_id} value={v.voice_id} style={{ background: color.bg1 }}>
+                          {v.name}{v.category ? ` — ${v.category}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>ElevenLabs Voice ID</span>
+                  <input
+                    value={p.voiceId}
+                    onChange={(e) => p.setVoiceId(e.target.value)}
+                    placeholder="วาง ElevenLabs Voice ID"
+                    className="w-full max-w-[280px]"
+                    style={{
+                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                      background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                      color: color.text, fontFamily: font.body, outline: "none",
+                    }}
+                  />
+                  {p.voiceId.trim() !== "" && p.elevenVoices && p.elevenVoices.length > 0 && !elevenVoice && (
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>
+                      ID นี้ไม่อยู่ในรายชื่อเสียงของบัญชีคุณ — ถ้าเป็นเสียง public/shared ก็ยังใช้เรนเดอร์ได้
+                    </span>
+                  )}
+                </label>
+              </div>
             )}
           </Advanced>
         </Group>
@@ -274,9 +307,23 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <UserX size={14} strokeWidth={1.6} /> วิดีโอเสียง + บีโรล ไม่มีพิธีกร
             </div>
           )}
-          <Advanced note="Avatar ID อื่น · ตำแหน่ง/สเกล WYSIWYG (ใช้ preset ที่บันทึกไว้ไปก่อน)">
+          <Advanced note="ตำแหน่ง/สเกล WYSIWYG (ใช้ preset ที่บันทึกไว้ไปก่อน)">
             {p.useAvatar && (
               <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>HeyGen Avatar ID</span>
+                  <input
+                    value={p.avatarId}
+                    onChange={(e) => p.setAvatarId(e.target.value)}
+                    placeholder="วาง HeyGen Avatar ID"
+                    className="w-full max-w-[280px]"
+                    style={{
+                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                      background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                      color: color.text, fontFamily: font.body, outline: "none",
+                    }}
+                  />
+                </label>
                 <label className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โหมดพิธีกร (HeyGen คิดเงินตามวินาทีที่เจน)</span>
                   <Segmented
@@ -348,7 +395,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
               <SummaryRow label="บีโรล" value={BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-"} />
-              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : "ElevenLabs"} />
+              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (bgm.systemTracks.find(t => t.filename === p.musicTrack)?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
             </>
@@ -481,7 +528,7 @@ function Advanced({ note, children }: { note: string; children?: React.ReactNode
         <div className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
           {children}
           <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7, display: "block" }}>
-            {children ? "กำลังตามมา: " : "จะอยู่ตรงนี้: "}{note} (เชื่อมจริงใน P4/P6)
+            {children ? "กำลังตามมา: " : "จะอยู่ตรงนี้: "}{note}
           </span>
         </div>
       )}
