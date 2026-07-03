@@ -11,6 +11,9 @@ import { useMemo, useRef, useState } from "react";
 import { Play, Pause, Magnet, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
+import { useAudioPeaks } from "../_components/useAudioPeaks";
+import { WaveformCanvas } from "../_components/WaveformCanvas";
+import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 
 const TRACK_H = 26;
 const LABEL_W = 92;
@@ -46,6 +49,7 @@ export function TimelinePanel({
   selected, onSelect,
   videoRef, timeMs, durationMs,
   config, hasAvatar, avatarIntroMs,
+  voiceUrl,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -59,6 +63,7 @@ export function TimelinePanel({
   config: Record<string, unknown> | null;
   hasAvatar: boolean;
   avatarIntroMs: number;
+  voiceUrl: string | null;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
@@ -73,6 +78,14 @@ export function TimelinePanel({
   const bgmFile = (config as { bgmFile?: string } | null)?.bgmFile;
   const brollSpans = useMemo(() => brollSpansFromConfig(config, durMs), [config, durMs]);
 
+  // Waveform เสียงพากย์ (fail-open: โหลด/decode ไม่ได้ = ไม่มีเลน, snap ตกกลับแบบเดิม)
+  const { peaks, durationMs: waveDurMs } = useAudioPeaks(voiceUrl);
+  const waveMs = waveDurMs || durMs;
+  const audioSnapPoints = useMemo(
+    () => (peaks?.length ? snapPointsFromPeaks(peaks, waveMs / peaks.length) : []),
+    [peaks, waveMs],
+  );
+
   function seekTo(ms: number) {
     const v = videoRef.current;
     if (v) v.currentTime = Math.max(0, Math.min(durMs, ms)) / 1000;
@@ -84,9 +97,12 @@ export function TimelinePanel({
     if (v.paused) { void v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
   }
 
-  /** จุด snap: ขอบการ์ดข้างเคียง + วินาทีเต็ม */
+  /** จุด snap: จุดเปลี่ยนเสียงพูด (ก่อน) > ขอบการ์ดข้างเคียง > วินาทีเต็ม */
   function snapMs(raw: number, idx: number): number {
     if (!snap) return raw;
+    if (audioSnapPoints.length && audioSnapPoints.some((p) => Math.abs(p - raw) <= SNAP_MS)) {
+      return snapToNearest(raw, audioSnapPoints, SNAP_MS);
+    }
     const points: number[] = [0, durMs];
     captions.forEach((c, i) => { if (i !== idx) { points.push(c.startMs, c.endMs); } });
     for (let s = 0; s <= durMs; s += 1000) points.push(s);
@@ -148,7 +164,7 @@ export function TimelinePanel({
   });
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ height: 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
+    <div className="flex shrink-0 flex-col" style={{ height: peaks && peaks.length > 0 ? 226 : 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
       {/* Transport 38px */}
       <div className="flex h-[38px] shrink-0 items-center gap-3 px-3" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
         <button onClick={togglePlay} className="flex h-[24px] w-[24px] items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }} aria-label="เล่น/หยุด">
@@ -200,6 +216,18 @@ export function TimelinePanel({
               </span>
             ))}
           </div>
+
+          {/* เสียงพูด (waveform) — ไว้เทียบขอบซับกับ wave ตอนตัดต่อ */}
+          {peaks && peaks.length > 0 && (
+            <div className="relative flex items-center" style={{ height: 34 }}>
+              {trackLabel("เสียงพูด", "#8B7CF6")}
+              <div className="relative flex-1 overflow-hidden" style={{ height: 34 }}>
+                <div className="absolute left-0 top-0">
+                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* อวตาร */}
           {hasAvatar && (

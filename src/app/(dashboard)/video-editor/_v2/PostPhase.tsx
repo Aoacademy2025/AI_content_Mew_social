@@ -572,6 +572,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
         config={(preview?.config as Record<string, unknown>) ?? null}
         hasAvatar={!!(preview?.avatarModel && preview.avatarModel !== "none")}
         avatarIntroMs={5000}
+        voiceUrl={preview?.voiceUrl ?? null}
       />
     </div>
   );
