@@ -1,6 +1,6 @@
 // verify-v2-job-patch.ts — PATCH jobs/[id]: url guard + merge outputJson ไม่ทำ field อื่นหาย
 // Run: npx tsx scripts/verify-v2-job-patch.ts
-const URL_RE = /^\/api\/renders\/[\w.-]+$/;
+const URL_RE = /^\/api\/renders\/[\w.-]+\.mp4$/;
 
 let fail = 0;
 function check(name: string, cond: boolean) {
@@ -13,6 +13,9 @@ check("rejects external url", !URL_RE.test("https://evil.com/x.mp4"));
 check("rejects traversal", !URL_RE.test("/api/renders/../../etc/passwd"));
 check("rejects nested path", !URL_RE.test("/api/renders/a/b.mp4"));
 check("rejects empty", !URL_RE.test(""));
+check("rejects bare dot-dot segment", !URL_RE.test("/api/renders/.."));
+check("rejects bare dot segment", !URL_RE.test("/api/renders/."));
+check("rejects non-mp4", !URL_RE.test("/api/renders/evil.sh"));
 
 // merge เดียวกับ route: parse → set videoUrl → stringify (preview ต้องคงอยู่)
 const before = JSON.stringify({ version: 2, mode: "preview", videoUrl: "/api/renders/old.mp4", preview: { captions: [{ text: "a", startMs: 0, endMs: 1 }] } });
