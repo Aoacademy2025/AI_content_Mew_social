@@ -10,10 +10,11 @@ import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
-/** โปรไฟล์ด่วน 4 แบบตามดีไซน์ 4b — ทางลัดไปยัง preset+effect จริง */
+/** โปรไฟล์ด่วน 4 แบบตามดีไซน์ 4b — ทางลัดไปยัง preset+effect จริง
+ *  (เด้งไวรัล vs เงาเข้ม ต้องต่างกันทั้ง preset และ effect — QA 07-03) */
 export const V2_QUICK_STYLES: { key: string; label: string; desc: string; preset: SubPreset; effect: SubTextEffect }[] = [
-  { key: "viral", label: "เด้งไวรัล", desc: "ขอบดำ + เด้งเข้า", preset: "stroke", effect: "pop" },
-  { key: "shadow", label: "เงาเข้ม", desc: "Shadow นุ่ม อ่านง่าย", preset: "stroke", effect: "fade" },
+  { key: "viral", label: "เด้งไวรัล", desc: "ขอบดำ + เด้งเข้า", preset: "stroke", effect: "bounce" },
+  { key: "shadow", label: "เงาเข้ม", desc: "Shadow นุ่ม อ่านง่าย", preset: "shadow", effect: "fade" },
   { key: "outline", label: "ขอบหนา", desc: "Outline คมชัด", preset: "sharp-outline", effect: "quick" },
   { key: "clean", label: "มินิมอล", desc: "กล่องเรียบ Clean", preset: "box-rounded", effect: "fade" },
 ];
@@ -106,17 +107,83 @@ export function splitCaption(caps: V2Caption[], i: number, loanSpans: { start: n
   return [...caps.slice(0, i), left, right, ...caps.slice(i + 1)];
 }
 
-/** จัดกลุ่มการ์ดจากชุดต้นฉบับทีละ n ใบ (ความยาวการ์ด 1/2/3 ประโยค) */
-export function groupCaptionsBy(original: V2Caption[], n: number): V2Caption[] {
-  if (n <= 1) return original.map((c) => ({ ...c }));
+/** ความยาวการ์ดแบบเดียวกับ v1 (page.tsx splitMode): 1 ประโยค หรือซับสั้นแบบ TikTok ≤N คำ */
+export type V2CardLen = "sentence" | "4" | "3" | "2" | "1";
+
+export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
+  { value: "sentence", label: "1 ประโยค" },
+  { value: "4", label: "≤4 คำ" },
+  { value: "3", label: "≤3 คำ" },
+  { value: "2", label: "≤2 คำ" },
+  { value: "1", label: "1 คำ" },
+];
+
+type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: number; endChar: number };
+
+function tagCards(cards: V2Caption[]): V2Caption[] {
+  return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
+}
+
+function segmentWords(text: string): string[] {
+  try {
+    const seg = new Intl.Segmenter("th", { granularity: "word" });
+    return Array.from(seg.segment(text)).map((s) => s.segment).filter((w) => w.trim().length > 0);
+  } catch {
+    return text.split(/\s+/).filter(Boolean);
+  }
+}
+
+/**
+ * จัดกลุ่มการ์ดใหม่ตามความยาว — semantics เดียวกับ v1:
+ * - "sentence" → ชุดต้นฉบับจาก pipeline
+ * - "1"–"4"  → การ์ด ≤N คำ: มี `words` (word timeline จาก TTS ใน preview payload)
+ *   → ตัดด้วย timing เป๊ะ, text slice จาก fullText (สูตรเดียวกับ orchestrator-steps.ts
+ *   cardsByWordCount — คัดลอกไว้เพราะไฟล์นั้นอยู่ฝั่ง server; แก้ที่โน่นต้องแก้ที่นี่ด้วย);
+ *   ไม่มี words (งานเก่า/cutaway) → แบ่งตามสัดส่วนตัวอักษรรายการ์ด (fallback เดียวกับ v1)
+ */
+export function regroupCaptions(
+  original: V2Caption[],
+  len: V2CardLen,
+  words?: V2TimedWord[] | null,
+  fullText?: string | null,
+): V2Caption[] {
+  if (len === "sentence") return original.map((c) => ({ ...c }));
+  const n = parseInt(len, 10);
+  if (words?.length && fullText) {
+    const out: V2Caption[] = [];
+    for (let i = 0; i < words.length; i += n) {
+      const grp = words.slice(i, i + n);
+      if (!grp.length) continue;
+      const text = fullText.slice(grp[0].startChar, grp[grp.length - 1].endChar).trim();
+      if (!text) continue;
+      out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
+    }
+    return tagCards(out);
+  }
+  // fallback: interpolate เวลาในการ์ดเดิมตามสัดส่วนคำ (v1 page.tsx:3546-3561)
   const out: V2Caption[] = [];
-  for (let i = 0; i < original.length; i += n) {
-    const chunk = original.slice(i, i + n);
-    out.push({
-      ...chunk[0],
-      text: chunk.map((c) => c.text.trim()).join(" "),
-      endMs: chunk[chunk.length - 1].endMs,
-    });
+  for (const cap of original) {
+    const ws = segmentWords(cap.text.trim());
+    if (!ws.length) continue;
+    const dur = cap.endMs - cap.startMs;
+    for (let i = 0; i < ws.length; i += n) {
+      const chunk = ws.slice(i, i + n);
+      const s = cap.startMs + (i / ws.length) * dur;
+      const e = cap.startMs + (Math.min(i + n, ws.length) / ws.length) * dur;
+      out.push({ text: joinThaiWords(chunk), startMs: Math.round(s), endMs: Math.round(e), tag: "body" });
+    }
+  }
+  return tagCards(out);
+}
+
+/** ต่อคำไทยไม่แทรกช่องว่าง แทรกเฉพาะรอยต่อที่มีละติน/ตัวเลข (เหมือน joinWords ของ v1) */
+function joinThaiWords(ws: string[]): string {
+  const isThai = (ch: string) => /[฀-๿]/.test(ch);
+  let out = "";
+  for (const w of ws) {
+    if (!out) { out = w; continue; }
+    const noSpace = isThai(out[out.length - 1]) && isThai(w[0]);
+    out += noSpace ? w : ` ${w}`;
   }
   return out;
 }
