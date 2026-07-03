@@ -45,6 +45,12 @@ export interface V2AvatarInfo {
   previewUrl?: string;
 }
 
+export interface V2ElevenVoice {
+  voice_id: string;
+  name: string;
+  category?: string;
+}
+
 export function useV2Project() {
   // Restore draft ก่อน (จำการตั้งค่าโปรเจกต์ข้ามเซสชัน) — ค่า default จาก server
   // จะไม่ทับของที่ผู้ใช้ตั้งไว้แล้ว (ดู effect ด้านล่าง)
@@ -80,6 +86,8 @@ export function useV2Project() {
   // ── Read-only wiring ──
   const [usage, setUsage] = useState<V2Usage | null>(null);
   const [avatarInfo, setAvatarInfo] = useState<V2AvatarInfo | null>(null);
+  /** รายชื่อเสียง ElevenLabs ของผู้ใช้ (แสดงชื่อแทน Voice ID) · null = ยังไม่โหลด/โหลดไม่ได้ */
+  const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -119,16 +127,29 @@ export function useV2Project() {
   }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders]);
 
-  // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId
+  // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
     if (!avatarId.trim()) { setAvatarInfo(null); return; }
     let alive = true;
-    fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (alive && d) setAvatarInfo({ name: d.name, previewUrl: d.previewUrl ?? d.thumbnailUrl }); })
-      .catch(() => { if (alive) setAvatarInfo(null); });
-    return () => { alive = false; };
+    const t = setTimeout(() => {
+      fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (alive && d) setAvatarInfo({ name: d.name, previewUrl: d.previewImageUrl || d.previewUrl }); })
+        .catch(() => { if (alive) setAvatarInfo(null); });
+    }, 500);
+    return () => { alive = false; clearTimeout(t); };
   }, [avatarId]);
+
+  // รายชื่อเสียง ElevenLabs — โหลดครั้งเดียวเมื่อผู้ใช้เลือก engine นี้ (fail เงียบ = ใช้ช่อง ID เดิม)
+  useEffect(() => {
+    if (voiceEngine !== "elevenlabs" || elevenVoices !== null) return;
+    let alive = true;
+    fetch("/api/elevenlabs/voices")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && Array.isArray(d?.voices)) setElevenVoices(d.voices); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [voiceEngine, elevenVoices]);
 
   return {
     mode, setMode,
@@ -147,7 +168,7 @@ export function useV2Project() {
     avatarTailSecs, setAvatarTailSecs,
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
-    usage, avatarInfo, isAdmin,
+    usage, avatarInfo, elevenVoices, isAdmin,
   };
 }
 
