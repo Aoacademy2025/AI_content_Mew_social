@@ -24,6 +24,7 @@ import { loanwordSpans } from "@/lib/thai-loanwords";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
+import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 
 type ExportState =
@@ -42,7 +43,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
   job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
 }) {
   const preview = job.output?.preview ?? null;
-  const baseUrl = job.output?.videoUrl ?? "";
+  const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
@@ -59,6 +60,14 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
+  const [adjustingAvatar, setAdjustingAvatar] = useState(false);
+  // ปรับได้เมื่องานนี้มีอวตาร + worker เก็บข้อมูล re-composite ไว้ (งานเก่าก่อนฟีเจอร์นี้ = ซ่อน)
+  // bookend-both ต้องมี tailAvatarUrl ด้วย ไม่งั้น composite split ขาดท่อน
+  const canAdjustAvatar = !!(
+    preview?.avatarModel && preview.avatarModel !== "none" &&
+    preview.avatarVideoUrl && preview.compositeBaseUrl && preview.avatarMode &&
+    (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
+  );
 
   // การ์ดที่ "กำลังพูด" ตาม preview (แยกจาก selected = การ์ดที่เลือกแก้)
   const activeIdx = useMemo(() => findActiveCaptionIdx(captions, timeMs), [captions, timeMs]);
@@ -383,6 +392,25 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
               playing={playing}
               onVerticalPos={(p) => set("verticalPos", p)}
             />
+            {adjustingAvatar && canAdjustAvatar && preview && (
+              <AvatarAdjustOverlay
+                avatarId={preview.avatarModel!}
+                avatarMode={preview.avatarMode!}
+                introSecs={preview.avatarIntroSecs ?? 5}
+                tailSecs={preview.avatarTailSecs ?? 5}
+                avatarVideoUrl={preview.avatarVideoUrl!}
+                tailAvatarUrl={preview.tailAvatarUrl ?? null}
+                bgVideoUrl={preview.compositeBaseUrl!}
+                jobId={job.jobId}
+                onClose={() => setAdjustingAvatar(false)}
+                onDone={(url) => {
+                  setBaseUrl(url);
+                  setAdjustingAvatar(false);
+                  const v = videoRef.current;
+                  if (v) { v.load(); v.currentTime = 0; }
+                }}
+              />
+            )}
             {(exp.phase === "burning" || exp.phase === "saving") && (
               <div className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(10,10,16,.55)", borderRadius: radius.cardLg }}>
                 <Loader2 size={22} className="animate-spin" color={color.primary300} />
@@ -393,6 +421,27 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
 
         {/* ── ขวา 330px: คุมซับ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          {canAdjustAvatar && (
+            <section className="flex flex-col gap-2">
+              <GroupLabel>อวตาร</GroupLabel>
+              <button
+                onClick={() => {
+                  const v = videoRef.current;
+                  if (v) { v.pause(); v.currentTime = 0; }
+                  setAdjustingAvatar(true);
+                }}
+                className="flex items-center justify-center gap-2"
+                style={{
+                  padding: "9px 0", borderRadius: radius.control, background: "none",
+                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  fontSize: 12, cursor: "pointer",
+                }}
+              >
+                ปรับตำแหน่งอวตาร (ฟรี — ไม่เรียก HeyGen ใหม่)
+              </button>
+            </section>
+          )}
+
           <section className="flex flex-col gap-2">
             <GroupLabel>ความยาวการ์ดซับ</GroupLabel>
             <Segmented
