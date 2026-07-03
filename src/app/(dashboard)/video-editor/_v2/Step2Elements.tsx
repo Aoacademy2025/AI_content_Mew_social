@@ -13,7 +13,7 @@ import {
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
+import { KIE_IMAGE_MODEL_OPTIONS, PRICED_KIE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
@@ -75,8 +75,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
             {BROLL_OPTIONS.map((o) => {
-              // Beta = เปิดเฉพาะ admin · วิดีโอ AI ยังไม่เปิดให้ใคร
-              const locked = o.comingSoon || (o.beta && !p.isAdmin);
+              // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
+              const locked = o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie);
               return (
                 <button
                   key={o.value}
@@ -125,17 +125,23 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   />
                 )}
               </label>
-              {p.isAdmin && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
+              {(p.isAdmin || p.isPaidManagedKie) && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
                 <label className="flex flex-col gap-1.5">
-                  <span style={{ fontSize: 11, color: color.textFaint }}>โมเดลภาพ AI (Beta)</span>
+                  <span style={{ fontSize: 11, color: color.textFaint }}>
+                    {p.isAdmin ? "โมเดลภาพ AI (Beta)" : "โมเดลภาพ AI (คิดเครดิตต่อภาพ)"}
+                  </span>
                   <select
-                    value={p.kieModel}
+                    // Paid users have no "system default" ("") option, so surface the
+                    // priced default (gpt-image-2) when unset — matches the server's coercion.
+                    value={p.isAdmin ? p.kieModel : (p.kieModel || "gpt-image-2-text-to-image")}
                     onChange={(e) => p.setKieModel(e.target.value as typeof p.kieModel)}
                     className="w-full max-w-[280px]"
                     style={{ padding: "8px 10px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   >
-                    <option value="" style={{ background: color.bg1 }}>ค่าเริ่มต้นของระบบ</option>
-                    {KIE_IMAGE_MODEL_OPTIONS.map((m) => (
+                    {/* Admins get the "system default" escape hatch + all 8 models;
+                        paid users get only the 3 priced models (server coerces anything else). */}
+                    {p.isAdmin && <option value="" style={{ background: color.bg1 }}>ค่าเริ่มต้นของระบบ</option>}
+                    {(p.isAdmin ? KIE_IMAGE_MODEL_OPTIONS : PRICED_KIE_MODEL_OPTIONS).map((m) => (
                       <option key={m.value} value={m.value} style={{ background: color.bg1 }}>{m.label}</option>
                     ))}
                   </select>

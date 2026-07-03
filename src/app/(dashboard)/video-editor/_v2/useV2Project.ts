@@ -67,6 +67,7 @@ export function useV2Project() {
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
   const [brollSource, setBrollSource] = useState<V2BrollSource>(d.brollSource ?? "stock");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>(d.voiceEngine ?? "gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState(d.geminiVoiceName ?? "Aoede");
   const [voiceId, setVoiceId] = useState(d.voiceId ?? "");
@@ -109,7 +110,12 @@ export function useV2Project() {
     fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(u => {
       if (u) setUsage(u);
     }).catch(() => {});
-    fetchMe().then(m => setIsAdmin(m?.role === "ADMIN")).catch(() => {});
+    fetchMe().then(m => {
+      setIsAdmin(m?.role === "ADMIN");
+      // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
+      // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
+      setIsPaidManagedKie(!!m?.kiePaidUnlocked);
+    }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -171,7 +177,7 @@ export function useV2Project() {
     avatarTailSecs, setAvatarTailSecs,
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
-    usage, avatarInfo, elevenVoices, isAdmin,
+    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie,
   };
 }
 

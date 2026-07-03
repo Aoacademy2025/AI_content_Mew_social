@@ -49,6 +49,13 @@ export const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] 
   { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
   { value: "qwen2/text-to-image", label: "Qwen2" },
 ];
+// Non-admin paid users see ONLY the 3 priced models, labelled with credit cost.
+// Values map to credit-keys server-side (src/lib/credits.ts costKeyForKieModel).
+export const PRICED_KIE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ" },
+  { value: "flux-2/pro-text-to-image", label: "ประหยัด · 2 เครดิต/ภาพ" },
+  { value: "nano-banana-2", label: "ขั้นสูง · 4 เครดิต/ภาพ" },
+];
 
 // แหล่งที่มาของ B-roll ที่ Auto Mix เลือกใช้ได้ — เลือกได้หลายตัว
 // - "video" = หาวิดีโอจริง (Pexels/Pixabay) — ถ้าปิด Auto Mix จะข้าม video ไปใช้ภาพล้วน

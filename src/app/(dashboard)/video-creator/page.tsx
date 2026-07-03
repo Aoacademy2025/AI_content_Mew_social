@@ -38,6 +38,13 @@ const KIE_IMAGE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
   { value: "grok-imagine/text-to-image", label: "Grok Imagine" },
   { value: "qwen2/text-to-image", label: "Qwen2" },
 ];
+// Non-admin paid users see ONLY the 3 priced models, labelled with their credit cost
+// (server maps model → credit-key in src/lib/credits.ts costKeyForKieModel).
+const PRICED_KIE_MODEL_OPTIONS: { value: KieImageModel; label: string }[] = [
+  { value: "gpt-image-2-text-to-image", label: "มาตรฐาน (แนะนำ) · 3 เครดิต/ภาพ" },
+  { value: "flux-2/pro-text-to-image", label: "ประหยัด · 2 เครดิต/ภาพ" },
+  { value: "nano-banana-2", label: "ขั้นสูง · 4 เครดิต/ภาพ" },
+];
 
 // ฟอนต์ซับ — label แยก name/hint เพื่อให้ custom dropdown แสดง name ด้วยฟอนต์จริง + hint สีจาง
 const SUB_FONT_OPTIONS: { name: string; hint?: string; value: string }[] = [
@@ -423,15 +430,21 @@ export default function ShortVideoPage() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [kieModelOpen]);
+  const [isAdminUser, setIsAdminUser] = useState(false);
   const [kieImageEnabled, setKieImageEnabled] = useState(false);
   const [autoMixEnabled, setAutoMixEnabled] = useState(false);
   useEffect(() => {
     fetch("/api/user/me").then(r => r.json()).then(d => {
       const isAdmin = d?.role === "ADMIN";
-      setKieImageEnabled(isAdmin);
-      setAutoMixEnabled(isAdmin);
+      // Managed-kie: paid users (PRO/BUSINESS) are un-gated when the flags are on.
+      const kiePaidUnlocked = !!d?.kiePaidUnlocked;
+      setIsAdminUser(isAdmin);
+      setKieImageEnabled(isAdmin || kiePaidUnlocked);
+      setAutoMixEnabled(isAdmin || kiePaidUnlocked);
     }).catch(() => {});
   }, []);
+  // Admins pick from all 8 models; non-admin paid users see only the 3 priced ones.
+  const kieModelOptions = isAdminUser ? KIE_IMAGE_MODEL_OPTIONS : PRICED_KIE_MODEL_OPTIONS;
   // Grid display filter (independent from fetch source — doesn't affect API calls)
   const [gridFilter, setGridFilter] = useState<"both" | "pexels" | "pixabay">("both");
   // Clips excluded by user (pexelsId set)
@@ -2654,7 +2667,7 @@ export default function ShortVideoPage() {
                   <button
                     disabled={!kieImageEnabled || running}
                     onClick={() => kieImageEnabled && setStockSource("kie-image")}
-                    title={kieImageEnabled ? "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — admin beta" : "เร็วๆ นี้"}
+                    title={kieImageEnabled ? (isAdminUser ? "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — admin beta" : "AI สร้างภาพแล้วแปลงเป็นวิดีโอ (kie.ai) — คิดเครดิตต่อภาพ") : "เร็วๆ นี้"}
                     className={cn("w-full rounded-xl px-4 py-2.5 text-left transition-all disabled:opacity-40",
                       !kieImageEnabled && "opacity-70 cursor-not-allowed")}
                     style={
@@ -2670,7 +2683,7 @@ export default function ShortVideoPage() {
                       ) : (
                         <span className="ml-auto text-[8px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
                           style={{ color: "hsl(189 90% 65%)", background: "hsl(189 90% 55% / 0.1)", border: "1px solid hsl(189 90% 55% / 0.3)" }}>
-                          {kieImageEnabled ? "Admin Beta" : "เร็วๆ นี้"}
+                          {kieImageEnabled ? (isAdminUser ? "Admin Beta" : "Beta") : "เร็วๆ นี้"}
                         </span>
                       )}
                     </div>
@@ -2711,7 +2724,7 @@ export default function ShortVideoPage() {
                         Image Model (9:16)
                       </label>
                       {(() => {
-                        const sel = KIE_IMAGE_MODEL_OPTIONS.find(o => o.value === kieModel) ?? KIE_IMAGE_MODEL_OPTIONS[0];
+                        const sel = kieModelOptions.find(o => o.value === kieModel) ?? kieModelOptions[0];
                         return (
                           <>
                             {/* ปุ่มเปิด dropdown — แสดงโมเดลที่เลือก (สไตล์เดียวกับ Gemini Voice dropdown) */}
@@ -2725,7 +2738,7 @@ export default function ShortVideoPage() {
                             {kieModelOpen && (
                               <div className="absolute z-30 left-1 right-1 mt-1 rounded-xl p-1 shadow-xl max-h-64 overflow-y-auto scrollbar-none"
                                 style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
-                                {KIE_IMAGE_MODEL_OPTIONS.map((opt) => {
+                                {kieModelOptions.map((opt) => {
                                   const active = opt.value === kieModel;
                                   return (
                                     <button key={opt.value} type="button"
