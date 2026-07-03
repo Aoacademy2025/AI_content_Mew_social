@@ -65,6 +65,7 @@ export function TimelinePanel({
   const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ idx: number; edge: "l" | "r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const scrubbingRef = useRef(false);
 
   const durMs = Math.max(durationMs, 1000);
   const widthPx = (durMs / 1000) * pxPerSec;
@@ -172,16 +173,29 @@ export function TimelinePanel({
       {/* Tracks */}
       <div ref={scrollRef} className="flex-1 overflow-x-auto overflow-y-hidden">
         <div className="relative" style={{ width: widthPx + LABEL_W + 16, minWidth: "100%" }}>
-          {/* ruler คลิกเพื่อ seek */}
+          {/* ruler ลาก scrub ได้ (คลิก = jump, ลากค้าง = playhead วิ่งตาม) */}
           <div
-            className="relative ml-[92px] h-[16px] cursor-pointer"
-            onClick={(e) => {
+            className="relative ml-[92px] h-[24px] cursor-pointer"
+            style={{ touchAction: "none" }}
+            onPointerDown={(e) => {
+              scrubbingRef.current = true;
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
             }}
+            onPointerMove={(e) => {
+              if (!scrubbingRef.current) return;
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              seekTo(((e.clientX - rect.left) / pxPerSec) * 1000);
+            }}
+            onPointerUp={(e) => {
+              scrubbingRef.current = false;
+              try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+            }}
+            onPointerCancel={() => { scrubbingRef.current = false; }}
           >
             {Array.from({ length: Math.floor(durMs / 1000) + 1 }, (_, s) => s).filter((s) => s % (pxPerSec < 18 ? 5 : 1) === 0).map((s) => (
-              <span key={s} className="absolute top-0" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
+              <span key={s} className="absolute top-0 select-none" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
                 {fmt(s * 1000)}
               </span>
             ))}
@@ -244,7 +258,7 @@ export function TimelinePanel({
           )}
 
           {/* Playhead */}
-          <div className="pointer-events-none absolute bottom-0 top-[16px]" style={{ left: LABEL_W + toPx(timeMs) }}>
+          <div className="pointer-events-none absolute bottom-0 top-[24px]" style={{ left: LABEL_W + toPx(timeMs) }}>
             <div className="h-full w-[1px]" style={{ background: "#fff" }} />
             <div style={{ position: "absolute", top: -1, left: -4, width: 9, height: 8, background: "#fff", clipPath: "polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%)" }} />
           </div>
