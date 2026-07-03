@@ -19,6 +19,7 @@ import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { estimateClipSecV2 } from "./estimate";
 import { useBgm } from "../_hooks/useBgm";
+import { MusicLibraryModal } from "./MusicLibraryModal";
 import type { V2Project, V2BrollSource } from "./useV2Project";
 
 // ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
@@ -45,6 +46,18 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
     : undefined;
   const [submitting, setSubmitting] = useState(false);
+  const [musicLibOpen, setMusicLibOpen] = useState(false);
+  // chips = 6 เพลงแรกของระบบ · ถ้าเพลงที่เลือกไม่อยู่ในนั้น (ระบบตัวท้าย ๆ / ของผู้ใช้) เอามาโชว์หน้าสุด
+  const baseChips = bgm.systemTracks.slice(0, 6).map((t) => ({ ...t, kind: "system" as const }));
+  const selectedTrack = p.musicTrack
+    ? (p.musicTrackKind === "user"
+        ? bgm.userTracks.find((t) => t.filename === p.musicTrack)
+        : bgm.systemTracks.find((t) => t.filename === p.musicTrack))
+    : null;
+  const selectedInChips = p.musicTrackKind === "system" && baseChips.some((t) => t.filename === p.musicTrack);
+  const chipTracks = selectedTrack && !selectedInChips
+    ? [{ id: selectedTrack.id, title: selectedTrack.title, filename: selectedTrack.filename, kind: p.musicTrackKind }, ...baseChips.slice(0, 5)]
+    : baseChips;
 
   async function handleRender() {
     if (submitting) return;
@@ -264,8 +277,25 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* 3 · เพลงประกอบ */}
         {p.mode !== "upload" && (
         <Group title="เพลงประกอบ" desc="เพลงเบา ๆ ใต้เสียงพูด (ลดเสียงอัตโนมัติ) · กดไอคอนเพื่อฟังตัวอย่าง">
-          <MusicChips p={p} tracks={bgm.systemTracks.slice(0, 6)} />
-          <Advanced note="อัปโหลดเพลงของคุณ · คลังทั้งหมด · ระดับเสียง" />
+          <MusicChips p={p} tracks={chipTracks} />
+          <button
+            onClick={() => setMusicLibOpen(true)}
+            className="self-start"
+            style={{ fontSize: 11.5, color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            คลังเพลงทั้งหมด ({bgm.systemTracks.length + bgm.userTracks.length}) · อัปโหลดเพลงของคุณ
+          </button>
+          <MusicLibraryModal
+            open={musicLibOpen}
+            onClose={() => setMusicLibOpen(false)}
+            systemTracks={bgm.systemTracks}
+            userTracks={bgm.userTracks}
+            onUploaded={(t) => bgm.setUserTracks([t, ...bgm.userTracks])}
+            selected={p.musicTrack}
+            selectedKind={p.musicTrackKind}
+            onSelect={(filename, kind) => { p.setMusicTrack(filename); p.setMusicTrackKind(kind); }}
+          />
+          <Advanced note="ระดับเสียงเพลง" />
         </Group>
         )}
 
@@ -396,7 +426,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
               <SummaryRow label="บีโรล" value={BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-"} />
               <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
-              <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (bgm.systemTracks.find(t => t.filename === p.musicTrack)?.title ?? "ยังไม่เลือก")} />
+              <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
             </>
           )}
@@ -424,7 +454,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 }
 
 /** ชิปเพลง + ปุ่มฟังตัวอย่างในตัว (logic เดียวกับ toggleMusicPreview ของ OrderPanel, URL = /api/music/<filename>) */
-function MusicChips({ p, tracks }: { p: V2Project; tracks: { id: string; title: string; filename: string }[] }) {
+function MusicChips({ p, tracks }: { p: V2Project; tracks: { id: string; title: string; filename: string; kind: "system" | "user" }[] }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [previewing, setPreviewing] = useState("");
 
@@ -465,8 +495,8 @@ function MusicChips({ p, tracks }: { p: V2Project; tracks: { id: string; title: 
           key={t.id}
           role="button"
           tabIndex={0}
-          onClick={() => p.setMusicTrack(t.filename)}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") p.setMusicTrack(t.filename); }}
+          onClick={() => { p.setMusicTrack(t.filename); p.setMusicTrackKind(t.kind); }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { p.setMusicTrack(t.filename); p.setMusicTrackKind(t.kind); } }}
           style={chipStyle(p.musicTrack === t.filename)}
         >
           {t.title}{i === 0 ? " · แนะนำ" : ""}
