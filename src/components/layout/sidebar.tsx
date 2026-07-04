@@ -3,14 +3,24 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useClerk } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
+import { UserAvatar } from "@/components/layout/user-avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface SidebarProps {
   role?: "ADMIN" | "USER";
@@ -94,6 +104,7 @@ function SectionLabel({
 export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, touchTargets = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const { signOut } = useClerk();
   const prefetchedRef = useRef<Set<string>>(new Set());
 
   function prefetchOnce(href: string) {
@@ -104,6 +115,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
 
   const [plan, setPlan] = useState<string>("FREE");
   const [userName, setUserName] = useState<string>("");
+  const [userEmail, setUserEmail] = useState<string>("");
+  const [avatar, setAvatar] = useState<string | null>(null);
   const [role, setRole] = useState<"ADMIN" | "USER">(roleProp);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
@@ -122,6 +135,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         if (!data) { setSessionLoaded(true); return; }
         if (data.plan) setPlan(data.plan);
         if (data.name) setUserName(data.name);
+        if (data.email) setUserEmail(data.email);
+        setAvatar(data.avatar ?? null);
         if (data.role) setRole(data.role as "ADMIN" | "USER");
         if (typeof data.usageCount === "number") setUsageCount(data.usageCount);
         if (typeof data.usageLimit === "number") setUsageLimit(data.usageLimit);
@@ -175,10 +190,6 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       : item);
 
   const userItems = withUpdatesBadge(userNavItems);
-
-  const initials = userName
-    ? userName.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)
-    : "U";
 
   function renderNavItem(item: SidebarNavItem) {
     const Icon = item.icon;
@@ -266,45 +277,93 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         </button>
       )}
 
-      {/* User section */}
-      <div
-        className={cn("flex items-center gap-3 border-b", collapsed ? "px-2.5 py-4 justify-center" : "px-4 py-4")}
-        style={{ borderColor: "var(--ui-divider)" }}
-      >
-        <FadeSwap
-          ready={sessionLoaded}
-          className="h-9 w-9 shrink-0"
-          skeleton={<div className="h-9 w-9 rounded-full skeleton-wave" />}
-        >
-          <div
-            className="flex h-9 w-9 items-center justify-center rounded-full text-xs font-bold text-white"
-            style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}
+      {/* User section — clickable account hub (Settings · Billing · Logout) */}
+      <div className="border-b" style={{ borderColor: "var(--ui-divider)" }}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="บัญชีผู้ใช้"
+              className={cn(
+                "flex w-full items-center gap-3 outline-none transition-colors hover:bg-black/5 dark:hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#8B5CF6]/60",
+                collapsed ? "px-2.5 py-4 justify-center" : "px-4 py-4",
+              )}
+            >
+              <FadeSwap
+                ready={sessionLoaded}
+                className="h-9 w-9 shrink-0"
+                skeleton={<div className="h-9 w-9 rounded-full skeleton-wave" />}
+              >
+                <UserAvatar name={userName} avatar={avatar} size={36} />
+              </FadeSwap>
+              {!collapsed && (
+                <FadeSwap
+                  ready={sessionLoaded}
+                  className="min-w-0 flex-1"
+                  skeleton={
+                    <div className="space-y-1.5">
+                      <div className="h-3.5 w-20 rounded skeleton-wave" />
+                      <div className="h-2.5 w-12 rounded skeleton-wave" />
+                    </div>
+                  }
+                >
+                  <div className="min-w-0 text-left">
+                    <p className="text-sm font-semibold truncate leading-tight" style={{ color: "var(--ui-text-primary)" }}>
+                      {userName || "User"}
+                    </p>
+                    <span className="text-[10px] font-semibold"
+                      style={{ color: planColor }}>
+                      {planLabel}
+                    </span>
+                  </div>
+                </FadeSwap>
+              )}
+              {!collapsed && (
+                <ChevronDown className="h-4 w-4 shrink-0" style={{ color: "var(--ui-text-muted)" }} />
+              )}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="w-56 border"
+            style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}
+            align="start"
+            side="bottom"
           >
-            {initials}
-          </div>
-        </FadeSwap>
-        {!collapsed && (
-          <FadeSwap
-            ready={sessionLoaded}
-            className="min-w-0 flex-1"
-            skeleton={
-              <div className="space-y-1.5">
-                <div className="h-3.5 w-20 rounded skeleton-wave" />
-                <div className="h-2.5 w-12 rounded skeleton-wave" />
+            <DropdownMenuLabel>
+              <div className="flex flex-col space-y-0.5">
+                <p className="text-sm font-medium leading-none" style={{ color: "var(--ui-text-primary)" }}>
+                  {userName || "User"}
+                </p>
+                {userEmail && (
+                  <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
+                    {userEmail}
+                  </p>
+                )}
               </div>
-            }
-          >
-            <div>
-              <p className="text-sm font-semibold truncate leading-tight" style={{ color: "var(--ui-text-primary)" }}>
-                {userName || "User"}
-              </p>
-              <span className="text-[10px] font-semibold"
-                style={{ color: planColor }}>
-                {planLabel}
-              </span>
-            </div>
-          </FadeSwap>
-        )}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link href="/settings">
+                <Settings className="mr-2 h-4 w-4" />
+                Settings
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link href="/settings?tab=billing">
+                <CreditCard className="mr-2 h-4 w-4" />
+                Billing
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
+            <DropdownMenuItem
+              className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
+              onClick={() => signOut({ redirectUrl: "/login" })}
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Nav */}

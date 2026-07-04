@@ -2,10 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, Sparkles } from "lucide-react";
+import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NotificationBell } from "@/components/layout/notification-bell";
-import { AccountMenu } from "@/components/layout/account-menu";
 
 const navLinks = [
   { title: "วิธีใช้งาน", href: "/docs" },
@@ -40,13 +39,14 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           aria-label="Hero AI Creator Studio"
         >
           <span
-            className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden"
+            className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden text-[15px] font-semibold leading-none text-white"
             style={{
               background: "linear-gradient(180deg,#8B66F8,#6C4CF4)",
               boxShadow: "0 4px 14px rgba(108,76,244,0.35), inset 0 1px 0 rgba(255,255,255,0.25)",
+              fontFamily: "Kanit, sans-serif",
             }}
           >
-            <Sparkles className="h-4 w-4 text-white" strokeWidth={2.5} />
+            H
             <span
               aria-hidden
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -81,10 +81,10 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         })}
       </div>
 
-      {/* Right — actions */}
+      {/* Right — actions. Account hub now lives in the sidebar user header;
+          the dashboard topbar-right is the notification bell only. */}
       <div className="flex items-center gap-2">
         <NotificationBell />
-        <AccountMenu />
       </div>
     </div>
   );

@@ -25,6 +25,49 @@ const cardStyle: React.CSSProperties = { background: "var(--ui-card-bg)", border
 interface AdminStats {
   totalUsers: number; freeUsers: number; paidUsers: number; suspendedUsers: number;
   totalContents: number; totalVideos: number; totalImages: number; newToday: number; newThisWeek: number;
+  // Honest revenue split (see /api/admin/stats + src/lib/revenue-cohorts.ts)
+  payingTotal: number; trialActive: number; compedPaid: number; mrr: number; lapsedPayers: number;
+}
+
+// Admin section tabs — grouped so the page is navigable instead of one long scroll.
+type AdminTab = "overview" | "support" | "storage" | "billing" | "content";
+const ADMIN_TABS: Array<{ id: AdminTab; label: string; icon: React.ElementType }> = [
+  { id: "overview", label: "ภาพรวม",       icon: BarChart3 },
+  { id: "support",  label: "Support",       icon: Ticket },
+  { id: "storage",  label: "พื้นที่ดิสก์", icon: HardDrive },
+  { id: "billing",  label: "การเงิน & แผน", icon: CreditCard },
+  { id: "content",  label: "เพลง",          icon: Music },
+];
+
+// Single stat card — matches the original grid card (byte-identical for non-hero);
+// `hero` variant fills violet for the headline "จ่ายจริง" cash metric.
+function StatCard({
+  title, value, sub, icon: Icon, loading, hero = false,
+}: {
+  title: string;
+  value: number | string;
+  sub: string;
+  icon: React.ElementType;
+  loading: boolean;
+  hero?: boolean;
+}) {
+  return (
+    <Card className="shadow-none" style={hero ? { background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` } : cardStyle}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium" style={{ color: hero ? VIOLET_LIGHT : "var(--ui-text-secondary)" }}>{title}</CardTitle>
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px]"
+          style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}>
+          <Icon className="h-4 w-4" style={{ color: VIOLET }} strokeWidth={2.1} />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {loading ? null : (
+          <div className="text-3xl font-bold" style={{ color: hero ? "#fff" : "var(--ui-text-primary)", fontFamily: "var(--font-kanit), Kanit, sans-serif" }}>{value}</div>
+        )}
+        <p className="mt-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>{sub}</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 interface CleanupInfo {
@@ -319,6 +362,9 @@ export default function AdminDashboardPage() {
   const [triageDrafts, setTriageDrafts] = useState<Record<string, TriageDraft>>({});
   const [savingTriage, setSavingTriage] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<{ src: string; name: string | null } | null>(null);
+
+  // Active section tab (grouped nav — see ADMIN_TABS)
+  const [tab, setTab] = useState<AdminTab>("overview");
 
   // Settings state
   const [supportEmail, setSupportEmail] = useState("");
@@ -733,15 +779,16 @@ export default function AdminDashboardPage() {
     }
   }
 
-  const statCards = [
-    { title: "ผู้ใช้งานทั้งหมด",    value: stats?.totalUsers ?? 0,    sub: `+${stats?.newToday ?? 0} รายในวันนี้`,                        icon: Users        },
-    { title: "ผู้ใช้งาน Paid",       value: stats?.paidUsers ?? 0,    sub: `${stats?.freeUsers ?? 0} ผู้ใช้งานระดับ Free`,              icon: Crown        },
-    { title: "ถูกระงับการใช้งาน",    value: stats?.suspendedUsers ?? 0, sub: "บัญชีที่ถูกระงับการเข้าถึง",                             icon: Ban          },
-    { title: "เนื้อหาทั้งหมด",       value: stats?.totalContents ?? 0,  sub: "รวมจากผู้ใช้งานทุกราย",                                  icon: FileText     },
-    { title: "วิดีโอทั้งหมด",        value: stats?.totalVideos ?? 0,    sub: "รวมจากผู้ใช้งานทุกราย",                                  icon: Video        },
-    { title: "รูปภาพทั้งหมด",        value: stats?.totalImages ?? 0,    sub: "รวมจากผู้ใช้งานทุกราย",                                  icon: Images       },
-    { title: "สมัครใช้งานวันนี้",    value: stats?.newToday ?? 0,       sub: `${stats?.newThisWeek ?? 0} รายใน 7 วันที่ผ่านมา`,       icon: UserPlus     },
-    { title: "สมัครใช้งาน 7 วัน",   value: stats?.newThisWeek ?? 0,    sub: "ย้อนหลัง 1 สัปดาห์",                                    icon: CalendarDays },
+  // ผู้ใช้งาน group — the "Paid" card is replaced by the honest revenue group below.
+  const userStatCards = [
+    { title: "ผู้ใช้งานทั้งหมด",    value: stats?.totalUsers ?? 0,     sub: `+${stats?.newToday ?? 0} รายในวันนี้`,             icon: Users        },
+    { title: "ผู้ใช้งานระดับ Free",  value: stats?.freeUsers ?? 0,      sub: "ยังไม่ได้อยู่บนแผน PRO/BUSINESS",                  icon: Users        },
+    { title: "ถูกระงับการใช้งาน",    value: stats?.suspendedUsers ?? 0, sub: "บัญชีที่ถูกระงับการเข้าถึง",                       icon: Ban          },
+    { title: "เนื้อหาทั้งหมด",       value: stats?.totalContents ?? 0,  sub: "รวมจากผู้ใช้งานทุกราย",                            icon: FileText     },
+    { title: "วิดีโอทั้งหมด",        value: stats?.totalVideos ?? 0,    sub: "รวมจากผู้ใช้งานทุกราย",                            icon: Video        },
+    { title: "รูปภาพทั้งหมด",        value: stats?.totalImages ?? 0,    sub: "รวมจากผู้ใช้งานทุกราย",                            icon: Images       },
+    { title: "สมัครใช้งานวันนี้",    value: stats?.newToday ?? 0,       sub: `${stats?.newThisWeek ?? 0} รายใน 7 วันที่ผ่านมา`, icon: UserPlus     },
+    { title: "สมัครใช้งาน 7 วัน",   value: stats?.newThisWeek ?? 0,    sub: "ย้อนหลัง 1 สัปดาห์",                              icon: CalendarDays },
   ];
 
   const storageTone = {
@@ -817,31 +864,62 @@ export default function AdminDashboardPage() {
           </Link>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {statCards.map((card) => {
-            const Icon = card.icon;
+        {/* Tab bar — grouped nav (flat pill style, matches settings page) */}
+        <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl w-full sm:w-auto sm:inline-flex"
+          style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
+          {ADMIN_TABS.map(({ id, label, icon: Icon }) => {
+            const active = tab === id;
             return (
-              <Card key={card.title} className="shadow-none" style={cardStyle}>
-                <CardHeader className="flex flex-row items-center justify-between pb-2">
-                  <CardTitle className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{card.title}</CardTitle>
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px]"
-                    style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}>
-                    <Icon className="h-4 w-4" style={{ color: VIOLET }} strokeWidth={2.1} />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  {loading ? null : (
-                    <div className="text-3xl font-bold" style={{ color: "var(--ui-text-primary)", fontFamily: "var(--font-kanit), Kanit, sans-serif" }}>{card.value}</div>
-                  )}
-                  <p className="mt-1 text-xs" style={{ color: "var(--ui-text-muted)" }}>{card.sub}</p>
-                </CardContent>
-              </Card>
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={`flex min-h-11 items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${active ? "shadow-sm" : "hover:bg-white/5"}`}
+                style={active ? {
+                  background: VIOLET_GRAD,
+                  color: "#fff",
+                  boxShadow: "0 4px 12px hsl(258 90% 66% / 0.3), inset 0 1px 0 rgba(255,255,255,0.15)",
+                } : {
+                  color: "var(--ui-text-muted)",
+                }}
+              >
+                <Icon className="h-3.5 w-3.5" strokeWidth={2.25} />
+                {label}
+              </button>
             );
           })}
         </div>
 
-        {/* Support Tickets */}
+        {/* ── Overview tab: Stats ──────────────────────────────────────── */}
+        {tab === "overview" && (
+          <div className="space-y-8">
+            {/* ผู้ใช้งาน group */}
+            <div>
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: VIOLET_LIGHT }}>ผู้ใช้งาน</p>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {userStatCards.map((card) => (
+                  <StatCard key={card.title} title={card.title} value={card.value} sub={card.sub} icon={card.icon} loading={loading} />
+                ))}
+              </div>
+            </div>
+
+            {/* รายได้จริง group — honest cash vs trial vs comped */}
+            <div>
+              <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: VIOLET_LIGHT }}>รายได้จริง</p>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <StatCard hero title="จ่ายจริง (จ่ายเงินสด)" value={stats?.payingTotal ?? 0} sub="ใช้งานอยู่ + จ่ายเงินจริง" icon={Crown} loading={loading} />
+                <StatCard title="Trial (ทดลอง)" value={stats?.trialActive ?? 0} sub="ทดลอง PRO ฟรี ยังไม่จ่ายเงิน" icon={Clock} loading={loading} />
+                <StatCard title="Comped (แจกสิทธิ์)" value={stats?.compedPaid ?? 0} sub="admin/coupon — เป็นต้นทุน ไม่ใช่รายได้" icon={Tag} loading={loading} />
+                <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub="รายได้ต่อเดือน (annual เฉลี่ยแล้ว)" icon={BarChart3} loading={loading} />
+              </div>
+              <p className="mt-3 text-xs" style={{ color: "var(--ui-text-muted)" }}>
+                หมายเหตุ: ยอด &quot;บนแผน PRO/BUSINESS&quot; ทั้งหมด {stats?.paidUsers ?? 0} ราย ≈ จ่ายจริง {stats?.payingTotal ?? 0} + Trial {stats?.trialActive ?? 0} + Comped {stats?.compedPaid ?? 0} (ที่เหลือ = รอ cron ปรับสถานะ)
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Support tab ──────────────────────────────────────────────── */}
+        {tab === "support" && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: "var(--ui-text-primary)" }}>
@@ -1090,8 +1168,10 @@ export default function AdminDashboardPage() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Disk Cleanup */}
+        {/* ── Storage tab ──────────────────────────────────────────────── */}
+        {tab === "storage" && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: "var(--ui-text-primary)" }}>
@@ -1267,8 +1347,10 @@ export default function AdminDashboardPage() {
             )}
           </div>
         </div>
+        )}
 
-        {/* Quick Links */}
+        {/* ── Overview tab: Quick Actions ──────────────────────────────── */}
+        {tab === "overview" && (
         <div>
           <h2 className="mb-4 text-lg font-bold" style={{ color: "var(--ui-text-primary)" }}>Quick Actions</h2>
           <div className="grid gap-3 md:grid-cols-2">
@@ -1315,8 +1397,10 @@ export default function AdminDashboardPage() {
             </Card>
           </div>
         </div>
+        )}
 
-        {/* ── Music Library ─────────────────────────────────────────────── */}
+        {/* ── Content tab: Music Library ───────────────────────────────── */}
+        {tab === "content" && (
         <div className="rounded-xl p-5" style={cardStyle}>
           <div className="mb-4 flex items-center gap-2">
             <Music className="h-4 w-4" style={{ color: VIOLET }} />
@@ -1366,7 +1450,11 @@ export default function AdminDashboardPage() {
             </div>
           )}
         </div>
+        )}
 
+        {/* ── Billing & Plans tab (Stripe · Server Keys · Plan Config · Support Email · Cost Rates) ── */}
+        {tab === "billing" && (
+        <div className="space-y-8">
         {/* ── Stripe Payment Settings ─────────────────────────────────── */}
         <div className="rounded-xl p-4 space-y-4" style={cardStyle}>
           <div className="flex items-center justify-between">
@@ -1702,6 +1790,8 @@ export default function AdminDashboardPage() {
             </button>
           </div>
         </div>
+        </div>
+        )}
 
       </div>
     </div>

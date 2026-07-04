@@ -10,6 +10,12 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface VideoItem {
   id: string;
@@ -34,6 +40,22 @@ type NavigatorConnection = {
   saveData?: boolean;
   effectiveType?: string;
 };
+
+type StatusFilter = "all" | "ready" | "rendering" | "failed";
+
+const STATUS_FILTER_LABEL: Record<StatusFilter, string> = {
+  all: "ทั้งหมด",
+  ready: "เสร็จแล้ว",
+  rendering: "กำลังเรนเดอร์",
+  failed: "ล้มเหลว",
+};
+
+function matchesStatusFilter(video: VideoItem, filter: StatusFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "ready") return video.status === "COMPLETED";
+  if (filter === "rendering") return video.status === "PROCESSING" || video.status === "PENDING";
+  return video.status === "FAILED";
+}
 
 // Violet single-accent house tokens (from video-editor/_v2/tokens.ts)
 const VIOLET = "#8B5CF6";
@@ -77,6 +99,7 @@ export default function VideosGalleryPage() {
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   const closePreview = useCallback(() => {
     setPreviewUrl(null);
@@ -132,11 +155,13 @@ export default function VideosGalleryPage() {
     finally { setDeleteId(null); }
   }
 
-  const sorted = [...videos].sort((a, b) =>
-    sortLatest
-      ? new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      : new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  const sorted = videos
+    .filter(video => matchesStatusFilter(video, statusFilter))
+    .sort((a, b) =>
+      sortLatest
+        ? new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        : new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
 
   const totalSize = videos.length * 47;
 
@@ -183,12 +208,36 @@ export default function VideosGalleryPage() {
               >
                 <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
               </button>
-              <button
-                className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
-                style={{ ...btnStyle, color: "var(--ui-text-muted)", minHeight: 44 }}
-              >
-                <Filter className="h-3.5 w-3.5" /> Filter
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
+                    style={{
+                      ...btnStyle,
+                      color: statusFilter !== "all" ? VIOLET_LIGHT : "var(--ui-text-muted)",
+                      borderColor: statusFilter !== "all" ? VIOLET_TILE_BORDER : undefined,
+                      minHeight: 44,
+                    }}
+                  >
+                    <Filter className="h-3.5 w-3.5" />
+                    {statusFilter === "all" ? "Filter" : `Filter · ${STATUS_FILTER_LABEL[statusFilter]}`}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}
+                >
+                  {(Object.keys(STATUS_FILTER_LABEL) as StatusFilter[]).map(key => (
+                    <DropdownMenuItem
+                      key={key}
+                      onClick={() => setStatusFilter(key)}
+                      style={{ color: statusFilter === key ? VIOLET_LIGHT : "var(--ui-text-primary)" }}
+                    >
+                      {STATUS_FILTER_LABEL[key]}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button
                 onClick={() => setSortLatest(p => !p)}
                 className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
@@ -211,7 +260,13 @@ export default function VideosGalleryPage() {
           </div>
 
           {/* ── Grid ── */}
-          {loading ? null : (
+          {loading ? null : sorted.length === 0 && videos.length > 0 ? (
+            <div className="ve-rise flex flex-col items-center justify-center gap-2 rounded-2xl py-16 text-center"
+              style={{ border: "1px dashed var(--ui-card-border)" }}>
+              <Filter className="h-6 w-6" style={{ color: "var(--ui-text-muted)" }} />
+              <p className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ไม่มีวิดีโอในสถานะนี้</p>
+            </div>
+          ) : (
             <div className="ve-rise grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" style={{ animationDelay: "80ms" }}>
               {sorted.map(video => (
                 <VideoCard
@@ -351,20 +406,20 @@ function VideoCard({
           className="absolute inset-0 h-full w-full object-cover"
         />
       ) : previewSrc ? (
-        <div
-          className="absolute inset-0 flex items-center justify-center"
-          style={{
-            background:
-              `linear-gradient(145deg, hsl(${posterHue} 74% 24% / 0.86), hsl(220 24% 8%) 58%, hsl(${posterHue + 34} 72% 16% / 0.72))`,
-          }}
-        >
-          <div
-            className="flex h-12 w-12 items-center justify-center rounded-xl"
-            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.14)" }}
-          >
-            <Film className="h-5 w-5 text-white/55" />
-          </div>
-        </div>
+        // Thumbnail stopgap: no generated thumbnail yet, so paint the video's first
+        // frame as a poster. muted + no autoplay + preload=metadata → browser decodes
+        // just enough to draw frame 1 without actually playing (avoids N videos
+        // playing at once across the grid).
+        <video
+          src={`${previewSrc}#t=0.1`}
+          preload="metadata"
+          muted
+          playsInline
+          aria-hidden="true"
+          tabIndex={-1}
+          className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+          style={{ background: `hsl(${posterHue} 40% 10%)` }}
+        />
       ) : (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           style={{ background: "var(--ui-card-bg-2)" }}>

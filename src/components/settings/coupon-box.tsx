@@ -74,11 +74,11 @@ export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountA
       <div className="flex items-start gap-4">
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
           style={{
-            background: "linear-gradient(135deg, hsl(45 100% 50% / 0.18), hsl(38 92% 55% / 0.08))",
-            border: "1px solid hsl(45 100% 50% / 0.3)",
-            boxShadow: "0 4px 14px hsl(45 100% 50% / 0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
+            background: "linear-gradient(135deg, hsl(258 90% 66% / 0.18), hsl(258 90% 66% / 0.08))",
+            border: "1px solid hsl(258 90% 66% / 0.3)",
+            boxShadow: "0 4px 14px hsl(258 90% 66% / 0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
           }}>
-          <Ticket className="h-5 w-5 text-yellow-400" strokeWidth={2.25} />
+          <Ticket className="h-5 w-5 text-violet-400" strokeWidth={2.25} />
         </div>
         <div className="flex-1 space-y-4">
           <div>
@@ -96,7 +96,7 @@ export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountA
               value={code}
               onChange={e => setCode(e.target.value.toUpperCase())}
               onKeyDown={e => e.key === "Enter" && redeem()}
-              className="flex-1 rounded-xl px-4 py-2.5 text-sm font-mono uppercase tracking-wider outline-none transition-all focus:ring-2 focus:ring-yellow-500/30 focus:border-yellow-500/50"
+              className="flex-1 rounded-xl px-4 py-2.5 text-sm font-mono uppercase tracking-wider outline-none transition-all focus:ring-2 focus:ring-violet-500/30 focus:border-violet-500/50"
               style={{
                 background: "hsl(0 0% 100% / 0.03)",
                 border: "1px solid hsl(0 0% 100% / 0.08)",
@@ -108,9 +108,9 @@ export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountA
               disabled={loading || !code.trim()}
               className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98]"
               style={{
-                background: "linear-gradient(135deg, hsl(45 100% 55%), hsl(38 92% 55%))",
-                color: "#1a1100",
-                boxShadow: "0 6px 20px hsl(45 100% 50% / 0.3), inset 0 1px 0 rgba(255,255,255,0.2)",
+                background: "linear-gradient(180deg, #8B66F8, #6C4CF4)",
+                color: "#ffffff",
+                boxShadow: "0 6px 20px hsl(258 90% 66% / 0.3), inset 0 1px 0 rgba(255,255,255,0.2)",
               }}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crown className="h-4 w-4" strokeWidth={2.5} />}
