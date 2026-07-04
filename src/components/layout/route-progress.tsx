@@ -51,7 +51,7 @@ export function RouteProgress() {
         style={{
           height: "100%",
           width: `${progress}%`,
-          background: "linear-gradient(90deg, hsl(190 100% 50%), hsl(252 83% 60%))",
+          background: "linear-gradient(90deg, hsl(258 90% 66%), hsl(252 83% 60%))",
           boxShadow: "0 0 8px hsl(252 83% 60% / 0.6)",
           transition: "width 280ms cubic-bezier(0.16, 1, 0.3, 1)",
         }}

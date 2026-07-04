@@ -24,7 +24,7 @@ export function ApiKeyField({
         <div className="flex items-center gap-1.5">
           <label htmlFor={def.id} className="text-sm font-medium" style={{ color: "var(--ui-text-secondary)" }}>{def.label}</label>
           <a href={def.getUrl} target="_blank" rel="noopener noreferrer"
-            className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
+            className="transition-colors hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }}>
             <ExternalLink className="h-3 w-3" />
           </a>
           {def.free && <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 bg-emerald-500/10">ฟรี</span>}
@@ -51,11 +51,11 @@ export function ApiKeyField({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={`วาง ${def.label}...`}
-            className="border-0 pr-16 font-mono text-xs focus-visible:ring-1 focus-visible:ring-cyan-500/50"
+            className="border-0 pr-16 font-mono text-xs focus-visible:ring-1 focus-visible:ring-violet-500/50"
             style={{ background: "var(--ui-input-bg)", color: "var(--ui-text-secondary)" }}
           />
           <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-            <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? "ซ่อน key" : "แสดง key"} className="transition-colors hover:text-cyan-400" style={{ color: "var(--ui-text-muted)" }}>
+            <button type="button" onClick={() => setShow((v) => !v)} aria-label={show ? "ซ่อน key" : "แสดง key"} className="transition-colors hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }}>
               {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </button>
             {isSaved && onDelete && (

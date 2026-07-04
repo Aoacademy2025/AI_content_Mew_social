@@ -45,7 +45,7 @@ export function AccountMenu({ extraItems }: { extraItems?: React.ReactNode }) {
           <button
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white transition-opacity hover:opacity-80"
             style={{
-              background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))",
+              background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(258 90% 55%))",
             }}
           >
             {initials}
