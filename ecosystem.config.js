@@ -173,6 +173,12 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/tsx",
       args: "scripts/render-worker.ts",
+      // Rung 2 (docs/scale-upgrade-plan.md): 2 parallel render instances on the 8-vCPU box
+      // so concurrent renders don't wait behind a single serial worker. Each instance polls
+      // and claims RenderJob rows independently; SQLite atomic claims already prevent
+      // double-claim. Bump toward 3 (and drop RENDER_CONCURRENCY→2) only if wait still grows.
+      instances: 2,
+      exec_mode: "fork",
       autorestart: true,
       watch: false,
       kill_timeout: 30000, // allow graceful drain (cancel render + requeue) before SIGKILL
