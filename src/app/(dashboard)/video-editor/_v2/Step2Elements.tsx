@@ -76,8 +76,21 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     try { await onRender(); } finally { setSubmitting(false); }
   }
 
+  // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
+  const primaryCta = (
+    <BtnPrimary
+      className="w-full"
+      onClick={() => void handleRender()}
+      disabled={submitting}
+      style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
+    >
+      {submitting ? "กำลังส่งงาน…" : "เรนเดอร์วิดีโอ"}
+    </BtnPrimary>
+  );
+
   return (
-    <div className="flex min-h-0 flex-1">
+    <>
+    <div className="flex min-h-0 flex-1 max-lg:flex-col">
       {/* ── เนื้อหาซ้าย: 4 กลุ่ม ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-y-auto px-7 py-6">
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
@@ -418,11 +431,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
       {/* ── Right rail 372px ── */}
       <aside
-        className="flex w-[372px] shrink-0 flex-col gap-4 overflow-y-auto px-5 py-5"
+        className="flex flex-col gap-4 overflow-y-auto px-5 py-5 lg:w-[372px] lg:shrink-0 max-lg:w-full max-lg:shrink"
         style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}
       >
-        {/* Preview 9:16 (196×348) */}
-        <div className="flex justify-center">
+        {/* Preview 9:16 (196×348) — พรีวิวจริงมีแค่หลังเรนเดอร์ ซ่อนบนมือถือเพื่อประหยัดที่ */}
+        <div className="flex justify-center max-lg:hidden">
           <div
             className="flex h-[348px] w-[196px] flex-col items-center justify-center gap-2"
             style={{ borderRadius: 16, background: "#0A0A12", border: `1px solid ${color.cardBorder}` }}
@@ -455,16 +468,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           )}
         </div>
 
-        {/* CTA เดียว */}
+        {/* CTA เดียว — ปุ่มซ่อนบนมือถือ (ย้ายไป sticky footer), แต่ caption ยังโชว์เหนือ footer */}
         <div className="flex flex-col gap-2">
-          <BtnPrimary
-            className="w-full"
-            onClick={() => void handleRender()}
-            disabled={submitting}
-            style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
-          >
-            {submitting ? "กำลังส่งงาน…" : "เรนเดอร์วิดีโอ"}
-          </BtnPrimary>
+          <div className="max-lg:hidden">{primaryCta}</div>
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             คลิปยาว ~{fmtTime(estSec)}
             {p.usage?.minutes ? ` · ใช้ ~${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
@@ -473,6 +479,21 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         </div>
       </aside>
     </div>
+
+    {/* Sticky bottom CTA — มือถือเท่านั้น, ใช้ handler/label เดียวกับปุ่มใน rail */}
+    <div
+      className="lg:hidden sticky bottom-0 z-10"
+      style={{
+        background: color.bg0,
+        borderTop: `1px solid ${color.cardBorder}`,
+        padding: "12px 14px calc(12px + env(safe-area-inset-bottom))",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+      }}
+    >
+      {primaryCta}
+    </div>
+    </>
   );
 }
 

@@ -57,12 +57,26 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
     setSelectedSeg(to);
   }
 
+  // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
+  const ctaDisabled = p.mode === "upload" ? !p.clipUrl : !lines.length;
+  const primaryCta = (
+    <BtnPrimary
+      className="w-full"
+      disabled={ctaDisabled}
+      style={ctaDisabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+      onClick={onNext}
+    >
+      ถัดไป: เลือกองค์ประกอบ →
+    </BtnPrimary>
+  );
+
   return (
-    <div className="flex min-h-0 flex-1">
+    <>
+    <div className="flex min-h-0 flex-1 max-lg:flex-col">
       {/* ── เนื้อหาซ้าย ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto px-7 py-6">
         {/* การ์ดเลือกโหมด 2 ใบ */}
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
             selected={p.mode === "script"}
             onClick={() => p.setMode("script")}
@@ -146,7 +160,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
 
       {/* ── Right rail 372px ── */}
       <aside
-        className="flex w-[372px] shrink-0 flex-col"
+        className="flex flex-col lg:w-[372px] lg:shrink-0 max-lg:w-full max-lg:shrink"
         style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}
       >
         <div className="px-5 pt-5 pb-3">
@@ -203,19 +217,27 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
           )}
         </div>
 
-        {/* CTA เดียว */}
-        <div className="px-5 pb-5 pt-2">
-          <BtnPrimary
-            className="w-full"
-            disabled={p.mode === "upload" ? !p.clipUrl : !lines.length}
-            style={(p.mode === "upload" ? !p.clipUrl : !lines.length) ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
-            onClick={onNext}
-          >
-            ถัดไป: เลือกองค์ประกอบ →
-          </BtnPrimary>
+        {/* CTA เดียว — ซ่อนบนมือถือ (ย้ายไป sticky footer ด้านล่างแทน) */}
+        <div className="px-5 pb-5 pt-2 max-lg:hidden">
+          {primaryCta}
         </div>
       </aside>
     </div>
+
+    {/* Sticky bottom CTA — มือถือเท่านั้น, ใช้ handler/label เดียวกับปุ่มใน rail */}
+    <div
+      className="lg:hidden sticky bottom-0 z-10"
+      style={{
+        background: color.bg0,
+        borderTop: `1px solid ${color.cardBorder}`,
+        padding: "12px 14px calc(12px + env(safe-area-inset-bottom))",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+      }}
+    >
+      {primaryCta}
+    </div>
+    </>
   );
 }
 
