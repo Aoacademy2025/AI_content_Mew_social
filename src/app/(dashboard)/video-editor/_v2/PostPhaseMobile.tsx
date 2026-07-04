@@ -10,8 +10,9 @@
  */
 
 import { useState } from "react";
+import { toast } from "sonner";
 import {
-  CheckCircle2, ChevronDown, Download, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal,
+  CheckCircle2, ChevronDown, Download, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -69,6 +70,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
     const v = ed.videoRef.current;
     const cap = ed.captions[i];
     if (v && cap) v.currentTime = cap.startMs / 1000 + 0.01;
+    v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setEditOpen(true);
   }
 
@@ -80,7 +82,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
     const v = Math.max(0, Math.round(rawMs));
     const start = field === "startMs" ? v : cap.startMs;
     const end = field === "endMs" ? v : cap.endMs;
-    if (start >= end) return; // guard start < end
+    if (start >= end) { toast.error("ปรับไม่ได้ — จุดเข้าต้องมาก่อนจุดออก"); return; } // guard start < end
     ed.handleCaptionsChange(ed.captions.map((c, ci) => (ci === i ? { ...c, [field]: v } : c)), true);
   }
   function nudge(field: "startMs" | "endMs", deltaMs: number) {
@@ -187,14 +189,17 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
               onClick={togglePlay}
               aria-label={ed.playing ? "หยุด" : "เล่น"}
               className="flex shrink-0 items-center justify-center"
-              style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(255,255,255,.08)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }}
+              style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(255,255,255,.08)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }}
             >
               {ed.playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" style={{ marginLeft: 1 }} />}
             </button>
             <span style={{ fontSize: 11, color: color.textSecondary, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmtMs(ed.timeMs)}</span>
-            <div onClick={seekTrack} className="relative flex-1" style={{ height: 5, borderRadius: 999, background: "rgba(255,255,255,.10)", cursor: "pointer" }}>
-              <div className="absolute left-0 top-0 bottom-0" style={{ width: `${pct}%`, borderRadius: 999, background: color.gradientPrimary }} />
-              <div className="absolute" style={{ top: "50%", left: `${pct}%`, transform: "translate(-50%,-50%)", width: 13, height: 13, borderRadius: "50%", background: "#fff", boxShadow: "0 0 0 3px rgba(139,92,246,.35)" }} />
+            {/* hit area สูง ≥44px ครอบเส้นบาง 5px เดิม — seekTrack ใช้ rect ของ wrapper นี้ (left/width เท่าเดิม) จึงคำนวณ seek เหมือนเดิม */}
+            <div onClick={seekTrack} className="relative flex flex-1 items-center" style={{ height: 44, cursor: "pointer" }}>
+              <div className="pointer-events-none absolute left-0 right-0" style={{ top: "50%", transform: "translateY(-50%)", height: 5, borderRadius: 999, background: "rgba(255,255,255,.10)" }}>
+                <div className="absolute left-0 top-0 bottom-0" style={{ width: `${pct}%`, borderRadius: 999, background: color.gradientPrimary }} />
+                <div className="absolute" style={{ top: "50%", left: `${pct}%`, transform: "translate(-50%,-50%)", width: 13, height: 13, borderRadius: "50%", background: "#fff", boxShadow: "0 0 0 3px rgba(139,92,246,.35)" }} />
+              </div>
             </div>
             <span style={{ fontSize: 11, color: color.textSecondary, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmtMs(durationMs)}</span>
           </div>
@@ -218,8 +223,25 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
         )}
 
         <div className="px-3.5 pb-1.5 pt-3">
-          <div className="mb-2.5 flex items-center justify-between">
-            <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
+          <div className="mb-2.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
+              <button
+                onClick={ed.undoCaptions}
+                disabled={ed.historyLen === 0}
+                aria-label="เลิกทำการแก้ไขล่าสุด"
+                title="เลิกทำ"
+                className="flex items-center justify-center"
+                style={{
+                  width: 44, height: 44, borderRadius: "50%", background: "none",
+                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  cursor: ed.historyLen === 0 ? "default" : "pointer",
+                  opacity: ed.historyLen === 0 ? 0.4 : 1, flex: "none",
+                }}
+              >
+                <Undo2 size={16} />
+              </button>
+            </div>
             <Chip selected={ed.follow} onClick={ed.resumeFollow} style={{ padding: "5px 11px", fontSize: 11 }}>ตามซับที่กำลังเล่น</Chip>
           </div>
           {ed.captions.map((c, i) => {
