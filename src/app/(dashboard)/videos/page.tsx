@@ -47,19 +47,7 @@ const STATUS_INFO = "#38BDF8";
 const STATUS_DANGER = "#F87171";
 const STATUS_WARNING = "#FBBF24";
 
-// Calm, self-contained motion + card-hover styling (no globals.css dependency).
-const PAGE_CSS = `
-@keyframes ve-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.ve-rise { animation: ve-rise .5s cubic-bezier(.2,.65,.3,1) both; }
-.ve-card {
-  background: var(--ui-card-bg);
-  border: 1px solid var(--ui-card-border);
-  transition: border-color .15s ease, background-color .15s ease;
-}
-@media (prefers-reduced-motion: reduce) {
-  .ve-rise { animation: none; }
-}
-`;
+// .ve-card / .ve-rise now live in globals.css (Editor v2 house utilities).
 
 function connectionPrefersFallbackPreview() {
   if (typeof navigator === "undefined") return false;
@@ -165,7 +153,6 @@ export default function VideosGalleryPage() {
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <style>{PAGE_CSS}</style>
       <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-4 md:pt-6 pb-12">
         <div className="space-y-6">
 

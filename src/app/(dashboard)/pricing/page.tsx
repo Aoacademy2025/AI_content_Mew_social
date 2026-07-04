@@ -35,18 +35,7 @@ const VIOLET_TILE_BG = "rgba(139,92,246,.10)";
 const VIOLET_TILE_BORDER = "hsl(258 90% 66% / .45)";
 const GLOW = "0 8px 26px rgba(108,76,244,.35)";
 
-// Calm, self-contained card styling (no globals.css dependency) — matches dashboard/page.tsx, settings/page.tsx
-const PAGE_CSS = `
-.ve-card {
-  background: var(--ui-card-bg);
-  border: 1px solid var(--ui-card-border);
-  transition: border-color .15s ease, background-color .15s ease;
-}
-.ve-card-hover:hover {
-  border-color: hsl(258 90% 66% / .45);
-  background-color: rgba(139,92,246,.06);
-}
-`;
+// .ve-card / .ve-card-hover now live in globals.css (Editor v2 house utilities).
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
@@ -472,7 +461,6 @@ function PricingContent() {
 export default function PricingPage() {
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <style>{PAGE_CSS}</style>
       <div className="relative z-10">
         <Suspense fallback={null}>
           <PricingContent />

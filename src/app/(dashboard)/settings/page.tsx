@@ -24,18 +24,7 @@ import { CreditsBillingSection } from "@/components/settings/credits-billing-sec
 const VIOLET_GRAD = "linear-gradient(180deg,#8B66F8,#6C4CF4)";
 const VIOLET_LIGHT = "#B9A6FF";
 
-// Calm, self-contained card styling (no globals.css dependency) — matches dashboard/page.tsx
-const PAGE_CSS = `
-.ve-card {
-  background: var(--ui-card-bg);
-  border: 1px solid var(--ui-card-border);
-  transition: border-color .15s ease, background-color .15s ease;
-}
-.ve-card-hover:hover {
-  border-color: hsl(258 90% 66% / .45);
-  background-color: rgba(139,92,246,.06);
-}
-`;
+// .ve-card / .ve-card-hover now live in globals.css (Editor v2 house utilities).
 
 // ── Billing Tab ──────────────────────────────────────────────────────────
 interface PaymentRecord {
@@ -598,7 +587,6 @@ function SettingsContent() {
 export default function SettingsPage() {
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <style>{PAGE_CSS}</style>
       <div className="relative z-10 px-4 md:px-6 pt-3 md:pt-4 pb-12">
         <SettingsContent />
       </div>

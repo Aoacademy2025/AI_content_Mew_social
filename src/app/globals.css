@@ -891,3 +891,23 @@ button, a {
 @media (prefers-reduced-motion: reduce) {
   .sp-beam-1, .sp-beam-2, .sp-beam-3, .sp-grid-anim, .sp-spin { animation: none !important; }
 }
+
+/* ── Editor v2 house card + rise animation utilities ─────────────────────────
+   Shared by the reskinned dashboard / settings / pricing / videos pages.
+   Phase 6 hoisted these out of four identical local <style>{PAGE_CSS} blocks
+   into one source. Dark-only house look: subtle card surface + violet hover,
+   plus a calm rise-in on mount that respects reduced-motion. */
+.ve-card {
+  background: var(--ui-card-bg);
+  border: 1px solid var(--ui-card-border);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.ve-card-hover:hover {
+  border-color: hsl(258 90% 66% / .45);
+  background-color: rgba(139,92,246,.06);
+}
+@keyframes ve-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.ve-rise { animation: ve-rise .5s cubic-bezier(.2,.65,.3,1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .ve-rise { animation: none; }
+}

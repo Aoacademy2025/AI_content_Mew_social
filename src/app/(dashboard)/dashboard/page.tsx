@@ -32,23 +32,7 @@ const VIOLET_LIGHT = "#B9A6FF";
 const VIOLET_TILE_BG = "rgba(139,92,246,.10)";
 const VIOLET_TILE_BORDER = "hsl(258 90% 66% / .45)";
 
-// Calm, self-contained motion + card-hover styling (no globals.css dependency).
-const PAGE_CSS = `
-@keyframes ve-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.ve-rise { animation: ve-rise .5s cubic-bezier(.2,.65,.3,1) both; }
-.ve-card {
-  background: var(--ui-card-bg);
-  border: 1px solid var(--ui-card-border);
-  transition: border-color .15s ease, background-color .15s ease;
-}
-.ve-card-hover:hover {
-  border-color: hsl(258 90% 66% / .45);
-  background-color: rgba(139,92,246,.06);
-}
-@media (prefers-reduced-motion: reduce) {
-  .ve-rise { animation: none; }
-}
-`;
+// .ve-card / .ve-card-hover / .ve-rise now live in globals.css (Editor v2 house utilities).
 
 function daysLeft(isoDate: string): number {
   return Math.ceil((new Date(isoDate).getTime() - Date.now()) / 86400000);
@@ -151,8 +135,6 @@ export default function DashboardPage() {
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <style>{PAGE_CSS}</style>
-
       <div className="relative z-10 mx-auto max-w-5xl px-4 md:px-6 pt-4 md:pt-6 pb-12">
 
         {/* Editor v2 background job (renders nothing unless a v2 job exists) */}
