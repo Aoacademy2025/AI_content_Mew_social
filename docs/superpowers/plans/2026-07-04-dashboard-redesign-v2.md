@@ -109,7 +109,7 @@ The nav backbone. One task-cluster because sidebar + bottom-tabs + layout change
 
 - [ ] **Step 1 — Strip neon.** Remove `PremiumBackdrop`, `CornerBrackets`, `pp-card`, `pp-fade-*` neon usages. Replace the animated grid/orbs background with the flat editor surface (`--ui-*` / `tokens.ts bg0`).
 - [ ] **Step 2 — Rebuild layout to match the approved Phase 0 mockup:** greeting header (Kanit), plan badge (violet/business, keep expiry logic), `QuotaStatus` chip (restyled), `DashboardOnboarding` (restyled), quick-action cards (violet, flat v2 cards, ≥44px, `ArrowRight` affordance), stats cards, recent activity, upgrade CTA. Keep ALL existing `fetch('/api/user/stats')` + `/api/user/me` logic and every link target.
-- [ ] **Step 3 — Role-aware.** Admin sees an admin quick-action row (link to `/admin`); user sees the creator row. Data unchanged.
+- [ ] **Step 3 — Role-aware.** Admin sees an admin quick-action row (Insights / Users / Coupons); user sees the creator row (Editor / Gallery / Docs). **The admin dashboard body is a pure launchpad — do NOT add a system-snapshot / stats row (payers/trials/MRR); that lives in Insights.** Data unchanged.
 - [ ] **Step 4 — Build + eyeball vs mockup** (desktop + mobile). `BUILD_NO_LINT=1 npm run build`.
 - [ ] **Step 5 — Commit.** `git commit -m "dashboard-v2: rebuild /dashboard on editor tokens"`
 
@@ -182,7 +182,7 @@ Each: restyle to v2 tokens, single violet accent, keep every handler/fetch/route
 
 ## Status
 
-interviewed 2026-07-04 | approved: pending | executed: - | delivered: -
+interviewed 2026-07-04 | approved: 2026-07-04 | executed: 2026-07-05 (14 commits, build+review clean) | delivered: pending Mew merge+deploy
 
 ## Open decisions carried in (already resolved with Mew — do not re-ask)
 
