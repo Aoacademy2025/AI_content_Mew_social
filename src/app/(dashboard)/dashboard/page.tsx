@@ -22,7 +22,7 @@ interface Stats {
   videoCount: number;
   limits: { styles: number | null; contents: number | null; images: null };
   recentContents: { id: string; headline: string | null; createdAt: string; language: string }[];
-  recentVideos: { id: string; status: string; createdAt: string; avatarModel: string; content: { headline: string | null } | null }[];
+  recentVideos: { id: string; status: string; createdAt: string; avatarModel: string; script?: string | null; content: { headline: string | null } | null }[];
 }
 
 // Violet single-accent house tokens (from video-editor/_v2/tokens.ts)
@@ -317,7 +317,7 @@ export default function DashboardPage() {
                   {stats!.recentVideos.map((v) => (
                     <div key={v.id} className="flex items-center gap-3 rounded-lg px-3 py-2.5">
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: VIOLET_TILE_BORDER }} />
-                      <p className="flex-1 truncate text-[13px]" style={{ color: "var(--ui-text-secondary)" }}>{v.content?.headline || v.avatarModel}</p>
+                      <p className="flex-1 truncate text-[13px]" style={{ color: "var(--ui-text-secondary)" }}>{v.content?.headline || (v.script ? v.script.slice(0, 40) + "…" : "วิดีโอ " + new Date(v.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" }))}</p>
                       <span className="shrink-0 rounded-md px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider" style={statusStyle(v.status)}>
                         {v.status === "PROCESSING" && <Loader2 className="mr-1 inline h-2.5 w-2.5 animate-spin" />}
                         {v.status}

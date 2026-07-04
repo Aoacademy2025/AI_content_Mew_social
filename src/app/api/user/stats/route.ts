@@ -35,7 +35,7 @@ export async function GET() {
           where: { userId },
           orderBy: { createdAt: "desc" },
           take: 5,
-          select: { id: true, status: true, createdAt: true, avatarModel: true, content: { select: { headline: true } } },
+          select: { id: true, status: true, createdAt: true, avatarModel: true, script: true, content: { select: { headline: true } } },
         }),
       ]);
 
