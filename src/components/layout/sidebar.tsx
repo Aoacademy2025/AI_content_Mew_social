@@ -26,8 +26,9 @@ type SidebarNavItem = {
   href: string;
   icon: React.ElementType;
   locked?: boolean;
-  adminOnly?: boolean;
-  proOnly?: boolean;
+  /** Active only on an EXACT pathname match. Used for "/admin" so it doesn't
+   *  also light up on every /admin/* sub-route (e.g. /admin/users). */
+  exact?: boolean;
   badge?: number;
 };
 
@@ -53,7 +54,7 @@ const adminStudioItems: SidebarNavItem[] = [
   { title: "Settings",     href: "/settings",      icon: Settings },
 ];
 const adminAdminItems: SidebarNavItem[] = [
-  { title: "Admin",        href: "/admin",          icon: Shield },
+  { title: "Admin",        href: "/admin",          icon: Shield, exact: true },
   { title: "Insights",     href: "/admin/insights", icon: Activity },
   { title: "จัดการผู้ใช้",  href: "/admin/users",    icon: Users },
   { title: "คูปอง",         href: "/admin/coupons",  icon: Ticket },
@@ -181,7 +182,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
     const Icon = item.icon;
     // While session loads, don't show lock icon — assume unlocked to avoid flash
     const isLocked = sessionLoaded && !isPaid && (item as { locked?: boolean }).locked;
-    const isActive = !isLocked && (pathname === item.href || pathname.startsWith(item.href + "/"));
+    const isActive = !isLocked && (item.exact
+      ? pathname === item.href
+      : pathname === item.href || pathname.startsWith(item.href + "/"));
 
     if (isLocked) {
       return (
@@ -209,6 +212,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         onMouseEnter={() => prefetchOnce(item.href)}
         className={cn(
           "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60",
           collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
           isActive ? "font-medium" : "hover:bg-black/5 dark:hover:bg-white/5"
         )}
