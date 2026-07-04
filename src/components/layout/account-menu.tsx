@@ -1,7 +1,9 @@
 "use client";
 
-import { useUser, useClerk } from "@clerk/nextjs";
-import { LogOut } from "lucide-react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useClerk } from "@clerk/nextjs";
+import { Settings, CreditCard, LogOut } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,44 +13,57 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FadeSwap } from "@/components/ui/fade-swap";
+import { UserAvatar } from "@/components/layout/user-avatar";
+import { fetchMe } from "@/lib/use-me";
 
 /**
- * Shared account control — gradient-initials avatar trigger + dropdown
- * (user label + Logout). Extracted verbatim from the TopNav inline block so the
- * top nav AND the full-screen editor topbar share ONE Clerk-backed account menu.
+ * Shared account control — real-photo avatar trigger + dropdown
+ * (user label + Settings · Billing · Logout). Identity comes from fetchMe() (DB
+ * name + uploaded avatar) so the editor topbar matches the sidebar instead of
+ * showing the Clerk-only initials. Sign-out stays on Clerk.
  *
- * `extraItems` renders optional DropdownMenuItems ABOVE Logout (used by the editor
- * topbar to fold desktop-only links — วิธีใช้งาน / ?ui=v1 — into the menu on mobile).
- * With no extraItems the output is byte-identical to the original TopNav menu.
+ * `extraItems` renders optional DropdownMenuItems ABOVE the Settings/Billing/Logout
+ * block (used by the editor topbar to fold desktop-only links — วิธีใช้งาน / ?ui=v1
+ * — into the menu on mobile).
  */
 export function AccountMenu({ extraItems }: { extraItems?: React.ReactNode }) {
-  const { user, isLoaded } = useUser();
   const { signOut } = useClerk();
+  const [me, setMe] = useState<{ name?: string; email?: string; avatar?: string | null } | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
-  const displayName = user?.fullName ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "";
-  const displayEmail = user?.primaryEmailAddress?.emailAddress ?? "";
-  const initials = displayName
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2) || "U";
+  useEffect(() => {
+    let active = true;
+    fetchMe()
+      .then((d) => {
+        if (!active) return;
+        setMe(d ?? null);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (active) setLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const displayName = me?.name ?? "";
+  const displayEmail = me?.email ?? "";
+  const avatar = me?.avatar ?? null;
 
   return (
     <FadeSwap
-      ready={isLoaded}
+      ready={loaded}
       className="h-8 w-8 shrink-0"
       skeleton={<div className="h-8 w-8 rounded-full skeleton-wave" />}
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white transition-opacity hover:opacity-80"
-            style={{
-              background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(258 90% 55%))",
-            }}
+            aria-label="บัญชีผู้ใช้"
+            className="block h-8 w-8 shrink-0 rounded-full outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60"
           >
-            {initials}
+            <UserAvatar name={displayName} avatar={avatar} size={32} />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -59,15 +74,30 @@ export function AccountMenu({ extraItems }: { extraItems?: React.ReactNode }) {
           <DropdownMenuLabel>
             <div className="flex flex-col space-y-0.5">
               <p className="text-sm font-medium leading-none" style={{ color: "var(--ui-text-primary)" }}>
-                {displayName}
+                {displayName || "User"}
               </p>
-              <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
-                {displayEmail}
-              </p>
+              {displayEmail && (
+                <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
+                  {displayEmail}
+                </p>
+              )}
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
           {extraItems}
+          <DropdownMenuItem asChild className="cursor-pointer">
+            <Link href="/settings">
+              <Settings className="mr-2 h-4 w-4" />
+              Settings
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild className="cursor-pointer">
+            <Link href="/settings?tab=billing">
+              <CreditCard className="mr-2 h-4 w-4" />
+              Billing
+            </Link>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
           <DropdownMenuItem
             className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
             onClick={() => signOut({ redirectUrl: "/login" })}

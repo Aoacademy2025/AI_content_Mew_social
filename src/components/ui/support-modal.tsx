@@ -5,6 +5,7 @@ import { X, HelpCircle, Loader2, ImagePlus, CheckCircle2, Trash2, Sparkles, Crow
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { fetchMe } from "@/lib/use-me";
+import { UserAvatar } from "@/components/layout/user-avatar";
 
 interface SupportModalProps {
   open: boolean;
@@ -20,11 +21,17 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [plan, setPlan] = useState("FREE");
+  const [userName, setUserName] = useState("");
+  const [avatar, setAvatar] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
-      fetchMe().then(d => { if (d?.plan) setPlan(d.plan); }).catch(() => {});
+      fetchMe().then(d => {
+        if (d?.plan) setPlan(d.plan);
+        if (d?.name) setUserName(d.name);
+        setAvatar(d?.avatar ?? null);
+      }).catch(() => {});
     }
   }, [open]);
 
@@ -152,14 +159,9 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
             className="mx-5 mb-4 flex items-center gap-3 rounded-xl px-3 py-2.5"
             style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)" }}
           >
-            <div
-              className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-              style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(258 90% 55%))" }}
-            >
-              U
-            </div>
+            <UserAvatar name={userName} avatar={avatar} size={32} />
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold truncate text-white">ผู้ใช้งาน</p>
+              <p className="text-xs font-semibold truncate text-white">{userName || "ผู้ใช้งาน"}</p>
               <p className="text-[10px] truncate text-zinc-500">{planLabel}</p>
             </div>
             <span
