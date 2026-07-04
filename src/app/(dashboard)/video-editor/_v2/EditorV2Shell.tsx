@@ -108,7 +108,7 @@ export function EditorV2Shell() {
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
               <SaveStatus status={p.saveStatus} />
               <span>·</span>
-              <a href="/video-editor?ui=v1" style={{ color: color.link }}>กลับ UI ปัจจุบัน</a>
+              <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
             </div>
           </div>
         </div>
@@ -156,7 +156,7 @@ export function EditorV2Shell() {
                 <DropdownMenuItem asChild className="cursor-pointer lg:hidden">
                   <a href="/video-editor?ui=v1">
                     <RotateCcw className="mr-2 h-4 w-4" />
-                    กลับ UI ปัจจุบัน
+                    UI เดิม (รุ่นเก่า)
                   </a>
                 </DropdownMenuItem>
               </>

@@ -331,7 +331,28 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             selectedKind={p.musicTrackKind}
             onSelect={(filename, kind) => { p.setMusicTrack(filename); p.setMusicTrackKind(kind); }}
           />
-          <Advanced note="ระดับเสียงเพลง" />
+          <Advanced>
+            <label className="flex flex-col gap-2">
+              <span style={{ fontSize: 11, color: color.textFaint }}>ระดับเสียงเพลง</span>
+              <div className="flex items-center gap-2.5">
+                <input
+                  type="range" min={0} max={1} step={0.01} value={p.bgmVolume}
+                  disabled={!p.musicTrack}
+                  onChange={(e) => p.setBgmVolume(Number(e.target.value))}
+                  className="min-w-0 flex-1"
+                  style={{ accentColor: color.primary500, cursor: p.musicTrack ? "pointer" : "not-allowed", opacity: p.musicTrack ? 1 : 0.5 }}
+                />
+                <span style={{ fontSize: 11.5, color: color.textSecondary, fontVariantNumeric: "tabular-nums", width: 34, textAlign: "right" }}>
+                  {Math.round(p.bgmVolume * 100)}%
+                </span>
+              </div>
+              <span style={{ fontSize: 10.5, color: color.textFaintest, lineHeight: 1.6 }}>
+                {p.musicTrack
+                  ? "ระดับเสียงเพลงเทียบกับเสียงพูด · ค่าเริ่มต้น 12%"
+                  : "เลือกเพลงก่อนถึงจะปรับระดับเสียงได้"}
+              </span>
+            </label>
+          </Advanced>
         </Group>
         )}
 
@@ -373,7 +394,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <UserX size={14} strokeWidth={1.6} /> วิดีโอเสียง + บีโรล ไม่มีพิธีกร
             </div>
           )}
-          <Advanced note="ตำแหน่ง/สเกล WYSIWYG (ใช้ preset ที่บันทึกไว้ไปก่อน)">
+          <Advanced>
             {p.useAvatar && (
               <div className="flex flex-col gap-3">
                 <label className="flex flex-col gap-1.5">
@@ -422,6 +443,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     )}
                   </div>
                 )}
+                <span style={{ fontSize: 10.5, color: color.textFaintest, lineHeight: 1.6 }}>
+                  ปรับตำแหน่ง/ขนาดอวตารได้ฟรีหลังเรนเดอร์ (ในจอแต่งซับ)
+                </span>
               </div>
             )}
           </Advanced>
@@ -631,8 +655,10 @@ function Group({ title, desc, children }: { title: string; desc: string; childre
   );
 }
 
-/** ตั้งค่าขั้นสูง — จุดพักของฟีเจอร์เดิมทั้งหมด (นโยบาย "ย้าย ไม่ตัด") */
-function Advanced({ note, children }: { note: string; children?: React.ReactNode }) {
+/** ตั้งค่าขั้นสูง — จุดพักของฟีเจอร์เดิมทั้งหมด (นโยบาย "ย้าย ไม่ตัด").
+ *  note = ป้ายบอกฟีเจอร์ที่ยังไม่ยกเข้ามา (ไม่มี children → "จะอยู่ตรงนี้", มีบางส่วน → "กำลังตามมา").
+ *  ฟีเจอร์ที่ทำเสร็จครบแล้วไม่ต้องส่ง note — จะแสดงแค่ตัวคุมจริง */
+function Advanced({ note, children }: { note?: string; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -647,9 +673,11 @@ function Advanced({ note, children }: { note: string; children?: React.ReactNode
       {open && (
         <div className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
           {children}
-          <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7, display: "block" }}>
-            {children ? "กำลังตามมา: " : "จะอยู่ตรงนี้: "}{note}
-          </span>
+          {note && (
+            <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7, display: "block" }}>
+              {children ? "กำลังตามมา: " : "จะอยู่ตรงนี้: "}{note}
+            </span>
+          )}
         </div>
       )}
     </div>

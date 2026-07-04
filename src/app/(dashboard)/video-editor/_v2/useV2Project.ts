@@ -10,7 +10,7 @@ const DRAFT_KEY = "editor-v2-project";
 interface V2Draft {
   mode?: V2Mode; script?: string; clipUrl?: string; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
-  musicTrack?: string | null; musicTrackKind?: "system" | "user"; useAvatar?: boolean; avatarId?: string;
+  musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
 }
@@ -80,6 +80,8 @@ export function useV2Project() {
   const [musicTrack, setMusicTrack] = useState<string | null>(d.musicTrack === undefined ? "" : d.musicTrack);
   /** เพลงที่เลือกเป็นของระบบหรือของผู้ใช้ — ใช้เลือก path bgmFile ตอน submit */
   const [musicTrackKind, setMusicTrackKind] = useState<"system" | "user">(d.musicTrackKind ?? "system");
+  /** ระดับเสียงเพลง 0–1 · default 0.12 (ตรงกับ pipeline + editor v1) — ใต้เสียงพูด */
+  const [bgmVolume, setBgmVolume] = useState(d.bgmVolume ?? 0.12);
   const [useAvatar, setUseAvatar] = useState(d.useAvatar ?? false);
   const [avatarId, setAvatarId] = useState(d.avatarId ?? "");
 
@@ -165,7 +167,7 @@ export function useV2Project() {
       try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({
           mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
-          musicTrack, musicTrackKind, useAvatar, avatarId,
+          musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
           kieModel, autoMixProviders, mixPreset,
         } satisfies V2Draft));
@@ -173,7 +175,7 @@ export function useV2Project() {
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
-  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, useAvatar, avatarId,
+  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -210,6 +212,7 @@ export function useV2Project() {
     voiceId, setVoiceId,
     musicTrack, setMusicTrack,
     musicTrackKind, setMusicTrackKind,
+    bgmVolume, setBgmVolume,
     useAvatar, setUseAvatar,
     avatarId, setAvatarId,
     targetClipCount, setTargetClipCount,
