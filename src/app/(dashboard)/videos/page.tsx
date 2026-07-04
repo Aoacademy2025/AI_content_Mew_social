@@ -9,7 +9,6 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
-import { PremiumPage, PremiumCard, PremiumEyebrow } from "@/components/layout/premium-page";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 
 interface VideoItem {
@@ -35,6 +34,20 @@ type NavigatorConnection = {
   saveData?: boolean;
   effectiveType?: string;
 };
+
+// Violet single-accent house tokens (from video-editor/_v2/tokens.ts)
+const VIOLET = "#8B5CF6";
+const VIOLET_LIGHT = "#B9A6FF";
+const VIOLET_TILE_BG = "rgba(139,92,246,.10)";
+const VIOLET_TILE_BORDER = "hsl(258 90% 66% / .45)";
+
+// Semantic status hues (tokens.ts): success / info / danger / warning
+const STATUS_SUCCESS = "#34D399";
+const STATUS_INFO = "#38BDF8";
+const STATUS_DANGER = "#F87171";
+const STATUS_WARNING = "#FBBF24";
+
+// .ve-card / .ve-rise now live in globals.css (Editor v2 house utilities).
 
 function connectionPrefersFallbackPreview() {
   if (typeof navigator === "undefined") return false;
@@ -139,155 +152,162 @@ export default function VideosGalleryPage() {
   };
 
   return (
-    <PremiumPage maxWidth="max-w-7xl">
-      <div className="space-y-6">
+    <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-4 md:pt-6 pb-12">
+        <div className="space-y-6">
 
-        {/* ── Page header ── */}
-        <div className="pp-fade-up flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <PremiumEyebrow className="mb-2">
-              Gallery
-              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
-              Recent Renders
-            </PremiumEyebrow>
-            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">
-              Recent{" "}
-              <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">Generations</span>
-            </h1>
-            <p className="mt-2 text-sm text-white/55">Manage and download your AI-crafted cinematic shorts.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={fetchVideos}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs transition-colors"
-              style={{ ...btnStyle, color: "var(--ui-text-muted)" }}
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            </button>
-            <button
-              className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
-              style={{ ...btnStyle, color: "var(--ui-text-muted)" }}
-            >
-              <Filter className="h-3.5 w-3.5" /> Filter
-            </button>
-            <button
-              onClick={() => setSortLatest(p => !p)}
-              className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
-              style={{ ...btnStyle, color: "hsl(190 100% 50%)" }}
-            >
-              <ArrowUpDown className="h-3.5 w-3.5" />
-              {sortLatest ? "Latest" : "Oldest"}
-            </button>
-          </div>
-        </div>
-
-        {/* ── Expiry notice ── */}
-        <div className="flex items-center gap-2.5 rounded-xl px-4 py-3"
-          style={{ background: "hsl(38 90% 50% / 0.08)", border: "1px solid hsl(38 90% 50% / 0.25)" }}>
-          <Clock className="h-4 w-4 shrink-0" style={{ color: "hsl(38 90% 60%)" }} />
-          <p className="text-xs" style={{ color: "hsl(38 90% 70%)" }}>
-            วิดีโอในแกลเลอรีจะหมดอายุอัตโนมัติตามแพ็กเกจ <span className="font-semibold">Free 3 วัน · Pro 7 วัน · Business 14 วัน</span> — ดาวน์โหลดไว้ก่อนหมดอายุ
-          </p>
-        </div>
-
-        {/* ── Grid ── */}
-        {loading ? null : (
-          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {sorted.map(video => (
-              <VideoCard
-                key={video.id}
-                video={video}
-                daysLeft={daysLeft(video.expiresAt)}
-                onPreview={() => {
-                  // Prefer the sharp optimized gallery preview; fall back to 540p only on data-saver/2G.
-                  const url = chooseGalleryPreviewUrl(video);
-                  if (url) {
-                    setPreviewVideoId(video.id);
-                    setPreviewUrl(url);
-                  }
-                }}
-                onDelete={() => setDeleteId(video.id)}
-                deleteConfirm={deleteId === video.id}
-                onDeleteConfirm={() => handleDelete(video.id)}
-                onDeleteCancel={() => setDeleteId(null)}
-              />
-            ))}
-
-            {/* New Video card */}
-            <Link href="/video-creator">
-              <div
-                className="group flex aspect-3/4 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl transition-all hover:border-cyan-500/40 hover:bg-cyan-500/5"
-                style={{ border: "2px dashed var(--ui-card-border)" }}
+          {/* ── Page header ── */}
+          <div className="ve-rise flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
+                Gallery · Recent Renders
+              </p>
+              <h1 className="text-3xl md:text-4xl font-bold tracking-tight"
+                style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
+                Recent{" "}
+                <span style={{
+                  backgroundImage: "linear-gradient(135deg,#B9A6FF,#8B66F8)",
+                  WebkitBackgroundClip: "text",
+                  backgroundClip: "text",
+                  color: "transparent",
+                }}>Generations</span>
+              </h1>
+              <p className="mt-2 text-sm" style={{ color: "var(--ui-text-secondary)" }}>Manage and download your AI-crafted cinematic shorts.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchVideos}
+                disabled={loading}
+                className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs transition-colors"
+                style={{ ...btnStyle, color: "var(--ui-text-muted)", minHeight: 44 }}
               >
+                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+              </button>
+              <button
+                className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
+                style={{ ...btnStyle, color: "var(--ui-text-muted)", minHeight: 44 }}
+              >
+                <Filter className="h-3.5 w-3.5" /> Filter
+              </button>
+              <button
+                onClick={() => setSortLatest(p => !p)}
+                className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm transition-colors"
+                style={{ ...btnStyle, color: VIOLET_LIGHT, minHeight: 44 }}
+              >
+                <ArrowUpDown className="h-3.5 w-3.5" />
+                {sortLatest ? "Latest" : "Oldest"}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Expiry notice ── */}
+          <div className="ve-rise" style={{ animationDelay: "40ms" }}>
+            <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.30)" }} className="flex items-center gap-2.5 rounded-xl px-4 py-3 w-full">
+              <Clock className="h-4 w-4 shrink-0" style={{ color: STATUS_WARNING }} />
+              <p className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>
+                วิดีโอในแกลเลอรีจะหมดอายุอัตโนมัติตามแพ็กเกจ <span className="font-semibold" style={{ color: "var(--ui-text-primary)" }}>Free 3 วัน · Pro 7 วัน · Business 14 วัน</span> — ดาวน์โหลดไว้ก่อนหมดอายุ
+              </p>
+            </div>
+          </div>
+
+          {/* ── Grid ── */}
+          {loading ? null : (
+            <div className="ve-rise grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" style={{ animationDelay: "80ms" }}>
+              {sorted.map(video => (
+                <VideoCard
+                  key={video.id}
+                  video={video}
+                  daysLeft={daysLeft(video.expiresAt)}
+                  onPreview={() => {
+                    // Prefer the sharp optimized gallery preview; fall back to 540p only on data-saver/2G.
+                    const url = chooseGalleryPreviewUrl(video);
+                    if (url) {
+                      setPreviewVideoId(video.id);
+                      setPreviewUrl(url);
+                    }
+                  }}
+                  onDelete={() => setDeleteId(video.id)}
+                  deleteConfirm={deleteId === video.id}
+                  onDeleteConfirm={() => handleDelete(video.id)}
+                  onDeleteCancel={() => setDeleteId(null)}
+                />
+              ))}
+
+              {/* New Video card */}
+              <Link href="/video-creator">
                 <div
-                  className="flex h-10 w-10 items-center justify-center rounded-full transition-all group-hover:scale-110"
-                  style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)" }}
+                  className="group flex aspect-3/4 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl transition-all hover:border-violet-500/40 hover:bg-violet-500/5"
+                  style={{ border: "2px dashed var(--ui-card-border)" }}
                 >
-                  <Plus className="h-5 w-5 transition-colors group-hover:text-cyan-500" style={{ color: "var(--ui-text-muted)" }} />
+                  <div
+                    className="flex h-10 w-10 items-center justify-center rounded-full transition-all group-hover:scale-110"
+                    style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)" }}
+                  >
+                    <Plus className="h-5 w-5 transition-colors group-hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }} />
+                  </div>
+                  <span className="text-sm transition-colors group-hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }}>New Video</span>
                 </div>
-                <span className="text-sm transition-colors group-hover:text-cyan-500" style={{ color: "var(--ui-text-muted)" }}>New Video</span>
+              </Link>
+            </div>
+          )}
+
+          {/* ── Bottom stats ── */}
+          <div className="ve-rise grid gap-4 sm:grid-cols-3" style={{ animationDelay: "120ms" }}>
+            {[
+              { icon: Cpu,       label: "GPU CREDITS",       value: videos.length * 4,             suffix: `/ ${videos.length * 4 + 5000}` },
+              { icon: HardDrive, label: "STORAGE USED",      value: (totalSize / 1024).toFixed(1), suffix: "GB" },
+              { icon: Film,      label: "TOTAL GENERATIONS", value: videos.length,                 suffix: "" },
+            ].map(({ icon: Icon, label, value, suffix }) => (
+              <div key={label} className="ve-card flex items-center gap-4 rounded-xl p-5">
+                <div
+                  className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
+                  style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}
+                >
+                  <Icon className="h-5 w-5" style={{ color: VIOLET }} strokeWidth={2.1} />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest mb-1" style={{ color: "var(--ui-text-muted)" }}>{label}</p>
+                  <p className="text-2xl font-bold leading-none" style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
+                    {typeof value === "number" ? value.toLocaleString() : value}
+                    {suffix && <span className="ml-1 text-sm font-normal" style={{ color: "var(--ui-text-muted)" }}>{suffix}</span>}
+                  </p>
+                </div>
               </div>
-            </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Preview modal ── */}
+        {previewUrl && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
+            style={{ background: "var(--ui-overlay-bg)" }}
+            onClick={closePreview}
+          >
+            <div
+              className="relative overflow-hidden rounded-2xl shadow-2xl"
+              style={{ height: "90vh", aspectRatio: "9/16" }}
+              onClick={e => e.stopPropagation()}
+            >
+              <video
+                ref={previewVideoRef}
+                src={previewUrl}
+                controls
+                autoPlay
+                className="absolute inset-0 h-full w-full object-contain bg-black"
+              />
+              <button
+                onClick={closePreview}
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white text-sm"
+                style={{ background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)" }}
+              >
+                ✕
+              </button>
+            </div>
           </div>
         )}
-
-        {/* ── Bottom stats ── */}
-        <div className="pp-fade-up grid gap-4 sm:grid-cols-3">
-          {[
-            { icon: Cpu,       label: "GPU CREDITS",       value: videos.length * 4,             suffix: `/ ${videos.length * 4 + 5000}`, color: "190 100% 50%" },
-            { icon: HardDrive, label: "STORAGE USED",      value: (totalSize / 1024).toFixed(1), suffix: "GB",                            color: "271 91% 65%" },
-            { icon: Film,      label: "TOTAL GENERATIONS", value: videos.length,                 suffix: "",                              color: "190 100% 50%" },
-          ].map(({ icon: Icon, label, value, suffix, color }) => (
-            <PremiumCard key={label} className="flex items-center gap-4 p-5" brackets={false}>
-              <div
-                className="pp-icon-frame relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
-                style={{ "--c-accent": color } as React.CSSProperties}
-              >
-                <Icon className="h-5 w-5" style={{ color: `hsl(${color})` }} />
-              </div>
-              <div className="relative">
-                <p className="text-[10px] font-bold uppercase tracking-widest mb-1 text-white/50">{label}</p>
-                <p className="text-2xl font-black leading-none text-white">
-                  {typeof value === "number" ? value.toLocaleString() : value}
-                  {suffix && <span className="ml-1 text-sm font-normal text-white/40">{suffix}</span>}
-                </p>
-              </div>
-            </PremiumCard>
-          ))}
-        </div>
       </div>
-
-      {/* ── Preview modal ── */}
-      {previewUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
-          style={{ background: "var(--ui-overlay-bg)" }}
-          onClick={closePreview}
-        >
-          <div
-            className="relative overflow-hidden rounded-2xl shadow-2xl"
-            style={{ height: "90vh", aspectRatio: "9/16" }}
-            onClick={e => e.stopPropagation()}
-          >
-            <video
-              ref={previewVideoRef}
-              src={previewUrl}
-              controls
-              autoPlay
-              className="absolute inset-0 h-full w-full object-contain bg-black"
-            />
-            <button
-              onClick={closePreview}
-              className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white text-sm"
-              style={{ background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)" }}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
-    </PremiumPage>
+    </div>
   );
 }
 
@@ -351,17 +371,17 @@ function VideoCard({
           {isRendering && (
             <>
               <div className="relative flex h-14 w-14 items-center justify-center">
-                <div className="absolute inset-0 rounded-full border-2 border-cyan-500/20" />
-                <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-cyan-400" />
+                <div className="absolute inset-0 rounded-full" style={{ border: `2px solid ${STATUS_INFO}33` }} />
+                <div className="absolute inset-0 animate-spin rounded-full border-2 border-transparent" style={{ borderTopColor: STATUS_INFO }} />
                 <div className="flex h-8 w-8 items-center justify-center rounded-full"
                   style={{ background: "var(--ui-spinner-bg)" }}>
-                  <div className="h-3 w-3 rounded-sm" style={{ background: "hsl(190 100% 50% / 0.6)" }} />
+                  <div className="h-3 w-3 rounded-sm" style={{ background: `${STATUS_INFO}99` }} />
                 </div>
               </div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-500/70">Rendering</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: `${STATUS_INFO}b3` }}>Rendering</p>
             </>
           )}
-          {isFailed && <XCircle className="h-8 w-8 text-red-400/50" />}
+          {isFailed && <XCircle className="h-8 w-8" style={{ color: `${STATUS_DANGER}80` }} />}
         </div>
       )}
 
@@ -374,19 +394,19 @@ function VideoCard({
       <div className="absolute top-2.5 right-2.5">
         {isReady && (
           <span className="rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
-            style={{ background: "hsl(142 72% 29%)", color: "hsl(142 72% 85%)", border: "1px solid hsl(142 72% 40% / 0.5)" }}>
+            style={{ background: "rgba(52,211,153,.16)", color: STATUS_SUCCESS, border: `1px solid ${STATUS_SUCCESS}66` }}>
             Ready
           </span>
         )}
         {isRendering && (
-          <span className="rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-400"
-            style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
+          <span className="rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+            style={{ background: "rgba(56,189,248,.12)", color: STATUS_INFO, border: `1px solid ${STATUS_INFO}40` }}>
             Rendering
           </span>
         )}
         {isFailed && (
-          <span className="rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-400"
-            style={{ background: "hsl(0 84% 60% / 0.1)", border: "1px solid hsl(0 84% 60% / 0.25)" }}>
+          <span className="rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider"
+            style={{ background: "rgba(248,113,113,.10)", color: STATUS_DANGER, border: `1px solid ${STATUS_DANGER}40` }}>
             Failed
           </span>
         )}
@@ -415,7 +435,7 @@ function VideoCard({
           <>
             <button onClick={onPreview}
               className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
-              style={{ background: "hsl(190 100% 50% / 0.3)", border: "1px solid hsl(190 100% 50% / 0.5)" }}>
+              style={{ background: "rgba(139,92,246,.35)", border: `1px solid ${VIOLET_TILE_BORDER}` }}>
               <Play className="h-4 w-4 fill-white ml-0.5" />
             </button>
             {downloadSrc && (
@@ -430,16 +450,16 @@ function VideoCard({
         {isRendering && (
           <Link href={`/video-editor?resume=${video.id}`}
             className="flex items-center gap-1 rounded-full px-3 h-10 text-xs font-semibold text-white transition-all hover:scale-105"
-            style={{ background: "hsl(45 100% 50% / 0.25)", border: "1px solid hsl(45 100% 50% / 0.55)" }}
+            style={{ background: "rgba(251,191,36,.25)", border: `1px solid ${STATUS_WARNING}8c` }}
             title="เปิดในเอดิเตอร์เพื่อทำต่อ (เช่น Burn ซับ)">
             <RefreshCw className="h-3.5 w-3.5" /> ทำต่อ
           </Link>
         )}
         {deleteConfirm ? (
           <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
-            style={{ background: "rgba(0,0,0,0.8)", border: "1px solid hsl(0 84% 60% / 0.4)" }}>
-            <span className="text-xs text-red-400">Delete?</span>
-            <button onClick={onDeleteConfirm} className="text-xs text-red-400 hover:text-red-300 transition-colors">Yes</button>
+            style={{ background: "rgba(0,0,0,0.8)", border: `1px solid ${STATUS_DANGER}66` }}>
+            <span className="text-xs" style={{ color: STATUS_DANGER }}>Delete?</span>
+            <button onClick={onDeleteConfirm} className="text-xs transition-colors" style={{ color: STATUS_DANGER }}>Yes</button>
             <button onClick={onDeleteCancel} className="text-xs text-white/50 hover:text-white/80 transition-colors">No</button>
           </div>
         ) : (

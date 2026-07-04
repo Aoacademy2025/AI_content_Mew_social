@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
-  Palette, FileText, Settings, Users, Film, Shield, Lock,
+  Settings, Users, Shield, Lock,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
@@ -19,6 +19,8 @@ interface SidebarProps {
   initialPlan?: string;
   initialName?: string;
   sessionLoaded?: boolean;
+  /** Mobile drawer rendering: bump nav row height to a ≥44px touch target. */
+  touchTargets?: boolean;
 }
 
 type SidebarNavItem = {
@@ -26,33 +28,70 @@ type SidebarNavItem = {
   href: string;
   icon: React.ElementType;
   locked?: boolean;
-  adminOnly?: boolean;
-  proOnly?: boolean;
+  /** Active only on an EXACT pathname match. Used for "/admin" so it doesn't
+   *  also light up on every /admin/* sub-route (e.g. /admin/users). */
+  exact?: boolean;
   badge?: number;
 };
 
-const adminNavItems: SidebarNavItem[] = [
-  { title: "Admin",       href: "/admin",         icon: Shield,  proOnly: false },
-  { title: "Insights",    href: "/admin/insights", icon: Activity, proOnly: false },
-  { title: "Updates",     href: "/admin/updates", icon: Megaphone, proOnly: false },
-  { title: "จัดการผู้ใช้", href: "/admin/users",  icon: Users,   proOnly: false },
-  { title: "คูปอง",        href: "/admin/coupons", icon: Ticket,  proOnly: false },
-];
-
+// USER (non-admin) — one lean list, no section labels.
+// Legacy items (Styles /style, Content /content, Video Creator /video-creator)
+// are intentionally removed from nav; their routes/pages still work if visited directly.
 const userNavItems: SidebarNavItem[] = [
-  { title: "Dashboard",     href: "/dashboard",  icon: LayoutDashboard },
-  { title: "Styles",        href: "/style",       icon: Palette, adminOnly: true },
-  { title: "Content",       href: "/content",     icon: FileText, adminOnly: true },
-  { title: "Video Creator", href: "/video-creator", icon: Film,   adminOnly: true },
-  { title: "Video Editor",  href: "/video-editor",  icon: Clapperboard },
-  { title: "Gallery",       href: "/videos",      icon: Video },
-  { title: "วิธีใช้งาน",     href: "/docs",        icon: BookOpen },
-  { title: "อัปเดต",       href: "/updates",     icon: Megaphone },
-  { title: "Pricing",       href: "/pricing",     icon: CreditCard },
-  { title: "Settings",      href: "/settings",    icon: Settings },
+  { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
+  { title: "Gallery",      href: "/videos",        icon: Video },
+  { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
+  { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
+  { title: "Pricing",      href: "/pricing",       icon: CreditCard },
+  { title: "Settings",     href: "/settings",      icon: Settings },
 ];
 
-export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }: SidebarProps) {
+// ADMIN — two labeled groups. Admins reach Docs via the topbar link and Pricing
+// directly, so those are omitted here (matches the approved mockup).
+const adminStudioItems: SidebarNavItem[] = [
+  { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
+  { title: "Gallery",      href: "/videos",        icon: Video },
+  { title: "Settings",     href: "/settings",      icon: Settings },
+];
+const adminAdminItems: SidebarNavItem[] = [
+  { title: "Admin",        href: "/admin",          icon: Shield, exact: true },
+  { title: "Insights",     href: "/admin/insights", icon: Activity },
+  { title: "จัดการผู้ใช้",  href: "/admin/users",    icon: Users },
+  { title: "คูปอง",         href: "/admin/coupons",  icon: Ticket },
+  { title: "Updates",      href: "/admin/updates",  icon: Megaphone },
+];
+
+/** Small uppercase group label (admin sections). Collapses to a subtle divider. */
+function SectionLabel({
+  collapsed,
+  withDivider,
+  children,
+}: {
+  collapsed: boolean;
+  withDivider?: boolean;
+  children: React.ReactNode;
+}) {
+  if (collapsed) {
+    // No room for text when collapsed — separate groups with a faint divider.
+    if (!withDivider) return null;
+    return <div className="mx-auto my-2 h-px w-6" style={{ background: "var(--ui-divider)" }} />;
+  }
+  return (
+    <div
+      className={cn(
+        "px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider",
+        withDivider ? "pt-4" : "pt-1",
+      )}
+      style={{ color: "var(--ui-text-muted)" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, touchTargets = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const prefetchedRef = useRef<Set<string>>(new Set());
@@ -126,21 +165,88 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
   const isPro = plan === "PRO";
   const isPaid = isPro || isBusiness;
   const planLabel = isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
-  const planColor = isBusiness ? "hsl(252 83% 65%)" : isPro ? "hsl(190 100% 50%)" : "var(--ui-text-muted)";
+  const planColor = isBusiness ? "hsl(252 83% 65%)" : isPro ? "#8B5CF6" : "var(--ui-text-muted)";
 
-  const visibleUserItems = role === "ADMIN"
-    ? userNavItems
-    : userNavItems.filter(item => !item.adminOnly);
-  const navItems: SidebarNavItem[] = role === "ADMIN"
-    ? [...adminNavItems, ...visibleUserItems]
-    : visibleUserItems;
-  const navItemsWithBadges: SidebarNavItem[] = navItems.map((item) => item.href === "/updates"
-    ? { ...item, title: updatesUnread > 0 ? "อัปเดตใหม่" : "อัปเดต", badge: updatesUnread }
-    : item);
+  // Attach the unread-updates badge to the user "/updates" item (admins use /admin/updates,
+  // which has no unread badge — the helper is a no-op there).
+  const withUpdatesBadge = (items: SidebarNavItem[]): SidebarNavItem[] =>
+    items.map((item) => item.href === "/updates"
+      ? { ...item, title: updatesUnread > 0 ? "อัปเดตใหม่" : "อัปเดต", badge: updatesUnread }
+      : item);
+
+  const userItems = withUpdatesBadge(userNavItems);
 
   const initials = userName
     ? userName.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)
     : "U";
+
+  function renderNavItem(item: SidebarNavItem) {
+    const Icon = item.icon;
+    // While session loads, don't show lock icon — assume unlocked to avoid flash
+    const isLocked = sessionLoaded && !isPaid && (item as { locked?: boolean }).locked;
+    const isActive = !isLocked && (item.exact
+      ? pathname === item.href
+      : pathname === item.href || pathname.startsWith(item.href + "/"));
+
+    if (isLocked) {
+      return (
+        <div key={item.href} title={collapsed ? `${item.title} (Pro)` : undefined}
+          className={cn(
+            "relative flex items-center rounded-lg cursor-not-allowed opacity-40",
+            collapsed ? "justify-center px-2 py-2.5" : cn("gap-3 px-3 py-2 text-sm", touchTargets && "min-h-[44px]"),
+          )}
+          style={{ color: "var(--ui-text-muted)" }}
+        >
+          <Icon className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-4 w-4")} />
+          {!collapsed && (
+            <>
+              <span className="flex-1">{item.title}</span>
+              <Lock className="h-3 w-3" />
+            </>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <Link key={item.href} href={item.href} title={collapsed ? item.title : undefined}
+        prefetch={true}
+        onMouseEnter={() => prefetchOnce(item.href)}
+        className={cn(
+          "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60",
+          collapsed ? "justify-center px-2 py-2.5" : cn("gap-3 px-3 py-2 text-sm", touchTargets && "min-h-[44px]"),
+          isActive ? "font-medium" : "hover:bg-black/5 dark:hover:bg-white/5"
+        )}
+        style={{
+          background: isActive ? "rgba(139,92,246,.10)" : undefined,
+          color: isActive ? "var(--ui-text-primary)" : "var(--ui-text-secondary)",
+        }}
+      >
+        {isActive && (
+          <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
+            style={{ background: "#8B5CF6" }} />
+        )}
+        <Icon
+          className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-4 w-4")}
+          style={{ color: isActive ? "#8B5CF6" : "var(--ui-text-muted)" }}
+        />
+        {!collapsed && (
+          <>
+            <span className="min-w-0 flex-1 truncate">{item.title}</span>
+            {(item.badge ?? 0) > 0 && (
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-500 px-1.5 text-[10px] font-bold leading-none text-white">
+                {(item.badge ?? 0) > 9 ? "9+" : item.badge}
+              </span>
+            )}
+          </>
+        )}
+        {collapsed && (item.badge ?? 0) > 0 && (
+          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-400" />
+        )}
+      </Link>
+    );
+  }
 
   return (
     <div
@@ -172,7 +278,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         >
           <div
             className="flex h-9 w-9 items-center justify-center rounded-full text-xs font-bold text-white"
-            style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))" }}
+            style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}
           >
             {initials}
           </div>
@@ -203,70 +309,16 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
 
       {/* Nav */}
       <nav className={cn("flex-1 overflow-y-auto py-3 space-y-0.5", collapsed ? "px-1.5" : "px-2")}>
-        {navItemsWithBadges.map((item) => {
-          const Icon = item.icon;
-          // While session loads, don't show lock icon — assume unlocked to avoid flash
-          const isLocked = sessionLoaded && !isPaid && (item as { locked?: boolean }).locked;
-          const isActive = !isLocked && (pathname === item.href || pathname.startsWith(item.href + "/"));
-
-          if (isLocked) {
-            return (
-              <div key={item.href} title={collapsed ? `${item.title} (Pro)` : undefined}
-                className={cn(
-                  "relative flex items-center rounded-lg cursor-not-allowed opacity-40",
-                  collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
-                )}
-                style={{ color: "var(--ui-text-muted)" }}
-              >
-                <Icon className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-4 w-4")} />
-                {!collapsed && (
-                  <>
-                    <span className="flex-1">{item.title}</span>
-                    <Lock className="h-3 w-3" />
-                  </>
-                )}
-              </div>
-            );
-          }
-
-          return (
-            <Link key={item.href} href={item.href} title={collapsed ? item.title : undefined}
-              prefetch={true}
-              onMouseEnter={() => prefetchOnce(item.href)}
-              className={cn(
-                "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
-                collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
-                isActive ? "font-medium" : "hover:bg-black/5 dark:hover:bg-white/5"
-              )}
-              style={{
-                background: isActive ? "hsl(190 100% 50% / 0.08)" : undefined,
-                color: isActive ? "var(--ui-text-primary)" : "var(--ui-text-secondary)",
-              }}
-            >
-              {isActive && (
-                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full"
-                  style={{ background: "hsl(190 100% 50%)" }} />
-              )}
-              <Icon
-                className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-4 w-4")}
-                style={{ color: isActive ? "hsl(190 100% 50%)" : "var(--ui-text-muted)" }}
-              />
-              {!collapsed && (
-                <>
-                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                  {(item.badge ?? 0) > 0 && (
-                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-500 px-1.5 text-[10px] font-bold leading-none text-white">
-                      {(item.badge ?? 0) > 9 ? "9+" : item.badge}
-                    </span>
-                  )}
-                </>
-              )}
-              {collapsed && (item.badge ?? 0) > 0 && (
-                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-sky-400" />
-              )}
-            </Link>
-          );
-        })}
+        {role === "ADMIN" ? (
+          <>
+            <SectionLabel collapsed={collapsed}>Studio</SectionLabel>
+            {adminStudioItems.map(renderNavItem)}
+            <SectionLabel collapsed={collapsed} withDivider>Admin</SectionLabel>
+            {adminAdminItems.map(renderNavItem)}
+          </>
+        ) : (
+          userItems.map(renderNavItem)
+        )}
       </nav>
 
       {/* Bottom */}
@@ -298,13 +350,13 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
                         width: `${Math.min(100, limitNow > 0 ? (usedNow / limitNow) * 100 : 0)}%`,
                         background: usedNow >= limitNow
                           ? "linear-gradient(90deg, hsl(0 80% 55%), hsl(20 90% 55%))"
-                          : "linear-gradient(90deg, hsl(252 83% 65%), hsl(190 100% 55%))",
+                          : "linear-gradient(90deg, #8B66F8, #6C4CF4)",
                         boxShadow: usedNow >= limitNow ? "0 0 8px rgba(239,68,68,0.6)" : "0 0 8px rgba(139,92,246,0.8)",
                       }} />
                   </div>
                   {/* cta */}
                   <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-[11px] font-bold text-white transition-all group-hover:brightness-110"
-                    style={{ background: "linear-gradient(135deg, hsl(252 83% 58%), hsl(220 90% 62%))", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
+                    style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
                     <span>⚡</span>
                     <span>Upgrade to Pro</span>
                   </div>
@@ -313,7 +365,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
             ) : isPro ? (
               <Link href="/settings?tab=billing"
                 className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
-                style={{ background: "linear-gradient(135deg, hsl(252 83% 50%), hsl(280 80% 55%))" }}>
+                style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
                 Upgrade to Business
               </Link>
             ) : <div />}

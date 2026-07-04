@@ -35,7 +35,7 @@ export const CLERK_APPEARANCE = {
     formFieldInput:
       "h-11 rounded-xl border-white/10 bg-white/5 text-white placeholder:text-zinc-600 focus:border-violet-500/60 focus:ring-violet-500/20 focus:ring-2 transition-all",
     formButtonPrimary:
-      "w-full h-11 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.99] !bg-[linear-gradient(120deg,#8b5cf6,#a78bfa)] shadow-[0_0_24px_rgba(139,92,246,.45)]",
+      "w-full h-11 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.99] !bg-[linear-gradient(180deg,#8B66F8,#6C4CF4)] shadow-[0_0_24px_rgba(139,92,246,.45)]",
     footerActionLink: "text-violet-300 hover:text-violet-200 font-medium",
     footerActionText: "text-zinc-500",
     identityPreviewText: "text-white",

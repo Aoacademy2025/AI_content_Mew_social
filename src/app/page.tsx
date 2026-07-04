@@ -28,7 +28,7 @@ export const metadata = {
 export const revalidate = 60;
 
 // Single-accent design system (violet-only, ref-inspired premium look).
-const ACCENT = "linear-gradient(120deg,#8b5cf6,#a78bfa)"; // one hue family
+const ACCENT = "linear-gradient(180deg,#8B66F8,#6C4CF4)"; // house gradient (matches app gradientPrimary)
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 const DISPLAY = { fontFamily: "'Anton', sans-serif" } as const; // giant wordmark
 const GLASS =

@@ -27,10 +27,11 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         {onMenuClick && (
           <button
             onClick={onMenuClick}
-            className="mr-2 flex h-8 w-8 items-center justify-center rounded-lg transition-colors md:hidden"
+            aria-label="เปิดเมนู"
+            className="mr-2 flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-white/5 lg:hidden"
             style={{ color: "var(--ui-text-secondary)" }}
           >
-            <Menu className="h-4 w-4" />
+            <Menu className="h-5 w-5" />
           </button>
         )}
         <Link
@@ -41,8 +42,8 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           <span
             className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden"
             style={{
-              background: "linear-gradient(135deg, hsl(220 100% 60%), hsl(252 83% 60%))",
-              boxShadow: "0 4px 14px hsl(252 83% 60% / 0.35), inset 0 1px 0 rgba(255,255,255,0.25)",
+              background: "linear-gradient(180deg,#8B66F8,#6C4CF4)",
+              boxShadow: "0 4px 14px rgba(108,76,244,0.35), inset 0 1px 0 rgba(255,255,255,0.25)",
             }}
           >
             <Sparkles className="h-4 w-4 text-white" strokeWidth={2.5} />

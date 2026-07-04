@@ -1,4 +1,4 @@
-﻿import type { Metadata } from "next";
+﻿import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -20,6 +20,12 @@ const GOOGLE_FONTS_URL =
 export const metadata: Metadata = {
   title: "HERO AI Creator Studio",
   description: "AI-Powered Content, Built for Creators.",
+};
+
+// viewport-fit=cover so env(safe-area-inset-*) is non-zero on notched devices
+// (the mobile bottom-tabs pad by safe-area-inset-bottom). Zoom + theme untouched.
+export const viewport: Viewport = {
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
