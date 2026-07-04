@@ -4,9 +4,9 @@ import { useCallback, useState } from "react";
 import type { HeygenAvatar } from "../_v2/avatar-filter";
 
 /**
- * Lazy loader for the user's HeyGen avatar list (GET /api/heygen/avatars — already
- * cached + durable-stale server-side). Mirrors the useBgm pattern. Maps the route's
- * HTTP statuses to a typed error so the picker can show the right message:
+ * Lazy loader for the user's OWN HeyGen avatars (GET /api/heygen/my-avatars — their avatar
+ * groups → looks, ~2s). Mirrors the useBgm pattern. Maps the route's HTTP statuses to a
+ * typed error so the picker can show the right message:
  *   400 → no-key · 403 → not-paid · 401 → bad-key · other → failed.
  */
 
@@ -23,7 +23,7 @@ export function useHeygenAvatars() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/heygen/avatars");
+      const res = await fetch("/api/heygen/my-avatars");
       if (res.status === 400) { setError("no-key"); setAvatars([]); return; }
       if (res.status === 403) { setError("not-paid"); setAvatars([]); return; }
       if (res.status === 401) { setError("bad-key"); setAvatars([]); return; }
