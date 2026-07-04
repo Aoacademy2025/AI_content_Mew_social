@@ -90,9 +90,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
   return (
     <>
-    <div className="flex min-h-0 flex-1 max-lg:flex-col">
+    <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย: 4 กลุ่ม ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-y-auto px-7 py-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
 
         {/* 1 · บีโรล */}
@@ -431,7 +431,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
       {/* ── Right rail 372px ── */}
       <aside
-        className="flex flex-col gap-4 overflow-y-auto px-5 py-5 lg:w-[372px] lg:shrink-0 max-lg:w-full max-lg:shrink"
+        className="flex flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-5 py-5 lg:w-[372px] lg:shrink-0 max-lg:w-full max-lg:shrink"
         style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}
       >
         {/* Preview 9:16 (196×348) — พรีวิวจริงมีแค่หลังเรนเดอร์ ซ่อนบนมือถือเพื่อประหยัดที่ */}

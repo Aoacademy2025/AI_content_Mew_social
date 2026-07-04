@@ -72,9 +72,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
 
   return (
     <>
-    <div className="flex min-h-0 flex-1 max-lg:flex-col">
+    <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto px-7 py-6">
+      <div className="flex min-w-0 flex-1 flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
         {/* การ์ดเลือกโหมด 2 ใบ */}
         <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
@@ -172,7 +172,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-5 pb-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 lg:overflow-y-auto max-lg:overflow-visible px-5 pb-3">
           {lines.map((line, i) => (
             <div
               key={`${i}-${line.slice(0, 12)}`}
