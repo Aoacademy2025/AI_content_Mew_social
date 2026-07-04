@@ -34,6 +34,34 @@ function imageModelBucket(absDelta: number): "flux1k" | "gpt1k" | "nano1k" | "gp
   return null;
 }
 
+type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
+
+// Net variable COGS (฿) from raw rows — TTS minutes + AI-image spends, netting image refunds.
+// Used for the P&L, which is ALWAYS a monthly figure (matches the monthly MRR) so that gross
+// margin / profit don't swing when the health-window selector changes (a 24h window would pair
+// monthly MRR with 1 day of COGS and read misleadingly profitable).
+function netCogs(
+  clips: Array<{ chargedMinutes: number | null }>,
+  spendRows: Array<{ delta: number }>,
+  refundRows: Array<{ delta: number }>,
+  rates: CogsRates,
+) {
+  const managedMinutes = clips.reduce((s, r) => s + (r.chargedMinutes ?? 0), 0);
+  const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+  let grossImageSpend = 0;
+  for (const r of spendRows) {
+    const bucket = imageModelBucket(Math.abs(r.delta));
+    if (!bucket) continue;
+    imageCounts[bucket]++;
+    grossImageSpend += Math.abs(r.delta);
+  }
+  const refundCredits = refundRows.reduce((s, r) => s + Math.abs(r.delta), 0);
+  const gross = computeCogs({ managedMinutes, imageCounts, rates });
+  const ratio = grossImageSpend > 0 ? Math.max(0, 1 - refundCredits / grossImageSpend) : 1;
+  const imageNet = gross.image * ratio;
+  return { tts: gross.tts, image: imageNet, video: gross.video, total: gross.tts + imageNet + gross.video };
+}
+
 function parseDays(raw: string | null): number {
   const n = Number(raw ?? 30);
   if (!Number.isFinite(n) || n < 1) return 30;
@@ -56,6 +84,9 @@ export async function GET(req: Request) {
     const days = parseDays(url.searchParams.get("days"));
     const now = new Date();
     const from = new Date(now.getTime() - days * DAY_MS);
+    // Financial P&L (COGS / margin / profit) is always monthly so it stays consistent with the
+    // monthly MRR regardless of the selected health window. Usage/cash/top-users still use `from`.
+    const monthFrom = new Date(now.getTime() - 30 * DAY_MS);
 
     // ── Parallel data fetch ───────────────────────────────────────────────────
     const [
@@ -70,6 +101,9 @@ export async function GET(req: Request) {
       activeCreatorsCount,
       creditGrantRows,
       imageRefundRows,
+      chargedClipsMonth,
+      imageSpendMonth,
+      imageRefundMonth,
     ] = await Promise.all([
       getCostRates(),
 
@@ -131,6 +165,20 @@ export async function GET(req: Request) {
       // We net these out so image COGS/creditsSpent are not upward-biased.
       prisma.creditLedger.findMany({
         where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: from } },
+        select: { delta: true },
+      }),
+
+      // ── Monthly (30-day) COGS inputs — for the P&L only (margin/profit stay monthly) ──
+      prisma.chargedClip.findMany({
+        where: { createdAt: { gte: monthFrom }, chargedMinutes: { not: null } },
+        select: { chargedMinutes: true },
+      }),
+      prisma.creditLedger.findMany({
+        where: { kind: "spend", action: "ai-image", createdAt: { gte: monthFrom } },
+        select: { delta: true },
+      }),
+      prisma.creditLedger.findMany({
+        where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: monthFrom } },
         select: { delta: true },
       }),
     ]);
@@ -200,20 +248,15 @@ export async function GET(req: Request) {
     // MRR comes from the real cohort engine: card subs + one-time/PromptPay/annual, with
     // annual terms normalized to a monthly figure. Trials are NOT revenue.
     const mrr = cohorts.mrr;
-    const cogsGross = computeCogs({ managedMinutes, imageCounts, rates });
-    // FIX 1: scale image COGS proportionally to net out refunds.
-    // imageCogsNet = imageCogsGross × max(0, 1 − refundCredits / grossImageSpend)
-    // Guard grossImageSpend=0 to avoid NaN.
-    const imageRefundRatio = grossImageSpend > 0
-      ? Math.max(0, 1 - refundCredits / grossImageSpend)
-      : 1;
-    const imageCogsNet = cogsGross.image * imageRefundRatio;
-    const cogs = { ...cogsGross, image: imageCogsNet, total: cogsGross.tts + imageCogsNet + cogsGross.video };
+    // COGS/margin/profit are a MONTHLY P&L (30-day COGS + full monthly infra vs monthly MRR),
+    // independent of the health-window selector — otherwise a 24h window shows ~1 day of COGS
+    // against a full month of MRR and profit reads far too rosy.
+    const cogs = netCogs(chargedClipsMonth, imageSpendMonth, imageRefundMonth, rates);
     const margins = computeMargins({
       revenue: mrr,
       variableCogs: cogs.total,
       infraMonthly: rates.infraMonthly,
-      periodDays: days,
+      periodDays: 30,
     });
 
     // ── Top-cost users (top 10) ───────────────────────────────────────────────
