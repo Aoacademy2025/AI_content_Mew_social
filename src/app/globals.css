@@ -911,3 +911,30 @@ button, a {
 @media (prefers-reduced-motion: reduce) {
   .ve-rise { animation: none; }
 }
+
+/* ── Founder (scarcity) banner effect ─────────────────────────────────────
+   Used by the sale-page top bar / final-CTA line and the in-app dashboard
+   founder banner: a calm pulsing violet glow on the banner shell + a
+   shimmer sweep across the filled portion of the "เหลือ N/100" progress bar. */
+@keyframes founder-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(139,92,246,0), inset 0 0 0 rgba(139,92,246,0); }
+  50% { box-shadow: 0 0 26px rgba(139,92,246,.35), inset 0 0 18px rgba(139,92,246,.08); }
+}
+.founder-glow { animation: founder-glow-pulse 3.2s ease-in-out infinite; }
+
+@keyframes founder-bar-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.founder-bar-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent);
+  animation: founder-bar-shimmer 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .founder-glow { animation: none; }
+  .founder-bar-shimmer::after { animation: none; content: none; }
+}

@@ -117,14 +117,14 @@ export default async function Home() {
 
       {/* founding bar — server-rendered, only when active */}
       {founding?.active && (
-        <div className="sticky top-0 z-50 border-b border-white/10 bg-[rgba(6,6,11,0.72)] py-2.5 backdrop-blur-md">
+        <div className="founder-glow sticky top-0 z-50 border-b border-white/10 bg-[rgba(6,6,11,0.72)] py-2.5 backdrop-blur-md">
           <div className="mx-auto flex max-w-[1140px] flex-wrap items-center justify-center gap-3 px-5 text-sm">
             <span className="font-bold" style={HEAD}>HERO AI Creator Studio</span>
             <span className="inline-flex items-center gap-1.5 text-white/70">
               <Flame className="h-4 w-4 text-amber-400" strokeWidth={2.5} aria-hidden /> ราคาผู้ก่อตั้ง {founding.total} คนแรก
             </span>
             <span className="h-[7px] w-[120px] overflow-hidden rounded-full bg-white/10">
-              <span className="block h-full rounded-full" style={{ width: `${filled}%`, background: ACCENT }} />
+              <span className="founder-bar-shimmer relative block h-full rounded-full" style={{ width: `${filled}%`, background: ACCENT }} />
             </span>
             <b className="text-violet-300">เหลือ {founding.remaining}/{founding.total}</b>
             <Link href="/register" className="rounded-full px-4 py-1.5 text-sm font-semibold text-white" style={{ background: ACCENT }}>
