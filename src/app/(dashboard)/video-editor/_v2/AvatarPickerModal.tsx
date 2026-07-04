@@ -1,16 +1,17 @@
 "use client";
 
 /**
- * คลังอวตาร — modal เลือกอวตารจากบัญชี HeyGen ของผู้ใช้ (ดึงผ่าน useHeygenAvatars ที่ parent).
- * ค้นหา + section "อวตารของคุณ" / "อวตารสาธารณะของ HeyGen" (พับได้) · เลือกแล้วปิด modal.
- * ตัวพิมพ์ Avatar ID เองอยู่ที่ Step 2 (ทางลัด) — modal นี้ presentation ล้วน.
+ * คลังอวตาร — modal เลือกอวตารจากบัญชี HeyGen ของผู้ใช้ (เฉพาะที่ผู้ใช้สร้างเอง, ดึงผ่าน
+ * useHeygenAvatars ที่ parent). แสดงเป็น section ตามชื่ออวตาร — อวตารที่มีหลาย "look"
+ * (เช่น Mew 15 ท่า) จะเห็นทุก look เลือกท่าที่ต้องการได้ · เลือกแล้วปิด modal.
+ * พิมพ์ Avatar ID เองอยู่ที่ Step 2 (ทางลัด) — modal นี้ presentation ล้วน.
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Search, User, X } from "lucide-react";
+import { Check, Search, User, X } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { GlassPanel, GroupLabel } from "./ui";
-import { partitionAvatars, type HeygenAvatar } from "./avatar-filter";
+import { groupLooksByAvatar, type HeygenAvatar } from "./avatar-filter";
 import type { HeygenAvatarsError } from "../_hooks/useHeygenAvatars";
 
 const ERROR_COPY: Record<HeygenAvatarsError, string> = {
@@ -32,7 +33,6 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
   onReload: () => void;
 }) {
   const [q, setQ] = useState("");
-  const [showPublic, setShowPublic] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -41,7 +41,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const { own, publicOnes } = useMemo(() => partitionAvatars(avatars, q), [avatars, q]);
+  const sections = useMemo(() => groupLooksByAvatar(avatars, q), [avatars, q]);
 
   if (!open) return null;
 
@@ -52,7 +52,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
       <GlassPanel className="flex w-[560px] max-w-full flex-col overflow-hidden" style={{ maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
         {/* หัว */}
         <div className="flex items-center justify-between px-5 pb-2 pt-4">
-          <GroupLabel>เลือกอวตารจากบัญชี HeyGen</GroupLabel>
+          <GroupLabel>เลือกอวตารของคุณจาก HeyGen</GroupLabel>
           <button onClick={onClose} aria-label="ปิด" style={{ background: "none", border: "none", color: color.textFaint, cursor: "pointer", padding: 4 }}>
             <X size={15} />
           </button>
@@ -72,7 +72,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
           </div>
           {stale && !error && (
             <div className="mt-2 flex items-center justify-between" style={{ fontSize: 10.5, color: color.textFaint }}>
-              <span>อาจไม่ใช่รายการล่าสุด (HeyGen ตอบช้า)</span>
+              <span>อาจไม่ใช่รายการล่าสุด</span>
               <button onClick={onReload} style={{ background: "none", border: "none", color: color.link, cursor: "pointer", padding: 0, fontSize: 10.5 }}>โหลดใหม่</button>
             </div>
           )}
@@ -81,10 +81,7 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
         {/* เนื้อ */}
         <div className="flex-1 overflow-y-auto px-4 pb-4">
           {loading && (
-            <div className="flex flex-col items-center gap-1.5 py-10 text-center">
-              <span style={{ fontSize: 12, color: color.textFaint }}>กำลังโหลดรายชื่ออวตาร…</span>
-              <span style={{ fontSize: 10.5, color: color.textFaintest }}>โหลดครั้งแรกอาจนานถึง ~1 นาที (ดึงจาก HeyGen) · ครั้งต่อไปจะเร็ว</span>
-            </div>
+            <div className="py-10 text-center" style={{ fontSize: 12, color: color.textFaint }}>กำลังโหลดรายชื่ออวตาร…</div>
           )}
 
           {!loading && error && (
@@ -97,33 +94,20 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
             </div>
           )}
 
-          {!loading && !error && own.length === 0 && publicOnes.length === 0 && (
+          {!loading && !error && sections.length === 0 && (
             <div className="py-10 text-center" style={{ fontSize: 11.5, color: color.textFaintest, lineHeight: 1.7 }}>
               {q.trim() ? "ไม่พบอวตารที่ค้นหา" : "ยังไม่มีอวตารในบัญชี HeyGen — สร้างที่ heygen.com หรือวาง Avatar ID เองด้านล่าง"}
             </div>
           )}
 
-          {!loading && !error && (own.length > 0 || publicOnes.length > 0) && (
+          {!loading && !error && sections.length > 0 && (
             <div className="flex flex-col gap-4">
-              {own.length > 0 && (
-                <section className="flex flex-col gap-2">
-                  <GroupLabel>อวตารของคุณ ({own.length})</GroupLabel>
-                  <AvatarGrid list={own} selectedId={selectedId} onPick={pick} />
+              {sections.map((s) => (
+                <section key={s.name} className="flex flex-col gap-2">
+                  <GroupLabel>{s.name}{s.looks.length > 1 ? ` (${s.looks.length})` : ""}</GroupLabel>
+                  <AvatarGrid looks={s.looks} selectedId={selectedId} onPick={pick} />
                 </section>
-              )}
-              {publicOnes.length > 0 && (
-                <section className="flex flex-col gap-2">
-                  <button
-                    onClick={() => setShowPublic((v) => !v)}
-                    className="flex items-center gap-1 self-start"
-                    style={{ background: "none", border: "none", color: color.textFaint, cursor: "pointer", padding: 0 }}
-                  >
-                    <ChevronDown size={12} strokeWidth={1.8} style={{ transform: showPublic ? "rotate(180deg)" : undefined, transition: "transform 150ms ease" }} />
-                    <GroupLabel>อวตารสาธารณะของ HeyGen ({publicOnes.length})</GroupLabel>
-                  </button>
-                  {showPublic && <AvatarGrid list={publicOnes} selectedId={selectedId} onPick={pick} />}
-                </section>
-              )}
+              ))}
             </div>
           )}
         </div>
@@ -132,33 +116,31 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
   );
 }
 
-function AvatarGrid({ list, selectedId, onPick }: { list: HeygenAvatar[]; selectedId: string; onPick: (id: string) => void }) {
+function AvatarGrid({ looks, selectedId, onPick }: { looks: HeygenAvatar[]; selectedId: string; onPick: (id: string) => void }) {
   return (
     <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4">
-      {list.map((a) => {
+      {looks.map((a) => {
         const isSelected = selectedId === a.avatar_id;
         return (
           <button
             key={a.avatar_id}
             onClick={() => onPick(a.avatar_id)}
-            className="relative flex flex-col items-center gap-1.5 text-center"
+            aria-label={`เลือก ${a.avatar_name}`}
+            className="relative flex items-center justify-center overflow-hidden"
             style={{
-              borderRadius: radius.card, padding: "8px",
-              background: isSelected ? color.selectedBg : color.cardBg,
-              border: `1px solid ${isSelected ? color.selectedBorder : color.cardBorder}`,
+              borderRadius: radius.card, aspectRatio: "3 / 4",
+              background: "#1C1C2B",
+              border: `1.5px solid ${isSelected ? color.primary500 : color.cardBorder}`,
               cursor: "pointer", transition: "all 150ms ease",
             }}
           >
-            <div className="flex aspect-[3/4] w-full items-center justify-center overflow-hidden" style={{ borderRadius: 8, background: "#1C1C2B" }}>
-              {a.preview_image_url
-                ? // eslint-disable-next-line @next/next/no-img-element
-                  <img src={a.preview_image_url} alt={a.avatar_name} className="h-full w-full object-cover" />
-                : <User size={20} strokeWidth={1.5} color={color.textFaint} />}
-            </div>
-            <span className="w-full truncate" style={{ fontSize: 10.5, color: isSelected ? color.primary300 : color.textSecondary }}>{a.avatar_name || a.avatar_id}</span>
+            {a.preview_image_url
+              ? // eslint-disable-next-line @next/next/no-img-element
+                <img src={a.preview_image_url} alt={a.avatar_name} loading="lazy" className="h-full w-full object-cover" />
+              : <User size={20} strokeWidth={1.5} color={color.textFaint} />}
             {isSelected && (
-              <span className="absolute right-1.5 top-1.5 flex h-[16px] w-[16px] items-center justify-center rounded-full" style={{ background: color.primary500 }}>
-                <Check size={10} color="#fff" strokeWidth={3} />
+              <span className="absolute right-1.5 top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full" style={{ background: color.primary500 }}>
+                <Check size={11} color="#fff" strokeWidth={3} />
               </span>
             )}
           </button>

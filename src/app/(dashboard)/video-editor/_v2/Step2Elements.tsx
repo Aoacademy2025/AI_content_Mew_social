@@ -63,10 +63,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const openAvatarPicker = () => { setAvatarPickerOpen(true); avatarLib.load(); };
-  // Prime the HeyGen list as soon as avatar mode is on — its first fetch is ~1 min
-  // (HeyGen /v2/avatars is slow, then cached), so warming it while the user is still
-  // configuring means the picker is usually ready by the time they open it. load() is
-  // idempotent (no-op once loaded/loading), so this never double-fetches.
+  // Prime the avatar list as soon as avatar mode is on, so it's ready by the time the user
+  // opens the picker. load() is idempotent (no-op once loaded/loading) → never double-fetches.
   useEffect(() => { if (p.useAvatar) avatarLib.load(); }, [p.useAvatar]); // eslint-disable-line react-hooks/exhaustive-deps
   // chips = 6 เพลงแรกของระบบ · ถ้าเพลงที่เลือกไม่อยู่ในนั้น (ระบบตัวท้าย ๆ / ของผู้ใช้) เอามาโชว์หน้าสุด
   const baseChips = bgm.systemTracks.slice(0, 6).map((t) => ({ ...t, kind: "system" as const }));
