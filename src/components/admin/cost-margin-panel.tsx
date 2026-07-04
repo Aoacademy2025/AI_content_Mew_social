@@ -187,7 +187,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
         { label: "Gemini TTS (นาที)", value: bd.tts, color: "bg-violet-500" },
         { label: "AI Image (GPT/Nano)", value: bd.image, color: "bg-sky-500" },
         { label: "AI Video (Seedance)", value: bd.video, color: "bg-cyan-500" },
-        { label: `Infra (ช่วง ${windowLabel})`, value: bd.infraProrated, color: "bg-zinc-500" },
+        { label: "Infra (ต่อเดือน)", value: bd.infraProrated, color: "bg-zinc-500" },
       ].filter((b) => b.value > 0 || b.label.startsWith("Gemini") || b.label.startsWith("Infra"))
     : [];
   const bdMax = Math.max(1, ...providerBars.map((b) => b.value));
@@ -311,10 +311,10 @@ export default function CostMarginPanel({ days }: { days: number }) {
 
               {/* ── Margin KPIs ───────────────────────────────────────────────────── */}
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <KpiTile label="ต้นทุนผันแปร AI (COGS)" value={fmtBaht(h.variableCogs)} sub={`ช่วง ${windowLabel} · Gemini TTS + AI image`} icon={Zap} tone="text-amber-300 bg-amber-500/12 border-amber-400/20" />
+                <KpiTile label="ต้นทุนผันแปร AI (COGS)" value={fmtBaht(h.variableCogs)} sub="ต่อเดือน (30 วัน) · Gemini TTS + AI image" icon={Zap} tone="text-amber-300 bg-amber-500/12 border-amber-400/20" />
                 <KpiTile label="Gross Margin %" value={fmtPct(h.grossMarginPct)} sub="(MRR - COGS) / MRR" icon={BarChart3} tone={marginTone(h.grossMarginPct)} />
                 <KpiTile label="AI Cost % ของรายได้" value={fmtPct(h.aiCostPct)} sub="COGS / MRR — ยิ่งน้อยยิ่งดี" icon={TrendingDown} tone={h.aiCostPct < 20 ? "text-emerald-300 bg-emerald-500/12 border-emerald-400/20" : h.aiCostPct < 40 ? "text-amber-300 bg-amber-500/12 border-amber-400/20" : "text-rose-300 bg-rose-500/12 border-rose-400/20"} />
-                <KpiTile label="กำไร/ขาดทุน (run-rate)" value={fmtBaht(h.netProfit)} sub="MRR - COGS - Infra (ช่วง) · ไม่ใช่เงินสดจริง" icon={Server} tone={profitTone(h.netProfit)} />
+                <KpiTile label="กำไร/ขาดทุน (run-rate)" value={fmtBaht(h.netProfit)} sub="ต่อเดือน: MRR - COGS - Infra · ไม่ใช่เงินสดจริง" icon={Server} tone={profitTone(h.netProfit)} />
               </div>
 
               {/* ── Break-even (real payers) ──────────────────────────────────────── */}
@@ -333,12 +333,12 @@ export default function CostMarginPanel({ days }: { days: number }) {
 
               {/* ── Cost breakdown by provider (window-consistent) ────────────────── */}
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 space-y-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">ต้นทุนแยก Provider · ช่วง {windowLabel}</h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">ต้นทุนแยก Provider · ต่อเดือน (30 วัน)</h3>
                 <div className="space-y-3">
                   {providerBars.map((b) => <BreakdownBar key={b.label} label={b.label} value={b.value} max={bdMax} color={b.color} />)}
                 </div>
                 <div className="flex items-center justify-between border-t border-white/10 pt-2 text-xs">
-                  <span className="font-semibold text-slate-300">รวม (COGS + Infra ช่วงนี้)</span>
+                  <span className="font-semibold text-slate-300">รวม (COGS + Infra ต่อเดือน)</span>
                   <span className="font-mono font-semibold text-white">{fmtBaht(costTotalWindow)}</span>
                 </div>
               </div>
