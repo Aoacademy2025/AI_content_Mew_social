@@ -2,19 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useUser, useClerk } from "@clerk/nextjs";
-import { LogOut, Menu, Sparkles } from "lucide-react";
+import { Menu, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { NotificationBell } from "@/components/layout/notification-bell";
-import { FadeSwap } from "@/components/ui/fade-swap";
+import { AccountMenu } from "@/components/layout/account-menu";
 
 const navLinks = [
   { title: "วิธีใช้งาน", href: "/docs" },
@@ -22,17 +13,6 @@ const navLinks = [
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
-  const { user, isLoaded } = useUser();
-  const { signOut } = useClerk();
-
-  const displayName = user?.fullName ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "";
-  const displayEmail = user?.primaryEmailAddress?.emailAddress ?? "";
-  const initials = displayName
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2) || "U";
 
   return (
     <div
@@ -103,49 +83,7 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
       {/* Right — actions */}
       <div className="flex items-center gap-2">
         <NotificationBell />
-
-        <FadeSwap
-          ready={isLoaded}
-          className="h-8 w-8 shrink-0"
-          skeleton={<div className="h-8 w-8 rounded-full skeleton-wave" />}
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white transition-opacity hover:opacity-80"
-                style={{
-                  background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))",
-                }}
-              >
-                {initials}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              className="w-56 border"
-              style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}
-              align="end"
-            >
-              <DropdownMenuLabel>
-                <div className="flex flex-col space-y-0.5">
-                  <p className="text-sm font-medium leading-none" style={{ color: "var(--ui-text-primary)" }}>
-                    {displayName}
-                  </p>
-                  <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
-                    {displayEmail}
-                  </p>
-                </div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
-              <DropdownMenuItem
-                className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
-                onClick={() => signOut({ redirectUrl: "/login" })}
-              >
-                <LogOut className="mr-2 h-4 w-4" />
-                Logout
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </FadeSwap>
+        <AccountMenu />
       </div>
     </div>
   );

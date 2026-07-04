@@ -104,6 +104,11 @@ export function useV2Project() {
     if (provs) setAutoMixProviders(provs);
   }, []);
 
+  // ── Autosave status (topbar hint) — observes the debounced persist effect below;
+  //    "idle" until the first user-driven change, then "saving" → "saved". ──
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const firstPersistRun = useRef(true);
+
   // ── Read-only wiring ──
   const [usage, setUsage] = useState<V2Usage | null>(null);
   const [avatarInfo, setAvatarInfo] = useState<V2AvatarInfo | null>(null);
@@ -148,8 +153,14 @@ export function useV2Project() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist draft (debounce 1s) — จำการตั้งค่าโปรเจกต์ข้ามเซสชัน
+  // Persist draft (debounce 1s) — จำการตั้งค่าโปรเจกต์ข้ามเซสชัน.
+  // saveStatus only OBSERVES this effect: the write itself is unchanged. The initial
+  // mount run (restoring the draft) is skipped for the status so the topbar shows a
+  // calm "บันทึกอัตโนมัติ" hint until the user's first real edit.
   useEffect(() => {
+    const isFirst = firstPersistRun.current;
+    firstPersistRun.current = false;
+    if (!isFirst) setSaveStatus("saving");
     const t = setTimeout(() => {
       try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({
@@ -158,6 +169,7 @@ export function useV2Project() {
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
           kieModel, autoMixProviders, mixPreset,
         } satisfies V2Draft));
+        if (!isFirst) setSaveStatus("saved");
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
@@ -208,6 +220,7 @@ export function useV2Project() {
     autoMixProviders, setAutoMixProviders,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
+    saveStatus,
   };
 }
 
