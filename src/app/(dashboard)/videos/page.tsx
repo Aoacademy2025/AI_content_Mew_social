@@ -201,7 +201,7 @@ export default function VideosGalleryPage() {
           </div>
 
           {/* ── Expiry notice ── */}
-          <div className="ve-rise flex items-center gap-2.5 rounded-xl px-4 py-3" style={{ animationDelay: "40ms" }}>
+          <div className="ve-rise" style={{ animationDelay: "40ms" }}>
             <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.30)" }} className="flex items-center gap-2.5 rounded-xl px-4 py-3 w-full">
               <Clock className="h-4 w-4 shrink-0" style={{ color: STATUS_WARNING }} />
               <p className="text-xs" style={{ color: "var(--ui-text-secondary)" }}>

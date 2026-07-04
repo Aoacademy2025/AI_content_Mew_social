@@ -31,7 +31,7 @@ export function MobileSidebar({ open, onOpenChange }: MobileSidebarProps) {
         >
           <X className="h-3.5 w-3.5" />
         </button>
-        <Sidebar />
+        <Sidebar touchTargets />
       </div>
     </>
   );

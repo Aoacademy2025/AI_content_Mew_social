@@ -74,7 +74,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
         </div>
       </div>
 
-      <BottomTabs />
+      {!mobileMenuOpen && <BottomTabs />}
     </div>
   );
 }

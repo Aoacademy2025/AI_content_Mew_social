@@ -19,6 +19,8 @@ interface SidebarProps {
   initialPlan?: string;
   initialName?: string;
   sessionLoaded?: boolean;
+  /** Mobile drawer rendering: bump nav row height to a ≥44px touch target. */
+  touchTargets?: boolean;
 }
 
 type SidebarNavItem = {
@@ -89,7 +91,7 @@ function SectionLabel({
   );
 }
 
-export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }: SidebarProps) {
+export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, touchTargets = false }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const prefetchedRef = useRef<Set<string>>(new Set());
@@ -191,7 +193,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         <div key={item.href} title={collapsed ? `${item.title} (Pro)` : undefined}
           className={cn(
             "relative flex items-center rounded-lg cursor-not-allowed opacity-40",
-            collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
+            collapsed ? "justify-center px-2 py-2.5" : cn("gap-3 px-3 py-2 text-sm", touchTargets && "min-h-[44px]"),
           )}
           style={{ color: "var(--ui-text-muted)" }}
         >
@@ -213,7 +215,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle }
         className={cn(
           "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60",
-          collapsed ? "justify-center px-2 py-2.5" : "gap-3 px-3 py-2 text-sm",
+          collapsed ? "justify-center px-2 py-2.5" : cn("gap-3 px-3 py-2 text-sm", touchTargets && "min-h-[44px]"),
           isActive ? "font-medium" : "hover:bg-black/5 dark:hover:bg-white/5"
         )}
         style={{
