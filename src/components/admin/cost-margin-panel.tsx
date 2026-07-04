@@ -245,8 +245,8 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     <div className="mt-2 flex flex-wrap gap-2 text-xs">
                       <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-slate-200"><Repeat className="h-3 w-3" /> Subscription {fmtNum(subCount)}</span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-slate-200"><CreditCard className="h-3 w-3" /> จ่ายครั้งเดียว {fmtNum(oneTimeCount)}</span>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2.5 py-1 text-sky-200">รายเดือน {fmtNum(monthlyCount)}</span>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2.5 py-1 text-sky-200">รายปี {fmtNum(annualCount)}</span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2.5 py-1 text-violet-200">รายเดือน {fmtNum(monthlyCount)}</span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2.5 py-1 text-violet-200">รายปี {fmtNum(annualCount)}</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-3 text-center">

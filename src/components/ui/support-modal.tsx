@@ -126,7 +126,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
                 <div
                   className="flex h-9 w-9 items-center justify-center rounded-xl shrink-0"
                   style={{
-                    background: "linear-gradient(135deg, hsl(252 83% 55%), hsl(190 100% 45%))",
+                    background: "linear-gradient(135deg, hsl(252 83% 55%), hsl(258 90% 66%))",
                     boxShadow: "0 4px 16px hsl(252 83% 55% / 0.4)",
                   }}
                 >
@@ -154,7 +154,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
           >
             <div
               className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-              style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))" }}
+              style={{ background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(258 90% 55%))" }}
             >
               U
             </div>
@@ -195,7 +195,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
                   <div
                     className="flex items-center gap-2 rounded-lg px-3 py-2 text-[11px]"
                     style={{
-                      background: "linear-gradient(90deg, rgba(124, 58, 237, 0.08), rgba(34, 211, 238, 0.05))",
+                      background: "linear-gradient(90deg, rgba(124, 58, 237, 0.08), rgba(139, 92, 246, 0.05))",
                       border: "1px solid rgba(124, 58, 237, 0.2)",
                     }}
                   >
@@ -268,7 +268,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
                   onClick={handleSend}
                   className="relative w-full rounded-xl py-3 text-sm font-bold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed group overflow-hidden"
                   style={{
-                    background: "linear-gradient(135deg, hsl(252 83% 55%), hsl(190 100% 45%))",
+                    background: "linear-gradient(135deg, hsl(252 83% 55%), hsl(258 90% 66%))",
                     boxShadow: message.trim() && !sending
                       ? "0 8px 24px hsl(252 83% 55% / 0.35), 0 0 0 1px rgba(255, 255, 255, 0.1) inset"
                       : "none",
@@ -277,7 +277,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
                   <span
                     aria-hidden
                     className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{ background: "linear-gradient(135deg, hsl(252 83% 60%), hsl(190 100% 50%))" }}
+                    style={{ background: "linear-gradient(135deg, hsl(252 83% 60%), hsl(258 90% 70%))" }}
                   />
                   <span className="relative flex items-center justify-center gap-2">
                     {sending ? (

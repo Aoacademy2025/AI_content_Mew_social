@@ -20,10 +20,10 @@ export function KeySetupChecklist({ status, onSetup, managed = false }: { status
   const doneCount = ((!managed && status.gemini) ? 1 : 0) + (stockDone ? 1 : 0);
 
   return (
-    <div className="rounded-xl border border-sky-400/25 bg-gradient-to-r from-sky-500/10 to-transparent p-4 sm:p-5">
+    <div className="rounded-xl border border-violet-400/25 bg-gradient-to-r from-violet-500/10 to-transparent p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
-          <KeyRound className="h-4 w-4 text-sky-300" />
+          <KeyRound className="h-4 w-4 text-violet-300" />
           <span className="text-sm font-semibold text-white">ตั้งค่าให้พร้อมสร้างวิดีโอ ({doneCount}/{totalRequired})</span>
         </div>
         <button type="button" onClick={onSetup}

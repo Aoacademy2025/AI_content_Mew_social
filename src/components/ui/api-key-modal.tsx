@@ -64,11 +64,11 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: "1px solid hsl(220 30% 14%)", background: "hsl(190 100% 50% / 0.04)" }}>
+          style={{ borderBottom: "1px solid hsl(220 30% 14%)", background: "hsl(258 90% 66% / 0.04)" }}>
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg"
-              style={{ background: "hsl(190 100% 50% / 0.12)", border: "1px solid hsl(190 100% 50% / 0.25)" }}>
-              <Key className="h-4 w-4 text-cyan-400" />
+              style={{ background: "hsl(258 90% 66% / 0.12)", border: "1px solid hsl(258 90% 66% / 0.25)" }}>
+              <Key className="h-4 w-4 text-violet-400" />
             </div>
             <div>
               <p className="text-sm font-bold text-white">ต้องการ API Key</p>
@@ -86,7 +86,7 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
             <div className="flex items-center justify-between">
               <label className="text-sm font-semibold text-white/70">{meta.label}</label>
               <a href={meta.link} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[10px] text-cyan-400/60 hover:text-cyan-400 transition-colors">
+                className="flex items-center gap-1 text-[10px] text-violet-400/60 hover:text-violet-400 transition-colors">
                 <ExternalLink className="h-3 w-3" /> Get key
               </a>
             </div>
@@ -98,7 +98,7 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
                 onKeyDown={e => e.key === "Enter" && handleSave()}
                 placeholder={meta.placeholder}
                 autoFocus
-                className="w-full rounded-xl px-4 py-3 pr-10 text-sm font-mono text-white placeholder:text-white/20 outline-none focus:ring-1 focus:ring-cyan-500/40"
+                className="w-full rounded-xl px-4 py-3 pr-10 text-sm font-mono text-white placeholder:text-white/20 outline-none focus:ring-1 focus:ring-violet-500/40"
                 style={{ background: "hsl(222 47% 7%)", border: "1px solid hsl(220 30% 18%)" }}
               />
               <button type="button" onClick={() => setShow(p => !p)}
@@ -116,7 +116,7 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
             </button>
             <button onClick={handleSave} disabled={!value.trim() || saving}
               className="flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold text-white disabled:opacity-40 transition-all hover:opacity-90"
-              style={{ background: "linear-gradient(135deg, hsl(190 100% 42%), hsl(230 100% 55%))" }}>
+              style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               บันทึกและลองใหม่
             </button>

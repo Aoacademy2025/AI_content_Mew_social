@@ -139,14 +139,14 @@ export function ApiKeySettings() {
               <li>
                 สร้าง key ที่{" "}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
-                  className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                  className="text-violet-400 underline underline-offset-2 hover:text-violet-300 inline-flex items-center gap-1">
                   aistudio.google.com/apikey <ExternalLink className="h-3 w-3" />
                 </a>
               </li>
               <li>
                 เข้า{" "}
                 <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
-                  className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                  className="text-violet-400 underline underline-offset-2 hover:text-violet-300 inline-flex items-center gap-1">
                   Cloud Console <ExternalLink className="h-3 w-3" />
                 </a>{" "}
                 แล้วกด <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 font-mono text-[11px]">Enable</span> Gemini key
@@ -155,7 +155,7 @@ export function ApiKeySettings() {
                 ถ้าต้องการใช้งานหลายคลิปต่อเนื่อง ให้ผูกบัตร Google ใน project เดียวกับ key เพื่อเพิ่มโควต้า
               </li>
             </ol>
-            <div className="rounded-lg bg-cyan-500/10 border border-cyan-500/25 px-3 py-2 text-[11px] text-cyan-100/90 leading-relaxed">
+            <div className="rounded-lg bg-violet-500/10 border border-violet-500/25 px-3 py-2 text-[11px] text-violet-100/90 leading-relaxed">
               <span className="font-semibold">แนะนำสำหรับ PRO:</span>{" "}
               ใช้ Gemini key ที่ผูกบัตร Google แล้ว เพราะโควต้าฟรีมีจำกัดและอาจหมดตอนสร้างเสียง ถอดซับ หรือหา keyword
             </div>
@@ -163,7 +163,7 @@ export function ApiKeySettings() {
               <span className="font-semibold">ถ้า Test ขึ้น "Generative Language API ยังไม่ได้เปิด":</span>{" "}
               เข้า{" "}
               <a href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com" target="_blank" rel="noreferrer"
-                className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 inline-flex items-center gap-1">
+                className="text-violet-400 underline underline-offset-2 hover:text-violet-300 inline-flex items-center gap-1">
                 Google Cloud Console <ExternalLink className="h-3 w-3" />
               </a>{" "}
               → กดปุ่ม <span className="font-mono text-amber-100">Enable</span> → รอ 1-2 นาที แล้วลอง Test ใหม่
@@ -203,7 +203,7 @@ export function ApiKeySettings() {
               {status.tier1Complete ? "✓ พร้อมสร้างวิดีโอ" : "ตั้งค่าจำเป็นให้ครบเพื่อเริ่มสร้างวิดีโอ"}
             </div>
 
-            <div className="text-xs font-semibold uppercase tracking-wide text-sky-200">จำเป็น</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">จำเป็น</div>
             {!managed && field("gemini")}
             {field("pexels")}
             {field("pixabay")}
@@ -237,7 +237,7 @@ export function ApiKeySettings() {
         </button>
         <button type="button" onClick={handleSave} disabled={loading || !dirty}
           className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-40"
-          style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
+          style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
           {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Save Settings
         </button>
