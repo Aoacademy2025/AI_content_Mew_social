@@ -198,16 +198,16 @@ button, a {
      - Borders softer (white/5%) instead of solid hsl */
 
   /* Nav / Sidebar */
-  --ui-nav-bg:          hsl(240 10% 5%);
-  --ui-nav-border:      hsl(0 0% 100% / 0.06);
-  --ui-sidebar-bg:      hsl(240 10% 5%);
-  --ui-sidebar-border:  hsl(0 0% 100% / 0.06);
+  --ui-nav-bg:          hsl(240 23% 5%);
+  --ui-nav-border:      hsl(0 0% 100% / 0.07);
+  --ui-sidebar-bg:      hsl(240 20% 8%);
+  --ui-sidebar-border:  hsl(0 0% 100% / 0.07);
 
   /* Cards / Panels — subtle elevation */
-  --ui-card-bg:         hsl(240 9% 7%);
-  --ui-card-border:     hsl(0 0% 100% / 0.06);
-  --ui-card-bg-2:       hsl(240 8% 9%);
-  --ui-card-bg-3:       hsl(240 10% 6%);
+  --ui-card-bg:         hsl(240 16% 7%);
+  --ui-card-border:     hsl(0 0% 100% / 0.08);
+  --ui-card-bg-2:       hsl(240 15% 9%);
+  --ui-card-bg-3:       hsl(240 18% 6%);
 
   /* Buttons / Controls */
   --ui-btn-bg:          hsl(0 0% 100% / 0.04);
@@ -215,11 +215,11 @@ button, a {
   --ui-btn-bg-hover:    hsl(0 0% 100% / 0.07);
 
   /* Input fields */
-  --ui-input-bg:        hsl(240 10% 6%);
-  --ui-input-border:    hsl(0 0% 100% / 0.08);
+  --ui-input-bg:        hsl(240 16% 7%);
+  --ui-input-border:    hsl(0 0% 100% / 0.09);
 
   /* Dividers */
-  --ui-divider:         hsl(0 0% 100% / 0.05);
+  --ui-divider:         hsl(0 0% 100% / 0.06);
 
   /* Text — softer whites for premium feel */
   --ui-text-primary:    hsl(0 0% 98%);
@@ -249,7 +249,7 @@ button, a {
 /* ── Design tokens (theme-independent) ──────────────────────────────────── */
 :root {
   /* Accent colors — softer, premium-feeling */
-  --accent-primary:   220 90% 65%;   /* soft blue */
+  --accent-primary:   258 90% 66%;   /* violet #8B5CF6 */
   --accent-secondary: 252 70% 65%;   /* soft violet */
   --accent-success:   142 60% 50%;
   --accent-warning:   38 92% 55%;
