@@ -10,6 +10,7 @@ import Link from "next/link";
 import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding";
 import { QuotaStatus } from "@/components/quota-status";
 import { V2JobBadge } from "@/components/v2-job-badge";
+import { DashboardFounderBanner } from "@/components/marketing/founder-banner";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 type Role = "ADMIN" | "USER";
@@ -190,6 +191,9 @@ export default function DashboardPage() {
             ? "ศูนย์ควบคุมผู้ดูแล — เลือกเครื่องมือด้านล่างเพื่อเริ่ม"
             : "เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม"}
         </p>
+
+        {/* Founder-urgency banner — non-paid users only, while founding seats remain */}
+        <DashboardFounderBanner plan={stats?.plan} />
 
         {/* Key setup checklist + first-login wizard (self-gating) */}
         <DashboardOnboarding />

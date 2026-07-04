@@ -59,6 +59,8 @@ export async function GET() {
       compedPaid: cohorts.compedPaid,
       mrr: cohorts.mrr,
       lapsedPayers: cohorts.lapsedPayers,
+      payingCanceling: cohorts.payingCanceling,
+      mrrAtRisk: cohorts.mrrAtRisk,
     });
   } catch (error) {
     return apiError({ route: "admin/stats", error });

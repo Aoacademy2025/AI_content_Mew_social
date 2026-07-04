@@ -60,6 +60,7 @@ type InsightSummary = {
 type ActivationData = {
   signups: number; internalTeam: number; hasGeminiKey: number; hasStockKey: number;
   paidTotal: number; trialActive: number; compedPaid: number; managed?: boolean;
+  payingCanceling?: number; mrrAtRisk?: number;
   openedEditor: number; startedPipeline: number; completedFirstVideo: number; repeatCreators: number;
   windowCompletedUsers: number; prevWindowCompletedUsers: number;
 };
@@ -293,6 +294,11 @@ export default function AdminInsightsPage() {
                     <div className="rounded-md border border-white/10 bg-black/20 px-3 py-2"><div className="text-lg font-bold text-white">{formatNumber(activation.compedPaid)}</div><div className="text-[11px] text-slate-500">แจกฟรี</div></div>
                   </div>
                 </div>
+                {!!activation.payingCanceling && activation.payingCanceling > 0 && (
+                  <p className="mt-3 rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-200">
+                    ⚠️ จ่ายอยู่ {formatNumber(activation.paidTotal)} · ในนั้น {formatNumber(activation.payingCanceling)} ยกเลิกแล้ว รอหมดรอบ (MRR เสี่ยง ฿{formatNumber(activation.mrrAtRisk)})
+                  </p>
+                )}
                 <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-relaxed text-sky-100/70">
                   💡 <span className="font-semibold">สำหรับ CEO:</span> ตัวเลขสุขภาพธุรกิจตัวแรกที่ต้องดู — ถ้า &ldquo;ได้วิดีโอแรก %&rdquo; ตก = ปัญหาใหญ่กว่า metric ระบบทุกตัวรวมกัน → ทุ่มแก้ activation ก่อน
                   {activation.internalTeam > 0 && <span className="text-sky-100/50"> · หมายเหตุ: signups รวมบัญชีทีมงาน {formatNumber(activation.internalTeam)} + นักเรียน workshop ด้วย</span>}

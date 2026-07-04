@@ -56,6 +56,12 @@ export type RevenueCohorts = {
   /** Monthly run-rate over active paying customers, annual normalized. List-price based. */
   mrr: number;
   mrrByTier: { pro: number; business: number };
+  /** Of payingTotal, subset with subStatus="canceled" — still entitled/paying this cycle, but
+   *  will churn at period end (user clicked cancel, access runs out the clock). Already counted
+   *  in payingTotal/mrr above; this is an ADDITIONAL at-risk view, not a separate bucket. */
+  payingCanceling: number;
+  /** Their contribution to `mrr` — the revenue that will disappear once they churn out. */
+  mrrAtRisk: number;
   /** Paid cash before but access has now lapsed (expired/reverted) — churn signal. */
   lapsedPayers: number;
   /** Active, unconverted free trials — NOT paying. */
@@ -110,6 +116,8 @@ export function computeRevenueCohorts(
   const compedByTier = { pro: 0, business: 0 };
   const comped = { team: 0, coupon: 0, other: 0 };
   let mrr = 0;
+  let payingCanceling = 0;
+  let mrrAtRisk = 0;
   let lapsedPayers = 0;
   let trialActive = 0;
   let compedPaid = 0;
@@ -148,6 +156,10 @@ export function computeRevenueCohorts(
       if (plan === "BUSINESS") { payingByTier.business++; mrrByTier.business += add; }
       else if (plan === "PRO") { payingByTier.pro++; mrrByTier.pro += add; }
       mrr += add;
+      if (u.subStatus === "canceled") {
+        payingCanceling++;
+        mrrAtRisk += add;
+      }
     } else if (entitledPaid && !cashPaid) {
       // Has paid-plan access but never paid cash: admin / coupon / comp — a cost, not revenue.
       compedPaid++;
@@ -179,6 +191,8 @@ export function computeRevenueCohorts(
     payingByTier,
     mrr,
     mrrByTier,
+    payingCanceling,
+    mrrAtRisk,
     lapsedPayers,
     trialActive,
     compedPaid,
