@@ -275,11 +275,13 @@ export const V2_STEPS = [
   { num: "03", label: "แต่งซับ" },
 ] as const;
 
-export function StepIndicator({ active = 0, done = [] as number[], onStepClick }: {
+export function StepIndicator({ active = 0, done = [] as number[], onStepClick, compact = false }: {
   active?: number;
   done?: number[];
   /** คลิกย้อนกลับสเต็ปที่ผ่านแล้ว (done) — สเต็ปข้างหน้าคลิกไม่ได้ */
   onStepClick?: (i: number) => void;
+  /** ซ่อน label ข้อความ เหลือแต่เลข/เช็ค (จอแคบ <lg) — desktop ไม่ส่ง = เหมือนเดิมทุก px */
+  compact?: boolean;
 }) {
   return (
     <div
@@ -316,9 +318,11 @@ export function StepIndicator({ active = 0, done = [] as number[], onStepClick }
                 {s.num}
               </span>
             )}
-            <span style={{ font: `500 12px ${font.heading}`, color: isActive ? "#fff" : isDone ? color.textSecondary : color.textFaintest }}>
-              {s.label}
-            </span>
+            {!compact && (
+              <span style={{ font: `500 12px ${font.heading}`, color: isActive ? "#fff" : isDone ? color.textSecondary : color.textFaintest }}>
+                {s.label}
+              </span>
+            )}
           </button>
         );
       })}

@@ -17,13 +17,16 @@ import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
 import { PostPhase } from "./PostPhase";
+import { PostPhaseMobile } from "./PostPhaseMobile";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
+import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 
 export function EditorV2Shell() {
   const p = useV2Project();
   const [step, setStep] = useState<0 | 1>(0);
   const { job, submit, cancel, reset, markExported } = useV2Job(p);
+  const isMobile = useIsMobile();
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
   // is on; with it off handleRender submits directly (byte-identical to before).
@@ -84,18 +87,30 @@ export function EditorV2Shell() {
           </div>
           <div className="leading-tight">
             <div style={{ font: `500 13.5px ${font.heading}` }}>New Project</div>
-            <div style={{ fontSize: 10.5, color: color.textFaint }}>
+            <div className="hidden lg:block" style={{ fontSize: 10.5, color: color.textFaint }}>
               v2 preview ·{" "}
               <a href="/video-editor?ui=v1" style={{ color: color.link }}>กลับ UI ปัจจุบัน</a>
             </div>
           </div>
         </div>
 
-        <StepIndicator
-          active={indicatorActive}
-          done={indicatorDone}
-          onStepClick={(i) => { if (!isRendering && job.phase !== "done" && i < step) setStep(i as 0 | 1); }}
-        />
+        {/* desktop (≥lg): full step labels — เหมือนเดิมทุก px */}
+        <div className="hidden lg:flex">
+          <StepIndicator
+            active={indicatorActive}
+            done={indicatorDone}
+            onStepClick={(i) => { if (!isRendering && job.phase !== "done" && i < step) setStep(i as 0 | 1); }}
+          />
+        </div>
+        {/* mobile (<lg): compact numbered dots */}
+        <div className="flex lg:hidden">
+          <StepIndicator
+            active={indicatorActive}
+            done={indicatorDone}
+            onStepClick={(i) => { if (!isRendering && job.phase !== "done" && i < step) setStep(i as 0 | 1); }}
+            compact
+          />
+        </div>
 
         <div
           className="h-[30px] w-[30px] rounded-full"
@@ -107,7 +122,11 @@ export function EditorV2Shell() {
       {isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
-        <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
+        isMobile ? (
+          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
+        ) : (
+          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
+        )
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />
       ) : step === 0 ? (

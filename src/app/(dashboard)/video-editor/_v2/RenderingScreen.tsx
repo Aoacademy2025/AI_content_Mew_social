@@ -53,7 +53,7 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, onCancel }
       className="flex flex-1 items-center justify-center"
       style={{ background: "radial-gradient(ellipse 60% 50% at 50% 42%, rgba(139,92,246,.13), transparent 70%)" }}
     >
-      <GlassPanel className="flex w-[520px] max-w-[92vw] flex-col items-center gap-5 px-10 py-8">
+      <GlassPanel className="flex w-[520px] max-w-[92vw] flex-col items-center gap-5 px-10 py-8 max-lg:px-6">
         {/* Progress ring (conic 54px) */}
         <div
           className="flex h-[54px] w-[54px] items-center justify-center rounded-full"
