@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { TopNav } from "./top-nav";
@@ -14,6 +15,7 @@ interface DashboardLayoutProps {
 }
 
 export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
+  const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -27,6 +29,18 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
       localStorage.setItem("sidebar-collapsed", String(!p));
       return !p;
     });
+  }
+
+  // Full-screen focused workspace: the editor owns its whole viewport with its own
+  // single topbar (EditorV2Shell / legacy editor both root at h-screen or flex-1).
+  // Suppress the shared dashboard chrome — TopNav, Sidebar/MobileSidebar, banners,
+  // <main> padding — ONLY on this route. Every other path renders unchanged below.
+  if (pathname === "/video-editor") {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-background">
+        {children}
+      </div>
+    );
   }
 
   return (
