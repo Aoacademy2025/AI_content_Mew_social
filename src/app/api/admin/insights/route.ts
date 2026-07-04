@@ -782,6 +782,8 @@ export async function GET(req: Request) {
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
       // Real paying customers = cash + currently entitled (was: any plan=PRO/BUSINESS, which swept in trials + comps).
       paidTotal: cohorts.payingTotal,
+      payingCanceling: cohorts.payingCanceling,
+      mrrAtRisk: cohorts.mrrAtRisk,
       trialActive: cohorts.trialActive,
       compedPaid: cohorts.compedPaid,
       openedEditor: openedUserRows.length,

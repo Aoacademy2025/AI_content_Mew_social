@@ -27,6 +27,7 @@ interface AdminStats {
   totalContents: number; totalVideos: number; totalImages: number; newToday: number; newThisWeek: number;
   // Honest revenue split (see /api/admin/stats + src/lib/revenue-cohorts.ts)
   payingTotal: number; trialActive: number; compedPaid: number; mrr: number; lapsedPayers: number;
+  payingCanceling?: number; mrrAtRisk?: number;
 }
 
 // Admin section tabs — grouped so the page is navigable instead of one long scroll.
@@ -906,7 +907,7 @@ export default function AdminDashboardPage() {
             <div>
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: VIOLET_LIGHT }}>รายได้จริง</p>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard hero title="จ่ายจริง (จ่ายเงินสด)" value={stats?.payingTotal ?? 0} sub="ใช้งานอยู่ + จ่ายเงินจริง" icon={Crown} loading={loading} />
+                <StatCard hero title="จ่ายจริง (จ่ายเงินสด)" value={stats?.payingTotal ?? 0} sub={stats?.payingCanceling ? `ใช้งานอยู่ + จ่ายเงินจริง · ${stats.payingCanceling} รอหมดรอบ` : "ใช้งานอยู่ + จ่ายเงินจริง"} icon={Crown} loading={loading} />
                 <StatCard title="Trial (ทดลอง)" value={stats?.trialActive ?? 0} sub="ทดลอง PRO ฟรี ยังไม่จ่ายเงิน" icon={Clock} loading={loading} />
                 <StatCard title="Comped (แจกสิทธิ์)" value={stats?.compedPaid ?? 0} sub="admin/coupon — เป็นต้นทุน ไม่ใช่รายได้" icon={Tag} loading={loading} />
                 <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub="รายได้ต่อเดือน (annual เฉลี่ยแล้ว)" icon={BarChart3} loading={loading} />
