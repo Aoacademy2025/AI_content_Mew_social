@@ -2,14 +2,13 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { getPlanConfig } from "@/lib/plan-config";
 import {
   getCostRates,
-  computeMrr,
   computeCogs,
   computeMargins,
   BREAK_EVEN_SUBS,
 } from "@/lib/cost-rates";
+import { getRevenueCohorts } from "@/lib/revenue-cohorts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -61,9 +60,7 @@ export async function GET(req: Request) {
     // ── Parallel data fetch ───────────────────────────────────────────────────
     const [
       rates,
-      planConfig,
-      proSubCount,
-      businessSubCount,
+      cohorts,
       chargedClips,
       imageSpendRows,
       creditPurchaseRows,
@@ -75,11 +72,11 @@ export async function GET(req: Request) {
       imageRefundRows,
     ] = await Promise.all([
       getCostRates(),
-      getPlanConfig(),
 
-      // Active subscriber counts by tier
-      prisma.user.count({ where: { subStatus: "active", plan: "PRO" } }),
-      prisma.user.count({ where: { subStatus: "active", plan: "BUSINESS" } }),
+      // Real revenue cohorts — money-backed customers (subs + one-time/PromptPay/annual),
+      // trials excluded, annual MRR normalized. Replaces the old subStatus="active"-only count
+      // that was blind to PromptPay/annual one-time payers and mislabeled trials as paying.
+      getRevenueCohorts(now),
 
       // Managed render minutes — ChargedClip rows in window. (Under MINUTE_QUOTA=1 the
       // reserve moved to the render route, so the old `minute_reserve` telemetry no longer
@@ -101,10 +98,10 @@ export async function GET(req: Request) {
         select: { delta: true },
       }),
 
-      // Subscription cash in window (only PAID payments)
+      // Plan cash in window (only PAID payments) — periodDays splits monthly (30) vs annual (365)
       prisma.payment.findMany({
         where: { status: "PAID", paidAt: { gte: from } },
-        select: { amount: true },
+        select: { amount: true, periodDays: true },
       }),
 
       // Web renders (parentJobId IS null)
@@ -185,19 +182,24 @@ export async function GET(req: Request) {
       if (baht !== undefined) packCash += baht;
     }
 
-    // ── Subscription cash ─────────────────────────────────────────────────────
-    const subCash = paidPayments.reduce((sum, p) => sum + p.amount, 0) / 100;
-
-    const cashCollected = subCash + packCash;
+    // ── Plan cash — split by term (periodDays >= 365 = annual, else monthly) ──
+    let planCashMonthly = 0;
+    let planCashAnnual = 0;
+    for (const p of paidPayments) {
+      const baht = p.amount / 100;
+      if ((p.periodDays ?? 30) >= 365) planCashAnnual += baht;
+      else planCashMonthly += baht;
+    }
+    const planCash = planCashMonthly + planCashAnnual;
+    const cashCollected = planCash + packCash;
 
     // ── Credits granted total ─────────────────────────────────────────────────
     const creditsGranted = creditGrantRows.reduce((sum, r) => sum + r.delta, 0);
 
     // ── MRR & COGS & Margins ──────────────────────────────────────────────────
-    const prices = { pro: planConfig.pro.price, business: planConfig.business.price };
-    const activeSubs = { pro: proSubCount, business: businessSubCount };
-
-    const mrr = computeMrr(activeSubs, prices);
+    // MRR comes from the real cohort engine: card subs + one-time/PromptPay/annual, with
+    // annual terms normalized to a monthly figure. Trials are NOT revenue.
+    const mrr = cohorts.mrr;
     const cogsGross = computeCogs({ managedMinutes, imageCounts, rates });
     // FIX 1: scale image COGS proportionally to net out refunds.
     // imageCogsNet = imageCogsGross × max(0, 1 − refundCredits / grossImageSpend)
@@ -269,12 +271,23 @@ export async function GET(req: Request) {
         grossMarginPct: margins.grossMarginPct,
         aiCostPct: margins.aiCostPct,
         netProfit: margins.netProfit,
+        infraProrated: margins.infraProrated,
+      },
+      // Real paying customers (subs + one-time/PromptPay/annual), trials separated. See revenue-cohorts.ts.
+      customers: cohorts,
+      // Actual cash collected in the window, split by source (satang→baht already applied).
+      cash: {
+        total: cashCollected,
+        planMonthly: planCashMonthly,
+        planAnnual: planCashAnnual,
+        packs: packCash,
       },
       breakdown: {
         tts: cogs.tts,
         image: cogs.image,
         video: cogs.video,
         infra: rates.infraMonthly,
+        infraProrated: margins.infraProrated,
       },
       usage: {
         managedMinutes,
@@ -287,7 +300,7 @@ export async function GET(req: Request) {
       },
       topUsers,
       breakEven: {
-        subs: proSubCount + businessSubCount,
+        subs: cohorts.breakEvenSubs,
         target: BREAK_EVEN_SUBS,
       },
       trend,
