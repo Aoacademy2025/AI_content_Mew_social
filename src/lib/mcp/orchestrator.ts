@@ -220,6 +220,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       await step("composite", 90);
       const plan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
       const personRanges = plan.person.map((r) => ({ start: r.startMs / 1000, end: r.endMs / 1000 }));
+      // hook = คลิปที่อัปต้องเป็นเฟรมแรกเสมอ. transcribe เว้นช่วง [0, คำแรก) ไว้ (เงียบ/หายใจ/อินโทร)
+      // ทำให้ base reel (b-roll) โผล่ก่อนหน้าคนพูด — คลุม person range แรกให้เริ่มที่ 0 (บั๊ก kapokja 07-04).
+      // person เป็น overlay บน b-roll base (composite mode:cutaway) → ทุกจังหวะที่ไม่มี person range = b-roll โผล่.
+      if (personRanges.length > 0) personRanges[0] = { ...personRanges[0], start: 0 };
       const comp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
         mode: "cutaway",
         avatarVideoUrl: input.clipUrl,

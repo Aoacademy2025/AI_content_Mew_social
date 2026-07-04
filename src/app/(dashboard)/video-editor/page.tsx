@@ -3660,6 +3660,15 @@ function LegacyVideoEditorPage() {
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
+          {/* กลับไปเวอร์ชันล่าสุด (v2) — อุดทางตัน: ผู้ใช้ที่เผลอสลับมา UI เดิมจะหาทางกลับ v2 ไม่เจอ
+              (ลิงก์ ?ui=v2 เดิมมีแค่ที่ dashboard badge). full-nav ให้ useEditorV2 อ่าน override ตอน mount */}
+          <a
+            href="/video-editor?ui=v2"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-500/15 border border-violet-500/40 text-violet-300 hover:bg-violet-500/25 transition-colors"
+            title="สลับไปตัวแก้ไขเวอร์ชันใหม่ — อัปคลิปเอง + B-roll/ตัดคลิปอัตโนมัติ"
+          >
+            ✨ เวอร์ชันใหม่
+          </a>
           {/* Reset to last-rendered style */}
           {lastRenderedStyleRef.current && styleIsDirty && !running && (
             <button

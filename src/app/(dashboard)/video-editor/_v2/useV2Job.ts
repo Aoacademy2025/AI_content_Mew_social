@@ -109,7 +109,7 @@ export function useV2Job(p: V2Project) {
         ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
         ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
         // เพลง: system → /music/<f> (resolver เดิม) · ของผู้ใช้ → /api/music/<f> (แบบ v1)
-        ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}` } : {}),
+        ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}`, bgmVolume: p.bgmVolume } : {}),
         // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
         stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
         // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
