@@ -19,7 +19,9 @@ import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { estimateClipSecV2 } from "./estimate";
 import { useBgm } from "../_hooks/useBgm";
+import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
+import { AvatarPickerModal } from "./AvatarPickerModal";
 import type { V2Project, V2BrollSource } from "./useV2Project";
 import type { MixPreset } from "./mix-presets";
 
@@ -58,6 +60,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : undefined;
   const [submitting, setSubmitting] = useState(false);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
+  const avatarLib = useHeygenAvatars();
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const openAvatarPicker = () => { setAvatarPickerOpen(true); avatarLib.load(); };
   // chips = 6 เพลงแรกของระบบ · ถ้าเพลงที่เลือกไม่อยู่ในนั้น (ระบบตัวท้าย ๆ / ของผู้ใช้) เอามาโชว์หน้าสุด
   const baseChips = bgm.systemTracks.slice(0, 6).map((t) => ({ ...t, kind: "system" as const }));
   const selectedTrack = p.musicTrack
@@ -365,28 +370,55 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             options={[{ value: "avatar", label: "มีอวตาร" }, { value: "faceless", label: "Faceless" }]}
           />
           {p.useAvatar && (
-            <div className="flex items-center gap-3">
-              <div
-                className="flex h-[66px] w-[50px] items-center justify-center overflow-hidden"
-                style={{
-                  borderRadius: 10,
-                  outline: `1.5px solid ${color.primary500}`, outlineOffset: 2,
-                  background: "#1C1C2B",
-                }}
-              >
-                {p.avatarInfo?.previewUrl
-                  ? // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.avatarInfo.previewUrl} alt="avatar" className="h-full w-full object-cover" />
-                  : <User size={20} strokeWidth={1.5} color={color.textFaint} />}
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-3">
+                <div
+                  className="flex h-[66px] w-[50px] items-center justify-center overflow-hidden"
+                  style={{
+                    borderRadius: 10,
+                    outline: `1.5px solid ${color.primary500}`, outlineOffset: 2,
+                    background: "#1C1C2B",
+                  }}
+                >
+                  {p.avatarInfo?.previewUrl
+                    ? // eslint-disable-next-line @next/next/no-img-element
+                      <img src={p.avatarInfo.previewUrl} alt="avatar" className="h-full w-full object-cover" />
+                    : <User size={20} strokeWidth={1.5} color={color.textFaint} />}
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span style={{ font: `500 12.5px ${font.heading}`, color: color.primary300 }}>
+                    {p.avatarInfo?.name || (p.avatarId ? p.avatarId : "ยังไม่ได้ตั้งอวตาร")}
+                  </span>
+                  <span style={{ fontSize: 10.5, color: color.textFaint }}>
+                    {p.avatarId ? "อวตารที่เลือกไว้" : "เลือกจากคลัง หรือวาง Avatar ID"}
+                  </span>
+                </div>
+                <button
+                  onClick={openAvatarPicker}
+                  className="shrink-0"
+                  style={{
+                    fontSize: 12, color: color.primary300, cursor: "pointer",
+                    padding: "8px 14px", borderRadius: radius.control,
+                    background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                  }}
+                >
+                  เลือกจากคลัง
+                </button>
               </div>
-              <div className="flex flex-col">
-                <span style={{ font: `500 12.5px ${font.heading}`, color: color.primary300 }}>
-                  {p.avatarInfo?.name || (p.avatarId ? p.avatarId : "ยังไม่ได้ตั้งอวตาร")}
-                </span>
-                <span style={{ fontSize: 10.5, color: color.textFaint }}>
-                  {p.avatarId ? "อวตารที่บันทึกไว้ของคุณ" : "ตั้ง Avatar ID ได้ที่ขั้นสูง"}
-                </span>
-              </div>
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>หรือวาง Avatar ID เอง</span>
+                <input
+                  value={p.avatarId}
+                  onChange={(e) => p.setAvatarId(e.target.value)}
+                  placeholder="วาง HeyGen Avatar ID"
+                  className="w-full max-w-[280px]"
+                  style={{
+                    padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                    background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                    color: color.text, fontFamily: font.body, outline: "none",
+                  }}
+                />
+              </label>
             </div>
           )}
           {!p.useAvatar && (
@@ -397,20 +429,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <Advanced>
             {p.useAvatar && (
               <div className="flex flex-col gap-3">
-                <label className="flex flex-col gap-1.5">
-                  <span style={{ fontSize: 11, color: color.textFaint }}>HeyGen Avatar ID</span>
-                  <input
-                    value={p.avatarId}
-                    onChange={(e) => p.setAvatarId(e.target.value)}
-                    placeholder="วาง HeyGen Avatar ID"
-                    className="w-full max-w-[280px]"
-                    style={{
-                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
-                      background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
-                      color: color.text, fontFamily: font.body, outline: "none",
-                    }}
-                  />
-                </label>
                 <label className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โหมดพิธีกร (HeyGen คิดเงินตามวินาทีที่เจน)</span>
                   <Segmented
@@ -449,6 +467,17 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               </div>
             )}
           </Advanced>
+          <AvatarPickerModal
+            open={avatarPickerOpen}
+            onClose={() => setAvatarPickerOpen(false)}
+            selectedId={p.avatarId}
+            onSelect={(id) => p.setAvatarId(id)}
+            avatars={avatarLib.avatars}
+            loading={avatarLib.loading}
+            error={avatarLib.error}
+            stale={avatarLib.stale}
+            onReload={avatarLib.reload}
+          />
         </Group>
         )}
       </div>
