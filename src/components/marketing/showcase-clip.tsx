@@ -36,7 +36,7 @@ export function ShowcaseClip({ src, poster, title }: { src: string; poster: stri
           <span className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/5 to-black/20" aria-hidden />
           <span
             className="absolute left-1/2 top-1/2 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-white transition duration-300 group-hover:scale-110"
-            style={{ background: "linear-gradient(120deg,#8b5cf6,#a78bfa)", boxShadow: "0 0 34px rgba(139,92,246,.55)" }}
+            style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)", boxShadow: "0 0 34px rgba(139,92,246,.55)" }}
             aria-hidden
           >
             <Play className="ml-0.5 h-6 w-6 fill-current" strokeWidth={0} />

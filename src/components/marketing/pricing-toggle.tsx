@@ -9,7 +9,7 @@ import type { PlanConfig } from "@/lib/plan-config";
 type Period = "monthly" | "yearly";
 type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
 
-const BRAND = "linear-gradient(120deg,#8b5cf6,#a78bfa)";
+const BRAND = "linear-gradient(180deg,#8B66F8,#6C4CF4)"; // house gradient (matches app gradientPrimary)
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 
 type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
