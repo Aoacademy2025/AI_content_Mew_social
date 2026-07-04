@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 interface UserAvatarProps {
@@ -19,6 +20,8 @@ interface UserAvatarProps {
  * account menu, and support modal all show ONE consistent identity.
  */
 export function UserAvatar({ name, avatar, size = 36, className }: UserAvatarProps) {
+  const [imgFailed, setImgFailed] = useState(false);
+
   const initials =
     (name ?? "")
       .trim()
@@ -29,7 +32,7 @@ export function UserAvatar({ name, avatar, size = 36, className }: UserAvatarPro
       .toUpperCase()
       .slice(0, 2) || "U";
 
-  if (avatar) {
+  if (avatar && !imgFailed) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
@@ -39,6 +42,7 @@ export function UserAvatar({ name, avatar, size = 36, className }: UserAvatarPro
         height={size}
         className={cn("shrink-0 rounded-full object-cover", className)}
         style={{ width: size, height: size }}
+        onError={() => setImgFailed(true)}
       />
     );
   }

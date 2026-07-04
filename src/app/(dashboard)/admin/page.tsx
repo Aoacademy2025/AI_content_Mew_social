@@ -912,7 +912,7 @@ export default function AdminDashboardPage() {
                 <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub="รายได้ต่อเดือน (annual เฉลี่ยแล้ว)" icon={BarChart3} loading={loading} />
               </div>
               <p className="mt-3 text-xs" style={{ color: "var(--ui-text-muted)" }}>
-                หมายเหตุ: ยอด &quot;บนแผน PRO/BUSINESS&quot; ทั้งหมด {stats?.paidUsers ?? 0} ราย = จ่ายจริง {stats?.payingTotal ?? 0} + Trial {stats?.trialActive ?? 0} + Comped {stats?.compedPaid ?? 0}
+                หมายเหตุ: ยอด &quot;บนแผน PRO/BUSINESS&quot; ทั้งหมด {stats?.paidUsers ?? 0} ราย ≈ จ่ายจริง {stats?.payingTotal ?? 0} + Trial {stats?.trialActive ?? 0} + Comped {stats?.compedPaid ?? 0} (ที่เหลือ = รอ cron ปรับสถานะ)
               </p>
             </div>
           </div>
