@@ -81,7 +81,10 @@ export function AvatarPickerModal({ open, onClose, selectedId, onSelect, avatars
         {/* เนื้อ */}
         <div className="flex-1 overflow-y-auto px-4 pb-4">
           {loading && (
-            <div className="py-10 text-center" style={{ fontSize: 12, color: color.textFaint }}>กำลังโหลดรายชื่ออวตาร…</div>
+            <div className="flex flex-col items-center gap-1.5 py-10 text-center">
+              <span style={{ fontSize: 12, color: color.textFaint }}>กำลังโหลดรายชื่ออวตาร…</span>
+              <span style={{ fontSize: 10.5, color: color.textFaintest }}>โหลดครั้งแรกอาจนานถึง ~1 นาที (ดึงจาก HeyGen) · ครั้งต่อไปจะเร็ว</span>
+            </div>
           )}
 
           {!loading && error && (

@@ -26,8 +26,15 @@ export type HeyGenAvatarList = {
 export const HEYGEN_AVATAR_TTL_MS = 5 * 60 * 1000;
 /** How long a durable (DB-persisted) avatar list stays usable as a stale fallback. */
 export const HEYGEN_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_ATTEMPTS = 3;
-const PER_ATTEMPT_TIMEOUT_MS = 35_000;
+// HeyGen's /v2/avatars is genuinely slow for accounts with a large public catalog:
+// measured ~65s / ~512KB on prod. The old 35s×3 aborted EVERY attempt, so the list
+// never completed and the durable cache never populated → the web picker 500'd with
+// "failed". A generous per-attempt timeout lets the first fetch finish and seed the
+// 5-min in-memory + 7-day durable cache, so every later load is instant. nginx allows
+// it (proxy_read_timeout 7200s). 2 attempts still guards a transient blip while capping
+// the worst-case spinner; the client shows a "first load ~1 min" hint + retry button.
+const MAX_ATTEMPTS = 2;
+const PER_ATTEMPT_TIMEOUT_MS = 90_000;
 const HEYGEN_AVATARS_URL = "https://api.heygen.com/v2/avatars";
 
 // ── Single-avatar lookup (preview/verify by ID) ─────────────────────────────
