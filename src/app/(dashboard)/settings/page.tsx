@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
@@ -20,6 +19,23 @@ import { QuotaStatus } from "@/components/quota-status";
 import { CreditsBillingSection } from "@/components/settings/credits-billing-section";
 
 // CouponBox moved to @/components/settings/coupon-box (shared with the pricing page)
+
+// Violet single-accent house tokens (from video-editor/_v2/tokens.ts) — see dashboard/page.tsx
+const VIOLET_GRAD = "linear-gradient(180deg,#8B66F8,#6C4CF4)";
+const VIOLET_LIGHT = "#B9A6FF";
+
+// Calm, self-contained card styling (no globals.css dependency) — matches dashboard/page.tsx
+const PAGE_CSS = `
+.ve-card {
+  background: var(--ui-card-bg);
+  border: 1px solid var(--ui-card-border);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.ve-card-hover:hover {
+  border-color: hsl(258 90% 66% / .45);
+  background-color: rgba(139,92,246,.06);
+}
+`;
 
 // ── Billing Tab ──────────────────────────────────────────────────────────
 interface PaymentRecord {
@@ -137,7 +153,7 @@ function BillingTab() {
         <p className="eyebrow">ประวัติการชำระเงิน</p>
 
         {loading ? null : payments.length === 0 ? (
-          <div className="pp-card p-12 text-center"><span aria-hidden className="pp-card-border" />
+          <div className="ve-card rounded-xl p-12 text-center">
             <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl mb-3"
               style={{ background: "hsl(0 0% 100% / 0.04)", border: "1px solid hsl(0 0% 100% / 0.06)" }}>
               <CreditCard className="h-5 w-5" style={{ color: "var(--ui-text-muted)" }} strokeWidth={1.75} />
@@ -152,7 +168,7 @@ function BillingTab() {
               const isPending = p.status === "PENDING";
               const isActioning = actionLoading === p.id;
               return (
-                <div key={p.id} className="rounded-2xl border border-white/10 bg-white/3 p-4 transition-colors hover:bg-white/5">
+                <div key={p.id} className="ve-card ve-card-hover rounded-2xl p-4">
                   <div className="flex items-center gap-4">
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl shrink-0"
                       style={{
@@ -184,9 +200,9 @@ function BillingTab() {
                         disabled={isActioning}
                         className="flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-bold transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                         style={{
-                          background: "linear-gradient(135deg, hsl(38 92% 55%), hsl(38 92% 50%))",
-                          color: "#1a1100",
-                          boxShadow: "0 4px 12px hsl(38 92% 50% / 0.25), inset 0 1px 0 rgba(255,255,255,0.15)",
+                          background: VIOLET_GRAD,
+                          color: "#fff",
+                          boxShadow: "0 4px 12px hsl(258 90% 66% / 0.3), inset 0 1px 0 rgba(255,255,255,0.15)",
                         }}
                       >
                         {isActioning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CreditCard className="h-3.5 w-3.5" strokeWidth={2.5} />}
@@ -364,25 +380,24 @@ function SettingsContent() {
       )}
 
       {/* Page header */}
-      <div className="pp-fade-up space-y-2">
-        <PremiumEyebrow>
-          Account
-          <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
+      <div className="space-y-2">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
+          Account · Settings
+        </p>
+        <h1 className="text-3xl md:text-4xl font-bold tracking-tight"
+          style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
           Settings
-        </PremiumEyebrow>
-        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">
-          <span className="bg-linear-to-r from-cyan-300 via-violet-300 to-cyan-300 bg-clip-text text-transparent">Settings</span>
         </h1>
-        <p className="text-base text-white/55">
+        <p className="text-base" style={{ color: "var(--ui-text-secondary)" }}>
           จัดการบัญชี, API keys และการชำระเงินของคุณ
         </p>
       </div>
 
-      {/* Tabs — premium pill style */}
+      {/* Tabs — flat pill style */}
       <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl w-full sm:w-auto sm:inline-flex"
         style={{
-          background: "hsl(0 0% 100% / 0.03)",
-          border: "1px solid hsl(0 0% 100% / 0.06)",
+          background: "var(--ui-card-bg)",
+          border: "1px solid var(--ui-card-border)",
         }}>
         {tabs.map(({ id, label, icon: Icon }) => {
           const active = tab === id;
@@ -391,15 +406,15 @@ function SettingsContent() {
               key={id}
               onClick={() => setTab(id)}
               className={cn(
-                "flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all",
+                "flex min-h-11 items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all",
                 active
                   ? "shadow-sm"
                   : "hover:bg-white/3"
               )}
               style={active ? {
-                background: "linear-gradient(135deg, hsl(var(--accent-primary)), hsl(var(--accent-secondary)))",
+                background: VIOLET_GRAD,
                 color: "#fff",
-                boxShadow: "0 4px 12px hsl(var(--accent-primary) / 0.3), inset 0 1px 0 rgba(255,255,255,0.15)",
+                boxShadow: "0 4px 12px hsl(258 90% 66% / 0.3), inset 0 1px 0 rgba(255,255,255,0.15)",
               } : {
                 color: "var(--ui-text-muted)",
               }}
@@ -416,7 +431,7 @@ function SettingsContent() {
 
         {/* Profile Tab */}
         {tab === "profile" && (
-          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
+          <div className="ve-card rounded-xl p-7">
             <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl"
                 style={{
@@ -441,7 +456,7 @@ function SettingsContent() {
 
         {/* API Keys Tab */}
         {tab === "api-keys" && (
-          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
+          <div className="ve-card rounded-xl p-7">
             <div className="flex items-center justify-between mb-6 pb-5 border-b border-white/5">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl"
@@ -491,7 +506,7 @@ function SettingsContent() {
 
         {/* Billing Tab */}
         {tab === "billing" && (
-          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
+          <div className="ve-card rounded-xl p-7">
             <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl"
                 style={{
@@ -518,7 +533,7 @@ function SettingsContent() {
 
         {/* Agent / MCP Tab */}
         {tab === "mcp" && (
-          <div className="pp-card p-7"><span aria-hidden className="pp-card-border" />
+          <div className="ve-card rounded-xl p-7">
             <div className="flex items-center gap-3 mb-6 pb-5 border-b border-white/5">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl"
                 style={{ background: "hsl(var(--accent-primary) / 0.1)", border: "1px solid hsl(var(--accent-primary) / 0.2)" }}>
@@ -537,7 +552,7 @@ function SettingsContent() {
         <CouponBox />
 
         {/* Contact Us banner — premium */}
-        <div className="pp-card p-6 flex items-center gap-4"><span aria-hidden className="pp-card-border" />
+        <div className="ve-card rounded-xl p-6 flex items-center gap-4">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
             style={{
               background: "linear-gradient(135deg, hsl(252 70% 65% / 0.18), hsl(280 80% 65% / 0.08))",
@@ -583,7 +598,7 @@ function SettingsContent() {
 export default function SettingsPage() {
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <PremiumBackdrop />
+      <style>{PAGE_CSS}</style>
       <div className="relative z-10 px-4 md:px-6 pt-3 md:pt-4 pb-12">
         <SettingsContent />
       </div>
