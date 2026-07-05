@@ -382,6 +382,12 @@ model Payment {
   periodDays        Int           @default(30)
   createdAt         DateTime      @default(now())
   paidAt            DateTime?
+  // Off-Stripe (bank-transfer / external) payments recorded by an admin. Additive; a manual
+  // PAID row counts in revenue-cohorts (จ่ายจริง/MRR/cash) exactly like a Stripe one. See
+  // src/app/api/admin/manual-payment/route.ts. Never hard-deleted — soft-voided to VOIDED.
+  manual            Boolean       @default(false)
+  note              String?       // admin free-text (e.g. "โอนธนาคาร · founder")
+  recordedBy        String?       // admin userId who recorded it
 }
 
 // Idempotency ledger for Stripe webhooks. Stripe delivers events "at least once"; we record
@@ -422,6 +428,7 @@ enum PaymentStatus {
   PAID
   FAILED
   REFUNDED
+  VOIDED // admin soft-void of a MANUAL payment — drops out of PAID cohorts, keeps the audit row
 }
 
 model SiteConfig {
