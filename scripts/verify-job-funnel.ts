@@ -3,7 +3,7 @@
 // non-increasing, `created` >= every later step, `done` == status-done jobs, conversion never
 // exceeds 100%, and @aoacademy internal accounts are excluded UPSTREAM (before summarize) — the
 // route filters them out, so a team-owned job must not inflate the funnel.
-import { summarizeJobFunnel, type JobFunnelRow } from "../src/app/api/admin/insights/route";
+import { summarizeJobFunnel, type JobFunnelRow } from "../src/lib/insights-funnels";
 
 let passed = 0;
 function assert(c: boolean, m: string) {

@@ -14,6 +14,12 @@ import { PRESET_WEIGHTS } from "./mix-presets";
 const STORAGE_KEY = "editor-v2-job";
 const POLL_MS = 5000;
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 export type V2JobPhase = "idle" | "submitting" | "rendering" | "done" | "failed";
 
 export interface V2JobState {
@@ -59,7 +65,7 @@ export function useV2Job(p: V2Project) {
       const res = await fetch(`/api/videos/jobs/${encodeURIComponent(jobId)}`);
       if (res.status === 404) {
         stopPolling();
-        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        try { browserStorage()?.removeItem(STORAGE_KEY); } catch {}
         setJob(IDLE);
         return;
       }
@@ -79,7 +85,7 @@ export function useV2Job(p: V2Project) {
   // Resume on mount: draft jobId → โหลดสถานะทันที (แท็บใหม่/กลับมาใหม่)
   useEffect(() => {
     let stored: string | null = null;
-    try { stored = localStorage.getItem(STORAGE_KEY); } catch {}
+    try { stored = browserStorage()?.getItem(STORAGE_KEY) ?? null; } catch {}
     if (stored) startPolling(stored);
     return stopPolling;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,7 +142,7 @@ export function useV2Job(p: V2Project) {
         setJob((j) => ({ ...j, phase: "idle" }));
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
       }
-      try { localStorage.setItem(STORAGE_KEY, d.jobId); } catch {}
+      try { browserStorage()?.setItem(STORAGE_KEY, d.jobId); } catch {}
       setJob({ phase: "rendering", jobId: d.jobId, currentStep: null, progress: 0, errorMessage: null, output: null });
       startPolling(d.jobId);
       return { ok: true };
@@ -154,7 +160,7 @@ export function useV2Job(p: V2Project) {
       const res = await fetch(`/api/videos/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
       if (res.ok) {
         stopPolling();
-        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        try { browserStorage()?.removeItem(STORAGE_KEY); } catch {}
         setJob(IDLE);
         return { ok: true };
       }
@@ -168,14 +174,14 @@ export function useV2Job(p: V2Project) {
   /** เคลียร์ state (หลัง done/failed → กลับไปตั้งค่า) */
   const reset = useCallback(() => {
     stopPolling();
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    try { browserStorage()?.removeItem(STORAGE_KEY); } catch {}
     setJob(IDLE);
   }, [stopPolling]);
 
   /** Export สำเร็จ = งานนี้จบแล้ว: ลืม jobId (ออกจากหน้าแล้วกลับมา → เริ่ม step 1 สด)
    *  แต่ไม่แตะ state ในหน้า — user ยังแก้ซับต่อ/ส่งออกซ้ำได้จนกว่าจะออก (spec ข้อ 5) */
   const markExported = useCallback(() => {
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    try { browserStorage()?.removeItem(STORAGE_KEY); } catch {}
   }, []);
 
   return { job, submit, cancel, reset, markExported };

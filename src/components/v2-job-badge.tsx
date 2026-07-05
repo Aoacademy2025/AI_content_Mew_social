@@ -12,12 +12,18 @@ import { Loader2, CheckCircle2 } from "lucide-react";
 
 const STORAGE_KEY = "editor-v2-job"; // sync กับ useV2Job
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 export function V2JobBadge() {
   const [state, setState] = useState<{ status: string; progress: number } | null>(null);
 
   useEffect(() => {
     let jobId: string | null = null;
-    try { jobId = localStorage.getItem(STORAGE_KEY); } catch {}
+    try { jobId = browserStorage()?.getItem(STORAGE_KEY) ?? null; } catch {}
     if (!jobId) return;
     let alive = true;
     const poll = async () => {

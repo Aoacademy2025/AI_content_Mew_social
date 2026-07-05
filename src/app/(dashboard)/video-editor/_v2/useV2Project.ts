@@ -15,9 +15,16 @@ interface V2Draft {
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
 }
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 function loadDraft(): V2Draft {
   try {
-    const raw = localStorage.getItem(DRAFT_KEY);
+    const storage = browserStorage();
+    const raw = storage?.getItem(DRAFT_KEY);
     return raw ? (JSON.parse(raw) as V2Draft) : {};
   } catch { return {}; }
 }
@@ -52,6 +59,27 @@ export interface V2ElevenVoice {
   category?: string;
 }
 
+const DEFAULT_PROJECT = {
+  mode: "script" as V2Mode,
+  script: "",
+  clipUrl: "",
+  voiceEngine: "gemini" as V2VoiceEngine,
+  geminiVoiceName: "Aoede",
+  voiceId: "",
+  musicTrack: "" as string | null,
+  musicTrackKind: "system" as const,
+  bgmVolume: 0.12,
+  useAvatar: false,
+  avatarId: "",
+  targetClipCount: 0,
+  avatarMode: "bookend" as V2AvatarMode,
+  avatarIntroSecs: 5,
+  avatarTailSecs: 5,
+  kieModel: "" as KieImageModel | "",
+  autoMixProviders: DEFAULT_AUTO_MIX_PROVIDERS,
+  mixPreset: "free" as MixPreset,
+};
+
 export function useV2Project() {
   // Restore draft ก่อน (จำการตั้งค่าโปรเจกต์ข้ามเซสชัน) — ค่า default จาก server
   // จะไม่ทับของที่ผู้ใช้ตั้งไว้แล้ว (ดู effect ด้านล่าง)
@@ -69,6 +97,7 @@ export function useV2Project() {
   const [brollSource, setBrollSource] = useState<V2BrollSource>(d.brollSource ?? "stock");
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
+  const [plan, setPlan] = useState<string | null>(null);
   /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
@@ -116,6 +145,33 @@ export function useV2Project() {
   const [avatarInfo, setAvatarInfo] = useState<V2AvatarInfo | null>(null);
   /** รายชื่อเสียง ElevenLabs ของผู้ใช้ (แสดงชื่อแทน Voice ID) · null = ยังไม่โหลด/โหลดไม่ได้ */
   const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
+  const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
+
+  const resetProject = useCallback(() => {
+    draftRef.current = {};
+    try { browserStorage()?.removeItem(DRAFT_KEY); } catch {}
+
+    setMode(DEFAULT_PROJECT.mode);
+    setScript(DEFAULT_PROJECT.script);
+    setClipUrl(DEFAULT_PROJECT.clipUrl);
+    setVoiceEngine(DEFAULT_PROJECT.voiceEngine);
+    setGeminiVoiceName(DEFAULT_PROJECT.geminiVoiceName);
+    setVoiceId(DEFAULT_PROJECT.voiceId);
+    setMusicTrack(DEFAULT_PROJECT.musicTrack);
+    setMusicTrackKind(DEFAULT_PROJECT.musicTrackKind);
+    setBgmVolume(DEFAULT_PROJECT.bgmVolume);
+    setUseAvatar(DEFAULT_PROJECT.useAvatar);
+    setAvatarId(DEFAULT_PROJECT.avatarId);
+    setAvatarInfo(null);
+    setTargetClipCount(DEFAULT_PROJECT.targetClipCount);
+    setAvatarMode(DEFAULT_PROJECT.avatarMode);
+    setAvatarIntroSecs(DEFAULT_PROJECT.avatarIntroSecs);
+    setAvatarTailSecs(DEFAULT_PROJECT.avatarTailSecs);
+    setKieModel(DEFAULT_PROJECT.kieModel);
+    setAutoMixProviders([...DEFAULT_PROJECT.autoMixProviders]);
+    setMixPreset(isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset);
+    setSaveStatus("idle");
+  }, [isPaidManagedKie, setMixPreset]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -137,6 +193,7 @@ export function useV2Project() {
     }).catch(() => {});
     fetchMe().then(m => {
       const admin = m?.role === "ADMIN";
+      setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
       const paid = !!m?.kiePaidUnlocked;
@@ -165,7 +222,7 @@ export function useV2Project() {
     if (!isFirst) setSaveStatus("saving");
     const t = setTimeout(() => {
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        browserStorage()?.setItem(DRAFT_KEY, JSON.stringify({
           mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
           musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
@@ -223,6 +280,7 @@ export function useV2Project() {
     autoMixProviders, setAutoMixProviders,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
+    plan, canUploadOwnMedia, resetProject,
     saveStatus,
   };
 }

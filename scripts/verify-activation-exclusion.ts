@@ -2,7 +2,7 @@
 // Proves the activation funnel EXCLUDES internal @aoacademy accounts from every count while KEEPING
 // everyone else — including workshop students (คลังแสง) and users with no email — and that
 // "startedPipeline" is server-truth VideoJob creators, not v1-only telemetry.
-import { computeActivationFunnel } from "../src/app/api/admin/insights/route";
+import { computeActivationFunnel } from "../src/lib/insights-funnels";
 
 let passed = 0;
 function assert(c: boolean, m: string) {

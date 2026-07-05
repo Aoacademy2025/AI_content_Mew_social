@@ -2,7 +2,7 @@
 // Proves failed-job classification separates OUR plan caps (quota) from customer-key (byok) and
 // real system bugs — and that under managed Gemini a 429 is OUR key (system), not a customer key.
 // Order under test: noise → quota → managed-rate-limit → byok → system.
-import { classifyJobError, quotaReasonFromText } from "../src/app/api/admin/insights/route";
+import { classifyJobError, quotaReasonFromText } from "../src/lib/error-classify";
 
 let passed = 0;
 function assert(c: boolean, m: string) {
