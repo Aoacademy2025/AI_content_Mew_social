@@ -1,6 +1,8 @@
 // PURE request-payload builders that reproduce the video-editor's non-avatar
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
+import type { BrollPreferenceInput } from "@/lib/broll-preferences";
+
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
 
 export const DEFAULT_STYLE = {
@@ -22,12 +24,19 @@ export function maxCardCharsFor(subtitleSize: number = DEFAULT_STYLE.subtitleSiz
   return Math.max(10, Math.floor((1080 - 160) / (subtitleSize * 0.47)));
 }
 
-export function buildKeywordsPayload(captionTexts: string[], script: string, audioDurationMs: number) {
+export function buildKeywordsPayload(
+  captionTexts: string[],
+  script: string,
+  audioDurationMs: number,
+  brollPreference?: BrollPreferenceInput,
+) {
   const scenes = captionTexts.length > 0 ? captionTexts : script.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   return {
     scenes,
     audioDurationSec: Math.min(1800, Math.max(1, Math.round(audioDurationMs / 1000))),
     preferredLLM: null as string | null,
+    ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
+    ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
   };
 }
 

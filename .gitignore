@@ -114,3 +114,6 @@ _vc-*
 _verify-*
 
 .superpowers/
+
+# clerk configuration (can include secrets)
+/.clerk/

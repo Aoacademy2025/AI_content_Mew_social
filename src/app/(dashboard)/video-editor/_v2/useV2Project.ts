@@ -4,15 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
 const DRAFT_KEY = "editor-v2-project";
 
 interface V2Draft {
-  mode?: V2Mode; script?: string; clipUrl?: string; brollSource?: V2BrollSource;
+  mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
+  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }
 
 function browserStorage() {
@@ -63,6 +65,7 @@ const DEFAULT_PROJECT = {
   mode: "script" as V2Mode,
   script: "",
   clipUrl: "",
+  clipDurationSec: 0,
   voiceEngine: "gemini" as V2VoiceEngine,
   geminiVoiceName: "Aoede",
   voiceId: "",
@@ -78,6 +81,8 @@ const DEFAULT_PROJECT = {
   kieModel: "" as KieImageModel | "",
   autoMixProviders: DEFAULT_AUTO_MIX_PROVIDERS,
   mixPreset: "free" as MixPreset,
+  brollRegionPreference: "auto" as BrollRegionPreference,
+  brollVisualStyle: "auto" as BrollVisualStyle,
 };
 
 export function useV2Project() {
@@ -90,7 +95,21 @@ export function useV2Project() {
   const [mode, setMode] = useState<V2Mode>(d.mode ?? "script");
   const [script, setScript] = useState(d.script ?? "");
   /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
-  const [clipUrl, setClipUrl] = useState(d.clipUrl ?? "");
+  const [clipUrlState, setClipUrlState] = useState(d.clipUrl ?? "");
+  const [clipDurationSecState, setClipDurationSecState] = useState(
+    typeof d.clipDurationSec === "number" && Number.isFinite(d.clipDurationSec) && d.clipDurationSec > 0
+      ? d.clipDurationSec
+      : 0,
+  );
+  const setClipDurationSec = useCallback((sec: number) => {
+    setClipDurationSecState(Number.isFinite(sec) && sec > 0 ? sec : 0);
+  }, []);
+  const setClipUrl = useCallback((url: string) => {
+    setClipUrlState(url);
+    if (!url) setClipDurationSecState(0);
+  }, []);
+  const clipUrl = clipUrlState;
+  const clipDurationSec = clipDurationSecState;
 
   // ── Step 2 ──
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
@@ -121,6 +140,8 @@ export function useV2Project() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(d.avatarTailSecs ?? 5);
   const [kieModel, setKieModel] = useState<KieImageModel | "">((d.kieModel as KieImageModel | undefined) ?? "");
   const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS);
+  const [brollRegionPreference, setBrollRegionPreference] = useState<BrollRegionPreference>(d.brollRegionPreference ?? "auto");
+  const [brollVisualStyle, setBrollVisualStyle] = useState<BrollVisualStyle>(d.brollVisualStyle ?? "auto");
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
@@ -154,6 +175,7 @@ export function useV2Project() {
     setMode(DEFAULT_PROJECT.mode);
     setScript(DEFAULT_PROJECT.script);
     setClipUrl(DEFAULT_PROJECT.clipUrl);
+    setClipDurationSec(DEFAULT_PROJECT.clipDurationSec);
     setVoiceEngine(DEFAULT_PROJECT.voiceEngine);
     setGeminiVoiceName(DEFAULT_PROJECT.geminiVoiceName);
     setVoiceId(DEFAULT_PROJECT.voiceId);
@@ -169,6 +191,8 @@ export function useV2Project() {
     setAvatarTailSecs(DEFAULT_PROJECT.avatarTailSecs);
     setKieModel(DEFAULT_PROJECT.kieModel);
     setAutoMixProviders([...DEFAULT_PROJECT.autoMixProviders]);
+    setBrollRegionPreference(DEFAULT_PROJECT.brollRegionPreference);
+    setBrollVisualStyle(DEFAULT_PROJECT.brollVisualStyle);
     setMixPreset(isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset);
     setSaveStatus("idle");
   }, [isPaidManagedKie, setMixPreset]);
@@ -224,16 +248,17 @@ export function useV2Project() {
       try {
         browserStorage()?.setItem(DRAFT_KEY, JSON.stringify({
           mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
+          clipDurationSec,
           musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-          kieModel, autoMixProviders, mixPreset,
+          kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
         } satisfies V2Draft));
         if (!isFirst) setSaveStatus("saved");
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
-  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset]);
+  }, [mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
@@ -262,7 +287,7 @@ export function useV2Project() {
   return {
     mode, setMode,
     script, setScript,
-    clipUrl, setClipUrl,
+    clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,
@@ -278,6 +303,8 @@ export function useV2Project() {
     avatarTailSecs, setAvatarTailSecs,
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
+    brollRegionPreference, setBrollRegionPreference,
+    brollVisualStyle, setBrollVisualStyle,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, resetProject,

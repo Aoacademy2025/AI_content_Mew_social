@@ -38,6 +38,9 @@ interface CreateInput {
   stockSource?: string;
   /** จำนวนคลิปบีโรลกำหนดเอง (Editor v2 ขั้นสูง) — absent = auto */
   targetClipCount?: number;
+  /** Visual preference hints for B-roll keyword/search/ranking (Editor v2 Advanced) */
+  brollRegionPreference?: string;
+  brollVisualStyle?: string;
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
@@ -179,7 +182,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upKw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
         "/api/videos/extract-keywords",
         {
-          ...buildKeywordsPayload(upCaps.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs),
+          ...buildKeywordsPayload(upCaps.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
+            brollRegionPreference: input.brollRegionPreference,
+            brollVisualStyle: input.brollVisualStyle,
+          }),
           ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
         },
       );
@@ -307,7 +313,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
       "/api/videos/extract-keywords",
       {
-        ...buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs),
+        ...buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs, {
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
+        }),
         // v2 ขั้นสูง: จำนวนคลิปกำหนดเอง (extract-keywords รองรับ field นี้จาก web เดิมอยู่แล้ว)
         ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
       },

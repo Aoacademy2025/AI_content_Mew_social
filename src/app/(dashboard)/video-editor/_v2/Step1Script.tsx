@@ -35,6 +35,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   const wordCount = useMemo(() => countWordsV2(p.script), [p.script]);
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
+  const uploadDurationLabel = p.clipDurationSec > 0 ? fmtTime(p.clipDurationSec) : null;
 
   // เวลาโดยประมาณต่อเซ็กเมนต์ — แบ่งตามสัดส่วนความยาวตัวอักษรของแต่ละบรรทัด
   const segTimes = useMemo(() => {
@@ -112,12 +113,18 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
                   style={{ borderRadius: 12, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
                   onLoadedMetadata={(e) => {
                     const v = e.currentTarget;
+                    if (Number.isFinite(v.duration) && v.duration > 0) p.setClipDurationSec(v.duration);
                     if (v.videoWidth > v.videoHeight) {
                       toast.error("ต้องเป็นคลิปแนวตั้ง (9:16) — คลิปแนวนอนยังไม่รองรับ");
                       p.setClipUrl("");
                     }
                   }}
                 />
+                {uploadDurationLabel && (
+                  <span style={{ fontSize: 11, color: color.textFaint }}>
+                    คลิปยาว {uploadDurationLabel} นาที
+                  </span>
+                )}
                 <button onClick={() => p.setClipUrl("")} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
                   เปลี่ยนคลิป
                 </button>
@@ -125,7 +132,10 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             ) : (
               <div className="w-full max-w-[420px]">
                 <DirectAvatarUpload
-                  onUrl={(u) => p.setClipUrl(u)}
+                  onUrl={(u, meta) => {
+                    p.setClipUrl(u);
+                    if (meta?.durationSec) p.setClipDurationSec(meta.durationSec);
+                  }}
                   requirePortrait
                   label="อัปโหลดคลิปแนวตั้งของคุณ"
                   hint="mp4 / mov / webm · มีเสียงพูดในคลิป"

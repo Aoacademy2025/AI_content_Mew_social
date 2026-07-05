@@ -101,6 +101,8 @@ export function useV2Job(p: V2Project) {
         clipUrl: p.clipUrl,
         stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
         ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+        ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
+        ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
         ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
         ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
         // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
@@ -123,6 +125,8 @@ export function useV2Job(p: V2Project) {
           ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
           : {}),
         ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+        ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
+        ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
         ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
         ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
         // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server

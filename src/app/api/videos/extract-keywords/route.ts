@@ -14,6 +14,12 @@ import {
   type ContentProfile,
 } from "@/lib/broll-profile";
 import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
+import {
+  appendBrollPreferenceToDirection,
+  augmentRelevanceSpecWithBrollPreference,
+  brollPreferencePromptBlock,
+  type BrollPreferenceInput,
+} from "@/lib/broll-preferences";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -245,7 +251,17 @@ export async function POST(req: Request) {
   const userId = authUser.id;
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
+  const {
+    script,
+    scenes,
+    perSubtitle = false,
+    audioDurationSec = 0,
+    targetClipCount = 0,
+    brollRegionPreference,
+    brollVisualStyle,
+  } = body ?? {};
+  const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
+  const preferenceBlock = brollPreferencePromptBlock(brollPreference);
 
   // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
   // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
@@ -353,6 +369,7 @@ export async function POST(req: Request) {
   "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
 }
 Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
+${preferenceBlock ? `\n${preferenceBlock}` : ""}
 
 Script: ${fullScript.slice(0, 1500)}`;
       const raw = (await callLLM(analysisPrompt, 400, false)).trim();
@@ -368,6 +385,8 @@ Script: ${fullScript.slice(0, 1500)}`;
         console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
       }
     }
+    visualDirection = appendBrollPreferenceToDirection(visualDirection, brollPreference);
+    relevanceSpec = augmentRelevanceSpecWithBrollPreference(relevanceSpec, brollPreference);
 
     const BATCH_SIZE = 15;
     const batches: string[][] = [];
@@ -577,6 +596,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
 }
 Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
+${preferenceBlock ? `\n${preferenceBlock}` : ""}
 
 Script: ${cleanScript.slice(0, 1500)}`;
     const raw = (await callLLM(analysisPrompt, 400, false)).trim();
@@ -589,6 +609,8 @@ Script: ${cleanScript.slice(0, 1500)}`;
     heuristicFallbackReason = useHeuristicKeywordFallback(e, "normal", numScenes);
     useHeuristicFallback = Boolean(heuristicFallbackReason);
   }
+  visualDirection = appendBrollPreferenceToDirection(visualDirection, brollPreference);
+  relevanceSpec = augmentRelevanceSpecWithBrollPreference(relevanceSpec, brollPreference);
 
   const directionBlock = visualDirection
     ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n${contentProfilePromptBlock(contentProfile)}\n═══ END DIRECTION ═══\n`
@@ -751,7 +773,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneDurations,
       visualDirection,
       contentProfile,
-      relevanceSpec: null,
+      relevanceSpec,
       fallback: "heuristic",
       fallbackReason: reason,
     });
