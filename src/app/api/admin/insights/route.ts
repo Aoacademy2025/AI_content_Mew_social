@@ -425,8 +425,9 @@ export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
 
 // Activation funnel counts (signups → opened → started → first video → repeat), with @aoacademy
 // internal accounts EXCLUDED and everyone else (incl. workshop students) KEPT. Pure + testable so
-// the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators, not v1-only
-// editor_script_ready telemetry (which editor v2 never emits).
+// the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators UNIONED with
+// completed-video creators, not v1-only editor_script_ready telemetry (which editor v2 never emits).
+// Invariant: signups >= openedEditor >= startedPipeline >= completedFirstVideo >= repeatCreators.
 export function computeActivationFunnel(input: {
   users: Array<{ id: string; email: string | null; createdAt: Date }>;
   openedUserIds: Array<string | null>;
@@ -438,19 +439,29 @@ export function computeActivationFunnel(input: {
     input.users.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
   );
   const notInternal = (id: string) => !internalIds.has(id);
-  // openedEditor = "engaged" = union of {editor_opened telemetry} ∪ {VideoJob creators}. MCP/chat
-  // users create jobs WITHOUT ever opening the web editor, so startedPipeline (server truth, all
-  // surfaces) can exceed a telemetry-only openedEditor count — that would show >100% conversion /
-  // negative drop-off on the funnel step. Anyone who created a job has, by definition, engaged, so
-  // folding jobUserIds into the union keeps openedEditor >= startedPipeline always.
+  // completedUserIds = the same source completedFirstVideo counts. Legacy users completed videos
+  // before the VideoJob system existed, so jobUserIds alone can UNDER-count startedPipeline relative
+  // to completedFirstVideo (started < completed — a logical impossibility: anyone who completed a
+  // video necessarily started). Folding completedUserIds into startedPipeline's set guarantees
+  // startedPipeline >= completedFirstVideo always.
+  const completedUserIds = new Set(input.completedByUser.map((g) => g.userId));
+  const startedIds = new Set<string>();
+  for (const id of input.jobUserIds) startedIds.add(id);
+  for (const id of completedUserIds) startedIds.add(id);
+  // openedEditor = "engaged" = union of {editor_opened telemetry} ∪ {VideoJob creators} ∪ {completed
+  // video creators}. MCP/chat users create jobs WITHOUT ever opening the web editor, and legacy users
+  // completed videos before VideoJob existed, so either surface can exceed a telemetry-only
+  // openedEditor count — that would show >100% conversion / negative drop-off on the funnel step.
+  // Anyone who created a job or completed a video has, by definition, engaged, so folding both into
+  // the union keeps openedEditor >= startedPipeline >= completedFirstVideo always.
   const engagedIds = new Set<string>();
   for (const id of input.openedUserIds) if (id) engagedIds.add(id);
-  for (const id of input.jobUserIds) engagedIds.add(id);
+  for (const id of startedIds) engagedIds.add(id);
   return {
     internalTeam: internalIds.size,
     signups: input.users.length - internalIds.size,
     openedEditor: Array.from(engagedIds).filter(notInternal).length,
-    startedPipeline: input.jobUserIds.filter(notInternal).length,
+    startedPipeline: Array.from(startedIds).filter(notInternal).length,
     completedFirstVideo: input.completedByUser.filter((g) => notInternal(g.userId)).length,
     repeatCreators: input.completedByUser.filter((g) => notInternal(g.userId) && g.count >= 2).length,
     windowSignups: input.users.filter((u) => u.createdAt >= input.since && notInternal(u.id)).length,

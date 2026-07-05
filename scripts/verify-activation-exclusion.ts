@@ -74,4 +74,28 @@ assert(mcpAf.startedPipeline === 2, `startedPipeline counts both web + MCP creat
 assert(mcpAf.openedEditor === 2, `openedEditor unions in the MCP-only creator (m2) → 2 (got ${mcpAf.openedEditor})`);
 assert(mcpAf.openedEditor >= mcpAf.startedPipeline, `monotonic: openedEditor (${mcpAf.openedEditor}) >= startedPipeline (${mcpAf.startedPipeline})`);
 
+// Legacy users completed videos before the VideoJob system existed, so a "completed-only" user can
+// be in completedByUser but absent from BOTH jobUserIds and openedUserIds. Tier-1 fix: startedPipeline
+// must be a superset of completedFirstVideo — otherwise the funnel shows "more finished than started"
+// (prod symptom: startedPipeline=23 < completedFirstVideo=42).
+const legacyUsers = [
+  { id: "l1", email: "webuser2@gmail.com", createdAt: new Date("2026-07-03") },
+  { id: "l2", email: "legacy@gmail.com", createdAt: new Date("2026-06-15") }, // completed-only: no job, never opened editor
+];
+const legacyAf = computeActivationFunnel({
+  users: legacyUsers,
+  openedUserIds: ["l1"],                       // l2 never opened the web editor
+  jobUserIds: ["l1"],                           // l2 never created a VideoJob
+  completedByUser: [
+    { userId: "l1", count: 1 },
+    { userId: "l2", count: 1 },                // l2 completed a video pre-VideoJob era
+  ],
+  since,
+});
+assert(legacyAf.completedFirstVideo === 2, `completedFirstVideo counts both l1 + l2 → 2 (got ${legacyAf.completedFirstVideo})`);
+assert(legacyAf.startedPipeline === 2, `startedPipeline unions in the completed-only creator (l2) → 2 (got ${legacyAf.startedPipeline})`);
+assert(legacyAf.startedPipeline >= legacyAf.completedFirstVideo, `monotonic: startedPipeline (${legacyAf.startedPipeline}) >= completedFirstVideo (${legacyAf.completedFirstVideo})`);
+assert(legacyAf.openedEditor >= legacyAf.startedPipeline, `monotonic: openedEditor (${legacyAf.openedEditor}) >= startedPipeline (${legacyAf.startedPipeline})`);
+assert(legacyAf.signups >= legacyAf.openedEditor, `monotonic: signups (${legacyAf.signups}) >= openedEditor (${legacyAf.openedEditor})`);
+
 console.log(`\n${passed} checks passed`);
