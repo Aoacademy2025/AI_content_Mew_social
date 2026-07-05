@@ -356,7 +356,7 @@ export function renderSubtitle(
       return <span style={withDecorations({ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" })}>{text}</span>;
 
     case "bold-shadow":
-      return <span style={withDecorations({ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, fontWeight, textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
 
     case "karaoke-box":
       return (
@@ -385,7 +385,7 @@ export function renderSubtitle(
     case "hormozi":
       return (
         <span style={withDecorations({
-          ...base, color: "#ff2244", fontStyle: "italic", fontWeight: Math.max(fontWeight, 800),
+          ...base, color: "#ff2244", fontStyle: "italic", fontWeight,
           textShadow: "-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff, 0 4px 16px rgba(200,0,30,0.6)",
           WebkitTextStroke: "1px #fff", paintOrder: "stroke fill",
         } as React.CSSProperties)}>{text}</span>
