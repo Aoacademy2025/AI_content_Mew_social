@@ -13,9 +13,12 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
 }
 
+// 30 min bound — see composite/route.ts FFMPEG_TIMEOUT_MS.
+const FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
+
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(ffmpegPath, args, { maxBuffer: 50 * 1024 * 1024 }, (err, _stdout, stderr) => {
+    execFile(ffmpegPath, args, { maxBuffer: 50 * 1024 * 1024, timeout: FFMPEG_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (err) reject(new Error(`ffmpeg: ${err.message}\n${stderr?.slice(-500)}`));
       else resolve(stderr ?? "");
     });

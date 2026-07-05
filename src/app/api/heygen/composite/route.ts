@@ -8,6 +8,7 @@ import {
   resolveChromaParams,
   detectChromaColor,
   buildCompositeFilter,
+  resolveCompositeEncode,
   type ChromaParams,
 } from "@/lib/chroma-key";
 import path from "path";
@@ -26,18 +27,13 @@ function getFfprobePath(): string {
   return process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
 }
 
-// Composite encode knobs (env-tunable). CRF/preset become ffmpeg args → sanitize even though env
-// is admin-controlled: CRF must be an int in [0,51], preset must be a known x264 preset.
-const X264_PRESETS = new Set([
-  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo",
-]);
+// Composite encode knobs (env-tunable, resolved by the shared lib so this route and the verify
+// script exercise the exact same code path — see resolveCompositeEncode in lib/chroma-key).
 function compositeCrf(): string {
-  const n = parseInt(process.env.COMPOSITE_CRF ?? "", 10);
-  return Number.isFinite(n) && n >= 0 && n <= 51 ? String(n) : "18";
+  return String(resolveCompositeEncode().crf);
 }
 function compositePreset(): string {
-  const p = process.env.COMPOSITE_PRESET;
-  return p && X264_PRESETS.has(p) ? p : "veryfast";
+  return resolveCompositeEncode().preset;
 }
 
 async function downloadFile(url: string, dest: string, heygenKey?: string): Promise<void> {
@@ -62,9 +58,13 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
 }
 
 
+// 30 min — composites of long avatars (multi-minute, bookend-both split into several ffmpeg
+// invocations) are legitimately slow; this just bounds a genuinely hung/stuck process.
+const FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
+
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024 }, (err, _stdout, stderr) => {
+    execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024, timeout: FFMPEG_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (err) {
         console.error("[ffmpeg stderr]", stderr?.slice(-2000));
         reject(new Error(`ffmpeg failed:\n${stderr?.slice(-1000)}`));

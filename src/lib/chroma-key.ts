@@ -74,28 +74,66 @@ export function resolveChromaParams(input: {
   const blendProvided = input.chromaBlend != null;
 
   const color = colorProvided ? sanitizeChromaColor(input.chromaColor) : DEFAULT_CHROMA_COLOR;
-  const similarity = simProvided ? clampSimilarity(input.chromaSimilarity) : DEFAULT_SIMILARITY;
-  const blend = blendProvided ? clampBlend(input.chromaBlend) : DEFAULT_BLEND;
+  // Omitted fields fall back to the LEGACY values — both for the triple check below AND (if this
+  // turns out to be a deliberate custom-color/honor-verbatim case) as the actual resolved value.
+  // An omitted field was never "tuned" by the user, so it must never silently pick up the raised
+  // auto-detect-only blend default (0.10) on a non-auto-detect path — that would make "honor
+  // verbatim" not verbatim. DEFAULT_SIMILARITY === LEGACY_SIMILARITY today, but DEFAULT_BLEND !==
+  // LEGACY_BLEND, which is exactly the drift this fixes.
+  const similarity = simProvided ? clampSimilarity(input.chromaSimilarity) : LEGACY_SIMILARITY;
+  const blend = blendProvided ? clampBlend(input.chromaBlend) : LEGACY_BLEND;
 
-  // Omitted fields are checked against the LEGACY defaults (DEFAULT_CHROMA_COLOR is itself legacy).
-  const checkSim = simProvided ? similarity : LEGACY_SIMILARITY;
-  const checkBlend = blendProvided ? blend : LEGACY_BLEND;
-  if (isLegacyDefaultTriple(color, checkSim, checkBlend)) {
+  if (isLegacyDefaultTriple(color, similarity, blend)) {
     return { autoDetect: true, color: DEFAULT_CHROMA_COLOR, similarity: DEFAULT_SIMILARITY, blend: DEFAULT_BLEND };
   }
   return { autoDetect: false, color, similarity, blend };
+}
+
+// ── Composite encode knobs (env-tunable) ──
+// Single source of truth for CRF/preset resolution, shared by the composite route (real encodes)
+// and the verify script (so the verify assertion exercises the SAME code path instead of a
+// hand-built literal). CRF/preset become ffmpeg args → sanitize even though the env is
+// admin-controlled: CRF must be an int in [0,51], preset must be a known x264 preset.
+const X264_PRESETS = new Set([
+  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo",
+]);
+
+export function resolveCompositeEncode(): { crf: number; preset: string } {
+  const n = parseInt(process.env.COMPOSITE_CRF ?? "", 10);
+  const crf = Number.isFinite(n) && n >= 0 && n <= 51 ? n : 18;
+  const p = process.env.COMPOSITE_PRESET;
+  const preset = p && X264_PRESETS.has(p) ? p : "veryfast";
+  return { crf, preset };
 }
 
 // ── Auto-detection ──
 
 const DETECT_WIDTH = 160;
 // Cache detection per avatar file (path + mtime + size). composite may run several times per
-// video for re-layout; there's no need to re-decode a frame each time.
+// video for re-layout; there's no need to re-decode a frame each time. Callers use per-request tmp
+// paths, so real cache hits are rare — cap the map so it can't grow unbounded across the process
+// lifetime (simplest possible eviction: drop the oldest insertion once at capacity).
+const DETECT_CACHE_MAX = 32;
 const detectCache = new Map<string, string>();
+
+function cacheDetectedColor(key: string, color: string): void {
+  if (detectCache.size >= DETECT_CACHE_MAX && !detectCache.has(key)) {
+    const oldest = detectCache.keys().next().value;
+    if (oldest !== undefined) detectCache.delete(oldest);
+  }
+  detectCache.set(key, color);
+}
+
+/** Test-only accessor so verify scripts can assert the eviction cap without reaching into module
+ * internals (the Map itself is not exported to keep it read-only from the outside). */
+export function _detectCacheSizeForTest(): number {
+  return detectCache.size;
+}
 
 function runFfmpegRaw(ffmpegPath: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    execFile(ffmpegPath, args, { maxBuffer: 32 * 1024 * 1024, encoding: "buffer" }, (err, stdout) => {
+    // Detection only decodes a single ~160px frame — 30s is generous; bounds a hung/corrupt input.
+    execFile(ffmpegPath, args, { maxBuffer: 32 * 1024 * 1024, encoding: "buffer", timeout: 30_000 }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout as Buffer);
     });
@@ -172,7 +210,7 @@ export async function detectChromaColor(avatarPath: string, ffmpegPath: string):
     /* fail-open to default */
   }
 
-  detectCache.set(cacheKey, color);
+  cacheDetectedColor(cacheKey, color);
   return color;
 }
 

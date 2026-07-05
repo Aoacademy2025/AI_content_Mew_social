@@ -100,7 +100,9 @@ export async function POST(req: Request) {
         "-q:v", "2",
         outPath,
       ];
-      execFile(ffmpeg, args, { maxBuffer: 50 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      // 30 min bound — see composite/route.ts FFMPEG_TIMEOUT_MS; this is a single-frame extraction
+      // so it's normally fast, but a hung ffmpeg process should never wedge the request forever.
+      execFile(ffmpeg, args, { maxBuffer: 50 * 1024 * 1024, timeout: 30 * 60 * 1000 }, (err, _stdout, stderr) => {
         if (stderr) console.log("[preview-frame] ffmpeg:", stderr.slice(-600));
         if (err) reject(new Error(err.message));
         else resolve();

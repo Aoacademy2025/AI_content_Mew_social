@@ -19,6 +19,8 @@ import {
   detectChromaColor,
   buildCompositeFilter,
   buildKeyChain,
+  resolveCompositeEncode,
+  _detectCacheSizeForTest,
   DEFAULT_CHROMA_COLOR,
 } from "../src/lib/chroma-key";
 import { clampAvatarLayout } from "../src/lib/avatar-layout";
@@ -109,6 +111,15 @@ assert(resolveChromaParams({ chromaColor: "0x00FF00", chromaSimilarity: 0.28, ch
   assert(r.autoDetect === false && r.color === "0x00AAFF" && r.similarity === 0.35 && r.blend === 0.12, "deliberate slider values honored verbatim (no auto-detect)");
 }
 assert(resolveChromaParams({ chromaColor: "0x12FF05", chromaSimilarity: 0.35, chromaBlend: 0.04 }).autoDetect === false, "tuned similarity (0.35) breaks the triple → honor verbatim");
+{
+  // Fix: custom color with OMITTED similarity/blend must fall back to the LEGACY values (0.28/0.04),
+  // not the auto-detect-only blend default (0.10) — "honor verbatim" must actually be verbatim.
+  const r = resolveChromaParams({ chromaColor: "0x00CC00" });
+  assert(
+    r.autoDetect === false && r.color === "0x00CC00" && r.similarity === 0.28 && r.blend === 0.04,
+    "custom color + omitted similarity/blend → legacy fallback (0.28/0.04), no auto-detect",
+  );
+}
 
 // ── 3. Auto-detection on both shades + non-green fallback ──
 async function main() {
@@ -120,6 +131,17 @@ async function main() {
   assert(cbg === DEFAULT_CHROMA_COLOR, "non-green source → fallback to default");
   // cache: second call returns identical result
   assert((await detectChromaColor(green12, FF)) === c12, "detection cached (stable across calls)");
+
+  // cache cap: 32 entries max, oldest-eviction. Exercise with >32 DISTINCT cache keys (path+mtime+
+  // size) by copying the same tiny clip to many filenames — no re-encode needed, just a file copy —
+  // then assert the internal cache never grows past the cap.
+  const CACHE_PROBE_N = 40;
+  for (let i = 0; i < CACHE_PROBE_N; i++) {
+    const copyPath = path.join(tmp, `cache-probe-${i}.mp4`);
+    fs.copyFileSync(green12, copyPath);
+    await detectChromaColor(copyPath, FF);
+  }
+  assert(_detectCacheSizeForTest() <= 32, `detect cache capped at 32 (size=${_detectCacheSizeForTest()} after ${CACHE_PROBE_N} distinct keys)`);
 
   // ── 4. Composite over magenta → assert NO residual green, both shades ──
   for (const [label, src, color] of [["12", green12, c12], ["00", green00, c00]] as const) {
@@ -143,16 +165,42 @@ async function main() {
 
   // ── 5. Production encode: 1080x1920 h264, CRF/preset applied ── (over complex testsrc2 bg so
   //    the encoded file has a realistic, non-trivial size for the bitrate-sanity check)
+  //
+  // These assertions call the REAL resolveCompositeEncode() from lib/chroma-key — the exact helper
+  // the composite route imports — instead of a hand-built literal args array, so the check actually
+  // exercises the env-knob plumbing (COMPOSITE_CRF / COMPOSITE_PRESET) rather than being tautological.
+  {
+    const def = resolveCompositeEncode();
+    assert(def.crf === 18 && def.preset === "veryfast", `default encode = crf 18 / preset veryfast (got ${def.crf}/${def.preset})`);
+
+    process.env.COMPOSITE_CRF = "23";
+    assert(resolveCompositeEncode().crf === 23, "COMPOSITE_CRF=23 honored");
+    delete process.env.COMPOSITE_CRF;
+
+    process.env.COMPOSITE_CRF = "99";
+    assert(resolveCompositeEncode().crf === 18, "COMPOSITE_CRF=99 (out of [0,51]) → falls back to 18");
+    delete process.env.COMPOSITE_CRF;
+
+    process.env.COMPOSITE_PRESET = "fast";
+    assert(resolveCompositeEncode().preset === "fast", "COMPOSITE_PRESET=fast honored");
+    delete process.env.COMPOSITE_PRESET;
+
+    process.env.COMPOSITE_PRESET = "ultrafast -evil";
+    assert(resolveCompositeEncode().preset === "veryfast", "COMPOSITE_PRESET with injection payload → falls back to veryfast");
+    delete process.env.COMPOSITE_PRESET;
+
+    assert(resolveCompositeEncode().crf === 18 && resolveCompositeEncode().preset === "veryfast", "env restored to defaults after probing");
+  }
+
+  const { crf: prodCrf, preset: prodPreset } = resolveCompositeEncode();
   const encArgs = [
     "-hide_banner", "-loglevel", "error", "-y", "-i", bg, "-i", green12,
     "-filter_complex", buildCompositeFilter({ color: c12, similarity: 0.28, blend: 0.1 }, null),
     "-map", "[out]",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+    "-c:v", "libx264", "-preset", prodPreset, "-crf", String(prodCrf),
     "-threads", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     path.join(tmp, "final.mp4"),
   ];
-  assert(encArgs.includes("-crf") && encArgs[encArgs.indexOf("-crf") + 1] === "18", "encode args include -crf 18");
-  assert(encArgs.includes("-preset") && encArgs[encArgs.indexOf("-preset") + 1] === "veryfast", "encode args include -preset veryfast");
   run(encArgs);
   const finalSize = fs.statSync(path.join(tmp, "final.mp4")).size;
   const dims = probeDims(path.join(tmp, "final.mp4"));
