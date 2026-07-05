@@ -13,11 +13,18 @@ import {
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import {
+  BROLL_REGION_OPTIONS,
+  BROLL_STYLE_OPTIONS,
+  type BrollRegionPreference,
+  type BrollVisualStyle,
+} from "@/lib/broll-preferences";
 import { KIE_IMAGE_MODEL_OPTIONS, PRICED_KIE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { estimateClipSecV2 } from "./estimate";
+import { minutesFromSeconds } from "@/lib/minute-round";
 import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
@@ -51,8 +58,10 @@ function fmtTime(sec: number) {
 
 export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
   const bgm = useBgm();
-  const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
-  const estMin = Math.max(1, Math.ceil(estSec / 60));
+  const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
+  const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
+  const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -162,6 +171,24 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   />
                 )}
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>แนวภาพ / โซนภาพ</span>
+                <Segmented
+                  value={p.brollRegionPreference}
+                  onChange={(v) => p.setBrollRegionPreference(v as BrollRegionPreference)}
+                  options={BROLL_REGION_OPTIONS}
+                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
+                <Segmented
+                  value={p.brollVisualStyle}
+                  onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
+                  options={BROLL_STYLE_OPTIONS}
+                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                />
               </label>
               {(p.isAdmin || p.isPaidManagedKie) && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
                 <label className="flex flex-col gap-1.5">
@@ -510,13 +537,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           {p.mode === "upload" ? (
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
+              <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
               <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (
             <>
-              <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
+              <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(scriptEstSec)}`} />
               <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
               <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
@@ -529,8 +557,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         <div className="flex flex-col gap-2">
           <div className="max-lg:hidden">{primaryCta}</div>
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
-            คลิปยาว ~{fmtTime(estSec)}
-            {p.usage?.minutes ? ` · ใช้ ~${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
+            {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
+            {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
             {" "}· แก้ทุกอย่างได้ทีหลัง
           </span>
         </div>

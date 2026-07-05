@@ -33,6 +33,8 @@ export interface ReceiptInput {
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
   hasAvatar: boolean;
+  /** True when estSec is an actual uploaded-media duration, not a script estimate. */
+  exactDuration?: boolean;
 }
 
 export type ReceiptLineKind = "info" | "warn";
@@ -56,7 +58,7 @@ export interface ReceiptModel {
 export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
-    perImageCredits, creditBalance, minuteCreditRate, hasAvatar,
+    perImageCredits, creditBalance, minuteCreditRate, hasAvatar, exactDuration = false,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
@@ -78,8 +80,8 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     key: "minutes",
     kind: "info",
     text: haveMinuteQuota
-      ? `นาทีที่จะใช้ (ประมาณ): ${estMinutes} นาที — รวมในแพ็กเกจ (เหลือ ${remainingMinutes} จาก ${totalMinutes} นาที)`
-      : `นาทีที่จะใช้ (ประมาณ): ${estMinutes} นาที — รวมในแพ็กเกจ`,
+      ? `นาทีที่จะใช้${exactDuration ? "" : " (ประมาณ)"}: ${estMinutes} นาที — รวมในแพ็กเกจ (เหลือ ${remainingMinutes} จาก ${totalMinutes} นาที)`
+      : `นาทีที่จะใช้${exactDuration ? "" : " (ประมาณ)"}: ${estMinutes} นาที — รวมในแพ็กเกจ`,
   });
 
   // 2) AI credit line — hidden when preset = ฟรีล้วน (no AI images).
@@ -123,7 +125,9 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   lines.push({
     key: "disclaimer",
     kind: "info",
-    text: "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง",
+    text: exactDuration
+      ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง"
+      : "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง",
   });
 
   return { estMinutes, estCredits, overflowMinutes, lines };

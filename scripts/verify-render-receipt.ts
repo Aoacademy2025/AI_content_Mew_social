@@ -100,5 +100,11 @@ check("K: full preset 60s @ 4cr/img → N = 60 (15 windows × 4)", k.estCredits 
 // ── L. disclaimer copy exact ──
 check("L: disclaimer copy exact", text(a, "disclaimer") === "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง", text(a, "disclaimer"));
 
+// ── M. upload duration exact: no "(ประมาณ)" on minutes, upload-specific disclaimer ──
+const m = R({ estSec: 184.128, exactDuration: true });
+check("M: exact upload 184s → 3 minutes", m.estMinutes === 3, `X=${m.estMinutes}`);
+check("M: exact minutes copy omits ประมาณ", text(m, "minutes") === "นาทีที่จะใช้: 3 นาที — รวมในแพ็กเกจ (เหลือ 10 จาก 10 นาที)", text(m, "minutes"));
+check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง", text(m, "disclaimer"));
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");

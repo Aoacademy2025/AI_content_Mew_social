@@ -1,0 +1,202 @@
+import type { RelevanceSpec } from "@/lib/relevance-spec";
+
+export type BrollRegionPreference = "auto" | "asian" | "thai" | "european" | "global" | "no-people";
+export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal";
+
+export type BrollPreferenceInput = {
+  brollRegionPreference?: BrollRegionPreference | string | null;
+  brollVisualStyle?: BrollVisualStyle | string | null;
+};
+
+export const BROLL_REGION_OPTIONS: { value: BrollRegionPreference; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "asian", label: "เอเชีย" },
+  { value: "thai", label: "ไทย" },
+  { value: "european", label: "ยุโรป" },
+  { value: "global", label: "Global" },
+  { value: "no-people", label: "ไม่มีคน" },
+];
+
+export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "documentary", label: "Doc" },
+  { value: "cinematic", label: "Cinematic" },
+  { value: "business", label: "Business" },
+  { value: "lifestyle", label: "Lifestyle" },
+  { value: "tech", label: "Tech" },
+  { value: "minimal", label: "Minimal" },
+];
+
+type PreferenceHints = {
+  instruction: string;
+  positive: string[];
+  avoid: string[];
+  fallbackQueries: string[];
+  domainLabel: string;
+};
+
+const REGION_HINTS: Record<Exclude<BrollRegionPreference, "auto">, PreferenceHints> = {
+  asian: {
+    instruction: "Prefer Asian people and Asian urban, business, or lifestyle contexts when people or places are relevant.",
+    positive: ["asian people", "asian city", "asian office", "east asian", "southeast asian", "asian business"],
+    avoid: [],
+    fallbackQueries: ["asian business people", "asian city street", "asian office workers"],
+    domainLabel: "asian visual context",
+  },
+  thai: {
+    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments.",
+    positive: ["thai people", "thailand", "bangkok", "thai office", "southeast asian", "thai lifestyle"],
+    avoid: [],
+    fallbackQueries: ["bangkok city street", "thai office workers", "southeast asian people"],
+    domainLabel: "thai visual context",
+  },
+  european: {
+    instruction: "Prefer European people, European city settings, and western office or lifestyle contexts when relevant.",
+    positive: ["european people", "european city", "western office", "european business", "european lifestyle"],
+    avoid: [],
+    fallbackQueries: ["european city street", "european office workers", "european business people"],
+    domainLabel: "european visual context",
+  },
+  global: {
+    instruction: "Prefer diverse people, international cities, multicultural teams, and globally neutral environments.",
+    positive: ["diverse people", "international city", "global office", "multicultural team", "diverse business"],
+    avoid: [],
+    fallbackQueries: ["diverse business team", "international city street", "multicultural office meeting"],
+    domainLabel: "global visual context",
+  },
+  "no-people": {
+    instruction: "Prefer objects, environments, hands, products, screens, and details; avoid visible faces or crowds unless the script requires people.",
+    positive: ["objects", "environment", "hands", "workspace", "product close up", "city detail", "screen close up"],
+    avoid: ["face", "portrait", "crowd", "people", "person", "man", "woman"],
+    fallbackQueries: ["hands working desk", "office objects close up", "city environment detail"],
+    domainLabel: "object and environment visuals",
+  },
+};
+
+const STYLE_HINTS: Record<Exclude<BrollVisualStyle, "auto">, PreferenceHints> = {
+  documentary: {
+    instruction: "Use realistic documentary footage, natural light, handheld or observational shots, and low-polish authentic scenes.",
+    positive: ["documentary", "realistic", "natural light", "handheld", "observational", "candid"],
+    avoid: ["studio portrait", "glamour", "overly staged"],
+    fallbackQueries: ["documentary street footage", "realistic workplace scene", "candid daily life"],
+    domainLabel: "documentary style",
+  },
+  cinematic: {
+    instruction: "Use cinematic composition, dramatic lighting, shallow depth of field, slow motion, and polished premium visuals.",
+    positive: ["cinematic", "dramatic lighting", "shallow depth of field", "slow motion", "wide shot", "premium"],
+    avoid: ["flat lighting", "casual phone footage"],
+    fallbackQueries: ["cinematic city night", "dramatic office lighting", "slow motion detail shot"],
+    domainLabel: "cinematic style",
+  },
+  business: {
+    instruction: "Use clean professional business visuals, offices, meetings, presentations, laptops, and executive work contexts.",
+    positive: ["business", "office", "meeting", "presentation", "laptop", "professional", "executive"],
+    avoid: ["party", "vacation", "random nature"],
+    fallbackQueries: ["business team meeting", "professional office laptop", "executive presentation"],
+    domainLabel: "business style",
+  },
+  lifestyle: {
+    instruction: "Use warm lifestyle visuals, everyday people, home or city moments, natural movement, and approachable scenes.",
+    positive: ["lifestyle", "everyday people", "home", "city life", "natural movement", "warm light"],
+    avoid: ["corporate boardroom", "server room"],
+    fallbackQueries: ["lifestyle city walk", "warm home detail", "everyday people cafe"],
+    domainLabel: "lifestyle style",
+  },
+  tech: {
+    instruction: "Use modern technology visuals, screens, devices, code, interfaces, server rooms, and clean digital workspaces.",
+    positive: ["technology", "screens", "devices", "code", "interface", "server room", "digital workspace"],
+    avoid: ["old equipment", "rustic", "random nature"],
+    fallbackQueries: ["developer multiple screens", "server room lights", "technology interface close up"],
+    domainLabel: "technology style",
+  },
+  minimal: {
+    instruction: "Use clean minimal visuals, simple compositions, negative space, product details, soft light, and uncluttered scenes.",
+    positive: ["minimal", "clean", "negative space", "simple composition", "soft light", "uncluttered"],
+    avoid: ["busy crowd", "messy room", "visual clutter"],
+    fallbackQueries: ["minimal desk setup", "clean product detail", "simple workspace light"],
+    domainLabel: "minimal style",
+  },
+};
+
+function isRegionPreference(v: string): v is BrollRegionPreference {
+  return v === "auto" || v === "asian" || v === "thai" || v === "european" || v === "global" || v === "no-people";
+}
+
+function isVisualStyle(v: string): v is BrollVisualStyle {
+  return v === "auto" || v === "documentary" || v === "cinematic" || v === "business" || v === "lifestyle" || v === "tech" || v === "minimal";
+}
+
+export function normalizeBrollRegionPreference(raw: unknown): Exclude<BrollRegionPreference, "auto"> | undefined {
+  if (typeof raw !== "string") return undefined;
+  const value = raw.trim().toLowerCase();
+  return isRegionPreference(value) && value !== "auto" ? value : undefined;
+}
+
+export function normalizeBrollVisualStyle(raw: unknown): Exclude<BrollVisualStyle, "auto"> | undefined {
+  if (typeof raw !== "string") return undefined;
+  const value = raw.trim().toLowerCase();
+  return isVisualStyle(value) && value !== "auto" ? value : undefined;
+}
+
+export function hasBrollPreference(input: BrollPreferenceInput): boolean {
+  return Boolean(normalizeBrollRegionPreference(input.brollRegionPreference) || normalizeBrollVisualStyle(input.brollVisualStyle));
+}
+
+function mergeUnique(...lists: Array<string[] | undefined>): string[] {
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const item of list ?? []) {
+      const t = item.trim().toLowerCase().replace(/\s+/g, " ");
+      if (t && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+function collectPreferenceHints(input: BrollPreferenceInput): PreferenceHints | null {
+  const region = normalizeBrollRegionPreference(input.brollRegionPreference);
+  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
+  if (!region && !style) return null;
+
+  const regionHint = region ? REGION_HINTS[region] : null;
+  const styleHint = style ? STYLE_HINTS[style] : null;
+  return {
+    instruction: [regionHint?.instruction, styleHint?.instruction].filter(Boolean).join(" "),
+    positive: mergeUnique(regionHint?.positive, styleHint?.positive),
+    avoid: mergeUnique(regionHint?.avoid, styleHint?.avoid),
+    fallbackQueries: mergeUnique(regionHint?.fallbackQueries, styleHint?.fallbackQueries),
+    domainLabel: [regionHint?.domainLabel, styleHint?.domainLabel].filter(Boolean).join(", ") || "b-roll preference",
+  };
+}
+
+export function brollPreferencePromptBlock(input: BrollPreferenceInput): string {
+  const hints = collectPreferenceHints(input);
+  if (!hints) return "";
+  return [
+    "B-ROLL VISUAL PREFERENCE (soft preference; script relevance wins if there is a conflict):",
+    hints.instruction,
+    "Use this to steer query wording, visualDirection, and safe fallback queries. Do not force demographic or location terms into unrelated shots.",
+  ].join("\n");
+}
+
+export function appendBrollPreferenceToDirection(direction: string, input: BrollPreferenceInput): string {
+  const hints = collectPreferenceHints(input);
+  if (!hints) return direction;
+  const base = direction.trim().replace(/\s+/g, " ");
+  const suffix = hints.instruction.replace(/\s+/g, " ");
+  return `${base}${base ? " " : ""}${suffix}`.slice(0, 260);
+}
+
+export function augmentRelevanceSpecWithBrollPreference(
+  spec: RelevanceSpec | null,
+  input: BrollPreferenceInput,
+): RelevanceSpec | null {
+  const hints = collectPreferenceHints(input);
+  if (!hints) return spec;
+  return {
+    visualDomain: spec?.visualDomain || hints.domainLabel,
+    positiveConcepts: mergeUnique(spec?.positiveConcepts, hints.positive).slice(0, 24),
+    avoidConcepts: mergeUnique(spec?.avoidConcepts, hints.avoid).slice(0, 24),
+    safeFallbackQueries: mergeUnique(spec?.safeFallbackQueries, hints.fallbackQueries).slice(0, 14),
+  };
+}

@@ -8,6 +8,7 @@ import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
+import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -27,6 +28,7 @@ type Body = {
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
+  brollRegionPreference?: unknown; brollVisualStyle?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown;
 };
 
@@ -137,6 +139,8 @@ export async function POST(req: Request) {
     // ขั้นสูง (P6c): จำนวนคลิป + ตัวเลือก AI-gen (Beta fields ผ่านได้เฉพาะเมื่อ source เป็น Beta
     // ซึ่งผ่าน admin gate ด้านบนแล้ว)
     const targetClipCount = num(body.targetClipCount, 1, 60);
+    const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
+    const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
     const kieModel = stockSource ? str(body.kieModel, 60) : undefined;
     const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
       ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
@@ -168,6 +172,8 @@ export async function POST(req: Request) {
           ...(!uploadMode && bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
           ...(stockSource ? { stockSource } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
+          ...(brollRegionPreference ? { brollRegionPreference } : {}),
+          ...(brollVisualStyle ? { brollVisualStyle } : {}),
           ...(kieModel ? { kieModel } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),

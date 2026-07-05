@@ -4,15 +4,23 @@ import { useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { isPortraitVideoFile } from "@/lib/video-orientation";
+import { readVideoMetadata } from "@/lib/video-orientation";
 
 const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
 
 type UploadResponse = {
   url?: string;
+  durationMs?: number;
+  durationSec?: number;
   error?: string;
   code?: string;
 };
+
+export interface UploadedVideoMetadata {
+  durationSec?: number;
+  width?: number;
+  height?: number;
+}
 
 class PlanRequiredError extends Error {
   constructor(public readonly planMessage: string) {
@@ -46,7 +54,7 @@ export function DirectAvatarUpload({
   planRequiredMessage = "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป",
   successMessage = "อัปโหลดสำเร็จ",
 }: {
-  onUrl: (url: string) => void;
+  onUrl: (url: string, metadata?: UploadedVideoMetadata) => void;
   onPlanError?: (msg: string) => void;
   requirePortrait?: boolean;
   label?: string;
@@ -66,9 +74,20 @@ export function DirectAvatarUpload({
       toast.error("ไฟล์ใหญ่เกิน 2 GB");
       return;
     }
-    if (requirePortrait && !(await isPortraitVideoFile(file))) {
-      toast.error("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
-      return;
+    let localMetadata: UploadedVideoMetadata | undefined;
+    try {
+      const meta = await readVideoMetadata(file);
+      localMetadata = {
+        width: meta.width,
+        height: meta.height,
+        ...(meta.durationSec > 0 ? { durationSec: meta.durationSec } : {}),
+      };
+      if (requirePortrait && !(meta.height > 0 && meta.width > 0 && meta.height > meta.width)) {
+        toast.error("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
+        return;
+      }
+    } catch {
+      // Keep the existing fail-open behavior for metadata read failures.
     }
     setUploading(true);
     setProgress(0);
@@ -83,7 +102,16 @@ export function DirectAvatarUpload({
         xhr.onload = () => {
           const data = parseUploadResponse(xhr.responseText);
           if (xhr.status === 200) {
-            if (data.url) { onUrl(data.url); resolve(); }
+            if (data.url) {
+              const serverDurationSec =
+                typeof data.durationMs === "number" && data.durationMs > 0
+                  ? data.durationMs / 1000
+                  : typeof data.durationSec === "number" && data.durationSec > 0
+                    ? data.durationSec
+                    : undefined;
+              onUrl(data.url, { ...localMetadata, ...(serverDurationSec ? { durationSec: serverDurationSec } : {}) });
+              resolve();
+            }
             else reject(new Error(data.error ?? "อัปโหลดไม่สำเร็จ"));
           } else if (xhr.status === 403 || data.code === "plan_required") {
             reject(new PlanRequiredError(planRequiredMessage));
