@@ -35,6 +35,13 @@ assert(classifyJobError("Error 429: too many requests", false) === "byok", "429 
 assert(classifyJobError("RESOURCE_EXHAUSTED", true) === "system", "RESOURCE_EXHAUSTED + managed=true → system");
 assert(classifyJobError("RESOURCE_EXHAUSTED", false) === "byok", "RESOURCE_EXHAUSTED + managed=false → byok");
 
+// byokReasonFromText also treats 503 and "too many requests" as rate-limit — the managed branch
+// must match the SAME set, so a managed-key 503/"too many requests" never falls through to byok.
+assert(classifyJobError("Error 503: Service Unavailable", true) === "system", "503 + managed=true → system (our key)");
+assert(classifyJobError("Error 503: Service Unavailable", false) === "byok", "503 + managed=false → byok (customer key)");
+assert(classifyJobError("too many requests, please retry", true) === "system", "too many requests + managed=true → system (our key)");
+assert(classifyJobError("too many requests, please retry", false) === "byok", "too many requests + managed=false → byok (customer key)");
+
 // Noise (superseded / cancel) wins over everything.
 assert(classifyJobError("__SUPERSEDED__", false) === "noise", "__SUPERSEDED__ → noise");
 assert(classifyJobError("job was cancelled by user", false) === "noise", "cancelled → noise");

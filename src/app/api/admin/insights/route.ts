@@ -311,7 +311,7 @@ export function classifyJobError(message: string | null, managed: boolean): "sys
   const text = message ?? "";
   if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
   if (quotaReasonFromText(text)) return "quota";
-  if (managed && /\b429\b|RESOURCE_EXHAUSTED|rate limit/i.test(text)) return "system";
+  if (managed && /\b429\b|\b503\b|RESOURCE_EXHAUSTED|too many requests|rate limit/i.test(text)) return "system";
   if (byokReasonFromText(text)) return "byok";
   return "system";
 }
@@ -438,10 +438,18 @@ export function computeActivationFunnel(input: {
     input.users.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
   );
   const notInternal = (id: string) => !internalIds.has(id);
+  // openedEditor = "engaged" = union of {editor_opened telemetry} ∪ {VideoJob creators}. MCP/chat
+  // users create jobs WITHOUT ever opening the web editor, so startedPipeline (server truth, all
+  // surfaces) can exceed a telemetry-only openedEditor count — that would show >100% conversion /
+  // negative drop-off on the funnel step. Anyone who created a job has, by definition, engaged, so
+  // folding jobUserIds into the union keeps openedEditor >= startedPipeline always.
+  const engagedIds = new Set<string>();
+  for (const id of input.openedUserIds) if (id) engagedIds.add(id);
+  for (const id of input.jobUserIds) engagedIds.add(id);
   return {
     internalTeam: internalIds.size,
     signups: input.users.length - internalIds.size,
-    openedEditor: input.openedUserIds.filter((id): id is string => !!id && notInternal(id)).length,
+    openedEditor: Array.from(engagedIds).filter(notInternal).length,
     startedPipeline: input.jobUserIds.filter(notInternal).length,
     completedFirstVideo: input.completedByUser.filter((g) => notInternal(g.userId)).length,
     repeatCreators: input.completedByUser.filter((g) => notInternal(g.userId) && g.count >= 2).length,

@@ -206,7 +206,7 @@ export default function AdminInsightsPage() {
     if (!activation) return [];
     return [
       { label: "สมัคร", count: activation.signups, cause: "" },
-      { label: "เปิด editor", count: activation.openedEditor, cause: "สมัครแล้วไม่เข้าใช้ — onboarding / อีเมลต้อนรับ" },
+      { label: "เข้าใช้งาน (เปิด editor / เริ่มผ่านแชท)", count: activation.openedEditor, cause: "สมัครแล้วไม่เข้าใช้ — onboarding / อีเมลต้อนรับ" },
       { label: "กดเริ่มสร้าง", count: activation.startedPipeline, cause: "เข้าแล้วไม่กดเริ่ม — UX / onboarding" },
       { label: "ได้วิดีโอเสร็จ", count: activation.completedFirstVideo, cause: "เริ่มแล้วไม่จบ — เช็คความเร็วระบบ (p95) ในโซน dev" },
       { label: "ทำซ้ำ ≥2", count: activation.repeatCreators, cause: "ทำครั้งเดียวแล้วหาย — คุณภาพ / ความคุ้มค่า" },
@@ -322,7 +322,10 @@ export default function AdminInsightsPage() {
                 <div className="space-y-3">
                   {activationSteps.map((item, index) => {
                     const prev = index === 0 ? item.count : activationSteps[index - 1].count;
-                    const conv = index === 0 ? 100 : pctOf(item.count, prev);
+                    // Clamp to 100: completedFirstVideo comes from the Video table while
+                    // startedPipeline comes from VideoJob — a legacy edge could still exceed the
+                    // previous step's count without this. The job funnel already clamps; mirror it.
+                    const conv = index === 0 ? 100 : Math.min(100, pctOf(item.count, prev));
                     const drop = index === 0 ? 0 : Math.max(0, 100 - conv);
                     const width = Math.max(5, Math.min(100, conv));
                     return (

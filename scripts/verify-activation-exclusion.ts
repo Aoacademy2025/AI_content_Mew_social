@@ -56,4 +56,22 @@ assert(users.length === 6 && af.signups === users.length - 2, "sanity: exclusion
 const empty = computeActivationFunnel({ users: [], openedUserIds: [], jobUserIds: [], completedByUser: [], since });
 assert(empty.signups === 0 && empty.internalTeam === 0 && empty.repeatCreators === 0, "empty input → all zeros");
 
+// MCP/chat creators never open the web editor, so openedUserIds is telemetry-only and can be a
+// STRICT subset of jobUserIds. Tier-1 fix: openedEditor must be the union (engaged >= started),
+// never < startedPipeline — otherwise the funnel shows >100% conversion / negative drop-off.
+const mcpUsers = [
+  { id: "m1", email: "webuser@gmail.com", createdAt: new Date("2026-07-03") },
+  { id: "m2", email: "mcponly@gmail.com", createdAt: new Date("2026-07-03") }, // MCP-only: job, no editor_opened
+];
+const mcpAf = computeActivationFunnel({
+  users: mcpUsers,
+  openedUserIds: ["m1"],           // m2 never opened the web editor
+  jobUserIds: ["m1", "m2"],        // but m2 DID create a job via MCP/chat
+  completedByUser: [],
+  since,
+});
+assert(mcpAf.startedPipeline === 2, `startedPipeline counts both web + MCP creators → 2 (got ${mcpAf.startedPipeline})`);
+assert(mcpAf.openedEditor === 2, `openedEditor unions in the MCP-only creator (m2) → 2 (got ${mcpAf.openedEditor})`);
+assert(mcpAf.openedEditor >= mcpAf.startedPipeline, `monotonic: openedEditor (${mcpAf.openedEditor}) >= startedPipeline (${mcpAf.startedPipeline})`);
+
 console.log(`\n${passed} checks passed`);
