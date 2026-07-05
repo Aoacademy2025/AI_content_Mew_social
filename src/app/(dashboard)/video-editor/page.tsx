@@ -15,6 +15,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
   Maximize2, Minimize2, Plus, Search, Loader2,
   ZoomIn, User, X, Save, Pencil, KeyRound, ImagePlus,
+  Captions, Type, Mic, Music, Image as ImageIcon, Crop, Undo2, Redo2,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { fetchMe } from "@/lib/use-me";
@@ -28,12 +29,15 @@ import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
   SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel, AutoMixImageProvider,
 } from "./_components/types";
-import { DEFAULT_STEPS, DEFAULT_AUTO_MIX_PROVIDERS } from "./_components/types";
+import { DEFAULT_STEPS, DEFAULT_AUTO_MIX_PROVIDERS, KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
 import { StepIcon } from "./_components/StepIcon";
 import { ApiCallError } from "./_components/ApiCallError";
 import { OrderPanel } from "./_components/OrderPanel";
 import { RightSettingsPanel } from "./_components/RightSettingsPanel";
+import { MChip, MSwatch, MField, MTool, MToggleRow, MBottomSheet } from "./_components/mobile-ui";
+import { MobileTimeline } from "./_components/MobileTimeline";
+import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { ScrubberBar } from "./_components/ScrubberBar";
 import { TimeLabel } from "./_components/TimeLabel";
 import { PlayheadIndicator, PlaybackProgressStrip, SegmentProgressBar } from "./_components/PlayheadIndicator";
@@ -179,6 +183,8 @@ export default function VideoEditorPage() {
   // ── Pipeline state (copied from video-creator) ─────────────────────────
   const [steps, setSteps] = useState<StepState>({ ...DEFAULT_STEPS });
   const stepsRef = useRef<StepState>({ ...DEFAULT_STEPS });
+  // snapshot ของ steps + label หลัง pipeline จบ — ใช้แสดง rail ค้างไว้บน mobile
+  const [lastRailSnap, setLastRailSnap] = useState<{ steps: StepState; label: string; pct: number } | null>(null);
   const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
@@ -385,14 +391,17 @@ export default function VideoEditorPage() {
   const [renderElapsedTick, setRenderElapsedTick] = useState(0);
   const renderProgress = renderProgressRef.current;
   function setRenderProgress(v: number) { renderProgressRef.current = v; setRenderProgressTick(t => t + 1); }
+  // เวลาเริ่ม pipeline ทั้งเส้น (kw→tts→render) — renderActivity.startedAt นับเฉพาะช่วง render
+  const pipelineStartedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (renderActivity.phase === "idle") return;
+    if (renderActivity.phase === "idle" && !running) return;
     const timer = window.setInterval(() => setRenderElapsedTick(t => t + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [renderActivity.phase]);
+  }, [renderActivity.phase, running]);
 
   const renderElapsedMs = renderActivity.startedAt ? Date.now() - renderActivity.startedAt : 0;
+  const pipelineElapsedMs = pipelineStartedAtRef.current ? Date.now() - pipelineStartedAtRef.current : renderElapsedMs;
   void renderElapsedTick;
 
   // ── Last-rendered style snapshot (for reset + dirty detection) ────────
@@ -502,6 +511,19 @@ export default function VideoEditorPage() {
   const leftResizeRef = useRef<{ startX: number; startW: number } | null>(null);
   const rightResizeRef = useRef<{ startX: number; startW: number } | null>(null);
   const timelineResizeRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  // ── Mobile / responsive ────────────────────────────────────────────────
+  // Below 768px the editor swaps to a CapCut-style stacked layout that reuses
+  // every state/handler in this component (desktop tree is hidden, not removed).
+  const [isMobile, setIsMobile] = useState(false);
+  const [mSheet, setMSheet] = useState<"script" | "split" | "style" | "voice" | "music" | "avatar" | "broll" | "ratio" | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
 
   // ── Search captions ────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
@@ -2618,7 +2640,8 @@ export default function VideoEditorPage() {
 
   const runAll = useCallback(async () => {
     if (!(await ensureKeysReady())) return;
-    if (runningRef.current || !script.trim()) return;
+    if (runningRef.current) { toast.error("กำลังสร้างอยู่ โปรดรอให้เสร็จก่อน"); return; }
+    if (!script.trim()) { toast.error("กรุณากรอกสคริปต์ก่อนกดสร้าง"); return; }
 
     // NOTE: a pre-TTS duration *estimate* gate was removed here — the script→duration
     // estimate (rate tuned for keyword counting, ~2 Thai chars/sec) over-estimates the
@@ -2696,6 +2719,7 @@ export default function VideoEditorPage() {
     } catch { /* ถ้าตรวจสอบ key ไม่ได้ ปล่อยผ่านและให้ pipeline จัดการ */ }
 
     runningRef.current = true; setRunning(true);
+    pipelineStartedAtRef.current = Date.now();
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     setSteps({ ...DEFAULT_STEPS }); stepsRef.current = { ...DEFAULT_STEPS };
@@ -2780,6 +2804,21 @@ export default function VideoEditorPage() {
       }
     } finally {
       runningRef.current = false; setRunning(false);
+      // snapshot rail state สำหรับแสดงค้างบน mobile หลัง pipeline จบ
+      // เช็คว่า pipeline เคย start จริง (มี step ที่ไม่ใช่ idle)
+      const snap = stepsRef.current;
+      const PIPELINE_STEPS = ["tts", "transcribe", "keywords", "fetchStock", "config", "render", "burnSubtitles"] as const;
+      const vis = PIPELINE_STEPS.filter(k => snap[k] !== "skip");
+      const done = vis.filter(k => snap[k] === "done").length;
+      const hasError = vis.some(k => snap[k] === "error");
+      const hasStarted = vis.some(k => snap[k] !== "idle");
+      if (hasStarted) {
+        setLastRailSnap({
+          steps: { ...snap },
+          label: hasError ? "มีขั้นตอนที่ล้มเหลว" : done === vis.length ? "เสร็จสิ้น ✓" : "หยุดกลางคัน",
+          pct: vis.length > 0 ? Math.round((done / vis.length) * 100) : 0,
+        });
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
@@ -2789,6 +2828,7 @@ export default function VideoEditorPage() {
     if (runningRef.current) return;
     if (!script.trim()) { toast.error("กรุณาใส่ script ก่อน"); return; }
     runningRef.current = true; setRunning(true);
+    pipelineStartedAtRef.current = Date.now();
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     const pipelineTelemetry = startPipelineRun(`runFrom:${String(startStep)}`);
@@ -3470,6 +3510,7 @@ export default function VideoEditorPage() {
         style={{ background: "radial-gradient(closest-side, hsl(190 100% 50% / 0.10), transparent)" }}
       />
 
+      {!isMobile && (<>
       {/* ── TOPBAR ── */}
       <div className="relative z-10 h-12 bg-[#111115]/85 backdrop-blur-sm border-b border-cyan-500/15 flex items-center gap-2 px-4 flex-shrink-0">
         <div className="w-px h-5 bg-[#2a2a36] mx-1" />
@@ -4862,6 +4903,691 @@ export default function VideoEditorPage() {
       </div>
         </div>{/* /คอลัมน์ขวาของ Transcript */}
       </div>{/* /MAIN BODY */}
+      </>)}
+
+      {/* ── MOBILE LAYOUT (CapCut-style, < 768px) — reuses all desktop state/handlers ── */}
+      {isMobile && (
+        <div className="fixed inset-0 z-[100] flex flex-col overflow-hidden bg-[#0b0b0d] text-slate-100">
+
+          {/* ── TOPBAR ── */}
+          <div className="flex h-[52px] shrink-0 items-center gap-2 border-b border-[#1e1e28] bg-[#0f0f13] px-3">
+            {/* Back */}
+            <button
+              onClick={() => { if (window.history.length > 1) window.history.back(); else window.location.href = "/dashboard"; }}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 active:bg-[#1e1e28]"
+              aria-label="ปิด"
+            >
+              <X className="h-[18px] w-[18px]" />
+            </button>
+
+            {/* Project name */}
+            <input
+              value={projectName}
+              onChange={e => setProjectName(e.target.value)}
+              aria-label="ชื่อโปรเจกต์"
+              className="min-w-0 flex-1 bg-transparent text-center text-[13px] font-bold text-slate-100 outline-none placeholder:text-slate-600"
+              placeholder="New Project"
+            />
+
+            {/* Quality pill */}
+            <button
+              onClick={() => setRenderSettingsOpen(true)}
+              className="flex h-7 shrink-0 items-center gap-0.5 rounded-lg bg-[#1e1e28] px-2.5 text-[11px] font-bold text-slate-400"
+              aria-label="คุณภาพ"
+            >
+              {renderQuality.toUpperCase()} <ChevronDown className="h-3 w-3 opacity-40" />
+            </button>
+
+            {/* Primary CTA */}
+            {(() => {
+              const noVideo = !previewVideoUrl;
+              const burnedClean = !!pipe.current.burnedVideoUrl && !styleIsDirty;
+              const hasSubs = hasBurnableCaptions(captions);
+              const label = running ? "กำลังสร้าง…" : noVideo ? "สร้าง" : burnedClean ? "ดาวน์โหลด" : hasSubs ? "ฝังซับ" : "ส่งออก";
+              return (
+                <button
+                  data-export
+                  disabled={running}
+                  onClick={async () => {
+                    if (running) return;
+                    if (noVideo) { runAll(); return; }
+                    if (burnedClean) {
+                      await saveToGallery({ videoUrl: pipe.current.burnedVideoUrl!, videoUrlNoSub: pipe.current.renderedVideoNoSubUrl, status: "COMPLETED" });
+                      const a = document.createElement("a"); a.href = pipe.current.burnedVideoUrl!; a.download = ""; a.click();
+                      toast.success("ดาวน์โหลดและบันทึกลง Gallery แล้ว");
+                    } else {
+                      const baseAvailable = pipe.current.compositeUrl || pipe.current.renderedVideoNoSubUrl;
+                      if (!baseAvailable) { toast.error("ต้อง Render วิดีโอก่อน"); return; }
+                      await runBurnSubtitles();
+                      const burned = pipe.current.burnedVideoUrl;
+                      if (burned) { const a = document.createElement("a"); a.href = burned; a.download = ""; a.click(); toast.success("ฝังซับ + ดาวน์โหลด + บันทึกแล้ว"); }
+                    }
+                  }}
+                  className={cn(
+                    "flex h-8 shrink-0 items-center gap-1.5 rounded-xl px-3.5 text-[12px] font-extrabold transition-all",
+                    running
+                      ? "bg-[#1e1e28] text-slate-500"
+                      : "bg-[#37d2c9] text-[#06302e] shadow-[0_4px_14px_-4px_rgba(55,210,201,0.5)]"
+                  )}
+                >
+                  {running
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : noVideo ? null : <Download className="h-3.5 w-3.5" />}
+                  {label}
+                </button>
+              );
+            })()}
+          </div>
+
+          {/* ── SUB-BAR: secondary actions, scrollable ── */}
+          <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-[#16161c] bg-[#0b0b0d] px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {running ? (
+              /* ขณะ running: แสดงแค่ปุ่ม Stop */
+              <button
+                onClick={() => stopAll()}
+                className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-red-500/35 bg-red-500/10 px-3 text-[11px] font-semibold text-red-400 active:bg-red-500/15"
+              >
+                <X className="h-3 w-3" /> หยุด
+              </button>
+            ) : (
+              <>
+                {/* Reset style — เฉพาะเมื่อ dirty */}
+                {/* สร้างใหม่ — re-run pipeline จากสคริปต์ (เฉพาะเมื่อมี video แล้ว; ตอนยังไม่มี CTA บนขวาคือ "สร้าง" อยู่แล้ว) */}
+                {previewVideoUrl && (
+                  <button
+                    onClick={() => {
+                      if (!script.trim()) { toast.error("ไม่มีสคริปต์ — แตะแท็บสคริปต์ก่อน"); return; }
+                      runAll();
+                    }}
+                    className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-violet-500/40 bg-violet-500/15 px-3 text-[11px] font-bold text-violet-300 active:bg-violet-500/25"
+                  >
+                    <Play className="h-3 w-3 fill-current" /> สร้างใหม่
+                  </button>
+                )}
+
+                {lastRenderedStyleRef.current && styleIsDirty && (
+                  <button
+                    onClick={() => {
+                      const snap = lastRenderedStyleRef.current; if (!snap) return;
+                      setSubFontFamily(snap.fontFamily); setSubFontSize(snap.fontSize); setSubFontWeight(snap.fontWeight);
+                      setSubColor(snap.color); setSubAccentColor(snap.accentColor); setSubPreset(snap.preset);
+                      setSubEffect(snap.effect); setSubPosition(snap.position); setSubShadow(snap.shadow);
+                      setSubOutline(snap.outline); setSubOutlineSize(snap.outlineSize);
+                      setCaptions(snap.captions.map(c => ({ ...c }))); setStyleIsDirty(false);
+                      toast("รีเซ็ตกลับ style ที่ Render ล่าสุด");
+                    }}
+                    className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-amber-500/35 bg-amber-500/8 px-3 text-[11px] font-semibold text-amber-400 active:bg-amber-500/15"
+                  >
+                    ↺ Reset
+                  </button>
+                )}
+
+                {/* Save Draft + Draft list */}
+                <button
+                  onClick={() => saveDraftNow()}
+                  className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-[#252530] bg-[#15151c] px-3 text-[11px] font-semibold text-slate-400 active:bg-[#1e1e28]"
+                >
+                  <Save className="h-3 w-3" /> บันทึก
+                </button>
+                <button
+                  onClick={() => setShowDraftList(v => !v)}
+                  className={cn(
+                    "flex h-7 shrink-0 items-center gap-1 rounded-lg border px-2.5 text-[11px] font-semibold transition-colors",
+                    showDraftList
+                      ? "border-violet-500/40 bg-violet-500/10 text-violet-300"
+                      : "border-[#252530] bg-[#15151c] text-slate-500"
+                  )}
+                >
+                  <ChevronDown className={cn("h-3 w-3 transition-transform", showDraftList && "rotate-180")} />
+                  {drafts.length > 0 ? drafts.length : "Draft"}
+                </button>
+
+                {/* Gallery — เฉพาะเมื่อมี video */}
+                {previewVideoUrl && (
+                  <button
+                    disabled={savingToGallery}
+                    onClick={async () => {
+                      if (savingToGallery) return;
+                      setSavingToGallery(true);
+                      try {
+                        const best = (pipe.current.burnedVideoUrl && !styleIsDirty) ? pipe.current.burnedVideoUrl : videoUrl;
+                        await saveToGallery({ videoUrl: best!, videoUrlNoSub: pipe.current.renderedVideoNoSubUrl, status: "COMPLETED" });
+                        saveDraftNow(); toast.success("บันทึกลง Gallery แล้ว");
+                      } finally { setSavingToGallery(false); }
+                    }}
+                    className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-[#252530] bg-[#15151c] px-3 text-[11px] font-semibold text-slate-400 active:bg-[#1e1e28] disabled:opacity-40"
+                  >
+                    {savingToGallery ? <Loader2 className="h-3 w-3 animate-spin" /> : <ImagePlus className="h-3 w-3" />}
+                    Gallery
+                  </button>
+                )}
+
+                {/* API Keys */}
+                <button
+                  onClick={() => setApiSettingsOpen(true)}
+                  className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/8 px-3 text-[11px] font-semibold text-violet-400 active:bg-violet-500/15"
+                >
+                  <KeyRound className="h-3 w-3" /> API Keys
+                </button>
+
+                {/* Autosave time */}
+                {lastSaved && (
+                  <span className="ml-auto shrink-0 font-mono text-[9px] text-slate-700">
+                    ● {lastSaved.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Draft dropdown */}
+          {showDraftList && !running && (
+            <div className="shrink-0 border-b border-[#1e1e28] bg-[#0f0f13]">
+              <div className="flex items-center justify-between px-4 py-2.5">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Drafts</span>
+                <button
+                  onClick={() => { resetEditorState(); setShowDraftList(false); toast.success("เริ่ม project ใหม่แล้ว"); }}
+                  className="flex items-center gap-1 rounded-md bg-violet-500/10 px-2.5 py-1 text-[11px] font-semibold text-violet-400"
+                >
+                  <Plus className="h-3 w-3" /> New
+                </button>
+              </div>
+              <div className="max-h-44 overflow-y-auto">
+                {drafts.length === 0 && (
+                  <p className="px-4 pb-4 text-center text-[11px] text-slate-700">ยังไม่มี draft</p>
+                )}
+                {drafts.map(d => (
+                  <div key={d.id} className="flex items-center border-t border-[#16161c]">
+                    <button
+                      onClick={() => { loadDraftInto(d); setShowDraftList(false); }}
+                      className="flex-1 px-4 py-2.5 text-left"
+                    >
+                      <div className="truncate text-[12px] font-semibold text-slate-200">{d.name}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-600">
+                        {new Date(d.updatedAt).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { const next = drafts.filter(x => x.id !== d.id); saveDrafts(next); setDrafts(next); toast.success("ลบ draft แล้ว"); }}
+                      className="mr-3 grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-700 active:text-red-400 active:bg-red-500/10"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Slim progress rail — แสดงขณะ running และค้างไว้หลังเสร็จจนกว่าจะปิด ── */}
+          {(() => {
+            // เรียงตามลำดับที่ pipeline รันจริง: tts → transcribe → keywords → fetchStock → config → render → burn
+            const PIPELINE_STEPS = ["tts", "transcribe", "keywords", "fetchStock", "config", "render", "burnSubtitles"] as const;
+            const SHORT: Record<string, string> = { keywords: "Keyword", fetchStock: "B-roll", tts: "เสียง", transcribe: "ซับ", config: "Config", render: "Render", burnSubtitles: "ฝังซับ" };
+
+            if (running) {
+              const visibleSteps = PIPELINE_STEPS.filter(k => steps[k] !== "skip");
+              const doneCount = visibleSteps.filter(k => steps[k] === "done").length;
+              const pct = visibleSteps.length > 0
+                ? renderActivity.phase === "rendering" && renderProgress > 0
+                  ? Math.round((doneCount / visibleSteps.length) * 60 + renderProgress * 0.4)
+                  : Math.round((doneCount / visibleSteps.length) * 100)
+                : 0;
+              // ชื่อขั้นตอนปัจจุบัน: ช่วง render/burn ใช้ renderActivity.label (มีรายละเอียด
+              // คิว/เปอร์เซ็นต์) — ขั้นอื่นดึงจาก step ที่กำลังรันตรงๆ
+              const runningStep = visibleSteps.find(k => steps[k] === "running");
+              const activityLabel =
+                runningStep && runningStep !== "render" && runningStep !== "burnSubtitles"
+                  ? `กำลัง${STEP_EVENT_LABELS[runningStep] ?? runningStep}…`
+                  : renderActivity.label || (runningStep ? `กำลัง${STEP_EVENT_LABELS[runningStep] ?? runningStep}…` : "กำลังประมวลผล…");
+              return (
+                <div className="shrink-0 border-b border-[#1e1e28] bg-[#111115] px-3 pb-2 pt-2">
+                  <div className="flex items-center gap-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {visibleSteps.map((k, i) => {
+                      const st = steps[k];
+                      const isDone = st === "done"; const isRun = st === "running"; const isErr = st === "error";
+                      return (
+                        <React.Fragment key={k}>
+                          {i > 0 && <div className={cn("mx-0.5 h-px w-2.5 shrink-0", visibleSteps[i-1] && steps[visibleSteps[i-1]] === "done" ? "bg-emerald-500/40" : "bg-[#2a2a36]")} />}
+                          <div className={cn("flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9.5px] font-semibold", isDone ? "text-emerald-400" : isRun ? "bg-violet-500/10 text-violet-300" : isErr ? "text-red-400" : "text-slate-600")}>
+                            <span className={cn("grid h-[14px] w-[14px] shrink-0 place-items-center rounded-full text-[8px]", isDone ? "bg-emerald-500/15 text-emerald-400" : isRun ? "bg-violet-500/20 text-violet-300" : isErr ? "bg-red-500/15 text-red-400" : "bg-[#1e1e28] text-slate-700")}>
+                              {isDone ? "✓" : isRun ? <Loader2 className="h-2 w-2 animate-spin" /> : isErr ? "!" : "·"}
+                            </span>
+                            {SHORT[k] ?? k}
+                          </div>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-1.5 h-[2px] w-full overflow-hidden rounded-full bg-[#2a2a36]">
+                    <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-500" style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="truncate text-[9px] font-semibold text-violet-400">
+                      <Loader2 className="mr-0.5 inline h-2.5 w-2.5 animate-spin" />
+                      {activityLabel}
+                      {renderActivity.queuePosition != null ? ` · คิว ${renderActivity.queuePosition}` : ""}
+                    </span>
+                    <span className="shrink-0 font-mono text-[9px] text-slate-600">{formatElapsed(pipelineElapsedMs)}</span>
+                  </div>
+                  {renderProgressError && <div className="mt-1 text-[9px] text-red-400">{renderProgressError}</div>}
+                </div>
+              );
+            }
+
+            if (lastRailSnap) {
+              const visibleSteps = PIPELINE_STEPS.filter(k => lastRailSnap.steps[k] !== "skip");
+              const hasError = visibleSteps.some(k => lastRailSnap.steps[k] === "error");
+              const allDone = visibleSteps.every(k => lastRailSnap.steps[k] === "done");
+              return (
+                <div className={cn("shrink-0 border-b px-3 pb-2 pt-2", hasError ? "border-red-500/20 bg-red-500/5" : "border-emerald-500/20 bg-emerald-500/5")}>
+                  <div className="flex items-center gap-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {visibleSteps.map((k, i) => {
+                      const st = lastRailSnap.steps[k];
+                      const isDone = st === "done"; const isErr = st === "error";
+                      return (
+                        <React.Fragment key={k}>
+                          {i > 0 && <div className={cn("mx-0.5 h-px w-2.5 shrink-0", visibleSteps[i-1] && lastRailSnap.steps[visibleSteps[i-1]] === "done" ? "bg-emerald-500/30" : "bg-[#2a2a36]")} />}
+                          <div className={cn("flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9.5px] font-semibold", isDone ? "text-emerald-400" : isErr ? "text-red-400" : "text-slate-600")}>
+                            <span className={cn("grid h-[14px] w-[14px] shrink-0 place-items-center rounded-full text-[8px]", isDone ? "bg-emerald-500/15 text-emerald-400" : isErr ? "bg-red-500/15 text-red-400" : "bg-[#1e1e28] text-slate-700")}>
+                              {isDone ? "✓" : isErr ? "!" : "·"}
+                            </span>
+                            {SHORT[k] ?? k}
+                          </div>
+                        </React.Fragment>
+                      );
+                    })}
+                    <button onClick={() => setLastRailSnap(null)} className="ml-auto shrink-0 pl-2 text-[10px] text-slate-600 active:text-slate-400">✕</button>
+                  </div>
+                  <div className="mt-1.5 h-[2px] w-full overflow-hidden rounded-full bg-[#2a2a36]">
+                    <div className={cn("h-full rounded-full transition-all", hasError ? "bg-red-500" : "bg-emerald-500")} style={{ width: `${lastRailSnap.pct}%` }} />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className={cn("truncate text-[9px] font-semibold", hasError ? "text-red-400" : "text-emerald-400")}>
+                      {allDone ? "✓ " : hasError ? "✕ " : ""}{lastRailSnap.label}
+                    </span>
+                    <span className="shrink-0 text-[9px] text-slate-600">{lastRailSnap.pct}%</span>
+                  </div>
+                </div>
+              );
+            }
+
+            return null;
+          })()}
+
+          {/* preview OR placeholder — flex-1 fills space between topbar and controls */}
+          {!previewVideoUrl ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-[#0b0b0d]">
+              <div className="grid h-16 w-16 place-items-center rounded-2xl border border-[#2a2a36] bg-[#13131a]">
+                <span className="text-3xl opacity-20">🎬</span>
+              </div>
+              <p className="px-8 text-center text-[12px] leading-relaxed text-slate-600">
+                แตะแท็บ <button onClick={() => setMSheet("script")} className="font-bold text-violet-400">สคริปต์</button> พิมพ์เนื้อหา<br />
+                แล้วกดปุ่ม <span className="font-bold text-[#37d2c9]">สร้าง</span> มุมบนขวา
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* preview — flex-1 but capped so timeline still has room */}
+              <div className="relative min-h-0 flex-1 overflow-hidden" style={{ backgroundImage: "radial-gradient(circle,#1e1e2a 1px,transparent 1px)", backgroundSize: "24px 24px", maxHeight: "52vh" }}>
+                <div className="flex h-full items-center justify-center">
+                <div ref={phoneFrameRef} className="video-editor-phone-frame relative select-none" style={{ height: "100%", aspectRatio: "9 / 16", maxHeight: "100%" }}>
+                  <div className="absolute inset-0 overflow-hidden rounded-2xl shadow-[0_0_0_1px_#2a2a36,0_24px_64px_rgba(0,0,0,0.8)]" style={{ background: "linear-gradient(160deg,#0f0f1a 0%,#1a0f2e 40%,#0f1a2e 100%)" }}>
+                    <video
+                      ref={videoRef}
+                      src={previewVideoUrl}
+                      className="h-full w-full object-cover"
+                      loop playsInline
+                      onClick={playToggle}
+                      style={{ cursor: "pointer" }}
+                      onLoadedMetadata={e => setDurationMs((e.target as HTMLVideoElement).duration * 1000)}
+                      onPlay={() => setPlaying(true)}
+                      onPause={() => setPlaying(false)}
+                      onEnded={() => setPlaying(false)}
+                    />
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/40">
+                      <PlaybackProgressStrip totalMs={totalMs} durationMs={durationMs} captionEndMs={captionEndMs} />
+                    </div>
+                  </div>
+                  {!previewUsesBurnedOutput && (
+                    <ActiveCaptionOverlay
+                      cap={activeSub ?? (!playing && displayCaptions.length > 0 ? displayCaptions[0] : null)}
+                      playing={playing}
+                      subPosition={subPosition}
+                      subDragRef={subDragRef}
+                      onSubPointerDown={onSubPointerDown}
+                      onSubPointerMove={onSubPointerMove}
+                      onSubPointerUp={onSubPointerUp}
+                      onOpenStyleTab={() => setMSheet("style")}
+                      onOpenFontTab={() => setMSheet("style")}
+                      onResetPosition={() => setSubPosition(82)}
+                      durationMs={durationMs}
+                      captionEndMs={captionEndMs}
+                      subColor={subColor}
+                      subAccentColor={subAccentColor}
+                      subPreset={subPreset}
+                      subEffect={subEffect}
+                      subFontFamily={subFontFamily}
+                      subFontSize={subFontSize}
+                      subFontWeight={subFontWeight}
+                      subShadow={subShadow}
+                      subOutline={subOutline}
+                      subOutlineSize={subOutlineSize}
+                      previewScale={previewScale}
+                    />
+                  )}
+                  <div className="pointer-events-none absolute inset-0 rounded-2xl" style={{ boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.07)" }} />
+                </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* controls row — expand · play · mute / undo / redo (CapCut layout). Always visible, even pre-render. */}
+          <div className="flex h-12 shrink-0 items-center border-t border-[#1e1e28] bg-[#0b0b0d] px-4">
+            <button onClick={() => { phoneFrameRef.current?.requestFullscreen?.(); }} disabled={!previewVideoUrl} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="เต็มจอ"><Maximize2 className="h-[18px] w-[18px]" /></button>
+            <div className="flex flex-1 items-center justify-center gap-6">
+              <button onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }} disabled={!previewVideoUrl} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="ย้อนต้น"><SkipBack className="h-[18px] w-[18px]" /></button>
+              <button onClick={playToggle} disabled={!previewVideoUrl} className="grid h-8 w-8 place-items-center rounded text-slate-100 active:bg-[#1e1e28] disabled:opacity-30" aria-label={playing ? "หยุด" : "เล่น"}>{playing ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 fill-current" />}</button>
+              <button onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 5); }} disabled={!previewVideoUrl} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="ไป +5 วิ"><SkipForward className="h-[18px] w-[18px]" /></button>
+            </div>
+            <button onClick={() => { setMuted(m => { const nm = !m; if (videoRef.current) videoRef.current.muted = nm; return nm; }); }} disabled={!previewVideoUrl} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="ปิด/เปิดเสียง">{muted ? <VolumeX className="h-[17px] w-[17px]" /> : <Volume2 className="h-[17px] w-[17px]" />}</button>
+            <button onClick={undo} disabled={historyIdxRef.current <= 0} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="ย้อนกลับ"><Undo2 className="h-[17px] w-[17px]" /></button>
+            <button onClick={redo} disabled={historyIdxRef.current >= historyRef.current.length - 1} className="grid h-8 w-8 place-items-center rounded text-slate-400 active:bg-[#1e1e28] disabled:opacity-30" aria-label="ทำซ้ำ"><Redo2 className="h-[17px] w-[17px]" /></button>
+          </div>
+
+          {/* timeline — CapCut-style: pinned centre playhead, scrolling tracks. Always visible, even pre-render. */}
+          <MobileTimeline
+            captions={displayCaptions}
+            stockVideos={stockVideos}
+            totalMs={totalMs}
+            durationMs={durationMs}
+            captionEndMs={captionEndMs}
+            ttsUrl={ttsUrl}
+            playing={playing}
+            activeCaptionIdx={activeCaptionIdx}
+            fmtMs={fmtMs}
+            onSeekCaptionMs={capMs => {
+              if (!videoRef.current) return;
+              const v = captionMsToVideoMs(capMs);
+              videoRef.current.currentTime = v / 1000;
+              playbackTime.setMs(v);
+              setCurrentMs(v);
+            }}
+            onAddVoice={() => setMSheet("voice")}
+            onAddText={() => setMSheet("style")}
+            onAddBroll={() => setMSheet("broll")}
+          />
+
+          {/* bottom tool bar — ลำดับตามที่ต้องใส่ก่อน: สคริปต์ → เสียง → B-roll → สไตล์ → ซับ → เพลง → Avatar */}
+          <div className="grid shrink-0 grid-cols-7 border-t border-[#1e1e28] bg-[#111115]" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+            {([
+              { k: "script", icon: Pencil,    label: "สคริปต์" },
+              { k: "voice",  icon: Mic,       label: "เสียง" },
+              { k: "broll",  icon: ImageIcon, label: "B-roll" },
+              { k: "style",  icon: Type,      label: "สไตล์" },
+              { k: "split",  icon: Captions,  label: "ซับ" },
+              { k: "music",  icon: Music,     label: "เพลง" },
+              { k: "avatar", icon: User,      label: "Avatar" },
+            ] as const).map(t => (
+              <MTool key={t.k} icon={t.icon} label={t.label} active={mSheet === t.k} onClick={() => setMSheet(t.k)} />
+            ))}
+          </div>
+
+          {/* bottom sheet */}
+          <MBottomSheet
+            open={mSheet !== null}
+            title={
+              mSheet === "script" ? "สคริปต์" :
+              mSheet === "split" ? "แบ่งคำ / ช่วงซับ" : mSheet === "style" ? "สไตล์ซับ" : mSheet === "voice" ? "เสียงพากย์" :
+              mSheet === "music" ? "เพลงประกอบ" : mSheet === "avatar" ? "AI Avatar" : mSheet === "broll" ? "เปลี่ยน B-roll" :
+              mSheet === "ratio" ? "อัตราส่วน" : ""
+            }
+            onClose={() => setMSheet(null)}
+          >
+            {mSheet === "script" && (
+              <>
+                <MField label="Script (แต่ละบรรทัด = 1 ช่วง)">
+                  <textarea
+                    value={script}
+                    onChange={e => setScript(e.target.value)}
+                    placeholder={"พิมพ์ script ที่นี่...\nเริ่มด้วย hook ที่ดึงดูด"}
+                    className="h-52 w-full resize-none rounded-xl border border-[#2a2a36] bg-[#0e0e13] p-3.5 text-[14px] leading-relaxed text-slate-200 outline-none focus:border-violet-500/50"
+                  />
+                </MField>
+                <button
+                  onClick={() => { setMSheet(null); runAll(); }}
+                  disabled={running || !script.trim()}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-violet-500 to-violet-600 text-[14px] font-extrabold text-white shadow-[0_8px_20px_-6px_rgba(139,92,246,0.55)] disabled:opacity-50"
+                >
+                  {running ? <Loader2 className="h-[18px] w-[18px] animate-spin" /> : <Play className="h-[18px] w-[18px] fill-current" />}
+                  {running ? "กำลังสร้าง…" : previewVideoUrl ? "สร้างวิดีโอใหม่" : "สร้างวิดีโอ"}
+                </button>
+                {previewVideoUrl && !running && (
+                  <p className="mt-2 text-center text-[11px] text-slate-600">สร้างใหม่จะแทนที่วิดีโอปัจจุบัน — บันทึกลง Gallery ก่อนถ้าต้องการเก็บไว้</p>
+                )}
+              </>
+            )}
+
+            {mSheet === "split" && (
+              <>
+                <MField label="จำนวนคำต่อช่วง">
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { m: "sentence", l: "ประโยค" }, { m: "1", l: "1 คำ" }, { m: "2", l: "≤2 คำ" }, { m: "3", l: "≤3 คำ" }, { m: "4", l: "≤4 คำ" },
+                    ] as const).map(o => (
+                      <MChip key={o.m} active={splitMode === o.m} onClick={() => { setSplitMode(o.m); splitCaptionsByMode(o.m); }}>{o.l}</MChip>
+                    ))}
+                  </div>
+                </MField>
+                <p className="mb-4 text-[12px] leading-relaxed text-slate-500">ระบบจะแบ่งซับใหม่ทันที โดยคงเวลาเดิมของเสียงพากย์ไว้ — ตัวอักษรไม่ถูกแก้</p>
+                {/* Caption list — แก้ข้อความซับได้โดยตรง */}
+                {displayCaptions.length > 0 && (
+                  <MField label={`ซับทั้งหมด (${displayCaptions.length} ช่วง)`}>
+                    <div className="flex flex-col gap-1.5">
+                      {displayCaptions.map((cap, i) => (
+                        <div key={i} className={cn("flex items-start gap-2 rounded-xl border p-2.5", i === activeCaptionIdx ? "border-violet-500/50 bg-violet-500/10" : "border-[#2a2a36] bg-[#1a1a22]")}>
+                          <span className="mt-0.5 shrink-0 font-mono text-[9px] text-slate-600">{fmtMs(cap.startMs)}</span>
+                          <textarea
+                            value={cap.text}
+                            rows={1}
+                            onChange={e => {
+                              const next = displayCaptions.map((c, j) => j === i ? { ...c, text: e.target.value } : c);
+                              setCaptions(next);
+                            }}
+                            className="min-h-[24px] flex-1 resize-none bg-transparent text-[13px] leading-snug text-slate-100 outline-none"
+                            style={{ height: "auto" }}
+                            onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </MField>
+                )}
+                {displayCaptions.length === 0 && (
+                  <p className="text-center text-[12px] text-slate-600">ยังไม่มีซับ — กดสร้างวิดีโอก่อน</p>
+                )}
+              </>
+            )}
+
+            {mSheet === "style" && (
+              <>
+                <MField label="ฟอนต์">
+                  <div className="flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {([
+                      { v: "'Bai Jamjuree', sans-serif", l: "Bai Jamjuree" },
+                      { v: "'Kanit', sans-serif", l: "Kanit" },
+                      { v: "'Prompt', sans-serif", l: "Prompt" },
+                      { v: "'Sarabun', sans-serif", l: "Sarabun" },
+                      { v: "'Mitr', sans-serif", l: "Mitr" },
+                    ] as const).map(f => <MChip key={f.l} active={subFontFamily === f.v} onClick={() => setSubFontFamily(f.v)}>{f.l}</MChip>)}
+                  </div>
+                </MField>
+                <MField label="ขนาด">
+                  <div className="flex items-center gap-3">
+                    <input type="range" min={40} max={140} value={subFontSize} onChange={e => setSubFontSize(Number(e.target.value))} className="h-1.5 flex-1 accent-violet-500" />
+                    <span className="w-9 text-right font-mono text-[12px] text-slate-400">{subFontSize}</span>
+                  </div>
+                </MField>
+                <MField label="สไตล์สำเร็จรูป">
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { v: "stroke", l: "ขอบหนา" }, { v: "box", l: "กล่อง" }, { v: "glow", l: "เรืองแสง" }, { v: "karaoke", l: "คาราโอเกะ" }, { v: "hormozi", l: "Hormozi" }, { v: "beast", l: "Beast" }, { v: "neon-green", l: "นีออน" },
+                    ] as const).map(p => <MChip key={p.v} active={subPreset === p.v} onClick={() => setSubPreset(p.v)}>{p.l}</MChip>)}
+                  </div>
+                </MField>
+                <MField label="สีตัวอักษร">
+                  <div className="flex flex-wrap gap-3">{["#ffffff", "#ffe24a", "#8b5cf6", "#ff5a5a", "#34d399", "#111111"].map(c => <MSwatch key={c} color={c} active={subColor.toLowerCase() === c} onClick={() => setSubColor(c)} />)}</div>
+                </MField>
+                <MField label="สีไฮไลต์คำสำคัญ">
+                  <div className="flex flex-wrap gap-3">{["#ffe500", "#8b5cf6", "#ff5a5a", "#34d399", "#ff8a3d"].map(c => <MSwatch key={c} color={c} active={subAccentColor.toLowerCase() === c} onClick={() => setSubAccentColor(c)} />)}</div>
+                </MField>
+                <MField label="ตำแหน่งซับ">
+                  <div className="flex gap-2">
+                    {([{ p: 15, l: "บน" }, { p: 50, l: "กลาง" }, { p: 82, l: "ล่าง" }] as const).map(o => <MChip key={o.p} active={subPosition === o.p} onClick={() => setSubPosition(o.p)}>{o.l}</MChip>)}
+                  </div>
+                </MField>
+                <div className="flex flex-col gap-2.5">
+                  <MToggleRow label="เงาตัวอักษร" sub="อ่านง่ายขึ้นบนพื้นสว่าง" on={subShadow} onClick={() => setSubShadow(v => !v)} />
+                  <MToggleRow label="เส้นขอบ (Outline)" sub="เพิ่มเส้นขอบรอบตัวอักษร" on={subOutline} onClick={() => setSubOutline(v => !v)} />
+                </div>
+              </>
+            )}
+
+            {mSheet === "voice" && (
+              <>
+                <MField label="ผู้ให้บริการเสียง">
+                  <div className="flex gap-2">
+                    <MChip active={ttsProvider === "gemini"} onClick={() => setTtsProvider("gemini")}>Gemini</MChip>
+                    <MChip active={ttsProvider === "elevenlabs"} onClick={() => setTtsProvider("elevenlabs")}>ElevenLabs</MChip>
+                  </div>
+                </MField>
+                {ttsProvider === "gemini" ? (
+                  <MField label="เสียง (Gemini)">
+                    <div className="flex flex-col gap-2">
+                      {GEMINI_VOICES.map(v => (
+                        <button
+                          key={v.id}
+                          onClick={() => setGeminiVoiceName(v.id)}
+                          className={cn("flex items-center justify-between rounded-xl border px-3 py-2.5 text-left", geminiVoiceName === v.id ? "border-violet-500/50 bg-violet-500/10" : "border-[#2a2a36] bg-[#1a1a22]")}
+                        >
+                          <span className="text-[13px] font-semibold text-slate-100">{v.label}</span>
+                          {geminiVoiceName === v.id && <span className="h-2 w-2 rounded-full bg-violet-400" />}
+                        </button>
+                      ))}
+                    </div>
+                  </MField>
+                ) : (
+                  <p className="text-[12px] leading-relaxed text-slate-500">ElevenLabs ใช้ Voice ID จากการตั้งค่า — เลือก/โคลนเสียงแบบละเอียดได้ในหน้าเดสก์ท็อป{voiceId ? ` (ปัจจุบัน: ${voiceId.slice(0, 8)}…)` : ""}</p>
+                )}
+              </>
+            )}
+
+            {mSheet === "music" && (
+              <>
+                <div className="mb-4"><MToggleRow label="เปิดเพลงประกอบ" on={bgmEnabled} onClick={() => setBgmEnabled(v => !v)} /></div>
+                <MField label="เลือกเพลง">
+                  <div className="flex flex-col gap-2">
+                    {systemTracks.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => { setBgmFile(t.filename); setBgmEnabled(true); }}
+                        className={cn("flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left", bgmFile === t.filename ? "border-violet-500/50 bg-violet-500/10" : "border-[#2a2a36] bg-[#1a1a22]")}
+                      >
+                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-violet-500/15 text-violet-300"><Music className="h-4 w-4" /></span>
+                        <span className="flex-1 text-[13px] font-semibold text-slate-100">{t.title}</span>
+                        {bgmFile === t.filename && <span className="h-2 w-2 rounded-full bg-violet-400" />}
+                      </button>
+                    ))}
+                    {systemTracks.length === 0 && <p className="text-[12px] text-slate-500">ยังไม่มีเพลงในระบบ</p>}
+                  </div>
+                </MField>
+                <MField label="ระดับเสียงเพลง">
+                  <div className="flex items-center gap-3">
+                    <input type="range" min={0} max={100} value={Math.round(bgmVolume * 100)} onChange={e => setBgmVolume(Number(e.target.value) / 100)} className="h-1.5 flex-1 accent-violet-500" />
+                    <span className="w-10 text-right font-mono text-[12px] text-slate-400">{Math.round(bgmVolume * 100)}%</span>
+                  </div>
+                </MField>
+              </>
+            )}
+
+            {mSheet === "avatar" && (
+              <>
+                <MToggleRow label="ใช้ AI Avatar" sub="พรีเซนเตอร์พูดในวิดีโอ" on={useAvatar} onClick={() => setUseAvatar(v => !v)} />
+                {useAvatar && (
+                  <div className="mt-4">
+                    <MField label="โหมด Avatar">
+                      <div className="flex flex-wrap gap-2">
+                        {([{ v: "full", l: "เต็มคลิป" }, { v: "bookend", l: "เปิดต้น" }, { v: "bookend-both", l: "เปิด–ปิดท้าย" }] as const).map(o => (
+                          <MChip key={o.v} active={avatarTiming === o.v} onClick={() => setAvatarTiming(o.v)}>{o.l}</MChip>
+                        ))}
+                      </div>
+                    </MField>
+                    <p className="text-[12px] leading-relaxed text-slate-500">เลือก/อัปโหลด Avatar และปรับขนาด-ตำแหน่งแบบละเอียดได้ในหน้าเดสก์ท็อป</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {mSheet === "broll" && (
+              <>
+                <MField label="แหล่ง B-roll">
+                  <div className="flex flex-wrap gap-2">
+                    {([{ v: "both", l: "Pexels + Pixabay" }, { v: "pexels", l: "Pexels" }, { v: "pixabay", l: "Pixabay" }] as const).map(o => (
+                      <MChip key={o.v} active={stockSource === o.v} onClick={() => setStockSource(o.v)}>{o.l}</MChip>
+                    ))}
+                    {kieImageEnabled && (
+                      <MChip active={stockSource === "kie-image"} onClick={() => setStockSource("kie-image")}>AI Image (kie.ai)</MChip>
+                    )}
+                    {autoMixEnabled && (
+                      <MChip active={stockSource === "auto-mix"} onClick={() => setStockSource("auto-mix")}>Auto Mix</MChip>
+                    )}
+                  </div>
+                </MField>
+
+                {stockSource === "kie-image" && kieImageEnabled && (
+                  <MField label="โมเดล AI Image">
+                    <div className="flex flex-wrap gap-2">
+                      {KIE_IMAGE_MODEL_OPTIONS.map(o => (
+                        <MChip key={o.value} active={kieModel === o.value} onClick={() => setKieModel(o.value)}>{o.label}</MChip>
+                      ))}
+                    </div>
+                  </MField>
+                )}
+
+                {stockSource === "auto-mix" && autoMixEnabled && (
+                  <MField label="แหล่งภาพ (Auto Mix)">
+                    <div className="flex flex-wrap gap-2">
+                      {AUTO_MIX_PROVIDER_OPTIONS.map(o => {
+                        const on = autoMixProviders.includes(o.value);
+                        return (
+                          <MChip
+                            key={o.value}
+                            active={on}
+                            onClick={() => setAutoMixProviders(prev => on ? prev.filter(p => p !== o.value) : [...prev, o.value])}
+                          >
+                            {o.label}
+                          </MChip>
+                        );
+                      })}
+                    </div>
+                  </MField>
+                )}
+
+                <p className="text-[12px] leading-relaxed text-slate-500">B-roll จะเปลี่ยนทุก 3–5 วินาทีอัตโนมัติ ตาม keyword ของแต่ละช่วง</p>
+              </>
+            )}
+
+            {mSheet === "ratio" && (
+              <>
+                <div className="flex flex-wrap gap-2"><MChip active>9:16 · TikTok/Reels</MChip></div>
+                <p className="mt-4 text-[12px] leading-relaxed text-slate-500">สตูดิโอปรับแต่งสำหรับ 9:16 แนวตั้ง — เหมาะกับ Shorts, Reels และ TikTok</p>
+              </>
+            )}
+          </MBottomSheet>
+
+        </div>
+      )}
 
       {/* Missing key modal */}
       {missingKey && (

@@ -72,7 +72,7 @@ async function callGeminiTts(
   deadline?: number,
 ): Promise<TtsCallResult> {
   const requestBody = JSON.stringify({
-    contents: [{ parts: [{ text }] }],
+    contents: [{ role: "user", parts: [{ text }] }],
     generationConfig: {
       responseModalities: ["AUDIO"],
       speechConfig: {
