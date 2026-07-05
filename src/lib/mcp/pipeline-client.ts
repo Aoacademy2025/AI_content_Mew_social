@@ -22,7 +22,9 @@ const pipelineDispatcher = new Agent({
 });
 
 export interface PipelineCaller {
-  post<T>(path: string, body: unknown): Promise<T>;
+  /** opts.retries=0 for calls that SPEND on external services (kie image gen) —
+   *  a transport-timeout retry there means paying for the whole batch again. */
+  post<T>(path: string, body: unknown, opts?: { retries?: number }): Promise<T>;
   patch<T>(path: string, body: unknown): Promise<T>;
   get<T>(path: string): Promise<T>;
 }
@@ -53,16 +55,16 @@ export function pipelineCaller(userId: string): PipelineCaller {
     [SERVICE_SECRET_HEADER]: process.env.MCP_SERVICE_SECRET ?? "",
     [SERVICE_ACTAS_HEADER]: userId,
   };
-  async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown): Promise<T> {
+  async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown, opts?: { retries?: number }): Promise<T> {
     return withRetry(async () => {
       const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
       const text = await res.text();
       if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
       return (text ? JSON.parse(text) : {}) as T;
-    });
+    }, { retries: opts?.retries });
   }
   return {
-    post: (path, body) => req("POST", path, body),
+    post: (path, body, opts) => req("POST", path, body, opts),
     patch: (path, body) => req("PATCH", path, body),
     get: (path) => req("GET", path),
   };
@@ -73,7 +75,7 @@ export async function pollRender(
   caller: PipelineCaller,
   jobId: string,
   onProgress?: (pct: number, stage: string | null) => void,
-  opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+  opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void>; checkCanceled?: () => Promise<void> } = {},
 ): Promise<string> {
   const interval = opts.intervalMs ?? 2000;
   const timeout = opts.timeoutMs ?? 15 * 60 * 1000;
@@ -81,6 +83,9 @@ export async function pollRender(
   const start = Date.now();
   let consecutiveErrors = 0;
   while (Date.now() - start < timeout) {
+    // Cooperative cancel from the owning VideoJob — the hook throws to abort the poll.
+    // OUTSIDE the try below so it can never be swallowed as a transient poll error.
+    await opts.checkCanceled?.();
     try {
       const p = await caller.get<{ progress: number; videoUrl: string | null; error: string | null; stage: string | null }>(
         `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`,

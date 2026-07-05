@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordChargedClip } from "@/lib/clip-charge";
+import { clampAvatarLayout, layoutGeometry, type AvatarLayout } from "@/lib/avatar-layout";
+import { buildEnableExpr } from "@/lib/cutaway-plan";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -39,31 +41,6 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
-// เลเยอร์ avatar บนเฟรม: scale = สัดส่วนต่อเฟรม (1 = เต็มเฟรม = พฤติกรรมเดิม),
-// offset เป็นหน่วย px ของ UI (-200..200; 200 = เลื่อนครึ่งเฟรม) — สูตรเดียวกับ preview ใน editor
-type AvatarLayout = { scale: number; offsetX: number; offsetY: number };
-
-// คืน null เมื่อไม่ได้ส่งมา/เป็นค่า default → ใช้เส้นทาง full-cover เดิมเป๊ะ
-// (client รุ่นเก่าและ video-creator ไม่ส่ง avatarLayout จึงไม่ได้รับผลกระทบ)
-function parseAvatarLayout(raw: unknown): AvatarLayout | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const scale = Number(o.scale), offsetX = Number(o.offsetX), offsetY = Number(o.offsetY);
-  if (!Number.isFinite(scale) || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return null;
-  const s = Math.min(4, Math.max(0.05, scale));
-  const x = Math.min(400, Math.max(-400, offsetX));
-  const y = Math.min(400, Math.max(-400, offsetY));
-  if (Math.abs(s - 1) < 0.001 && Math.abs(x) < 0.5 && Math.abs(y) < 0.5) return null;
-  return { scale: s, offsetX: x, offsetY: y };
-}
-
-function layoutGeometry(layout: AvatarLayout) {
-  const w = Math.round((1080 * layout.scale) / 2) * 2;
-  const h = Math.round((1920 * layout.scale) / 2) * 2;
-  const x = Math.round((1080 - w) / 2 + (1080 * layout.offsetX) / 400);
-  const y = Math.round((1920 - h) / 2 + (1920 * layout.offsetY) / 400);
-  return { w, h, x, y };
-}
 
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -101,6 +78,40 @@ async function directComposite(bgPath: string, avatarPath: string, outPath: stri
     outPath,
   ]);
   console.log("[direct-composite] done");
+}
+
+// ─────────────────────────────────────────────
+// Mode: cutaway — uploaded clip is the base video; the content-matched b-roll (bg)
+// peeks through during NON-person windows. Overlay the clip only during person ranges
+// (enable=between). Audio always from the clip (input 1). No green screen needed.
+// ─────────────────────────────────────────────
+async function cutawayComposite(
+  bgPath: string,
+  avatarPath: string,
+  outPath: string,
+  personRangesSec: { start: number; end: number }[],
+): Promise<void> {
+  const ffmpeg = getFfmpegPath();
+  const enableExpr = buildEnableExpr(personRangesSec);
+  const overlay = enableExpr
+    ? `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`
+    : `[bg][fg]overlay=0:0:format=auto[out]`; // no ranges => behave like full (fail-open)
+  const filter = [
+    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
+    overlay,
+  ].join(";");
+  console.log("[cutaway-composite] filter:", filter);
+  await runFfmpeg(ffmpeg, [
+    "-y", "-i", bgPath, "-i", avatarPath,
+    "-filter_complex", filter,
+    "-map", "[out]", "-map", "1:a?",
+    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+    "-c:a", "aac", "-b:a", "128k",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    outPath,
+  ]);
+  console.log("[cutaway-composite] done");
 }
 
 // ─────────────────────────────────────────────
@@ -485,9 +496,10 @@ export async function POST(req: Request) {
     rembgModel = "u2net",
     audioFromAvatar = false,
     avatarLayout = null,
+    personRanges = [],
   } = body ?? {};
 
-  const layout = parseAvatarLayout(avatarLayout);
+  const layout = clampAvatarLayout(avatarLayout);
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
@@ -546,6 +558,8 @@ export async function POST(req: Request) {
     // Standard composite (full / bookend / bookend-both legacy)
     if (mode === "direct") {
       await directComposite(bgTmp, avatarTmp, outPath);
+    } else if (mode === "cutaway") {
+      await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges);
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {

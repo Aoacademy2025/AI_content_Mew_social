@@ -17,6 +17,7 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
+import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import {
   activeRenderCancel,
@@ -34,16 +35,6 @@ function getRenderTmpDir(): string {
     process.env.RENDER_TMP_ROOT
       ? path.resolve(process.env.RENDER_TMP_ROOT)
       : path.join(process.cwd(), ".tmp", "remotion");
-  try {
-    fs.mkdirSync(base, { recursive: true });
-  } catch {}
-  return base;
-}
-
-function getRemotionBundlePublicDir(): string {
-  // Remotion inputs are absolute /api/renders and /api/stocks URLs, not staticFile().
-  // Use an empty public dir so bundle() does not duplicate public/renders into cache.
-  const base = path.join(process.cwd(), ".tmp", "remotion-public");
   try {
     fs.mkdirSync(base, { recursive: true });
   } catch {}
@@ -338,14 +329,20 @@ export async function POST(req: Request) {
     }
 
     const fps = [24, 30, 50, 60].includes(Number(requestedFps)) ? Number(requestedFps) : 30;
+    // Bill + cap from the LONGER of the client-declared duration and the config the
+    // composition ACTUALLY renders. run-render forces the render length to
+    // shortVideoConfig/subtitleOverlayConfig.durationInFrames (see applyCompositionOverrides),
+    // so preferring a small client `videoDuration` over the config let a caller send
+    // videoDuration:1 alongside a 10-min shortVideoConfig to under-reserve minutes AND slip
+    // past the per-clip duration cap while a full-length clip renders. max() closes that
+    // without over-billing honest clients (who omit videoDuration or send it == config);
+    // plain-scenes/avatar renders carry no config here, so they still bill from videoDuration
+    // exactly as before.
     const explicitDurationSec = Number(videoDuration);
     const configDurationFrames = Number(shortVideoConfig?.durationInFrames ?? subtitleOverlayConfig?.durationInFrames);
-    const requestedDurationSec =
-      Number.isFinite(explicitDurationSec) && explicitDurationSec > 0
-        ? explicitDurationSec
-        : Number.isFinite(configDurationFrames) && configDurationFrames > 0
-          ? configDurationFrames / fps
-          : null;
+    const explicitSec = Number.isFinite(explicitDurationSec) && explicitDurationSec > 0 ? explicitDurationSec : 0;
+    const configSec = Number.isFinite(configDurationFrames) && configDurationFrames > 0 ? configDurationFrames / fps : 0;
+    const requestedDurationSec = explicitSec > 0 || configSec > 0 ? Math.max(explicitSec, configSec) : null;
 
     // Minutes to reserve, from the best available output duration at reserve-time.
     // requestedDurationSec is null only when no explicit duration AND no config frames
@@ -825,7 +822,7 @@ export async function POST(req: Request) {
       fps,
       requestedJpegQuality,
       entryPoint,
-      bundlePublicDir: getRemotionBundlePublicDir(),
+      bundlePublicDir: prepareRemotionBundlePublicDir(),
       rendersDir,
       watermark,
       // Shared bundle cache — process-level, on the caller, passed by reference so

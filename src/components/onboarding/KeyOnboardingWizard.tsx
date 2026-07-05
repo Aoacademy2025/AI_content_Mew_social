@@ -77,7 +77,7 @@ export function KeyOnboardingWizard({
       <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#0c1018] p-5 sm:p-6">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-sky-300" />
+            <Sparkles className="h-5 w-5 text-violet-300" />
             <h2 className="text-lg font-semibold text-white">เริ่มต้นใช้ HERO AI</h2>
           </div>
           <button type="button" onClick={skip} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
@@ -85,7 +85,7 @@ export function KeyOnboardingWizard({
         <p className="mt-1 text-sm text-slate-400">ตั้งแค่ 2 อย่างก็เริ่มสร้างวิดีโอได้เลย</p>
 
         <div className="mt-5 space-y-5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-sky-200">จำเป็น</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">จำเป็น</div>
           {requiredKeysFor(managed).map((def) => (
             <ApiKeyField key={def.id} def={def} value={values[def.id] ?? ""} isSaved={false}
               onChange={(v) => setValue(def.id, v)} onTest={() => test(def.id, def.testKeyType)}
@@ -108,13 +108,13 @@ export function KeyOnboardingWizard({
           <button type="button" onClick={skip} className="text-sm text-slate-400 hover:text-white">ข้ามก่อน</button>
           <button type="button" onClick={saveAll} disabled={saving}
             className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
-            style={{ background: "linear-gradient(135deg, hsl(190 100% 45%), hsl(220 100% 58%))" }}>
+            style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
             {saving && <Loader2 className="h-4 w-4 animate-spin" />} บันทึกแล้วเริ่มเลย
           </button>
         </div>
         {!managed && (
           <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300">
+            className="mt-3 inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300">
             ขอ Gemini key ฟรี <ExternalLink className="h-3 w-3" />
           </a>
         )}

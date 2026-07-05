@@ -51,15 +51,24 @@ import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
+import { planCutaway } from "@/lib/cutaway-plan";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { shouldApplyLoadedPreset, avatarGenSignature, nextAvatarAction } from "@/lib/avatar-flow";
 
 // Window-based b-roll (flag-gated rollout). OFF → legacy per-caption + min-hold path.
 const BROLL_WINDOW_MODE = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
 const BROLL_WINDOW_SEC = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
 import type { TtsTiming, ScriptCard } from "@/lib/tts-timing";
 import { pollJob, PollStaleError, PollTransientLimitError } from "./_lib/poll-job";
+import { preprocessScript } from "./_lib/preprocess-script";
 import { estimateScriptDurationSec } from "./_lib/estimate-duration";
 import { limitsForPlan, nextPlanFor, PLAN_LABEL } from "@/lib/plan-limits";
 import { useAudioPeaks } from "./_components/useAudioPeaks";
+import { useEditorV2 } from "./_v2/useEditorV2Flag";
+import { EditorV2Shell } from "./_v2/EditorV2Shell";
+import { useBgm } from "./_hooks/useBgm";
+import { useCreditsQuota, CREDITS_LIVE_CLIENT } from "./_hooks/useCreditsQuota";
+import { useDraftAutosave } from "./_hooks/useDraftAutosave";
 import { WaveformCanvas } from "./_components/WaveformCanvas";
 import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
 
@@ -162,7 +171,14 @@ function hasBurnableCaptions(captions: Caption[]) {
 // MAIN PAGE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Editor v2 rollout switch — env default + per-person override (?ui=v2 / ?ui=v1).
+// Flag ปิด + ไม่มี override = LegacyVideoEditorPage ตรง ๆ พฤติกรรมเดิมทุกอย่าง
 export default function VideoEditorPage() {
+  const v2 = useEditorV2();
+  return v2 ? <EditorV2Shell /> : <LegacyVideoEditorPage />;
+}
+
+function LegacyVideoEditorPage() {
 
   // ── Draft / project state ──────────────────────────────────────────────
   const [draftId, setDraftId] = useState(() => newDraftId());
@@ -188,8 +204,11 @@ export default function VideoEditorPage() {
   const stepStartedAtRef = useRef<Partial<Record<keyof StepState, number>>>({});
   const [logs, setLogs] = useState<Partial<Record<keyof StepState, string>>>({});
   const [running, setRunning] = useState(false);
-  // Bumped after render or burn completes so QuotaStatus re-fetches the updated balance
-  const [quotaRefresh, setQuotaRefresh] = useState(0);
+  // Quota chip refresh + credit-overflow state/actions — extracted to _hooks/useCreditsQuota (P1)
+  const {
+    quotaRefresh, setQuotaRefresh, outOfMinutes, setOutOfMinutes,
+    buyCredits, fireCreditReceipt,
+  } = useCreditsQuota();
   const abortRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const stopRenderPollRef = useRef<(() => void) | null>(null);
@@ -301,7 +320,7 @@ export default function VideoEditorPage() {
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
-  const [kieModel, setKieModel] = useState<KieImageModel>("nano-banana-pro");
+  const [kieModel, setKieModel] = useState<KieImageModel>("gpt-image-2-text-to-image");
   const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(DEFAULT_AUTO_MIX_PROVIDERS);
   // AI Image-to-Video (kie.ai) และ Auto Mix เปิดเฉพาะ ADMIN — user ทั่วไปเห็นปุ่มแต่กดไม่ได้ (เร็วๆ นี้)
   const [kieImageEnabled, setKieImageEnabled] = useState(false);
@@ -357,6 +376,43 @@ export default function VideoEditorPage() {
   const [avatarTailSecs, setAvatarTailSecs] = useState(5);
   const [avatarGreenUrl, setAvatarGreenUrl] = useState("");
   const [avatarTailGreenUrl, setAvatarTailGreenUrl] = useState("");
+  // Signature of the inputs the CURRENT avatarGreenUrl was generated from. Lets the primary
+  // button re-composite for free when only scale/offset/chroma changed, and re-pay HeyGen only
+  // when a gen-input (avatar / voice / script / timing) actually changed. null = no green / unknown.
+  const [lastGenSig, setLastGenSig] = useState<string | null>(null);
+
+  // Collapse ok+unverified into a single boolean so the load-preset effect fires only on
+  // the invalid→valid edge, not on the unverified→ok transition (which would clobber edits).
+  const avatarValid = useMemo(() => avatarStatus === "ok" || avatarStatus === "unverified", [avatarStatus]);
+
+  // When an avatar ID becomes valid, load its saved position (else leave editor defaults).
+  // loadedPresetFor guards against clobbering user edits when the same avatarId re-triggers.
+  const loadedPresetFor = useRef<string | null>(null);
+  const avatarTouchedRef = useRef(false);          // user dragged a position control this avatar
+  const avatarHasPresetRef = useRef(false);        // a saved preset existed for the current avatarId
+  useEffect(() => {
+    if (!avatarId || !avatarValid) return;
+    if (!shouldApplyLoadedPreset({ loadedFor: loadedPresetFor.current, avatarId, userTouched: avatarTouchedRef.current })) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const { layout } = await res.json();
+          if (!cancelled && layout && !avatarTouchedRef.current) {
+            setAvatarScale(layout.scale); setAvatarOffsetX(layout.offsetX); setAvatarOffsetY(layout.offsetY);
+            avatarHasPresetRef.current = true;
+          } else if (!cancelled && !layout) {
+            avatarHasPresetRef.current = false;
+          }
+        }
+      } catch { /* keep current values */ }
+      finally { if (!cancelled) loadedPresetFor.current = avatarId; }  // one-shot per id, even on no-preset
+    })();
+    return () => { cancelled = true; };
+  }, [avatarId, avatarValid]);
+
   const audioRef = useRef<HTMLAudioElement>(null);
 
   // ── Split mode ────────────────────────────────────────────────────────
@@ -386,31 +442,23 @@ export default function VideoEditorPage() {
   // ── Avatar Direct URL mode ────────────────────────────────────────────
   const [avatarInputMode, setAvatarInputMode] = useState<"generate" | "direct">("generate");
   const [avatarDirectUrl, setAvatarDirectUrl] = useState("");
+  // Direct upload composite: "chromakey" = remove green, overlay on b-roll; "full" = use the
+  // uploaded clip's own background full-frame (no chroma), just add subtitles.
+  const [directCompositeMode, setDirectCompositeMode] = useState<"chromakey" | "full" | "cutaway">("chromakey");
   const [chromaSimilarity, setChromaSimilarity] = useState(0.28);
   const [chromaBlend, setChromaBlend] = useState(0.04);
 
   // ── BGM ───────────────────────────────────────────────────────────────
-  const [bgmEnabled, setBgmEnabled] = useState(false);
-  const [bgmFile, setBgmFile] = useState("");
-  const [bgmVolume, setBgmVolume] = useState(0.12);
-  const [bgmUploading, setBgmUploading] = useState(false);
-
-  // BGM is "on" exactly when a track is selected — the UI no longer has a separate
-  // enable toggle. Deriving it here keeps every bgmEnabled consumer (render patch,
-  // save config, status chip, draft) working unchanged.
-  useEffect(() => { setBgmEnabled(!!bgmFile); }, [bgmFile]);
-  interface SystemTrack { id: string; title: string; filename: string; }
-  interface UserMusicTrack { id: string; title: string; filename: string; sizeBytes?: number | null; }
-  const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
-  const [userTracks, setUserTracks] = useState<UserMusicTrack[]>([]);
+  // Extracted to _hooks/useBgm (P1) — includes the /api/music fetch-on-mount.
+  const {
+    bgmEnabled, setBgmEnabled, bgmFile, setBgmFile, bgmVolume, setBgmVolume,
+    bgmUploading, setBgmUploading, systemTracks, userTracks, setUserTracks,
+  } = useBgm();
 
   // ── Render progress ───────────────────────────────────────────────────
   const renderProgressRef = useRef(0);
   const [, setRenderProgressTick] = useState(0);
   const [renderProgressError, setRenderProgressError] = useState<string | null>(null);
-  // Credits overflow (NEXT_PUBLIC_CREDITS_LIVE): true when the render wall is hit AND
-  // credits are also empty (canBuyCredits) → render a [ซื้อเครดิต] CTA in the error UI.
-  const [outOfMinutes, setOutOfMinutes] = useState(false);
   const [renderActivity, setRenderActivity] = useState<RenderActivity>({
     phase: "idle",
     label: "",
@@ -645,10 +693,7 @@ export default function VideoEditorPage() {
       if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs" || d.ttsProvider === "omnivoice") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
-    fetch("/api/music").then(r => r.json()).then(d => {
-      if (d.tracks) setSystemTracks(d.tracks);
-      if (d.userTracks) setUserTracks(d.userTracks);
-    }).catch(() => {});
+    // (/api/music fetch moved into useBgm)
 
     // If jobId is in URL from a previous render session, cancel that job and clear the URL.
     // Refresh = stop render immediately — no auto-resume.
@@ -748,6 +793,7 @@ export default function VideoEditorPage() {
   // Auto-load avatar preview when avatarId changes (debounced)
   useEffect(() => {
     if (!avatarId || avatarId.length < 10) { setAvatarPreviewUrl(""); setAvatarName(""); return; }
+    avatarTouchedRef.current = false;   // new avatar id → allow its preset to load
     const t = setTimeout(() => { void loadAvatarInfo(avatarId); }, 600);
     return () => clearTimeout(t);
   }, [avatarId, loadAvatarInfo]);
@@ -885,6 +931,7 @@ export default function VideoEditorPage() {
     setChromaBlend(0.04);
     setAvatarGreenUrl("");
     setAvatarTailGreenUrl("");
+    setLastGenSig(null);
 
     // Pipeline steps + logs
     setSteps({ ...DEFAULT_STEPS });
@@ -964,10 +1011,22 @@ export default function VideoEditorPage() {
     }
     if (d.avatarInputMode) setAvatarInputMode(d.avatarInputMode);
     if (d.avatarDirectUrl !== undefined) setAvatarDirectUrl(d.avatarDirectUrl);
+    if (d.directCompositeMode) setDirectCompositeMode(d.directCompositeMode); // N5: persist direct green/full toggle
     if (d.chromaSimilarity !== undefined) setChromaSimilarity(d.chromaSimilarity);
     if (d.chromaBlend !== undefined) setChromaBlend(d.chromaBlend);
     if (d.avatarGreenUrl !== undefined) setAvatarGreenUrl(d.avatarGreenUrl);
     if (d.avatarTailGreenUrl !== undefined) setAvatarTailGreenUrl(d.avatarTailGreenUrl);
+    // Treat a restored green as already-generated from the draft's inputs, so the primary
+    // button re-composites (free) instead of re-paying HeyGen the first time after reload.
+    setLastGenSig(d.avatarGreenUrl ? avatarGenSignature({
+      inputMode: d.avatarInputMode || "generate",
+      avatarId: d.avatarId ?? "",
+      directUrl: (d.avatarDirectUrl ?? "").trim(),
+      voiceUrl: d.voiceUrl ?? "",
+      timing: d.avatarTiming || "full",
+      bookendSecs: d.avatarBookendSecs ?? 5,
+      tailSecs: d.avatarTailSecs ?? 5,
+    }) : null);
 
     // Pipeline cache — restore so steps can re-run from any point
     pipe.current.voiceUrl = d.voiceUrl ?? "";
@@ -1132,7 +1191,7 @@ export default function VideoEditorPage() {
       avatarTiming, avatarBookendSecs, avatarTailSecs,
       avatarScale, avatarOffsetX, avatarOffsetY,
       avatarLayoutV2: true,
-      avatarInputMode, avatarDirectUrl,
+      avatarInputMode, avatarDirectUrl, directCompositeMode,
       chromaSimilarity, chromaBlend,
       avatarGreenUrl, avatarTailGreenUrl,
     };
@@ -1145,13 +1204,8 @@ export default function VideoEditorPage() {
   }
 
   // ── Autosave (Tier-1 resume) ──────────────────────────────────────────────
-  // The draft already captures everything needed to resume (render URLs,
-  // captions, style, pipeline cache) — it was just never saved unless the user
-  // clicked "บันทึก draft". So accidentally leaving lost everything. Now we
-  // autosave a draft (silently) ~4s after any meaningful change, and once more
-  // on unload, so closing/refreshing/นเว็บหลุด no longer loses work — reopen the
-  // editor and load the draft to continue (e.g. Burn). Only saves once there is
-  // real progress, so we never spam empty drafts.
+  // Mechanism (4s debounce + unload latest-closure ref) → _hooks/useDraftAutosave (P1).
+  // Serialization (saveDraftNow) stays here — reads ~40 state values; later P1 chunk.
   function hasResumableProgress() {
     return (
       script.trim().length > 0 &&
@@ -1162,20 +1216,12 @@ export default function VideoEditorPage() {
         captionsRef.current.length > 0)
     );
   }
-  useEffect(() => {
-    if (!hasResumableProgress()) return;
-    const t = setTimeout(() => { try { saveDraftNow({ silent: true }); } catch {} }, 4000);
-    return () => clearTimeout(t);
-    // Re-armed on any meaningful editor change. pipe.current (a ref) isn't a dep,
-    // but every stage transition calls setStep → `steps` changes → this re-runs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
-      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize]);
-
-  // Latest-closure ref so the once-registered beforeunload handler can run the
-  // CURRENT autosave (a stale closure would persist mount-time empty state).
-  const autosaveRef = useRef<() => void>(() => {});
-  autosaveRef.current = () => { try { if (hasResumableProgress()) saveDraftNow({ silent: true }); } catch {} };
+  const autosaveRef = useDraftAutosave({
+    hasResumableProgress,
+    save: () => saveDraftNow({ silent: true }),
+    deps: [steps, videoUrl, captions, subFontFamily, subFontSize, subFontWeight, subColor,
+      subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize],
+  });
 
   // Warn before leaving while a step is running or a render exists that hasn't
   // been burned/exported yet (the state where Mew lost work). Re-evaluated on
@@ -1337,46 +1383,7 @@ export default function VideoEditorPage() {
     return true;
   }
 
-  // Credit overflow is build-baked OFF unless NEXT_PUBLIC_CREDITS_LIVE==="1". With it unset
-  // this is the literal `false`, so every guarded branch below is dead → page byte-identical.
-  const CREDITS_LIVE_CLIENT = process.env.NEXT_PUBLIC_CREDITS_LIVE === "1";
-
-  /** Start a Stripe checkout for a credit pack and redirect to it. */
-  async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
-    try {
-      const res = await fetch("/api/payments/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pack }),
-      });
-      const data = await res.json();
-      if (data?.url) window.location.href = data.url as string;
-      else toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
-    } catch {
-      toast.error("เปิดหน้าซื้อเครดิตไม่สำเร็จ — กรุณาลองใหม่");
-    }
-  }
-
-  /**
-   * Post-render receipt for a credit-funded (overflow) render: shows how many credits
-   * were spent + the remaining balance (fetched separately, since the queue render path
-   * carries no balance), plus a low-balance nudge. No-op unless credits are live and
-   * the render actually spent credits.
-   */
-  async function fireCreditReceipt(creditsSpent: number | null | undefined) {
-    if (!CREDITS_LIVE_CLIENT) return;
-    const spent = Number(creditsSpent);
-    if (!Number.isFinite(spent) || spent <= 0) return;
-    let left: number | null = null;
-    try {
-      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
-      left = typeof b?.total === "number" ? b.total : null;
-    } catch { /* balance fetch is best-effort — still show the spend */ }
-    toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);
-    if (left != null && left < 20) {
-      toast("เครดิตใกล้หมด เติมเลยไหม?", { action: { label: "ซื้อเครดิต", onClick: () => buyCredits() } });
-    }
-  }
+  // buyCredits / fireCreditReceipt / CREDITS_LIVE_CLIENT → _hooks/useCreditsQuota (P1)
 
   function friendlyError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
@@ -1466,25 +1473,7 @@ export default function VideoEditorPage() {
     return text.split(/\n+/).map(s => s.trim()).filter(Boolean);
   }
 
-  function preprocessScript(raw: string) {
-    return raw
-      // ตัดวงเล็บและเนื้อหาข้างใน — ไม่ควรอ่านออกเสียง เช่น (Artificial Intelligence), (อ่านว่า xxx)
-      .replace(/\([^)]{1,80}\)/g, "")
-      // ตัดวงเล็บเหลี่ยมและเนื้อหาข้างใน เช่น [หมายเหตุ], [ดนตรี]
-      .replace(/\[[^\]]{1,80}\]/g, "")
-      // ตัด hashtag เช่น #AI #tech
-      .replace(/#\S+/g, "")
-      // ตัด URL
-      .replace(/https?:\/\/\S+/g, "")
-      // ตัด emoji
-      .replace(/[\u{1F300}-\u{1FFFF}]/gu, "")
-      // ตัด stage direction เช่น *หยุดพัก*, _เน้น_
-      .replace(/\*[^*]{1,50}\*/g, "")
-      .replace(/_[^_]{1,50}_/g, "")
-      .replace(/\r?\n/g, " ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-  }
+  // preprocessScript → _lib/preprocess-script (shared with v2; + {braces}/punctuation-run hardening 07-03)
 
   // ── Step runners (same logic as video-creator) ─────────────────────────
 
@@ -2345,7 +2334,8 @@ export default function VideoEditorPage() {
 
   // HeyGen เจนด้วยเฟรมมาตรฐานที่พิสูจน์แล้ว "เสมอ" — ตำแหน่ง/ขนาดของผู้ใช้ทำที่ composite (เลเยอร์ ffmpeg)
   // ทำให้ preview ตรงกับผลจริง 100% และเปลี่ยนตำแหน่งได้โดยไม่ต้องเจน HeyGen ใหม่ (ไม่เปลือง credit)
-  const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+  // Single source of truth lives in avatar-gen-framing.ts (imported at top of file).
+  const HEYGEN_FRAMING = HEYGEN_GEN_FRAMING;
 
   // Payload จาก /api/videos/poll-avatar (ดู src/lib/heygen-poll.ts) — `error` คือ terminal error แบบมีโครงสร้าง
   type AvatarPollData = {
@@ -2459,24 +2449,84 @@ export default function VideoEditorPage() {
     return avatarVideoUrl;
   }
 
+  const [avatarLayoutSaving, setAvatarLayoutSaving] = useState(false);
+  async function onSaveAvatarLayout(): Promise<void> {
+    if (!avatarId) return;
+    setAvatarLayoutSaving(true);
+    try {
+      const res = await fetch(`/api/avatar-presets/${encodeURIComponent(avatarId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY }),
+      });
+      if (res.ok) {
+        toast.success("บันทึกตำแหน่ง avatar แล้ว");
+        avatarHasPresetRef.current = true;
+      } else {
+        toast.error("บันทึกไม่สำเร็จ");
+      }
+    } catch {
+      toast.error("บันทึกไม่สำเร็จ");
+    } finally { setAvatarLayoutSaving(false); }
+  }
+
+  // Touched-marking wrapped setters — passed to OrderPanel sliders so that any
+  // user interaction marks the layout as user-touched, preventing the preset-load
+  // effect from clobbering the user's live edit. The raw setters (setAvatarScale etc.)
+  // are kept for preset-load, reset, and draft-load paths which must NOT mark touched.
+  const setAvatarScaleTouched   = (v: number) => { avatarTouchedRef.current = true; setAvatarScale(v); };
+  const setAvatarOffsetXTouched = (v: number) => { avatarTouchedRef.current = true; setAvatarOffsetX(v); };
+  const setAvatarOffsetYTouched = (v: number) => { avatarTouchedRef.current = true; setAvatarOffsetY(v); };
+
   async function runComposite(bgVideoUrl: string, avatarUrl: string, tailAvatarUrl?: string): Promise<string> {
     const isDirect = avatarInputMode === "direct";
+    // Guard: bookend-both needs the clip ≥ intro+outro, else the tail segment is empty and
+    // the route's ffmpeg 500s. Fail with a clear message instead of a raw 500.
+    if (!isDirect && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+      }
+    }
     setStep("composite", "running", isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey + composite...");
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST", headers: { "Content-Type": "application/json" },
       signal: abortControllerRef.current?.signal,
       body: isDirect
-        ? JSON.stringify({
-            avatarVideoUrl: avatarUrl,
-            bgVideoUrl,
-            mode: "chromakey",
-            noScale: true,
-            chromaColor: "0x00ff00",
-            chromaSimilarity,
-            chromaBlend,
-            // The rendered background already contains the direct-avatar voice plus BGM.
-            audioFromAvatar: false,
-          })
+        ? JSON.stringify(
+            directCompositeMode === "cutaway"
+              ? {
+                  avatarVideoUrl: avatarUrl,
+                  bgVideoUrl,
+                  // Clip is the base; b-roll base shows through during non-person windows.
+                  mode: "cutaway",
+                  audioFromAvatar: true,
+                  personRanges: planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
+                    start: r.startMs / 1000,
+                    end: r.endMs / 1000,
+                  })),
+                }
+              : directCompositeMode === "full"
+                ? {
+                    avatarVideoUrl: avatarUrl,
+                    bgVideoUrl,
+                    // Full-video mode: overlay the uploaded clip full-frame (no chroma) — its own
+                    // background shows; subtitles burn on top. Audio comes from the clip.
+                    mode: "direct",
+                    audioFromAvatar: true,
+                  }
+                : {
+                    avatarVideoUrl: avatarUrl,
+                    bgVideoUrl,
+                    mode: "chromakey",
+                    noScale: true,
+                    chromaColor: "0x00ff00",
+                    chromaSimilarity,
+                    chromaBlend,
+                    // The rendered background already contains the direct-avatar voice plus BGM.
+                    audioFromAvatar: false,
+                  },
+          )
         : JSON.stringify({
             avatarVideoUrl: avatarUrl,
             ...(avatarTiming === "bookend-both" && tailAvatarUrl ? { tailAvatarVideoUrl: tailAvatarUrl } : {}),
@@ -2509,6 +2559,76 @@ export default function VideoEditorPage() {
       status: "PROCESSING",
     });
     return finalUrl;
+  }
+
+  // Composite-only using the already-generated green (no HeyGen re-gen). Used by both the
+  // pause "continue" button and the "re-position → re-composite" button.
+  async function compositeWithCurrentLayout(): Promise<void> {
+    if (!pipe.current.renderedVideoUrl || !avatarGreenUrl) { toast.error("ต้อง Render avatar ก่อน"); return; }
+    if (runningRef.current) return;
+    runningRef.current = true; setRunning(true);
+    abortRef.current = false;
+    abortControllerRef.current = new AbortController();
+    const tailUrl = avatarTiming === "bookend-both" ? (avatarTailGreenUrl || undefined) : undefined;
+    try { await runComposite(pipe.current.renderedVideoUrl, avatarGreenUrl, tailUrl); }
+    catch (err) {
+      if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return; // user Stop → cancel cleanly, not a red error
+      if (stepsRef.current.composite === "running") setStep("composite", "error", friendlyError(err)); // B2
+      if (!handleMissingKey(err, "runAvatarPipeline")) showErrorToast(err);
+    }
+    finally { runningRef.current = false; setRunning(false); }
+  }
+
+  // The gen signature of the CURRENT inputs (what generating right now would produce). Shared
+  // by the primary-button decision and the "remember after gen" write in runAvatarPipeline.
+  const currentAvatarGenSig = () => avatarGenSignature({
+    inputMode: avatarInputMode, avatarId, directUrl: avatarDirectUrl.trim(),
+    voiceUrl: pipe.current.voiceUrl ?? "", timing: avatarTiming,
+    bookendSecs: avatarBookendSecs, tailSecs: avatarTailSecs,
+  });
+  // Primary avatar button: composite-only (free) when a green already exists for the SAME
+  // gen-inputs; re-gen (HeyGen, costs credit) only when a gen-input actually changed.
+  // Scale/offset/chroma are NOT in the signature → adjusting them never re-gens (the bug fix).
+  const avatarPrimaryAction: "gen" | "composite" = nextAvatarAction({
+    hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig(),
+  });
+  const avatarPrimaryIsGen = avatarPrimaryAction === "gen";
+  const avatarPrimaryLabel = !avatarGreenUrl
+    ? "สร้าง Avatar + ประกอบ"
+    : avatarPrimaryIsGen
+      ? "อัปเดต Avatar (เจนใหม่) + ประกอบ"
+      : "▶ ปรับตำแหน่ง → ประกอบ";
+  function onAvatarPrimary(): void {
+    if (nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() }) === "composite")
+      void compositeWithCurrentLayout();
+    else void runAvatarPipeline();
+  }
+
+  // After a base render, ensure the avatar is composited. Gen (HeyGen) only when a gen-input
+  // changed since the last green (or no green yet); otherwise composite the existing green for
+  // free. Direct mode's runAvatar sets green from the URL (no HeyGen). No pause — ever.
+  async function autoCompositeAfterRender(renderedUrl: string, audioUrl: string): Promise<void> {
+    // Pre-gen guard: bookend-both needs the clip ≥ intro+outro. Catch it here (audio duration is
+    // known after render) so we don't burn 2 HeyGen gens on a clip that can't composite.
+    if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+      }
+    }
+    const action = nextAvatarAction({ hasGreen: !!avatarGreenUrl, lastGenSig, currentSig: currentAvatarGenSig() });
+    let avUrl = avatarGreenUrl;
+    let tailUrl = avatarTiming === "bookend-both" && avatarInputMode !== "direct" ? (avatarTailGreenUrl || undefined) : undefined;
+    if (action === "gen") {
+      avUrl = await runAvatar(audioUrl);
+      if (abortRef.current) return;
+      if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
+        tailUrl = await runAvatarTail(audioUrl); // B1: regen tail fresh on every gen (no stale reuse)
+        if (abortRef.current) return;
+      }
+      setLastGenSig(currentAvatarGenSig());
+    }
+    await runComposite(renderedUrl, avUrl, tailUrl);
   }
 
   async function runAvatarTail(audioUrl: string): Promise<string> {
@@ -2571,6 +2691,15 @@ export default function VideoEditorPage() {
     // paying for HeyGen if the clip exceeds the plan cap (direct mode has no known
     // duration, so it passes through and relies on the server backstop).
     if (!isDirect && !checkDurationWithinPlan((pipe.current.audioDurationMs ?? 0) / 1000, false)) return;
+    // Same short-clip guard as autoCompositeAfterRender — block bookend-both before paying for
+    // 2 HeyGen gens when the clip is shorter than intro+outro (else the tail segment is empty).
+    if (!isDirect && avatarTiming === "bookend-both") {
+      const clipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (clipSec > 0 && avatarBookendSecs + avatarTailSecs >= clipSec) {
+        toast.error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
+        return;
+      }
+    }
     if (runningRef.current) return;
     runningRef.current = true; setRunning(true);
     abortRef.current = false;
@@ -2585,9 +2714,12 @@ export default function VideoEditorPage() {
       if (abortRef.current) return;
       let tailUrl: string | undefined;
       if (!isDirect && avatarTiming === "bookend-both") {
-        tailUrl = avatarTailGreenUrl || await runAvatarTail(audioUrl);
+        tailUrl = await runAvatarTail(audioUrl); // B1: regen tail fresh on every gen (no stale reuse)
         if (abortRef.current) return;
       }
+      // Remember what these greens were generated from. A later click that changed only
+      // scale/offset/chroma keeps the same signature → the primary button composites for free.
+      setLastGenSig(currentAvatarGenSig());
       await runComposite(pipe.current.renderedVideoUrl, avUrl, tailUrl);
       if (abortRef.current) return;
       toast.success(captionsRef.current.length > 0
@@ -2822,20 +2954,18 @@ export default function VideoEditorPage() {
       if (abortRef.current) return;
 
       if (useAvatar) {
-        const avUrl = await runAvatar(vUrl);
-        if (abortRef.current) return;
-        let tailUrl: string | undefined;
-        if (avatarInputMode !== "direct" && avatarTiming === "bookend-both") {
-          tailUrl = avatarTailGreenUrl || await runAvatarTail(vUrl);
-          if (abortRef.current) return;
-        }
-        await runComposite(renderedUrl, avUrl, tailUrl);
+        await autoCompositeAfterRender(renderedUrl, vUrl);
         if (abortRef.current) return;
       }
 
       if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      // B2: clear any avatar/composite spinner left "running" so it doesn't spin forever.
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
       if (handlePlanError(err)) return;
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
@@ -2865,7 +2995,7 @@ export default function VideoEditorPage() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -2943,6 +3073,11 @@ export default function VideoEditorPage() {
       if (!abortRef.current) toast.success("Preview พร้อมแล้ว — ปรับซับ แล้วกด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
+      // B2: clear any avatar/composite spinner left "running" so it doesn't spin forever.
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
       if (handlePlanError(err)) return;
       if (!handleMissingKey(err, "runAll")) {
         showErrorToast(err);
@@ -2966,19 +3101,30 @@ export default function VideoEditorPage() {
     abortRef.current = false;
     abortControllerRef.current = new AbortController();
     try {
-      await runRender(pipe.current.config);
+      const renderedUrl = await runRender(pipe.current.config);
       if (abortRef.current) return;
+      if (useAvatar) {
+        if (avatarInputMode !== "direct" && !pipe.current.voiceUrl) { toast.error("ต้องสร้างเสียง TTS ก่อน (กด Render เต็มรอบ)"); return; } // S4
+        const audioUrl = avatarInputMode === "direct" ? avatarDirectUrl.trim() : (pipe.current.voiceUrl ?? "");
+        await autoCompositeAfterRender(renderedUrl, audioUrl);
+        if (abortRef.current) return;
+      }
       if (!abortRef.current) toast.success("Render preview พร้อมแล้ว — กด Burn & Download ตอนจบ");
     } catch (err) {
       if (err instanceof Error && (err.name === "AbortError" || err.message === "__SUPERSEDED__")) return;
-      if (!handlePlanError(err)) {
-        showErrorToast(err);
-        // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
-        // Skip when poll timed out (server job may still be running and may have charged minutes).
-        const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
-        if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
-          toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
-        }
+      // B2: clear any avatar/composite spinner left "running".
+      const failMsg = friendlyError(err);
+      for (const k of ["avatar", "avatarTail", "composite"] as (keyof StepState)[]) {
+        if (stepsRef.current[k] === "running") setStep(k, "error", failMsg);
+      }
+      if (handlePlanError(err)) return;
+      if (handleMissingKey(err, "runAvatarPipeline")) return;
+      showErrorToast(err);
+      // Refund reassurance — gated on flags; dead branch when both off (flag-off = no-op).
+      // Skip when poll timed out (server job may still be running and may have charged minutes).
+      const isStale = err instanceof PollStaleError || err instanceof PollTransientLimitError || (err as { isStale?: boolean })?.isStale === true;
+      if (!isStale && (minuteQuota || CREDITS_LIVE_CLIENT)) {
+        toast.message("เรนเดอร์ไม่สำเร็จ — ไม่ถูกหักนาที", { duration: 6000 });
       }
     } finally {
       runningRef.current = false; setRunning(false);
@@ -3599,6 +3745,15 @@ export default function VideoEditorPage() {
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
+          {/* กลับไปเวอร์ชันล่าสุด (v2) — อุดทางตัน: ผู้ใช้ที่เผลอสลับมา UI เดิมจะหาทางกลับ v2 ไม่เจอ
+              (ลิงก์ ?ui=v2 เดิมมีแค่ที่ dashboard badge). full-nav ให้ useEditorV2 อ่าน override ตอน mount */}
+          <a
+            href="/video-editor?ui=v2"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold bg-violet-500/15 border border-violet-500/40 text-violet-300 hover:bg-violet-500/25 transition-colors"
+            title="สลับไปตัวแก้ไขเวอร์ชันใหม่ — อัปคลิปเอง + B-roll/ตัดคลิปอัตโนมัติ"
+          >
+            ✨ เวอร์ชันใหม่
+          </a>
           {/* Reset to last-rendered style */}
           {lastRenderedStyleRef.current && styleIsDirty && !running && (
             <button
@@ -4112,14 +4267,13 @@ export default function VideoEditorPage() {
                 const isBurnDone = isDone && k === "burnSubtitles" && !!burnedUrl;
                 const isClickable = isDone || isError;
 
-                // Direct-URL mode supplies the avatar video itself — there's
-                // nothing to "generate", so the Avatar/Tail/Composite steps have no
-                // standalone Run action (they run as part of the main pipeline).
-                const isDirectAvatar = avatarInputMode === "direct";
+                // Avatar/Tail/Composite steps trigger the smart avatar action (onAvatarPrimary):
+                // composite-only when a green already exists for the same inputs, else gen — for
+                // both gen and direct-URL avatars.
                 // Determine the run action for this step
                 const stepRunAction: (() => void) | null = !running ? (() => {
                   if (k === "burnSubtitles") return () => runBurnSubtitles();
-                  if (k === "avatar" || k === "avatarTail" || k === "composite") return (useAvatar && !isDirectAvatar) ? () => runAvatarPipeline() : null;
+                  if (k === "avatar" || k === "avatarTail" || k === "composite") return useAvatar ? () => onAvatarPrimary() : null;
                   if (k === "render") return pipe.current.config ? () => runRenderOnly() : () => runFrom("render");
                   if (k === "tts" && avatarInputMode === "direct" && avatarDirectUrl.trim()) return null;
                   return () => runFrom(k as keyof StepState);
@@ -4131,7 +4285,7 @@ export default function VideoEditorPage() {
                 const showRunBtn = !running && isIdle && stepRunAction !== null && (
                   k !== "burnSubtitles" || (burnHasBase && !running)
                 ) && (
-                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || (useAvatar && !isDirectAvatar)
+                  k !== "avatar" && k !== "avatarTail" && k !== "composite" || useAvatar
                 );
                 const showRerunBtn = !running && (isDone || isError) && stepRunAction !== null;
 
@@ -4513,11 +4667,14 @@ export default function VideoEditorPage() {
               avatarGreenUrl={avatarGreenUrl} running={running} steps={steps}
               avatarInputMode={avatarInputMode} avatarDirectUrl={avatarDirectUrl}
               setAvatarInputMode={setAvatarInputMode} setAvatarDirectUrl={setAvatarDirectUrl}
+              directCompositeMode={directCompositeMode} setDirectCompositeMode={setDirectCompositeMode}
               chromaSimilarity={chromaSimilarity} setChromaSimilarity={setChromaSimilarity}
               chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
               setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
               setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-              setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+              setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
+              onSaveAvatarLayout={onSaveAvatarLayout} avatarLayoutSaving={avatarLayoutSaving}
+              onComposite={() => { void compositeWithCurrentLayout(); }} compositing={running}
               runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
               onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               stockSource={stockSource} setStockSource={setStockSource}
@@ -4571,13 +4728,16 @@ export default function VideoEditorPage() {
                 chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
                 setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
                 setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-                setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+                setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+                onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
                 projectName={projectName} onSaveTemplate={() => {
                   const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
                   localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
+                onSaveAvatarLayout={onSaveAvatarLayout}
+                avatarLayoutSaving={avatarLayoutSaving}
                 onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
               />
             </div>
@@ -4636,13 +4796,16 @@ export default function VideoEditorPage() {
             chromaBlend={chromaBlend} setChromaBlend={setChromaBlend}
             setUseAvatar={setUseAvatar} setAvatarId={setAvatarId} setAvatarTiming={setAvatarTiming}
             setAvatarBookendSecs={setAvatarBookendSecs} setAvatarTailSecs={setAvatarTailSecs}
-            setAvatarScale={setAvatarScale} setAvatarOffsetX={setAvatarOffsetX} setAvatarOffsetY={setAvatarOffsetY}
+            setAvatarScale={setAvatarScaleTouched} setAvatarOffsetX={setAvatarOffsetXTouched} setAvatarOffsetY={setAvatarOffsetYTouched}
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
+            onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
             projectName={projectName} onSaveTemplate={() => {
               const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
               localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
+            onSaveAvatarLayout={onSaveAvatarLayout}
+            avatarLayoutSaving={avatarLayoutSaving}
             onPlanError={(msg) => setUpgradeModal({ open: true, message: msg })}
           />
         </div>

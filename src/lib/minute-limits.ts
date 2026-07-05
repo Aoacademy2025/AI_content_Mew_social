@@ -4,17 +4,14 @@ import { syncUserEntitlement } from "@/lib/entitlements";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { TRIAL_MINUTES } from "@/lib/trial";
 
+// minutesFromSeconds lives in a prisma-free module so the client (Editor v2 Render
+// Receipt) can import it too; re-exported here for the existing server call sites.
+export { minutesFromSeconds } from "@/lib/minute-round";
+
 const USAGE_PERIOD_MS = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
 
 export function minutesLimitForPlan(plan: string): number {
   return minutesPerMonthForPlan(plan);
-}
-
-/** Convert a duration in seconds to whole minutes, ROUNDED TO NEAREST, minimum 1.
- *  One-system rounding (Mew 2026-06-26): nearest, not ceil — a 1:05 clip = 1 min,
- *  1:45 = 2 min. Non-finite / non-positive / NaN inputs default to 60s (→ 1 min). */
-export function minutesFromSeconds(sec: number): number {
-  return Math.max(1, Math.round((Number.isFinite(sec) && sec > 0 ? sec : 60) / 60));
 }
 
 function isWindowExpired(startedAt: Date | null, now: Date): boolean {

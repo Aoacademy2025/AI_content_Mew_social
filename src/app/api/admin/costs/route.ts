@@ -2,14 +2,13 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { getPlanConfig } from "@/lib/plan-config";
 import {
   getCostRates,
-  computeMrr,
   computeCogs,
   computeMargins,
-  BREAK_EVEN_SUBS,
+  computeBreakEvenTarget,
 } from "@/lib/cost-rates";
+import { getRevenueCohorts } from "@/lib/revenue-cohorts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -20,16 +19,47 @@ const PACK_CREDIT_TO_BAHT: Record<number, number> = {
   1150: 999,
 };
 
-// AI-image spend delta → image model bucket
-// MUST stay in sync with CREDIT_COST / costKeyForKieModel in src/lib/credits.ts.
-// Today only 3 (gpt-1k) and 4 (nano-1k) are reachable; 5/6 reserved.
-// If CREDIT_COST image values change, update here or spends silently drop from COGS.
-function imageModelBucket(absDelta: number): "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
+// AI-image spend delta → image model bucket.
+// MUST stay in sync with CREDIT_COST and costKeyForKieModel() in src/lib/credit-costs.ts
+// (which maps kie model → cost-key → credit delta). Reachable non-admin-paid deltas
+// under managed-kie: 2 (flux-1k), 3 (gpt-1k), 4 (nano-1k). 5/6 reserved (no live model
+// maps to them yet — costKeyForKieModel returns null for every other kie model, so
+// those deltas are unreachable on the managed-kie money path today).
+function imageModelBucket(absDelta: number): "flux1k" | "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
+  if (absDelta === 2) return "flux1k";
   if (absDelta === 3) return "gpt1k";
   if (absDelta === 4) return "nano1k";
   if (absDelta === 5) return "gpt2k";
   if (absDelta === 6) return "nano2k";
   return null;
+}
+
+type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
+
+// Net variable COGS (฿) from raw rows — TTS minutes + AI-image spends, netting image refunds.
+// Used for the P&L, which is ALWAYS a monthly figure (matches the monthly MRR) so that gross
+// margin / profit don't swing when the health-window selector changes (a 24h window would pair
+// monthly MRR with 1 day of COGS and read misleadingly profitable).
+function netCogs(
+  clips: Array<{ chargedMinutes: number | null }>,
+  spendRows: Array<{ delta: number }>,
+  refundRows: Array<{ delta: number }>,
+  rates: CogsRates,
+) {
+  const managedMinutes = clips.reduce((s, r) => s + (r.chargedMinutes ?? 0), 0);
+  const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+  let grossImageSpend = 0;
+  for (const r of spendRows) {
+    const bucket = imageModelBucket(Math.abs(r.delta));
+    if (!bucket) continue;
+    imageCounts[bucket]++;
+    grossImageSpend += Math.abs(r.delta);
+  }
+  const refundCredits = refundRows.reduce((s, r) => s + Math.abs(r.delta), 0);
+  const gross = computeCogs({ managedMinutes, imageCounts, rates });
+  const ratio = grossImageSpend > 0 ? Math.max(0, 1 - refundCredits / grossImageSpend) : 1;
+  const imageNet = gross.image * ratio;
+  return { tts: gross.tts, image: imageNet, video: gross.video, total: gross.tts + imageNet + gross.video };
 }
 
 function parseDays(raw: string | null): number {
@@ -54,13 +84,14 @@ export async function GET(req: Request) {
     const days = parseDays(url.searchParams.get("days"));
     const now = new Date();
     const from = new Date(now.getTime() - days * DAY_MS);
+    // Financial P&L (COGS / margin / profit) is always monthly so it stays consistent with the
+    // monthly MRR regardless of the selected health window. Usage/cash/top-users still use `from`.
+    const monthFrom = new Date(now.getTime() - 30 * DAY_MS);
 
     // ── Parallel data fetch ───────────────────────────────────────────────────
     const [
       rates,
-      planConfig,
-      proSubCount,
-      businessSubCount,
+      cohorts,
       chargedClips,
       imageSpendRows,
       creditPurchaseRows,
@@ -70,13 +101,16 @@ export async function GET(req: Request) {
       activeCreatorsCount,
       creditGrantRows,
       imageRefundRows,
+      chargedClipsMonth,
+      imageSpendMonth,
+      imageRefundMonth,
     ] = await Promise.all([
       getCostRates(),
-      getPlanConfig(),
 
-      // Active subscriber counts by tier
-      prisma.user.count({ where: { subStatus: "active", plan: "PRO" } }),
-      prisma.user.count({ where: { subStatus: "active", plan: "BUSINESS" } }),
+      // Real revenue cohorts — money-backed customers (subs + one-time/PromptPay/annual),
+      // trials excluded, annual MRR normalized. Replaces the old subStatus="active"-only count
+      // that was blind to PromptPay/annual one-time payers and mislabeled trials as paying.
+      getRevenueCohorts(now),
 
       // Managed render minutes — ChargedClip rows in window. (Under MINUTE_QUOTA=1 the
       // reserve moved to the render route, so the old `minute_reserve` telemetry no longer
@@ -98,10 +132,10 @@ export async function GET(req: Request) {
         select: { delta: true },
       }),
 
-      // Subscription cash in window (only PAID payments)
+      // Plan cash in window (only PAID payments) — periodDays splits monthly (30) vs annual (365)
       prisma.payment.findMany({
         where: { status: "PAID", paidAt: { gte: from } },
-        select: { amount: true },
+        select: { amount: true, periodDays: true },
       }),
 
       // Web renders (parentJobId IS null)
@@ -133,6 +167,20 @@ export async function GET(req: Request) {
         where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: from } },
         select: { delta: true },
       }),
+
+      // ── Monthly (30-day) COGS inputs — for the P&L only (margin/profit stay monthly) ──
+      prisma.chargedClip.findMany({
+        where: { createdAt: { gte: monthFrom }, chargedMinutes: { not: null } },
+        select: { chargedMinutes: true },
+      }),
+      prisma.creditLedger.findMany({
+        where: { kind: "spend", action: "ai-image", createdAt: { gte: monthFrom } },
+        select: { delta: true },
+      }),
+      prisma.creditLedger.findMany({
+        where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: monthFrom } },
+        select: { delta: true },
+      }),
     ]);
 
     // ── Managed minutes — sum ChargedClip.chargedMinutes (minutes billed per video) ──
@@ -147,14 +195,14 @@ export async function GET(req: Request) {
     }
 
     // ── AI-image counts ───────────────────────────────────────────────────────
-    const imageCounts = { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
-    const perUserImages = new Map<string, { gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+    const perUserImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
     for (const row of imageSpendRows) {
       const bucket = imageModelBucket(Math.abs(row.delta));
       if (!bucket) continue;
       imageCounts[bucket]++;
       if (row.userId) {
-        const u = perUserImages.get(row.userId) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const u = perUserImages.get(row.userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
         u[bucket]++;
         perUserImages.set(row.userId, u);
       }
@@ -182,33 +230,42 @@ export async function GET(req: Request) {
       if (baht !== undefined) packCash += baht;
     }
 
-    // ── Subscription cash ─────────────────────────────────────────────────────
-    const subCash = paidPayments.reduce((sum, p) => sum + p.amount, 0) / 100;
-
-    const cashCollected = subCash + packCash;
+    // ── Plan cash — split by term (periodDays >= 365 = annual, else monthly) ──
+    let planCashMonthly = 0;
+    let planCashAnnual = 0;
+    for (const p of paidPayments) {
+      const baht = p.amount / 100;
+      if ((p.periodDays ?? 30) >= 365) planCashAnnual += baht;
+      else planCashMonthly += baht;
+    }
+    const planCash = planCashMonthly + planCashAnnual;
+    const cashCollected = planCash + packCash;
 
     // ── Credits granted total ─────────────────────────────────────────────────
     const creditsGranted = creditGrantRows.reduce((sum, r) => sum + r.delta, 0);
 
     // ── MRR & COGS & Margins ──────────────────────────────────────────────────
-    const prices = { pro: planConfig.pro.price, business: planConfig.business.price };
-    const activeSubs = { pro: proSubCount, business: businessSubCount };
-
-    const mrr = computeMrr(activeSubs, prices);
-    const cogsGross = computeCogs({ managedMinutes, imageCounts, rates });
-    // FIX 1: scale image COGS proportionally to net out refunds.
-    // imageCogsNet = imageCogsGross × max(0, 1 − refundCredits / grossImageSpend)
-    // Guard grossImageSpend=0 to avoid NaN.
-    const imageRefundRatio = grossImageSpend > 0
-      ? Math.max(0, 1 - refundCredits / grossImageSpend)
-      : 1;
-    const imageCogsNet = cogsGross.image * imageRefundRatio;
-    const cogs = { ...cogsGross, image: imageCogsNet, total: cogsGross.tts + imageCogsNet + cogsGross.video };
+    // MRR comes from the real cohort engine: card subs + one-time/PromptPay/annual, with
+    // annual terms normalized to a monthly figure. Trials are NOT revenue.
+    const mrr = cohorts.mrr;
+    // COGS/margin/profit are a MONTHLY P&L (30-day COGS + full monthly infra vs monthly MRR),
+    // independent of the health-window selector — otherwise a 24h window shows ~1 day of COGS
+    // against a full month of MRR and profit reads far too rosy.
+    const cogs = netCogs(chargedClipsMonth, imageSpendMonth, imageRefundMonth, rates);
     const margins = computeMargins({
       revenue: mrr,
       variableCogs: cogs.total,
       infraMonthly: rates.infraMonthly,
-      periodDays: days,
+      periodDays: 30,
+    });
+
+    // ── Live break-even target ────────────────────────────────────────────────
+    // infra ÷ gross-profit-per-paying-customer, using THIS page's own monthly margin so it can
+    // never contradict the profit tile. Falls back to the static constant only when payingTotal=0.
+    const breakEvenTarget = computeBreakEvenTarget({
+      infraMonthly: rates.infraMonthly,
+      grossProfit: margins.grossProfit,
+      payingTotal: cohorts.payingTotal,
     });
 
     // ── Top-cost users (top 10) ───────────────────────────────────────────────
@@ -216,9 +273,9 @@ export async function GET(req: Request) {
     const topUsers = Array.from(allUserIds)
       .map((userId) => {
         const mins = perUserMinutes.get(userId) ?? 0;
-        const imgs = perUserImages.get(userId) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const imgs = perUserImages.get(userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
         const userCogs = computeCogs({ managedMinutes: mins, imageCounts: imgs, rates });
-        const images = imgs.gpt1k + imgs.nano1k + imgs.gpt2k + imgs.nano2k;
+        const images = imgs.flux1k + imgs.gpt1k + imgs.nano1k + imgs.gpt2k + imgs.nano2k;
         return { userId, cogs: userCogs.total, minutes: mins, images };
       })
       .sort((a, b) => b.cogs - a.cogs)
@@ -233,12 +290,12 @@ export async function GET(req: Request) {
       dailyMinutes.set(label, (dailyMinutes.get(label) ?? 0) + mins);
     }
 
-    const dailyImages = new Map<string, { gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const dailyImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
     for (const row of imageSpendRows) {
       const bucket = imageModelBucket(Math.abs(row.delta));
       if (!bucket) continue;
       const label = dateLabel(row.createdAt);
-      const d = dailyImages.get(label) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const d = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
       d[bucket]++;
       dailyImages.set(label, d);
     }
@@ -251,7 +308,7 @@ export async function GET(req: Request) {
       const d = new Date(from.getTime() + i * DAY_MS);
       const label = dateLabel(d);
       const dayMins = dailyMinutes.get(label) ?? 0;
-      const dayImgs = dailyImages.get(label) ?? { gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const dayImgs = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
       const dayCogs = computeCogs({ managedMinutes: dayMins, imageCounts: dayImgs, rates });
       trend.push({ date: label, revenue: dailyMrr, cogs: dayCogs.total });
     }
@@ -266,12 +323,23 @@ export async function GET(req: Request) {
         grossMarginPct: margins.grossMarginPct,
         aiCostPct: margins.aiCostPct,
         netProfit: margins.netProfit,
+        infraProrated: margins.infraProrated,
+      },
+      // Real paying customers (subs + one-time/PromptPay/annual), trials separated. See revenue-cohorts.ts.
+      customers: cohorts,
+      // Actual cash collected in the window, split by source (satang→baht already applied).
+      cash: {
+        total: cashCollected,
+        planMonthly: planCashMonthly,
+        planAnnual: planCashAnnual,
+        packs: packCash,
       },
       breakdown: {
         tts: cogs.tts,
         image: cogs.image,
         video: cogs.video,
         infra: rates.infraMonthly,
+        infraProrated: margins.infraProrated,
       },
       usage: {
         managedMinutes,
@@ -284,8 +352,8 @@ export async function GET(req: Request) {
       },
       topUsers,
       breakEven: {
-        subs: proSubCount + businessSubCount,
-        target: BREAK_EVEN_SUBS,
+        subs: cohorts.breakEvenSubs,
+        target: breakEvenTarget,
       },
       trend,
     });

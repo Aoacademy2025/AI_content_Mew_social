@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Captions, Film, Bot, SlidersHorizontal, Flame } from "lucide-react";
+import { Captions, Upload, Bot, Scissors, Flame } from "lucide-react";
 
 // Shared split-screen shell for /login and /register — CI-matched to the sale
 // page (single-accent violet). Server component so it can show live founding seats.
@@ -11,9 +11,9 @@ const GLOW = "0 0 34px rgba(139,92,246,.5)";
 
 const BULLETS = [
   { icon: Captions, text: "ซับไทยตรงเสียงเป๊ะ — ไม่ใช่ AI เดา" },
-  { icon: Film, text: "B-roll เปลี่ยนทุก 3–5 วิ อัตโนมัติ" },
+  { icon: Upload, text: "อัปโหลดคลิปที่ถ่ายเอง → ใส่ซับ + B-roll อัตโนมัติ" },
   { icon: Bot, text: "AI Avatar พิธีกร — หรือทำ Faceless" },
-  { icon: SlidersHorizontal, text: "ตัดต่อในเว็บ + พร้อมโพสต์แนวตั้ง" },
+  { icon: Scissors, text: "ตัดต่อบนไทม์ไลน์ + แต่งซับ 17 สไตล์" },
 ];
 
 // Real outputs (same self-hosted posters as the sale-page Showcase) — real proof, not fabricated.
@@ -35,7 +35,7 @@ export const CLERK_APPEARANCE = {
     formFieldInput:
       "h-11 rounded-xl border-white/10 bg-white/5 text-white placeholder:text-zinc-600 focus:border-violet-500/60 focus:ring-violet-500/20 focus:ring-2 transition-all",
     formButtonPrimary:
-      "w-full h-11 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.99] !bg-[linear-gradient(120deg,#8b5cf6,#a78bfa)] shadow-[0_0_24px_rgba(139,92,246,.45)]",
+      "w-full h-11 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.99] !bg-[linear-gradient(180deg,#8B66F8,#6C4CF4)] shadow-[0_0_24px_rgba(139,92,246,.45)]",
     footerActionLink: "text-violet-300 hover:text-violet-200 font-medium",
     footerActionText: "text-zinc-500",
     identityPreviewText: "text-white",
@@ -143,7 +143,7 @@ export function AuthShell({
         <div className="relative z-10 flex flex-wrap items-center gap-3 text-xs text-zinc-600">
           <span>© 2026 HERO AI Creator Studio</span>
           {founding?.active && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-300">
+            <span className="founder-glow inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-300">
               <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden /> ราคาผู้ก่อตั้งเหลือ {founding.remaining}/{founding.total}
             </span>
           )}

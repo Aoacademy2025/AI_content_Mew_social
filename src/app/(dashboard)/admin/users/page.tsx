@@ -22,8 +22,14 @@ import {
   BadgeDollarSign,
 } from "lucide-react";
 import { toast } from "sonner";
-import { PremiumBackdrop, PremiumEyebrow } from "@/components/layout/premium-page";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+
+// Violet single-accent house tokens (from video-editor/_v2/tokens.ts) — see admin/page.tsx
+const VIOLET = "#8B5CF6";
+const VIOLET_LIGHT = "#B9A6FF";
+// Flat v2 card surface — inline var(--ui-*), matches settings/admin (no .ve-card helper)
+const cardStyle: React.CSSProperties = { background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" };
+const dropdownStyle: React.CSSProperties = { background: "var(--ui-card-bg-3)", borderColor: "var(--ui-card-border)", backdropFilter: "blur(8px)" };
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -42,8 +48,8 @@ interface AdminUser {
 
 const PLAN_STYLES: Record<PlanKey, { bg: string; text: string; icon: React.ElementType | null; label: string }> = {
   FREE:     { bg: "bg-zinc-500/15",   text: "text-zinc-400",   icon: null,       label: "FREE" },
-  PRO:      { bg: "bg-yellow-500/15", text: "text-yellow-400", icon: Crown,      label: "PRO" },
-  BUSINESS: { bg: "bg-violet-500/15", text: "text-violet-300", icon: Building2,  label: "BUSINESS" },
+  PRO:      { bg: "bg-violet-500/10", text: "text-violet-300", icon: Crown,      label: "PRO" },
+  BUSINESS: { bg: "bg-violet-500/20", text: "text-violet-200", icon: Building2,  label: "BUSINESS" },
 };
 
 interface CacheInfo {
@@ -183,18 +189,18 @@ export default function AdminUsersPage() {
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
-      <PremiumBackdrop />
-      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-3 md:pt-4 pb-12 space-y-6">
+      <div className="relative z-10 mx-auto max-w-7xl px-4 md:px-6 pt-4 md:pt-6 pb-12 space-y-6">
         {/* Header */}
-        <div className="pp-fade-up flex items-center justify-between">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <PremiumEyebrow className="mb-2">
-              Admin
-              <span className="pp-chip-dot h-1 w-1 rounded-full bg-cyan-400" />
-              Users
-            </PremiumEyebrow>
-            <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white">จัดการผู้ใช้งาน</h1>
-            <p className="text-sm text-white/50 mt-1">ผู้ใช้งานทั้งหมด {users.length} ราย</p>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: VIOLET_LIGHT }}>
+              Admin · Users
+            </p>
+            <h1 className="text-[30px] font-bold leading-tight tracking-tight"
+              style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>
+              จัดการผู้ใช้งาน
+            </h1>
+            <p className="text-sm mt-1" style={{ color: "var(--ui-text-secondary)" }}>ผู้ใช้งานทั้งหมด {users.length} ราย</p>
           </div>
           <Button
             variant="ghost"
@@ -216,13 +222,14 @@ export default function AdminUsersPage() {
             placeholder="ค้นหาด้วยชื่อหรืออีเมล..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-4 text-sm text-white placeholder-zinc-500 outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30"
+            className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] py-2 pl-9 pr-4 text-sm placeholder-zinc-500 outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30"
+            style={{ color: "var(--ui-text-primary)" }}
           />
         </div>
 
         {/* User Cards */}
         {loading ? null : filtered.length === 0 ? (
-          <Card className="border-white/10 bg-white/5">
+          <Card className="shadow-none" style={cardStyle}>
             <CardContent className="flex items-center justify-center py-12 text-zinc-500">
               ไม่พบผู้ใช้
             </CardContent>
@@ -234,21 +241,22 @@ export default function AdminUsersPage() {
               return (
                 <Card
                   key={user.id}
-                  className={`border-white/10 bg-white/5 transition-colors ${
-                    user.suspended ? "border-red-500/20 bg-red-500/5" : ""
-                  }`}
+                  className="transition-colors shadow-none"
+                  style={user.suspended
+                    ? { background: "hsl(0 70% 50% / 0.05)", border: "1px solid hsl(0 70% 55% / 0.25)" }
+                    : cardStyle}
                 >
                   <CardHeader className="pb-3">
                     <div className="flex flex-wrap items-start gap-3">
                       {/* Avatar */}
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-500/20 text-sm font-bold text-purple-300">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500/20 text-sm font-bold text-violet-300">
                         {user.name.charAt(0).toUpperCase()}
                       </div>
 
                       {/* Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <CardTitle className="text-sm text-white">{user.name}</CardTitle>
+                          <CardTitle className="text-sm" style={{ color: "var(--ui-text-primary)" }}>{user.name}</CardTitle>
                           {/* Plan badge */}
                           {(() => {
                             const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
@@ -266,7 +274,10 @@ export default function AdminUsersPage() {
                             if (!exp) return null;
                             const d = daysLeft(exp);
                             return (
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${d <= 3 ? "bg-red-500/15 text-red-400" : d <= 7 ? "bg-amber-500/15 text-amber-400" : "bg-white/5 text-white/40"}`}>
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${d <= 3 ? "bg-red-500/15 text-red-400" : d <= 7 ? "bg-amber-500/15 text-amber-400" : ""}`}
+                                style={d <= 7 ? undefined : { background: "var(--ui-badge-neutral-bg)", color: "var(--ui-text-muted)" }}
+                              >
                                 {d > 0 ? `หมดใน ${d} วัน` : "หมดอายุแล้ว"}
                               </span>
                             );
@@ -293,8 +304,8 @@ export default function AdminUsersPage() {
                             </span>
                           )}
                         </div>
-                        <p className="mt-0.5 text-xs text-zinc-500">{user.email}</p>
-                        <p className="mt-0.5 text-xs text-zinc-600">
+                        <p className="mt-0.5 text-xs" style={{ color: "var(--ui-text-muted)" }}>{user.email}</p>
+                        <p className="mt-0.5 text-xs" style={{ color: "var(--ui-text-muted)" }}>
                           สมัครใช้งานเมื่อ{" "}
                           {new Date(user.createdAt).toLocaleDateString("th-TH", {
                             day: "2-digit",
@@ -309,7 +320,7 @@ export default function AdminUsersPage() {
                         {user.couponRedemptions?.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
                             {user.couponRedemptions.map((r, i) => (
-                              <span key={i} className="inline-flex items-center gap-1 rounded-full bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-400">
+                              <span key={i} className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-xs text-violet-300">
                                 <Ticket className="h-3 w-3" />
                                 {r.coupon.code}
                                 {r.coupon.durationDays === 0 ? " (ถาวร)" : ` (${r.coupon.durationDays}วัน)`}
@@ -321,7 +332,7 @@ export default function AdminUsersPage() {
 
                         {/* Cache info row */}
                         {cacheInfo[user.id] && (
-                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs" style={{ color: "var(--ui-text-muted)" }}>
                             <span className="flex items-center gap-1">
                               <HardDrive className="h-3 w-3 text-zinc-600" />
                               Stock: {cacheInfo[user.id].stocks.count} ไฟล์ ({cacheInfo[user.id].stocks.sizeMb} MB)
@@ -348,7 +359,7 @@ export default function AdminUsersPage() {
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
                                     <button
-                                      className={`h-7 inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-2 text-xs font-medium outline-none focus:border-purple-500/50 hover:bg-white/10 transition-colors cursor-pointer ${ps.text}`}
+                                      className={`h-7 inline-flex items-center gap-1.5 rounded-md border-[var(--ui-btn-border)] bg-[var(--ui-btn-bg)] px-2 text-xs font-medium outline-none focus:border-violet-500/50 hover:bg-[var(--ui-btn-bg-hover)] transition-colors cursor-pointer ${ps.text}`}
                                       title="เปลี่ยนแพ็กเกจ"
                                     >
                                       {Icon && <Icon className="h-3 w-3" />}
@@ -359,7 +370,7 @@ export default function AdminUsersPage() {
                                   <DropdownMenuContent
                                     align="end"
                                     className="min-w-35 border"
-                                    style={{ background: "rgba(20, 20, 28, 0.98)", borderColor: "rgba(255,255,255,0.1)", backdropFilter: "blur(8px)" }}
+                                    style={dropdownStyle}
                                   >
                                     {(["FREE", "PRO", "BUSINESS"] as PlanKey[]).map(opt => {
                                       const ops = PLAN_STYLES[opt];
@@ -386,10 +397,10 @@ export default function AdminUsersPage() {
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button
-                                  className="h-7 inline-flex items-center gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-2 text-xs font-medium text-emerald-300 outline-none hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                                  className="h-7 inline-flex items-center gap-1.5 rounded-md border-[var(--ui-btn-border)] bg-[var(--ui-btn-bg)] px-2 text-xs font-medium text-violet-300 outline-none hover:bg-[var(--ui-btn-bg-hover)] transition-colors cursor-pointer"
                                   title="บันทึกการชำระเงิน (สำหรับลูกค้าโอนเงิน/นอก Stripe) — ตั้งวันหมดอายุและล้างสถานะทดลอง"
                                 >
-                                  <BadgeDollarSign className="h-3 w-3" />
+                                  <BadgeDollarSign className="h-3 w-3" style={{ color: VIOLET }} />
                                   บันทึกชำระ
                                   <ChevronDown className="h-3 w-3 opacity-60" />
                                 </button>
@@ -397,7 +408,7 @@ export default function AdminUsersPage() {
                               <DropdownMenuContent
                                 align="end"
                                 className="min-w-44 border"
-                                style={{ background: "rgba(20, 20, 28, 0.98)", borderColor: "rgba(255,255,255,0.1)", backdropFilter: "blur(8px)" }}
+                                style={dropdownStyle}
                               >
                                 {([
                                   { plan: "PRO", days: 365, label: "รายปี" },
@@ -410,7 +421,7 @@ export default function AdminUsersPage() {
                                     onClick={() => markPaid(user, o.plan, o.days, o.label)}
                                     className="gap-2 text-xs cursor-pointer text-white/80 focus:bg-white/10"
                                   >
-                                    <BadgeDollarSign className="h-3 w-3 text-emerald-400" />
+                                    <BadgeDollarSign className="h-3 w-3" style={{ color: VIOLET }} />
                                     <span className="flex-1">{o.plan} · {o.label}</span>
                                   </DropdownMenuItem>
                                 ))}

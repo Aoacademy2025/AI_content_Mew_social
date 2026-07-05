@@ -6,6 +6,12 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+
+// Single source of truth lives in avatar-gen-framing.ts; these consts are kept so the
+// destructuring defaults at line ~116-118 are unchanged and easy to read.
+const HEYGEN_GEN_SCALE = HEYGEN_GEN_FRAMING.scale;
+const HEYGEN_GEN_OFFSET_Y = HEYGEN_GEN_FRAMING.offsetY;
 
 function getFfmpegPath(): string {
   if (process.platform !== "win32") return "/usr/bin/ffmpeg";
@@ -107,9 +113,9 @@ async function handleGenerateWithBg(req: Request) {
     greenScreen = false,
     removeBg = false,
     bgColor = "#000000",
-    scale = 2.02,
-    offsetX = 0.0,
-    offsetY = 0.28,
+    scale = HEYGEN_GEN_SCALE,
+    offsetX = HEYGEN_GEN_FRAMING.offsetX,
+    offsetY = HEYGEN_GEN_OFFSET_Y,
   } = body ?? {};
 
   if (!text && !audioUrl) return NextResponse.json({ error: "text or audioUrl required" }, { status: 400 });
@@ -126,8 +132,8 @@ async function handleGenerateWithBg(req: Request) {
     if (Math.abs(n) <= 1) return n;
     return Math.max(-1, Math.min(1, n / 400));
   };
-  const hgOffsetX = safeOffset(offsetX, 0.0);
-  const hgOffsetY = safeOffset(offsetY, 0.13);
+  const hgOffsetX = safeOffset(offsetX, HEYGEN_GEN_FRAMING.offsetX);
+  const hgOffsetY = safeOffset(offsetY, HEYGEN_GEN_OFFSET_Y);
   if (hgOffsetX !== Number(offsetX) || hgOffsetY !== Number(offsetY)) {
     console.warn(`[generate-with-bg] offset adjusted for HeyGen range: (${offsetX}, ${offsetY}) → (${hgOffsetX}, ${hgOffsetY})`);
   }

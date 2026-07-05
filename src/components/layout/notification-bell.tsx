@@ -26,7 +26,7 @@ interface Notification {
 
 function typeIcon(type: Notification["type"]) {
   switch (type) {
-    case "VIDEO_COMPLETED": return <Video className="h-4 w-4 text-cyan-400" />;
+    case "VIDEO_COMPLETED": return <Video className="h-4 w-4 text-violet-400" />;
     case "VIDEO_FAILED":    return <AlertTriangle className="h-4 w-4 text-red-400" />;
     case "LIMIT_WARNING":   return <TrendingUp className="h-4 w-4 text-amber-400" />;
     case "LIMIT_REACHED":   return <AlertTriangle className="h-4 w-4 text-orange-400" />;
@@ -122,7 +122,7 @@ export function NotificationBell() {
       >
         <Bell className="h-4.5 w-4.5" />
         {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-cyan-500 text-[9px] font-bold text-white leading-none">
+          <span className="absolute -right-0.5 -top-0.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-violet-500 text-[9px] font-bold text-white leading-none">
             {unread > 9 ? "9+" : unread}
           </span>
         )}
@@ -136,10 +136,10 @@ export function NotificationBell() {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: "hsl(220 20% 22%)" }}>
             <div className="flex items-center gap-2">
-              <Bell className="h-4 w-4 text-cyan-400" />
+              <Bell className="h-4 w-4 text-violet-400" />
               <span className="text-sm font-semibold text-white">การแจ้งเตือน</span>
               {unread > 0 && (
-                <span className="flex h-5 items-center rounded-full bg-cyan-500/20 px-1.5 text-[10px] font-bold text-cyan-400">
+                <span className="flex h-5 items-center rounded-full bg-violet-500/20 px-1.5 text-[10px] font-bold text-violet-400">
                   {unread} ใหม่
                 </span>
               )}
@@ -178,7 +178,7 @@ export function NotificationBell() {
                   onClick={() => openNotification(n)}
                   className={cn(
                     "group flex cursor-pointer items-start gap-3 px-4 py-3 transition-colors hover:bg-white/5",
-                    !n.read && "bg-cyan-500/5"
+                    !n.read && "bg-violet-500/5"
                   )}
                   style={{ borderBottom: "1px solid hsl(220 20% 18%)" }}
                 >
@@ -208,7 +208,7 @@ export function NotificationBell() {
                   {/* Unread dot + dismiss */}
                   <div className="flex shrink-0 flex-col items-end gap-2">
                     {!n.read && (
-                      <span className="h-2 w-2 rounded-full bg-cyan-400" />
+                      <span className="h-2 w-2 rounded-full bg-violet-400" />
                     )}
                     <button
                       onClick={(e) => { e.stopPropagation(); dismissOne(n.id); }}

@@ -63,6 +63,7 @@ export function buildConfigPayload(
   keywordsPerScene: number,
   sceneClipCounts: number[],
   sceneDurations: number[],
+  brollWindows: { startMs: number; endMs: number }[] = [],
 ) {
   return {
     sceneCaptions: captions,
@@ -82,10 +83,11 @@ export function buildConfigPayload(
     sceneClipCounts,
     sceneDurations,
     preferredLLM: null as string | null,
-    // TODO(broll-cadence): MCP currently uses DEFAULT_STOCK_SOURCE="both", so the AI/auto-mix
-    // cadence (3–5s min-hold) never applies here. If auto-mix/kie-image is ever exposed via
-    // MCP, pass minHoldSec: targetCadenceSec(audioDurationMs/1000) like the web editor does,
-    // or generate-config will strobe one clip per caption (undoing the cadence cap).
+    // Window-mode b-roll cadence (parity with the web editor): one clip per ~4s window instead
+    // of one per caption — generate-config takes its window branch when brollWindows is present.
+    ...(brollWindows.length > 0 ? { brollWindows } : {}),
+    // NOTE(auto-mix): MCP uses DEFAULT_STOCK_SOURCE="both" (stock), so the AI/auto-mix minHoldSec
+    // cadence path isn't used here; window mode above governs stock cadence.
   };
 }
 

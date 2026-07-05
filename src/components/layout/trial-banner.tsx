@@ -32,7 +32,7 @@ export function TrialBanner() {
     <Link
       href="/pricing"
       className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
-      style={{ background: "linear-gradient(90deg,#7c3aed,#06b6d4)" }}
+      style={{ background: "linear-gradient(90deg,#8B66F8,#6C4CF4)" }}
     >
       <Sparkles className="h-4 w-4" strokeWidth={2.5} />
       <span>{text}</span>

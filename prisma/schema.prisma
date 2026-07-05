@@ -31,6 +31,8 @@ model User {
   flickrKey          String?
   avatar             String?
   heygenAvatarId     String?
+  heygenAvatarsCache    String?   // durable fallback: last successful HeyGen avatar list (JSON {k,avatars,talkingPhotos}); served stale when HeyGen is slow so the picker/preview keep working
+  heygenAvatarsCachedAt DateTime? // when heygenAvatarsCache was last refreshed (for max-age on the stale fallback)
   elevenlabsVoiceId  String?
   ttsProvider        String?  @default("elevenlabs")
   geminiVoiceName    String?  @default("Aoede")
@@ -70,6 +72,7 @@ model User {
   telemetryEvents    TelemetryEvent[]
   productUpdateReads ProductUpdateRead[]
   userMusic          UserMusic[]
+  avatarPresets      AvatarPreset[]
 }
 
 model Style {
@@ -141,6 +144,21 @@ model McpToken {
   revokedAt  DateTime?
   createdAt  DateTime  @default(now())
 
+  @@index([userId])
+}
+
+model AvatarPreset {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  avatarId  String   // HeyGen avatar_id or talking_photo_id
+  scale     Float    @default(1)
+  offsetX   Float    @default(0)
+  offsetY   Float    @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([userId, avatarId])
   @@index([userId])
 }
 

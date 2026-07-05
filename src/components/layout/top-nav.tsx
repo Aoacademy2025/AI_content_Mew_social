@@ -2,37 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useUser, useClerk } from "@clerk/nextjs";
-import { LogOut, Menu, Sparkles } from "lucide-react";
+import { Menu } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { NotificationBell } from "@/components/layout/notification-bell";
-import { FadeSwap } from "@/components/ui/fade-swap";
 
 const navLinks = [
-  { title: "Docs", href: "/docs" },
+  { title: "วิธีใช้งาน", href: "/docs" },
 ];
 
 export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
   const pathname = usePathname();
-  const { user, isLoaded } = useUser();
-  const { signOut } = useClerk();
-
-  const displayName = user?.fullName ?? user?.firstName ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "";
-  const displayEmail = user?.primaryEmailAddress?.emailAddress ?? "";
-  const initials = displayName
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2) || "U";
 
   return (
     <div
@@ -47,10 +26,11 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         {onMenuClick && (
           <button
             onClick={onMenuClick}
-            className="mr-2 flex h-8 w-8 items-center justify-center rounded-lg transition-colors md:hidden"
+            aria-label="เปิดเมนู"
+            className="mr-2 flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-white/5 lg:hidden"
             style={{ color: "var(--ui-text-secondary)" }}
           >
-            <Menu className="h-4 w-4" />
+            <Menu className="h-5 w-5" />
           </button>
         )}
         <Link
@@ -59,13 +39,14 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
           aria-label="Hero AI Creator Studio"
         >
           <span
-            className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden"
+            className="relative flex h-8 w-8 items-center justify-center rounded-xl shrink-0 overflow-hidden text-[15px] font-semibold leading-none text-white"
             style={{
-              background: "linear-gradient(135deg, hsl(220 100% 60%), hsl(252 83% 60%))",
-              boxShadow: "0 4px 14px hsl(252 83% 60% / 0.35), inset 0 1px 0 rgba(255,255,255,0.25)",
+              background: "linear-gradient(180deg,#8B66F8,#6C4CF4)",
+              boxShadow: "0 4px 14px rgba(108,76,244,0.35), inset 0 1px 0 rgba(255,255,255,0.25)",
+              fontFamily: "Kanit, sans-serif",
             }}
           >
-            <Sparkles className="h-4 w-4 text-white" strokeWidth={2.5} />
+            H
             <span
               aria-hidden
               className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -100,52 +81,10 @@ export function TopNav({ onMenuClick }: { onMenuClick?: () => void }) {
         })}
       </div>
 
-      {/* Right — actions */}
+      {/* Right — actions. Account hub now lives in the sidebar user header;
+          the dashboard topbar-right is the notification bell only. */}
       <div className="flex items-center gap-2">
         <NotificationBell />
-
-        <FadeSwap
-          ready={isLoaded}
-          className="h-8 w-8 shrink-0"
-          skeleton={<div className="h-8 w-8 rounded-full skeleton-wave" />}
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white transition-opacity hover:opacity-80"
-                style={{
-                  background: "linear-gradient(135deg, hsl(252 83% 45%), hsl(190 100% 40%))",
-                }}
-              >
-                {initials}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              className="w-56 border"
-              style={{ background: "var(--ui-card-bg)", borderColor: "var(--ui-card-border)" }}
-              align="end"
-            >
-              <DropdownMenuLabel>
-                <div className="flex flex-col space-y-0.5">
-                  <p className="text-sm font-medium leading-none" style={{ color: "var(--ui-text-primary)" }}>
-                    {displayName}
-                  </p>
-                  <p className="text-xs leading-none" style={{ color: "var(--ui-text-muted)" }}>
-                    {displayEmail}
-                  </p>
-                </div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
-              <DropdownMenuItem
-                className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
-                onClick={() => signOut({ redirectUrl: "/login" })}
-              >
-                <LogOut className="mr-2 h-4 w-4" />
-                Logout
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </FadeSwap>
       </div>
     </div>
   );

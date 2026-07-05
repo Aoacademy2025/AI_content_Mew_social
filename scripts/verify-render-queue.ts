@@ -65,6 +65,41 @@ async function main() {
   const deadAfter2 = await store.getRenderJob(dead.id);
   ok(deadAfter2?.status === "FAILED", "re-failing a FAILED job is a no-op (idempotent)");
 
+  // 5b. retry after a transient stale heartbeat must not expose the stale error to
+  // clients while the retry is QUEUED/RUNNING, and a later success must clear it.
+  await prisma.renderJob.deleteMany({ where: { status: "QUEUED" } });
+  const retry = await prisma.renderJob.create({
+    data: {
+      userId: "u1",
+      type: "RENDER",
+      payload: "{}",
+      status: "RUNNING",
+      attempts: 0,
+      maxAttempts: 2,
+      progress: 87,
+      phase: "rendering",
+      error: "{\"message\":\"old transient error\"}",
+      cancelRequested: true,
+      heartbeatAt: new Date(Date.now() - 10 * 60_000),
+    },
+  });
+  await store.sweepDeadRenderJobs(90_000);
+  const retryQueued = await store.getRenderJob(retry.id);
+  ok(retryQueued?.status === "QUEUED", "transient stale job requeues for retry");
+  ok(retryQueued?.error === null, "retry QUEUED job clears transient error");
+  ok(retryQueued?.progress === 0 && retryQueued?.phase === null, "retry QUEUED job resets progress + phase");
+  ok(retryQueued?.cancelRequested === false, "retry QUEUED job clears cancelRequested");
+  const retryClaimed = await store.claimNextRenderJob();
+  ok(retryClaimed?.id === retry.id, "retry job can be claimed again");
+  ok(retryClaimed?.status === "RUNNING", "retry claim moves job to RUNNING");
+  ok(retryClaimed?.error === null, "retry RUNNING job keeps transient error cleared");
+  ok(retryClaimed?.progress === 0 && retryClaimed?.phase === null, "retry RUNNING job starts from clean progress + phase");
+  await store.finishRenderJob(retry.id, "/api/renders/retry-ok.mp4");
+  const retryDone = await store.getRenderJob(retry.id);
+  ok(retryDone?.status === "DONE", "retry job can finish successfully");
+  ok(retryDone?.error === null, "DONE job clears previous transient error");
+  ok(retryDone?.progress === 100 && retryDone?.phase === "done", "DONE job records clean done state");
+
   // 6. graceful-drain requeue nets ZERO consumed attempts: enqueue → claim (attempts 0→1)
   // → requeueForShutdown (QUEUED, attempts 1→0). A deploy must not burn a retry.
   // Drain any leftover QUEUED jobs first (e.g. the requeued stale job from step 3) so

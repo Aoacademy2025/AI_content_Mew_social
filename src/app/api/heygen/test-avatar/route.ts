@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -45,15 +46,15 @@ export async function POST(req: Request) {
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
   const heygenKey = decrypt(user.heygenKey);
 
-  // Params from heygen-direct (proven working): scale=2.02, offset.y=0.28
+  // Framing from the shared HEYGEN_GEN_FRAMING constant (safe whole-avatar default)
   const genPayload = {
     video_inputs: [{
       character: {
         type: "avatar",
         avatar_id: avatarId,
         avatar_style: "normal",
-        offset: { x: 0.0, y: 0.28 },
-        scale: 2.02,
+        offset: { x: HEYGEN_GEN_FRAMING.offsetX, y: HEYGEN_GEN_FRAMING.offsetY },
+        scale: HEYGEN_GEN_FRAMING.scale,
         matting: true,
       },
       voice: { type: "text", input_text: text, voice_id: voiceId, speed: 1.0 },

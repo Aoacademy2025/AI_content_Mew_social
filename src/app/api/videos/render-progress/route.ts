@@ -27,6 +27,12 @@ export async function GET(req: Request) {
         : job.status === "FAILED" || job.status === "CANCELLED"
         ? "error"
         : "running";
+    const terminalError =
+      job.status === "FAILED"
+        ? job.error ?? "Render failed"
+        : job.status === "CANCELLED"
+        ? job.error ?? "Render cancelled"
+        : undefined;
     // Return BOTH `stage` and `status`: the MCP poller (pipeline-client.pollRender)
     // and the legacy progress shape key off `stage`, while other callers may read
     // `status`. Before this, the queue branch returned only `status`, so pollRender's
@@ -37,7 +43,7 @@ export async function GET(req: Request) {
       status: stage,
       progress: job.progress,
       videoUrl: job.videoUrl ?? null,
-      error: job.error ?? undefined,
+      error: terminalError,
       // Surface the credit-overflow receipt amount ONLY when credits are live, so
       // the response is byte-identical when CREDITS_LIVE is off. getRenderJob reads
       // the full RenderJob row, so job.creditsSpent is already present (no select change).

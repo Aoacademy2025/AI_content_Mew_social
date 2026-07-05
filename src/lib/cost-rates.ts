@@ -8,13 +8,15 @@ import { prisma } from "@/lib/prisma";
 export interface CostRates {
   /** ฿ per managed minute of TTS render */
   renderPerMinute: number;
-  /** ฿ per GPT-Image-1 (standard) generation */
+  /** ฿ per flux-2/pro-text-to-image generation (managed-kie "ประหยัด" tier, image-flux-1k) */
+  imageFlux1k: number;
+  /** ฿ per gpt-image-2-text-to-image generation (managed-kie "มาตรฐาน" tier, image-gpt-1k) */
   imageGpt1k: number;
-  /** ฿ per DALL-E-nano generation */
+  /** ฿ per nano-banana-2 generation (managed-kie "ขั้นสูง" tier, image-nano-1k) */
   imageNano1k: number;
-  /** ฿ per GPT-Image-2 generation */
+  /** ฿ per GPT-Image-2 generation (reserved bucket, not yet a priced managed-kie tier) */
   imageGpt2k: number;
-  /** ฿ per DALL-E-nano-2 generation */
+  /** ฿ per DALL-E-nano-2 generation (reserved bucket, not yet a priced managed-kie tier) */
   imageNano2k: number;
   /** ฿ per Seedance 5-second video clip */
   videoSeedance5s: number;
@@ -24,11 +26,16 @@ export interface CostRates {
   fxBahtPerUsd: number;
 }
 
+// kie.ai research 2026-07-03 (docs/plans/2026-07-03-managed-image-gen-golive.md, Task 1
+// Result), ฿36/USD: flux-2/pro $0.025/img, gpt-image-2 $0.03/img, nano-banana-2 $0.04/img
+// at 1K resolution. imageGpt2k/imageNano2k are reserved buckets (deltas 5/6) — no live
+// managed-kie model maps to them yet, so their defaults are untouched.
 /** Default cost rates — used when the SiteConfig key is absent or unparseable. */
 export const COST_DEFAULTS: CostRates = {
   renderPerMinute: 0.7,
-  imageGpt1k: 1.05,
-  imageNano1k: 1.4,
+  imageFlux1k: 0.9,
+  imageGpt1k: 1.08,
+  imageNano1k: 1.44,
   imageGpt2k: 1.75,
   imageNano2k: 2.1,
   videoSeedance5s: 3.06,
@@ -51,6 +58,7 @@ async function getCfg(key: string, fallback: number): Promise<number> {
 export async function getCostRates(): Promise<CostRates> {
   const [
     renderPerMinute,
+    imageFlux1k,
     imageGpt1k,
     imageNano1k,
     imageGpt2k,
@@ -60,6 +68,7 @@ export async function getCostRates(): Promise<CostRates> {
     fxBahtPerUsd,
   ] = await Promise.all([
     getCfg("cost_render_per_minute", COST_DEFAULTS.renderPerMinute),
+    getCfg("cost_image_flux_1k", COST_DEFAULTS.imageFlux1k),
     getCfg("cost_image_gpt_1k", COST_DEFAULTS.imageGpt1k),
     getCfg("cost_image_nano_1k", COST_DEFAULTS.imageNano1k),
     getCfg("cost_image_gpt_2k", COST_DEFAULTS.imageGpt2k),
@@ -71,6 +80,7 @@ export async function getCostRates(): Promise<CostRates> {
 
   return {
     renderPerMinute,
+    imageFlux1k,
     imageGpt1k,
     imageNano1k,
     imageGpt2k,
@@ -83,12 +93,32 @@ export async function getCostRates(): Promise<CostRates> {
 
 // ── Break-even constant ──────────────────────────────────────────────────────
 /**
- * Number of active subscribers required to cover fixed infra costs.
- * Derivation: ≈ infraMonthly (฿2,600) ÷ blended contribution-margin-per-sub
- * (~฿190/sub after variable AI COGS), from the 2026-06-24 business-model spec.
- * Revisit if economics change (infra cost, pricing, or variable-cost rate).
+ * FALLBACK-ONLY break-even estimate — used when there are no paying customers yet
+ * (payingTotal = 0), so no live contribution margin can be derived. The LIVE target
+ * is computed in costs/route.ts (computeBreakEvenTarget) from this page's own margin,
+ * so it can never contradict the profit tile. Static derivation kept for reference:
+ * ≈ infraMonthly (฿2,600) ÷ blended contribution-margin-per-sub (~฿190/sub), from the
+ * 2026-06-24 business-model spec.
  */
 export const BREAK_EVEN_SUBS = 14;
+
+/**
+ * Live break-even target = infra ÷ gross-profit-per-paying-customer. Uses the caller's
+ * OWN monthly margin (grossProfit = mrr − variable COGS) so the target can never
+ * contradict the profit tile. Falls back to the static constant only when there are no
+ * payers to derive a contribution from. Pure — no DB access.
+ */
+export function computeBreakEvenTarget(input: {
+  infraMonthly: number;
+  grossProfit: number;
+  payingTotal: number;
+  fallback?: number;
+}): number {
+  const { infraMonthly, grossProfit, payingTotal } = input;
+  const fallback = input.fallback ?? BREAK_EVEN_SUBS;
+  const contributionPerSub = payingTotal > 0 ? grossProfit / payingTotal : 0;
+  return contributionPerSub > 0 ? Math.ceil(infraMonthly / contributionPerSub) : fallback;
+}
 
 // ── Pure calculation functions ───────────────────────────────────────────────
 
@@ -109,6 +139,7 @@ export interface CogsInput {
   managedMinutes: number;
   /** AI image generation counts by model tier. */
   imageCounts: {
+    flux1k: number;
     gpt1k: number;
     nano1k: number;
     gpt2k: number;
@@ -139,6 +170,7 @@ export function computeCogs(input: CogsInput): CogsResult {
   const tts = managedMinutes * rates.renderPerMinute;
 
   const image =
+    imageCounts.flux1k * rates.imageFlux1k +
     imageCounts.gpt1k * rates.imageGpt1k +
     imageCounts.nano1k * rates.imageNano1k +
     imageCounts.gpt2k * rates.imageGpt2k +

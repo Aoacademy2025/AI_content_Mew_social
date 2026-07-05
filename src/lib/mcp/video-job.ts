@@ -36,11 +36,70 @@ export async function setJobStep(id: string, currentStep: string, progress: numb
   await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
 }
 
-export async function finishJob(id: string, output: { videoUrl: string; videoId?: string }) {
+export async function finishJob(id: string, output: { videoUrl: string; videoId?: string } & Record<string, unknown>) {
   await prisma.videoJob.update({
     where: { id },
     data: { status: "done", progress: 100, outputJson: JSON.stringify(output), videoId: output.videoId ?? null, finishedAt: new Date() },
   });
+}
+
+// ── Versioned output (ADR 0001) ──────────────────────────────────────────────
+// v1 (MCP full pipeline, ORIGINAL shape): { videoUrl, videoId }
+// v2 preview (Editor v2 background render): { version: 2, mode: "preview", videoUrl,
+//   preview: { captions, config, voiceUrl, audioDurationMs, avatarModel, avatarVideoUrl,
+//   avatarMode, avatarIntroSecs, avatarTailSecs, compositeBaseUrl, tailAvatarUrl } }
+// Readers MUST accept both — old rows never get migrated.
+
+export interface VideoJobPreviewData {
+  captions: { text: string; startMs: number; endMs: number; tag?: string }[];
+  config: Record<string, unknown>;
+  voiceUrl: string;
+  audioDurationMs: number;
+  avatarModel?: string;
+  avatarVideoUrl?: string | null;
+  /** ข้อมูลสำหรับ re-composite อวตารจากจอแต่งซับ (spec 07-03 ข้อ 1) — งานเก่าไม่มี = ซ่อนปุ่มปรับ */
+  avatarMode?: string | null;
+  avatarIntroSecs?: number;
+  avatarTailSecs?: number;
+  /** base render ก่อน composite อวตาร = bgVideoUrl ของ /api/heygen/composite */
+  compositeBaseUrl?: string | null;
+  /** อวตารท้ายคลิป (bookend-both) — จำเป็นตอน re-composite โหมดนั้น */
+  tailAvatarUrl?: string | null;
+  /** per-word TTS timeline (script path only) — lets the editor regroup cards
+   *  by word count (1/2/3/4 คำ) with exact timing. Absent on cutaway/old jobs
+   *  → editor falls back to proportional split. */
+  words?: { word: string; startMs: number; endMs: number; startChar: number; endChar: number }[];
+  /** exact TTS-spoken text `words` char offsets index into */
+  fullText?: string;
+}
+
+export interface ParsedVideoJobOutput {
+  version: 1 | 2;
+  videoUrl?: string;
+  videoId?: string;
+  /** present only on v2 preview jobs */
+  preview?: VideoJobPreviewData | null;
+}
+
+/** Tolerant parser for VideoJob.outputJson — handles v1, v2, null, and garbage. */
+export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOutput | null {
+  if (!outputJson) return null;
+  try {
+    const raw = JSON.parse(outputJson) as Record<string, unknown>;
+    if (typeof raw !== "object" || raw === null) return null;
+    const version = raw.version === 2 ? 2 : 1;
+    const preview = version === 2 && typeof raw.preview === "object" && raw.preview !== null
+      ? (raw.preview as unknown as VideoJobPreviewData)
+      : null;
+    return {
+      version,
+      videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
+      videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
+      ...(preview ? { preview } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function failJob(id: string, message: string) {

@@ -51,6 +51,7 @@ export interface OrderPanelProps {
   onReloadAvatar?: () => void; avatarStatus?: "idle" | "loading" | "ok" | "error" | "unverified";
   avatarGreenUrl: string; running: boolean; steps: StepState;
   avatarInputMode: "generate" | "direct"; avatarDirectUrl: string;
+  directCompositeMode: "chromakey" | "full" | "cutaway"; setDirectCompositeMode: (m: "chromakey" | "full" | "cutaway") => void;
   setAvatarInputMode: (v: "generate" | "direct") => void; setAvatarDirectUrl: (v: string) => void;
   chromaSimilarity: number; setChromaSimilarity: (v: number) => void;
   chromaBlend: number; setChromaBlend: (v: number) => void;
@@ -58,6 +59,8 @@ export interface OrderPanelProps {
   setAvatarTiming: (v: "full" | "bookend" | "bookend-both") => void;
   setAvatarBookendSecs: (v: number) => void; setAvatarTailSecs: (v: number) => void;
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void; setAvatarOffsetY: (v: number) => void;
+  onSaveAvatarLayout: () => Promise<void>; avatarLayoutSaving: boolean;
+  onComposite: () => void; compositing: boolean;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
   onPlanError?: (msg: string) => void;
   stockSource: StockSource;
@@ -827,7 +830,7 @@ export function OrderPanel(p: OrderPanelProps) {
                 className={cn("w-9 h-5 rounded-full transition-colors flex-shrink-0 relative", p.useAvatar ? "bg-violet-600 shadow-[0_0_10px_rgba(139,92,246,0.5)]" : "bg-[#2a2a36]")}>
                 <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", p.useAvatar ? "left-5" : "left-0.5")} />
               </button>
-            }>Avatar (HeyGen)</SectionLabel>
+            }>พิธีกรในคลิป (AI / คลิปฉัน)</SectionLabel>
             {p.useAvatar && (
               <div className="space-y-3">
                 <div className="flex gap-1 rounded-lg p-0.5 bg-[#1a1a22] border border-[#2a2a36]">
@@ -835,7 +838,7 @@ export function OrderPanel(p: OrderPanelProps) {
                     <button key={mode} onClick={() => p.setAvatarInputMode(mode)}
                       className={cn("flex-1 py-1 rounded-md text-[10px] font-bold transition-all border",
                         p.avatarInputMode === mode ? "bg-violet-500/15 border-violet-500/40 text-violet-300" : "bg-transparent border-transparent text-slate-500 hover:text-slate-400")}>
-                      {mode === "generate" ? "Generate" : "Direct URL"}
+                      {mode === "generate" ? "Avatar AI" : "อัปคลิปฉันเอง"}
                     </button>
                   ))}
                 </div>
@@ -923,16 +926,27 @@ export function OrderPanel(p: OrderPanelProps) {
                             X: {p.avatarOffsetX}<br />Y: {p.avatarOffsetY}<br />SCALE: {p.avatarScale.toFixed(2)}
                           </div>
                           {/* เลเยอร์ avatar = สูตรเดียวกับ ffmpeg composite: width = scale×เฟรม, center เลื่อน (px/200)×ครึ่งเฟรม */}
-                          {(p.avatarPreviewUrl || p.avatarGreenUrl) && (
+                          {p.avatarGreenUrl ? (
+                            /* Green = full-frame avatar (gen framing 1.0); the saved scale/offset is
+                               calibrated for it, so this preview matches the final render (WYSIWYG). */
                             <div className="absolute pointer-events-none overflow-hidden" style={{ width:`${p.avatarScale*100}%`, aspectRatio:"9/16", left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)", outline:"1px solid rgba(99,179,237,0.4)" }}>
-                              {p.avatarGreenUrl ? (
-                                <video src={p.avatarGreenUrl} className="w-full h-full object-cover" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
-                              ) : (
-                                <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center top" }} />
-                              )}
+                              <video src={p.avatarGreenUrl} className="w-full h-full object-cover" style={{ mixBlendMode:"screen", opacity:0.85 }} muted loop autoPlay playsInline />
+                            </div>
+                          ) : p.avatarPreviewUrl ? (
+                            /* Before the first render only HeyGen's headshot thumbnail exists. Its framing
+                               differs from the full-frame green video, so applying the green-calibrated scale
+                               (e.g. 2.06×) would massively over-zoom the already-tight headshot (reported "zoom"
+                               bug). Show it at neutral size — the amber note explains position is set after Render. */
+                            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                              <img src={p.avatarPreviewUrl} draggable={false} className="w-full h-full" style={{ objectFit:"cover", objectPosition:"center top", opacity: 0.5 }} />
+                            </div>
+                          ) : null}
+                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)" }} />
+                          {p.avatarPreviewUrl && !p.avatarGreenUrl && (
+                            <div className="absolute bottom-1 left-1 right-1 bg-black/80 text-[7px] text-amber-300/90 px-1.5 py-0.5 rounded text-center pointer-events-none leading-snug">
+                              รูปตัวอย่าง · ตำแหน่งจริงปรับได้หลัง Render รอบแรก
                             </div>
                           )}
-                          <div className="absolute w-2.5 h-2.5 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none" style={{ left:`${50+(p.avatarOffsetX/200)*50}%`, top:`${50+(p.avatarOffsetY/200)*50}%`, transform:"translate(-50%, -50%)" }} />
                         </div>
                         {/* Sliders */}
                         <div className="space-y-2">
@@ -949,7 +963,16 @@ export function OrderPanel(p: OrderPanelProps) {
                               <input type="range" min={min} max={max} step={step} value={value} onChange={e=>onChange(Number(e.target.value))} className="w-full accent-cyan-400 h-1" />
                             </div>
                           ))}
-                          <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0);p.setAvatarScale(1);}} className="text-[9px] text-slate-600 hover:text-slate-400 w-full text-center">↺ Reset</button>
+                          <div className="flex gap-2">
+                            <button onClick={()=>{p.setAvatarOffsetX(0);p.setAvatarOffsetY(0);p.setAvatarScale(1);}} className="text-[9px] text-slate-600 hover:text-slate-400 flex-1 text-center">↺ Reset</button>
+                            <button onClick={()=>{ void p.onSaveAvatarLayout(); }} disabled={p.avatarLayoutSaving} className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 flex-1 text-center">{p.avatarLayoutSaving ? "กำลังบันทึก…" : "💾 Save ตำแหน่ง"}</button>
+                            {p.avatarGreenUrl && (
+                              <button onClick={() => p.onComposite()} disabled={p.compositing}
+                                className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 flex-1 text-center">
+                                {p.compositing ? "กำลังประกอบ…" : "↻ ปรับตำแหน่ง → ประกอบใหม่"}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -957,14 +980,32 @@ export function OrderPanel(p: OrderPanelProps) {
                   </>
                 ) : (
                   <div className="space-y-2">
-                    <div className="text-[10px] text-slate-500 bg-violet-500/5 border border-violet-500/15 rounded-lg px-2.5 py-2 leading-relaxed">วิดีโอ green screen + เสียง — chromakey อัตโนมัติหลัง Render</div>
+                    <div className="flex gap-1.5">
+                      {(() => {
+                        const directModes: [("chromakey" | "full" | "cutaway"), string][] = [
+                          ["chromakey", "Green Screen (ตัดเขียว)"],
+                          ["full", "วิดีโอเต็มจอ (ใส่ซับ)"],
+                          ...(process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1"
+                            ? ([["cutaway", "เต็มจอ + B-roll"]] as [("chromakey" | "full" | "cutaway"), string][])
+                            : []),
+                        ];
+                        return directModes.map(([m, label]) => (
+                          <button key={m} onClick={() => p.setDirectCompositeMode(m)}
+                            className={`flex-1 py-1.5 rounded-lg border text-[10px] font-bold transition-all ${p.directCompositeMode === m ? "bg-violet-500/15 border-violet-500/45 text-violet-300" : "bg-[#1a1a22] border-[#2a2a36] text-slate-500"}`}>
+                            {label}
+                          </button>
+                        ));
+                      })()}
+                    </div>
+                    <div className="text-[10px] text-slate-500 bg-violet-500/5 border border-violet-500/15 rounded-lg px-2.5 py-2 leading-relaxed">{p.directCompositeMode === "cutaway" ? "อัปคลิปพูดเอง → ระบบใส่ซับ + แทรก B-roll ให้อัตโนมัติเป็นช่วงๆ ตรงกับที่พูด" : p.directCompositeMode === "full" ? "วิดีโอเต็มจอ — ใช้พื้นหลังในคลิป + ใส่ซับ อัตโนมัติหลัง Render" : "วิดีโอ green screen — ตัดเขียววางบน b-roll อัตโนมัติหลัง Render"}</div>
                     <div className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">URL or Upload File</div>
                     <div className="relative flex items-center">
                       <input value={p.avatarDirectUrl} onChange={e => p.setAvatarDirectUrl(e.target.value)} placeholder="https://... หรือ URL วิดีโอ green screen"
                         className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-lg px-3 py-2 text-[11px] text-slate-300 outline-none pr-7" />
                       {p.avatarDirectUrl && <button onClick={() => p.setAvatarDirectUrl("")} className="absolute right-2 text-slate-600 hover:text-slate-400"><X className="h-3 w-3" /></button>}
                     </div>
-                    <DirectAvatarUpload onUrl={p.setAvatarDirectUrl} onPlanError={(msg) => p.onPlanError?.(msg)} />
+                    <DirectAvatarUpload onUrl={p.setAvatarDirectUrl} onPlanError={(msg) => p.onPlanError?.(msg)}
+                      requirePortrait={p.directCompositeMode === "cutaway"} />
                     {p.avatarDirectUrl.trim() && <video src={p.avatarDirectUrl.trim()} controls className="w-full rounded-lg" style={{ maxHeight: 180, background: "#000" }} />}
                   </div>
                 )}

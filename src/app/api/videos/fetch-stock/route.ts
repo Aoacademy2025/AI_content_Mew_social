@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { geminiGenerateText } from "@/lib/gemini";
+import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { fetchWithBudget } from "@/lib/fetch-budget";
@@ -24,8 +24,24 @@ import {
   type RelevanceTerms,
 } from "@/lib/relevance-spec";
 import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
+import {
+  spendCredits,
+  refundCredits,
+  creditCostFor,
+  costKeyForKieModel,
+  ensureMonthlyGrant,
+} from "@/lib/credits";
+import {
+  kieMaxImagesPerJob,
+  tryConsumeKieImageRate,
+  capKiePrompt,
+  resolveKieImageAccess,
+  shouldGuardKieImages,
+  mergeCapClampReason,
+} from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
+import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -89,9 +105,11 @@ type CandidateVideo = FoundVideo & {
   title: string;
   query: string;
   provider: StockProvider;
+  /** poster/thumbnail URL (Pexels `image`, Pixabay `videos.medium.thumbnail`) — vision re-rank */
+  thumb?: string;
 };
 
-type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string };
+type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string; thumb?: string };
 
 type CandidateFit = {
   index: number;
@@ -205,6 +223,7 @@ interface PexelsVideo {
   width: number;
   height: number;
   url: string;   // e.g. https://www.pexels.com/video/woman-cooking-soup-1234567/
+  image?: string; // poster frame — used by the vision re-rank
   video_files: PexelsVideoFile[];
 }
 
@@ -241,8 +260,13 @@ async function searchPexels(query: string, apiKey: string, minDuration = 3, perP
   return (data.videos ?? []) as PexelsVideo[];
 }
 
-// Pick best video file: prefer HD portrait ≤1080p, fallback to any
-// Cap at 1920px on the long side — 4K files (2160p) are too large to download reliably
+// Pick best video file: HD portrait ≤1080p preferred, any portrait accepted.
+// Cap at 1920px on the long side — 4K files (2160p) are too large to download reliably.
+// PORTRAIT-ONLY (2026-07-03): a hit with no portrait mp4 is SKIPPED (return null) instead
+// of falling back to a landscape file — the 9:16 renderer center-crops landscape and loses
+// the subject (เหรียญหลุดเฟรมเหลือแต่กำแพงขาว). Pools are deep (up to 80 hits/keyword), so
+// skipping rogue landscape hits beats shipping a broken crop. Resolution caps unchanged
+// (#63 no-4K + HD preference stay — that's the download/normalize-speed protection).
 function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   const files = video.video_files.filter(f => f.file_type === "video/mp4");
   const under1080 = (f: PexelsVideoFile) => Math.max(f.width, f.height) <= 1920;
@@ -251,9 +275,7 @@ function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
     ?? portrait.filter(under1080)[0];
   if (hdPortrait) return hdPortrait;
   if (portrait[0]) return portrait[0]; // fallback: any portrait even if large
-  const hd = files.filter(under1080).find(f => f.quality === "hd") ?? files.filter(under1080)[0];
-  if (hd) return hd;
-  return files[0] ?? null;
+  return null; // no portrait file → skip this hit (never crop landscape into 9:16)
 }
 
 function safeUnlink(filePath: string) {
@@ -347,7 +369,7 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5,
   const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
     { provider: "pixabay", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
   const data = await res.json();
-  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number }; large?: { url: string; width?: number; height?: number } }; tags?: string }) => {
+  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number; thumbnail?: string }; large?: { url: string; width?: number; height?: number; thumbnail?: string } }; tags?: string }) => {
     // #8 soft resolution floor: prefer medium (avoids 4K, respects #63), but fall up
     // to large when medium is sub-720p and large stays ≤1920 — keeps soft/upscaled
     // clips out without reintroducing the 4K download #63 removed.
@@ -359,8 +381,13 @@ async function searchPixabay(query: string, pixabayKey: string, minDuration = 5,
       width: v.width,
       height: v.height,
       tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
+      thumb: h.videos?.medium?.thumbnail ?? h.videos?.large?.thumbnail,
     };
-  }).filter((v: PixabayVideo) => v.videoUrl);
+  }).filter((v: PixabayVideo) =>
+    // PORTRAIT-ONLY belt (2026-07-03, same rationale as pickBestFile): drop variants that
+    // are provably landscape; keep unknown-dimension hits (orientation=vertical search).
+    v.videoUrl && !(Number(v.width) > 0 && Number(v.height) > 0 && Number(v.width) > Number(v.height)),
+  );
 }
 
 
@@ -758,7 +785,7 @@ const KIE_IMAGE_MODELS = [
   "qwen2/text-to-image",
 ] as const;
 type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
-const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "nano-banana-pro";
+const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "gpt-image-2-text-to-image";
 
 function isKieImageModel(value: unknown): value is KieImageModel {
   return typeof value === "string" && (KIE_IMAGE_MODELS as readonly string[]).includes(value);
@@ -1082,6 +1109,107 @@ function getImageProviderOrder(query: string): ImageProvider[] {
 // Batched in chunks of RANK_BATCH_SIZE to handle long scripts reliably.
 const RANK_BATCH_SIZE = 30;
 
+// ── VISION re-rank (2026-07-03) ──────────────────────────────────────────────
+// The text ranker judges clips by title/tags — it never SEES them, which is the
+// root of "บีโรลไม่ตรงเนื้อหา" feedback (stock titles are thin/wrong). This pass
+// sends the top-N candidates' REAL thumbnails to Gemini Flash (1 call per fetch,
+// ~258 tokens/image ≈ ฿0.05-0.15/clip) and picks by what the footage actually
+// shows. Kill-switch: BROLL_VISION_RERANK=0. Every failure path falls back to
+// the existing text ranker → deterministic ranking (fail-open, never blocks).
+const VISION_RERANK_ON = process.env.BROLL_VISION_RERANK !== "0";
+const VISION_TOP_N = 4;          // thumbnails considered per subtitle
+const VISION_MAX_IMAGES = 60;    // total per call — long clips beyond this keep text ranking
+const VISION_THUMB_TIMEOUT_MS = 5_000;
+const VISION_THUMB_MAX_BYTES = 400_000;
+
+async function fetchThumbBase64(url: string): Promise<{ mimeType: string; dataBase64: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(VISION_THUMB_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/jpeg";
+    if (!mimeType.startsWith("image/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength === 0 || buf.byteLength > VISION_THUMB_MAX_BYTES) return null;
+    return { mimeType, dataBase64: buf.toString("base64") };
+  } catch { return null; }
+}
+
+/**
+ * Returns bestIdxByKeyword like llmRankCandidates, with -1 for any subtitle the
+ * vision pass could not judge (no thumbs / over budget / unparseable) — the
+ * caller merges those from the text-ranking result.
+ */
+async function visionRerankCandidates(
+  keywords: string[],
+  subtitleTexts: string[],
+  candidatesByKeyword: CandidateVideo[][],
+  llmKey: string,
+  terms: RelevanceTerms,
+): Promise<number[]> {
+  // Pick top-N judgeable candidates per subtitle by the existing soft ranking.
+  const perKeyword: { ki: number; entries: { candIdx: number; thumb: string }[] }[] = [];
+  let imageBudget = VISION_MAX_IMAGES;
+  for (let ki = 0; ki < keywords.length && imageBudget > 0; ki++) {
+    const cands = candidatesByKeyword[ki] ?? [];
+    if (!cands.length) continue;
+    const order = orderCandidateIndices(cands, -1, keywords[ki] ?? "", subtitleTexts[ki] ?? "", terms, true);
+    const entries: { candIdx: number; thumb: string }[] = [];
+    for (const fit of order) {
+      const c = cands[fit.index];
+      if (c?.thumb && entries.length < VISION_TOP_N) entries.push({ candIdx: fit.index, thumb: c.thumb });
+    }
+    if (entries.length >= 2 && imageBudget >= entries.length) {
+      imageBudget -= entries.length;
+      perKeyword.push({ ki, entries });
+    }
+  }
+  if (!perKeyword.length) return keywords.map(() => -1);
+
+  // Download thumbnails (parallel, failures drop the entry).
+  const fetched = await Promise.all(perKeyword.map(async (group) => ({
+    ...group,
+    images: await Promise.all(group.entries.map(async (e) => ({ ...e, img: await fetchThumbBase64(e.thumb) }))),
+  })));
+
+  const images: { mimeType: string; dataBase64: string }[] = [];
+  const promptGroups: string[] = [];
+  const letterOf = (i: number) => String.fromCharCode(65 + i); // A, B, C…
+  const groupMap: { ki: number; candIdxs: number[] }[] = [];
+  for (const group of fetched) {
+    const ok = group.images.filter((e) => e.img);
+    if (ok.length < 2) continue;
+    const candIdxs: number[] = [];
+    const labels: string[] = [];
+    for (let i = 0; i < ok.length; i++) {
+      images.push(ok[i].img!);
+      candIdxs.push(ok[i].candIdx);
+      labels.push(`${letterOf(i)}=image#${images.length}`);
+    }
+    promptGroups.push(`S${group.ki}: subtitle="${(subtitleTexts[group.ki] ?? keywords[group.ki] ?? "").slice(0, 160)}" options: ${labels.join(", ")}`);
+    groupMap.push({ ki: group.ki, candIdxs });
+  }
+  if (!groupMap.length) return keywords.map(() => -1);
+
+  const prompt = `You are a B-roll editor. Images are numbered in the order attached (image#1, image#2, …).
+For EACH subtitle below, look at its option images and pick the letter whose footage VISUALLY matches the subtitle's content best.
+Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.
+Output ONLY a JSON object mapping subtitle keys to a letter, e.g. {"S0":"B","S3":"A"}. Use "NONE" only if every option is truly unrelated.
+
+${promptGroups.join("\n")}`;
+
+  const raw = await geminiGenerateVision(llmKey, prompt, images, Math.max(200, groupMap.length * 10 + 80));
+  const jsonText = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+  const parsed = JSON.parse(jsonText) as Record<string, string>;
+
+  const out = keywords.map(() => -1);
+  for (const g of groupMap) {
+    const pick = String(parsed[`S${g.ki}`] ?? "").trim().toUpperCase();
+    const li = pick.charCodeAt(0) - 65;
+    if (pick.length === 1 && li >= 0 && li < g.candIdxs.length) out[g.ki] = g.candIdxs[li];
+  }
+  return out;
+}
+
 async function llmRankBatch(
   keywords: string[],
   subtitleTexts: string[],
@@ -1176,6 +1304,7 @@ export async function POST(req: Request) {
     stockSource = "both",
     kieModel,
     autoMixProviders,
+    autoMixWeights,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     brollWindowMode = false,
@@ -1194,6 +1323,7 @@ export async function POST(req: Request) {
     stockSource?: string;
     kieModel?: string;
     autoMixProviders?: string[];
+    autoMixWeights?: unknown;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     brollWindowMode?: boolean;
@@ -1243,25 +1373,58 @@ export async function POST(req: Request) {
     select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
   });
 
-  // AI Image-to-Video (kie.ai) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
-  if (useKieImage && user?.role !== "ADMIN") {
+  // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
+  // Flag OFF → byte-identical to before: kie sources are ADMIN-only and use the
+  // user's own BYOK key (never charged). Flag ON + CREDITS_LIVE → PRO/BUSINESS
+  // users are un-gated and generate on the server's managed KIE_API_KEY, metered
+  // to their credits (spend-before-generate below). FREE always stays 403.
+  const managedKieOn = process.env.MANAGED_KIE === "1";
+  const creditsLive = process.env.CREDITS_LIVE === "1";
+  const isAdmin = user?.role === "ADMIN";
+  const isPaidPlan = user?.plan === "PRO" || user?.plan === "BUSINESS";
+  const kieEnvKey = process.env.KIE_API_KEY || null;
+  // Access + metering decision (single source of truth — tested in
+  // scripts/verify-image-credit-spend.ts). Paid users may reach kie sources only
+  // under the full managed+credits flag set; only non-admin paid users are charged.
+  const { kiePaidUnlocked, chargeImages } = resolveKieImageAccess({
+    managedKieOn, creditsLive, isAdmin, isPaidPlan,
+  });
+
+  // AI Image-to-Video (kie.ai) — admins always; paid users only when un-gated.
+  if (useKieImage && !isAdmin && !kiePaidUnlocked) {
     return NextResponse.json({ error: "AI Image-to-Video (kie.ai) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
-  // Auto Mix (video + image fallback ผ่าน Ken Burns) — ยังเปิดเฉพาะ ADMIN เพื่อทดลอง
-  if (useAutoMix && user?.role !== "ADMIN") {
+  // Auto Mix (video + image fallback ผ่าน Ken Burns) — same gate as kie image.
+  if (useAutoMix && !isAdmin && !kiePaidUnlocked) {
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
   const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
   const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
   const kieKey = user?.kieKey ? Buffer.from(user.kieKey, "base64").toString("utf-8") : null;
+  // Token actually sent to kie.ai. Flag off → BYOK key (today). Flag on: admins
+  // use the managed key when set (else fall back to their BYOK key); paid users
+  // use the managed key only. Never logged. Managed key is server-side env only.
+  const kieToken: string | null = !managedKieOn
+    ? kieKey
+    : isAdmin
+      ? (kieEnvKey ?? kieKey)
+      : isPaidPlan
+        ? kieEnvKey
+        : kieKey;
+  // Does this request actually run on the shared server key? (admin or paid; NOT a
+  // user's BYOK key and NOT flag-off). Guardrails (rate/cap/prompt) apply to ANY
+  // managed-key generation — admins included (still uncharged) — so one unguarded
+  // admin can't loop the shared key. Mirrors the managed-Gemini precedent.
+  const usesManagedKey = managedKieOn && !!kieEnvKey && kieToken === kieEnvKey;
+  const guardImages = shouldGuardKieImages({ usesManagedKey, chargeImages });
   const unsplashKey = user?.unsplashKey ? Buffer.from(user.unsplashKey, "base64").toString("utf-8") : null;
   const flickrKey = user?.flickrKey ? Buffer.from(user.flickrKey, "base64").toString("utf-8") : null;
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;
-  const canUseKieImage = useKieImage && !!kieKey;
+  const canUseKieImage = useKieImage && !!kieToken;
   // Auto Mix: fallback ภาพใช้ตัวไหนก็ได้ที่มี key — ไม่บังคับ ไม่ error ถ้าไม่มี (แค่ skip fallback)
   // Wikimedia/NASA/Met ไม่ต้องใช้ key — เปิดใช้ได้เสมอเมื่อ Auto Mix
   // Pexels/Pixabay photo ใช้ key เดียวกับ video search — ใช้ได้ทันทีถ้ามี key อยู่แล้ว
@@ -1274,7 +1437,7 @@ export async function POST(req: Request) {
   const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
   const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
   const canUseMetFallback = useAutoMix && isAutoMixProviderAllowed("met");
-  const canUseKieFallback = useAutoMix && !!kieKey && isAutoMixProviderAllowed("kie-ai");
+  const canUseKieFallback = useAutoMix && !!kieToken && isAutoMixProviderAllowed("kie-ai");
 
   if (useKieImage && !canUseKieImage) {
     return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
@@ -1309,6 +1472,70 @@ export async function POST(req: Request) {
     try { const resolved = resolveGeminiKey(user); llmKey = resolved.key; llmMode = resolved.mode; }
     catch (e) { if (!(e instanceof KeyRequiredError)) throw e; /* no key + managed off → null → soft heuristic fallback below */ }
   }
+
+  // ── Managed-kie credit metering (money path) ──────────────────────────────
+  // Non-admin paid users are restricted to the 3 priced models server-side; if a
+  // client somehow requests an unpriced/admin-only model, coerce to the default
+  // priced model so we never hand out free unpriced generation.
+  const effectiveKieModel: KieImageModel =
+    chargeImages && costKeyForKieModel(resolvedKieModel) === null
+      ? DEFAULT_KIE_IMAGE_MODEL
+      : resolvedKieModel;
+  const imageCostKey = costKeyForKieModel(effectiveKieModel);
+  const imageCost = imageCostKey ? creditCostFor(imageCostKey) : 0;
+  const imageSpendAction = "ai-image";
+  const imageRefundAction = "ai-image-refund";
+  const maxImagesPerJob = kieMaxImagesPerJob();
+  // Captured non-null id (narrowing from the early !authUser 401 guard is not
+  // preserved into the nested spend/refund closures below).
+  const spenderUserId = authUser.id;
+
+  // Ensure the paid user's current-period monthly credit allowance is granted
+  // before the first spend (idempotent; itself CREDITS_LIVE-gated).
+  if (chargeImages) {
+    try { await ensureMonthlyGrant(spenderUserId); } catch { /* non-fatal */ }
+  }
+
+  // Signal surfaced in the response when AI generation was skipped mid-job:
+  //   "credits" = out of credits · "rate" = hourly rate ceiling · "cap" = per-job cap.
+  let aiSkippedReason: "credits" | "rate" | "cap" | null = null;
+  let aiGenCount = 0; // managed-key generation attempts this job (charged OR admin-free)
+
+  type ImageSpendGate =
+    | { proceed: true; charged: false }
+    | { proceed: true; charged: true; fromGranted: number; fromPurchased: number }
+    | { proceed: false };
+
+  // Gate before each managed-key generation. Guardrails (per-job cap + hourly rate)
+  // apply to EVERY managed-key request — admins included (uncharged) — so one admin
+  // can't loop the shared key. Metering (spend) applies only to non-admin paid users.
+  // Once any guard trips, aiSkippedReason halts all remaining AI attempts this job.
+  async function attemptImageSpend(): Promise<ImageSpendGate> {
+    if (guardImages) {
+      if (aiSkippedReason) return { proceed: false };
+      if (aiGenCount >= maxImagesPerJob) { aiSkippedReason = "cap"; return { proceed: false }; }
+      if (!tryConsumeKieImageRate(spenderUserId)) { aiSkippedReason = "rate"; return { proceed: false }; }
+    }
+    if (chargeImages) {
+      aiGenCount++; // reserve the slot synchronously (precise cap under concurrency)
+      const spend = await spendCredits(spenderUserId, imageCost, imageSpendAction);
+      if (!spend.ok) { aiSkippedReason = "credits"; aiGenCount--; return { proceed: false }; }
+      return { proceed: true, charged: true, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+    }
+    // Admin on the managed key: guarded above (cap/rate consumed) but never charged.
+    if (guardImages) aiGenCount++;
+    return { proceed: true, charged: false };
+  }
+
+  // Refund the exact buckets a prior spend drained (kie generation failed AFTER
+  // the charge). The createTask attempt still counted toward the per-job cap.
+  async function refundImageSpend(g: { fromGranted: number; fromPurchased: number }): Promise<void> {
+    await refundCredits(spenderUserId, g.fromGranted, g.fromPurchased, imageRefundAction);
+  }
+
+  // Prompt sent to kie is length-capped on any managed-key request (admin or paid);
+  // flag-off / BYOK prompts untouched — byte-identical.
+  const promptFor = (raw: string): string => (guardImages ? capKiePrompt(raw) : raw);
 
   const BUFFER = 1.6; // เผื่อ clip บางตัว download ไม่ได้
   // ใช้ avg 3.5s/clip (realistic สำหรับ stock portrait) แทน 2.0s
@@ -1350,11 +1577,23 @@ export async function POST(req: Request) {
     const anyPhotoUsable =
       canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback ||
       canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback;
-    const weights = {
-      video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
-      photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
-      ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
-    };
+    // Editor v2 "mix preset" (D5.1): honor request-supplied autoMixWeights over the env
+    // defaults ONLY under MANAGED_KIE and only when they are sane ints 0–9. The ai weight
+    // is force-zeroed for users NOT authorized for kie spend — same gate as the 403 above
+    // (isAdmin || kiePaidUnlocked). Flag off / field absent / invalid → reqWeights is null
+    // and the else branch is BYTE-IDENTICAL to the pre-preset env-only behavior.
+    const reqWeights = managedKieOn ? parseAutoMixWeights(autoMixWeights) : null;
+    const weights = reqWeights
+      ? {
+          video: autoMixUsesVideo ? reqWeights.video : 0,
+          photo: anyPhotoUsable ? reqWeights.photo : 0,
+          ai: (canUseKieFallback && (isAdmin || kiePaidUnlocked)) ? reqWeights.ai : 0,
+        }
+      : {
+          video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
+          photo: anyPhotoUsable ? readIntEnv("AUTOMIX_WEIGHT_PHOTO", 2, 0, 100) : 0,
+          ai: canUseKieFallback ? readIntEnv("AUTOMIX_WEIGHT_AI", 1, 0, 100) : 0,
+        };
     const pieceCount = brollWindowMode
       ? keywords.length
       : aiGenPieceCount(totalDurationSec, Math.min(keywords.length, downloadClipLimit), isPerSubtitleMode, downloadClipLimit);
@@ -1388,6 +1627,8 @@ export async function POST(req: Request) {
     page2CandidateHits: 0,
     llmRankingUsed: false,
     llmRankingFailed: false,
+    visionRankingUsed: false,
+    visionRankingFailed: false,
     llmRejectedCount: 0,
     candidateRejectedCount: 0,
     profileFallbackUsedCount: 0,
@@ -1497,7 +1738,7 @@ export async function POST(req: Request) {
     // Cost cap: on the per-subtitle AUTO path, pay for ~ceil(duration/cadence) images
     // (e.g. 21s → ~6), NOT one per caption. Manual clip counts (overrideClipCount set by
     // the user, perSubtitleMode false) bypass the cadence cap via isAuto=false.
-    const clipsToGenerate = brollWindowMode
+    const clipsToGenerateRaw = brollWindowMode
       ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
       : aiGenPieceCount(
           totalDurationSec,
@@ -1505,7 +1746,16 @@ export async function POST(req: Request) {
           isPerSubtitleMode,
           PER_SUBTITLE_DOWNLOAD_LIMIT,
         );
-    console.log(`[fetch-stock] source=${srcLabel}, model=${resolvedKieModel}, generating ${clipsToGenerate} clips`);
+    // Managed-key generations (admin or paid) are bounded by the per-job cap. When
+    // the clamp reduces the requested count, surface "cap" so the client can tell the
+    // user some windows were dropped (not silently fewer clips). CRITICAL: track the
+    // clamp in a SEPARATE local — it must NOT be written into the shared in-loop
+    // `aiSkippedReason`, whose first job is to short-circuit the gate. Setting it here
+    // would bail every item in the already-clamped batch (0 clips). Merged in after
+    // the loop via mergeCapClampReason.
+    const clipsToGenerate = guardImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
+    const capClampHit = guardImages && clipsToGenerateRaw > clipsToGenerate;
+    console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
       keywords.slice(0, clipsToGenerate).map((keyword, i) => ({ keyword, i })),
@@ -1515,13 +1765,17 @@ export async function POST(req: Request) {
         const id = KIE_ID_OFFSET + i;
         const imageFile = `${userPrefix}${id}.src.jpg`;
         const imagePath = path.join(rendersDir, imageFile);
+        // Spend-before-generate. Skipped (credits/rate/cap) → no generation.
+        const gate = await attemptImageSpend();
+        if (!gate.proceed) return;
+        let success = false;
         try {
           if (download) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const genPrompt = buildKieImagePrompt(keyword, { visualDirection, terms: relTerms });
-              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieKey!, resolvedKieModel, imagePath, outPath);
+              const genPrompt = promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }));
+              const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieToken!, effectiveKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
                 return;
@@ -1535,18 +1789,23 @@ export async function POST(req: Request) {
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
+              success = true;
             } catch (e) {
               stockTelemetry.downloadFailCount++;
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(resolvedKieModel, buildKieImageInput(resolvedKieModel, buildKieImagePrompt(keyword, { visualDirection, terms: relTerms })), kieKey!);
-            const imageUrl = await kiePollResult(imageTaskId, kieKey!);
+            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }))), kieToken!);
+            const imageUrl = await kiePollResult(imageTaskId, kieToken!);
             results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
+            success = true;
           }
         } catch (e) {
           stockTelemetry.noCandidateKeywords++;
           console.error(`[fetch-stock] kie.ai generation failed for "${query}":`, e);
+        } finally {
+          // Refund the exact buckets if we charged but produced no usable clip.
+          if (gate.charged && !success) await refundImageSpend(gate);
         }
       },
     );
@@ -1556,7 +1815,10 @@ export async function POST(req: Request) {
     stockTelemetry.servedClipCount = results.length;
     await recordFetchStockTelemetry("done");
     console.log(`[fetch-stock] kie.ai generated ${results.length} clips`);
-    return NextResponse.json({ results });
+    // Merge the pre-loop clamp signal (capClampHit) with any in-loop guard reason —
+    // in-loop reason wins; otherwise "cap" if the batch was clamped.
+    const directReason = mergeCapClampReason(aiSkippedReason, capClampHit);
+    return NextResponse.json({ results, ...(directReason ? { aiSkippedReason: directReason } : {}) });
   }
 
   const usedIds = new Set<number>();
@@ -1599,6 +1861,7 @@ export async function POST(req: Request) {
         title: slugToTitle(v.url ?? ""),
         query,
         provider: "pexels",
+        ...(v.image ? { thumb: v.image } : {}),
       });
     }
     for (const pv of pixabayVideos) {
@@ -1613,6 +1876,7 @@ export async function POST(req: Request) {
         title,
         query,
         provider: "pixabay",
+        ...(pv.thumb ? { thumb: pv.thumb } : {}),
       });
     }
 
@@ -1812,6 +2076,28 @@ export async function POST(req: Request) {
       );
       stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
     } else if (hasAnyCandidates) {
+      // VISION pass first (sees actual thumbnails; 1 call, replaces the text call in the
+      // happy path). Unjudged subtitles get deterministic soft ranking; a thrown vision
+      // pass falls through to the text ranker below — today's behavior, unchanged.
+      let visionDone = false;
+      if (VISION_RERANK_ON) {
+        try {
+          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms);
+          const judged = v.filter((idx) => idx >= 0).length;
+          if (judged > 0) {
+            bestIdxByKeyword = v.map((idx, i) =>
+              idx >= 0 ? idx : bestRelevantCandidateIndex(candidatesByKeyword[i] ?? [], keywords[i] ?? "", subtitleTexts[i] ?? "", relTerms),
+            );
+            stockTelemetry.visionRankingUsed = true;
+            visionDone = true;
+            console.log(`[fetch-stock] VISION re-rank judged ${judged}/${keywords.length} subtitles`);
+          }
+        } catch (e) {
+          stockTelemetry.visionRankingFailed = true;
+          console.warn(`[fetch-stock] vision re-rank failed — falling back to text ranking:`, e);
+        }
+      }
+      if (visionDone) { /* vision picked — skip text ranker */ } else {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
@@ -1834,6 +2120,7 @@ export async function POST(req: Request) {
         );
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
       }
+      } // end text-ranker fallback (vision-happy-path skips it)
     }
   } else if (isPerSubtitleMode) {
     // No LLM key or subtitle texts mismatch — pick best soft-relevant candidate instead of index 0.
@@ -2097,14 +2384,18 @@ export async function POST(req: Request) {
         // paid AI credit it wasn't budgeted for — keeps the plan's video/photo/ai cost
         // split honest. min-hold tolerates a smaller pool, so a missing piece is fine.
         if (kind === "ai" && canUseKieFallback) {
+          // Spend-before-generate for the AutoMix AI slot (skip → piece dropped).
+          const gate = await attemptImageSpend();
+          if (!gate.proceed) return;
           const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
+          let success = false;
           try {
-            const genPrompt = buildKieImagePrompt(kw, { visualDirection, terms: relTerms });
-            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieKey!, resolvedKieModel, imagePath, outPath);
+            const genPrompt = promptFor(buildKieImagePrompt(kw, { visualDirection, terms: relTerms }));
+            const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieToken!, effectiveKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
@@ -2115,6 +2406,7 @@ export async function POST(req: Request) {
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
+              success = true;
             }
           } catch (e) {
             console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
@@ -2123,6 +2415,9 @@ export async function POST(req: Request) {
             if (msg.includes("credit") || msg.includes("insufficient") || msg.includes("balance") || msg.includes("top up")) {
               kieCreditExhausted = true;
             }
+          } finally {
+            // Refund the exact buckets if we charged but produced no usable clip.
+            if (gate.charged && !success) await refundImageSpend(gate);
           }
         }
       });
@@ -2168,7 +2463,7 @@ export async function POST(req: Request) {
     // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
     // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
     await recordFetchStockTelemetry("done", { emptyResult: results.length === 0, selectionDebugSample });
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
   }
 
   // ── Download phase ──
@@ -2256,7 +2551,7 @@ export async function POST(req: Request) {
   stockTelemetry.servedClipCount = results.length;
   await recordFetchStockTelemetry("done", { selectionDebugSample });
   console.log(`[fetch-stock] downloaded ${results.length} clips`);
-  return NextResponse.json({ results });
+  return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
 }
 
 // DELETE /api/videos/fetch-stock — no-op, files are kept

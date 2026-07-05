@@ -106,7 +106,7 @@ function ClientPanel({ client, token }: { client: ClientDef; token: string }) {
       <ol className="space-y-1.5">
         {client.steps.map((s, i) => (
           <li key={i} className="flex items-start gap-2 text-xs" style={{ color: "var(--ui-text-secondary)" }}>
-            <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-cyan-300"
+            <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-violet-300"
               style={{ background: "hsl(var(--accent-primary) / 0.15)" }}>{i + 1}</span>
             <span className="leading-relaxed">{s}</span>
           </li>
@@ -147,7 +147,7 @@ function ConnectGuide({ token }: { token: string }) {
       {/* Endpoint */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg bg-black/30 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--ui-text-muted)" }}>Endpoint</span>
-        <code className="flex-1 min-w-0 truncate text-xs text-cyan-300">{MCP_URL}</code>
+        <code className="flex-1 min-w-0 truncate text-xs text-violet-300">{MCP_URL}</code>
         <button onClick={() => copyText(MCP_URL, "Endpoint")} className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/70 transition-colors hover:bg-white/10 hover:text-white">
           <Copy className="h-3 w-3" /> คัดลอก
         </button>
@@ -267,7 +267,7 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
       {/* How to connect — client picker */}
       <div className="rounded-2xl border border-white/10 bg-white/3 p-4">
         <div className="flex items-center gap-2 mb-3">
-          <Terminal className="h-4 w-4 text-cyan-400" strokeWidth={2.25} />
+          <Terminal className="h-4 w-4 text-violet-400" strokeWidth={2.25} />
           <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>เลือก agent ของคุณ แล้วทำตามขั้นตอน</p>
         </div>
         <ConnectGuide token={TOKEN_PLACEHOLDER} />
@@ -325,7 +325,7 @@ export function McpAccessSettings({ allowed }: { allowed: boolean }) {
           {newToken ? (
             <div className="space-y-4">
               <div className="space-y-2">
-                <div className="rounded-lg bg-black/40 p-3 text-xs break-all text-cyan-300">{newToken}</div>
+                <div className="rounded-lg bg-black/40 p-3 text-xs break-all text-violet-300">{newToken}</div>
                 <button onClick={() => copyText(newToken, "token")} className="flex w-full items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: "hsl(var(--accent-primary) / 0.15)", border: "1px solid hsl(var(--accent-primary) / 0.3)" }}>
                   <Copy className="h-4 w-4" /> คัดลอก token
                 </button>

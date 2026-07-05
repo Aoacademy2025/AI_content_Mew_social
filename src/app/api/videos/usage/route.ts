@@ -24,7 +24,11 @@ export async function GET() {
     const limit = quota.usageLimit;
     const remaining = Math.max(0, limit - used);
 
-    const minuteQuota = await checkMinuteQuota(authUser.id);
+    // Only surface the minutes quota when the minute meter is the live gate (MINUTE_QUOTA=1),
+    // matching enforcement + /api/user/me. With the flag off the render path enforces CLIPS, so a
+    // minutes chip would advertise a quota that isn't the real limit.
+    const includeMinutes = process.env.MINUTE_QUOTA === "1";
+    const minuteQuota = includeMinutes ? await checkMinuteQuota(authUser.id) : null;
 
     return NextResponse.json({
       plan: quota.plan,
@@ -32,11 +36,15 @@ export async function GET() {
       limit,
       remaining,
       resetAt: quota.resetAt.toISOString(),
-      minutes: {
-        used: minuteQuota.used,
-        limit: minuteQuota.used + minuteQuota.remaining,
-        remaining: minuteQuota.remaining,
-      },
+      ...(minuteQuota
+        ? {
+            minutes: {
+              used: minuteQuota.used,
+              limit: minuteQuota.used + minuteQuota.remaining,
+              remaining: minuteQuota.remaining,
+            },
+          }
+        : {}),
     });
   } catch (err) {
     console.error("[api/videos/usage] error:", err);

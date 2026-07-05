@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getFfmpeg(): any {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -195,8 +196,8 @@ export async function POST(req: Request) {
           type: "avatar",
           avatar_id: avatarId,
           avatar_style: "normal",
-          scale: 2.02,
-          offset: { x: 0.0, y: 0.28 },
+          scale: HEYGEN_GEN_FRAMING.scale,
+          offset: { x: HEYGEN_GEN_FRAMING.offsetX, y: HEYGEN_GEN_FRAMING.offsetY },
           matting: true,
         },
         voice: audioAssetId
@@ -226,8 +227,8 @@ export async function POST(req: Request) {
             type: "avatar",
             avatar_id: avatarId,
             avatar_style: "normal",
-            scale: 2.02,
-            offset: { x: 0.0, y: 0.28 },
+            scale: HEYGEN_GEN_FRAMING.scale,
+            offset: { x: HEYGEN_GEN_FRAMING.offsetX, y: HEYGEN_GEN_FRAMING.offsetY },
             matting: true,
           },
           voice: assetId

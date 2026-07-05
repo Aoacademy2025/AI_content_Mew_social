@@ -13,6 +13,10 @@ export async function GET() {
       where: {
         userId: authUser.id,
         amount: { gt: 0 }, // ไม่แสดง admin-set plan หรือ coupon 100%
+        // ซ่อน checkout ที่ถูกทิ้ง/ถูกแทนที่: FAILED ที่ไม่เคยชำระสำเร็จ (paidAt = null) ไม่ใช่
+        // "จ่ายไม่ผ่าน" จริง — เป็นแค่ session ที่ user ไม่ได้ทำต่อ (หรือถูกแทนที่ตอนกด checkout
+        // ใหม่ตาม double-charge guard) จึงไม่ควรโผล่เป็นแถว "ไม่สำเร็จ" รัวๆ ในประวัติ
+        NOT: { status: "FAILED", paidAt: null },
         // ซ่อน PENDING เก่าเกิน 24 ชั่วโมง (session หมดอายุ ไม่สามารถชำระได้แล้ว)
         OR: [
           { status: { not: "PENDING" } },

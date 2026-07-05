@@ -1,9 +1,12 @@
 import { missingKeyError, missingAvatarError } from "@/lib/mcp/onboarding";
 import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
+import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
-export const HEYGEN_FRAMING = { scale: 2.02, offsetX: 0, offsetY: 0.13 } as const;
+// Single source of truth lives in avatar-gen-framing.ts — re-exported here so callers of this
+// module don't need a second import.
+export const HEYGEN_FRAMING = HEYGEN_GEN_FRAMING;
 // Composite layer default (how the avatar overlays the bg frame). scale 1 = fill frame.
 export const DEFAULT_AVATAR_LAYER = { scale: 1, offsetX: 0, offsetY: 0 } as const;
 

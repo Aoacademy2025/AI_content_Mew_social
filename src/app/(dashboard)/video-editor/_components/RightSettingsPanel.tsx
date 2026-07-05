@@ -1,6 +1,7 @@
 "use client";
 
 import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { normalizedBox } from "@/lib/avatar-layout";
 import { Plus, Lock, ChevronRight, ChevronDown, Check, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -55,7 +56,10 @@ export interface RightPanelProps {
   setAvatarBookendSecs: (v: number) => void; setAvatarTailSecs: (v: number) => void;
   setAvatarScale: (v: number) => void; setAvatarOffsetX: (v: number) => void;
   setAvatarOffsetY: (v: number) => void;
+  onSaveAvatarLayout: () => Promise<void>;
+  avatarLayoutSaving: boolean;
   runAvatarPipeline: () => void; pipeRenderedVideoUrl?: string;
+  onAvatarPrimary: () => void; avatarPrimaryLabel: string; avatarPrimaryIsGen: boolean;
   projectName: string; onSaveTemplate: () => void;
   onPlanError?: (msg: string) => void;
 }
@@ -598,24 +602,29 @@ export function RightSettingsPanel(p: RightPanelProps) {
                         }}>
                         {[25,50,75].map(p2 => <div key={`v${p2}`} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${p2}%`, width: 1, background: p2===50?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.04)" }} />)}
                         {[25,50,75].map(p2 => <div key={`h${p2}`} className="absolute left-0 right-0 pointer-events-none" style={{ top: `${p2}%`, height: 1, background: p2===50?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.04)" }} />)}
-                        {/* เลเยอร์ avatar = สูตรเดียวกับ ffmpeg composite: width = scale×เฟรม, center เลื่อน (px/200)×ครึ่งเฟรม */}
-                        <div className="absolute pointer-events-none rounded"
-                          style={{
-                            width: `${p.avatarScale * 100}%`,
-                            aspectRatio: "9/16",
-                            left: `${50 + (p.avatarOffsetX / 200) * 50}%`,
-                            top: `${50 + (p.avatarOffsetY / 200) * 50}%`,
-                            transform: "translate(-50%, -50%)",
-                            background: p.avatarGreenUrl ? "transparent" : "rgba(124,58,237,0.2)",
-                            border: "1px solid rgba(99,179,237,0.5)",
-                          }}>
-                          {p.avatarGreenUrl && (
-                            <video src={p.avatarGreenUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
-                          )}
-                          {!p.avatarGreenUrl && <User className="w-4 h-4 text-violet-400/40 m-auto mt-2" />}
-                        </div>
-                        <div className="absolute w-2 h-2 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none"
-                          style={{ left: `${50 + (p.avatarOffsetX / 200) * 50}%`, top: `${50 + (p.avatarOffsetY / 200) * 50}%`, transform: "translate(-50%, -50%)" }} />
+                        {/* เลเยอร์ avatar — geometry from shared normalizedBox (same formula as ffmpeg composite) */}
+                        {(() => {
+                          const box = normalizedBox({ scale: p.avatarScale, offsetX: p.avatarOffsetX, offsetY: p.avatarOffsetY });
+                          return <>
+                            <div className="absolute pointer-events-none rounded"
+                              style={{
+                                width: `${box.widthPct}%`,
+                                aspectRatio: "9/16",
+                                left: `${box.centerXPct}%`,
+                                top: `${box.centerYPct}%`,
+                                transform: "translate(-50%, -50%)",
+                                background: p.avatarGreenUrl ? "transparent" : "rgba(124,58,237,0.2)",
+                                border: "1px solid rgba(99,179,237,0.5)",
+                              }}>
+                              {p.avatarGreenUrl && (
+                                <video src={p.avatarGreenUrl} className="w-full h-full object-cover" muted loop autoPlay playsInline />
+                              )}
+                              {!p.avatarGreenUrl && <User className="w-4 h-4 text-violet-400/40 m-auto mt-2" />}
+                            </div>
+                            <div className="absolute w-2 h-2 rounded-full border-2 border-cyan-400 bg-cyan-500/50 pointer-events-none"
+                              style={{ left: `${box.centerXPct}%`, top: `${box.centerYPct}%`, transform: "translate(-50%, -50%)" }} />
+                          </>;
+                        })()}
                         <div className="absolute top-1 left-1 bg-black/75 text-[7px] text-white/70 px-1 py-0.5 rounded font-mono pointer-events-none leading-snug">
                           X:{p.avatarOffsetX}<br />Y:{p.avatarOffsetY}
                         </div>
@@ -636,10 +645,16 @@ export function RightSettingsPanel(p: RightPanelProps) {
                               className="w-full accent-cyan-400 h-1" />
                           </div>
                         ))}
-                        <button onClick={() => { p.setAvatarOffsetX(0); p.setAvatarOffsetY(0); p.setAvatarScale(1); }}
-                          className="text-[9px] text-slate-600 hover:text-slate-400 transition-colors w-full text-center">
-                          ↺ Reset
-                        </button>
+                        <div className="flex gap-2">
+                          <button onClick={() => { p.setAvatarOffsetX(0); p.setAvatarOffsetY(0); p.setAvatarScale(1); }}
+                            className="text-[9px] text-slate-600 hover:text-slate-400 transition-colors flex-1 text-center">
+                            ↺ Reset
+                          </button>
+                          <button onClick={() => { void p.onSaveAvatarLayout(); }} disabled={p.avatarLayoutSaving}
+                            className="text-[9px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 transition-colors flex-1 text-center">
+                            {p.avatarLayoutSaving ? "กำลังบันทึก…" : "💾 Save ตำแหน่ง"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>}
@@ -688,18 +703,27 @@ export function RightSettingsPanel(p: RightPanelProps) {
                       {p.avatarGreenUrl && (
                         <div className="text-[10px] text-emerald-400 truncate">✓ Avatar: {p.avatarGreenUrl.split("/").pop()}</div>
                       )}
-                      <button onClick={p.runAvatarPipeline}
+                      <button onClick={p.onAvatarPrimary}
                         disabled={p.running || !p.pipeRenderedVideoUrl}
                         className={cn("w-full py-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all",
                           p.running || !p.pipeRenderedVideoUrl
                             ? "bg-[#1a1a22] border border-[#2a2a36] text-slate-600 cursor-not-allowed"
                             : "bg-violet-600 hover:bg-violet-500 text-white shadow-[0_0_12px_rgba(124,58,237,0.3)]")}>
                         <User className="w-3 h-3" />
-                        {p.steps.avatar === "running" ? "กำลัง Gen Avatar (ต้น)..." : p.steps.avatarTail === "running" ? "กำลัง Gen Avatar (ท้าย)..." : p.steps.composite === "running" ? "กำลัง Composite..." : "สร้าง Avatar + Composite"}
+                        {p.steps.avatar === "running" ? "กำลัง Gen Avatar (ต้น)..." : p.steps.avatarTail === "running" ? "กำลัง Gen Avatar (ท้าย)..." : p.steps.composite === "running" ? "กำลัง Composite..." : p.avatarPrimaryLabel}
                       </button>
-                      {!p.pipeRenderedVideoUrl && (
+                      {!p.pipeRenderedVideoUrl ? (
                         <div className="text-[10px] text-slate-600 text-center">ต้อง Render วิดีโอก่อน</div>
-                      )}
+                      ) : p.avatarGreenUrl && !p.avatarPrimaryIsGen ? (
+                        // Green already made + only position/chroma differs → primary composites for free.
+                        // Offer an explicit, low-key way to spend credit on a fresh gen if they really want one.
+                        <button onClick={p.runAvatarPipeline} disabled={p.running}
+                          className="w-full text-[9px] text-slate-500 hover:text-slate-300 disabled:opacity-50 text-center">
+                          เจน Avatar ใหม่ (ใช้เครดิต HeyGen)
+                        </button>
+                      ) : p.avatarGreenUrl && p.avatarPrimaryIsGen ? (
+                        <div className="text-[9px] text-amber-400/80 text-center">⚠️ เนื้อหาเปลี่ยน — กดแล้วจะเจน HeyGen ใหม่ (ใช้เครดิต)</div>
+                      ) : null}
                     </>
                   )}
                   {p.avatarInputMode === "direct" && (

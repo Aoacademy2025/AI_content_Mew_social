@@ -672,7 +672,7 @@ export function ShortVideoComposition({
             position: "absolute",
             bottom: "4%",
             right: "4%",
-            width: "14%",
+            width: "12%",
             opacity: 0.9,
             mixBlendMode: "screen",
             pointerEvents: "none",
