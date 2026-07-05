@@ -87,64 +87,68 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
 
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
-        <aside onScroll={ed.onListScroll} className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
-          <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
-          {ed.captions.map((c, i) => (
-            <div
-              key={`${i}-${c.startMs}`}
-              ref={(el) => { ed.cardRefs.current[i] = el; }}
-              onClick={() => { ed.setSelected(i); ed.setFollow(true); const v = ed.videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
-              style={{ cursor: "pointer" }}
-            >
-              <Card
-                selected={i === ed.selected}
-                style={i === ed.activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+        <aside className="flex min-h-0 w-[266px] shrink-0 flex-col" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          <div className="shrink-0 px-3 pb-2 pt-3">
+            <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
+          </div>
+          <div onScroll={ed.onListScroll} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
+            {ed.captions.map((c, i) => (
+              <div
+                key={`${i}-${c.startMs}`}
+                ref={(el) => { ed.cardRefs.current[i] = el; }}
+                onClick={() => { ed.setSelected(i); ed.setFollow(true); const v = ed.videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
+                style={{ cursor: "pointer" }}
               >
-                <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
-                  <span style={{ color: i === ed.selected ? color.primary300 : color.textFaint }}>
-                    {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
-                  </span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); ed.setSelected(i); ed.setEditingIdx(ed.editingIdx === i ? null : i); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
-                    aria-label="แก้ข้อความ"
-                  >
-                    <Pencil size={11} strokeWidth={1.7} />
-                  </button>
-                </div>
-                {ed.editingIdx === i ? (
-                  <textarea
-                    autoFocus
-                    value={c.text}
-                    onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => ci === i ? { ...cc, text: e.target.value } : cc))}
-                    onBlur={() => ed.setEditingIdx(null)}
-                    className="mt-1 w-full resize-none bg-transparent outline-none"
-                    rows={2}
-                    style={{ fontSize: 12, lineHeight: 1.5, color: color.text, border: `1px solid ${color.selectedBorder}`, borderRadius: 8, padding: "4px 6px" }}
-                  />
-                ) : (
-                  <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 4, color: i === ed.selected ? color.text : color.textSecondary }}>
-                    {c.text}
+                <Card
+                  selected={i === ed.selected}
+                  style={i === ed.activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+                >
+                  <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
+                    <span style={{ color: i === ed.selected ? color.primary300 : color.textFaint }}>
+                      {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); ed.setSelected(i); ed.setEditingIdx(ed.editingIdx === i ? null : i); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
+                      aria-label="แก้ข้อความ"
+                    >
+                      <Pencil size={11} strokeWidth={1.7} />
+                    </button>
                   </div>
-                )}
-              </Card>
-            </div>
-          ))}
-          {!ed.follow && (
-            <button
-              onClick={ed.resumeFollow}
-              className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
-              style={{
-                padding: "5px 12px", borderRadius: radius.pill,
-                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
-                color: color.primary300, fontSize: 11, cursor: "pointer",
-                backdropFilter: "blur(6px)",
-              }}
-            >
-              <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
-            </button>
-          )}
-          <div className="mt-auto flex gap-2 pt-2">
+                  {ed.editingIdx === i ? (
+                    <textarea
+                      autoFocus
+                      value={c.text}
+                      onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => ci === i ? { ...cc, text: e.target.value } : cc))}
+                      onBlur={() => ed.setEditingIdx(null)}
+                      className="mt-1 w-full resize-none bg-transparent outline-none"
+                      rows={2}
+                      style={{ fontSize: 12, lineHeight: 1.5, color: color.text, border: `1px solid ${color.selectedBorder}`, borderRadius: 8, padding: "4px 6px" }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 4, color: i === ed.selected ? color.text : color.textSecondary }}>
+                      {c.text}
+                    </div>
+                  )}
+                </Card>
+              </div>
+            ))}
+            {!ed.follow && (
+              <button
+                onClick={ed.resumeFollow}
+                className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
+                style={{
+                  padding: "5px 12px", borderRadius: radius.pill,
+                  background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                  color: color.primary300, fontSize: 11, cursor: "pointer",
+                  backdropFilter: "blur(6px)",
+                }}
+              >
+                <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
+              </button>
+            )}
+          </div>
+          <div className="flex shrink-0 gap-2 p-3" style={{ borderTop: `1px solid ${color.cardBorder}`, boxShadow: "0 -10px 24px rgba(0,0,0,.18)" }}>
             <button onClick={ed.mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
               รวมกับใบถัดไป
             </button>
