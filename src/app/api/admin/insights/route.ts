@@ -423,6 +423,32 @@ export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
   return { funnel, funnelMode: "job" as const, funnelRuns: funnel[0]?.count ?? 0 };
 }
 
+// Activation funnel counts (signups → opened → started → first video → repeat), with @aoacademy
+// internal accounts EXCLUDED and everyone else (incl. workshop students) KEPT. Pure + testable so
+// the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators, not v1-only
+// editor_script_ready telemetry (which editor v2 never emits).
+export function computeActivationFunnel(input: {
+  users: Array<{ id: string; email: string | null; createdAt: Date }>;
+  openedUserIds: Array<string | null>;
+  jobUserIds: string[];
+  completedByUser: Array<{ userId: string; count: number }>;
+  since: Date;
+}) {
+  const internalIds = new Set(
+    input.users.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
+  );
+  const notInternal = (id: string) => !internalIds.has(id);
+  return {
+    internalTeam: internalIds.size,
+    signups: input.users.length - internalIds.size,
+    openedEditor: input.openedUserIds.filter((id): id is string => !!id && notInternal(id)).length,
+    startedPipeline: input.jobUserIds.filter(notInternal).length,
+    completedFirstVideo: input.completedByUser.filter((g) => notInternal(g.userId)).length,
+    repeatCreators: input.completedByUser.filter((g) => notInternal(g.userId) && g.count >= 2).length,
+    windowSignups: input.users.filter((u) => u.createdAt >= input.since && notInternal(u.id)).length,
+  };
+}
+
 function summarizeBroll(rows: TelemetryRow[]) {
   const doneRows = rows.filter((row) => row.name === "fetch_stock_server_done");
   const errorRows = rows.filter((row) => row.name === "fetch_stock_server_error");
@@ -858,11 +884,20 @@ export async function GET(req: Request) {
       .filter((j) => !internalUserIds.has(j.userId))
       .map((j) => ({ userId: j.userId, status: j.status, progress: j.progress }));
 
+    // Activation counts (pure + testable) — @aoacademy internal accounts excluded, workshop students kept.
+    const activationFunnel = computeActivationFunnel({
+      users: allUsers.map((u) => ({ id: u.id, email: u.email, createdAt: u.createdAt })),
+      openedUserIds: openedUserRows.map((r) => r.userId),
+      jobUserIds: jobUserRows.map((r) => r.userId),
+      completedByUser: completedByUser.map((g) => ({ userId: g.userId, count: g._count?._all ?? 0 })),
+      since,
+    });
+
     const activation = {
       managed: process.env.MANAGED_GEMINI === "1",
       // These funnel/activation counts EXCLUDE @aoacademy internal accounts; workshop students are
       // intentionally kept (real prospects). internalTeam is surfaced so the UI can show what was cut.
-      signups: allUsers.length - internalUserIds.size,
+      signups: activationFunnel.signups,
       internalTeam: cohorts.internalTeam,
       hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
@@ -872,12 +907,12 @@ export async function GET(req: Request) {
       mrrAtRisk: cohorts.mrrAtRisk,
       trialActive: cohorts.trialActive,
       compedPaid: cohorts.compedPaid,
-      openedEditor: openedUserRows.filter((r) => r.userId && !internalUserIds.has(r.userId)).length,
+      openedEditor: activationFunnel.openedEditor,
       // Server truth: distinct users who ever created a VideoJob (was v1-only editor_script_ready telemetry).
-      startedPipeline: jobUserRows.filter((r) => !internalUserIds.has(r.userId)).length,
-      completedFirstVideo: completedByUser.filter((g) => !internalUserIds.has(g.userId)).length,
-      repeatCreators: completedByUser.filter((g) => !internalUserIds.has(g.userId) && (g._count?._all ?? 0) >= 2).length,
-      windowSignups: allUsers.filter((u) => u.createdAt >= since && !internalUserIds.has(u.id)).length,
+      startedPipeline: activationFunnel.startedPipeline,
+      completedFirstVideo: activationFunnel.completedFirstVideo,
+      repeatCreators: activationFunnel.repeatCreators,
+      windowSignups: activationFunnel.windowSignups,
       windowCompletedUsers: completedUsersIn(currentVideos),
       prevWindowCompletedUsers: completedUsersIn(previousVideos),
     };
