@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import { resolveChromaParams, detectChromaColor, buildKeyChain } from "@/lib/chroma-key";
+import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -83,7 +83,10 @@ export async function POST(req: Request) {
     // editor preview matches the final output. Auto-detects the green shade unless sliders are tuned.
     const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
     const keyColor = resolved.autoDetect ? await detectChromaColor(avatarTmp, ffmpeg) : resolved.color;
-    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend });
+    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build) — the
+    // keying path isn't fail-open, so resolve BEFORE building the filter. Cached per-process.
+    const feather = await featherSupported(ffmpeg);
+    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend }, feather);
 
     const filter = [
       `[1:v]${scaleAndCrop},${keyChain}[ck]`,

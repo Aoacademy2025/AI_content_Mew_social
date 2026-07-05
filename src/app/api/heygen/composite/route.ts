@@ -9,6 +9,7 @@ import {
   detectChromaColor,
   buildCompositeFilter,
   resolveCompositeEncode,
+  featherSupported,
   type ChromaParams,
 } from "@/lib/chroma-key";
 import path from "path";
@@ -147,10 +148,11 @@ async function chromakeyComposite(
   params: ChromaParams,
   audioFromAvatar = false,
   layout: AvatarLayout | null = null,
+  feather = true,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
-  const filterComplex = buildCompositeFilter(params, layout);
+  const filterComplex = buildCompositeFilter(params, layout, feather);
   if (layout) {
     console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY})`);
   } else {
@@ -346,6 +348,7 @@ async function applyBookendBothSplit(
   params: ChromaParams,     // pre-resolved key color/similarity/blend
   mode: string,
   layout: AvatarLayout | null = null,
+  feather = true,
 ): Promise<void> {
   const rendersDir = path.dirname(outPath);
   const ts = Date.now();
@@ -395,7 +398,7 @@ async function applyBookendBothSplit(
       ]);
     } else {
       // Same key-at-display-resolution chain as the main composite (shared builder → can't drift).
-      const segFilter = buildCompositeFilter(params, layout);
+      const segFilter = buildCompositeFilter(params, layout, feather);
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
         "-filter_complex", segFilter,
@@ -518,8 +521,12 @@ export async function POST(req: Request) {
     if (willKey && resolved.autoDetect) {
       chromaParams.color = await detectChromaColor(avatarTmp, ffmpeg);
     }
+    // One probe per ffmpeg path per process lifetime (cached in lib/chroma-key) — negligible cost.
+    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build); the
+    // keying path isn't fail-open like detection, so this must be resolved BEFORE building filters.
+    const feather = willKey ? await featherSupported(ffmpeg) : true;
     if (willKey) {
-      console.log(`[composite] chroma ${resolved.autoDetect ? "auto-detected" : "user-tuned"} → color=${chromaParams.color} similarity=${chromaParams.similarity} blend=${chromaParams.blend}`);
+      console.log(`[composite] chroma ${resolved.autoDetect ? "auto-detected" : "user-tuned"} → color=${chromaParams.color} similarity=${chromaParams.similarity} blend=${chromaParams.blend} feather=${feather}`);
     }
 
     // bookend-both split: composite intro and tail separately onto bg segments, then stitch
@@ -533,6 +540,7 @@ export async function POST(req: Request) {
         avatarBookendSecs, avatarTailSecs,
         chromaParams, mode,
         layout,
+        feather,
       );
 
       console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
@@ -551,7 +559,7 @@ export async function POST(req: Request) {
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {
-      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaParams, audioFromAvatar, layout);
+      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaParams, audioFromAvatar, layout, feather);
     }
 
     if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");

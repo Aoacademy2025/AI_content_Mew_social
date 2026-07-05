@@ -1611,6 +1611,9 @@ export default function ShortVideoPage() {
             mode: "chromakey",
             noScale: true,
             chromaColor: chromaColor.replace("#", "0x"),
+            // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real green
+            // shade. Moving either away from that default opts OUT of auto-detect and keys with the
+            // hardcoded chromaColor above verbatim — no behavior change, just documenting it.
             chromaSimilarity,
             chromaBlend,
           })
@@ -1627,6 +1630,9 @@ export default function ShortVideoPage() {
             avatarOffsetX,
             avatarOffsetY,
             chromaColor: chromaColor.replace("#", "0x"),
+            // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real green
+            // shade. Moving either away from that default opts OUT of auto-detect and keys with the
+            // hardcoded chromaColor above verbatim — no behavior change, just documenting it.
             chromaSimilarity,
             chromaBlend,
           }),

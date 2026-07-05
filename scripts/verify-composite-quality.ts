@@ -20,6 +20,7 @@ import {
   buildCompositeFilter,
   buildKeyChain,
   resolveCompositeEncode,
+  featherSupported,
   _detectCacheSizeForTest,
   DEFAULT_CHROMA_COLOR,
 } from "../src/lib/chroma-key";
@@ -222,7 +223,29 @@ async function main() {
   // key chain is self-sanitizing even if handed garbage
   assert(!buildKeyChain({ color: "evil; rm", similarity: 99, blend: -5 }).includes("evil"), "buildKeyChain re-sanitizes an unsafe color");
 
-  // ── 7. Before/after PNG dumps over testsrc2 for human eyeball ──
+  // ── 7. featherSupported() guard — the composite ffmpeg call errors (not fail-open) if the
+  //    binary lacks erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build), so callers must
+  //    probe first and drop feathering when unsupported. ──
+  {
+    const supported = await featherSupported(FF);
+    assert(supported === true, `featherSupported(bundled ffmpeg) === true (this machine's build ships erosion+gblur)`);
+
+    const noFeatherChain = buildKeyChain({ color: c12, similarity: 0.28, blend: 0.1 }, false);
+    assert(!/erosion|gblur/.test(noFeatherChain), "feather:false chain contains no erosion/gblur");
+
+    const noFeatherFilter = buildCompositeFilter({ color: c12, similarity: 0.28, blend: 0.1 }, null, false);
+    const rgbNoFeather = runRaw([
+      "-hide_banner", "-loglevel", "error", "-y", "-i", mag, "-i", green12,
+      "-filter_complex", noFeatherFilter, "-map", "[out]", "-frames:v", "1",
+      "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]);
+    assert(greenPixels(rgbNoFeather).count === 0, `feather:false chain still keys with 0 residual green (count=${greenPixels(rgbNoFeather).count})`);
+
+    const bogusSupported = await featherSupported("/no/such/ffmpeg-binary-xyz");
+    assert(bogusSupported === false, "featherSupported(bogus path) → false, fail-open, no throw");
+  }
+
+  // ── 8. Before/after PNG dumps over testsrc2 for human eyeball ──
   const dumps: string[] = [];
   for (const [label, src, color] of [["12", green12, c12], ["00", green00, c00]] as const) {
     const before = path.join(tmp, `before_${label}_greenscreen.png`);

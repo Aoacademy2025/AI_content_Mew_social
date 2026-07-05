@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { resolveChromaParams, detectChromaColor, buildKeyChain } from "@/lib/chroma-key";
+import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -74,7 +74,10 @@ export async function POST(req: Request) {
     // chroma (yuva444p) with an alpha feather, then encodes to a VP9 alpha webm.
     const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
     const keyColor = resolved.autoDetect ? await detectChromaColor(inputPath, ffmpeg) : resolved.color;
-    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend });
+    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build) — the
+    // keying path isn't fail-open, so resolve BEFORE building the filter. Cached per-process.
+    const feather = await featherSupported(ffmpeg);
+    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend }, feather);
     console.log(`[preview-bg] chromakey removing green (color=${keyColor}) from entire video...`);
     await runFfmpeg(ffmpeg, [
       "-y",
