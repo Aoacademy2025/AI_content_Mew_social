@@ -32,6 +32,76 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   const frameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
+  // Live keyed-avatar preview (spec 07-05): fetch a fast, half-res, alpha webm of the avatar so
+  // the box shows the REAL keyed subject while dragging, instead of an empty dashed box. Any
+  // failure — fetch error, keying error, unsupported browser — silently falls back to today's
+  // dashed-box-only behavior; the save flow below is untouched either way.
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+  const [avatarPreviewState, setAvatarPreviewState] = useState<"loading" | "ready" | "fallback">("loading");
+  const fallbackToastShown = useRef(false);
+
+  // `reason: "unsupported"` = the canPlayType probe failed (browser genuinely can't decode a
+  // VP9-alpha webm) — keeps the original browser-blaming copy. Every OTHER failure (fetch error,
+  // keying error, a 200 response pointing at an undecodable file caught by the <video onError>
+  // below) is NOT the browser's fault, so it gets a generic message instead of blaming it.
+  function fallbackToBox(reason: "unsupported" | "error") {
+    setAvatarPreviewState("fallback");
+    if (!fallbackToastShown.current) {
+      fallbackToastShown.current = true;
+      toast.info(
+        reason === "unsupported"
+          ? "ตัวอย่างอวตารสดใช้ไม่ได้ในเบราว์เซอร์นี้ — ใช้กรอบลากแทน (ไม่กระทบการบันทึก)"
+          : "เตรียมตัวอย่างอวตารไม่สำเร็จ — ยังลากตำแหน่งด้วยกรอบได้ตามปกติ"
+      );
+    }
+  }
+
+  useEffect(() => {
+    let alive = true;
+    setAvatarPreviewUrl(null);
+    setAvatarPreviewState("loading");
+
+    // Safari (and any browser without VP9-alpha) can't play the keyed webm at all — bail before
+    // even hitting the network.
+    const probe = document.createElement("video");
+    const supportsVp9 = !!probe.canPlayType('video/webm; codecs="vp9"');
+    if (!supportsVp9) {
+      fallbackToBox("unsupported");
+      return () => { alive = false; };
+    }
+
+    // Abort the in-flight request on unmount / when avatarVideoUrl changes, so reopening the
+    // panel quickly (or switching avatars mid-request) doesn't leave an orphaned fetch racing a
+    // newer one. The server-side encode keeps running (harmless, and other callers may still
+    // benefit from the cache it produces) — this only stops the CLIENT from waiting on it.
+    const controller = new AbortController();
+
+    fetch("/api/heygen/preview-bg", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avatarVideoUrl, maxSec: 4, halfRes: true }),
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`preview-bg failed (${r.status})`))))
+      .then((d) => {
+        if (!alive) return;
+        if (!d?.previewUrl) throw new Error("no previewUrl");
+        setAvatarPreviewUrl(d.previewUrl as string);
+        setAvatarPreviewState("ready");
+      })
+      .catch((err) => {
+        if (!alive) return;
+        if (err instanceof DOMException && err.name === "AbortError") return; // intentional — swallow silently, no toast
+        fallbackToBox("error");
+      });
+
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [avatarVideoUrl]);
+
   // ค่าเริ่มต้น = preset ที่บันทึกไว้ (ใกล้เคียงค่าที่งานนี้ใช้เรนเดอร์ที่สุด)
   useEffect(() => {
     let alive = true;
@@ -119,26 +189,65 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
 
   return (
     <div className="absolute inset-0 z-20" style={{ borderRadius: radius.cardLg, overflow: "hidden" }}>
+      {/* ชั้นหลัง (backdrop): base render ก่อน composite อวตาร — เห็นฉาก/บีรอลจริง แทนที่จะเห็น
+          อวตารเก่าที่ baked ไว้ในพรีวิวเดิม (ผ่านสครีมโปร่งแสง). paused ที่เฟรมแรกสุด. */}
+      <video
+        src={bgVideoUrl}
+        muted
+        playsInline
+        preload="metadata"
+        className="absolute inset-0 h-full w-full object-cover"
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          try { v.currentTime = Math.min(0.05, v.duration || 0.05); } catch { /* ignore */ }
+        }}
+      />
+      <div className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }} />
+
       {/* กรอบลาก = พื้นที่วิดีโอเต็ม 1:1 — normalizedBox คิด % จาก canvas เต็ม (สูตรเดียวกับ ffmpeg) ห้ามให้แถบคุมกินความสูงกรอบนี้ */}
-      <div ref={frameRef} className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }}>
+      <div ref={frameRef} className="absolute inset-0">
         <div
           onPointerDown={onBoxPointerDown}
           onPointerMove={onBoxPointerMove}
           onPointerUp={onBoxPointerUp}
           onPointerCancel={onBoxPointerUp}
-          className="absolute flex items-center justify-center"
+          className="absolute flex items-center justify-center overflow-hidden"
           style={{
             left: `${box.centerXPct}%`, top: `${box.centerYPct}%`,
             width: `${box.widthPct}%`, height: `${box.heightPct}%`,
             transform: "translate(-50%,-50%)",
             border: `1.5px dashed ${color.primary300}`, borderRadius: 10,
-            background: "rgba(139,92,246,.10)", cursor: busy ? "wait" : "move",
+            background: avatarPreviewState === "ready" ? "transparent" : "rgba(139,92,246,.10)",
+            cursor: busy ? "wait" : "move",
             touchAction: "none",
           }}
         >
-          <span className="flex items-center gap-1" style={{ fontSize: 10.5, color: color.primary300, background: "rgba(10,10,16,.55)", padding: "3px 8px", borderRadius: 8 }}>
-            <Move size={11} /> อวตาร — ลากเพื่อย้าย
-          </span>
+          {/* ชั้นอวตาร: keyed webm เต็มกรอบ = ตำแหน่งเดียวกับที่จะเรนเดอร์จริง (ไม่มีคณิตใหม่) */}
+          {avatarPreviewState === "ready" && avatarPreviewUrl && (
+            <video
+              key={avatarPreviewUrl}
+              src={avatarPreviewUrl}
+              autoPlay
+              muted
+              loop
+              playsInline
+              // A 200 response can still point at a file the browser can't actually decode (e.g.
+              // cache poisoned by a truncated write, or a codec edge case canPlayType missed) —
+              // degrade to the same dashed-box fallback rather than showing a broken/blank video.
+              onError={() => fallbackToBox("error")}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0 }}
+            />
+          )}
+          <div className="relative flex flex-col items-center gap-1" style={{ zIndex: 1 }}>
+            <span className="flex items-center gap-1" style={{ fontSize: 10.5, color: color.primary300, background: "rgba(10,10,16,.55)", padding: "3px 8px", borderRadius: 8 }}>
+              <Move size={11} /> อวตาร — ลากเพื่อย้าย
+            </span>
+            {avatarPreviewState === "loading" && (
+              <span style={{ fontSize: 9.5, color: color.textSecondary, background: "rgba(10,10,16,.55)", padding: "2px 7px", borderRadius: 7, whiteSpace: "nowrap" }}>
+                กำลังเตรียมตัวอย่างอวตาร…
+              </span>
+            )}
+          </div>
         </div>
         {busy && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ background: "rgba(10,10,16,.66)" }}>
