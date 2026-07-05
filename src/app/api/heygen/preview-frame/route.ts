@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { resolveChromaParams, detectChromaColor, buildKeyChain } from "@/lib/chroma-key";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -35,8 +36,18 @@ export async function POST(req: Request) {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { avatarVideoUrl, bgVideoUrl, overlayX = 0, overlayY = 0, overlayW, avatarCrop } = body ?? {};
+  const {
+    avatarVideoUrl, bgVideoUrl, overlayX = 0, overlayY = 0, overlayW, avatarCrop,
+    chromaColor, chromaSimilarity, chromaBlend,
+  } = body ?? {};
   if (!avatarVideoUrl || !bgVideoUrl) return NextResponse.json({ error: "avatarVideoUrl and bgVideoUrl required" }, { status: 400 });
+
+  // Sanitize geometry — these values become ffmpeg args (injection surface).
+  const num = (v: unknown, def = 0) => { const n = Number(v); return Number.isFinite(n) ? n : def; };
+  const clampPct = (v: unknown) => Math.min(100, Math.max(0, num(v, 0)));
+  const ovX = Math.round(num(overlayX));
+  const ovY = Math.round(num(overlayY));
+  const ovW = overlayW != null && Number.isFinite(Number(overlayW)) ? Math.max(2, Math.round(Number(overlayW))) : null;
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
@@ -55,23 +66,29 @@ export async function POST(req: Request) {
       downloadFile(bgVideoUrl, bgTmp, heygenKey),
     ]);
 
-    const crop = avatarCrop ?? { left: 0, right: 0, top: 0, bottom: 0 };
-    const hasCrop = crop.left > 0 || crop.right > 0 || crop.top > 0 || crop.bottom > 0;
+    const cl = clampPct(avatarCrop?.left), cr = clampPct(avatarCrop?.right);
+    const ct = clampPct(avatarCrop?.top), cb = clampPct(avatarCrop?.bottom);
+    const hasCrop = cl > 0 || cr > 0 || ct > 0 || cb > 0;
     const cropPart = hasCrop
-      ? `,crop=floor(iw*(${100 - crop.left - crop.right})/200)*2:floor(ih*(${100 - crop.top - crop.bottom})/200)*2:iw*${crop.left}/100:ih*${crop.top}/100`
+      ? `,crop=floor(iw*(${100 - cl - cr})/200)*2:floor(ih*(${100 - ct - cb})/200)*2:iw*${cl}/100:ih*${ct}/100`
       : "";
 
-    const scaleAndCrop = overlayW
-      ? `scale=${overlayW}:-2${cropPart}`
+    const scaleAndCrop = ovW
+      ? `scale=${ovW}:-2${cropPart}`
       : `scale=iw:ih${cropPart}`;
 
-    const filter = [
-      `[1:v]${scaleAndCrop}[av]`,
-      "[av]colorkey=color=0x00FF00:similarity=0.05:blend=0.0[ck]",
-      `[0:v][ck]overlay=${overlayX}:${overlayY}[out]`,
-    ].join(";");
-
     const ffmpeg = getFfmpegPath();
+
+    // WYSIWYG: use the SAME detection + key chain as the render composite (lib/chroma-key) so the
+    // editor preview matches the final output. Auto-detects the green shade unless sliders are tuned.
+    const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
+    const keyColor = resolved.autoDetect ? await detectChromaColor(avatarTmp, ffmpeg) : resolved.color;
+    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend });
+
+    const filter = [
+      `[1:v]${scaleAndCrop},${keyChain}[ck]`,
+      `[0:v][ck]overlay=${ovX}:${ovY}[out]`,
+    ].join(";");
     await new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
