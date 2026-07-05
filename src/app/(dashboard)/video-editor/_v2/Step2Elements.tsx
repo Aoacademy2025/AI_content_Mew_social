@@ -248,7 +248,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
             </span>
           </Card>
-          <Advanced note="ปรับความเร็ว/อารมณ์เสียง">
+          <Advanced label="เลือกเสียงอื่น" note="ปรับความเร็ว/อารมณ์เสียง">
             {p.voiceEngine === "gemini" ? (
               <label className="flex flex-col gap-1.5">
                 <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง Gemini</span>
@@ -327,13 +327,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             className="self-start"
             style={{ fontSize: 11.5, color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}
           >
-            คลังเพลงทั้งหมด ({bgm.systemTracks.length + bgm.userTracks.length}) · อัปโหลดเพลงของคุณ
+            คลังเพลงทั้งหมด ({bgm.systemTracks.length + bgm.userTracks.length}) · {p.canUploadOwnMedia ? "อัปโหลดเพลงของคุณ" : "เพลงของฉัน (Pro)"}
           </button>
           <MusicLibraryModal
             open={musicLibOpen}
             onClose={() => setMusicLibOpen(false)}
             systemTracks={bgm.systemTracks}
             userTracks={bgm.userTracks}
+            canUpload={p.canUploadOwnMedia}
             onUploaded={(t) => bgm.setUserTracks([t, ...bgm.userTracks])}
             selected={p.musicTrack}
             selectedKind={p.musicTrackKind}
@@ -690,7 +691,7 @@ function Group({ title, desc, children }: { title: string; desc: string; childre
 /** ตั้งค่าขั้นสูง — จุดพักของฟีเจอร์เดิมทั้งหมด (นโยบาย "ย้าย ไม่ตัด").
  *  note = ป้ายบอกฟีเจอร์ที่ยังไม่ยกเข้ามา (ไม่มี children → "จะอยู่ตรงนี้", มีบางส่วน → "กำลังตามมา").
  *  ฟีเจอร์ที่ทำเสร็จครบแล้วไม่ต้องส่ง note — จะแสดงแค่ตัวคุมจริง */
-function Advanced({ note, children }: { note?: string; children?: React.ReactNode }) {
+function Advanced({ label = "ตั้งค่าขั้นสูง", note, children }: { label?: string; note?: string; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div>
@@ -700,7 +701,7 @@ function Advanced({ note, children }: { note?: string; children?: React.ReactNod
         style={{ fontSize: 11, color: color.textFaint, background: "none", border: "none", cursor: "pointer", padding: 0 }}
       >
         <ChevronDown size={12} strokeWidth={1.8} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 150ms ease" }} />
-        ตั้งค่าขั้นสูง
+        {label}
       </button>
       {open && (
         <div className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>

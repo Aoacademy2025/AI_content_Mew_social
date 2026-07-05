@@ -18,6 +18,7 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
 import {
   V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
+  EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
@@ -378,9 +379,9 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
           </section>
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>สไตล์ทั้งหมด ({PRESETS_DATA.length})</GroupLabel>
+            <GroupLabel>ปรับเอฟเฟกต์ได้ ({EDITABLE_EFFECT_PRESETS_DATA.length})</GroupLabel>
             <div className="grid grid-cols-3 gap-1.5">
-              {PRESETS_DATA.map((p) => (
+              {EDITABLE_EFFECT_PRESETS_DATA.map((p) => (
                 <button
                   key={p.value}
                   onClick={() => ed.set("preset", p.value)}
@@ -390,6 +391,23 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <GroupLabel>เอฟเฟกต์ติดมากับสไตล์ ({BUILT_IN_EFFECT_PRESETS_DATA.length})</GroupLabel>
+            <div className="grid grid-cols-3 gap-1.5">
+              {BUILT_IN_EFFECT_PRESETS_DATA.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => ed.set("preset", p.value)}
+                  title="สไตล์นี้มีเอฟเฟกต์ในตัว"
+                  style={{ borderRadius: 9, padding: "10px 4px", fontSize: 11, minHeight: 42, background: ed.cfg.preset === p.value ? color.selectedBg : color.cardBg, border: `1px solid ${ed.cfg.preset === p.value ? color.selectedBorder : color.cardBorder}`, color: ed.cfg.preset === p.value ? color.primary300 : color.textSecondary, cursor: "pointer", fontFamily: font.body }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <span style={{ fontSize: 10, color: color.textFaintest }}>เลือกกลุ่มนี้แล้วระบบจะใช้เอฟเฟกต์ประจำสไตล์แทนปุ่มเอฟเฟกต์ด้านล่าง</span>
           </section>
 
           <section className="flex flex-col gap-2">

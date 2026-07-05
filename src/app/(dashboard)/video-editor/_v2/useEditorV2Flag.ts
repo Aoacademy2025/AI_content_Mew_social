@@ -15,14 +15,21 @@ import { useEffect, useState } from "react";
 const V2_DEFAULT = process.env.NEXT_PUBLIC_EDITOR_V2 === "1";
 const STORAGE_KEY = "editor-ui";
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 export function useEditorV2(): boolean {
   const [override, setOverride] = useState<"v1" | "v2" | null>(null);
 
   useEffect(() => {
     try {
+      const storage = browserStorage();
       const q = new URLSearchParams(window.location.search).get("ui");
-      if (q === "v1" || q === "v2") localStorage.setItem(STORAGE_KEY, q);
-      const stored = localStorage.getItem(STORAGE_KEY);
+      if (q === "v1" || q === "v2") storage?.setItem(STORAGE_KEY, q);
+      const stored = storage?.getItem(STORAGE_KEY);
       if (stored === "v1" || stored === "v2") setOverride(stored);
     } catch {
       // localStorage unavailable (private mode ฯลฯ) → ใช้ env default

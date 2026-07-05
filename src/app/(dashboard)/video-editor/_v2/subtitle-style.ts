@@ -25,6 +25,9 @@ export const LOCKED_EFFECT_PRESETS: SubPreset[] = ["classic-yellow", "hormozi", 
 export const LOCKED_COLOR_PRESETS: string[] = ["classic-yellow", "hormozi", "beast", "neon-green", "neon-red", "neon-blue", "pastel", "retro", "box-white", "box-yellow", "news"];
 export const LOCKED_ACCENT_PRESETS: string[] = ["neon-green", "neon-red", "neon-blue", "pastel", "classic-yellow", "hormozi", "beast", "box-white", "box-yellow", "retro", "news", "karaoke-box"];
 
+export const EDITABLE_EFFECT_PRESETS_DATA = PRESETS_DATA.filter((p) => !LOCKED_EFFECT_PRESETS.includes(p.value));
+export const BUILT_IN_EFFECT_PRESETS_DATA = PRESETS_DATA.filter((p) => LOCKED_EFFECT_PRESETS.includes(p.value));
+
 export const V2_TEXT_COLORS = ["#FFFFFF", "#FFE500", "#38BDF8", "#F472B6", "#000000"] as const;
 export const V2_ACCENT_COLORS = ["#FFE500", "#F87171", "#34D399", "#38BDF8"] as const;
 

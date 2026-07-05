@@ -20,6 +20,12 @@ function hasBrowser() {
   return typeof window !== "undefined" && typeof navigator !== "undefined";
 }
 
+function browserStorage() {
+  if (!hasBrowser()) return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 function createSessionId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -28,12 +34,13 @@ function createSessionId() {
 }
 
 export function getTelemetrySessionId() {
-  if (!hasBrowser()) return null;
+  const storage = browserStorage();
+  if (!storage) return null;
   try {
-    const existing = localStorage.getItem(SESSION_KEY);
+    const existing = storage.getItem(SESSION_KEY);
     if (existing) return existing;
     const next = createSessionId();
-    localStorage.setItem(SESSION_KEY, next);
+    storage.setItem(SESSION_KEY, next);
     return next;
   } catch {
     return null;

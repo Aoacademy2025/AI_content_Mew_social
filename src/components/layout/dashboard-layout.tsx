@@ -15,19 +15,25 @@ interface DashboardLayoutProps {
   noPadding?: boolean;
 }
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem("sidebar-collapsed");
+    const saved = browserStorage()?.getItem("sidebar-collapsed");
     if (saved === "true") setCollapsed(true);
   }, []);
 
   function toggleCollapsed() {
     setCollapsed(p => {
-      localStorage.setItem("sidebar-collapsed", String(!p));
+      browserStorage()?.setItem("sidebar-collapsed", String(!p));
       return !p;
     });
   }
