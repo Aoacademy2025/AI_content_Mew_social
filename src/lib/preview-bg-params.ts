@@ -4,6 +4,8 @@
 // handlers) so `scripts/verify-preview-bg.ts` can assert clamp/coercion behavior as pure
 // functions, without going through HTTP or ffmpeg.
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 const MIN_MAX_SEC = 1;
 const MAX_MAX_SEC = 10;
@@ -67,4 +69,55 @@ export function buildPreviewBgFfmpegArgs(opts: {
     "-an",
     opts.outPath,
   ];
+}
+
+// ── Atomic cache write + in-process de-dupe lock (review fix 07-06) ──
+//
+// Before this, the route checked `existsSync(outPath)` then had ffmpeg write DIRECTLY to
+// `outPath`. Two concurrent requests for the SAME cache key (React StrictMode's double-effect,
+// a quick close/reopen of the adjust panel, or two tabs) could both pass the existence check,
+// then interleave their writes onto the same destination file — permanently poisoning the disk
+// cache with a truncated/corrupt webm that every future cache-hit would serve.
+//
+// `ensureEncodedOnce` fixes both halves:
+//   1. Atomicity — `encode` must write to the TEMP path it's given, never `outPath` directly.
+//      On success the temp file is `fs.renameSync`'d onto `outPath` (atomic on POSIX — a reader
+//      can never observe a partially-written file at the final path). On failure the temp file
+//      is unlinked and the error rethrown.
+//   2. De-dupe — an in-process `Map<outPath, Promise>` ensures only ONE caller ever actually
+//      invokes `encode` for a given `outPath` at a time; every other concurrent caller for the
+//      same key just awaits that single in-flight promise (and gets its result/error too). The
+//      map entry is removed once the promise settles, so a later, unrelated request for the same
+//      key (e.g. after the file was deleted) starts a fresh encode.
+const inFlightEncodes = new Map<string, Promise<void>>();
+let tmpSeq = 0;
+
+export async function ensureEncodedOnce(outPath: string, encode: (tmpPath: string) => Promise<void>): Promise<void> {
+  // Fast path — already cached. No lock needed for a read-only check.
+  if (fs.existsSync(outPath)) return;
+
+  const existing = inFlightEncodes.get(outPath);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    // Re-check inside the lock — another request may have finished between the fast-path check
+    // above and this closure actually starting.
+    if (fs.existsSync(outPath)) return;
+    const dir = path.dirname(outPath);
+    const tmpPath = path.join(dir, `.tmp-${process.pid}-${++tmpSeq}-${path.basename(outPath)}`);
+    try {
+      await encode(tmpPath);
+      fs.renameSync(tmpPath, outPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+      throw err;
+    }
+  })();
+
+  inFlightEncodes.set(outPath, promise);
+  try {
+    await promise;
+  } finally {
+    inFlightEncodes.delete(outPath);
+  }
 }

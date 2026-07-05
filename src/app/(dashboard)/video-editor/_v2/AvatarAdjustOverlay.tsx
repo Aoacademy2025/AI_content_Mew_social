@@ -40,11 +40,19 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   const [avatarPreviewState, setAvatarPreviewState] = useState<"loading" | "ready" | "fallback">("loading");
   const fallbackToastShown = useRef(false);
 
-  function fallbackToBox() {
+  // `reason: "unsupported"` = the canPlayType probe failed (browser genuinely can't decode a
+  // VP9-alpha webm) — keeps the original browser-blaming copy. Every OTHER failure (fetch error,
+  // keying error, a 200 response pointing at an undecodable file caught by the <video onError>
+  // below) is NOT the browser's fault, so it gets a generic message instead of blaming it.
+  function fallbackToBox(reason: "unsupported" | "error") {
     setAvatarPreviewState("fallback");
     if (!fallbackToastShown.current) {
       fallbackToastShown.current = true;
-      toast.info("ตัวอย่างอวตารสดใช้ไม่ได้ในเบราว์เซอร์นี้ — ใช้กรอบลากแทน (ไม่กระทบการบันทึก)");
+      toast.info(
+        reason === "unsupported"
+          ? "ตัวอย่างอวตารสดใช้ไม่ได้ในเบราว์เซอร์นี้ — ใช้กรอบลากแทน (ไม่กระทบการบันทึก)"
+          : "เตรียมตัวอย่างอวตารไม่สำเร็จ — ยังลากตำแหน่งด้วยกรอบได้ตามปกติ"
+      );
     }
   }
 
@@ -58,14 +66,21 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
     const probe = document.createElement("video");
     const supportsVp9 = !!probe.canPlayType('video/webm; codecs="vp9"');
     if (!supportsVp9) {
-      fallbackToBox();
+      fallbackToBox("unsupported");
       return () => { alive = false; };
     }
+
+    // Abort the in-flight request on unmount / when avatarVideoUrl changes, so reopening the
+    // panel quickly (or switching avatars mid-request) doesn't leave an orphaned fetch racing a
+    // newer one. The server-side encode keeps running (harmless, and other callers may still
+    // benefit from the cache it produces) — this only stops the CLIENT from waiting on it.
+    const controller = new AbortController();
 
     fetch("/api/heygen/preview-bg", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ avatarVideoUrl, maxSec: 4, halfRes: true }),
+      signal: controller.signal,
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`preview-bg failed (${r.status})`))))
       .then((d) => {
@@ -74,11 +89,16 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
         setAvatarPreviewUrl(d.previewUrl as string);
         setAvatarPreviewState("ready");
       })
-      .catch(() => {
-        if (alive) fallbackToBox();
+      .catch((err) => {
+        if (!alive) return;
+        if (err instanceof DOMException && err.name === "AbortError") return; // intentional — swallow silently, no toast
+        fallbackToBox("error");
       });
 
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avatarVideoUrl]);
 
@@ -211,6 +231,10 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
               muted
               loop
               playsInline
+              // A 200 response can still point at a file the browser can't actually decode (e.g.
+              // cache poisoned by a truncated write, or a codec edge case canPlayType missed) —
+              // degrade to the same dashed-box fallback rather than showing a broken/blank video.
+              onError={() => fallbackToBox("error")}
               style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0 }}
             />
           )}

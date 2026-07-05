@@ -14,7 +14,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFile, execFileSync } from "child_process";
-import { resolveMaxSec, resolveHalfRes, previewBgCacheHash, previewBgOutputName, buildPreviewBgFfmpegArgs } from "../src/lib/preview-bg-params";
+import { resolveMaxSec, resolveHalfRes, previewBgCacheHash, previewBgOutputName, buildPreviewBgFfmpegArgs, ensureEncodedOnce } from "../src/lib/preview-bg-params";
 import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "../src/lib/chroma-key";
 
 let passed = 0;
@@ -177,6 +177,72 @@ async function main() {
   assert(r3.reencoded === true, "different params correctly miss the cache and re-encode");
   const info3 = probeInfo(r3.outPath);
   assert(info3.w !== 540, `halfRes=false output is NOT scaled to 540 (got ${info3.w}, source is 720-wide)`);
+
+  // ── 4. Concurrency: ensureEncodedOnce de-dupes racing callers for the SAME key (review fix
+  //    07-06 — the route used to check existsSync then let ffmpeg write DIRECTLY to outPath,
+  //    which two concurrent requests could interleave and permanently poison the cache with a
+  //    truncated file). Exercises the REAL exported helper the route imports, with an injected
+  //    counter standing in for the ffmpeg call so we can assert exactly one encode ran, plus a
+  //    real (cheap) ffmpeg encode so the resulting file is genuinely valid/decodable. ──
+  {
+    const concurrentOutPath = path.join(stocksDir, "avatar-nobg-concurrency-test.webm");
+    let encodeCount = 0;
+    const encode = async (tmpPath: string) => {
+      encodeCount++;
+      // Small delay so the 3 concurrent callers actually overlap in time (proves the lock, not
+      // just fast sequential execution beating the race window).
+      await new Promise((r) => setTimeout(r, 150));
+      await runFfmpegAsync(["-y", "-t", "1", "-f", "lavfi", "-i", "color=c=0x12FF05:s=64x64:d=1:r=5", "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-an", tmpPath]);
+    };
+    await Promise.all([
+      ensureEncodedOnce(concurrentOutPath, encode),
+      ensureEncodedOnce(concurrentOutPath, encode),
+      ensureEncodedOnce(concurrentOutPath, encode),
+    ]);
+    assert(encodeCount === 1, `3 concurrent ensureEncodedOnce calls for the SAME key → exactly ONE encode ran (got ${encodeCount})`);
+    assert(fs.existsSync(concurrentOutPath), "concurrency-test output file exists after all 3 callers resolved");
+    const concurrentInfo = probeInfo(concurrentOutPath);
+    assert(concurrentInfo.codec === "vp9", `concurrency-test output decodes as valid vp9 (got ${concurrentInfo.codec})`);
+    // No leftover temp files from the 2 callers that joined the lock instead of encoding.
+    const leftoverTmp = fs.readdirSync(stocksDir).filter((f) => f.startsWith(".tmp-") && f.includes("concurrency-test"));
+    assert(leftoverTmp.length === 0, `no leftover temp files after concurrent de-duped encode (found: ${leftoverTmp.join(", ") || "none"})`);
+
+    // A later, independent call for the same key (post-completion) must be a pure cache hit —
+    // no re-encode — proving the in-flight map entry was cleaned up correctly, not left dangling.
+    await ensureEncodedOnce(concurrentOutPath, encode);
+    assert(encodeCount === 1, "a later call for the same (now-cached) key does not re-encode");
+  }
+
+  // ── 5. Forced failure: temp file is cleaned up, outPath is never created, and the map doesn't
+  //    wedge (a subsequent call for the same key can still succeed). ──
+  {
+    const failOutPath = path.join(stocksDir, "avatar-nobg-forced-failure.webm");
+    let capturedTmpPath = "";
+    const failingEncode = async (tmpPath: string) => {
+      capturedTmpPath = tmpPath;
+      fs.writeFileSync(tmpPath, "partial-garbage"); // simulate a started-but-incomplete encode
+      throw new Error("simulated encode failure");
+    };
+    let threw = false;
+    try {
+      await ensureEncodedOnce(failOutPath, failingEncode);
+    } catch {
+      threw = true;
+    }
+    assert(threw, "ensureEncodedOnce rethrows the encode error to the caller");
+    assert(!fs.existsSync(failOutPath), "outPath was never created on a failed encode (no rename happened)");
+    assert(!fs.existsSync(capturedTmpPath), "the temp file from the failed encode was cleaned up (unlinked)");
+
+    // Map must not be wedged by the failure — a subsequent call for the SAME key can still
+    // succeed with a real encode.
+    let secondAttemptRan = false;
+    await ensureEncodedOnce(failOutPath, async (tmpPath) => {
+      secondAttemptRan = true;
+      await runFfmpegAsync(["-y", "-t", "1", "-f", "lavfi", "-i", "color=c=0x12FF05:s=64x64:d=1:r=5", "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-an", tmpPath]);
+    });
+    assert(secondAttemptRan, "a later call for the same key after a failure is NOT blocked by the failed attempt");
+    assert(fs.existsSync(failOutPath), "the later successful attempt produced the cached file");
+  }
 
   console.log(`\n${passed} checks passed`);
 }

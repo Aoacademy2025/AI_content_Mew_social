@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
-import { resolveMaxSec, resolveHalfRes, previewBgOutputName, buildPreviewBgFfmpegArgs } from "@/lib/preview-bg-params";
+import { resolveMaxSec, resolveHalfRes, previewBgOutputName, buildPreviewBgFfmpegArgs, ensureEncodedOnce } from "@/lib/preview-bg-params";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -85,18 +85,26 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Same detection + key chain as the render composite (lib/chroma-key) so this transparent
-    // preview asset matches the final output. Auto-detects the real green shade (the old hardcoded
-    // 0x00FF00/0x00b140 passes catastrophically over-keyed 0x12FF05 HeyGen greens). Keys at full
-    // chroma (yuva444p) with an alpha feather, then encodes to a VP9 alpha webm.
-    const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
-    const keyColor = resolved.autoDetect ? await detectChromaColor(inputPath, ffmpeg) : resolved.color;
-    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build) — the
-    // keying path isn't fail-open, so resolve BEFORE building the filter. Cached per-process.
-    const feather = await featherSupported(ffmpeg);
-    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend }, feather);
-    console.log(`[preview-bg] chromakey removing green (color=${keyColor}) from entire video...`);
-    await runFfmpeg(ffmpeg, buildPreviewBgFfmpegArgs({ keyChain, maxSec, halfRes, inputPath, outPath }));
+    // ensureEncodedOnce (lib/preview-bg-params) gives us both: (1) an atomic write — `encode`
+    // below writes to a temp path in the same dir, renamed onto `outPath` only on success, so a
+    // crash/interleave can never leave a truncated file at the cache path readers hit; and (2) an
+    // in-process lock keyed by `outPath` — if a concurrent request (StrictMode double-effect,
+    // quick reopen, two tabs) is already encoding this exact key, we just await that single
+    // in-flight encode instead of racing ffmpeg onto the same destination.
+    await ensureEncodedOnce(outPath, async (tmpPath) => {
+      // Same detection + key chain as the render composite (lib/chroma-key) so this transparent
+      // preview asset matches the final output. Auto-detects the real green shade (the old
+      // hardcoded 0x00FF00/0x00b140 passes catastrophically over-keyed 0x12FF05 HeyGen greens).
+      // Keys at full chroma (yuva444p) with an alpha feather, then encodes to a VP9 alpha webm.
+      const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
+      const keyColor = resolved.autoDetect ? await detectChromaColor(inputPath, ffmpeg) : resolved.color;
+      // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build) —
+      // the keying path isn't fail-open, so resolve BEFORE building the filter. Cached per-process.
+      const feather = await featherSupported(ffmpeg);
+      const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend }, feather);
+      console.log(`[preview-bg] chromakey removing green (color=${keyColor}) from entire video...`);
+      await runFfmpeg(ffmpeg, buildPreviewBgFfmpegArgs({ keyChain, maxSec, halfRes, inputPath, outPath: tmpPath }));
+    });
 
     const outSize = fs.statSync(outPath).size;
     console.log(`[preview-bg] done: ${outFile} (${outSize} bytes)`);
