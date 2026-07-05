@@ -37,7 +37,23 @@ function uploadErrorMessage(status: number, data: UploadResponse) {
   return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
 }
 
-export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { onUrl: (url: string) => void; onPlanError?: (msg: string) => void; requirePortrait?: boolean }) {
+export function DirectAvatarUpload({
+  onUrl,
+  onPlanError,
+  requirePortrait,
+  label = "อัปโหลดไฟล์วิดีโอ green screen",
+  hint = "mp4 / mov / webm · รองรับถึง 10 นาที",
+  planRequiredMessage = "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป",
+  successMessage = "อัปโหลดสำเร็จ",
+}: {
+  onUrl: (url: string) => void;
+  onPlanError?: (msg: string) => void;
+  requirePortrait?: boolean;
+  label?: string;
+  hint?: string;
+  planRequiredMessage?: string;
+  successMessage?: string;
+}) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -70,7 +86,7 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
             if (data.url) { onUrl(data.url); resolve(); }
             else reject(new Error(data.error ?? "อัปโหลดไม่สำเร็จ"));
           } else if (xhr.status === 403 || data.code === "plan_required") {
-            reject(new PlanRequiredError(data.error ?? "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป"));
+            reject(new PlanRequiredError(planRequiredMessage));
           } else {
             // Non-JSON body (e.g. an HTML error page from the proxy) → give an
             // actionable message instead of an opaque "Upload failed".
@@ -81,7 +97,7 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
         xhr.onabort = () => reject(new Error("ยกเลิกการอัปโหลดแล้ว"));
         xhr.send(fd);
       });
-      toast.success("อัปโหลดสำเร็จ");
+      toast.success(successMessage);
     } catch (e) {
       if (e instanceof PlanRequiredError) {
         onPlanError?.(e.planMessage);
@@ -112,8 +128,8 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
       ) : (
         <>
           <Upload className="h-4 w-4 text-slate-600" />
-          <span className="text-[10px] text-slate-600">อัปโหลดไฟล์วิดีโอ green screen</span>
-          <span className="text-[9px] text-slate-700">mp4 / mov / webm · รองรับถึง 10 นาที</span>
+          <span className="text-[10px] text-slate-600">{label}</span>
+          <span className="text-[9px] text-slate-700">{hint}</span>
         </>
       )}
     </label>

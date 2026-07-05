@@ -74,6 +74,12 @@ export function EditorV2Shell() {
     if (!r.ok && r.message) toast.error(r.message);
   }
 
+  function handleNewProject() {
+    reset();
+    p.resetProject();
+    setStep(0);
+  }
+
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -169,9 +175,9 @@ export function EditorV2Shell() {
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
         isMobile ? (
-          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
+          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} />
         ) : (
-          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={() => { reset(); setStep(0); }} />
+          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} />
         )
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />

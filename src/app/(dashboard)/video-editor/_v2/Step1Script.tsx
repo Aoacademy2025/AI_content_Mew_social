@@ -7,7 +7,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { PenLine, Clapperboard, GripVertical } from "lucide-react";
+import { PenLine, Clapperboard, GripVertical, Crown } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
@@ -58,7 +58,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
-  const ctaDisabled = p.mode === "upload" ? !p.clipUrl : !lines.length;
+  const ctaDisabled = p.mode === "upload" ? (!p.canUploadOwnMedia || !p.clipUrl) : !lines.length;
   const primaryCta = (
     <BtnPrimary
       className="w-full"
@@ -100,7 +100,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-6"
             style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
           >
-            {p.clipUrl ? (
+            {!p.canUploadOwnMedia ? (
+              <LockedUploadPanel />
+            ) : p.clipUrl ? (
               <>
                 <video
                   src={p.clipUrl}
@@ -122,7 +124,14 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
               </>
             ) : (
               <div className="w-full max-w-[420px]">
-                <DirectAvatarUpload onUrl={(u) => p.setClipUrl(u)} />
+                <DirectAvatarUpload
+                  onUrl={(u) => p.setClipUrl(u)}
+                  requirePortrait
+                  label="อัปโหลดคลิปแนวตั้งของคุณ"
+                  hint="mp4 / mov / webm · มีเสียงพูดในคลิป"
+                  planRequiredMessage="อัปโหลดคลิปส่วนตัวใช้ได้เฉพาะแผน Pro ขึ้นไป"
+                  successMessage="อัปโหลดคลิปสำเร็จ"
+                />
                 <p style={{ fontSize: 11, color: color.textFaint, marginTop: 10, lineHeight: 1.7, textAlign: "center" }}>
                   อัปคลิปแนวตั้งที่มีเสียงพูดของคุณ — ระบบจะถอดซับไทยจากเสียง
                   แล้วแทรกบีโรลให้อัตโนมัติ (เสียงเดิมต่อเนื่องทั้งคลิป)
@@ -168,7 +177,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             {p.mode === "upload" ? "โหมดใช้คลิปของคุณ" : lines.length ? "ระบบแบ่งเซ็กเมนต์ให้แล้ว" : "เซ็กเมนต์จะขึ้นที่นี่"}
           </div>
           <div style={{ fontSize: 11, color: color.textFaint, marginTop: 2 }}>
-            {p.mode === "upload" ? "ซับ + บีโรลจะถูกสร้างจากเสียงในคลิปหลังกดเรนเดอร์" : "ลากการ์ดเพื่อสลับลำดับ"}
+            {p.mode === "upload"
+              ? p.canUploadOwnMedia ? "ซับ + บีโรลจะถูกสร้างจากเสียงในคลิปหลังกดเรนเดอร์" : "อัปโหลดคลิปส่วนตัวเปิดให้ Pro ขึ้นไป"
+              : "ลากการ์ดเพื่อสลับลำดับ"}
           </div>
         </div>
 
@@ -211,7 +222,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
               style={{ fontSize: 12, color: color.textFaintest, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 120 }}
             >
               {p.mode === "upload"
-                ? <>อัปโหลดคลิปทางซ้าย<br />แล้วกด &quot;ถัดไป&quot; เพื่อเลือกบีโรล</>
+                ? p.canUploadOwnMedia
+                  ? <>อัปโหลดคลิปทางซ้าย<br />แล้วกด &quot;ถัดไป&quot; เพื่อเลือกบีโรล</>
+                  : <>อัปเกรดเป็น Pro<br />เพื่ออัปโหลดคลิปส่วนตัว</>
                 : <>เริ่มพิมพ์สคริปต์ทางซ้าย<br />ระบบจะแบ่งเซ็กเมนต์ให้อัตโนมัติ</>}
             </div>
           )}
@@ -238,6 +251,36 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
       {primaryCta}
     </div>
     </>
+  );
+}
+
+function LockedUploadPanel() {
+  return (
+    <div className="flex w-full max-w-[430px] flex-col items-center text-center" style={{ gap: 12 }}>
+      <div
+        className="flex h-11 w-11 items-center justify-center rounded-full"
+        style={{ background: "rgba(251,191,36,.12)", color: color.warning, border: "1px solid rgba(251,191,36,.28)" }}
+      >
+        <Crown size={18} strokeWidth={1.8} />
+      </div>
+      <div className="flex flex-col" style={{ gap: 5 }}>
+        <span style={{ font: `500 13.5px ${font.heading}`, color: color.text }}>อัปโหลดคลิปส่วนตัวใช้ได้ใน Pro</span>
+        <span style={{ fontSize: 11.5, lineHeight: 1.65, color: color.textFaint }}>
+          แผน Free ยังสร้างวิดีโอจากสคริปต์และใช้เพลงระบบได้ แต่โหมดอัปคลิปของตัวเองต้องอัปเกรดก่อน
+        </span>
+      </div>
+      <a
+        href="/pricing"
+        style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          minHeight: 36, padding: "0 16px", borderRadius: radius.control,
+          background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+          color: color.primary300, fontSize: 12, fontWeight: 500,
+        }}
+      >
+        ดูแพ็ก Pro
+      </a>
+    </div>
   );
 }
 

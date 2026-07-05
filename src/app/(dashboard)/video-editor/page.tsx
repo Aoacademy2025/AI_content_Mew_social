@@ -83,6 +83,12 @@ const STEP_EVENT_LABELS: Record<string, string> = {
 
 const SNAP_MS = 120;
 
+function browserStorage() {
+  if (typeof window === "undefined") return null;
+  const storage = window.localStorage;
+  return storage && typeof storage.getItem === "function" ? storage : null;
+}
+
 type RenderProgressPayload = {
   progress?: number;
   videoUrl?: string | null;
@@ -4646,8 +4652,9 @@ function LegacyVideoEditorPage() {
                 runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
                 onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
                 projectName={projectName} onSaveTemplate={() => {
-                  const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-                  localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
+                  const storage = browserStorage();
+                  const templates = JSON.parse(storage?.getItem("ve_templates_v1") ?? "[]");
+                  storage?.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
                   toast.success("Template saved");
                 }}
                 onSaveAvatarLayout={onSaveAvatarLayout}
@@ -4714,8 +4721,9 @@ function LegacyVideoEditorPage() {
             runAvatarPipeline={runAvatarPipeline} pipeRenderedVideoUrl={videoUrl || preRenderUrl || pipe.current.renderedVideoUrl}
             onAvatarPrimary={onAvatarPrimary} avatarPrimaryLabel={avatarPrimaryLabel} avatarPrimaryIsGen={avatarPrimaryIsGen}
             projectName={projectName} onSaveTemplate={() => {
-              const templates = JSON.parse(localStorage.getItem("ve_templates_v1") ?? "[]");
-              localStorage.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
+              const storage = browserStorage();
+              const templates = JSON.parse(storage?.getItem("ve_templates_v1") ?? "[]");
+              storage?.setItem("ve_templates_v1", JSON.stringify([{ id: `tpl_${Date.now()}`, name: projectName, savedAt: Date.now(), style: { fontFamily: subFontFamily, fontSize: subFontSize, fontWeight: subFontWeight, color: subColor, accentColor: subAccentColor, preset: subPreset, effect: subEffect, position: subPosition, shadow: subShadow, outline: subOutline, outlineSize: subOutlineSize } }, ...templates].slice(0, 20)));
               toast.success("Template saved");
             }}
             onSaveAvatarLayout={onSaveAvatarLayout}
