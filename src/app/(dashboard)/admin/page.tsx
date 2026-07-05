@@ -1392,7 +1392,7 @@ export default function AdminDashboardPage() {
                 </div>
                 <CardTitle className="mt-2 text-sm" style={{ color: "var(--ui-text-primary)" }}>สถิติแผนการใช้งาน</CardTitle>
                 <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
-                  {loading ? "..." : `${stats?.paidUsers ?? 0} Paid · ${stats?.freeUsers ?? 0} Free`}
+                  {loading ? "..." : `${stats?.paidUsers ?? 0} แผน PRO/BUSINESS (รวม trial/comp) · ${stats?.freeUsers ?? 0} Free`}
                 </p>
               </CardHeader>
             </Card>

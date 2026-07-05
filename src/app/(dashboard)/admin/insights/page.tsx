@@ -89,7 +89,7 @@ type ReconcileApplyResponse = { error?: string; applied?: { completed?: number; 
 
 const metricHelp: Record<string, string> = {
   "Health Score": "คะแนนสุขภาพระบบ 0–100 — คิดเฉพาะ error ของระบบเรา (ไม่รวมคีย์ลูกค้า/noise) + render p95 + video completion + งานค้าง ยิ่งใกล้ 100 ยิ่งดี",
-  "Error ระบบ": "บั๊กของเราที่ต้องแก้โค้ด (ตัด noise และปัญหาคีย์ลูกค้าออกแล้ว) — กองนี้คือสิ่งที่ทีม dev ต้องไล่แก้",
+  "Error telemetry": "เหตุการณ์ error จาก telemetry ฝั่ง client+server (ตัด noise/คีย์ลูกค้า/quota ออกแล้ว) — เป็น 'สัญญาณ' ไม่ใช่จำนวนบั๊กชี้ขาด เพราะ editor v2 แทบไม่ยิง telemetry. จำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) ดูที่แผง 'งานจริง (server)' ซึ่งนับจาก VideoJob",
   "Job outcomes": "ผลงานจริงจาก VideoJob ฝั่ง server (status เซิร์ฟเวอร์เขียน ไม่หายตอนปิดแท็บ) — บอกว่างานที่ล้มเหลวพังที่ขั้นไหน และเป็นบั๊กเราหรือคีย์ลูกค้า",
   "Drop-off": "เปอร์เซ็นต์ session ที่ไปไม่ถึงขั้นถัดไป — นับต่อ session หน่วยเดียวกันทุกขั้น จึงเทียบกันได้จริง",
   "Activation": "สัดส่วนคนที่ได้ 'คุณค่าครั้งแรก' = ได้วิดีโอเสร็จอย่างน้อย 1 ตัว เป็นตัวชี้วัดว่าคนใช้ product ได้จริงไหม",
@@ -303,6 +303,9 @@ export default function AdminInsightsPage() {
                   💡 <span className="font-semibold">สำหรับ CEO:</span> ตัวเลขสุขภาพธุรกิจตัวแรกที่ต้องดู — ถ้า &ldquo;ได้วิดีโอแรก %&rdquo; ตก = ปัญหาใหญ่กว่า metric ระบบทุกตัวรวมกัน → ทุ่มแก้ activation ก่อน
                   {activation.internalTeam > 0 && <span className="text-sky-100/50"> · หมายเหตุ: ตัดบัญชีทีมงาน (@aoacademy) {formatNumber(activation.internalTeam)} บัญชีออกแล้ว · นับรวมนักเรียน workshop (ลูกค้าจริง)</span>}
                 </p>
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                  หมายเหตุ: &ldquo;จ่ายจริง&rdquo; = ลูกค้าที่จ่ายเงินสดจริง · MRR (ดูแผงรายได้ด้านบน) อิงราคา list — สมาชิก founding/คูปองนับเต็มราคา จึง<span className="font-semibold text-slate-400">ไม่ใช่เงินสดที่เก็บได้จริง</span> · ดูเงินสดจริงที่ &ldquo;เงินสดเข้าจริง&rdquo; (Cash-in)
+                </p>
               </section>
             )}
 
@@ -346,17 +349,18 @@ export default function AdminInsightsPage() {
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MetricTile label="Health Score" value={`${current.totals.healthScore}`} helper={`ช่วงก่อนหน้า ${previous?.totals.healthScore ?? 0}`} icon={Gauge} tone={statusTone(current.totals.healthScore)} />
               <MetricTile label="Video completed" value={`${current.totals.videoCompletionPct}%`} helper={`${formatNumber(current.totals.videoJobs.completed)}/${formatNumber(current.totals.videoJobs.total)} jobs · output ready ${formatNumber(current.totals.videoJobs.outputReady)}`} icon={CheckCircle2} tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300" />
-              <MetricTile label="Error ระบบ" value={formatNumber(current.totals.errors)} helper={`ระบบเรา ${formatNumber(current.totals.errors)} · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · โควต้า ${formatNumber(current.totals.quotaErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)}`} icon={AlertTriangle} tone="border-rose-400/20 bg-rose-500/12 text-rose-300" />
+              <MetricTile label="Error telemetry" value={formatNumber(current.totals.errors)} helper={`เหตุการณ์ telemetry (client+server) · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · โควต้า ${formatNumber(current.totals.quotaErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)} · บั๊กชี้ขาดดูแผง 'งานจริง (server)'`} icon={AlertTriangle} tone="border-rose-400/20 bg-rose-500/12 text-rose-300" />
               <MetricTile label="เปิด Editor (ครั้ง)" value={formatNumber(current.totals.editorOpens)} helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions · started ${formatNumber(current.totals.pipelineStarts)} · jobs ${formatNumber(current.totals.pipelineJobs)}`} icon={Users} tone="border-sky-400/20 bg-sky-500/12 text-sky-300" />
             </section>
 
             {/* ── 5. Server job outcomes ────────────────────────────────────────── */}
             {jobOutcomes && jobOutcomes.total > 0 && (
               <Panel>
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">งานจริง (server) — ล้มเหลวที่ขั้นไหน <InfoTip label="Job outcomes" /></h2>
+                <div className="mb-1 flex items-center justify-between gap-3">
+                  <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">งานจริง (server) — บั๊กระบบตัวจริง (งานเรนเดอร์ที่ล้มเหลว) <InfoTip label="Job outcomes" /></h2>
                   <CheckCircle2 className="h-5 w-5 text-emerald-300" />
                 </div>
+                <p className="mb-4 text-xs text-slate-500">แผงนี้คือจำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) — นับจาก VideoJob ที่ล้มเหลวจริงฝั่ง server ไม่ใช่ telemetry ฝั่ง client</p>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <div className="rounded-md border border-white/10 bg-black/20 p-3"><div className="text-xs text-slate-500">งานทั้งหมด</div><div className="mt-1 text-2xl font-semibold text-white">{formatNumber(jobOutcomes.total)}</div><div className="mt-1 text-xs text-slate-500">done {formatNumber(jobOutcomes.done)} · processing {formatNumber(jobOutcomes.processing)}</div></div>
                   <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3"><div className="text-xs text-rose-300/80">ล้มเหลว: บั๊กระบบ</div><div className="mt-1 text-2xl font-semibold text-rose-200">{formatNumber(jobOutcomes.systemFailed)}</div><div className="mt-1 text-xs text-rose-300/70">ของเรา → แก้โค้ด</div></div>
@@ -457,9 +461,10 @@ export default function AdminInsightsPage() {
 
             {/* ── 8. System errors ──────────────────────────────────────────────── */}
             <Panel>
-              <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">Error ระบบ (ที่ต้องแก้) <InfoTip label="Error ระบบ" /></h2>
+              <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">Error telemetry — เหตุการณ์ที่ต้องไล่ดู (client+server) <InfoTip label="Error telemetry" /></h2>
+              <p className="mt-1 text-xs text-slate-500">จาก telemetry — เป็นสัญญาณ; จำนวนบั๊กชี้ขาดดูแผง &ldquo;งานจริง (server)&rdquo; ด้านบน</p>
               <div className="mt-4 divide-y divide-white/10">
-                {current.errors.length === 0 && <div className="py-6 text-sm text-emerald-300/80">ไม่มี error ระบบในช่วงนี้ 🎉 (ปัญหาคีย์ลูกค้า/noise แยกไว้ด้านล่าง)</div>}
+                {current.errors.length === 0 && <div className="py-6 text-sm text-emerald-300/80">ไม่มี error telemetry ในช่วงนี้ 🎉 (คีย์ลูกค้า/quota/noise แยกไว้ด้านล่าง)</div>}
                 {current.errors.map((item) => (
                   <div key={`${item.stepLabel}:${item.label}`} className="grid gap-2 py-3 sm:grid-cols-[110px_1fr_80px] sm:items-center">
                     <div className="rounded-full bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-300">{item.stepLabel}</div>
