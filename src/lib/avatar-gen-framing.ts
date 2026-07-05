@@ -32,8 +32,11 @@ export const AVATAR_GEN_FALLBACK_DIMENSION = { width: 720, height: 1280 };
  * True when a HeyGen /v2/video/generate error body/message indicates the account/plan
  * doesn't support the requested (1080) resolution — the ONLY case call sites should
  * retry at AVATAR_GEN_FALLBACK_DIMENSION. Matched case-insensitively; any other error
- * (auth, quota, rate limit, network, etc.) must be left unchanged.
+ * (auth, quota, rate limit, network, etc.) must be left unchanged. No bare "plan" match —
+ * that false-positived on unrelated billing/quota errors ("upgrade your plan", "not
+ * included in your plan"), triggering a doomed 720p retry + misleading warn log.
+ * Plan-tier messages that actually reference 1080 still match via the "1080" alternative.
  */
 export function isResolutionFallbackError(raw: string): boolean {
-  return /resolution|dimension|1080|plan/i.test(raw);
+  return /resolution|dimension|1080/i.test(raw);
 }
