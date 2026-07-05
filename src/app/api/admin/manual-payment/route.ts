@@ -48,6 +48,10 @@ export async function POST(req: Request) {
     const rawEmail = String(body?.email ?? "").trim();
     if (!rawEmail) return NextResponse.json({ error: "ต้องระบุอีเมลผู้ใช้" }, { status: 400 });
 
+    if (body?.note !== undefined && body?.note !== null && typeof body.note !== "string") {
+      return NextResponse.json({ error: "หมายเหตุไม่ถูกต้อง" }, { status: 400 });
+    }
+
     const input: ManualPaymentInput = {
       plan: body?.plan,
       billingPeriod: body?.billingPeriod,
@@ -71,6 +75,30 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : "ข้อมูลไม่ถูกต้อง" },
         { status: 400 },
+      );
+    }
+
+    // 2b) Idempotency guard: a double-click / two-tab submit would otherwise create two Payments
+    //     AND (with markFounder) double-claim a founder seat (no per-user unique on
+    //     FoundingReservation). Block it BEFORE any seat is claimed or Payment written.
+    const dupWindowMs = 60_000;
+    const recentDup = await prisma.payment.findFirst({
+      where: {
+        userId: targetId,
+        manual: true,
+        status: "PAID",
+        amount: norm.amountSatang,
+        createdAt: { gte: new Date(Date.now() - dupWindowMs) },
+      },
+    });
+    if (recentDup) {
+      return NextResponse.json(
+        {
+          error: "duplicate",
+          message:
+            "ดูเหมือนเพิ่งบันทึกรายการเดียวกันไปเมื่อครู่ (กันกดซ้ำ) — ถ้าตั้งใจบันทึกซ้ำจริง รอสักครู่แล้วลองใหม่",
+        },
+        { status: 409 },
       );
     }
 

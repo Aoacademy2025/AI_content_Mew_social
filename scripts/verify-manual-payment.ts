@@ -79,6 +79,23 @@ function expectThrow(name: string, input: ManualPaymentInput, expectMsg?: string
   check("paidAt within +1d skew accepted", r.periodDays === 365);
 }
 
+// ── Lower bound on paidAtMs: reject dates before 2020-01-01 (typo years like 0202) ──
+{
+  const yearAgo = NOW - 365 * DAY_MS;
+  const r = normalizeManualPayment(base({ paidAtMs: yearAgo }), NOW);
+  check("paidAt a year ago still accepted", r.planExpiresAtMs === yearAgo + 365 * DAY_MS);
+}
+expectThrow(
+  "reject paidAt before 2020-01-01",
+  base({ paidAtMs: Date.UTC(2019, 11, 31) }),
+  "วันที่จ่ายไม่ถูกต้อง (เก่าเกินไป)",
+);
+expectThrow(
+  "reject paidAt typo year (0202 → epoch-era ms)",
+  base({ paidAtMs: 202 }),
+  "วันที่จ่ายไม่ถูกต้อง (เก่าเกินไป)",
+);
+
 // ── Rejections ───────────────────────────────────────────────────────────────
 expectThrow("reject amount = 0", base({ amountBaht: 0 }), "จำนวนเงินต้องมากกว่า 0");
 expectThrow("reject amount < 0", base({ amountBaht: -5 }), "จำนวนเงินต้องมากกว่า 0");

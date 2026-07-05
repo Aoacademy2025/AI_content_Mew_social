@@ -10,6 +10,7 @@
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MIN_PAID_AT_MS = 1_577_836_800_000; // 2020-01-01T00:00:00Z — catches typo years (e.g. 0202)
 
 export type ManualPaymentPlan = "PRO" | "BUSINESS";
 export type ManualPaymentPeriod = "monthly" | "annual";
@@ -48,6 +49,9 @@ export function normalizeManualPayment(
   // Allow up to +1 day of clock skew but reject a genuinely-future payment date.
   if (!Number.isFinite(input.paidAtMs) || input.paidAtMs > nowMs + DAY_MS)
     throw new Error("วันที่จ่ายไม่ถูกต้อง");
+  // Reject a date before 2020-01-01 — catches typo years (e.g. 0202) that would otherwise
+  // silently store a 1970-era date.
+  if (input.paidAtMs < MIN_PAID_AT_MS) throw new Error("วันที่จ่ายไม่ถูกต้อง (เก่าเกินไป)");
 
   const periodDays = input.billingPeriod === "annual" ? 365 : 30;
   const amountSatang = Math.round(input.amountBaht * 100);
