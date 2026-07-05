@@ -29,7 +29,7 @@ type CountRow = { label: string; count: number };
 type InsightSummary = {
   totals: {
     sessions: number; users: number; editorSessions: number; editorOpens: number; pipelineJobs: number;
-    pipelineStarts: number; events: number; errors: number; byokErrorCount: number; rawErrors: number;
+    pipelineStarts: number; events: number; errors: number; byokErrorCount: number; quotaErrorCount: number; rawErrors: number;
     noiseEvents: number; frontendErrors: number; serverErrors: number; renderSuccessPct: number;
     videoCompletionPct: number; renderTaskSuccessPct: number; healthScore: number;
     funnelMode: "run" | "event" | "session" | "job"; funnelRuns: number;
@@ -72,8 +72,8 @@ type RenderStats = {
 
 type JobOutcomes = {
   total: number; done: number; failed: number; processing: number; queued: number;
-  systemFailed: number; byokFailed: number; noiseFailed: number;
-  failedByStage: Array<{ stage: string; stageLabel: string; kind: "system" | "byok" | "noise"; count: number; sample: string }>;
+  systemFailed: number; byokFailed: number; quotaFailed: number; noiseFailed: number;
+  failedByStage: Array<{ stage: string; stageLabel: string; kind: "system" | "byok" | "quota" | "noise"; count: number; sample: string }>;
 };
 
 type InsightsResponse = {
@@ -346,7 +346,7 @@ export default function AdminInsightsPage() {
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MetricTile label="Health Score" value={`${current.totals.healthScore}`} helper={`ช่วงก่อนหน้า ${previous?.totals.healthScore ?? 0}`} icon={Gauge} tone={statusTone(current.totals.healthScore)} />
               <MetricTile label="Video completed" value={`${current.totals.videoCompletionPct}%`} helper={`${formatNumber(current.totals.videoJobs.completed)}/${formatNumber(current.totals.videoJobs.total)} jobs · output ready ${formatNumber(current.totals.videoJobs.outputReady)}`} icon={CheckCircle2} tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300" />
-              <MetricTile label="Error ระบบ" value={formatNumber(current.totals.errors)} helper={`ระบบเรา ${formatNumber(current.totals.errors)} · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)}`} icon={AlertTriangle} tone="border-rose-400/20 bg-rose-500/12 text-rose-300" />
+              <MetricTile label="Error ระบบ" value={formatNumber(current.totals.errors)} helper={`ระบบเรา ${formatNumber(current.totals.errors)} · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · โควต้า ${formatNumber(current.totals.quotaErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)}`} icon={AlertTriangle} tone="border-rose-400/20 bg-rose-500/12 text-rose-300" />
               <MetricTile label="เปิด Editor (ครั้ง)" value={formatNumber(current.totals.editorOpens)} helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions · started ${formatNumber(current.totals.pipelineStarts)} · jobs ${formatNumber(current.totals.pipelineJobs)}`} icon={Users} tone="border-sky-400/20 bg-sky-500/12 text-sky-300" />
             </section>
 
@@ -357,9 +357,10 @@ export default function AdminInsightsPage() {
                   <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">งานจริง (server) — ล้มเหลวที่ขั้นไหน <InfoTip label="Job outcomes" /></h2>
                   <CheckCircle2 className="h-5 w-5 text-emerald-300" />
                 </div>
-                <div className="grid gap-3 sm:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <div className="rounded-md border border-white/10 bg-black/20 p-3"><div className="text-xs text-slate-500">งานทั้งหมด</div><div className="mt-1 text-2xl font-semibold text-white">{formatNumber(jobOutcomes.total)}</div><div className="mt-1 text-xs text-slate-500">done {formatNumber(jobOutcomes.done)} · processing {formatNumber(jobOutcomes.processing)}</div></div>
                   <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3"><div className="text-xs text-rose-300/80">ล้มเหลว: บั๊กระบบ</div><div className="mt-1 text-2xl font-semibold text-rose-200">{formatNumber(jobOutcomes.systemFailed)}</div><div className="mt-1 text-xs text-rose-300/70">ของเรา → แก้โค้ด</div></div>
+                  <div className="rounded-md border border-violet-400/20 bg-violet-500/[0.07] p-3"><div className="text-xs text-violet-300/80">ชนเพดานแผน (โควต้า)</div><div className="mt-1 text-2xl font-semibold text-violet-200">{formatNumber(jobOutcomes.quotaFailed)}</div><div className="mt-1 text-xs text-violet-300/70">ชนเพดานนาที/คลิป — สัญญาณราคา/อัปเกรด ไม่ใช่บั๊ก</div></div>
                   <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.07] p-3"><div className="text-xs text-amber-300/80">ล้มเหลว: คีย์ลูกค้า</div><div className="mt-1 text-2xl font-semibold text-amber-200">{formatNumber(jobOutcomes.byokFailed)}</div><div className="mt-1 text-xs text-amber-300/70">BYOK → แจ้งลูกค้า</div></div>
                   <div className="rounded-md border border-white/10 bg-black/20 p-3"><div className="text-xs text-slate-500">ล้มเหลว: noise</div><div className="mt-1 text-2xl font-semibold text-slate-300">{formatNumber(jobOutcomes.noiseFailed)}</div><div className="mt-1 text-xs text-slate-600">superseded/cancel</div></div>
                 </div>
@@ -367,7 +368,7 @@ export default function AdminInsightsPage() {
                   <div className="mt-4 divide-y divide-white/10">
                     {jobOutcomes.failedByStage.map((row) => (
                       <div key={`${row.stage}:${row.kind}`} className="grid gap-2 py-3 sm:grid-cols-[150px_1fr_56px] sm:items-center">
-                        <div className={cn("inline-flex w-fit items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold", row.kind === "system" ? "bg-rose-500/10 text-rose-300" : row.kind === "byok" ? "bg-amber-500/10 text-amber-300" : "bg-white/10 text-slate-300")}>{row.stageLabel} · {row.kind === "system" ? "ระบบ" : row.kind === "byok" ? "คีย์ลูกค้า" : "noise"}</div>
+                        <div className={cn("inline-flex w-fit items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold", row.kind === "system" ? "bg-rose-500/10 text-rose-300" : row.kind === "quota" ? "bg-violet-500/10 text-violet-300" : row.kind === "byok" ? "bg-amber-500/10 text-amber-300" : "bg-white/10 text-slate-300")}>{row.stageLabel} · {row.kind === "system" ? "ระบบ" : row.kind === "quota" ? "ชนเพดานแผน" : row.kind === "byok" ? "คีย์ลูกค้า" : "noise"}</div>
                         <div className="min-w-0 truncate text-sm text-slate-300">{row.sample || "-"}</div>
                         <div className="text-right text-lg font-semibold text-white">{formatNumber(row.count)}</div>
                       </div>

@@ -273,13 +273,29 @@ function benignTelemetryReason(row: TelemetryRow): string | null {
   return null;
 }
 
-// P2 กฎ #4: แยก error ฝั่ง "คีย์ลูกค้า" (BYOK) ออกจาก "ระบบเรา" — 429/503/quota/billing/คีย์ผิด
-// = ปัญหาของลูกค้า ไม่ใช่บั๊กระบบ → ไม่หัก Health Score และไม่ปนกับ error ที่ dev ต้องแก้
+// OUR own plan caps (minute/clip quota) — an EXPECTED business rule (PRO 15-min cap thrown as 409),
+// not a bug and not a customer-key fault. Must NOT inflate "ระบบเรา" (system) OR "คีย์ลูกค้า" (byok);
+// it is a pricing/upgrade signal. Classified BEFORE byok so a plan cap never reads as a BYOK error.
+export function quotaReasonFromText(text: string): string | null {
+  if (/QUOTA_MINUTES|เกินโควต้านาที|เกินนาที/i.test(text)) return "ชนเพดานแผน: โควต้านาที";
+  if (/QUOTA_CLIPS|QUOTA_[A-Z]+|เกินโควต้าคลิป|clip quota/i.test(text)) return "ชนเพดานแผน: โควต้าคลิป";
+  return null;
+}
+
+// P2 กฎ #4: แยก error ฝั่ง "คีย์ลูกค้า" (BYOK) ออกจาก "ระบบเรา" — 429/503/RESOURCE_EXHAUSTED/rate-limit/
+// billing/คีย์ผิด = ปัญหาของลูกค้า ไม่ใช่บั๊กระบบ. NOTE: bare "quota" was removed — our plan caps
+// (QUOTA_MINUTES/QUOTA_CLIPS) now belong to quotaReasonFromText, not to BYOK.
 function byokReasonFromText(text: string): string | null {
-  if (/\b429\b|\b503\b|quota|RESOURCE_EXHAUSTED|too many requests|rate limit/i.test(text)) return "คีย์ลูกค้า: เกินโควต้า/rate limit";
+  if (/\b429\b|\b503\b|RESOURCE_EXHAUSTED|too many requests|rate limit/i.test(text)) return "คีย์ลูกค้า: เกินโควต้า/rate limit";
   if (/ผูกบัตร|billing/i.test(text)) return "คีย์ลูกค้า: ยังไม่ผูกบัตร/billing";
   if (/api[\s_-]?key|API_KEY_INVALID|invalid key|api key not valid|unauthorized|permission denied/i.test(text)) return "คีย์ลูกค้า: คีย์ผิด/ไม่มีสิทธิ์";
   return null;
+}
+
+function quotaErrorReason(row: TelemetryRow): string | null {
+  const props = parseProps(row);
+  const text = [row.name, row.status, props.message, props.reason, props.errorName].filter(Boolean).join(" ");
+  return quotaReasonFromText(text);
 }
 
 function byokErrorReason(row: TelemetryRow): string | null {
@@ -288,9 +304,14 @@ function byokErrorReason(row: TelemetryRow): string | null {
   return byokReasonFromText(text);
 }
 
-function classifyJobError(message: string | null): "system" | "byok" | "noise" {
+// Classify a VideoJob failure. Order: noise → quota (our plan cap) → managed-key rate-limit → byok →
+// system. `managed` = MANAGED_GEMINI: when on, a 429/RESOURCE_EXHAUSTED/rate-limit is OUR managed key
+// hitting a ceiling (a capacity/infra signal = system), NOT a customer key. Pure + testable.
+export function classifyJobError(message: string | null, managed: boolean): "system" | "byok" | "quota" | "noise" {
   const text = message ?? "";
   if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
+  if (quotaReasonFromText(text)) return "quota";
+  if (managed && /\b429\b|RESOURCE_EXHAUSTED|rate limit/i.test(text)) return "system";
   if (byokReasonFromText(text)) return "byok";
   return "system";
 }
@@ -519,9 +540,12 @@ function summarize(
   const rawErrorRows = rows.filter((row) => row.category === "error" || row.status === "error" || /failed|error/i.test(row.name));
   const noiseRows = rawErrorRows.filter((row) => benignTelemetryReason(row));
   const realErrorRows = rawErrorRows.filter((row) => !benignTelemetryReason(row));
-  const byokErrorRows = realErrorRows.filter((row) => byokErrorReason(row));
-  // errorRows = "ระบบเรา" เท่านั้น (ตัด noise + คีย์ลูกค้าออก) → ใช้คิด Health Score v2
-  const errorRows = realErrorRows.filter((row) => !byokErrorReason(row));
+  // Split our plan-cap (quota) rows out FIRST — they're a pricing/upgrade signal, never a bug or a
+  // customer-key fault, so they must not inflate byok OR system (same fix as the VideoJob path).
+  const quotaErrorRows = realErrorRows.filter((row) => quotaErrorReason(row));
+  const byokErrorRows = realErrorRows.filter((row) => !quotaErrorReason(row) && byokErrorReason(row));
+  // errorRows = "ระบบเรา" เท่านั้น (ตัด noise + คีย์ลูกค้า + quota ออก) → ใช้คิด Health Score v2
+  const errorRows = realErrorRows.filter((row) => !quotaErrorReason(row) && !byokErrorReason(row));
   const frontendErrorRows = errorRows.filter((row) => row.name === "frontend_error" || row.source === "client");
   const serverErrorRows = errorRows.filter((row) => row.source === "server");
   const serverRenderRows = rows.filter((row) => row.name === "render_server_done");
@@ -543,7 +567,7 @@ function summarize(
     const entry = stepMap.get(row.step) ?? { durations: [], started: 0, done: 0, error: 0, skipped: 0 };
     if (row.name === "pipeline_step_started") entry.started++;
     if (row.name === "pipeline_step_done") entry.done++;
-    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row) && !byokErrorReason(row)) entry.error++;
+    if (row.name === "pipeline_step_error" && !benignTelemetryReason(row) && !byokErrorReason(row) && !quotaErrorReason(row)) entry.error++;
     if (row.name === "pipeline_step_skipped") entry.skipped++;
     if (row.durationMs != null && row.durationMs >= 0) entry.durations.push(row.durationMs);
     stepMap.set(row.step, entry);
@@ -670,6 +694,7 @@ function summarize(
       events: rows.length,
       errors: errorRows.length,
       byokErrorCount: byokErrorRows.length,
+      quotaErrorCount: quotaErrorRows.length,
       rawErrors: rawErrorRows.length,
       noiseEvents: noiseRows.length,
       frontendErrors: frontendErrorRows.length,
@@ -858,10 +883,12 @@ export async function GET(req: Request) {
     };
     const renderStats = summarizeRenderJobs(renderJobRows);
 
+    // Under managed Gemini a 429/RESOURCE_EXHAUSTED is OUR key (capacity), not a customer key.
+    const managedGemini = process.env.MANAGED_GEMINI === "1";
     const failedJobs = currentJobs.filter((j) => j.status === "failed");
-    const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "noise"; count: number; sample: string }>();
+    const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "quota" | "noise"; count: number; sample: string }>();
     for (const job of failedJobs) {
-      const kind = classifyJobError(job.errorMessage);
+      const kind = classifyJobError(job.errorMessage, managedGemini);
       const key = `${job.currentStep ?? "unknown"}:${kind}`;
       const entry = failedByStageMap.get(key) ?? { stage: job.currentStep ?? "unknown", stageLabel: jobStepLabel(job.currentStep), kind, count: 0, sample: "" };
       entry.count++;
@@ -874,9 +901,10 @@ export async function GET(req: Request) {
       failed: failedJobs.length,
       processing: currentJobs.filter((j) => j.status === "processing").length,
       queued: currentJobs.filter((j) => j.status === "queued").length,
-      systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "system").length,
-      byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "byok").length,
-      noiseFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage) === "noise").length,
+      systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "system").length,
+      byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "byok").length,
+      quotaFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "quota").length,
+      noiseFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "noise").length,
       failedByStage: Array.from(failedByStageMap.values()).sort((a, b) => b.count - a.count),
     };
 
