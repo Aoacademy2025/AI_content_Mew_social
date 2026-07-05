@@ -32,6 +32,21 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   const frameRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
+  // ความสูงจริงของแถบคุมล่าง — เฟรมวิดีโอต้องถูก "ย่อให้พ้นแถบ" ไม่ใช่ให้แถบทับเฟรม:
+  // ถ้าแถบทับ ขอบล่างที่ผู้ใช้เห็น = ขอบบนของแถบ ไม่ใช่ขอบล่างวิดีโอจริง → จัดชิดล่างแล้ว
+  // ของจริงลอย (บั๊ก QA 07-06). วัดด้วย ResizeObserver เพราะแถบเป็น 2 แถว สูงตามฟอนต์/ความกว้าง.
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const [controlsH, setControlsH] = useState(96);
+  useEffect(() => {
+    const el = controlsRef.current;
+    if (!el) return;
+    const update = () => setControlsH(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Live keyed-avatar preview (spec 07-05): fetch a fast, half-res, alpha webm of the avatar so
   // the box shows the REAL keyed subject while dragging, instead of an empty dashed box. Any
   // failure — fetch error, keying error, unsupported browser — silently falls back to today's
@@ -188,24 +203,27 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   }
 
   return (
-    <div className="absolute inset-0 z-20" style={{ borderRadius: radius.cardLg, overflow: "hidden" }}>
-      {/* ชั้นหลัง (backdrop): base render ก่อน composite อวตาร — เห็นฉาก/บีรอลจริง แทนที่จะเห็น
-          อวตารเก่าที่ baked ไว้ในพรีวิวเดิม (ผ่านสครีมโปร่งแสง). paused ที่เฟรมแรกสุด. */}
-      <video
-        src={bgVideoUrl}
-        muted
-        playsInline
-        preload="metadata"
-        className="absolute inset-0 h-full w-full object-cover"
-        onLoadedMetadata={(e) => {
-          const v = e.currentTarget;
-          try { v.currentTime = Math.min(0.05, v.duration || 0.05); } catch { /* ignore */ }
-        }}
-      />
-      <div className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }} />
-
-      {/* กรอบลาก = พื้นที่วิดีโอเต็ม 1:1 — normalizedBox คิด % จาก canvas เต็ม (สูตรเดียวกับ ffmpeg) ห้ามให้แถบคุมกินความสูงกรอบนี้ */}
-      <div ref={frameRef} className="absolute inset-0">
+    <div className="absolute inset-0 z-20" style={{ borderRadius: radius.cardLg, overflow: "hidden", background: "rgba(10,10,16,.97)" }}>
+      {/* เวทีเฟรมวิดีโอ: ย่อทั้งเฟรม 9:16 ให้อยู่ "เหนือ" แถบคุมแบบเห็นครบ 100% (letterbox) —
+          ห้ามให้แถบคุมทับเฟรมเด็ดขาด: ขอบล่างที่เห็นต้องเป็นขอบล่างวิดีโอจริง (บั๊ก QA 07-06
+          จัดชิดล่างแล้วของจริงลอย เพราะแถบบังท่อนล่างของเฟรม). normalizedBox ยังคิด % จาก
+          เฟรมเต็มเหมือนเดิม — เวทีคือเฟรมเต็ม แค่ย่อสเกลการแสดงผล คณิตไม่เปลี่ยน. */}
+      <div className="absolute left-0 right-0 top-0 flex items-center justify-center" style={{ bottom: controlsH }}>
+        <div ref={frameRef} className="relative h-full" style={{ aspectRatio: "9/16", maxWidth: "100%", border: `1px solid ${color.cardBorder}`, borderRadius: 8, overflow: "hidden" }}>
+          {/* ชั้นหลัง (backdrop): base render ก่อน composite อวตาร — เห็นฉาก/บีรอลจริง แทนที่จะเห็น
+              อวตารเก่าที่ baked ไว้ในพรีวิวเดิม (ผ่านสครีมโปร่งแสง). paused ที่เฟรมแรกสุด. */}
+          <video
+            src={bgVideoUrl}
+            muted
+            playsInline
+            preload="metadata"
+            className="absolute inset-0 h-full w-full object-cover"
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              try { v.currentTime = Math.min(0.05, v.duration || 0.05); } catch { /* ignore */ }
+            }}
+          />
+          <div className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }} />
         <div
           onPointerDown={onBoxPointerDown}
           onPointerMove={onBoxPointerMove}
@@ -255,12 +273,13 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
             <span style={{ fontSize: 11.5, color: color.textSecondary }}>กำลังวางอวตารตำแหน่งใหม่… (~1-2 นาที ไม่คิดค่า HeyGen เพิ่ม)</span>
           </div>
         )}
+        </div>
       </div>
 
       {/* แถบคุมล่าง — ต้องเป็น 2 แถวเสมอ: overlay กว้างเท่า preview 9:16 (~330-360px)
           แถวเดียวล้นแล้วโดน overflow:hidden ของกรอบตัดปุ่มขวาสุดทิ้ง → ผู้ใช้เห็นแต่
           "ยกเลิก" หาปุ่มบันทึกไม่เจอ (บั๊ก QA 07-04) */}
-      <div className="absolute bottom-0 left-0 right-0 flex flex-col gap-2 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
+      <div ref={controlsRef} className="absolute bottom-0 left-0 right-0 flex flex-col gap-2 px-4 py-3" style={{ background: "rgba(10,10,16,.88)", borderTop: `1px solid ${color.cardBorder}` }}>
         <div className="flex items-center gap-3">
           <GroupLabel>ขนาด</GroupLabel>
           <input
