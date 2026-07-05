@@ -32,8 +32,8 @@ export interface RightPanelProps {
   setSubShadow: (v: boolean) => void; setSubOutline: (v: boolean) => void;
   setSubOutlineSize: (v: number) => void;
   displayCaptions: Caption[]; activeSegIdx: number;
-  ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini") => void;
+  ttsProvider: "elevenlabs" | "gemini" | "omnivoice"; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: "elevenlabs" | "gemini" | "omnivoice") => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void;

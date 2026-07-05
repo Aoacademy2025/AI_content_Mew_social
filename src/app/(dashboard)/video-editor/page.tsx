@@ -266,9 +266,38 @@ export default function VideoEditorPage() {
   }, [activeCaptionIdx, playing]);
 
   // ── TTS / Voice ───────────────────────────────────────────────────────
-  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
+  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini" | "omnivoice">("gemini");
   const [voiceId, setVoiceId] = useState("");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  // OmniVoice (self-hosted TTS) — รายการเสียงโหลดจาก /api/omnivoice/voices ครั้งแรกที่เลือก provider
+  const [omniVoiceId, setOmniVoiceId] = useState("voice_01");
+  const [omniVoices, setOmniVoices] = useState<{ voice_id: string; desc: string; instruct: string; preview_url: string }[]>([]);
+  const [omniVoicesError, setOmniVoicesError] = useState("");
+  const omniVoicesLoadedRef = useRef(false);
+  const omniPreviewRef = useRef<HTMLAudioElement | null>(null);
+  const [omniPreviewPlaying, setOmniPreviewPlaying] = useState("");
+  useEffect(() => {
+    if (ttsProvider !== "omnivoice" || omniVoicesLoadedRef.current) return;
+    omniVoicesLoadedRef.current = true;
+    fetch("/api/omnivoice/voices")
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((list) => { setOmniVoices(list); setOmniVoicesError(""); })
+      .catch(() => { setOmniVoicesError("เชื่อมต่อ OmniVoice server ไม่ได้"); omniVoicesLoadedRef.current = false; });
+  }, [ttsProvider]);
+  function toggleOmniPreview(v: { voice_id: string; preview_url: string }) {
+    if (omniPreviewPlaying === v.voice_id) {
+      omniPreviewRef.current?.pause();
+      setOmniPreviewPlaying("");
+      return;
+    }
+    omniPreviewRef.current?.pause();
+    const audio = new Audio(v.preview_url);
+    omniPreviewRef.current = audio;
+    audio.onended = () => setOmniPreviewPlaying("");
+    audio.onerror = () => { setOmniPreviewPlaying(""); toast.error("เล่นเสียงตัวอย่างไม่สำเร็จ"); };
+    setOmniPreviewPlaying(v.voice_id);
+    audio.play().catch(() => setOmniPreviewPlaying(""));
+  }
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
@@ -613,7 +642,7 @@ export default function VideoEditorPage() {
     fetch("/api/user/video-settings").then(r => r.json()).then(d => {
       if (d.heygenAvatarId) setAvatarId(d.heygenAvatarId);
       if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
-      if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
+      if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs" || d.ttsProvider === "omnivoice") setTtsProvider(d.ttsProvider);
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
     fetch("/api/music").then(r => r.json()).then(d => {
@@ -897,6 +926,7 @@ export default function VideoEditorPage() {
     if (d.ttsProvider) setTtsProvider(d.ttsProvider);
     if (d.voiceId) setVoiceId(d.voiceId);
     if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+    if (d.omniVoiceId) setOmniVoiceId(d.omniVoiceId);
 
     // Video + captions (preview)
     setVideoUrl(d.renderedUrl ?? "");
@@ -1025,7 +1055,7 @@ export default function VideoEditorPage() {
         burnedVideoUrl: v.videoUrl || undefined,
         compositeUrl: v.avatarVideoUrl || undefined,
         galleryVideoId: v.id,
-        ttsProvider, voiceId, geminiVoiceName,
+        ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
         captions: caps,
         voiceUrl: v.audioUrl || undefined,
         audioDurationMs: cfg?.durationInFrames ? Math.round((cfg.durationInFrames / fps) * 1000) : undefined,
@@ -1075,7 +1105,7 @@ export default function VideoEditorPage() {
       galleryVideoId: pipe.current.galleryVideoId,
       compositeUrl: pipe.current.compositeUrl,
 
-      ttsProvider, voiceId, geminiVoiceName,
+      ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
       captions: captionsRef.current,
       voiceUrl: pipe.current.voiceUrl,
       audioDurationMs: pipe.current.audioDurationMs,
@@ -1619,6 +1649,20 @@ export default function VideoEditorPage() {
       const res = await fetch("/api/videos/tts-gemini", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceName: geminiVoiceName }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const data = await res.json();
+      assertOk("TTS", res, data);
+      captureTtsTiming(data);
+      const url = data.voiceUrl as string;
+      pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
+      setStep("tts", "done", url); return url;
+    } else if (ttsProvider === "omnivoice") {
+      setStep("tts", "running", "OmniVoice TTS...");
+      const res = await fetch("/api/videos/tts-omnivoice", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -2821,7 +2865,7 @@ export default function VideoEditorPage() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, avatarTiming, avatarTailGreenUrl, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -4456,6 +4500,7 @@ export default function VideoEditorPage() {
               open={orderPanelOpen} onToggle={() => setOrderPanelOpen(v => !v)}
               ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
               setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
+              omniVoiceId={omniVoiceId} setOmniVoiceId={setOmniVoiceId}
               bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
               setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
               bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
@@ -5457,12 +5502,13 @@ export default function VideoEditorPage() {
             {mSheet === "voice" && (
               <>
                 <MField label="ผู้ให้บริการเสียง">
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <MChip active={ttsProvider === "gemini"} onClick={() => setTtsProvider("gemini")}>Gemini</MChip>
                     <MChip active={ttsProvider === "elevenlabs"} onClick={() => setTtsProvider("elevenlabs")}>ElevenLabs</MChip>
+                    <MChip active={ttsProvider === "omnivoice"} onClick={() => setTtsProvider("omnivoice")}>OmniVoice</MChip>
                   </div>
                 </MField>
-                {ttsProvider === "gemini" ? (
+                {ttsProvider === "gemini" && (
                   <MField label="เสียง (Gemini)">
                     <div className="flex flex-col gap-2">
                       {GEMINI_VOICES.map(v => (
@@ -5477,8 +5523,50 @@ export default function VideoEditorPage() {
                       ))}
                     </div>
                   </MField>
-                ) : (
+                )}
+                {ttsProvider === "elevenlabs" && (
                   <p className="text-[12px] leading-relaxed text-slate-500">ElevenLabs ใช้ Voice ID จากการตั้งค่า — เลือก/โคลนเสียงแบบละเอียดได้ในหน้าเดสก์ท็อป{voiceId ? ` (ปัจจุบัน: ${voiceId.slice(0, 8)}…)` : ""}</p>
+                )}
+                {ttsProvider === "omnivoice" && (
+                  <MField label="เสียง (OmniVoice)">
+                    {omniVoicesError && (
+                      <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/8 px-3 py-2.5">
+                        <span className="text-[12px] text-red-400">{omniVoicesError}</span>
+                        <button
+                          onClick={() => { omniVoicesLoadedRef.current = false; setOmniVoicesError(""); setTtsProvider("omnivoice"); }}
+                          className="text-[11px] font-bold text-violet-400"
+                        >ลองใหม่</button>
+                      </div>
+                    )}
+                    {!omniVoicesError && omniVoices.length === 0 && (
+                      <div className="flex items-center gap-2 rounded-xl border border-[#2a2a36] bg-[#1a1a22] px-3 py-2.5">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-500" />
+                        <span className="text-[12px] text-slate-500">กำลังโหลดรายการเสียง…</span>
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-2">
+                      {omniVoices.map(v => (
+                        <div
+                          key={v.voice_id}
+                          className={cn("flex items-center gap-2 rounded-xl border px-3 py-2.5", omniVoiceId === v.voice_id ? "border-violet-500/50 bg-violet-500/10" : "border-[#2a2a36] bg-[#1a1a22]")}
+                        >
+                          <button onClick={() => setOmniVoiceId(v.voice_id)} className="flex min-w-0 flex-1 flex-col text-left">
+                            <span className="truncate text-[13px] font-semibold text-slate-100">{v.desc}</span>
+                            <span className="truncate text-[10px] text-slate-500">{v.instruct}</span>
+                          </button>
+                          <button
+                            onClick={() => toggleOmniPreview(v)}
+                            aria-label="ฟังตัวอย่าง"
+                            className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full border", omniPreviewPlaying === v.voice_id ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" : "border-[#2a2a36] bg-[#15151c] text-slate-400")}
+                          >
+                            {omniPreviewPlaying === v.voice_id ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+                          </button>
+                          {omniVoiceId === v.voice_id && <span className="h-2 w-2 shrink-0 rounded-full bg-violet-400" />}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-3 text-[11px] leading-relaxed text-slate-600">เสียงจาก server ของระบบ — ไม่ต้องใช้ API key</p>
+                  </MField>
                 )}
               </>
             )}

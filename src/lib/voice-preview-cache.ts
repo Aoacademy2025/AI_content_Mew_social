@@ -5,7 +5,7 @@ import path from "path";
 export const VOICE_PREVIEW_TEXT = "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ";
 export const MAX_VOICE_PREVIEW_CHARS = 90;
 
-export type VoicePreviewProvider = "gemini" | "elevenlabs";
+export type VoicePreviewProvider = "gemini" | "elevenlabs" | "omnivoice";
 
 export function normalizeVoicePreviewText(input: unknown) {
   const text = typeof input === "string" && input.trim()

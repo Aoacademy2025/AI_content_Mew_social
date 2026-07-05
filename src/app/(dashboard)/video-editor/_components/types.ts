@@ -151,9 +151,10 @@ export interface EditorDraft {
   galleryVideoId?: string;
   compositeUrl?: string;
 
-  ttsProvider: "elevenlabs" | "gemini";
+  ttsProvider: "elevenlabs" | "gemini" | "omnivoice";
   voiceId: string;
   geminiVoiceName: string;
+  omniVoiceId?: string;
   captions?: Caption[];
   voiceUrl?: string;
   audioDurationMs?: number;

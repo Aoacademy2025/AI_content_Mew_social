@@ -95,7 +95,9 @@ export function captionsFromTtsTiming(
     // EVERY Gemini clip worse. Pause-accurate splitting needs real word timing
     // (ElevenLabs), not a guess from the drifted clock.
     let intervals: SilenceInterval[] = [];
-    if (timing.provider === "gemini") {
+    // omnivoice = segment-proportional เหมือน gemini (chars:null + silences จาก ffmpeg)
+    // → ใช้ pause-snap เดียวกัน; elevenlabs มี char timing จริงอยู่แล้ว ไม่ต้อง snap
+    if (timing.provider === "gemini" || timing.provider === "omnivoice") {
       const segTotal = timing.segments.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0);
       const raw: SilenceInterval[] =
         Array.isArray(timing.silenceIntervals) && timing.silenceIntervals.length > 0
@@ -111,7 +113,7 @@ export function captionsFromTtsTiming(
 
     // Snap card boundaries to the speech ONSET of each real pause, then merge any
     // card too short to read — pause-aware so split runs aren't re-joined.
-    if (timing.provider === "gemini" && intervals.length > 0) {
+    if ((timing.provider === "gemini" || timing.provider === "omnivoice") && intervals.length > 0) {
       snapCaptionsToSilences(caps, intervals, { target: SNAP_TARGET });
       caps = mergeShortCaptions(caps, MIN_CARD_MS, intervals);
     }

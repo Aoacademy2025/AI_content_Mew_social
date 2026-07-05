@@ -33,7 +33,7 @@ export interface TtsCharAlignment {
 export interface SilenceInterval { startMs: number; endMs: number }
 
 export interface TtsTiming {
-  provider: "gemini" | "elevenlabs";
+  provider: "gemini" | "elevenlabs" | "omnivoice";
   segments: TtsSegment[];
   chars: TtsCharAlignment | null; // gemini has no char-level timing
   // Real-pause midpoints (ms) from ffmpeg silencedetect over the final audio.

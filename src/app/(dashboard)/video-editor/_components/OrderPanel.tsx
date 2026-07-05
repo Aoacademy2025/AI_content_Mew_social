@@ -34,9 +34,10 @@ const BROLL_BADGE: Record<"ai" | "photo" | "video", { label: string; cls: string
 
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
-  ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini") => void;
+  ttsProvider: "elevenlabs" | "gemini" | "omnivoice"; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: "elevenlabs" | "gemini" | "omnivoice") => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
+  omniVoiceId: string; setOmniVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void; setBgmVolume: (v: number) => void;
   bgmUploading: boolean; setBgmUploading: (v: boolean) => void;
@@ -111,6 +112,22 @@ export function OrderPanel(p: OrderPanelProps) {
   const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
   const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
   const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
+
+  // OmniVoice — โหลดรายการเสียงครั้งแรกที่เลือก provider นี้ + preview player ใน panel
+  const [omniVoices, setOmniVoices] = React.useState<{ voice_id: string; desc: string; instruct: string; preview_url: string }[]>([]);
+  const [omniVoicesError, setOmniVoicesError] = React.useState("");
+  const omniLoadedRef = React.useRef(false);
+  const omniPreviewRef = React.useRef<HTMLAudioElement | null>(null);
+  const [omniPreviewPlaying, setOmniPreviewPlaying] = React.useState("");
+  React.useEffect(() => {
+    if (p.ttsProvider !== "omnivoice" || omniLoadedRef.current) return;
+    omniLoadedRef.current = true;
+    fetch("/api/omnivoice/voices")
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((list) => { setOmniVoices(list); setOmniVoicesError(""); })
+      .catch(() => { setOmniVoicesError("เชื่อมต่อ OmniVoice server ไม่ได้"); omniLoadedRef.current = false; });
+  }, [p.ttsProvider]);
+  React.useEffect(() => () => { omniPreviewRef.current?.pause(); }, []);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
   const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
   const [kieModelOpen, setKieModelOpen] = React.useState(false);
@@ -523,14 +540,14 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini","elevenlabs"] as const).map(pv => (
+              {(["gemini","elevenlabs","omnivoice"] as const).map(pv => (
                 <button key={pv} onClick={() => p.setTtsProvider(pv)}
                   className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
                     p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
                   style={p.ttsProvider === pv
                     ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
                     : undefined}>
-                  {pv === "gemini" ? "Gemini" : "ElevenLabs"}
+                  {pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : "OmniVoice"}
                 </button>
               ))}
             </div>
@@ -611,12 +628,59 @@ export function OrderPanel(p: OrderPanelProps) {
                   className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-300 placeholder:text-slate-700 outline-none focus:border-violet-500/40 transition-colors" />
               </div>
             )}
-            <VoicePreviewButton
-              provider={p.ttsProvider}
-              geminiVoiceName={p.geminiVoiceName}
-              voiceId={p.voiceId}
-              onPlanError={p.onPlanError}
-            />
+            {p.ttsProvider === "omnivoice" && (
+              <div className="mt-2 space-y-1.5">
+                <div className="text-[10px] text-slate-600">OmniVoice — เสียงจาก server ระบบ (ไม่ใช้ key)</div>
+                {omniVoicesError && (
+                  <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/8 px-3 py-2">
+                    <span className="text-[10px] text-red-400">{omniVoicesError}</span>
+                    <button type="button" onClick={() => { omniLoadedRef.current = false; setOmniVoicesError(""); p.setTtsProvider("omnivoice"); }}
+                      className="text-[10px] font-bold text-violet-400 hover:text-violet-300">ลองใหม่</button>
+                  </div>
+                )}
+                {!omniVoicesError && omniVoices.length === 0 && (
+                  <div className="text-[10px] text-slate-600 px-1">กำลังโหลดรายการเสียง…</div>
+                )}
+                {omniVoices.map(v => {
+                  const active = p.omniVoiceId === v.voice_id;
+                  const playing = omniPreviewPlaying === v.voice_id;
+                  return (
+                    <div key={v.voice_id}
+                      className={cn("flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors",
+                        active ? "border-violet-500/45 bg-violet-500/10" : "border-[#26262f] bg-[#15151b] hover:border-violet-500/25")}>
+                      <button type="button" onClick={() => p.setOmniVoiceId(v.voice_id)} className="flex-1 min-w-0 text-left">
+                        <div className={cn("text-[11px] font-bold truncate", active ? "text-violet-200" : "text-slate-300")}>{v.desc}</div>
+                        <div className="text-[9px] text-slate-600 truncate">{v.instruct}</div>
+                      </button>
+                      <button type="button" aria-label="ฟังตัวอย่าง"
+                        onClick={() => {
+                          if (playing) { omniPreviewRef.current?.pause(); setOmniPreviewPlaying(""); return; }
+                          omniPreviewRef.current?.pause();
+                          const audio = new Audio(v.preview_url);
+                          omniPreviewRef.current = audio;
+                          audio.onended = () => setOmniPreviewPlaying("");
+                          audio.onerror = () => setOmniPreviewPlaying("");
+                          setOmniPreviewPlaying(v.voice_id);
+                          audio.play().catch(() => setOmniPreviewPlaying(""));
+                        }}
+                        className={cn("w-7 h-7 shrink-0 rounded-full border grid place-items-center transition-colors",
+                          playing ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" : "border-[#26262f] bg-[#101016] text-slate-500 hover:text-violet-300")}>
+                        {playing ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
+                      </button>
+                      {active && <Check className="w-3 h-3 text-violet-300 shrink-0" strokeWidth={3} />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {p.ttsProvider !== "omnivoice" && (
+              <VoicePreviewButton
+                provider={p.ttsProvider}
+                geminiVoiceName={p.geminiVoiceName}
+                voiceId={p.voiceId}
+                onPlanError={p.onPlanError}
+              />
+            )}
           </div>
           ) : (
           <div className="rounded-lg px-3 py-2.5 bg-[#1a1a22] border border-[#2a2a36]">
