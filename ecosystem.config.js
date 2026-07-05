@@ -26,7 +26,9 @@ module.exports = {
         // inflates heap usage during long renders, which contributed to the OOM.
         RENDER_CONCURRENCY: "4",
         RENDER_OFFTHREAD_CACHE_MB: "128",
-        RENDER_JPEG_QUALITY: "70",
+        // JPEG quality 70 was tuned for the old 15GB box; box is now KVM8 (8c/31Gi)
+        // with headroom to spare, so 90 (2026-07-05) for sharper avatar/b-roll frames.
+        RENDER_JPEG_QUALITY: "90",
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
         // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
@@ -193,9 +195,12 @@ module.exports = {
         // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
         // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
         DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
-        // Render tuning for the worker process (smaller per-job cache / quality floor).
+        // Render tuning for the worker process. JPEG quality 60 was a memory-headroom
+        // compromise for the old 15GB box; the box is now KVM8 (8c/31Gi) with plenty of
+        // headroom, so 90 (2026-07-05) trades a little more heap/CPU for sharper frames —
+        // the blur users saw was avatar-source resolution + this quality floor compounding.
         RENDER_OFFTHREAD_CACHE_MB: "128",
-        RENDER_JPEG_QUALITY: "60",
+        RENDER_JPEG_QUALITY: "90",
       },
     },
   ],

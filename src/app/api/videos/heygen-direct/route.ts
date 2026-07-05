@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
-import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -70,7 +70,7 @@ async function generateVideo(opts: GenerateOpts): Promise<string> {
     ? { type: "video", url: videoAssetUrl, fit: "cover", play_style: "loop" }
     : { type: "color", value: "#00FF00" };
 
-  const body = {
+  const buildBody = (dimension: { width: number; height: number }) => ({
     video_inputs: [{
       character: {
         type: "avatar",
@@ -83,17 +83,30 @@ async function generateVideo(opts: GenerateOpts): Promise<string> {
       voice: { type: "audio", audio_asset_id: audioAssetId },
       background,
     }],
-    dimension: { width: 720, height: 1280 },
+    dimension,
+  });
+
+  const callGenerate = async (dimension: { width: number; height: number }) => {
+    const body = buildBody(dimension);
+    console.log("[heygen] generate payload:", JSON.stringify(body));
+    const res = await fetch("https://api.heygen.com/v2/video/generate", {
+      method: "POST",
+      headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    console.log("[heygen] generate response:", res.status, JSON.stringify(data));
+    return { res, data };
   };
 
-  console.log("[heygen] generate payload:", JSON.stringify(body));
-  const res = await fetch("https://api.heygen.com/v2/video/generate", {
-    method: "POST",
-    headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  console.log("[heygen] generate response:", res.status, JSON.stringify(data));
+  let { res, data } = await callGenerate(AVATAR_GEN_DIMENSION);
+
+  // One-shot fallback: some accounts/plans reject 1080 — retry once at 720×1280.
+  if (!res.ok && isResolutionFallbackError(JSON.stringify(data?.error ?? data))) {
+    console.warn("[heygen] 1080 generate rejected (resolution/plan) — retrying once at 720x1280 fallback");
+    ({ res, data } = await callGenerate(AVATAR_GEN_FALLBACK_DIMENSION));
+  }
+
   if (!res.ok || !data.data?.video_id) {
     throw new Error(`HeyGen generate failed (${res.status}): ${JSON.stringify(data.error ?? data)}`);
   }

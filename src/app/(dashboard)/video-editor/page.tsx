@@ -2461,6 +2461,9 @@ function LegacyVideoEditorPage() {
                     mode: "chromakey",
                     noScale: true,
                     chromaColor: "0x00ff00",
+                    // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real
+                    // green shade. Moving either away from that default opts OUT of auto-detect and
+                    // keys with this hardcoded 0x00ff00 verbatim — no behavior change, just documenting it.
                     chromaSimilarity,
                     chromaBlend,
                     // The rendered background already contains the direct-avatar voice plus BGM.
@@ -2481,6 +2484,9 @@ function LegacyVideoEditorPage() {
             // เลเยอร์ตำแหน่ง/ขนาด avatar — composite ใช้ field นี้เท่านั้น (ตัวบนคงไว้เผื่อโค้ดเก่า)
             avatarLayout: { scale: avatarScale, offsetX: avatarOffsetX, offsetY: avatarOffsetY },
             chromaColor: "0x00ff00",
+            // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real green
+            // shade. Moving either away from that default opts OUT of auto-detect and keys with this
+            // hardcoded 0x00ff00 verbatim — no behavior change, just documenting it.
             chromaSimilarity,
             chromaBlend,
           }),

@@ -6,7 +6,7 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
-import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
 
 // Single source of truth lives in avatar-gen-framing.ts; these consts are kept so the
 // destructuring defaults at line ~116-118 are unchanged and easy to read.
@@ -229,19 +229,32 @@ async function handleGenerateWithBg(req: Request) {
       voice: voiceInput,
       ...(background ? { background } : {}),
     }],
-    dimension: { width: 720, height: 1280 },
+    dimension: AVATAR_GEN_DIMENSION,
   };
 
   console.log("[generate-with-bg] generate payload:", JSON.stringify(payload));
   // HeyGen generate budget: 60s, NO retries — a duplicated generate would
   // spend the user's HeyGen credits twice. returnHttpErrors → map status below.
-  const genRes = await fetchWithBudget("https://api.heygen.com/v2/video/generate", {
+  let genRes = await fetchWithBudget("https://api.heygen.com/v2/video/generate", {
     method: "POST",
     headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }, { provider: "heygen", timeoutMs: 60_000, retries: 0, wallClockMs: 65_000, returnHttpErrors: true });
-  const genData = await genRes.json();
+  let genData = await genRes.json();
   console.log("[generate-with-bg] generate response:", genRes.status, JSON.stringify(genData));
+
+  // One-shot fallback: some accounts/plans reject 1080 — retry once at 720×1280.
+  if (!genRes.ok && isResolutionFallbackError(JSON.stringify(genData?.error ?? genData))) {
+    console.warn("[generate-with-bg] 1080 generate rejected (resolution/plan) — retrying once at 720x1280 fallback");
+    payload.dimension = AVATAR_GEN_FALLBACK_DIMENSION;
+    genRes = await fetchWithBudget("https://api.heygen.com/v2/video/generate", {
+      method: "POST",
+      headers: { "X-Api-Key": heygenKey, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, { provider: "heygen", timeoutMs: 60_000, retries: 0, wallClockMs: 65_000, returnHttpErrors: true });
+    genData = await genRes.json();
+    console.log("[generate-with-bg] fallback generate response:", genRes.status, JSON.stringify(genData));
+  }
 
   if (!genRes.ok || !genData.data?.video_id) {
     if (!genRes.ok) {
