@@ -342,6 +342,9 @@ function funnelStepSessionCount(rows: TelemetryRow[], step: FunnelStep) {
   );
 }
 
+// SUPERSEDED for the main path by summarizeJobFunnel(): editor v2 (the live default) emits ZERO
+// client pipeline/session telemetry, so this telemetry funnel measures the dead legacy v1 editor
+// only (the "v2 telemetry blind spot"). Kept because it's still used when no jobFunnel is supplied.
 function summarizeEditorFunnel(rows: TelemetryRow[]) {
   const funnel = EDITOR_FUNNEL.map((step) => ({
     ...step,
@@ -367,6 +370,36 @@ function summarizeEditorFunnel(rows: TelemetryRow[]) {
     funnelMode: "session" as const,
     funnelRuns: funnel[0]?.count ?? 0,
   };
+}
+
+// Creation funnel from VideoJob (server truth) — the real path every generation walks, regardless
+// of editor version. progress is server-written + monotonic; milestones match orchestrator step()
+// calls: stock=55, config=65, render=75, done→100. This replaces the telemetry funnel above, which
+// went blind when editor v2 became the default (v2 emits no client pipeline telemetry).
+export type JobFunnelRow = { userId: string; status: string; progress: number };
+
+const JOB_FUNNEL_STEPS = [
+  { key: "created", label: "เริ่มสร้าง (สั่งเรนเดอร์)", reached: (_j: JobFunnelRow) => true },
+  { key: "broll", label: "ได้ B-roll", reached: (j: JobFunnelRow) => j.progress >= 55 },
+  { key: "config", label: "จัดคลิปเสร็จ", reached: (j: JobFunnelRow) => j.progress >= 65 },
+  { key: "render", label: "เรนเดอร์", reached: (j: JobFunnelRow) => j.progress >= 75 },
+  { key: "done", label: "เสร็จสมบูรณ์", reached: (j: JobFunnelRow) => j.status === "done" },
+] as const;
+
+export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
+  const funnel = JOB_FUNNEL_STEPS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    count: jobs.filter(s.reached).length,
+    conversionPct: 0,
+    dropOffPct: 0,
+    previousCount: 0,
+  })).map((step, i, all) => {
+    const previousCount = i === 0 ? step.count : all[i - 1].count;
+    const conversionPct = i === 0 ? 100 : Math.min(100, pct(step.count, previousCount));
+    return { ...step, previousCount, conversionPct, dropOffPct: i === 0 ? 0 : Math.max(0, 100 - conversionPct) };
+  });
+  return { funnel, funnelMode: "job" as const, funnelRuns: funnel[0]?.count ?? 0 };
 }
 
 function summarizeBroll(rows: TelemetryRow[]) {
@@ -474,6 +507,7 @@ function summarize(
   rows: TelemetryRow[],
   videos: VideoRow[],
   processingSummary: ProcessingReconcileSummary = EMPTY_PROCESSING_SUMMARY,
+  jobFunnel?: ReturnType<typeof summarizeJobFunnel>,
 ) {
   const videoJobs = summarizeVideoJobs(videos);
   const sessions = uniqueNonNullCount(rows.map((row) => row.sessionId));
@@ -499,7 +533,9 @@ function summarize(
   const burnRenderDoneRows = serverRenderRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
   const burnRenderStartRows = serverStartRows.filter((row) => stringProp(row, "compositionId") === "SubtitleOverlayComposition");
 
-  const { funnel, funnelMode, funnelRuns } = summarizeEditorFunnel(rows);
+  // Prefer the VideoJob-derived creation funnel (server truth, counts editor v2). Falls back to the
+  // legacy telemetry funnel only when no jobFunnel is supplied (keeps summarizeEditorFunnel testable).
+  const { funnel, funnelMode, funnelRuns } = jobFunnel ?? summarizeEditorFunnel(rows);
 
   const stepMap = new Map<string, { durations: number[]; started: number; done: number; error: number; skipped: number }>();
   for (const row of rows) {
@@ -700,8 +736,8 @@ export async function GET(req: Request) {
 
     const [
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
-      allUsers, openedUserRows, startedUserRows, completedByUser, currentJobs,
-      planConfig, renderJobRows, paidRows,
+      allUsers, openedUserRows, completedByUser, currentJobs,
+      planConfig, renderJobRows, paidRows, previousJobs, jobUserRows,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -743,12 +779,12 @@ export async function GET(req: Request) {
         },
       }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
-      prisma.telemetryEvent.findMany({ where: { name: "editor_script_ready", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
       prisma.video.groupBy({ by: ["userId"], where: { status: "COMPLETED" }, _count: { _all: true } }),
       // P2 scorecard (server-authoritative): job outcome จาก VideoJob (status server เขียน, ไม่หายตอนปิดแท็บ)
+      // Also drives the creation funnel (progress/status) — see summarizeJobFunnel.
       prisma.videoJob.findMany({
         where: { createdAt: { gte: since } },
-        select: { status: true, currentStep: true, errorMessage: true, startedAt: true, finishedAt: true },
+        select: { userId: true, status: true, currentStep: true, errorMessage: true, progress: true, startedAt: true, finishedAt: true },
       }),
       getPlanConfig(),
       // Render throughput (window) from RenderJob — the source of truth for editor-v2/worker renders.
@@ -758,6 +794,14 @@ export async function GET(req: Request) {
       }),
       // Cash ground truth — distinct users who ever completed a PAID payment.
       prisma.payment.findMany({ where: { status: "PAID" }, select: { userId: true }, distinct: ["userId"] }),
+      // Previous-window VideoJobs — so previous.funnel is also job-derived (apples-to-apples).
+      prisma.videoJob.findMany({
+        where: { createdAt: { gte: previousSince, lt: since } },
+        select: { userId: true, status: true, progress: true },
+      }),
+      // Server-truth "started pipeline": distinct users who ever created a VideoJob (any time).
+      // Replaces the v1-only editor_script_ready telemetry, which editor v2 never emits.
+      prisma.videoJob.findMany({ select: { userId: true }, distinct: ["userId"] }),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
@@ -774,9 +818,26 @@ export async function GET(req: Request) {
       now,
     );
 
+    // Internal team = @aoacademy accounts. Excluded from ALL funnel/activation counts (they inflate
+    // signups/started/completed), but workshop students (คลังแสง) and every other account are KEPT —
+    // they are real prospects. Same rule as revenue-cohorts.ts.
+    const internalUserIds = new Set(
+      allUsers.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
+    );
+
+    // Creation funnel input — VideoJob rows (server truth), internal team excluded.
+    const currentJobsForFunnel = currentJobs
+      .filter((j) => !internalUserIds.has(j.userId))
+      .map((j) => ({ userId: j.userId, status: j.status, progress: j.progress }));
+    const previousJobsForFunnel = previousJobs
+      .filter((j) => !internalUserIds.has(j.userId))
+      .map((j) => ({ userId: j.userId, status: j.status, progress: j.progress }));
+
     const activation = {
       managed: process.env.MANAGED_GEMINI === "1",
-      signups: allUsers.length,
+      // These funnel/activation counts EXCLUDE @aoacademy internal accounts; workshop students are
+      // intentionally kept (real prospects). internalTeam is surfaced so the UI can show what was cut.
+      signups: allUsers.length - internalUserIds.size,
       internalTeam: cohorts.internalTeam,
       hasGeminiKey: allUsers.filter((u) => nonEmpty(u.geminiKey)).length,
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
@@ -786,11 +847,12 @@ export async function GET(req: Request) {
       mrrAtRisk: cohorts.mrrAtRisk,
       trialActive: cohorts.trialActive,
       compedPaid: cohorts.compedPaid,
-      openedEditor: openedUserRows.length,
-      startedPipeline: startedUserRows.length,
-      completedFirstVideo: completedByUser.length,
-      repeatCreators: completedByUser.filter((g) => (g._count?._all ?? 0) >= 2).length,
-      windowSignups: allUsers.filter((u) => u.createdAt >= since).length,
+      openedEditor: openedUserRows.filter((r) => r.userId && !internalUserIds.has(r.userId)).length,
+      // Server truth: distinct users who ever created a VideoJob (was v1-only editor_script_ready telemetry).
+      startedPipeline: jobUserRows.filter((r) => !internalUserIds.has(r.userId)).length,
+      completedFirstVideo: completedByUser.filter((g) => !internalUserIds.has(g.userId)).length,
+      repeatCreators: completedByUser.filter((g) => !internalUserIds.has(g.userId) && (g._count?._all ?? 0) >= 2).length,
+      windowSignups: allUsers.filter((u) => u.createdAt >= since && !internalUserIds.has(u.id)).length,
       windowCompletedUsers: completedUsersIn(currentVideos),
       prevWindowCompletedUsers: completedUsersIn(previousVideos),
     };
@@ -823,8 +885,8 @@ export async function GET(req: Request) {
       activation,
       renderStats,
       jobOutcomes,
-      current: summarize(currentRows, currentVideos, processingPlan.summary),
-      previous: summarize(previousRows, previousVideos),
+      current: summarize(currentRows, currentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel)),
+      previous: summarize(previousRows, previousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel)),
       processingReconcile: { dryRun: true, ...processingPlan },
     });
   } catch (error) {

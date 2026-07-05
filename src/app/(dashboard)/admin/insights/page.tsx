@@ -32,7 +32,7 @@ type InsightSummary = {
     pipelineStarts: number; events: number; errors: number; byokErrorCount: number; rawErrors: number;
     noiseEvents: number; frontendErrors: number; serverErrors: number; renderSuccessPct: number;
     videoCompletionPct: number; renderTaskSuccessPct: number; healthScore: number;
-    funnelMode: "run" | "event" | "session"; funnelRuns: number;
+    funnelMode: "run" | "event" | "session" | "job"; funnelRuns: number;
     videoJobs: { total: number; completed: number; processing: number; failed: number; pending: number; outputReady: number; statusStuckWithOutput: number; processingWithoutOutput: number; completionPct: number; outputReadyPct: number };
   };
   funnel: FunnelRow[];
@@ -93,7 +93,7 @@ const metricHelp: Record<string, string> = {
   "Job outcomes": "ผลงานจริงจาก VideoJob ฝั่ง server (status เซิร์ฟเวอร์เขียน ไม่หายตอนปิดแท็บ) — บอกว่างานที่ล้มเหลวพังที่ขั้นไหน และเป็นบั๊กเราหรือคีย์ลูกค้า",
   "Drop-off": "เปอร์เซ็นต์ session ที่ไปไม่ถึงขั้นถัดไป — นับต่อ session หน่วยเดียวกันทุกขั้น จึงเทียบกันได้จริง",
   "Activation": "สัดส่วนคนที่ได้ 'คุณค่าครั้งแรก' = ได้วิดีโอเสร็จอย่างน้อย 1 ตัว เป็นตัวชี้วัดว่าคนใช้ product ได้จริงไหม",
-  "Session funnel": "เส้นทางต่อ 'session' ในช่วงเวลาที่เลือก ใช้ดูพฤติกรรมระหว่างใช้ editor หนึ่งครั้ง",
+  "Session funnel": "เส้นทางการสร้างวิดีโอ นับจากงานเรนเดอร์จริง (VideoJob) ฝั่ง server ตาม progress/status — วัดทุก editor version (รวม v2) และตัดบัญชีทีมงาน (@aoacademy) ออกแล้ว",
   "p50": "ค่ากลาง: ผู้ใช้ครึ่งหนึ่งเร็วกว่าเวลานี้ และอีกครึ่งช้ากว่านี้",
   "p95": "เคสช้าเกือบสุด: 95% ของงานเร็วกว่าเวลานี้ ใช้หาคอขวดและเคสหนัก",
   "LCP": "เวลาที่เนื้อหาหลักของหน้าขึ้นจอ ถ้าสูง ผู้ใช้รู้สึกว่าหน้าโหลดช้า",
@@ -301,7 +301,7 @@ export default function AdminInsightsPage() {
                 )}
                 <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-relaxed text-sky-100/70">
                   💡 <span className="font-semibold">สำหรับ CEO:</span> ตัวเลขสุขภาพธุรกิจตัวแรกที่ต้องดู — ถ้า &ldquo;ได้วิดีโอแรก %&rdquo; ตก = ปัญหาใหญ่กว่า metric ระบบทุกตัวรวมกัน → ทุ่มแก้ activation ก่อน
-                  {activation.internalTeam > 0 && <span className="text-sky-100/50"> · หมายเหตุ: signups รวมบัญชีทีมงาน {formatNumber(activation.internalTeam)} + นักเรียน workshop ด้วย</span>}
+                  {activation.internalTeam > 0 && <span className="text-sky-100/50"> · หมายเหตุ: ตัดบัญชีทีมงาน (@aoacademy) {formatNumber(activation.internalTeam)} บัญชีออกแล้ว · นับรวมนักเรียน workshop (ลูกค้าจริง)</span>}
                 </p>
               </section>
             )}
@@ -382,8 +382,8 @@ export default function AdminInsightsPage() {
               <Panel>
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">Session funnel หน้า Video Editor <InfoTip label="Session funnel" /></h2>
-                    <p className="mt-1 text-xs text-slate-500">จุดหลุดสูงสุด: {worstDrop ? `${worstDrop.label} (${worstDrop.dropOffPct}%)` : "-"} · นับต่อ session {formatNumber(current.totals.funnelRuns)} · ช่วงที่เลือก</p>
+                    <h2 className="flex items-center gap-1.5 text-lg font-semibold text-white">งานสร้างวิดีโอ — หลุดตรงไหน <InfoTip label="Session funnel" /></h2>
+                    <p className="mt-1 text-xs text-slate-500">จุดหลุดสูงสุด: {worstDrop ? `${worstDrop.label} (${worstDrop.dropOffPct}%)` : "-"} · นับจากงานเรนเดอร์จริง (VideoJob) {formatNumber(current.totals.funnelRuns)} งาน — ตัดบัญชีทีมงานออก · ช่วงที่เลือก</p>
                   </div>
                   <BarChart3 className="h-5 w-5 text-sky-300" />
                 </div>
