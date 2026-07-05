@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
+import ManualPaymentPanel from "@/components/admin/manual-payment-panel";
 
 // Violet single-accent house tokens (from video-editor/_v2/tokens.ts) — see dashboard/page.tsx
 const VIOLET = "#8B5CF6";
@@ -1456,6 +1457,11 @@ export default function AdminDashboardPage() {
         {/* ── Billing & Plans tab (Stripe · Server Keys · Plan Config · Support Email · Cost Rates) ── */}
         {tab === "billing" && (
         <div className="space-y-8">
+        {/* ── Manual / external (off-Stripe) payment log ──────────────── */}
+        <ManualPaymentPanel
+          proPrice={Number(planProPrice) || 599}
+          businessPrice={Number(planBusinessPrice) || 990}
+        />
         {/* ── Stripe Payment Settings ─────────────────────────────────── */}
         <div className="rounded-xl p-4 space-y-4" style={cardStyle}>
           <div className="flex items-center justify-between">
