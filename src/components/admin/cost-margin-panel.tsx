@@ -324,10 +324,12 @@ export default function CostMarginPanel({ days }: { days: number }) {
                   <span className={cn("text-xs font-semibold", be.subs >= be.target ? "text-emerald-300" : "text-amber-300")}>{be.subs}/{be.target} ราย</span>
                 </div>
                 <div className="h-3 w-full overflow-hidden rounded-full bg-slate-900">
-                  <div className={cn("h-full rounded-full transition-all", be.subs >= be.target ? "bg-emerald-500" : "bg-amber-500")} style={{ width: `${Math.min(100, (be.subs / Math.max(1, be.target)) * 100)}%` }} />
+                  <div className={cn("h-full rounded-full transition-all", be.subs >= be.target ? "bg-emerald-500" : "bg-amber-500")} style={{ width: `${Math.max(0, Math.min(100, (be.subs / Math.max(1, be.target)) * 100))}%` }} />
                 </div>
                 <p className="mt-2 text-xs text-slate-500">
-                  {be.subs >= be.target ? `เกิน break-even แล้ว (+${be.subs - be.target} ราย)` : `ต้องการอีก ${be.target - be.subs} ราย เพื่อ cover infra ฿${fmtNum(bd.infra)}/เดือน`}
+                  {be.subs >= be.target
+                    ? `คุ้ม infra แล้ว ✓ (เกินจุดคุ้มทุน +${be.subs - be.target} ราย)`
+                    : `ต้องการอีก ${Math.max(0, be.target - be.subs)} ราย เพื่อ cover infra ฿${fmtNum(bd.infra)}/เดือน`}
                 </p>
               </div>
 

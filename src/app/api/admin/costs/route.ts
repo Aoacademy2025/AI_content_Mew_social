@@ -6,7 +6,7 @@ import {
   getCostRates,
   computeCogs,
   computeMargins,
-  BREAK_EVEN_SUBS,
+  computeBreakEvenTarget,
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
 
@@ -259,6 +259,15 @@ export async function GET(req: Request) {
       periodDays: 30,
     });
 
+    // ── Live break-even target ────────────────────────────────────────────────
+    // infra ÷ gross-profit-per-paying-customer, using THIS page's own monthly margin so it can
+    // never contradict the profit tile. Falls back to the static constant only when payingTotal=0.
+    const breakEvenTarget = computeBreakEvenTarget({
+      infraMonthly: rates.infraMonthly,
+      grossProfit: margins.grossProfit,
+      payingTotal: cohorts.payingTotal,
+    });
+
     // ── Top-cost users (top 10) ───────────────────────────────────────────────
     const allUserIds = new Set([...perUserMinutes.keys(), ...perUserImages.keys()]);
     const topUsers = Array.from(allUserIds)
@@ -344,7 +353,7 @@ export async function GET(req: Request) {
       topUsers,
       breakEven: {
         subs: cohorts.breakEvenSubs,
-        target: BREAK_EVEN_SUBS,
+        target: breakEvenTarget,
       },
       trend,
     });

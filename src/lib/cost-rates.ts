@@ -93,12 +93,32 @@ export async function getCostRates(): Promise<CostRates> {
 
 // ── Break-even constant ──────────────────────────────────────────────────────
 /**
- * Number of active subscribers required to cover fixed infra costs.
- * Derivation: ≈ infraMonthly (฿2,600) ÷ blended contribution-margin-per-sub
- * (~฿190/sub after variable AI COGS), from the 2026-06-24 business-model spec.
- * Revisit if economics change (infra cost, pricing, or variable-cost rate).
+ * FALLBACK-ONLY break-even estimate — used when there are no paying customers yet
+ * (payingTotal = 0), so no live contribution margin can be derived. The LIVE target
+ * is computed in costs/route.ts (computeBreakEvenTarget) from this page's own margin,
+ * so it can never contradict the profit tile. Static derivation kept for reference:
+ * ≈ infraMonthly (฿2,600) ÷ blended contribution-margin-per-sub (~฿190/sub), from the
+ * 2026-06-24 business-model spec.
  */
 export const BREAK_EVEN_SUBS = 14;
+
+/**
+ * Live break-even target = infra ÷ gross-profit-per-paying-customer. Uses the caller's
+ * OWN monthly margin (grossProfit = mrr − variable COGS) so the target can never
+ * contradict the profit tile. Falls back to the static constant only when there are no
+ * payers to derive a contribution from. Pure — no DB access.
+ */
+export function computeBreakEvenTarget(input: {
+  infraMonthly: number;
+  grossProfit: number;
+  payingTotal: number;
+  fallback?: number;
+}): number {
+  const { infraMonthly, grossProfit, payingTotal } = input;
+  const fallback = input.fallback ?? BREAK_EVEN_SUBS;
+  const contributionPerSub = payingTotal > 0 ? grossProfit / payingTotal : 0;
+  return contributionPerSub > 0 ? Math.ceil(infraMonthly / contributionPerSub) : fallback;
+}
 
 // ── Pure calculation functions ───────────────────────────────────────────────
 
