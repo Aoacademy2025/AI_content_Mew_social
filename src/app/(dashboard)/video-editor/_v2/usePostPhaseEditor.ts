@@ -75,6 +75,11 @@ export function usePostPhaseEditor(
   const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
+  // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
+  // ไม่งั้น AvatarAdjustOverlay จะ re-composite ทับ base เก่า (ก่อนแก้ b-roll) แล้วเขียน
+  // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
+  const [compositeBaseUrlOverride, setCompositeBaseUrlOverride] = useState<string | null>(null);
+  const compositeBaseUrl = compositeBaseUrlOverride ?? preview?.compositeBaseUrl ?? null;
 
   function setWindowEdit(index: number, edit: WindowEdit) {
     setWindowEditsState((m) => {
@@ -117,7 +122,7 @@ export function usePostPhaseEditor(
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
           status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
-          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown> } };
+          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>; compositeBaseUrl?: string | null } };
         } | null = null;
         try {
           p = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`).then((r) => r.json());
@@ -129,6 +134,7 @@ export function usePostPhaseEditor(
           if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
           setBaseUrl(newVideoUrl);
           if (p.output?.preview?.config) setConfigOverride(p.output.preview.config);
+          if (p.output?.preview?.compositeBaseUrl) setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl);
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
@@ -155,7 +161,7 @@ export function usePostPhaseEditor(
   // bookend-both ต้องมี tailAvatarUrl ด้วย ไม่งั้น composite split ขาดท่อน
   const canAdjustAvatar = !!(
     preview?.avatarModel && preview.avatarModel !== "none" &&
-    preview.avatarVideoUrl && preview.compositeBaseUrl && preview.avatarMode &&
+    preview.avatarVideoUrl && compositeBaseUrl && preview.avatarMode &&
     (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
   );
 
@@ -344,6 +350,7 @@ export function usePostPhaseEditor(
   return {
     preview,
     previewConfig,
+    compositeBaseUrl,
     windowEdits, setWindowEdit, clearWindowEdit,
     selectedWindow, setSelectedWindow,
     applyWindowEdits, applyingWindows,

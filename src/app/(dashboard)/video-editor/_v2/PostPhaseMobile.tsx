@@ -179,7 +179,7 @@ export function PostPhaseMobile({ job, script, onExported, onAdoptJob, onNewProj
               tailSecs={ed.preview.avatarTailSecs ?? 5}
               avatarVideoUrl={ed.preview.avatarVideoUrl!}
               tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-              bgVideoUrl={ed.preview.compositeBaseUrl!}
+              bgVideoUrl={ed.compositeBaseUrl!}
               jobId={job.jobId}
               onClose={() => ed.setAdjustingAvatar(false)}
               onDone={(url) => {
