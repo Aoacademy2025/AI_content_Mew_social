@@ -96,6 +96,31 @@ function ffprobeDurationSec(filePath: string): number {
   }
 }
 
+// Sibling to ffprobeDurationSec: metadata-only probe (no frame decode) so we can bound
+// pixel dimensions BEFORE applyKenBurns / normalizeForRemotion ever touch the file. A
+// tiny file can still be a decompression bomb (e.g. a 317 KB 10000×10000 PNG forces the
+// Ken Burns ffmpeg decode to ~4.5 GB RSS; an 8000×8000 mp4 does ~3 GB in
+// normalizeForRemotion) — and normalizeForRemotion runs behind the process-wide
+// normalize semaphore shared with every other user's b-roll processing, so one hostile
+// upload can stall the whole pipeline. Reject anything we can't confidently bound.
+function ffprobeDimensions(filePath: string): { width: number; height: number } | null {
+  const ffprobe = getFfmpegPath().replace(/ffmpeg(\.exe)?$/, (m) => m.replace("ffmpeg", "ffprobe"));
+  try {
+    const out = execFileSync(
+      ffprobe,
+      ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", filePath],
+      { encoding: "utf-8", timeout: 10_000 },
+    );
+    const [w, h] = out.trim().split(",").map((n) => parseInt(n, 10));
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+    return { width: w, height: h };
+  } catch {
+    return null;
+  }
+}
+
+const MAX_DIMENSION_PX = 4096;
+
 // Stream a web File to disk (mirrors /api/videos/upload-avatar's pump loop) with
 // backpressure — never buffers the whole file a second time in memory.
 async function streamToFile(file: File, outPath: string): Promise<void> {
@@ -161,7 +186,20 @@ export async function POST(req: Request) {
     );
   }
 
-  const formData = await req.formData();
+  // formData() parses the multipart body and throws on malformed input (bad boundary,
+  // truncated stream, etc). Catch it explicitly so a hostile/broken body still gets the
+  // route's standard Thai JSON error shape instead of falling through to Next's generic
+  // framework error page (mirrors how /api/videos/upload-avatar wraps its whole handler).
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch (e) {
+    console.error("[broll-window/upload] formData parse failed:", e);
+    return NextResponse.json(
+      { error: "invalid_body", message: "ข้อมูลฟอร์มไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง" },
+      { status: 400 },
+    );
+  }
   const file = formData.get("file");
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "file_required", message: "กรุณาเลือกไฟล์" }, { status: 400 });
@@ -213,6 +251,17 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "empty_file", message: "ไฟล์ว่างหรืออ่านไม่ได้" }, { status: 400 });
       }
 
+      // Metadata-only probe BEFORE Ken Burns ever decodes the file — bounds pixel
+      // dimensions so a small-byte-size decompression bomb can't force a multi-GB decode.
+      const imgDims = ffprobeDimensions(tempInput);
+      if (!imgDims || imgDims.width > MAX_DIMENSION_PX || imgDims.height > MAX_DIMENSION_PX) {
+        safeUnlink(tempInput);
+        return NextResponse.json(
+          { error: "unsupported_type", message: "ไฟล์มีความละเอียดสูงเกินไป (สูงสุด 4096×4096)" },
+          { status: 415 },
+        );
+      }
+
       // Still image → 5s vertical Ken Burns motion clip (throws if ffmpeg output is bad).
       await applyKenBurns(tempInput, outPath);
       if (!isValidMp4Path(outPath)) {
@@ -233,6 +282,19 @@ export async function POST(req: Request) {
     if (!isValidMp4Path(outPath)) {
       safeUnlink(outPath);
       return NextResponse.json({ error: "empty_file", message: "ไฟล์วิดีโอว่างหรืออ่านไม่ได้" }, { status: 400 });
+    }
+
+    // Metadata-only probe BEFORE normalizeForRemotion decodes the file — same bomb guard
+    // as the image path. normalizeForRemotion also runs behind the process-wide normalize
+    // semaphore shared with all b-roll processing, so an oversized decode here would stall
+    // every other user's b-roll, not just this request.
+    const vidDims = ffprobeDimensions(outPath);
+    if (!vidDims || vidDims.width > MAX_DIMENSION_PX || vidDims.height > MAX_DIMENSION_PX) {
+      safeUnlink(outPath);
+      return NextResponse.json(
+        { error: "unsupported_type", message: "ไฟล์มีความละเอียดสูงเกินไป (สูงสุด 4096×4096)" },
+        { status: 415 },
+      );
     }
 
     const normalizeResult = await normalizeForRemotion(outPath);
