@@ -44,6 +44,7 @@ import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
   applyBrollPreferenceToSearchQueries,
+  brollPreferenceInstruction,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
 import { execFile } from "child_process";
@@ -1149,6 +1150,7 @@ async function visionRerankCandidates(
   candidatesByKeyword: CandidateVideo[][],
   llmKey: string,
   terms: RelevanceTerms,
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   // Pick top-N judgeable candidates per subtitle by the existing soft ranking.
   const perKeyword: { ki: number; entries: { candIdx: number; thumb: string }[] }[] = [];
@@ -1194,9 +1196,13 @@ async function visionRerankCandidates(
   }
   if (!groupMap.length) return keywords.map(() => -1);
 
+  const preferenceLine = preferenceInstruction
+    ? `\nSTRICT VISUAL PREFERENCE: ${preferenceInstruction} Reject options whose people clearly violate this preference.`
+    : "";
+
   const prompt = `You are a B-roll editor. Images are numbered in the order attached (image#1, image#2, …).
 For EACH subtitle below, look at its option images and pick the letter whose footage VISUALLY matches the subtitle's content best.
-Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.
+Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.${preferenceLine}
 Output ONLY a JSON object mapping subtitle keys to a letter, e.g. {"S0":"B","S3":"A"}. Use "NONE" only if every option is truly unrelated.
 
 ${promptGroups.join("\n")}`;
@@ -1221,6 +1227,7 @@ async function llmRankBatch(
   llmKey: string,
   visualDirection?: string,
   terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   const lines = keywords.map((kw, ki) => {
     const sub = subtitleTexts[ki] ?? kw;
@@ -1232,11 +1239,14 @@ async function llmRankBatch(
     ? `\nVIDEO DIRECTION: ${visualDirection}\nPrioritize candidates that match this overall visual tone/theme.\n`
     : "";
   const profileLine = `\nVISUAL DOMAIN: ${terms.domainLabel}\nPrefer footage of: ${terms.positive.slice(0, 12).join(", ") || "the subject described"}.\nDown-rank (do NOT hard-reject) footage of: ${terms.avoid.slice(0, 8).join(", ") || "obviously unrelated subjects"}.\n`;
+  const preferenceRankLine = preferenceInstruction
+    ? `\nVISUAL PREFERENCE (strict): ${preferenceInstruction} Prefer candidates matching it; use -1 rather than picking a clear violation when alternatives exist.\n`
+    : "";
 
   const lastIdx = keywords.length - 1;
   const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content, content profile, and overall video direction.
 ${directionLine}
-${profileLine}
+${profileLine}${preferenceRankLine}
 RULES:
 - Output ONLY a JSON object mapping each subtitle index to its chosen candidate index, e.g. {"0": 2, "1": -1, "2": 0}
 - Include an entry for EVERY subtitle index from 0 to ${lastIdx}
@@ -1265,9 +1275,10 @@ async function llmRankCandidates(
   llmKey: string,
   visualDirection?: string,
   terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   if (keywords.length <= RANK_BATCH_SIZE) {
-    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, terms);
+    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, terms, preferenceInstruction);
   }
 
   // Split into chunks and call sequentially to avoid LLM output-length limits
@@ -1279,7 +1290,7 @@ async function llmRankCandidates(
     const chunkTitles = candidateTitles.slice(start, end);
     console.log(`[fetch-stock] LLM ranking chunk ${start}-${end - 1} of ${keywords.length}`);
     try {
-      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, terms);
+      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, terms, preferenceInstruction);
       for (let i = 0; i < chunkResult.length; i++) {
         results[start + i] = chunkResult[i];
       }
@@ -1344,6 +1355,7 @@ export async function POST(req: Request) {
   } = body ?? {};
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
+  const preferenceInstruction = brollPreferenceInstruction(brollPreference);
   const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
     ? pipelineRunId.trim().slice(0, 120)
     : null;
@@ -1909,7 +1921,12 @@ export async function POST(req: Request) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const genPrompt = promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }));
+              const genPrompt = promptFor(buildKieImagePrompt(keyword, {
+                visualDirection,
+                terms: relTerms,
+                region: brollPreference.brollRegionPreference,
+                style: brollPreference.brollVisualStyle,
+              }));
               const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieToken!, effectiveKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
@@ -1932,7 +1949,12 @@ export async function POST(req: Request) {
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }))), kieToken!);
+            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, {
+              visualDirection,
+              terms: relTerms,
+              region: brollPreference.brollRegionPreference,
+              style: brollPreference.brollVisualStyle,
+            }))), kieToken!);
             const imageUrl = await kiePollResult(imageTaskId, kieToken!);
             results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
             success = true;
@@ -2247,7 +2269,7 @@ export async function POST(req: Request) {
       let visionDone = false;
       if (VISION_RERANK_ON) {
         try {
-          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms);
+          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms, preferenceInstruction);
           const judged = v.filter((idx) => idx >= 0).length;
           if (judged > 0) {
             bestIdxByKeyword = v.map((idx, i) =>
@@ -2266,7 +2288,7 @@ export async function POST(req: Request) {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, relTerms);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, relTerms, preferenceInstruction);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
         if (shouldDistrustRanker(bestIdxByKeyword, RANK_DISTRUST_PCT)) {
@@ -2562,7 +2584,12 @@ export async function POST(req: Request) {
           let success = false;
           let failureReason: string | null = null;
           try {
-            const genPrompt = promptFor(buildKieImagePrompt(kw, { visualDirection, terms: relTerms }));
+            const genPrompt = promptFor(buildKieImagePrompt(kw, {
+              visualDirection,
+              terms: relTerms,
+              region: brollPreference.brollRegionPreference,
+              style: brollPreference.brollVisualStyle,
+            }));
             const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieToken!, effectiveKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;
