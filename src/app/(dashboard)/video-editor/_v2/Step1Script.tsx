@@ -36,6 +36,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
   const uploadDurationLabel = p.clipDurationSec > 0 ? fmtTime(p.clipDurationSec) : null;
+  const showScriptSegments = p.mode !== "upload";
 
   // เวลาโดยประมาณต่อเซ็กเมนต์ — แบ่งตามสัดส่วนความยาวตัวอักษรของแต่ละบรรทัด
   const segTimes = useMemo(() => {
@@ -194,7 +195,31 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-2 lg:overflow-y-auto max-lg:overflow-visible px-5 pb-3">
-          {lines.map((line, i) => (
+          {!showScriptSegments && (
+            <div
+              className="flex flex-1 flex-col justify-center gap-3 text-center"
+              style={{ fontSize: 12, color: color.textFaint, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 160, padding: 18 }}
+            >
+              <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full" style={{ background: "rgba(124,92,255,.16)", color: color.primary300 }}>
+                <Clapperboard size={18} strokeWidth={1.8} />
+              </div>
+              {p.canUploadOwnMedia ? (
+                p.clipUrl ? (
+                  <div className="flex flex-col gap-1.5">
+                    <span style={{ font: `500 13px ${font.heading}`, color: color.text }}>คลิปพร้อมใช้งาน</span>
+                    <span style={{ lineHeight: 1.65 }}>
+                      {uploadDurationLabel ? `ความยาว ${uploadDurationLabel} นาที · ` : ""}ระบบจะใช้เสียงจากคลิปนี้เพื่อสร้างซับและบีโรล
+                    </span>
+                  </div>
+                ) : (
+                  <span style={{ lineHeight: 1.65 }}>อัปโหลดคลิปทางซ้าย แล้วไปเลือกองค์ประกอบต่อ</span>
+                )
+              ) : (
+                <span style={{ lineHeight: 1.65 }}>อัปเกรดเป็น Pro เพื่ออัปโหลดคลิปส่วนตัว</span>
+              )}
+            </div>
+          )}
+          {showScriptSegments && lines.map((line, i) => (
             <div
               key={`${i}-${line.slice(0, 12)}`}
               draggable
@@ -226,16 +251,12 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
               </Card>
             </div>
           ))}
-          {!lines.length && (
+          {showScriptSegments && !lines.length && (
             <div
               className="flex flex-1 items-center justify-center text-center"
               style={{ fontSize: 12, color: color.textFaintest, borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.12)`, minHeight: 120 }}
             >
-              {p.mode === "upload"
-                ? p.canUploadOwnMedia
-                  ? <>อัปโหลดคลิปทางซ้าย<br />แล้วกด &quot;ถัดไป&quot; เพื่อเลือกบีโรล</>
-                  : <>อัปเกรดเป็น Pro<br />เพื่ออัปโหลดคลิปส่วนตัว</>
-                : <>เริ่มพิมพ์สคริปต์ทางซ้าย<br />ระบบจะแบ่งเซ็กเมนต์ให้อัตโนมัติ</>}
+              เริ่มพิมพ์สคริปต์ทางซ้าย<br />ระบบจะแบ่งเซ็กเมนต์ให้อัตโนมัติ
             </div>
           )}
         </div>

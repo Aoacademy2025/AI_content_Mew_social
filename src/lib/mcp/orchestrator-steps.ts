@@ -48,6 +48,7 @@ export function buildStockPayload(
   visualDirection?: string,
   keywordAlternatives?: string[][],
   relevanceSpec?: unknown,
+  brollPreference?: BrollPreferenceInput,
 ) {
   const perSubtitle = captions.length > 0 && captions.length === keywords.length;
   return {
@@ -60,6 +61,8 @@ export function buildStockPayload(
     ...(visualDirection ? { visualDirection } : {}),
     ...(keywordAlternatives && keywordAlternatives.length ? { keywordAlternatives } : {}),
     ...(relevanceSpec ? { relevanceSpec } : {}),
+    ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
+    ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
   };
 }
 

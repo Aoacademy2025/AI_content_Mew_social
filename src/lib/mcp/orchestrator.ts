@@ -196,7 +196,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upStock = await caller.post<{ results: unknown[] }>(
         "/api/videos/fetch-stock",
         {
-          ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec),
+          ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec, {
+            brollRegionPreference: input.brollRegionPreference,
+            brollVisualStyle: input.brollVisualStyle,
+          }),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
@@ -331,7 +334,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const stock = await caller.post<{ results: unknown[] }>(
       "/api/videos/fetch-stock",
       {
-        ...buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+        ...buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec, {
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
+        }),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),

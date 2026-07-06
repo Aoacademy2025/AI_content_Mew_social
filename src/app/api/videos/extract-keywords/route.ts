@@ -15,6 +15,7 @@ import {
 } from "@/lib/broll-profile";
 import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
 import {
+  applyBrollPreferenceToSearchQueries,
   appendBrollPreferenceToDirection,
   augmentRelevanceSpecWithBrollPreference,
   brollPreferencePromptBlock,
@@ -262,6 +263,7 @@ export async function POST(req: Request) {
   } = body ?? {};
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const preferenceBlock = brollPreferencePromptBlock(brollPreference);
+  const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
 
   // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
   // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
@@ -492,8 +494,8 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       const batchAlts: string[][] = [];
 
       for (let i = 0; i < batch.length; i++) {
-        const alts = rawAlts[i] ?? [];
-        const fallbackAlts = fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile);
+        const alts = withBrollPreference(rawAlts[i] ?? []);
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
 
         // Pick first valid keyword — in perSubtitle mode allow similar keywords
         // because adjacent subtitles can legitimately share visual themes
@@ -658,15 +660,15 @@ Exactly ${manualClips} distinct queries.`;
     }
 
     // รวม keyword ที่ LLM ให้ + เติม fallback ถ้าไม่ครบ แล้ว dedup ให้ครบ ${manualClips}
-    const flatKws = parsedFlat.map(g => g[0]).filter(Boolean);
-    const fallbackPool = fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile);
+    const flatKws = withBrollPreference(parsedFlat.map(g => g[0]).filter(Boolean));
+    const fallbackPool = withBrollPreference(fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile));
     const merged = [...flatKws, ...fallbackPool];
     const picked = pickDistinctKeywords(merged, merged.map(k => [k]), manualClips);
     // เติมจาก fallback อีกถ้ายังไม่ครบ (กันเคส LLM ให้น้อย + fallback ซ้ำ)
     while (picked.keywords.length < manualClips && fallbackPool.length > 0) {
       const extra = fallbackPool[picked.keywords.length % fallbackPool.length];
       const variant = `${extra} ${["closeup","wide","aerial","slow motion","detail"][picked.keywords.length % 5]}`;
-      picked.keywords.push(sanitizeKeyword(variant) || extra);
+      picked.keywords.push(withBrollPreference([sanitizeKeyword(variant) || extra])[0] ?? extra);
       picked.alternatives.push([extra]);
     }
 
@@ -750,7 +752,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const allKeywords: string[] = [];
 
     for (let i = 0; i < numScenes; i++) {
-      const sceneAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
+      const sceneAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
       for (let j = 0; j < kwPerScene; j++) {
         const picked = sceneAlts[j % sceneAlts.length];
         allKeywords.push(picked);
@@ -800,8 +802,8 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     if (multiKwMode) {
       // แต่ละ scene → kwPerScene keywords แยกกัน
       for (let i = 0; i < numScenes; i++) {
-        const sceneAlts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
+        const sceneAlts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
         // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
         let fallbackIndex = 0;
         while (sceneAlts.length < kwPerScene) {
@@ -824,8 +826,8 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       }
     } else {
       for (let i = 0; i < numScenes; i++) {
-        const alts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile);
+        const alts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile));
 
         let picked = "";
         for (const alt of alts) {

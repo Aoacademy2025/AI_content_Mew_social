@@ -172,10 +172,17 @@ function collectPreferenceHints(input: BrollPreferenceInput): PreferenceHints | 
 export function brollPreferencePromptBlock(input: BrollPreferenceInput): string {
   const hints = collectPreferenceHints(input);
   if (!hints) return "";
+  const region = normalizeBrollRegionPreference(input.brollRegionPreference);
+  const regionConstraint = region
+    ? region === "no-people"
+      ? "Treat the no-people setting as a hard search constraint: avoid visible faces, portraits, crowds, and full-body people unless the subtitle is impossible without a person."
+      : "Treat the region setting as a strong search constraint: every people, place, office, school, lifestyle, or city query must carry the requested region/local context."
+    : "";
   return [
-    "B-ROLL VISUAL PREFERENCE (soft preference; script relevance wins if there is a conflict):",
+    "B-ROLL VISUAL PREFERENCE:",
     hints.instruction,
-    "Use this to steer query wording, visualDirection, and safe fallback queries. Do not force demographic or location terms into unrelated shots.",
+    regionConstraint,
+    "Use this to steer query wording, visualDirection, and safe fallback queries while keeping every query filmable and relevant to the subtitle.",
   ].join("\n");
 }
 
@@ -199,4 +206,62 @@ export function augmentRelevanceSpecWithBrollPreference(
     avoidConcepts: mergeUnique(spec?.avoidConcepts, hints.avoid).slice(0, 24),
     safeFallbackQueries: mergeUnique(spec?.safeFallbackQueries, hints.fallbackQueries).slice(0, 14),
   };
+}
+
+const REGION_SEARCH_CONSTRAINTS: Partial<Record<BrollRegionPreference, { required: string; aliases: string[] }>> = {
+  thai: {
+    required: "thai",
+    aliases: ["thai", "thailand", "bangkok", "southeast asian"],
+  },
+  asian: {
+    required: "asian",
+    aliases: ["asian", "east asian", "southeast asian", "thai", "thailand", "bangkok", "japanese", "korean", "chinese"],
+  },
+  european: {
+    required: "european",
+    aliases: ["european", "europe", "western"],
+  },
+  global: {
+    required: "diverse",
+    aliases: ["diverse", "global", "international", "multicultural"],
+  },
+};
+
+const PEOPLE_WORD_RE = /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers)\b/gi;
+
+function hasConstraintAlias(query: string, aliases: string[]): boolean {
+  const normalized = ` ${query.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+  return aliases.some((alias) => normalized.includes(` ${alias.toLowerCase()} `));
+}
+
+export function applyBrollPreferenceToSearchQuery(query: string, input: BrollPreferenceInput): string {
+  const clean = query.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!clean) return "";
+
+  const region = normalizeBrollRegionPreference(input.brollRegionPreference);
+  if (!region) return clean;
+
+  if (region === "no-people") {
+    const withoutPeople = clean.replace(PEOPLE_WORD_RE, "").replace(/\s+/g, " ").trim();
+    const base = withoutPeople || clean;
+    return hasConstraintAlias(base, ["no people", "empty", "object", "objects", "hands", "workspace", "detail"])
+      ? base
+      : `${base} no people`;
+  }
+
+  const constraint = REGION_SEARCH_CONSTRAINTS[region];
+  if (!constraint || hasConstraintAlias(clean, constraint.aliases)) return clean;
+  return `${constraint.required} ${clean}`;
+}
+
+export function applyBrollPreferenceToSearchQueries(
+  queries: string[],
+  input: BrollPreferenceInput,
+): string[] {
+  const out: string[] = [];
+  for (const query of queries) {
+    const preferred = applyBrollPreferenceToSearchQuery(query, input);
+    if (preferred && !out.includes(preferred)) out.push(preferred);
+  }
+  return out;
 }

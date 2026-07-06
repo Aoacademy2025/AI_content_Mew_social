@@ -42,6 +42,10 @@ import {
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
+import {
+  applyBrollPreferenceToSearchQueries,
+  type BrollPreferenceInput,
+} from "@/lib/broll-preferences";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
@@ -1312,6 +1316,8 @@ export async function POST(req: Request) {
     visualDirection,
     contentProfile,
     relevanceSpec,
+    brollRegionPreference,
+    brollVisualStyle,
     pipelineRunId,
     draftId,
   }: {
@@ -1331,9 +1337,13 @@ export async function POST(req: Request) {
     visualDirection?: string;
     contentProfile?: string;
     relevanceSpec?: RelevanceSpec | null;
+    brollRegionPreference?: string;
+    brollVisualStyle?: string;
     pipelineRunId?: string;
     draftId?: string;
   } = body ?? {};
+  const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
+  const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
   const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
     ? pipelineRunId.trim().slice(0, 120)
     : null;
@@ -1903,12 +1913,12 @@ export async function POST(req: Request) {
   async function findProfileFallbackClip(keyword: string, keywordIndex: number, reason: string): Promise<FoundVideo | null> {
     const subtitleText = Array.isArray(subtitleTexts) ? subtitleTexts[keywordIndex] ?? "" : "";
     const words = keyword.split(/\s+/).filter(Boolean);
-    const queries = [
+    const queries = withBrollPreference([
       ...relTerms.fallbackQueries,
       words.slice(0, 2).join(" "),
       words[0],
       words[words.length - 1],
-    ].filter((query, index, arr) => query && query !== keyword && arr.indexOf(query) === index);
+    ]).filter((query, index, arr) => query && query !== keyword && arr.indexOf(query) === index);
 
     for (const query of queries) {
       try {
@@ -1971,12 +1981,12 @@ export async function POST(req: Request) {
     async (keyword, ki): Promise<CandidateVideo[]> => {
       // Build list of queries to try: alternatives first, then broad fallbacks
       const alts = keywordAlternatives?.[ki] ?? [];
-      const queriesToTry = [
+      const queriesToTry = withBrollPreference([
         ...alts.filter(Boolean),
         keyword,
         keyword.split(" ").slice(0, 2).join(" "),
         keyword.split(" ")[0],
-      ].filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
+      ]).filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
 
       try {
         for (const query of queriesToTry) {
