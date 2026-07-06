@@ -89,9 +89,10 @@ const DEFAULT_PROJECT = {
 };
 
 export function useV2Project() {
-  // Restore draft ก่อน (จำการตั้งค่าโปรเจกต์ข้ามเซสชัน) — ค่า default จาก server
-  // จะไม่ทับของที่ผู้ใช้ตั้งไว้แล้ว (ดู effect ด้านล่าง)
-  const draftRef = useRef<V2Draft>(typeof window === "undefined" ? {} : loadDraft());
+  // Keep the first client render byte-compatible with SSR. Local/server drafts are
+  // applied after mount in ensureServerProject(); reading localStorage here causes
+  // hydration text mismatches when a previous draft exists.
+  const draftRef = useRef<V2Draft>({});
   const d = draftRef.current;
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectReady, setProjectReady] = useState(false);
