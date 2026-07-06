@@ -14,34 +14,26 @@ import type { V2Caption } from "./subtitle-style";
 import { useAudioPeaks } from "../_components/useAudioPeaks";
 import { WaveformCanvas } from "../_components/WaveformCanvas";
 import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
+import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
 
 const TRACK_H = 26;
 const LABEL_W = 92;
 const MIN_CARD_MS = 300;
 const SNAP_MS = 120;
 
-interface Span { startMs: number; endMs: number; label: string }
+const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
 function fmt(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** ดึงช่วงบีโรลจาก render config (fail-open → บล็อกเดียวเต็มคลิป) */
-function brollSpansFromConfig(config: Record<string, unknown> | null | undefined, durMs: number, fps = 30): Span[] {
-  try {
-    const scenes = (config as { scenes?: { durationInFrames?: number; keyword?: string }[] } | null)?.scenes;
-    if (Array.isArray(scenes) && scenes.length > 0) {
-      let cursor = 0;
-      return scenes.map((sc, i) => {
-        const d = Math.max(1, Number(sc?.durationInFrames) || fps) / fps * 1000;
-        const span = { startMs: cursor, endMs: Math.min(durMs, cursor + d), label: sc?.keyword || `คลิป ${i + 1}` };
-        cursor += d;
-        return span;
-      }).filter((s) => s.startMs < durMs);
-    }
-  } catch { /* fall through */ }
-  return [{ startMs: 0, endMs: durMs, label: "บีโรลอัตโนมัติ" }];
+/** ดึงช่วงบีโรลจาก render config: ลอง bgVideos จริงก่อน (brollWindowSpans) —
+ * ว่าง (งานเก่า/ไม่มี field) ถึง fail-open กลับไปบล็อกเดียวเต็มคลิปแบบเดิม */
+function brollSpansFromConfig(config: Record<string, unknown> | null | undefined, durMs: number): BrollWindowSpan[] {
+  const real = brollWindowSpans(config, durMs);
+  if (real.length > 0) return real;
+  return [{ index: 0, startMs: 0, endMs: durMs, label: "บีโรลอัตโนมัติ", src: "" }];
 }
 
 export function TimelinePanel({
@@ -49,7 +41,7 @@ export function TimelinePanel({
   selected, onSelect,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs,
-  voiceUrl,
+  voiceUrl, onSelectBrollWindow,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -68,6 +60,9 @@ export function TimelinePanel({
   avatarIntroMs: number;
   avatarTailMs: number;
   voiceUrl: string | null;
+  /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — ใช้เมื่อ flag
+   * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1 เปิดและมี prop นี้ส่งมา (caller ยังไม่ wire ใน task นี้) */
+  onSelectBrollWindow?: (index: number) => void;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
@@ -286,7 +281,16 @@ export function TimelinePanel({
             {trackLabel("บีโรล", color.trackBroll)}
             <div className="relative flex-1" style={{ height: TRACK_H }}>
               {brollSpans.map((s, i) => (
-                <div key={i} data-clip style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }} onClick={() => seekTo(s.startMs)} title={s.label}>
+                <div
+                  key={i}
+                  data-clip
+                  style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }}
+                  onClick={() => {
+                    seekTo(s.startMs);
+                    if (BROLL_WINDOW_EDIT) onSelectBrollWindow?.(s.index);
+                  }}
+                  title={s.label}
+                >
                   {s.label}
                 </div>
               ))}
