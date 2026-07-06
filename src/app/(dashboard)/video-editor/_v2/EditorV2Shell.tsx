@@ -290,9 +290,9 @@ export function EditorV2Shell() {
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
         isMobile ? (
-          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} />
+          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
         ) : (
-          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} />
+          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
         )
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />

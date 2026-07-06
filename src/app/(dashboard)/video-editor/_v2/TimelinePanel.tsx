@@ -41,7 +41,7 @@ export function TimelinePanel({
   selected, onSelect,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs,
-  voiceUrl, onSelectBrollWindow,
+  voiceUrl, onSelectBrollWindow, editedWindowIndices,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -61,8 +61,10 @@ export function TimelinePanel({
   avatarTailMs: number;
   voiceUrl: string | null;
   /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — ใช้เมื่อ flag
-   * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1 เปิดและมี prop นี้ส่งมา (caller ยังไม่ wire ใน task นี้) */
+   * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1 เปิด (wired จาก PostPhase.tsx, Task 11) */
   onSelectBrollWindow?: (index: number) => void;
+  /** index (ใน config.bgVideos[]) ของหน้าต่างที่แก้ไว้ในเซสชันนี้แต่ยังไม่ apply — จุดม่วงบนคลิป (Task 11) */
+  editedWindowIndices?: ReadonlySet<number>;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
@@ -292,6 +294,13 @@ export function TimelinePanel({
                   title={s.label}
                 >
                   {s.label}
+                  {BROLL_WINDOW_EDIT && editedWindowIndices?.has(s.index) && (
+                    <span
+                      aria-hidden
+                      className="absolute"
+                      style={{ top: 2, right: 2, width: 6, height: 6, borderRadius: "50%", background: color.primary300 }}
+                    />
+                  )}
                 </div>
               ))}
             </div>
