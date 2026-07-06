@@ -7,6 +7,7 @@ import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
+import { rerenderSkipEligible } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import path from "path";
 import fs from "fs";
@@ -322,15 +323,17 @@ export async function POST(req: Request) {
     // → it must NOT charge minutes again. This is NEVER granted from a client flag: it's valid
     // ONLY when the named source job exists, belongs to THIS user, is `done`, its output video
     // canonicalizes to a `ChargedClip` we recorded for this user (reusing isBurnAlreadyPaid — the
-    // same server-trusted primitive that makes burns free), AND the incoming config duration
-    // equals the source preview's duration (binds the free render to the paid clip's length, so a
-    // longer/expensive config can't ride the skip). Any mismatch/lie/error → skip=false → falls
-    // through to NORMAL charging (never an error). Accepted skips are rate-capped 10/user/hour.
+    // same server-trusted primitive that makes burns free), AND the incoming config matches the
+    // paid source on BOTH duration AND audio identity (`voiceFile`) — `rerenderSkipEligible`. The
+    // rest of shortVideoConfig (scenes/bgVideos/captions) is client-supplied, so binding just the
+    // frame count let a caller keep the same length but swap in a different/longer soundtrack for
+    // free; requiring voiceFile match closes that (a legit per-window edit reuses the source's
+    // voiceFile verbatim). Any mismatch/lie/error → skip=false → falls through to NORMAL charging
+    // (never an error). Accepted skips are rate-capped 10/user/hour.
     let rerenderSkipCharge = false;
     if (rerenderOf && typeof rerenderOf === "object") {
       const sourceJobId = (rerenderOf as { sourceJobId?: unknown }).sourceJobId;
-      const incomingFrames = Number(shortVideoConfig?.durationInFrames);
-      if (typeof sourceJobId === "string" && sourceJobId && Number.isFinite(incomingFrames) && incomingFrames > 0) {
+      if (typeof sourceJobId === "string" && sourceJobId) {
         try {
           const src = await prisma.videoJob.findUnique({
             where: { id: sourceJobId },
@@ -338,9 +341,14 @@ export async function POST(req: Request) {
           });
           if (src && src.userId === userId && src.status === "done") {
             const parsed = parseVideoJobOutput(src.outputJson);
-            const srcFrames = Number((parsed?.preview?.config as Record<string, unknown> | undefined)?.durationInFrames);
+            const sourceConfig = parsed?.preview?.config as Record<string, unknown> | null | undefined;
+            // Config-identity gate (pure, unit-tested): duration frames AND voiceFile must match
+            // the paid source; a forged same-frame config with a swapped voice fails here → charges.
             // ChargedClip existence for (userId, canonical(source videoUrl)) via the shared primitive.
-            if (Number.isFinite(srcFrames) && srcFrames === incomingFrames && (await isBurnAlreadyPaid(userId, parsed?.videoUrl))) {
+            if (
+              rerenderSkipEligible({ sourceConfig, incomingConfig: shortVideoConfig }) &&
+              (await isBurnAlreadyPaid(userId, parsed?.videoUrl))
+            ) {
               // Valid — consume a rate slot only now (an over-limit request stays chargeable).
               rerenderSkipCharge = tryConsumeRerenderRate(userId);
             }

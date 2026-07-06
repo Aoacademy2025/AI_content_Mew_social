@@ -13,7 +13,7 @@
 //     the inspector badge reflects the NEW asset. UNEDITED windows keep all metadata.
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
-import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "../src/lib/broll-rerender";
+import { validateWindowEdits, mergeWindowEdits, rerenderSkipEligible, type WindowEdit } from "../src/lib/broll-rerender";
 
 let failures = 0;
 let passed = 0;
@@ -220,6 +220,64 @@ const metaBg = [
     check("edited window start/end untouched (partial)", m.bgVideos[1].start === 4 && m.bgVideos[1].end === 8);
   }
 }
+
+// ── rerenderSkipEligible (billing-bypass finding) ───────────────────────────────
+// The FREE `rerenderOf` charge-skip must bind to the paid source's DURATION *and* AUDIO. Binding
+// only the frame count let a caller keep the same length but swap in a different soundtrack/scenes
+// for free (minute-quota bypass). A legit per-window edit reuses the source's voiceFile verbatim
+// (orchestrator's rrBaseConfig = { ...preview.config, bgVideos, keywordPopups: [] }), so it still
+// qualifies. Any mismatch → false → the route falls through to NORMAL charging (never an error).
+const voiceA = "/api/renders/tts-1700000000000-aaaa.mp3";
+const voiceB = "/api/renders/tts-1700000000000-bbbb.mp3";
+const srcCfg = { durationInFrames: 900, voiceFile: voiceA };
+
+// (a) same duration + same voiceFile (verbatim — the legit orchestrator path) ⇒ ELIGIBLE.
+//     Incoming carries DIFFERENT bgVideos/captions (the point of the edit) — those don't matter.
+check("skip: same duration + same voiceFile ⇒ eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 900, voiceFile: voiceA, bgVideos: [{ src: "/api/stocks/new.mp4" }], captions: [{ text: "x" }] },
+}) === true);
+
+// (b) same duration + DIFFERENT voiceFile (swapped soundtrack) ⇒ NOT eligible (falls through → charges).
+check("skip: same duration + different voiceFile ⇒ NOT eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 900, voiceFile: voiceB },
+}) === false);
+
+// duration mismatch ⇒ NOT eligible (existing invariant preserved).
+check("skip: different duration ⇒ NOT eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 1200, voiceFile: voiceA },
+}) === false);
+
+// source has NO voiceFile ⇒ NOT eligible (can't bind audio identity → never a free bypass).
+check("skip: source without voiceFile ⇒ NOT eligible", rerenderSkipEligible({
+  sourceConfig: { durationInFrames: 900 },
+  incomingConfig: { durationInFrames: 900, voiceFile: voiceA },
+}) === false);
+
+// incoming omits voiceFile ⇒ NOT eligible.
+check("skip: incoming without voiceFile ⇒ NOT eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 900 },
+}) === false);
+
+// canonicalization: the /renders/ mirror + absolute-URL form of the SAME file still count as SAME audio.
+check("skip: /renders mirror of same voice ⇒ eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 900, voiceFile: "/renders/tts-1700000000000-aaaa.mp3" },
+}) === true);
+check("skip: absolute-URL form of same voice ⇒ eligible", rerenderSkipEligible({
+  sourceConfig: srcCfg,
+  incomingConfig: { durationInFrames: 900, voiceFile: "https://studio.heroaiengine.com" + voiceA },
+}) === true);
+
+// zero/negative/NaN frames and null/garbage configs ⇒ NOT eligible.
+check("skip: zero frames ⇒ NOT eligible", rerenderSkipEligible({
+  sourceConfig: { durationInFrames: 0, voiceFile: voiceA }, incomingConfig: { durationInFrames: 0, voiceFile: voiceA },
+}) === false);
+check("skip: null configs ⇒ NOT eligible", rerenderSkipEligible({ sourceConfig: null, incomingConfig: null }) === false);
+check("skip: undefined incoming ⇒ NOT eligible", rerenderSkipEligible({ sourceConfig: srcCfg, incomingConfig: undefined }) === false);
 
 if (failures) { console.error(`\n${failures} FAILED (${passed} passed)`); process.exit(1); }
 console.log(`\nALL ${passed} BROLL-RERENDER CHECKS PASSED`);

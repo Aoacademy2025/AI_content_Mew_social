@@ -108,3 +108,65 @@ export function mergeWindowEdits(
   }
   return { bgVideos: merged };
 }
+
+/**
+ * Canonicalize a voice/audio URL for identity comparison: absolute→pathname (origin is
+ * irrelevant — same file), strip any query/hash, and fold the `/renders/` ↔ `/api/renders/`
+ * mirror to one form. Returns null for a non-string / empty value. Deliberately lenient: it
+ * NEVER collapses two DIFFERENT files, so a benign relative/absolute reformat of the SAME audio
+ * still compares equal. (Callers additionally accept a raw exact-string match, so a verbatim
+ * value — the legit orchestrator path — always compares equal even without this.)
+ */
+function canonicalAudioUrl(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  let s = v.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) {
+    try { s = new URL(s).pathname; } catch { return s; }
+  }
+  const q = s.search(/[?#]/);
+  if (q !== -1) s = s.slice(0, q);
+  if (s.startsWith("/renders/")) s = "/api/renders/" + s.slice("/renders/".length);
+  return s || null;
+}
+
+/**
+ * Does the incoming render config match the paid SOURCE closely enough to ride the FREE
+ * `rerenderOf` charge-skip in /api/videos/render? A legit per-window b-roll re-render swaps ONLY
+ * `bgVideos` and reuses the source's voice + duration verbatim (see the orchestrator's
+ * `rrBaseConfig` = `{ ...preview.config, bgVideos, keywordPopups: [] }`), so we require BOTH:
+ *   - `durationInFrames` equal (and > 0) — binds the free render to the paid clip's length so a
+ *     longer/expensive config can't ride the skip.
+ *   - `voiceFile` (audio identity) equal — the client may NOT swap in a different soundtrack and
+ *     still pay nothing. `voiceFile`/`durationInFrames` are the only two source-bound fields; the
+ *     rest of the config (scenes/bgVideos/captions) is client-supplied and free to differ.
+ *
+ * Pure + total: any missing / NaN / mismatched field → `false`, so the route simply falls through
+ * to NORMAL charging (never an error, same as every other invalid `rerenderOf` condition today).
+ * NEVER returns true when the source carries no usable `voiceFile` (can't bind audio identity).
+ */
+export function rerenderSkipEligible(args: {
+  sourceConfig: Record<string, unknown> | null | undefined;
+  incomingConfig: Record<string, unknown> | null | undefined;
+}): boolean {
+  const { sourceConfig, incomingConfig } = args;
+  if (typeof sourceConfig !== "object" || sourceConfig === null) return false;
+  if (typeof incomingConfig !== "object" || incomingConfig === null) return false;
+
+  // Duration-frame equality (the existing invariant).
+  const srcFrames = Number(sourceConfig.durationInFrames);
+  const inFrames = Number(incomingConfig.durationInFrames);
+  if (!Number.isFinite(srcFrames) || srcFrames <= 0) return false;
+  if (!Number.isFinite(inFrames) || inFrames <= 0) return false;
+  if (srcFrames !== inFrames) return false;
+
+  // Audio identity: the free re-render must reuse the paid clip's voice, not a swapped one.
+  const srcVoice = sourceConfig.voiceFile;
+  const inVoice = incomingConfig.voiceFile;
+  if (typeof srcVoice !== "string" || !srcVoice.trim()) return false; // no source voice → ineligible
+  if (typeof inVoice !== "string" || !inVoice.trim()) return false;
+  if (srcVoice.trim() === inVoice.trim()) return true; // verbatim — the legit orchestrator path
+  const a = canonicalAudioUrl(srcVoice);
+  const b = canonicalAudioUrl(inVoice);
+  return a !== null && a === b;
+}
