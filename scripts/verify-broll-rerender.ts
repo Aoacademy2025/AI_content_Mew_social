@@ -8,7 +8,9 @@
 //   - index int >= 0; 1..40 edits; dedupe by index (last wins).
 // mergeWindowEdits: apply validated edits onto the SOURCE preview's bgVideos[].
 //   - NEVER touches start/end (window timing is locked — subtitle invariant); never reorders.
-//   - per edited window: replace src (+ keyword when given), set clipOffset 0, drop clipDuration.
+//   - per edited window: replace src (+ keyword when given), set clipOffset 0, drop clipDuration,
+//     and STRIP stale source metadata (provider/title/query/selectionReason/relevanceScore) so
+//     the inspector badge reflects the NEW asset. UNEDITED windows keep all metadata.
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
 import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "../src/lib/broll-rerender";
@@ -150,6 +152,73 @@ check("non-array source bgVideos rejected", isErr(mergeWindowEdits(null as unkno
   const edits: WindowEdit[] = [{ index: 1, src: "/api/renders/z.mp4" }];
   mergeWindowEdits(original, edits);
   check("source input not mutated by merge", original[1].src === "/api/stocks/orig-1.mp4" && original[1].clipDuration === 4);
+}
+
+// ── stale source-metadata stripping (Finding 2) ────────────────────────────────
+// An edited window must DROP the old asset's provider/title/query/selectionReason/relevanceScore
+// so the inspector badge reflects the NEW source — but timing (start/end) and keyword handling
+// stay exactly as before.
+const metaBg = [
+  { src: "/api/stocks/orig-0.mp4", start: 0, end: 4, clipOffset: 0.5, clipDuration: 3,
+    keyword: "cats", provider: "pexels", title: "A cat", query: "cats playing",
+    selectionReason: "top match", relevanceScore: 0.9 },
+];
+{
+  const edits = validateWindowEdits([{ index: 0, src: "/api/stocks/broll-ai-123.mp4" }]);
+  const m = mergeWindowEdits(structuredClone(metaBg), edits as WindowEdit[]);
+  check("merge (metadata strip) succeeds", !isErr(m), JSON.stringify(m));
+  if (!isErr(m)) {
+    const w = m.bgVideos[0];
+    check("edited src replaced (strip case)", w.src === "/api/stocks/broll-ai-123.mp4");
+    check("stale provider stripped", !("provider" in w));
+    check("stale title stripped", !("title" in w));
+    check("stale query stripped", !("query" in w));
+    check("stale selectionReason stripped", !("selectionReason" in w));
+    check("stale relevanceScore stripped", !("relevanceScore" in w));
+    check("edited start UNTOUCHED (strip case)", w.start === 0);
+    check("edited end UNTOUCHED (strip case)", w.end === 4);
+    check("edited clipOffset reset (strip case)", w.clipOffset === 0);
+    check("edited clipDuration dropped (strip case)", !("clipDuration" in w));
+    check("existing keyword preserved when edit omits it (strip case)", w.keyword === "cats");
+  }
+}
+
+// keyword provided by the edit replaces the stale one; metadata still stripped
+{
+  const edits = validateWindowEdits([{ index: 0, src: "/api/stocks/broll-upload-9.mp4", keyword: "new kw" }]);
+  const m = mergeWindowEdits(structuredClone(metaBg), edits as WindowEdit[]);
+  check("merge (keyword + strip) succeeds", !isErr(m));
+  if (!isErr(m)) {
+    const w = m.bgVideos[0];
+    check("keyword replaced when edit supplies it (strip case)", w.keyword === "new kw");
+    check("provider stripped (keyword case)", !("provider" in w));
+    check("title stripped (keyword case)", !("title" in w));
+    check("start/end untouched (keyword case)", w.start === 0 && w.end === 4);
+  }
+}
+
+// UNEDITED windows keep ALL their metadata — stripping only touches edited windows
+{
+  const bg = [
+    { src: "/api/stocks/keep-0.mp4", start: 0, end: 4, provider: "pexels", title: "keep",
+      query: "q", selectionReason: "r", relevanceScore: 0.7, clipDuration: 4 },
+    { src: "/api/stocks/edit-1.mp4", start: 4, end: 8, provider: "pixabay", title: "gone",
+      query: "gq", selectionReason: "gr", relevanceScore: 0.3 },
+  ];
+  const edits = validateWindowEdits([{ index: 1, src: "/api/renders/x.mp4" }]);
+  const m = mergeWindowEdits(structuredClone(bg), edits as WindowEdit[]);
+  check("merge (partial strip) succeeds", !isErr(m));
+  if (!isErr(m)) {
+    check("unedited window keeps provider", m.bgVideos[0].provider === "pexels");
+    check("unedited window keeps title", m.bgVideos[0].title === "keep");
+    check("unedited window keeps query/selectionReason/relevanceScore",
+      m.bgVideos[0].query === "q" && m.bgVideos[0].selectionReason === "r" && m.bgVideos[0].relevanceScore === 0.7);
+    check("unedited window keeps clipDuration", m.bgVideos[0].clipDuration === 4);
+    check("edited window strips provider (partial)", !("provider" in m.bgVideos[1]));
+    check("edited window strips title (partial)", !("title" in m.bgVideos[1]));
+    check("edited window strips query (partial)", !("query" in m.bgVideos[1]));
+    check("edited window start/end untouched (partial)", m.bgVideos[1].start === 4 && m.bgVideos[1].end === 8);
+  }
 }
 
 if (failures) { console.error(`\n${failures} FAILED (${passed} passed)`); process.exit(1); }

@@ -51,7 +51,7 @@ export function EditorV2Shell() {
   const p = useV2Project();
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, cancel, reset, markExported } = useV2Job(p);
+  const { job, submit, cancel, reset, markExported, adoptJob } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -290,9 +290,9 @@ export function EditorV2Shell() {
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
         isMobile ? (
-          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
         ) : (
-          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
         )
       ) : job.phase === "failed" ? (
         <FailedView job={job} onBack={() => { reset(); setStep(1); }} />

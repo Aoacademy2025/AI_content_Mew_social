@@ -75,7 +75,7 @@ export async function POST(req: Request) {
       const editsRes = validateWindowEdits(body.windowEdits);
       if ("error" in editsRes) return NextResponse.json({ error: "invalid_edits", message: editsRes.error }, { status: 400 });
 
-      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true, outputJson: true } });
+      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true, outputJson: true, projectId: true } });
       if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)" }, { status: 400 });
 
@@ -103,10 +103,15 @@ export async function POST(req: Request) {
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
       try {
+        // Inherit the SOURCE job's projectId (server-trusted — never body.projectId) so the
+        // new job re-links the EditorProject on finish (finishJob sets activeJobId only when
+        // job.projectId is set); otherwise reopening the project reverts to the pre-edit video.
+        // srcJob.userId === user.id is already verified above, so this preserves the IDOR guard.
         const job = await createVideoJob(
           user.id,
           { mode: "broll-rerender", previewMode: true, sourceJobId, windowEdits: editsRes },
           str(body.idempotencyKey, 120),
+          { projectId: srcJob.projectId },
         );
         return NextResponse.json({ jobId: job.id, status: "queued" });
       } catch (e) {

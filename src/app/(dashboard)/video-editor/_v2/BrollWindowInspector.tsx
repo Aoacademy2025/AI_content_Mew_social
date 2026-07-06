@@ -47,6 +47,25 @@ function sourceLabel(kind: WindowEditKind | null): string {
   return "สต็อก";
 }
 
+// Infer a window's source kind from its asset filename — used when `provider` metadata is
+// absent (an edited window has its stale provider stripped by mergeWindowEdits after apply).
+// broll-window routes stamp the kind into the basename: broll-ai-* / broll-upload-* / stock-*.
+function inferKindFromSrc(src: unknown): WindowEditKind {
+  const s = typeof src === "string" ? src : "";
+  if (s.includes("/broll-ai-")) return "ai";
+  if (s.includes("/broll-upload-")) return "upload";
+  return "stock";
+}
+
+// Source badge for a live bgVideos entry: trust `provider` when present (kie-ai → AI, any other
+// provider → stock), else fall back to filename inference for post-apply edited windows.
+function entrySourceLabel(entry: Record<string, unknown> | null): string {
+  const provider = entry?.provider;
+  if (provider === "kie-ai") return "AI";
+  if (typeof provider === "string" && provider) return "สต็อก";
+  return sourceLabel(inferKindFromSrc(entry?.src));
+}
+
 const AI_MODELS: { id: string; label: string }[] = [
   { id: "flux-2/pro-text-to-image", label: "Flux" },
   { id: "gpt-image-2-text-to-image", label: "GPT" },
@@ -159,9 +178,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   const existingEdit = ed.windowEdits.get(index) ?? null;
   const currentSourceLabel = existingEdit
     ? sourceLabel(existingEdit.kind)
-    : rawEntry?.provider === "kie-ai"
-      ? "AI"
-      : "สต็อก";
+    : entrySourceLabel(rawEntry);
   const positionLabel = (spans.findIndex((s) => s.index === index) + 1) || index + 1;
 
   const composedPrompt = buildKieImagePrompt(aiSimpleText, {

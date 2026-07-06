@@ -191,5 +191,18 @@ export function useV2Job(p: V2Project) {
     try { browserStorage()?.removeItem(STORAGE_KEY); } catch {}
   }, []);
 
-  return { job, submit, cancel, reset, markExported };
+  /** Adopt a NEW job as the active one after an in-place free re-render (broll-rerender).
+   *  Repoints jobId + the localStorage resume key at the new job so (a) a tab refresh resumes
+   *  IT — not the pre-edit job — and (b) the next re-render chains onto it (applyWindowEdits
+   *  reads job.jobId as sourceJobId). The caller already holds the finished output and swapped
+   *  the video/config in place, so this stays phase "done" without re-polling and does NOT
+   *  touch caption/subtitle state. projectId is unchanged (the new job inherited the source's). */
+  const adoptJob = useCallback((next: { id: string; projectId?: string | null }) => {
+    stopPolling();
+    jobIdRef.current = next.id;
+    try { browserStorage()?.setItem(STORAGE_KEY, next.id); } catch {}
+    setJob((j) => ({ ...j, jobId: next.id, projectId: next.projectId ?? j.projectId }));
+  }, [stopPolling]);
+
+  return { job, submit, cancel, reset, markExported, adoptJob };
 }

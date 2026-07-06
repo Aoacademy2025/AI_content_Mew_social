@@ -90,8 +90,17 @@ export function mergeWindowEdits(
     const base = { ...(v as Record<string, unknown>) };
     const e = byIndex.get(i);
     if (!e) { merged.push(base); continue; }
-    // Drop clipDuration; keep everything else (start/end/index/title/query/provider/keyword...).
+    // Edited window: swap src, reset clipOffset, drop clipDuration (the renderer re-probes the
+    // new clip's real length), and STRIP stale source metadata (provider/title/query/
+    // selectionReason/relevanceScore) — they describe the OLD asset, so leaving them makes the
+    // inspector show a wrong source badge (e.g. "สต็อก" after an AI swap). start/end (window
+    // timing = subtitle invariant) and every non-metadata field are copied through untouched.
     delete base.clipDuration;
+    delete base.provider;
+    delete base.title;
+    delete base.query;
+    delete base.selectionReason;
+    delete base.relevanceScore;
     base.src = e.src;
     if (e.keyword) base.keyword = e.keyword; // replace keyword only when the edit supplies one
     base.clipOffset = 0;

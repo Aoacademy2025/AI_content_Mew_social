@@ -37,7 +37,12 @@ export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; 
 export function usePostPhaseEditor(
   job: V2JobState,
   script: string,
-  { onExported }: { onExported: () => void },
+  { onExported, onAdoptJob }: {
+    onExported: () => void;
+    /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
+     *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
+    onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  },
 ) {
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
@@ -111,7 +116,7 @@ export function usePostPhaseEditor(
       for (let i = 0; i < 450 && !windowPollStop.current; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
-          status?: string; progress?: number; errorMessage?: string;
+          status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
           output?: { videoUrl?: string; preview?: { config?: Record<string, unknown> } };
         } | null = null;
         try {
@@ -127,6 +132,10 @@ export function usePostPhaseEditor(
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
+          // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
+          // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
+          // style state is untouched — only the source job identity moves forward.
+          onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
           toast.success("อัปเดตวิดีโอแล้ว");
           done = true;
           break;
