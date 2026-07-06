@@ -1,7 +1,7 @@
 import type { RelevanceSpec } from "@/lib/relevance-spec";
 
 export type BrollRegionPreference = "auto" | "asian" | "thai" | "european" | "global" | "no-people";
-export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal";
+export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal" | "surreal";
 
 export type BrollPreferenceInput = {
   brollRegionPreference?: BrollRegionPreference | string | null;
@@ -25,6 +25,7 @@ export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] =
   { value: "lifestyle", label: "Lifestyle" },
   { value: "tech", label: "Tech" },
   { value: "minimal", label: "Minimal" },
+  { value: "surreal", label: "Surreal" },
 ];
 
 type PreferenceHints = {
@@ -120,6 +121,13 @@ const STYLE_HINTS: Record<Exclude<BrollVisualStyle, "auto">, PreferenceHints> = 
     fallbackQueries: ["minimal desk setup", "clean product detail", "simple workspace light"],
     domainLabel: "minimal style",
   },
+  surreal: {
+    instruction: "Use surreal, imaginative, dreamlike visuals with unexpected juxtapositions and bold artistic composition.",
+    positive: ["surreal", "dreamlike", "imaginative", "abstract", "bold colors", "artistic"],
+    avoid: ["plain office", "corporate stock photo"],
+    fallbackQueries: ["surreal abstract art", "dreamlike landscape", "creative light installation"],
+    domainLabel: "surreal artistic style",
+  },
 };
 
 function isRegionPreference(v: string): v is BrollRegionPreference {
@@ -127,7 +135,7 @@ function isRegionPreference(v: string): v is BrollRegionPreference {
 }
 
 function isVisualStyle(v: string): v is BrollVisualStyle {
-  return v === "auto" || v === "documentary" || v === "cinematic" || v === "business" || v === "lifestyle" || v === "tech" || v === "minimal";
+  return v === "auto" || v === "documentary" || v === "cinematic" || v === "business" || v === "lifestyle" || v === "tech" || v === "minimal" || v === "surreal";
 }
 
 export function normalizeBrollRegionPreference(raw: unknown): Exclude<BrollRegionPreference, "auto"> | undefined {
