@@ -37,23 +37,27 @@ type PreferenceHints = {
 
 const REGION_HINTS: Record<Exclude<BrollRegionPreference, "auto">, PreferenceHints> = {
   asian: {
-    instruction: "Prefer Asian people and Asian urban, business, or lifestyle contexts when people or places are relevant.",
+    instruction: "Prefer Asian people (East or Southeast Asian) and Asian urban, business, or lifestyle contexts whenever people or places appear. Never use Western/European-looking people.",
     positive: ["asian people", "asian city", "asian office", "east asian", "southeast asian", "asian business"],
-    avoid: [],
+    avoid: ["caucasian people", "western people", "european people", "blonde hair"],
     fallbackQueries: ["asian business people", "asian city street", "asian office workers"],
     domainLabel: "asian visual context",
   },
   thai: {
-    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments.",
+    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments. If Thai-specific footage is unavailable, other Asian people and settings are acceptable — never Western/European-looking people.",
     positive: ["thai people", "thailand", "bangkok", "thai office", "southeast asian", "thai lifestyle"],
-    avoid: [],
-    fallbackQueries: ["bangkok city street", "thai office workers", "southeast asian people"],
+    avoid: ["caucasian people", "western people", "european people", "blonde hair"],
+    fallbackQueries: [
+      "bangkok city street", "thai office workers", "southeast asian people",
+      // degrade path: thai unavailable → asian, never western
+      "asian business people", "asian city street", "asian office workers",
+    ],
     domainLabel: "thai visual context",
   },
   european: {
-    instruction: "Prefer European people, European city settings, and western office or lifestyle contexts when relevant.",
+    instruction: "Prefer European or Western people, European city settings, and western office or lifestyle contexts whenever people or places appear. Never use Asian-looking people.",
     positive: ["european people", "european city", "western office", "european business", "european lifestyle"],
-    avoid: [],
+    avoid: ["asian people", "east asian people", "southeast asian people"],
     fallbackQueries: ["european city street", "european office workers", "european business people"],
     domainLabel: "european visual context",
   },
@@ -189,9 +193,15 @@ export function brollPreferencePromptBlock(input: BrollPreferenceInput): string 
 export function appendBrollPreferenceToDirection(direction: string, input: BrollPreferenceInput): string {
   const hints = collectPreferenceHints(input);
   if (!hints) return direction;
-  const base = direction.trim().replace(/\s+/g, " ");
-  const suffix = hints.instruction.replace(/\s+/g, " ");
-  return `${base}${base ? " " : ""}${suffix}`.slice(0, 260);
+  const suffix = hints.instruction.replace(/\s+/g, " ").trim();
+  const MAX = 320;
+  const budget = Math.max(0, MAX - suffix.length - 1);
+  const base = direction.trim().replace(/\s+/g, " ").slice(0, budget).trimEnd();
+  return [base, suffix].filter(Boolean).join(" ");
+}
+
+export function brollPreferenceInstruction(input: BrollPreferenceInput): string {
+  return collectPreferenceHints(input)?.instruction ?? "";
 }
 
 export function augmentRelevanceSpecWithBrollPreference(

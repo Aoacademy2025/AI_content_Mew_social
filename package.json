@@ -24,7 +24,8 @@
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts",
     "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts",
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",
-    "verify:editor-projects": "tsx scripts/verify-editor-projects.ts"
+    "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
+    "verify:broll-preferences": "tsx scripts/verify-broll-preferences.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
