@@ -12,7 +12,7 @@ import {
 import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { buildBrollWindows } from "@/lib/broll-windows";
+import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 
@@ -62,6 +62,33 @@ interface CreateInput {
    * MCP clients never send this — the full path below is byte-identical without it.
    */
   previewMode?: boolean;
+}
+
+function brollWindowCaptions(windows: BrollWindow[]): OrchCaption[] {
+  return windows.map((w, i) => ({
+    text: w.text,
+    startMs: w.startMs,
+    endMs: w.endMs,
+    tag: i === 0 ? "hook" : "body",
+  }));
+}
+
+function alignBrollWindowsToKeywords(
+  windows: BrollWindow[],
+  units: OrchCaption[],
+  keywords: string[],
+  alternatives?: string[][],
+): { windows: BrollWindow[]; units: OrchCaption[]; keywords: string[]; alternatives?: string[][] } {
+  if (windows.length === 0 || keywords.length === windows.length) {
+    return { windows, units, keywords, alternatives };
+  }
+  const count = Math.min(windows.length, keywords.length);
+  return {
+    windows: windows.slice(0, count),
+    units: units.slice(0, count),
+    keywords: keywords.slice(0, count),
+    alternatives: alternatives?.slice(0, count),
+  };
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
@@ -177,12 +204,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upWindows = buildBrollWindows(upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), upWindowSec);
+      const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
 
       await step("keywords", 40);
       const upKw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
         "/api/videos/extract-keywords",
         {
-          ...buildKeywordsPayload(upCaps.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
+          ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
           }),
@@ -192,11 +220,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       await step("stock", 55);
       const upAiGen = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
-      const upTotalDur = (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
+      const upAligned = alignBrollWindowsToKeywords(upWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
+      const upTotalDur = upAligned.windows.length > 0
+        ? Math.round(upDurMs / 1000)
+        : (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
       const upStock = await caller.post<{ results: unknown[] }>(
         "/api/videos/fetch-stock",
         {
-          ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec, {
+          ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
           }),
@@ -208,13 +239,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       );
 
       await step("config", 65);
-      const upScc = upWindows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
+      const upScc = upAligned.windows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
       const upCfg = await caller.post<{ config: Record<string, unknown> }>(
         "/api/videos/generate-config",
         buildConfigPayload(
           upCaps, upStock.results ?? [], input.clipUrl, upDurMs, upCaps.map((c) => c.text),
           upKw.keywordsPerScene ?? 5, upScc, upKw.sceneDurations ?? [],
-          upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+          upAligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
         ),
       );
 
@@ -310,13 +341,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const brollWindows = brollWindowMode
       ? buildBrollWindows(captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), brollWindowSec)
       : [];
+    const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
     // 3. Keywords
     await step("keywords", 40);
     const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
       "/api/videos/extract-keywords",
       {
-        ...buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs, {
+        ...buildKeywordsPayload(brollUnits.map((c) => c.text), input.script, durMs, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
         }),
@@ -327,14 +359,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 4. Stock
     await step("stock", 55);
-    const totalDur = (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
+    const aligned = alignBrollWindowsToKeywords(brollWindows, brollUnits, kw.keywords ?? [], kw.keywordAlternatives);
+    const totalDur = aligned.windows.length > 0
+      ? Math.round(durMs / 1000)
+      : (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
     const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
     const stock = await caller.post<{ results: unknown[] }>(
       "/api/videos/fetch-stock",
       {
-        ...buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec, {
+        ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
         }),
@@ -351,7 +386,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // Window mode → empty sceneClipCounts so generate-config takes the window branch (one clip
     // per window) instead of per-caption cycling; brollWindows below carries the spans (mirrors
     // web page.tsx runConfig). Otherwise keep the legacy 1-clip-per-caption path.
-    const sceneClipCounts = brollWindows.length > 0
+    const sceneClipCounts = aligned.windows.length > 0
       ? []
       : (captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []));
     const cfgRes = await caller.post<{ config: Record<string, unknown> }>(
@@ -359,7 +394,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       buildConfigPayload(
         captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
         kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
-        brollWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        aligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
       ),
     );
 

@@ -1499,6 +1499,46 @@ export async function POST(req: Request) {
   // Captured non-null id (narrowing from the early !authUser 401 guard is not
   // preserved into the nested spend/refund closures below).
   const spenderUserId = authUser.id;
+  const aiBillingMode =
+    chargeImages ? "paid-managed-charged"
+    : usesManagedKey && isAdmin ? "admin-managed-free"
+    : usesManagedKey ? "managed-free"
+    : isAdmin && !!kieToken ? "admin-byok"
+    : !!kieToken ? "byok-free"
+    : "unavailable";
+  const aiTelemetry = {
+    aiModel: effectiveKieModel,
+    aiCreditCostKey: imageCostKey,
+    aiCreditCostPerImage: imageCost,
+    aiBillingMode,
+    aiChargeImages: chargeImages,
+    aiUsesManagedKey: usesManagedKey,
+    aiGenRequestedCount: 0,
+    aiGenPlannedCount: 0,
+    aiGenAttemptCount: 0,
+    aiGenSuccessCount: 0,
+    aiGenFailedCount: 0,
+    aiGenSkippedCount: 0,
+    aiGenSkippedCreditsCount: 0,
+    aiGenSkippedRateCount: 0,
+    aiGenSkippedCapCount: 0,
+    aiChargedCount: 0,
+    aiCreditsSpent: 0,
+    aiCreditsSpentGranted: 0,
+    aiCreditsSpentPurchased: 0,
+    aiRefundedCount: 0,
+    aiCreditsRefunded: 0,
+    aiCreditsRefundedGranted: 0,
+    aiCreditsRefundedPurchased: 0,
+    aiLastCreditBalanceAfterSpend: null as number | null,
+  };
+
+  function trackAiSkip(reason: "credits" | "rate" | "cap" | null, count = 1) {
+    aiTelemetry.aiGenSkippedCount += count;
+    if (reason === "credits") aiTelemetry.aiGenSkippedCreditsCount += count;
+    if (reason === "rate") aiTelemetry.aiGenSkippedRateCount += count;
+    if (reason === "cap") aiTelemetry.aiGenSkippedCapCount += count;
+  }
 
   // Ensure the paid user's current-period monthly credit allowance is granted
   // before the first spend (idempotent; itself CREDITS_LIVE-gated).
@@ -1513,8 +1553,8 @@ export async function POST(req: Request) {
 
   type ImageSpendGate =
     | { proceed: true; charged: false }
-    | { proceed: true; charged: true; fromGranted: number; fromPurchased: number }
-    | { proceed: false };
+    | { proceed: true; charged: true; creditsSpent: number; balanceAfter: number; fromGranted: number; fromPurchased: number }
+    | { proceed: false; reason: "credits" | "rate" | "cap" | null };
 
   // Gate before each managed-key generation. Guardrails (per-job cap + hourly rate)
   // apply to EVERY managed-key request — admins included (uncharged) — so one admin
@@ -1522,15 +1562,36 @@ export async function POST(req: Request) {
   // Once any guard trips, aiSkippedReason halts all remaining AI attempts this job.
   async function attemptImageSpend(): Promise<ImageSpendGate> {
     if (guardImages) {
-      if (aiSkippedReason) return { proceed: false };
-      if (aiGenCount >= maxImagesPerJob) { aiSkippedReason = "cap"; return { proceed: false }; }
-      if (!tryConsumeKieImageRate(spenderUserId)) { aiSkippedReason = "rate"; return { proceed: false }; }
+      if (aiSkippedReason) {
+        trackAiSkip(aiSkippedReason);
+        return { proceed: false, reason: aiSkippedReason };
+      }
+      if (aiGenCount >= maxImagesPerJob) {
+        aiSkippedReason = "cap";
+        trackAiSkip("cap");
+        return { proceed: false, reason: "cap" };
+      }
+      if (!tryConsumeKieImageRate(spenderUserId)) {
+        aiSkippedReason = "rate";
+        trackAiSkip("rate");
+        return { proceed: false, reason: "rate" };
+      }
     }
     if (chargeImages) {
       aiGenCount++; // reserve the slot synchronously (precise cap under concurrency)
       const spend = await spendCredits(spenderUserId, imageCost, imageSpendAction);
-      if (!spend.ok) { aiSkippedReason = "credits"; aiGenCount--; return { proceed: false }; }
-      return { proceed: true, charged: true, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+      if (!spend.ok) {
+        aiSkippedReason = "credits";
+        aiGenCount--;
+        trackAiSkip("credits");
+        return { proceed: false, reason: "credits" };
+      }
+      aiTelemetry.aiChargedCount++;
+      aiTelemetry.aiCreditsSpent += imageCost;
+      aiTelemetry.aiCreditsSpentGranted += spend.fromGranted;
+      aiTelemetry.aiCreditsSpentPurchased += spend.fromPurchased;
+      aiTelemetry.aiLastCreditBalanceAfterSpend = spend.balanceAfter;
+      return { proceed: true, charged: true, creditsSpent: imageCost, balanceAfter: spend.balanceAfter, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
     }
     // Admin on the managed key: guarded above (cap/rate consumed) but never charged.
     if (guardImages) aiGenCount++;
@@ -1539,8 +1600,12 @@ export async function POST(req: Request) {
 
   // Refund the exact buckets a prior spend drained (kie generation failed AFTER
   // the charge). The createTask attempt still counted toward the per-job cap.
-  async function refundImageSpend(g: { fromGranted: number; fromPurchased: number }): Promise<void> {
+  async function refundImageSpend(g: { creditsSpent: number; fromGranted: number; fromPurchased: number }): Promise<void> {
     await refundCredits(spenderUserId, g.fromGranted, g.fromPurchased, imageRefundAction);
+    aiTelemetry.aiRefundedCount++;
+    aiTelemetry.aiCreditsRefunded += g.creditsSpent;
+    aiTelemetry.aiCreditsRefundedGranted += g.fromGranted;
+    aiTelemetry.aiCreditsRefundedPurchased += g.fromPurchased;
   }
 
   // Prompt sent to kie is length-capped on any managed-key request (admin or paid);
@@ -1615,6 +1680,8 @@ export async function POST(req: Request) {
       else if (src === "photo") autoMixPhotoSlots.add(ki);
       else autoMixActiveVideo.add(ki);
     });
+    aiTelemetry.aiGenRequestedCount += autoMixAiSlots.size;
+    aiTelemetry.aiGenPlannedCount += autoMixAiSlots.size;
     console.log(`[fetch-stock] Auto Mix plan: ${pieceCount} pieces over ${keywords.length} kw → ${autoMixActiveVideo.size} video / ${autoMixPhotoSlots.size} photo / ${autoMixAiSlots.size} ai (weights v${weights.video}:p${weights.photo}:a${weights.ai})`);
   }
 
@@ -1670,6 +1737,56 @@ export async function POST(req: Request) {
 
   const srcLabel = canUseKieImage ? "AI Image-to-Video (kie.ai)" : useAutoMix ? "Auto Mix (video + image fallback)" : canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
 
+  async function recordAiGenerationTelemetry(input: {
+    status: "done" | "error";
+    mode: "kie-image" | "auto-mix";
+    keywordIndex: number;
+    assetId: number;
+    durationMs: number;
+    charged: boolean;
+    creditsSpent: number;
+    creditsRefunded: number;
+    fromGranted: number;
+    fromPurchased: number;
+    balanceAfterSpend: number | null;
+    failureReason: string | null;
+  }) {
+    await recordTelemetryEvent(userId, {
+      name: input.status === "done" ? "ai_image_generation_server_done" : "ai_image_generation_server_error",
+      category: input.status === "done" ? "performance" : "error",
+      source: "server",
+      step: "fetchStock.aiImage",
+      status: input.status,
+      durationMs: input.durationMs,
+      properties: {
+        stockSource,
+        resolvedSource: srcLabel,
+        pipelineRunId: telemetryPipelineRunId,
+        draftId: telemetryDraftId,
+        aiProvider: "kie",
+        aiMode: input.mode,
+        aiModel: effectiveKieModel,
+        aiCreditCostKey: imageCostKey,
+        aiCreditCostPerImage: imageCost,
+        aiBillingMode,
+        aiChargeImages: chargeImages,
+        aiUsesManagedKey: usesManagedKey,
+        aiCharged: input.charged,
+        aiCreditsSpent: input.creditsSpent,
+        aiCreditsRefunded: input.creditsRefunded,
+        aiCreditsNet: input.creditsSpent - input.creditsRefunded,
+        aiCreditsSpentGranted: input.fromGranted,
+        aiCreditsSpentPurchased: input.fromPurchased,
+        aiCreditsRefundedGranted: input.creditsRefunded > 0 ? input.fromGranted : 0,
+        aiCreditsRefundedPurchased: input.creditsRefunded > 0 ? input.fromPurchased : 0,
+        aiBalanceAfterSpend: input.balanceAfterSpend,
+        aiKeywordIndex: input.keywordIndex,
+        aiAssetId: input.assetId,
+        aiFailureReason: input.failureReason,
+      },
+    }).catch(() => {});
+  }
+
   async function recordFetchStockTelemetry(status: "done" | "error", extra: Record<string, unknown> = {}) {
     const normalizeAttempts = stockTelemetry.normalizeRanCount + stockTelemetry.normalizeFailedCount;
     await recordTelemetryEvent(userId, {
@@ -1705,6 +1822,8 @@ export async function POST(req: Request) {
         normalizeTimeoutMs: NORMALIZE_TIMEOUT_MS,
         perSubtitleDownloadLimit: PER_SUBTITLE_DOWNLOAD_LIMIT,
         staleTempDeleted,
+        ...aiTelemetry,
+        aiCreditsNet: aiTelemetry.aiCreditsSpent - aiTelemetry.aiCreditsRefunded,
         normalizeMsAvg: normalizeAttempts > 0 ? Math.round(stockTelemetry.normalizeMsTotal / normalizeAttempts) : 0,
         ...stockTelemetry,
         ...extra,
@@ -1765,6 +1884,9 @@ export async function POST(req: Request) {
     // the loop via mergeCapClampReason.
     const clipsToGenerate = guardImages ? Math.min(clipsToGenerateRaw, maxImagesPerJob) : clipsToGenerateRaw;
     const capClampHit = guardImages && clipsToGenerateRaw > clipsToGenerate;
+    aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
+    aiTelemetry.aiGenPlannedCount += clipsToGenerate;
+    if (capClampHit) trackAiSkip("cap", clipsToGenerateRaw - clipsToGenerate);
     console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
     await withConcurrency(
@@ -1778,7 +1900,10 @@ export async function POST(req: Request) {
         // Spend-before-generate. Skipped (credits/rate/cap) → no generation.
         const gate = await attemptImageSpend();
         if (!gate.proceed) return;
+        aiTelemetry.aiGenAttemptCount++;
+        const aiStartedAt = Date.now();
         let success = false;
+        let failureReason: string | null = null;
         try {
           if (download) {
             const outFile = `${userPrefix}${id}.mp4`;
@@ -1788,6 +1913,7 @@ export async function POST(req: Request) {
               const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieToken!, effectiveKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
+                failureReason = "invalid_output";
                 return;
               }
               stockTelemetry.downloadedCount++;
@@ -1802,6 +1928,7 @@ export async function POST(req: Request) {
               success = true;
             } catch (e) {
               stockTelemetry.downloadFailCount++;
+              failureReason = "provider_error";
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
@@ -1812,10 +1939,38 @@ export async function POST(req: Request) {
           }
         } catch (e) {
           stockTelemetry.noCandidateKeywords++;
+          failureReason = "provider_error";
           console.error(`[fetch-stock] kie.ai generation failed for "${query}":`, e);
         } finally {
+          let creditsRefunded = 0;
+          let refundError: unknown = null;
           // Refund the exact buckets if we charged but produced no usable clip.
-          if (gate.charged && !success) await refundImageSpend(gate);
+          if (gate.charged && !success) {
+            try {
+              await refundImageSpend(gate);
+              creditsRefunded = gate.creditsSpent;
+            } catch (e) {
+              refundError = e;
+              failureReason = "refund_error";
+            }
+          }
+          if (success) aiTelemetry.aiGenSuccessCount++;
+          else aiTelemetry.aiGenFailedCount++;
+          await recordAiGenerationTelemetry({
+            status: success ? "done" : "error",
+            mode: "kie-image",
+            keywordIndex: i,
+            assetId: id,
+            durationMs: Date.now() - aiStartedAt,
+            charged: gate.charged,
+            creditsSpent: gate.charged ? gate.creditsSpent : 0,
+            creditsRefunded,
+            fromGranted: gate.charged ? gate.fromGranted : 0,
+            fromPurchased: gate.charged ? gate.fromPurchased : 0,
+            balanceAfterSpend: gate.charged ? gate.balanceAfter : null,
+            failureReason,
+          });
+          if (refundError) throw refundError;
         }
       },
     );
@@ -2397,12 +2552,15 @@ export async function POST(req: Request) {
           // Spend-before-generate for the AutoMix AI slot (skip → piece dropped).
           const gate = await attemptImageSpend();
           if (!gate.proceed) return;
+          aiTelemetry.aiGenAttemptCount++;
+          const aiStartedAt = Date.now();
           const id = KIE_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           let success = false;
+          let failureReason: string | null = null;
           try {
             const genPrompt = promptFor(buildKieImagePrompt(kw, { visualDirection, terms: relTerms }));
             const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieToken!, effectiveKieModel, imagePath, outPath);
@@ -2417,6 +2575,8 @@ export async function POST(req: Request) {
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
               });
               success = true;
+            } else {
+              failureReason = "invalid_output";
             }
           } catch (e) {
             console.error(`[fetch-stock] Auto Mix kie.ai fallback failed for "${query}":`, e);
@@ -2424,10 +2584,40 @@ export async function POST(req: Request) {
             const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
             if (msg.includes("credit") || msg.includes("insufficient") || msg.includes("balance") || msg.includes("top up")) {
               kieCreditExhausted = true;
+              failureReason = "provider_quota";
+            } else {
+              failureReason = "provider_error";
             }
           } finally {
+            let creditsRefunded = 0;
+            let refundError: unknown = null;
             // Refund the exact buckets if we charged but produced no usable clip.
-            if (gate.charged && !success) await refundImageSpend(gate);
+            if (gate.charged && !success) {
+              try {
+                await refundImageSpend(gate);
+                creditsRefunded = gate.creditsSpent;
+              } catch (e) {
+                refundError = e;
+                failureReason = "refund_error";
+              }
+            }
+            if (success) aiTelemetry.aiGenSuccessCount++;
+            else aiTelemetry.aiGenFailedCount++;
+            await recordAiGenerationTelemetry({
+              status: success ? "done" : "error",
+              mode: "auto-mix",
+              keywordIndex: ki,
+              assetId: id,
+              durationMs: Date.now() - aiStartedAt,
+              charged: gate.charged,
+              creditsSpent: gate.charged ? gate.creditsSpent : 0,
+              creditsRefunded,
+              fromGranted: gate.charged ? gate.fromGranted : 0,
+              fromPurchased: gate.charged ? gate.fromPurchased : 0,
+              balanceAfterSpend: gate.charged ? gate.balanceAfter : null,
+              failureReason,
+            });
+            if (refundError) throw refundError;
           }
         }
       });

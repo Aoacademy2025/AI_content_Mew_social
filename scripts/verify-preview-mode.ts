@@ -135,6 +135,61 @@ async function main() {
     ok(typeof out?.preview?.config === "object" && out?.preview?.config !== null, "A: config present");
   }
 
+  // ── G. window-mode b-roll parity: keywords/fetch-stock use b-roll windows, not
+  // subtitle-card count. This prevents AI-gen full mode from creating one image per
+  // subtitle card and timing out before fetch-stock returns. ─────────────────
+  {
+    const prevMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE;
+    const prevSec = process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC;
+    process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE = "1";
+    process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC = "60";
+    try {
+      const log: CallLog[] = [];
+      const base = makeStubCaller(log);
+      const windowCaller = {
+        ...base,
+        post: async <T,>(path: string, body: unknown): Promise<T> => {
+          if (path === "/api/videos/extract-keywords") {
+            log.push({ method: "POST", path, body });
+            const scenes = ((body as { scenes?: string[] }).scenes ?? []).filter(Boolean);
+            return {
+              keywords: scenes.map((_, i) => `window keyword ${i + 1}`),
+              keywordAlternatives: scenes.map((_, i) => [`window keyword ${i + 1}`]),
+              keywordsPerScene: 1,
+              sceneClipCounts: scenes.map(() => 1),
+              sceneDurations: scenes.map(() => 5),
+              visualDirection: "",
+            } as T;
+          }
+          return base.post<T>(path, body);
+        },
+      };
+      const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", stockSource: "kie-image", kieModel: "gpt-image-2-text-to-image" });
+      await runOrchestrator(job.id, "u-preview", {
+        caller: windowCaller,
+        refundOneClip: async () => {},
+        sleep: async () => {},
+      });
+
+      const kwCall = log.find((c) => c.path === "/api/videos/extract-keywords");
+      const stockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
+      const cfgCall = log.find((c) => c.path === "/api/videos/generate-config");
+      const kwScenes = (kwCall?.body as { scenes?: string[] } | undefined)?.scenes ?? [];
+      const stockBody = stockCall?.body as { keywords?: string[]; overrideClipCount?: number; subtitleTexts?: string[]; perSubtitleMode?: boolean } | undefined;
+      const cfgBody = cfgCall?.body as { brollWindows?: { startMs: number; endMs: number }[] } | undefined;
+      ok(kwScenes.length === 1, `G: window mode sends 1 b-roll window to keywords (got ${kwScenes.length})`);
+      ok(stockBody?.keywords?.length === 1, `G: fetch-stock gets 1 keyword/window (got ${stockBody?.keywords?.length ?? 0})`);
+      ok(stockBody?.overrideClipCount === 1 && stockBody.perSubtitleMode === true, `G: fetch-stock overrideClipCount follows windows (got ${stockBody?.overrideClipCount})`);
+      ok((stockBody?.subtitleTexts?.length ?? 0) === 1, `G: subtitleTexts follows windows (got ${stockBody?.subtitleTexts?.length ?? 0})`);
+      ok((cfgBody?.brollWindows?.length ?? 0) === 1, `G: generate-config keeps the same 1 b-roll window (got ${cfgBody?.brollWindows?.length ?? 0})`);
+    } finally {
+      if (prevMode === undefined) delete process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE;
+      else process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE = prevMode;
+      if (prevSec === undefined) delete process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC;
+      else process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC = prevSec;
+    }
+  }
+
   // ── B. full path (no previewMode): behavior unchanged ─────────────────────
   {
     const log: CallLog[] = [];
