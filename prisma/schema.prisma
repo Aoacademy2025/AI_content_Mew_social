@@ -8,64 +8,64 @@ datasource db {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  clerkId       String?   @unique
-  name          String
-  email         String    @unique
-  password      String?
-  googleId      String?  @unique
-  image         String?
-  role          Role      @default(USER)
-  plan          Plan      @default(FREE)
-  usageCount    Int       @default(0)
-  usageLimit    Int       @default(2)
-  usagePeriodStartedAt DateTime?
-  openaiKey          String?
-  geminiKey          String?
-  heygenKey          String?
-  elevenlabsKey      String?
-  pexelsKey          String?
-  pixabayKey         String?
-  kieKey             String?
-  unsplashKey        String?
-  flickrKey          String?
-  avatar             String?
-  heygenAvatarId     String?
-  heygenAvatarsCache    String?   // durable fallback: last successful HeyGen avatar list (JSON {k,avatars,talkingPhotos}); served stale when HeyGen is slow so the picker/preview keep working
+  id                    String    @id @default(cuid())
+  clerkId               String?   @unique
+  name                  String
+  email                 String    @unique
+  password              String?
+  googleId              String?   @unique
+  image                 String?
+  role                  Role      @default(USER)
+  plan                  Plan      @default(FREE)
+  usageCount            Int       @default(0)
+  usageLimit            Int       @default(2)
+  usagePeriodStartedAt  DateTime?
+  openaiKey             String?
+  geminiKey             String?
+  heygenKey             String?
+  elevenlabsKey         String?
+  pexelsKey             String?
+  pixabayKey            String?
+  kieKey                String?
+  unsplashKey           String?
+  flickrKey             String?
+  avatar                String?
+  heygenAvatarId        String?
+  heygenAvatarsCache    String? // durable fallback: last successful HeyGen avatar list (JSON {k,avatars,talkingPhotos}); served stale when HeyGen is slow so the picker/preview keep working
   heygenAvatarsCachedAt DateTime? // when heygenAvatarsCache was last refreshed (for max-age on the stale fallback)
-  elevenlabsVoiceId  String?
-  ttsProvider        String?  @default("elevenlabs")
-  geminiVoiceName    String?  @default("Aoede")
-  suspended     Boolean   @default(false)
-  planExpiresAt DateTime?
+  elevenlabsVoiceId     String?
+  ttsProvider           String?   @default("elevenlabs")
+  geminiVoiceName       String?   @default("Aoede")
+  suspended             Boolean   @default(false)
+  planExpiresAt         DateTime?
   onboardingDismissedAt DateTime?
   // Phase 2 — subscriptions (card auto-renew cohort)
-  stripeCustomerId     String?  @unique
-  stripeSubscriptionId String?
-  subStatus            String?  // active | past_due | canceled
-  billingPeriod        String?  // monthly | annual
-  cancelAtPeriodEnd    Boolean  @default(false) // portal-scheduled cancel; resume clears it
-  cancelAt             DateTime?                  // exact lapse date from Stripe sub.cancel_at
+  stripeCustomerId      String?   @unique
+  stripeSubscriptionId  String?
+  subStatus             String? // active | past_due | canceled
+  billingPeriod         String? // monthly | annual
+  cancelAtPeriodEnd     Boolean   @default(false) // portal-scheduled cancel; resume clears it
+  cancelAt              DateTime? // exact lapse date from Stripe sub.cancel_at
   // Free trial (public 7-day PRO trial, no card)
-  trialStartedAt DateTime?  // set once; never cleared (one-trial-per-user guard)
-  trialEndsAt    DateTime?  // end of the active unconverted trial; cleared on conversion/revert
-  minutesUsed   Float    @default(0)
-  minutesLimit  Int      @default(0)
-  aiAudioMinutesUsed Float @default(0) // managed-Gemini side-channel audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
-  aiTextCallsUsed Float @default(0) // managed-Gemini text-LLM call count (keywords/ranker/content/analyze/split) per usage window; ceiling = minutesLimit × AI_TEXT_CALLS_MULT
-  geminiKeyMode String   @default("byok")
-  resetToken    String?
-  resetExpires  DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  trialStartedAt        DateTime? // set once; never cleared (one-trial-per-user guard)
+  trialEndsAt           DateTime? // end of the active unconverted trial; cleared on conversion/revert
+  minutesUsed           Float     @default(0)
+  minutesLimit          Int       @default(0)
+  aiAudioMinutesUsed    Float     @default(0) // managed-Gemini side-channel audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
+  aiTextCallsUsed       Float     @default(0) // managed-Gemini text-LLM call count (keywords/ranker/content/analyze/split) per usage window; ceiling = minutesLimit × AI_TEXT_CALLS_MULT
+  geminiKeyMode         String    @default("byok")
+  resetToken            String?
+  resetExpires          DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  styles        Style[]
-  contents      Content[]
-  videos        Video[]
-  mcpTokens     McpToken[]
-  videoJobs     VideoJob[]
-  images        GeneratedImage[]
-  notifications   Notification[]
+  styles             Style[]
+  contents           Content[]
+  videos             Video[]
+  mcpTokens          McpToken[]
+  videoJobs          VideoJob[]
+  images             GeneratedImage[]
+  notifications      Notification[]
   supportTickets     SupportTicket[]
   couponRedemptions  CouponRedemption[]
   payments           Payment[]
@@ -73,14 +73,15 @@ model User {
   productUpdateReads ProductUpdateRead[]
   userMusic          UserMusic[]
   avatarPresets      AvatarPreset[]
+  editorProjects     EditorProject[]
 }
 
 model Style {
   id                String   @id @default(cuid())
   name              String
-  sampleText        String?  
+  sampleText        String?
   sampleUrl         String?
-  instructionPrompt String   
+  instructionPrompt String
   userId            String
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt         DateTime @default(now())
@@ -109,28 +110,32 @@ model Content {
 }
 
 model Video {
-  id              String      @id @default(cuid())
+  id              String         @id @default(cuid())
   contentId       String?
-  content         Content?    @relation(fields: [contentId], references: [id])
+  content         Content?       @relation(fields: [contentId], references: [id])
+  projectId       String?
+  project         EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   avatarModel     String
   voiceModel      String
   imageModel      String?
   sceneCount      Int
-  script          String?     
-  sceneMapping    String?     
-  generatedImages String?     
+  script          String?
+  sceneMapping    String?
+  generatedImages String?
   audioUrl        String?
   videoUrl        String?
   avatarVideoUrl  String?
   thumbnail       String?
-  thumbnailConfig String?     // JSON: { seekTime, textLayers } for thumbnail editor
-  renderConfig    String?     // JSON: shortVideoConfig for Remotion thumbnail
-  status          VideoStatus @default(PENDING)
+  thumbnailConfig String? // JSON: { seekTime, textLayers } for thumbnail editor
+  renderConfig    String? // JSON: shortVideoConfig for Remotion thumbnail
+  status          VideoStatus    @default(PENDING)
   userId          String
-  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
   expiresAt       DateTime?
+
+  @@index([projectId])
 }
 
 model McpToken {
@@ -151,7 +156,7 @@ model AvatarPreset {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  avatarId  String   // HeyGen avatar_id or talking_photo_id
+  avatarId  String // HeyGen avatar_id or talking_photo_id
   scale     Float    @default(1)
   offsetX   Float    @default(0)
   offsetY   Float    @default(0)
@@ -162,34 +167,58 @@ model AvatarPreset {
   @@index([userId])
 }
 
+model EditorProject {
+  id            String     @id @default(cuid())
+  userId        String
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String     @default("New Project")
+  status        String     @default("draft") // draft|rendering|post|exported|archived
+  draftJson     String?
+  activeJobId   String?
+  latestVideoId String?
+  lastOpenedAt  DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  jobs          VideoJob[]
+  videos        Video[]
+
+  @@index([userId, updatedAt])
+  @@index([userId, status, updatedAt])
+  @@index([activeJobId])
+  @@index([latestVideoId])
+}
+
 model VideoJob {
-  id             String    @id @default(cuid())
+  id             String         @id @default(cuid())
   userId         String
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId      String?
+  project        EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   videoId        String?
-  type           String    @default("create")
-  status         String    @default("queued") // queued|processing|done|failed|canceled
+  type           String         @default("create")
+  status         String         @default("queued") // queued|processing|done|failed|canceled
   currentStep    String?
-  progress       Int       @default(0)
+  progress       Int            @default(0)
   inputJson      String
   outputJson     String?
   errorMessage   String?
   idempotencyKey String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
   startedAt      DateTime?
   finishedAt     DateTime?
 
   @@unique([userId, idempotencyKey])
   @@index([status])
   @@index([userId])
+  @@index([projectId])
 }
 
 model ToolCallAudit {
   id           String   @id @default(cuid())
   userId       String?
   toolName     String
-  status       String   // ok | denied | error
+  status       String // ok | denied | error
   durationMs   Int?
   requestJson  String?
   responseJson String?
@@ -245,22 +274,22 @@ enum NotificationType {
 }
 
 model ProductUpdate {
-  id          String                @id @default(cuid())
+  id          String                  @id @default(cuid())
   version     String
   title       String
   summary     String
   body        String?
-  category    ProductUpdateCategory @default(IMPROVEMENT)
+  category    ProductUpdateCategory   @default(IMPROVEMENT)
   importance  ProductUpdateImportance @default(BANNER)
-  state       ProductUpdateState    @default(DRAFT)
-  isPinned    Boolean               @default(false)
+  state       ProductUpdateState      @default(DRAFT)
+  isPinned    Boolean                 @default(false)
   targetPath  String?
   ctaLabel    String?
   ctaHref     String?
   imageUrl    String?
   publishedAt DateTime?
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
   reads       ProductUpdateRead[]
 
   @@index([state, publishedAt])
@@ -269,12 +298,12 @@ model ProductUpdate {
 }
 
 model ProductUpdateRead {
-  id        String        @id @default(cuid())
-  updateId  String
-  update    ProductUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
-  userId    String
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  readAt    DateTime      @default(now())
+  id       String        @id @default(cuid())
+  updateId String
+  update   ProductUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt   DateTime      @default(now())
 
   @@unique([updateId, userId])
   @@index([userId, readAt])
@@ -302,24 +331,24 @@ enum ProductUpdateState {
 }
 
 model SupportTicket {
-  id          String              @id @default(cuid())
-  userId      String
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  message     String
-  imageBase64 String?
-  imageName   String?
-  imageMimeType String?
-  status      SupportTicketStatus @default(OPEN)
-  adminReply  String?
-  category    String?
-  severity    String?
+  id                String              @id @default(cuid())
+  userId            String
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message           String
+  imageBase64       String?
+  imageName         String?
+  imageMimeType     String?
+  status            SupportTicketStatus @default(OPEN)
+  adminReply        String?
+  category          String?
+  severity          String?
   recommendedAction String?
-  auditNote   String?
-  impactNote  String?
-  auditedAt   DateTime?
-  repliedAt   DateTime?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  auditNote         String?
+  impactNote        String?
+  auditedAt         DateTime?
+  repliedAt         DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
 
   @@index([status, createdAt])
 }
@@ -330,28 +359,28 @@ enum SupportTicketStatus {
 }
 
 model Coupon {
-  id          String    @id @default(cuid())
-  code        String    @unique
-  plan        Plan      @default(PRO)
-  durationDays Int      @default(30)  // 0 = permanent
-  maxUses     Int       @default(1)
-  usedCount   Int       @default(0)
-  expiresAt   DateTime?
-  type                  String   @default("GRANT") // GRANT | DISCOUNT
-  percentOff            Int?                         // 1-100, DISCOUNT only
-  discountDuration      String?                      // "once" | "forever", DISCOUNT only
-  stripeCouponId        String?                      // Stripe Coupon id (DISCOUNT)
-  stripePromotionCodeId String?                      // Stripe Promotion Code id (DISCOUNT)
-  createdAt   DateTime  @default(now())
-  redemptions CouponRedemption[]
+  id                    String             @id @default(cuid())
+  code                  String             @unique
+  plan                  Plan               @default(PRO)
+  durationDays          Int                @default(30) // 0 = permanent
+  maxUses               Int                @default(1)
+  usedCount             Int                @default(0)
+  expiresAt             DateTime?
+  type                  String             @default("GRANT") // GRANT | DISCOUNT
+  percentOff            Int? // 1-100, DISCOUNT only
+  discountDuration      String? // "once" | "forever", DISCOUNT only
+  stripeCouponId        String? // Stripe Coupon id (DISCOUNT)
+  stripePromotionCodeId String? // Stripe Promotion Code id (DISCOUNT)
+  createdAt             DateTime           @default(now())
+  redemptions           CouponRedemption[]
 }
 
 model CouponRedemption {
-  id        String   @id @default(cuid())
-  couponId  String
-  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  couponId   String
+  coupon     Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   redeemedAt DateTime @default(now())
 
   @@unique([couponId, userId])
@@ -370,24 +399,24 @@ model FoundingReservation {
 }
 
 model Payment {
-  id                String        @id @default(cuid())
-  userId            String
-  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  stripeSessionId   String        @unique
+  id                  String        @id @default(cuid())
+  userId              String
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripeSessionId     String        @unique
   stripePaymentIntent String?
-  plan              Plan
-  amount            Int           // satang / cents
-  currency          String        @default("thb")
-  status            PaymentStatus @default(PENDING)
-  periodDays        Int           @default(30)
-  createdAt         DateTime      @default(now())
-  paidAt            DateTime?
+  plan                Plan
+  amount              Int // satang / cents
+  currency            String        @default("thb")
+  status              PaymentStatus @default(PENDING)
+  periodDays          Int           @default(30)
+  createdAt           DateTime      @default(now())
+  paidAt              DateTime?
   // Off-Stripe (bank-transfer / external) payments recorded by an admin. Additive; a manual
   // PAID row counts in revenue-cohorts (จ่ายจริง/MRR/cash) exactly like a Stripe one. See
   // src/app/api/admin/manual-payment/route.ts. Never hard-deleted — soft-voided to VOIDED.
-  manual            Boolean       @default(false)
-  note              String?       // admin free-text (e.g. "โอนธนาคาร · founder")
-  recordedBy        String?       // admin userId who recorded it
+  manual              Boolean       @default(false)
+  note                String? // admin free-text (e.g. "โอนธนาคาร · founder")
+  recordedBy          String? // admin userId who recorded it
 }
 
 // Idempotency ledger for Stripe webhooks. Stripe delivers events "at least once"; we record
@@ -400,20 +429,20 @@ model StripeWebhookEvent {
 }
 
 model TelemetryEvent {
-  id          String   @id @default(cuid())
-  userId      String?
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  sessionId   String?
-  name        String
-  category    String   @default("product") // product | pipeline | performance | error
-  source      String   @default("client")  // client | server
-  path        String?
-  step        String?
-  status      String?
-  durationMs  Int?
-  value       Float?
-  properties  String?
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionId  String?
+  name       String
+  category   String   @default("product") // product | pipeline | performance | error
+  source     String   @default("client") // client | server
+  path       String?
+  step       String?
+  status     String?
+  durationMs Int?
+  value      Float?
+  properties String?
+  createdAt  DateTime @default(now())
 
   @@index([createdAt])
   @@index([name, createdAt])
@@ -438,11 +467,11 @@ model SiteConfig {
 }
 
 model Music {
-  id          String   @id @default(cuid())
-  title       String
-  filename    String   // file stored in public/music/
-  duration    Float?   // seconds
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  title     String
+  filename  String // file stored in public/music/
+  duration  Float? // seconds
+  createdAt DateTime @default(now())
 }
 
 model UserMusic {
@@ -483,8 +512,8 @@ model ChargedClip {
   id             String   @id @default(cuid())
   userId         String
   outputUrl      String // the base render's output, e.g. /api/renders/render-….mp4
-  chargedMinutes Int?   // minutes charged for this video; null = legacy/clips-mode
-  creditsSpent   Int?   // credits charged for a credit-funded (overflow) render; null = minute/clip-funded
+  chargedMinutes Int? // minutes charged for this video; null = legacy/clips-mode
+  creditsSpent   Int? // credits charged for a credit-funded (overflow) render; null = minute/clip-funded
   createdAt      DateTime @default(now())
 
   @@index([userId, outputUrl])
@@ -502,7 +531,7 @@ model CreditLedger {
   id           String   @id @default(cuid())
   userId       String
   delta        Int
-  kind         String   // grant | purchase | spend | expire
+  kind         String // grant | purchase | spend | expire
   action       String?
   balanceAfter Int
   createdAt    DateTime @default(now())
@@ -511,30 +540,30 @@ model CreditLedger {
 }
 
 model RenderJob {
-  id              String    @id @default(cuid())
-  userId          String
-  videoId         String?   // gallery Video row, set when known
-  parentJobId     String?   // VideoJob.id when created by the MCP orchestrator; null for web jobs
-  type            String    // RENDER | BURN
-  status          String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
-  attempts        Int       @default(0)
-  maxAttempts     Int       @default(2)
-  payload         String    // JSON: full render config — no in-memory dependence
-  progress        Float     @default(0)
-  phase           String?   // bundling | rendering | encoding
-  heartbeatAt     DateTime?
-  cancelRequested Boolean   @default(false)
-  reservedQuota   Boolean   @default(false) // true iff THIS job reserved a clip for its video
-  reservedMinutes Int?      // minutes reserved for a queued job; for exact refund
-  creditsSpent    Int?      // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
-  creditsFromGranted Int?   // of creditsSpent, the portion drained from the granted (monthly) bucket; the rest came from purchased — for an EXACT per-bucket refund (granted-back-to-granted, not inflated into purchased)
-  error           String?   // JSON, PR-5 error taxonomy
-  idempotencyKey  String?   @unique
-  scopeKey        String?   // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
-  videoUrl        String?
-  createdAt       DateTime  @default(now())
-  startedAt       DateTime?
-  finishedAt      DateTime?
+  id                 String    @id @default(cuid())
+  userId             String
+  videoId            String? // gallery Video row, set when known
+  parentJobId        String? // VideoJob.id when created by the MCP orchestrator; null for web jobs
+  type               String // RENDER | BURN
+  status             String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
+  attempts           Int       @default(0)
+  maxAttempts        Int       @default(2)
+  payload            String // JSON: full render config — no in-memory dependence
+  progress           Float     @default(0)
+  phase              String? // bundling | rendering | encoding
+  heartbeatAt        DateTime?
+  cancelRequested    Boolean   @default(false)
+  reservedQuota      Boolean   @default(false) // true iff THIS job reserved a clip for its video
+  reservedMinutes    Int? // minutes reserved for a queued job; for exact refund
+  creditsSpent       Int? // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
+  creditsFromGranted Int? // of creditsSpent, the portion drained from the granted (monthly) bucket; the rest came from purchased — for an EXACT per-bucket refund (granted-back-to-granted, not inflated into purchased)
+  error              String? // JSON, PR-5 error taxonomy
+  idempotencyKey     String?   @unique
+  scopeKey           String? // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
+  videoUrl           String?
+  createdAt          DateTime  @default(now())
+  startedAt          DateTime?
+  finishedAt         DateTime?
 
   @@index([status, type])
   @@index([userId, createdAt])

@@ -276,7 +276,7 @@ function benignTelemetryReason(row: TelemetryRow): string | null {
 // OUR own plan caps (minute/clip quota) — an EXPECTED business rule (PRO 15-min cap thrown as 409),
 // not a bug and not a customer-key fault. Must NOT inflate "ระบบเรา" (system) OR "คีย์ลูกค้า" (byok);
 // it is a pricing/upgrade signal. Classified BEFORE byok so a plan cap never reads as a BYOK error.
-export function quotaReasonFromText(text: string): string | null {
+function quotaReasonFromText(text: string): string | null {
   if (/QUOTA_MINUTES|เกินโควต้านาที|เกินนาที/i.test(text)) return "ชนเพดานแผน: โควต้านาที";
   if (/QUOTA_CLIPS|QUOTA_[A-Z]+|เกินโควต้าคลิป|clip quota/i.test(text)) return "ชนเพดานแผน: โควต้าคลิป";
   return null;
@@ -307,7 +307,7 @@ function byokErrorReason(row: TelemetryRow): string | null {
 // Classify a VideoJob failure. Order: noise → quota (our plan cap) → managed-key rate-limit → byok →
 // system. `managed` = MANAGED_GEMINI: when on, a 429/RESOURCE_EXHAUSTED/rate-limit is OUR managed key
 // hitting a ceiling (a capacity/infra signal = system), NOT a customer key. Pure + testable.
-export function classifyJobError(message: string | null, managed: boolean): "system" | "byok" | "quota" | "noise" {
+function classifyJobError(message: string | null, managed: boolean): "system" | "byok" | "quota" | "noise" {
   const text = message ?? "";
   if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
   if (quotaReasonFromText(text)) return "quota";
@@ -397,7 +397,7 @@ function summarizeEditorFunnel(rows: TelemetryRow[]) {
 // of editor version. progress is server-written + monotonic; milestones match orchestrator step()
 // calls: stock=55, config=65, render=75, done→100. This replaces the telemetry funnel above, which
 // went blind when editor v2 became the default (v2 emits no client pipeline telemetry).
-export type JobFunnelRow = { userId: string; status: string; progress: number };
+type JobFunnelRow = { userId: string; status: string; progress: number };
 
 const JOB_FUNNEL_STEPS = [
   { key: "created", label: "เริ่มสร้าง (สั่งเรนเดอร์)", reached: (_j: JobFunnelRow) => true },
@@ -407,7 +407,7 @@ const JOB_FUNNEL_STEPS = [
   { key: "done", label: "เสร็จสมบูรณ์", reached: (j: JobFunnelRow) => j.status === "done" },
 ] as const;
 
-export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
+function summarizeJobFunnel(jobs: JobFunnelRow[]) {
   const funnel = JOB_FUNNEL_STEPS.map((s) => ({
     key: s.key,
     label: s.label,
@@ -428,7 +428,7 @@ export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
 // the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators UNIONED with
 // completed-video creators, not v1-only editor_script_ready telemetry (which editor v2 never emits).
 // Invariant: signups >= openedEditor >= startedPipeline >= completedFirstVideo >= repeatCreators.
-export function computeActivationFunnel(input: {
+function computeActivationFunnel(input: {
   users: Array<{ id: string; email: string | null; createdAt: Date }>;
   openedUserIds: Array<string | null>;
   jobUserIds: string[];

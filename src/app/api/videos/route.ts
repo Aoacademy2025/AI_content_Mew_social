@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { isGalleryClipFileMissing } from "@/lib/gallery-clip-cleanup";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
 import {
@@ -126,7 +127,11 @@ export async function POST(req: Request) {
       avatarVideoUrl,
       status,
       renderConfig,
+      projectId: rawProjectId,
     } = await req.json();
+    const projectId = typeof rawProjectId === "string" && rawProjectId.trim()
+      ? await assertEditorProjectOwner(authUser.id, rawProjectId.trim())
+      : null;
 
     // Compute expiresAt based on user's current plan (FREE: 3d, PRO: 7d, BUSINESS: 14d)
     const dbUser = await prisma.user.findUnique({
@@ -138,6 +143,7 @@ export async function POST(req: Request) {
     const video = await prisma.video.create({
       data: {
         contentId: contentId ?? null,
+        projectId,
         avatarModel: avatarModel ?? "unknown",
         voiceModel: voiceModel ?? "unknown",
         imageModel: imageModel ?? null,
@@ -153,6 +159,16 @@ export async function POST(req: Request) {
         expiresAt: videoExpiryFor(userPlan),
       },
     });
+    if (projectId) {
+      await prisma.editorProject.updateMany({
+        where: { id: projectId, userId: authUser.id },
+        data: {
+          latestVideoId: video.id,
+          status: video.status === "COMPLETED" ? "exported" : "post",
+          lastOpenedAt: new Date(),
+        },
+      });
+    }
 
     const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
     const previewQueue = enqueueLowResPreview(primaryVideoUrl, {
@@ -170,6 +186,9 @@ export async function POST(req: Request) {
       previewStatus: previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
     }, { status: 201 });
   } catch (error) {
+    if ((error as { code?: string })?.code === "project_not_found") {
+      return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+    }
     return apiError({ route: "videos", error });
   }
 }

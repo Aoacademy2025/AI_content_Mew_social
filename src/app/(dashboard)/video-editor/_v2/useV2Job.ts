@@ -25,13 +25,14 @@ export type V2JobPhase = "idle" | "submitting" | "rendering" | "done" | "failed"
 export interface V2JobState {
   phase: V2JobPhase;
   jobId: string | null;
+  projectId: string | null;
   currentStep: string | null;
   progress: number;
   errorMessage: string | null;
   output: ParsedVideoJobOutput | null;
 }
 
-const IDLE: V2JobState = { phase: "idle", jobId: null, currentStep: null, progress: 0, errorMessage: null, output: null };
+const IDLE: V2JobState = { phase: "idle", jobId: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null };
 
 export function useV2Job(p: V2Project) {
   const [job, setJob] = useState<V2JobState>(IDLE);
@@ -43,7 +44,7 @@ export function useV2Job(p: V2Project) {
   }, []);
 
   const applyStatus = useCallback((d: {
-    id: string; status: string; currentStep: string | null; progress: number;
+    id: string; projectId?: string | null; status: string; currentStep: string | null; progress: number;
     errorMessage: string | null; output?: ParsedVideoJobOutput | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
@@ -51,12 +52,12 @@ export function useV2Job(p: V2Project) {
     // เริ่มโปรเจกต์ใหม่ / กลับไปตั้งค่า) หรือ Burn เสร็จใน P6.
     if (d.status === "done") {
       stopPolling();
-      setJob({ phase: "done", jobId: d.id, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null });
+      setJob({ phase: "done", jobId: d.id, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null });
+      setJob({ phase: "failed", jobId: d.id, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.id, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null });
     }
   }, [stopPolling]);
 
@@ -97,6 +98,7 @@ export function useV2Job(p: V2Project) {
     try {
       // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
       const body: Record<string, unknown> = p.mode === "upload" ? {
+        ...(p.projectId ? { projectId: p.projectId } : {}),
         mode: "upload",
         clipUrl: p.clipUrl,
         stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
@@ -112,6 +114,7 @@ export function useV2Job(p: V2Project) {
         subtitleMode: "sentence",
         subtitlePosition: "bottom",
       } : {
+        ...(p.projectId ? { projectId: p.projectId } : {}),
         script: p.script,
         voiceProvider: p.voiceEngine,
         ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
@@ -147,7 +150,7 @@ export function useV2Job(p: V2Project) {
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
       }
       try { browserStorage()?.setItem(STORAGE_KEY, d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, currentStep: null, progress: 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.jobId, projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null });
       startPolling(d.jobId);
       return { ok: true };
     } catch {

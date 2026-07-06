@@ -16,6 +16,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
     return NextResponse.json({
       id: job.id,
+      projectId: job.projectId,
       status: job.status, // queued | processing | done | failed | canceled
       currentStep: job.currentStep,
       progress: job.progress,
@@ -38,12 +39,25 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
+    const job = await prisma.videoJob.findFirst({
+      where: { id, userId: user.id },
+      select: { id: true, projectId: true },
+    });
+    if (!job) {
+      return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+    }
     const res = await prisma.videoJob.updateMany({
       where: { id, userId: user.id, status: { in: ["queued", "processing"] } },
       data: { status: "canceled", finishedAt: new Date(), errorMessage: "canceled by user (editor v2)" },
     });
     if (res.count !== 1) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+    }
+    if (job.projectId) {
+      await prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: user.id, activeJobId: job.id },
+        data: { status: "draft", lastOpenedAt: new Date() },
+      });
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

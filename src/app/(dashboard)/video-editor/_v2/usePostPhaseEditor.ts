@@ -225,6 +225,7 @@ export function usePostPhaseEditor(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           videoUrl: burnedUrl,
+          ...(job.projectId ? { projectId: job.projectId } : {}),
           audioUrl: preview?.voiceUrl ?? null,
           thumbnail: null,
           // ชื่อใน Gallery มาจาก script (v1 ก็ทำแบบนี้) — โหมดอัปคลิปใช้ fullText ที่ถอดได้

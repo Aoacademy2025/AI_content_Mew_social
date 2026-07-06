@@ -11,7 +11,7 @@ import { execFile } from "child_process";
 export const runtime = "nodejs";
 export const maxDuration = 600; // 10 min — supports large green-screen video uploads
 
-const MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+const MAX_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_FORM_OVERHEAD_BYTES = 10 * 1024 * 1024; // multipart headers / form fields
 
 type UploadErrorCode =
@@ -140,7 +140,7 @@ export async function POST(req: Request) {
         durationMs: Date.now() - startedAt,
         contentLengthBytes: safeContentLength,
       });
-      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 2 GB");
+      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 500 MB");
     }
 
     const formData = await req.formData();
@@ -198,7 +198,7 @@ export async function POST(req: Request) {
         ext,
         mime,
       });
-      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 2 GB");
+      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 500 MB");
     }
 
     const rendersDir = path.join(process.cwd(), "public", "renders");

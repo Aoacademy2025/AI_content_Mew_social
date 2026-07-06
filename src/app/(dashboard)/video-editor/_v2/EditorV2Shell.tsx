@@ -5,17 +5,24 @@
  * preview mode P4a/P4b) + done/failed placeholder (เฟสแต่งซับเต็มรูปแบบ = P6)
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { XCircle, ChevronLeft, BookOpen, RotateCcw } from "lucide-react";
+import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check } from "lucide-react";
 import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
 import { StepIndicator, BtnPrimary } from "./ui";
 import { AccountMenu } from "@/components/layout/account-menu";
 import { NotificationBell } from "@/components/layout/notification-bell";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useV2Project } from "./useV2Project";
 import { useV2Job, type V2JobState } from "./useV2Job";
 import { Step1Script } from "./Step1Script";
@@ -27,12 +34,28 @@ import { RenderReceiptDialog } from "./RenderReceiptDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 
+type ProjectMenuItem = {
+  id: string;
+  title: string;
+  status: string;
+};
+
+const PROJECT_STATUS_LABEL: Record<string, string> = {
+  draft: "Draft",
+  rendering: "Rendering",
+  post: "Post",
+  exported: "Exported",
+};
+
 export function EditorV2Shell() {
   const p = useV2Project();
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
   const { job, submit, cancel, reset, markExported } = useV2Job(p);
   const isMobile = useIsMobile();
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
   // is on; with it off handleRender submits directly (byte-identical to before).
@@ -43,6 +66,21 @@ export function EditorV2Shell() {
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
   const indicatorDone = job.phase === "done" ? [0, 1] : (isRendering || step === 1) ? [0] : [];
+
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    let alive = true;
+    setProjectsLoading(true);
+    fetch("/api/editor-projects", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!alive) return;
+        setProjects(Array.isArray(data?.projects) ? data.projects.slice(0, 8) : []);
+      })
+      .catch(() => { if (alive) setProjects([]); })
+      .finally(() => { if (alive) setProjectsLoading(false); });
+    return () => { alive = false; };
+  }, [projectMenuOpen, p.projectId]);
 
   async function handleRender() {
     if (!CREDITS_LIVE_CLIENT) {
@@ -80,6 +118,15 @@ export function EditorV2Shell() {
     setStep(0);
   }
 
+  function openProject(projectId: string) {
+    if (!projectId || projectId === p.projectId) return;
+    const url = new URL(window.location.href);
+    url.pathname = "/video-editor";
+    url.searchParams.set("ui", "v2");
+    url.searchParams.set("projectId", projectId);
+    window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
+  }
+
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -109,8 +156,76 @@ export function EditorV2Shell() {
             H
           </div>
 
+          <DropdownMenu open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="เปิดรายการโปรเจกต์"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[9px] transition-colors hover:brightness-125 lg:h-[34px] lg:w-[34px]"
+                style={{ background: "rgba(255,255,255,.05)", color: color.textSecondary }}
+              >
+                <FolderOpen size={16} strokeWidth={2.1} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="w-[292px] rounded-[10px] p-1.5"
+              style={{ background: color.bg1, border: `1px solid ${color.cardBorder}`, color: color.text }}
+            >
+              <DropdownMenuLabel className="px-2 py-1.5" style={{ font: `600 11px ${font.heading}`, color: color.textFaint }}>
+                โปรเจกต์ล่าสุด
+              </DropdownMenuLabel>
+              <DropdownMenuItem
+                onSelect={() => handleNewProject()}
+                className="rounded-[8px] px-2.5 py-2"
+                style={{ color: color.primary300, cursor: "pointer" }}
+              >
+                <Plus size={14} />
+                <span style={{ fontSize: 12 }}>โปรเจกต์ใหม่</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator style={{ background: color.cardBorder }} />
+              {projectsLoading ? (
+                <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
+                  <span style={{ fontSize: 12 }}>กำลังโหลด…</span>
+                </DropdownMenuItem>
+              ) : projects.length === 0 ? (
+                <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
+                  <span style={{ fontSize: 12 }}>ยังไม่มีโปรเจกต์อื่น</span>
+                </DropdownMenuItem>
+              ) : projects.map((project) => {
+                const active = project.id === p.projectId;
+                return (
+                  <DropdownMenuItem
+                    key={project.id}
+                    onSelect={() => openProject(project.id)}
+                    className="rounded-[8px] px-2.5 py-2"
+                    style={{ color: active ? color.primary300 : color.textSecondary, cursor: active ? "default" : "pointer" }}
+                  >
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                      {active ? <Check size={13} strokeWidth={2.4} /> : null}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: 12 }}>{project.title || "New Project"}</span>
+                    <span className="shrink-0" style={{ fontSize: 10, color: color.textFaint }}>
+                      {PROJECT_STATUS_LABEL[project.status] ?? project.status}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <div className="flex min-w-0 flex-col leading-tight">
-            <div className="truncate" style={{ font: `500 13.5px ${font.heading}` }}>New Project</div>
+            <input
+              aria-label="ชื่อโปรเจกต์"
+              value={p.projectTitle}
+              onChange={(event) => p.setProjectTitle(event.target.value.slice(0, 80))}
+              onBlur={() => {
+                const trimmed = p.projectTitle.trim();
+                p.setProjectTitle(trimmed || "New Project");
+              }}
+              className="-mx-1.5 min-w-0 truncate rounded-[6px] border-0 bg-transparent px-1.5 py-0 outline-none transition-colors focus:bg-white/[.06]"
+              style={{ font: `500 13.5px ${font.heading}`, color: color.text }}
+            />
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
               <SaveStatus status={p.saveStatus} />
               <span>·</span>

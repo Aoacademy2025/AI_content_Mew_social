@@ -7,8 +7,10 @@ import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-prese
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
 const DRAFT_KEY = "editor-v2-project";
+const PROJECT_ID_KEY = "editor-v2-project-id";
 
 interface V2Draft {
+  projectTitle?: string;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
@@ -62,6 +64,7 @@ export interface V2ElevenVoice {
 }
 
 const DEFAULT_PROJECT = {
+  projectTitle: "New Project",
   mode: "script" as V2Mode,
   script: "",
   clipUrl: "",
@@ -90,8 +93,11 @@ export function useV2Project() {
   // จะไม่ทับของที่ผู้ใช้ตั้งไว้แล้ว (ดู effect ด้านล่าง)
   const draftRef = useRef<V2Draft>(typeof window === "undefined" ? {} : loadDraft());
   const d = draftRef.current;
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectReady, setProjectReady] = useState(false);
 
   // ── Step 1 ──
+  const [projectTitle, setProjectTitle] = useState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle);
   const [mode, setMode] = useState<V2Mode>(d.mode ?? "script");
   const [script, setScript] = useState(d.script ?? "");
   /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
@@ -156,6 +162,43 @@ export function useV2Project() {
     if (provs) setAutoMixProviders(provs);
   }, []);
 
+  function buildDraft(): V2Draft {
+    return {
+      mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId,
+      projectTitle,
+      musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
+      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
+    };
+  }
+
+  function applyDraft(next: V2Draft) {
+    draftRef.current = next;
+    if (next.projectTitle !== undefined) setProjectTitle(next.projectTitle || DEFAULT_PROJECT.projectTitle);
+    if (next.mode) setMode(next.mode);
+    if (next.script !== undefined) setScript(next.script);
+    if (next.clipUrl !== undefined) setClipUrl(next.clipUrl);
+    if (next.clipDurationSec !== undefined) setClipDurationSec(next.clipDurationSec);
+    if (next.brollSource) setBrollSource(next.brollSource);
+    if (next.voiceEngine) setVoiceEngine(next.voiceEngine);
+    if (next.geminiVoiceName !== undefined) setGeminiVoiceName(next.geminiVoiceName);
+    if (next.voiceId !== undefined) setVoiceId(next.voiceId);
+    if (next.musicTrack !== undefined) setMusicTrack(next.musicTrack);
+    if (next.musicTrackKind) setMusicTrackKind(next.musicTrackKind);
+    if (next.bgmVolume !== undefined) setBgmVolume(next.bgmVolume);
+    if (next.useAvatar !== undefined) setUseAvatar(next.useAvatar);
+    if (next.avatarId !== undefined) setAvatarId(next.avatarId);
+    if (next.targetClipCount !== undefined) setTargetClipCount(next.targetClipCount);
+    if (next.avatarMode) setAvatarMode(next.avatarMode);
+    if (next.avatarIntroSecs !== undefined) setAvatarIntroSecs(next.avatarIntroSecs);
+    if (next.avatarTailSecs !== undefined) setAvatarTailSecs(next.avatarTailSecs);
+    if (next.kieModel !== undefined) setKieModel(next.kieModel as KieImageModel | "");
+    if (next.autoMixProviders) setAutoMixProviders(next.autoMixProviders);
+    if (next.mixPreset) setMixPresetState(next.mixPreset);
+    if (next.brollRegionPreference) setBrollRegionPreference(next.brollRegionPreference);
+    if (next.brollVisualStyle) setBrollVisualStyle(next.brollVisualStyle);
+  }
+
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
   //    "idle" until the first user-driven change, then "saving" → "saved". ──
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -168,11 +211,44 @@ export function useV2Project() {
   const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
 
+  const createServerProject = useCallback(async (draft: V2Draft) => {
+    try {
+      const res = await fetch("/api/editor-projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: draft.projectTitle ?? DEFAULT_PROJECT.projectTitle, draft }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const id = typeof data?.project?.id === "string" ? data.project.id : null;
+      if (id) {
+        setProjectId(id);
+        setProjectReady(true);
+        try { browserStorage()?.setItem(PROJECT_ID_KEY, id); } catch {}
+      }
+      return id;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const resetProject = useCallback(() => {
-    draftRef.current = {};
-    try { browserStorage()?.removeItem(DRAFT_KEY); } catch {}
+    const nextDraft: V2Draft = {
+      ...DEFAULT_PROJECT,
+      autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
+      mixPreset: isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset,
+    };
+    draftRef.current = nextDraft;
+    setProjectId(null);
+    setProjectReady(false);
+    try {
+      const storage = browserStorage();
+      storage?.removeItem(DRAFT_KEY);
+      storage?.removeItem(PROJECT_ID_KEY);
+    } catch {}
 
     setMode(DEFAULT_PROJECT.mode);
+    setProjectTitle(DEFAULT_PROJECT.projectTitle);
     setScript(DEFAULT_PROJECT.script);
     setClipUrl(DEFAULT_PROJECT.clipUrl);
     setClipDurationSec(DEFAULT_PROJECT.clipDurationSec);
@@ -195,7 +271,50 @@ export function useV2Project() {
     setBrollVisualStyle(DEFAULT_PROJECT.brollVisualStyle);
     setMixPreset(isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset);
     setSaveStatus("idle");
-  }, [isPaidManagedKie, setMixPreset]);
+    void createServerProject(nextDraft);
+  }, [createServerProject, isPaidManagedKie, setMixPreset]);
+
+  useEffect(() => {
+    let alive = true;
+    async function ensureServerProject() {
+      const storage = browserStorage();
+      const localDraft = loadDraft();
+      const urlProjectId = new URLSearchParams(window.location.search).get("projectId");
+      const storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null;
+      const existingProjectId = urlProjectId || storedProjectId;
+
+      if (existingProjectId) {
+        try {
+          const res = await fetch(`/api/editor-projects/${encodeURIComponent(existingProjectId)}`, { cache: "no-store" });
+          if (res.ok) {
+            const data = await res.json();
+            const project = data?.project;
+            if (!alive || typeof project?.id !== "string") return;
+            setProjectId(project.id);
+            setProjectReady(true);
+            storage?.setItem(PROJECT_ID_KEY, project.id);
+            if (project.draft && typeof project.draft === "object") {
+              applyDraft(project.draft as V2Draft);
+            } else if (typeof project.title === "string") {
+              setProjectTitle(project.title);
+            }
+            return;
+          }
+        } catch {
+          // Fall back to local draft + create a fresh server project below.
+        }
+      }
+
+      const seedDraft = Object.keys(localDraft).length > 0 ? localDraft : buildDraft();
+      const id = await createServerProject(seedDraft);
+      if (!alive || !id) return;
+      storage?.setItem(PROJECT_ID_KEY, id);
+    }
+    void ensureServerProject();
+    return () => { alive = false; };
+    // Server project bootstrap should run once. Subsequent field autosaves are handled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createServerProject]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -245,20 +364,25 @@ export function useV2Project() {
     firstPersistRun.current = false;
     if (!isFirst) setSaveStatus("saving");
     const t = setTimeout(() => {
+      const draft = buildDraft();
       try {
-        browserStorage()?.setItem(DRAFT_KEY, JSON.stringify({
-          mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
-          clipDurationSec,
-          musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-          targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-          kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
-        } satisfies V2Draft));
-        if (!isFirst) setSaveStatus("saved");
+        browserStorage()?.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* quota/private mode */ }
+      if (projectReady && projectId) {
+        fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: draft.projectTitle, draft, touchLastOpened: true }),
+        })
+          .then((res) => { if (!isFirst && res.ok) setSaveStatus("saved"); })
+          .catch(() => { if (!isFirst) setSaveStatus("saved"); });
+      } else if (!isFirst) {
+        setSaveStatus("saved");
+      }
     }, 1000);
     return () => clearTimeout(t);
-  }, [mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle]);
+  }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, projectId, projectReady]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
@@ -285,6 +409,7 @@ export function useV2Project() {
   }, [voiceEngine, elevenVoices]);
 
   return {
+    projectTitle, setProjectTitle,
     mode, setMode,
     script, setScript,
     clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
@@ -307,7 +432,7 @@ export function useV2Project() {
     brollVisualStyle, setBrollVisualStyle,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, resetProject,
+    plan, canUploadOwnMedia, projectId, projectReady, resetProject,
     saveStatus,
   };
 }

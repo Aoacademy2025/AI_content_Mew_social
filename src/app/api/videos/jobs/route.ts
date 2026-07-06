@@ -9,6 +9,7 @@ import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
+import { assertEditorProjectOwner } from "@/lib/editor-projects";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -29,7 +30,7 @@ type Body = {
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown;
-  subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown;
+  subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -54,6 +55,9 @@ export async function POST(req: Request) {
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+    const projectId = typeof body.projectId === "string" && body.projectId.trim()
+      ? await assertEditorProjectOwner(user.id, body.projectId.trim())
+      : null;
 
     // โหมดอัปคลิปเอง (cutaway) — gate ด้วย flag เดียวกับปุ่มใน UI (flip พร้อม EDITOR_V2 วัน launch)
     const uploadMode = body.mode === "upload";
@@ -181,7 +185,14 @@ export async function POST(req: Request) {
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },
         str(body.idempotencyKey, 120),
+        { projectId },
       );
+      if (projectId) {
+        await prisma.editorProject.updateMany({
+          where: { id: projectId, userId: user.id },
+          data: { activeJobId: job.id, status: "rendering", lastOpenedAt: new Date() },
+        });
+      }
       return NextResponse.json({ jobId: job.id, status: "queued" });
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
@@ -190,6 +201,9 @@ export async function POST(req: Request) {
       throw e;
     }
   } catch (err) {
+    if ((err as { code?: string })?.code === "project_not_found") {
+      return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+    }
     console.error("[api/videos/jobs] error:", err);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });
   }

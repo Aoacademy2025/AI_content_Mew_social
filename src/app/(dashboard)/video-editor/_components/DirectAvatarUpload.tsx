@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { readVideoMetadata } from "@/lib/video-orientation";
 
-const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
+const MAX_AVATAR_UPLOAD_BYTES = 500 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
 
 type UploadResponse = {
   url?: string;
@@ -38,9 +38,9 @@ function parseUploadResponse(text: string): UploadResponse {
 }
 
 function uploadErrorMessage(status: number, data: UploadResponse) {
+  if (status === 401 || data.code === "unauthorized") return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
   if (data.error) return data.error;
-  if (status === 401) return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
-  if (status === 413) return "ไฟล์ใหญ่เกิน 2 GB";
+  if (status === 413) return "ไฟล์ใหญ่เกิน 500 MB";
   if (status === 507) return "พื้นที่จัดเก็บบนเซิร์ฟเวอร์ไม่พอสำหรับอัปโหลดไฟล์นี้";
   return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
 }
@@ -71,7 +71,7 @@ export function DirectAvatarUpload({
       return;
     }
     if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
-      toast.error("ไฟล์ใหญ่เกิน 2 GB");
+      toast.error("ไฟล์ใหญ่เกิน 500 MB");
       return;
     }
     let localMetadata: UploadedVideoMetadata | undefined;
@@ -98,6 +98,7 @@ export function DirectAvatarUpload({
         fd.append("file", file);
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/videos/upload-avatar");
+        xhr.withCredentials = true;
         xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100)); };
         xhr.onload = () => {
           const data = parseUploadResponse(xhr.responseText);

@@ -8,6 +8,7 @@ import { RouteProgress } from "@/components/layout/route-progress";
 import { TelemetryProvider } from "@/components/telemetry/telemetry-provider";
 
 const inter = Inter({ subsets: ["latin"] });
+const ICON_VERSION = "20260706-h";
 
 // Thai + decorative Google Fonts for subtitle editor.
 // Includes weights 700–900 because subtitle defaults to fontWeight=900 — without
@@ -20,6 +21,13 @@ const GOOGLE_FONTS_URL =
 export const metadata: Metadata = {
   title: "HERO AI Creator Studio",
   description: "AI-Powered Content, Built for Creators.",
+  icons: {
+    icon: [
+      { url: `/icon.svg?v=${ICON_VERSION}`, type: "image/svg+xml" },
+      { url: `/favicon.ico?v=${ICON_VERSION}`, sizes: "any" },
+    ],
+    apple: [{ url: `/apple-icon.png?v=${ICON_VERSION}`, sizes: "180x180", type: "image/png" }],
+  },
 };
 
 // viewport-fit=cover so env(safe-area-inset-*) is non-zero on notched devices
