@@ -21,11 +21,21 @@ check("european avoid includes asian", (euroSpec?.avoidConcepts ?? []).some((t) 
 // 2. thai degrades to asian in fallback queries (never western)
 check("thai fallback contains asian queries", (thaiSpec?.safeFallbackQueries ?? []).some((q) => q.includes("asian")));
 check("thai fallback has no european", !(thaiSpec?.safeFallbackQueries ?? []).some((q) => /european|western/.test(q)));
+check("thai fallback includes specific asian business people query", (thaiSpec?.safeFallbackQueries ?? []).includes("asian business people"));
 
 // 3. Truncation: long base direction must NOT swallow the preference suffix
 const longBase = "x".repeat(300);
 const appended = appendBrollPreferenceToDirection(longBase, { brollRegionPreference: "thai" });
 check("suffix survives long base", /Thai|Southeast Asian/.test(appended));
+
+// 3b. Combined region+style: base direction must survive AND suffix must stay whole
+const combinedBase = "office worker typing on laptop at sunrise, warm tones, city skyline in background";
+const combinedAppended = appendBrollPreferenceToDirection(combinedBase, {
+  brollRegionPreference: "thai",
+  brollVisualStyle: "documentary",
+});
+check("combined: base direction preserved", combinedAppended.includes("office worker"));
+check("combined: suffix stays whole", combinedAppended.includes("never Western/European-looking people"));
 
 // 4. Instruction helper
 check("instruction non-empty for thai", brollPreferenceInstruction({ brollRegionPreference: "thai" }).length > 0);

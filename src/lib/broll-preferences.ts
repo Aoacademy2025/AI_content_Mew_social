@@ -195,7 +195,8 @@ export function appendBrollPreferenceToDirection(direction: string, input: Broll
   if (!hints) return direction;
   const suffix = hints.instruction.replace(/\s+/g, " ").trim();
   const MAX = 320;
-  const budget = Math.max(0, MAX - suffix.length - 1);
+  const MIN_BASE = 160;
+  const budget = Math.max(MIN_BASE, MAX - suffix.length - 1);
   const base = direction.trim().replace(/\s+/g, " ").slice(0, budget).trimEnd();
   return [base, suffix].filter(Boolean).join(" ");
 }
