@@ -10,6 +10,7 @@ import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
+import { validateWindowEdits } from "@/lib/broll-rerender";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -31,6 +32,8 @@ type Body = {
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
+  // Phase 2 free per-window re-render (mode: "broll-rerender")
+  sourceJobId?: unknown; windowEdits?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -55,6 +58,44 @@ export async function POST(req: Request) {
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+
+    // ── Phase 2: free per-window b-roll re-render (mode: "broll-rerender") ─────────
+    // Reuses the source job's TTS + avatar and only swaps b-roll windows → NOTHING new is
+    // fetched or charged, so this SKIPS the API-key guards and the clip-quota reserve. It KEEPS
+    // auth (above), the in-flight cap of 3, and idempotency. The render route's server-trusted
+    // `rerenderOf` skip (not any client flag) is what makes the render itself free; here we only
+    // validate shape + ownership up-front and enqueue. The orchestrator re-checks authoritatively.
+    if (body.mode === "broll-rerender") {
+      if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+        return NextResponse.json({ error: "not_enabled" }, { status: 404 });
+      }
+      const sourceJobId = str(body.sourceJobId, 120);
+      if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
+      const editsRes = validateWindowEdits(body.windowEdits);
+      if ("error" in editsRes) return NextResponse.json({ error: "invalid_edits", message: editsRes.error }, { status: 400 });
+
+      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true } });
+      if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
+      if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)" }, { status: 400 });
+
+      const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: ["queued", "processing"] } } });
+      if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
+
+      try {
+        const job = await createVideoJob(
+          user.id,
+          { mode: "broll-rerender", previewMode: true, sourceJobId, windowEdits: editsRes },
+          str(body.idempotencyKey, 120),
+        );
+        return NextResponse.json({ jobId: job.id, status: "queued" });
+      } catch (e) {
+        if ((e as { code?: string })?.code === "P2002") {
+          return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
+        }
+        throw e;
+      }
+    }
+
     const projectId = typeof body.projectId === "string" && body.projectId.trim()
       ? await assertEditorProjectOwner(user.id, body.projectId.trim())
       : null;

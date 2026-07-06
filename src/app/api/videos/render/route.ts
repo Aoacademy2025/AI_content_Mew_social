@@ -7,6 +7,7 @@ import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
+import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
@@ -224,6 +225,26 @@ function quotaExceededResponse(message: string, opts?: { canBuyCredits?: boolean
   );
 }
 
+// In-process sliding window capping ACCEPTED free b-roll re-renders (the `rerenderOf`
+// charge-skip). Mirrors `tryConsumeKieImageRate`: per-user, 10/hour, single-process. With
+// RENDER_VIA_QUEUE=1 every render funnels through this one Next.js route, so a per-process
+// window is the effective ceiling. A slot is consumed ONLY when a re-render is otherwise
+// valid (see the caller) — an over-limit re-render just falls through to normal charging.
+const RERENDER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const RERENDER_RATE_PER_HOUR = 10;
+const rerenderHits = new Map<string, number[]>();
+function tryConsumeRerenderRate(userId: string, now: number = Date.now()): boolean {
+  const cutoff = now - RERENDER_WINDOW_MS;
+  const recent = (rerenderHits.get(userId) ?? []).filter((t) => t > cutoff);
+  if (recent.length >= RERENDER_RATE_PER_HOUR) {
+    rerenderHits.set(userId, recent);
+    return false;
+  }
+  recent.push(now);
+  rerenderHits.set(userId, recent);
+  return true;
+}
+
 export async function POST(req: Request) {
   const requestStartedAt = Date.now();
   loadBundleCache();
@@ -278,7 +299,7 @@ export async function POST(req: Request) {
     // reserved + completed). Foreign/external/fabricated sources are not found → charge.
     // This still runs before any heavy work (job cancellation / bundle / render), so the
     // PR-1 fail-fast property is preserved.
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -296,10 +317,45 @@ export async function POST(req: Request) {
     const burnAlreadyPaid =
       isSubtitleOverlay && (await isBurnAlreadyPaid(userId, subtitleOverlayConfig?.videoUrl));
 
+    // Server-trusted FREE b-roll re-render (`rerenderOf`, Phase 2 "Per-window Upgrade"). A base
+    // re-render that only swaps b-roll windows reuses the SAME TTS/avatar of an already-paid clip
+    // → it must NOT charge minutes again. This is NEVER granted from a client flag: it's valid
+    // ONLY when the named source job exists, belongs to THIS user, is `done`, its output video
+    // canonicalizes to a `ChargedClip` we recorded for this user (reusing isBurnAlreadyPaid — the
+    // same server-trusted primitive that makes burns free), AND the incoming config duration
+    // equals the source preview's duration (binds the free render to the paid clip's length, so a
+    // longer/expensive config can't ride the skip). Any mismatch/lie/error → skip=false → falls
+    // through to NORMAL charging (never an error). Accepted skips are rate-capped 10/user/hour.
+    let rerenderSkipCharge = false;
+    if (rerenderOf && typeof rerenderOf === "object") {
+      const sourceJobId = (rerenderOf as { sourceJobId?: unknown }).sourceJobId;
+      const incomingFrames = Number(shortVideoConfig?.durationInFrames);
+      if (typeof sourceJobId === "string" && sourceJobId && Number.isFinite(incomingFrames) && incomingFrames > 0) {
+        try {
+          const src = await prisma.videoJob.findUnique({
+            where: { id: sourceJobId },
+            select: { userId: true, status: true, outputJson: true },
+          });
+          if (src && src.userId === userId && src.status === "done") {
+            const parsed = parseVideoJobOutput(src.outputJson);
+            const srcFrames = Number((parsed?.preview?.config as Record<string, unknown> | undefined)?.durationInFrames);
+            // ChargedClip existence for (userId, canonical(source videoUrl)) via the shared primitive.
+            if (Number.isFinite(srcFrames) && srcFrames === incomingFrames && (await isBurnAlreadyPaid(userId, parsed?.videoUrl))) {
+              // Valid — consume a rate slot only now (an over-limit request stays chargeable).
+              rerenderSkipCharge = tryConsumeRerenderRate(userId);
+            }
+          }
+        } catch {
+          rerenderSkipCharge = false; // fail-safe: any error → normal charging, never a free bypass
+        }
+      }
+    }
+
     // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง (ก่อนยกเลิก job เดิม + ก่อน bundle/render).
     // อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่างยังเป็นตัวจองจริง (atomic) ตัวเดียว.
     // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
-    if (!burnAlreadyPaid) {
+    // ข้าม re-render ฟรี (rerenderSkipCharge) ด้วย: ไม่มีการจองใหม่ จึงไม่ต้อง pre-check โควต้า.
+    if (!burnAlreadyPaid && !rerenderSkipCharge) {
       if (useMinuteQuota) {
         // Fail-fast minute pre-check. SKIP it entirely when creditsLive: an out-of-minutes
         // user can still render by overflowing to credits, so a minute-only 403 here would
@@ -423,8 +479,10 @@ export async function POST(req: Request) {
     // leak quota permanently). An UNPAID burn (external / foreign / fabricated source)
     // is NOT skipped: it reserves like a normal render — no free-render bypass. Both the
     // legacy and queue paths share this single gate.
-    if (burnAlreadyPaid) {
-      // FREE: burn of this user's own paid render — never reserve, never block.
+    if (burnAlreadyPaid || rerenderSkipCharge) {
+      // FREE: a burn of this user's own paid render, OR a server-trusted b-roll re-render of an
+      // already-paid clip (rerenderSkipCharge) — never reserve, never block. quotaReserved stays
+      // false, so every refund path below (in-flight + setup-error) also skips (nothing to refund).
     } else if (useMinuteQuota) {
       // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
       // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
@@ -1088,6 +1146,11 @@ export async function POST(req: Request) {
           // 4th arg persists the credit spend (credit-funded overflow). Null → undefined
           // → byte-identical to the prior 3-arg call (creditsSpent stays null on the row).
           await recordChargedClip(userId, videoUrl, useMinuteQuota ? reservedMinutes : undefined, creditsSpent ?? undefined).catch(() => {});
+        } else if (rerenderSkipCharge && !isSubtitleOverlay) {
+          // FREE b-roll re-render (legacy in-process path): record the NEW base as a paid clip so
+          // the subsequent BURN of it is free too (isBurnAlreadyPaid). chargedMinutes=0 = this base
+          // cost no minutes. (The RENDER_VIA_QUEUE worker records the same on its own success path.)
+          await recordChargedClip(userId, videoUrl, 0).catch(() => {});
         }
         createNotification({
           userId,
