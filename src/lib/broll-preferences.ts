@@ -260,11 +260,16 @@ const REGION_SEARCH_CONSTRAINTS: Partial<Record<BrollRegionPreference, { require
   },
 };
 
-const PEOPLE_WORD_RE = /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers)\b/gi;
+// Kept broad on purpose: any genuine person/role/social noun here should earn
+// the region qualifier (see applyBrollPreferenceToSearchQuery). Each entry is
+// a full word behind \b...\b boundaries so partial matches (e.g. "manager"
+// via "age") can't sneak in — only add whole words here, never fragments.
+export const PEOPLE_WORD_RE =
+  /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers|meeting|meetings|interview|interviews|presentation|presentations|audience|audiences|colleague|colleagues|family|families|couple|couples|friend|friends|kid|kids|child|children|chef|chefs|musician|musicians|athlete|athletes|engineer|engineers|ceo|ceos|founder|founders|commuter|commuters|pedestrian|pedestrians|runner|runners|tourist|tourists|farmer|farmers|artist|artists|handshake|handshakes|nurse|nurses|waiter|waiters|waitress|waitresses|barista|baristas|dancer|dancers|singer|singers|speaker|speakers|coach|coaches|player|players|driver|drivers|vendor|vendors|shopper|shoppers|passenger|passengers)\b/gi;
 
 // Non-global twin of PEOPLE_WORD_RE for stateless `.test()` (global flag carries
 // lastIndex between calls and would flap true/false).
-const PEOPLE_WORD_TEST_RE = new RegExp(PEOPLE_WORD_RE.source, "i");
+export const PEOPLE_WORD_TEST_RE = new RegExp(PEOPLE_WORD_RE.source, "i");
 
 // Place / setting vocabulary — a query about a location legitimately carries a
 // regional look. Pure object/nature/abstract queries do NOT.

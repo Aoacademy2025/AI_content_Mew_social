@@ -3,6 +3,7 @@ import {
   applyBrollPreferenceToSearchQuery,
   augmentRelevanceSpecWithBrollPreference,
   brollPreferenceInstruction,
+  PEOPLE_WORD_TEST_RE,
 } from "../src/lib/broll-preferences";
 import type { RelevanceSpec } from "../src/lib/relevance-spec";
 
@@ -97,10 +98,18 @@ for (const region of ["asian", "thai", "european"] as const) {
 // (e) augmented positiveConcepts for asian include SETTING terms and are NOT
 //     people-dominated (used as the ranker's "prefer footage of" list).
 const asianPos = asianSpec?.positiveConcepts ?? [];
-const asianPeople = asianPos.filter((t) => /\b(people|person|persons|worker|workers|team|teams|business|man|woman|men|women)\b/.test(t));
 const asianSetting = asianPos.filter((t) => /\b(city|street|office|market|architecture|scene|lifestyle|home|shop|building)\b/.test(t));
 check("asian positiveConcepts include setting terms", asianSetting.length > 0);
-check("asian positiveConcepts are not people-dominated", asianPeople.length <= asianSetting.length);
+// Real guard (previously trivially true: asianPeople was always 0 because
+// REGION_HINTS.asian.positive never had people terms in the first place, so
+// `0 <= asianSetting.length` always passed regardless of what changed).
+// This asserts directly against PEOPLE_WORD_TEST_RE — the single source of
+// truth for "is this a person/role word" — so if a future edit reintroduces
+// people terms into REGION_HINTS.*.positive, this check actually fails.
+check(
+  "asian positiveConcepts contain NO people/role term (setting-only)",
+  !asianPos.some((t) => PEOPLE_WORD_TEST_RE.test(t)),
+);
 
 // (f) auto / unset -> byte-identical passthrough behavior
 check(
@@ -118,5 +127,27 @@ check(
   "unset augment returns the same spec reference",
   augmentRelevanceSpecWithBrollPreference(passthroughSpec, {}) === passthroughSpec,
 );
+
+// ---------------------------------------------------------------------------
+// FIX 1 REGRESSION COVERAGE: the people-word list was too narrow — genuine
+// people/role queries (meetings, family scenes, professions, etc.) were
+// slipping through unqualified. Broadened PEOPLE_WORD_RE must now catch them,
+// while pure object/nature/abstract queries must stay unchanged (no
+// over-broadening regression).
+// ---------------------------------------------------------------------------
+
+for (const q of ["business meeting", "family dinner", "chef cooking", "athlete running"]) {
+  check(
+    `people/role query '${q}' (asian) gets asian qualifier`,
+    applyBrollPreferenceToSearchQuery(q, { brollRegionPreference: "asian" }) === `asian ${q}`,
+  );
+}
+
+for (const q of ["growth chart", "circuit board", "sunset over ocean", "mountain landscape"]) {
+  check(
+    `object/nature query '${q}' (asian) stays unchanged`,
+    applyBrollPreferenceToSearchQuery(q, { brollRegionPreference: "asian" }) === q,
+  );
+}
 
 process.exit(failures ? 1 : 0);
