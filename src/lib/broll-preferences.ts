@@ -264,8 +264,16 @@ const REGION_SEARCH_CONSTRAINTS: Partial<Record<BrollRegionPreference, { require
 // the region qualifier (see applyBrollPreferenceToSearchQuery). Each entry is
 // a full word behind \b...\b boundaries so partial matches (e.g. "manager"
 // via "age") can't sneak in — only add whole words here, never fragments.
+//
+// NOTE: player, speaker, driver, coach, vendor, runner were REMOVED (round-2
+// review) — they're polysemous nouns that mean OBJECTS/DEVICES at least as
+// often as people ("video player", "bluetooth speaker", "usb driver", "coach
+// bus", "software vendor", "carpet runner"), which both wrongly added the
+// region prefix to object queries AND, worse, got stripped as "people words"
+// in the no-people path, deleting the actual subject of the query. Do not
+// re-add them without a query-context disambiguator.
 export const PEOPLE_WORD_RE =
-  /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers|meeting|meetings|interview|interviews|presentation|presentations|audience|audiences|colleague|colleagues|family|families|couple|couples|friend|friends|kid|kids|child|children|chef|chefs|musician|musicians|athlete|athletes|engineer|engineers|ceo|ceos|founder|founders|commuter|commuters|pedestrian|pedestrians|runner|runners|tourist|tourists|farmer|farmers|artist|artists|handshake|handshakes|nurse|nurses|waiter|waiters|waitress|waitresses|barista|baristas|dancer|dancers|singer|singers|speaker|speakers|coach|coaches|player|players|driver|drivers|vendor|vendors|shopper|shoppers|passenger|passengers)\b/gi;
+  /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers|meeting|meetings|interview|interviews|presentation|presentations|audience|audiences|colleague|colleagues|family|families|couple|couples|friend|friends|kid|kids|child|children|chef|chefs|musician|musicians|athlete|athletes|engineer|engineers|ceo|ceos|founder|founders|commuter|commuters|pedestrian|pedestrians|tourist|tourists|farmer|farmers|artist|artists|handshake|handshakes|nurse|nurses|waiter|waiters|waitress|waitresses|barista|baristas|dancer|dancers|singer|singers|shopper|shoppers|passenger|passengers)\b/gi;
 
 // Non-global twin of PEOPLE_WORD_RE for stateless `.test()` (global flag carries
 // lastIndex between calls and would flap true/false).

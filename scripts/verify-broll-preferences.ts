@@ -136,7 +136,7 @@ check(
 // over-broadening regression).
 // ---------------------------------------------------------------------------
 
-for (const q of ["business meeting", "family dinner", "chef cooking", "athlete running"]) {
+for (const q of ["business meeting", "family dinner", "chef cooking", "athlete running", "teacher explaining"]) {
   check(
     `people/role query '${q}' (asian) gets asian qualifier`,
     applyBrollPreferenceToSearchQuery(q, { brollRegionPreference: "asian" }) === `asian ${q}`,
@@ -149,5 +149,39 @@ for (const q of ["growth chart", "circuit board", "sunset over ocean", "mountain
     applyBrollPreferenceToSearchQuery(q, { brollRegionPreference: "asian" }) === q,
   );
 }
+
+// ---------------------------------------------------------------------------
+// FIX 2 (round-2 review) REGRESSION COVERAGE: PEOPLE_WORD_RE overshot with 6
+// polysemous object/device nouns (player, speaker, driver, coach, vendor,
+// runner) that collide with people/role senses. They were removed. Lock in:
+// (a) object/device queries no longer get the region prefix, and
+// (b) the no-people path no longer strips the actual subject out of them.
+// ---------------------------------------------------------------------------
+
+for (const q of [
+  "video player interface",
+  "bluetooth speaker on desk",
+  "usb driver install",
+  "coach bus",
+  "software vendor logo",
+  "carpet runner rug",
+]) {
+  check(
+    `object/device query '${q}' (asian) stays unchanged`,
+    applyBrollPreferenceToSearchQuery(q, { brollRegionPreference: "asian" }) === q,
+  );
+}
+
+check(
+  "no-people 'bluetooth speaker on desk' keeps 'speaker' (not stripped)",
+  applyBrollPreferenceToSearchQuery("bluetooth speaker on desk", { brollRegionPreference: "no-people" }).includes(
+    "speaker",
+  ),
+);
+
+check(
+  "no-people 'chef cooking' still strips the genuine people word",
+  applyBrollPreferenceToSearchQuery("chef cooking", { brollRegionPreference: "no-people" }) === "cooking no people",
+);
 
 process.exit(failures ? 1 : 0);
