@@ -140,7 +140,6 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiInsufficient, setAiInsufficient] = useState<{ need: number; balance: number } | null>(null);
-  const [aiPreviewUrl, setAiPreviewUrl] = useState<string | null>(null);
 
   const rawEntry = index != null ? rawBgVideoAt(ed.previewConfig, index) : null;
 
@@ -159,7 +158,6 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     setAiBusy(false);
     setAiError(null);
     setAiInsufficient(null);
-    setAiPreviewUrl(null);
     const kw = typeof rawEntry?.keyword === "string" ? rawEntry.keyword : "";
     setSearchKeyword(kw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,6 +238,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    setUploadError(null);
     const ext = fileExt(file.name);
     const isImage = IMAGE_EXTS.has(ext);
     const isVideo = VIDEO_EXTS.has(ext);
@@ -252,7 +251,6 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
       setUploadError(isImage ? "รูปใหญ่เกิน 20 MB" : "วิดีโอใหญ่เกิน 200 MB");
       return;
     }
-    setUploadError(null);
     setUploadBusy(true);
     try {
       const form = new FormData();
@@ -285,7 +283,6 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         return;
       }
       if (!res.ok || !d?.src) { setAiError(d?.message ?? `สร้างรูปไม่สำเร็จ (${res.status})`); return; }
-      setAiPreviewUrl(d.src);
       markEdited("ai", d.src, undefined, "AI");
     } catch {
       setAiError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -443,9 +440,6 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
               เครดิตไม่พอ — ต้องใช้ {aiInsufficient.need} เครดิต (มี {aiInsufficient.balance}) — <a href="/pricing" style={{ color: color.link }}>ดูแพ็กเกจ</a>
             </span>
           )}
-          {aiPreviewUrl && (
-            <video src={aiPreviewUrl} muted loop autoPlay playsInline style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200 }} />
-          )}
           <BtnPrimary
             onClick={() => void handleGenerate()}
             disabled={aiBusy || !finalPrompt}
@@ -455,6 +449,23 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
           </BtnPrimary>
         </div>
       )}
+    </div>
+  );
+
+  // Single source of truth for the "here's the chosen clip" preview: derives from the
+  // window's actual staged edit (not per-tab local state) so it can never go stale when
+  // switching tabs — it always reflects what will actually be used on apply.
+  const stagedPreview = existingEdit?.src && (
+    <div className="flex flex-col gap-1.5">
+      <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>
+      <video
+        src={existingEdit.src}
+        muted
+        loop
+        autoPlay
+        playsInline
+        style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200, objectFit: "cover" }}
+      />
     </div>
   );
 
@@ -505,6 +516,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
             <div className="flex flex-col gap-3 pt-1">
               {header}
               {tabContent}
+              {stagedPreview}
               {footerSummary}
             </div>
           </div>
@@ -522,6 +534,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         <div className="flex flex-col gap-3">
           {header}
           {tabContent}
+          {stagedPreview}
           {footerSummary}
         </div>
       </div>

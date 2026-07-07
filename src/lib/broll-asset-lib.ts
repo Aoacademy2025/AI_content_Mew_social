@@ -276,8 +276,12 @@ const KEN_BURNS_HEIGHT = 1920;
 export async function applyKenBurns(imagePath: string, outPath: string): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const totalFrames = KEN_BURNS_DURATION_SEC * TARGET_FPS;
-  // ซูมเข้าช้าๆ จาก 1.0 -> ~1.15 พร้อม pan ไปกลางภาพเล็กน้อย ให้ดูมีการเคลื่อนไหว
-  const zoompan = `zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
+  // Cover-crop to 9:16 BEFORE zoompan so non-9:16 stills (landscape photos, kie
+  // images off-ratio) get cropped like everywhere else (objectFit:"cover"),
+  // never stretched. Scale to a larger 1350x2400 (9:16) intermediate first so
+  // the zoompan zoom stays crisp, then crop to that exact box; zoompan then
+  // does its usual zoom/pan and downsamples to the final 1080x1920 output.
+  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase,crop=1350:2400,zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [
