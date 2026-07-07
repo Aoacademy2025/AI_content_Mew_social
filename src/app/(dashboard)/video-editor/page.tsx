@@ -45,6 +45,7 @@ import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
+import { setDynamicCompounds } from "@/lib/thai-compounds";
 import { targetCadenceSec } from "@/lib/broll-even-split";
 import { buildBrollWindows } from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
@@ -491,14 +492,19 @@ function LegacyVideoEditorPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Load auto-mined loanwords so client-side word-mode splitting keeps them whole.
-  // Fail-open: on any error the static list (already bundled) is used.
+  // Load auto-mined loanwords + admin-approved native compounds so client-side word-mode
+  // splitting keeps them whole. Fail-open: on any error the static lists (bundled) are used.
   useEffect(() => {
     let cancelled = false;
     fetch("/api/thai-loanwords")
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d && Array.isArray(d.words)) setDynamicLoanwords(d.words, Array.isArray(d.denylist) ? d.denylist : []); })
-      .catch(() => { /* fail-open: static list only */ });
+      .then((d) => {
+        if (cancelled || !d) return;
+        const deny = Array.isArray(d.denylist) ? d.denylist : [];
+        if (Array.isArray(d.words)) setDynamicLoanwords(d.words, deny);
+        if (Array.isArray(d.compounds)) setDynamicCompounds(d.compounds, deny);
+      })
+      .catch(() => { /* fail-open: static lists only */ });
     return () => { cancelled = true; };
   }, []);
 

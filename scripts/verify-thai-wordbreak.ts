@@ -6,6 +6,7 @@
 //   npx tsx scripts/verify-thai-wordbreak.ts
 import { tokenizeWords } from "../src/lib/tts-timing";
 import { cardsByWordCount } from "../src/lib/mcp/orchestrator-steps";
+import { THAI_COMPOUNDS } from "../src/lib/thai-compounds";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -56,6 +57,56 @@ for (const n of [1, 2, 3, 4]) {
   const cards = cardsByWordCount(words, n, SCRIPT);
   const split = loanwordSplit(cards);
   assert(split === null, `subMode=${n}: no loanword split across cards${split ? " (FOUND " + split + ")" : ""}`);
+}
+
+// ── T5: curated native COMPOUNDS survive whole through the same machinery ──
+// (ขี้เกียจ, เวลางาน, … must stay ONE token — the origin bug was ขี้|เกียจ).
+for (const w of THAI_COMPOUNDS) {
+  const text = `เขาเป็นคน${w}มากเลยนะ`;
+  const toks = tokenizeWords(text).map((t) => t.word);
+  assert(toks.includes(w), `tokenizeWords keeps compound "${w}" whole (got: ${toks.join("|")})`);
+}
+
+// ── T6: compounds never split across cardsByWordCount cards (all subModes) ──
+function compoundSplit(cards: { text: string }[]): string | null {
+  for (let i = 0; i < cards.length - 1; i++) {
+    const a = cards[i].text, b = cards[i + 1].text;
+    for (const w of THAI_COMPOUNDS) {
+      for (let k = 1; k < w.length; k++) {
+        if (a.endsWith(w.slice(0, k)) && b.startsWith(w.slice(k))) return `${w} -> ${w.slice(0, k)}|${w.slice(k)}`;
+      }
+    }
+  }
+  return null;
+}
+const CSCRIPT = "หัวหน้าบอกว่าเขาขี้เกียจมากช่วงเวลางานที่ผ่านมา เพื่อนร่วมงานเลยต้องไปหาหมอที่โรงพยาบาลแทน";
+for (const n of [1, 2, 3, 4]) {
+  const words = tokenizeWords(CSCRIPT).map((t) => ({ word: t.word, startMs: 0, endMs: 1, startChar: t.startChar, endChar: t.endChar }));
+  const cards = cardsByWordCount(words, n, CSCRIPT);
+  const split = compoundSplit(cards);
+  assert(split === null, `subMode=${n}: no compound split across cards${split ? " (FOUND " + split + ")" : ""}`);
+}
+
+// ── T7: NO false-merge — a compound's fragments in UNRELATED context stay split ──
+// The exact compound substring is absent, so the fragments must tokenize normally
+// (guards against a bad seed entry gluing across a real word boundary).
+{
+  // เวลา + งาน present but never adjacent-as-"เวลางาน"
+  const t = "ใช้เวลาไปทำงานบ้านทั้งวัน";
+  const toks = tokenizeWords(t).map((x) => x.word);
+  assert(!toks.includes("เวลางาน"), `no phantom "เวลางาน" when absent (got: ${toks.join("|")})`);
+  assert(toks.some((x) => x.includes("เวลา")) && toks.some((x) => x.includes("งาน")), "both fragments still present as separate tokens");
+}
+{
+  // "งาน" in a งาน-compound must not get swallowed by เวลางาน/เพื่อนร่วมงาน
+  const t = "งานเลี้ยงคืนนี้สนุกมาก";
+  const toks = tokenizeWords(t).map((x) => x.word);
+  assert(!toks.some((x) => x.includes("เวลางาน") || x.includes("ร่วมงาน")), `no phantom compound in "งานเลี้ยง…" (got: ${toks.join("|")})`);
+}
+{
+  // short real words around a compound must not over-merge
+  const t = "ที่ไม่ได้อยู่ในของเรา";
+  assert(tokenizeWords(t).length >= 4, "compounds don't cause over-merge of short words");
 }
 
 console.log(`\n${passed} checks passed`);
