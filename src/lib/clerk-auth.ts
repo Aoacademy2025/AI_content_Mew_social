@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
-import { syncUserEntitlement } from "@/lib/entitlements";
+import { syncUserEntitlement, classifyEntitlement } from "@/lib/entitlements";
 import { resolveServiceActor } from "@/lib/mcp/service-actor";
 
 // ── Admin trust root (SEC-11 hardening) ──────────────────────────────────────
@@ -51,6 +51,31 @@ function resolveClerkIdentity(
 }
 
 /**
+ * STAB-4 backstop (defense-in-depth against a stopped/401ing trial-expiry cron).
+ * Runs on the row we're about to return: if it STILL shows a paid plan whose entitlement
+ * has lapsed (expired trial or expired timed plan, no active subscription), demote it to
+ * FREE inline before returning — so an expired trial can never keep PRO just because the
+ * cron isn't running.
+ *
+ * Rules are NOT duplicated here: `classifyEntitlement` is the single source of the
+ * downgrade decision (it returns KEEP for active subscribers and still-valid trials/timed
+ * plans, and REVIEW — never DOWNGRADE — for comped/manual paid rows with no expiry), and
+ * persistence reuses `syncUserEntitlement`. In the normal flow syncUserEntitlement() has
+ * already demoted the row upstream, so classifyEntitlement returns KEEP here and this is a
+ * pure in-memory no-op (no DB round-trip); it only does extra work in the anomaly where
+ * that upstream persist did not land — which is exactly the leak STAB-4 must close.
+ */
+async function demoteLapsedPaidPlan(user: User | null): Promise<User | null> {
+  if (!user || user.plan === "FREE") return user;
+  if (classifyEntitlement(user).action !== "DOWNGRADE") return user;
+  const synced = await syncUserEntitlement(user.id);
+  if (synced?.changed) {
+    return (await prisma.user.findUnique({ where: { id: user.id } })) ?? user;
+  }
+  return user;
+}
+
+/**
  * Get the current authenticated user from Prisma (server-side, Clerk-based).
  * - Looks up by clerkId first (fast path)
  * - Falls back to email match (for users migrated from NextAuth)
@@ -79,7 +104,7 @@ export async function getCurrentUser(): Promise<User | null> {
     if (synced?.changed) {
       return prisma.user.findUnique({ where: { id: user.id } }) as Promise<User | null>;
     }
-    return user;
+    return demoteLapsedPaidPlan(user); // STAB-4 backstop (no-op unless the sync above missed a lapse)
   }
 
   // Slow path: match by email (existing NextAuth user)
@@ -106,7 +131,7 @@ export async function getCurrentUser(): Promise<User | null> {
     if (synced?.changed) {
       return prisma.user.findUnique({ where: { id: linked.id } }) as Promise<User | null>;
     }
-    return linked;
+    return demoteLapsedPaidPlan(linked); // STAB-4 backstop (no-op unless the sync above missed a lapse)
   }
 
   // New user — create Prisma record + start their 7-day PRO trial.

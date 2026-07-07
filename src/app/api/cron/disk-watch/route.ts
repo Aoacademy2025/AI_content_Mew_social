@@ -4,6 +4,7 @@ import { runDiskWatch } from "@/lib/disk-watch";
 import { notifyAdmins } from "@/lib/notifications";
 import { sendDiskAlertEmail } from "@/lib/send-email";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,6 +68,7 @@ export async function GET(req: Request) {
         `status=${health.status} swept=${swept.freedMb}MB alerted=${overThreshold}`,
     );
 
+    writeCronHeartbeat("disk-watch");
     return NextResponse.json({
       ok: true,
       usedPercent: d.usedPercent,

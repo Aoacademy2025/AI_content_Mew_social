@@ -56,7 +56,20 @@ echo "=== [4/6] Prisma sync schema + generate ==="
 # live DB so queries referencing new fields (e.g. cancelAtPeriodEnd) don't 500.
 # No --accept-data-loss: additive changes (new nullable/defaulted columns) apply
 # safely; a destructive change will fail loudly instead of dropping data.
-npx prisma db push --skip-generate
+# P3.3: db push runs FIRST (before build/restart). If it fails, abort with a LOUD
+# banner — set -e would exit anyway, but silently; this makes it unmissable in the log
+# and guarantees we never build+restart onto code that expects columns the DB lacks.
+if ! npx prisma db push --skip-generate; then
+  echo ""
+  echo "########################################################################"
+  echo "## DEPLOY ABORTED — DB SCHEMA NOT APPLIED"
+  echo "## 'prisma db push' failed. Build and PM2 restart were NOT run, so the"
+  echo "## app keeps serving on the OLD schema + OLD code (no partial deploy)."
+  echo "## Likely cause: a destructive/ambiguous schema change needing review, or"
+  echo "## the DB is locked. Resolve the drift, then re-run: bash deploy/deploy.sh"
+  echo "########################################################################"
+  exit 1
+fi
 npx prisma generate
 
 echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEAP_MB}MB) ==="
@@ -140,6 +153,23 @@ pm2 restart render-worker --update-env || pm2 start ecosystem.config.js --only r
 
 pm2 save
 pm2 startup
+
+# STAB-1 self-check: verify PM2 reboot-resurrection is actually armed. `pm2 save` above
+# only persists the process list; the systemd UNIT that replays it on boot is registered
+# by deploy/setup.sh (`pm2 startup systemd`). If that unit is missing, a VPS reboot brings
+# back NOTHING (web, workers, crons). Warn LOUD — non-fatal (the deploy itself succeeded),
+# guarded so `is-enabled` returning non-zero can't trip `set -e`.
+echo "=== [self-check] PM2 reboot resurrection (systemd unit) ==="
+if systemctl is-enabled pm2-root >/dev/null 2>&1; then
+  echo "OK: systemd unit 'pm2-root' is enabled — PM2 will resurrect on reboot."
+else
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! WARNING: systemd unit 'pm2-root' is NOT enabled."
+  echo "!! A reboot will NOT restart PM2 — web, workers, and crons stay DOWN."
+  echo "!! Fix once, as root:  pm2 startup systemd -u root --hp /root && pm2 save"
+  echo "!! (or re-run deploy/setup.sh — it registers the unit idempotently)."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+fi
 
 echo ""
 echo "Deploy finished successfully."

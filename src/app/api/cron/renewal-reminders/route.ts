@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { sendRenewalReminderEmail } from "@/lib/send-email";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -52,5 +53,6 @@ export async function GET(req: Request) {
     sent++;
   }
 
+  writeCronHeartbeat("renewal-reminders");
   return NextResponse.json({ remindersSent: sent, checked: users.length });
 }

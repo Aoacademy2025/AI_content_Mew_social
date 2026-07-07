@@ -15,6 +15,13 @@ module.exports = {
       // own node); NODE_OPTIONS in env is the reliable heap setter.
       node_args: "--max-old-space-size=3072",
       max_memory_restart: "4G",
+      // Crash-loop guard (P1.6/STAB-LOW): if the process dies <20s after boot 10 times
+      // in a row, PM2 stops retrying and leaves it `errored` — a DELIBERATE, detectable
+      // stop (shows in `pm2 status` + the ops watchdog) rather than PM2's silent default
+      // that quietly gives up after ~15 fast restarts. Prevents an invisible boot loop
+      // (bad .env / missing .next / migration mismatch) from thrashing the box unnoticed.
+      max_restarts: 10,
+      min_uptime: "20s",
       env: {
         NODE_ENV: "production",
         PORT: 3000,
@@ -48,6 +55,23 @@ module.exports = {
         // so the flag would be lost if someone starts with `pm2 ... --env production`.
         // Keep in sync with the env block (see the RENDER_VIA_QUEUE notes above).
         RENDER_VIA_QUEUE: "1",
+      },
+    },
+    {
+      name: "db-backup",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/backup-db.ts",
+      cron_restart: "0 2 * * *", // daily 2:00 AM — SQLite snapshot BEFORE the 3:00 cleanup (STAB-3)
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        // scripts/backup-db.ts reads these from the environment / prod .env (via dotenv):
+        //   BACKUP_DIR            default /var/backups/heroai
+        //   BACKUP_RETENTION_DAYS default 14
+        //   BACKUP_RSYNC_TARGET   optional — set in .env to enable off-box copies
+        //                         (unset = local snapshot only, logged, not an error)
       },
     },
     {
@@ -185,6 +209,12 @@ module.exports = {
       watch: false,
       kill_timeout: 30000, // allow graceful drain (cancel render + requeue) before SIGKILL
       max_memory_restart: "5G", // worker heap; web heap shrinks once renders move off ai-content (PR-8)
+      // Crash-loop guard (P1.6/STAB-LOW): same rationale as ai-content — a worker that
+      // dies <20s after boot 10× in a row is left `errored` (deliberate, detectable) rather
+      // than silently abandoned by PM2's default. A boot-crashing worker (bad DATABASE_URL /
+      // missing tsx dep) stops thrashing and is visible to `pm2 status` + the watchdog.
+      max_restarts: 10,
+      min_uptime: "20s",
       env: {
         NODE_ENV: "production",
         // Worker heap for in-process renderMedia (long videos accumulate frame buffers).

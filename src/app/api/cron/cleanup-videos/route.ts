@@ -4,6 +4,7 @@ import { stripe } from "@/lib/stripe";
 import { deleteLowResPreviewForVideoUrl } from "@/lib/low-res-preview-paths";
 import { activeRemotionBundleNames } from "@/app/api/videos/render/cancel-registry";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 import fs from "fs";
 import path from "path";
 
@@ -12,6 +13,7 @@ export const runtime = "nodejs";
 // PENDING payments older than this are auto-cancelled
 const PENDING_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 const REMOTION_TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours; avoid active long renders
+const TELEMETRY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // keep last 90 days (DB-1)
 
 function safePublicPath(publicDir: string, ...segments: string[]): string | null {
   const base = path.resolve(publicDir);
@@ -67,7 +69,7 @@ export async function GET(req: Request) {
   }
 
   const now = new Date();
-  const result = { videosDeleted: 0, pendingPaymentsCancelled: 0, remotionTmpDeleted: 0 };
+  const result = { videosDeleted: 0, pendingPaymentsCancelled: 0, remotionTmpDeleted: 0, telemetryEventsDeleted: 0 };
 
   // ── 1. Expire stale PENDING payments (> 2 hours old) ───────────────────
   try {
@@ -132,5 +134,19 @@ export async function GET(req: Request) {
     console.log(`[cron] Deleted ${count} expired videos`);
   }
 
+  // ── 4. TelemetryEvent retention: keep last 90 days (DB-1) ─────────────────
+  // Additive sweep for the largest, previously-unbounded table (~123k rows in prod,
+  // no prior sweeper). Fail-open — a retention error must not break the cleanup response.
+  try {
+    const { count } = await prisma.telemetryEvent.deleteMany({
+      where: { createdAt: { lt: new Date(now.getTime() - TELEMETRY_RETENTION_MS) } },
+    });
+    result.telemetryEventsDeleted = count;
+    if (count > 0) console.log(`[cron] Deleted ${count} TelemetryEvent rows older than 90 days`);
+  } catch (e) {
+    console.error("[cron] TelemetryEvent retention sweep failed:", e);
+  }
+
+  writeCronHeartbeat("cleanup-videos");
   return NextResponse.json(result);
 }

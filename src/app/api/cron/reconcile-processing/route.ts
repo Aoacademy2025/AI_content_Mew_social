@@ -3,6 +3,7 @@ import { applyProcessingReconcile, getProcessingReconcilePlan } from "@/lib/vide
 import { sweepDeadRenderJobs } from "@/lib/render/job-store";
 import { apiError } from "@/lib/api-error";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -52,6 +53,7 @@ export async function GET(req: Request) {
       console.error("[reconcile-processing] sweepDeadRenderJobs error (non-fatal):", sweepErr);
     }
 
+    writeCronHeartbeat("reconcile-processing");
     return NextResponse.json({
       ok: true,
       dryRun,

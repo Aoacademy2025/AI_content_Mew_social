@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { releaseStaleReservations } from "@/lib/founding";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -17,5 +18,6 @@ export async function GET(req: Request) {
   }
   const released = await releaseStaleReservations();
   console.log(`[founding-sweep] ${new Date().toISOString()} released=${released}`);
+  writeCronHeartbeat("founding-sweep");
   return NextResponse.json({ ok: true, released });
 }

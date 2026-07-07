@@ -311,10 +311,25 @@ export async function refundCredits(
  * and record the reset timestamp + a ledger row.
  *
  * This does NOT touch the `purchased` bucket.
+ *
+ * `guard`, when passed, makes the write CONDITIONAL (MON-7): the reset only commits if
+ * `grantedResetAt` in the DB still equals `guard.priorResetAt` — the value the CALLER observed
+ * before deciding a reset was due. This is for `ensureMonthlyGrant`'s lazy write-on-read path,
+ * where two concurrent callers (e.g. two GET /api/credits/balance requests racing the same
+ * expired-window decision) could otherwise both decide a reset is due and both write a
+ * monthly-reset ledger row. SQLite serializes their transactions, so the first writer's
+ * updateMany matches (its `grantedResetAt` still equals what it observed) and flips the field
+ * forward; the second (later) writer's guard condition no longer matches its now-stale captured
+ * value, so its updateMany affects 0 rows and it no-ops instead of writing a second row.
+ *
+ * Force callers (grantOnPaidActivation, trial-expiry downgrade) must keep calling this WITHOUT
+ * `guard` — they call it explicitly to override state, not lazily on a read, so they should
+ * always win unconditionally.
  */
 export async function resetMonthlyGranted(
   userId: string,
-  plan: string
+  plan: string,
+  guard?: { priorResetAt: Date | null }
 ): Promise<void> {
   const newGranted = MONTHLY_GRANT[plan] ?? 0;
   const now = new Date();
@@ -333,16 +348,31 @@ export async function resetMonthlyGranted(
     });
     const priorGranted = prior.granted;
 
-    // Hard-set granted and reset timestamp (row is guaranteed to exist now)
-    const updated = await tx.creditBalance.update({
-      where: { userId },
-      data: {
-        granted: newGranted,
-        grantedResetAt: now,
-      },
-    });
+    let updatedGranted: number;
+    let updatedPurchased: number;
 
-    const balanceAfter = updated.granted + updated.purchased;
+    if (guard) {
+      const flipped = await tx.creditBalance.updateMany({
+        where: { userId, grantedResetAt: guard.priorResetAt },
+        data: { granted: newGranted, grantedResetAt: now },
+      });
+      if (flipped.count !== 1) return; // lost the race — another caller already reset this window
+      updatedGranted = newGranted;
+      updatedPurchased = prior.purchased;
+    } else {
+      // Hard-set granted and reset timestamp (row is guaranteed to exist now)
+      const updated = await tx.creditBalance.update({
+        where: { userId },
+        data: {
+          granted: newGranted,
+          grantedResetAt: now,
+        },
+      });
+      updatedGranted = updated.granted;
+      updatedPurchased = updated.purchased;
+    }
+
+    const balanceAfter = updatedGranted + updatedPurchased;
 
     await tx.creditLedger.create({
       data: {
@@ -400,5 +430,8 @@ export async function ensureMonthlyGrant(userId: string): Promise<void> {
 
   if (withinWindow) return; // already granted this period
 
-  await resetMonthlyGranted(userId, user.plan);
+  // MON-7: guard the reset with the grantedResetAt value we just observed, so a concurrent GET
+  // racing this same expired-window decision can't ALSO write a monthly-reset ledger row — see
+  // resetMonthlyGranted's guarded branch.
+  await resetMonthlyGranted(userId, user.plan, { priorResetAt: balance?.grantedResetAt ?? null });
 }

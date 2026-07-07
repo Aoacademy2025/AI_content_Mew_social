@@ -212,6 +212,7 @@ model VideoJob {
   @@index([status])
   @@index([userId])
   @@index([projectId])
+  @@index([createdAt]) // DB-1: admin/insights does createdAt-range scans across ALL users
 }
 
 model ToolCallAudit {
@@ -386,6 +387,13 @@ model CouponRedemption {
   @@unique([couponId, userId])
 }
 
+// MON-10 (audited 2026-07-07): a user can legitimately churn through RESERVED → RELEASED →
+// RESERVED (abandoned checkout, retry) many times, so `@@unique([userId])` on this table would
+// wrongly forbid a normal retry. What we actually want to guard is "one CONFIRMED row per user",
+// which needs a PARTIAL/filtered unique index (`WHERE status = 'CONFIRMED'`) — SQLite/Prisma has
+// no filtered-unique support, so that constraint isn't cleanly expressible here. Instead, the
+// member-check + coupon-claim in `claimSeat()` (src/lib/founding.ts) run inside one
+// `$transaction` — see the comment there for exactly what race that closes and what it doesn't.
 model FoundingReservation {
   id              String    @id @default(cuid())
   userId          String
@@ -417,6 +425,8 @@ model Payment {
   manual              Boolean       @default(false)
   note                String? // admin free-text (e.g. "โอนธนาคาร · founder")
   recordedBy          String? // admin userId who recorded it
+
+  @@index([status]) // DB-1: admin/insights + revenue-cohorts filter/scan by status (previously zero indexes besides the PK/unique)
 }
 
 // Idempotency ledger for Stripe webhooks. Stripe delivers events "at least once"; we record
@@ -527,6 +537,15 @@ model CreditBalance {
   updatedAt      DateTime  @updatedAt
 }
 
+// MON-8 (audited 2026-07-07): do NOT add `@@unique([userId, action])` here. It looks like an
+// obvious dedup key but it's WRONG — `action` is a legitimately repeatable label, not a per-row
+// key. `spendCredits`/`refundCredits` are called with constant action strings like "ai-image" or
+// "render-overflow" (see src/app/api/videos/fetch-stock/route.ts, src/lib/minute-credits.ts) —
+// EVERY spend/refund of that kind for a user reuses the exact same string, so many legitimate
+// rows share one (userId, action) pair. The real one-time-only dedup lives in `grantCreditsOnce`,
+// which keys on a UNIQUE ref per event (e.g. "pack:<stripeSessionId>") via a `findFirst` check
+// before granting — that's what actually prevents a double Stripe-webhook-retry grant, not a
+// table constraint on this model.
 model CreditLedger {
   id           String   @id @default(cuid())
   userId       String
@@ -569,6 +588,7 @@ model RenderJob {
   @@index([userId, createdAt])
   @@index([parentJobId])
   @@index([scopeKey, status])
+  @@index([createdAt]) // DB-1: admin/insights createdAt-range scans across ALL users (userId,createdAt above doesn't serve that)
 }
 
 // Anti-farming guard for MON-5 (2026-07-07): trialStartedAt on User is a "set once,

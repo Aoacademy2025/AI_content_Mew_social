@@ -29,9 +29,15 @@ export async function getFoundingCoupon(): Promise<FoundingCoupon | null> {
 
 export type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number };
 
-/** Public status. Self-heals stale reservations first so the counter is honest. */
+/** Public status.
+ *
+ * MON-12 (2026-07-07): this used to call `releaseStaleReservations()` (a write) on every read —
+ * GET /api/founding/status is public/unauthenticated and can be hit often, so that was a
+ * write-on-read. The `founding-sweep` PM2 cron (src/app/api/cron/founding-sweep/route.ts) already
+ * calls `releaseStaleReservations()` every ~15 min, well inside the 35-minute stale-hold window
+ * (HOLD_MINUTES), so the counter here is never more than one sweep cycle behind honest — reads no
+ * longer need to self-heal inline. */
 export async function foundingStatus(): Promise<FoundingStatus> {
-  await releaseStaleReservations();
   const c = await getFoundingCoupon();
   if (!c) return { active: false, remaining: 0, total: 0, percentOff: 0 };
   const remaining = Math.max(0, c.maxUses - c.usedCount);
@@ -54,18 +60,31 @@ export async function claimSeat(userId: string): Promise<ClaimResult> {
   });
   for (const r of ownStale) await releaseSeat(r.stripeSessionId);
 
-  // 2) one seat per user — a confirmed member doesn't get a second
-  const member = await prisma.foundingReservation.findFirst({ where: { userId, status: "CONFIRMED" } });
-  if (member) return null;
+  // MON-10 (2026-07-07): steps 2+3 run in ONE transaction. SQLite serializes concurrent
+  // transactions, so if this same user calls claimSeat twice at once (double-click / two open
+  // tabs), the second call's transaction only starts once the first has fully committed — closing
+  // the narrow race where both could read "not yet a CONFIRMED member" before either write landed.
+  // NOTE this does not make double-founding fully airtight: attachReservation (a separate Stripe
+  // session id per call) still happens OUTSIDE this function/transaction, so two concurrent calls
+  // can still each walk away with a RESERVED hold on two DIFFERENT Stripe sessions. A per-user
+  // "one CONFIRMED seat" DB constraint would close that too, but needs a partial/filtered unique
+  // index (`WHERE status='CONFIRMED'`), which SQLite/Prisma doesn't support (a plain
+  // `@@unique([userId])` on FoundingReservation would wrongly block the normal
+  // RESERVED→RELEASED→RESERVED retry churn) — see the schema comment on FoundingReservation.
+  return prisma.$transaction(async (tx) => {
+    // 2) one seat per user — a confirmed member doesn't get a second
+    const member = await tx.foundingReservation.findFirst({ where: { userId, status: "CONFIRMED" } });
+    if (member) return null;
 
-  // 3) the race-safe gate: a single UPDATE that only succeeds while seats remain
-  const claim = await prisma.coupon.updateMany({
-    where: { id: c.id, usedCount: { lt: c.maxUses } },
-    data: { usedCount: { increment: 1 } },
+    // 3) the race-safe gate: a single UPDATE that only succeeds while seats remain
+    const claim = await tx.coupon.updateMany({
+      where: { id: c.id, usedCount: { lt: c.maxUses } },
+      data: { usedCount: { increment: 1 } },
+    });
+    if (claim.count !== 1) return null; // sold out
+
+    return { couponId: c.id, stripePromotionCodeId: c.stripePromotionCodeId };
   });
-  if (claim.count !== 1) return null; // sold out
-
-  return { couponId: c.id, stripePromotionCodeId: c.stripePromotionCodeId };
 }
 
 /** Record the reservation once the Stripe session id exists (called right after claimSeat succeeds). */

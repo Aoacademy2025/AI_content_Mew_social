@@ -12,6 +12,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/clerk-webhook(.*)",
   "/api/payments/webhook(.*)",
   "/api/plans(.*)",
+  "/api/health(.*)",   // public up/down probe for the OS watchdog (no auth, SELECT 1)
   "/api/founding/status(.*)",
   "/api/stocks(.*)",
   "/api/renders(.*)",

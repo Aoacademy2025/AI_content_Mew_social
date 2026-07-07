@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { revertExpiredEntitlements } from "@/lib/entitlements";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -15,5 +16,6 @@ export async function GET(req: Request) {
   }
   const result = await revertExpiredEntitlements();
   console.log(`[trial-expiry] ${new Date().toISOString()} checked=${result.checked} reverted=${result.reverted}`);
+  writeCronHeartbeat("trial-expiry");
   return NextResponse.json({ ok: true, ...result });
 }

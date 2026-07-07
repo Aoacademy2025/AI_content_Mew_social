@@ -58,12 +58,43 @@ async function handleCheckoutSession(s: any) {
   if (s.metadata?.type === "credits" && s.metadata.userId) {
     if (process.env.CREDITS_LIVE !== "1") { console.log("[webhook] CREDITS_LIVE off — skipping credit grant for", s.id); return; }
     if (s.payment_status !== "paid") { console.warn("[webhook] credit session not yet paid, status:", s.payment_status, s.id); return; }
-    const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true } });
+    const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true, plan: true } });
     if (!creditUser) { console.error("[webhook] credit grant: user not found", s.metadata.userId, s.id); return; }
     const credits = parseInt(s.metadata.credits ?? "0", 10);
     if (!credits || credits <= 0) { console.error("[webhook] bad credit metadata", s.id); return; }
     await grantCreditsOnce(s.metadata.userId, credits, "purchase", "pack:" + s.id)
       .catch((e) => console.error("[webhook] credit grant:", e));
+
+    // MON-9: also log the cash as a Payment row so a credit-pack purchase shows up in
+    // จ่ายจริง/MRR — src/lib/revenue-cohorts.ts treats ANY Payment{status:"PAID"} row for a user
+    // as "has paid cash" (paidUserIds), independent of the Payment.plan/periodDays fields, which
+    // are purely informational here (a credit pack has no plan/term — periodDays:0, plan:<user's
+    // current plan> just for display). Deliberately OUTSIDE the plan-activation $transaction above
+    // (this branch returns before ever reaching it) — this is a separate, best-effort side effect
+    // and must never cause grantCreditsOnce (already committed above) to be retried. Idempotent
+    // via the unique `stripeSessionId`: a webhook retry (MON-1) hits the unique constraint and is
+    // swallowed as "already recorded", same pattern as the couponRedemption insert below.
+    // KNOWN GAP (left as-is, out of this task's scope): /api/payments/history doesn't special-case
+    // note==="credits", so this row will surface in the settings billing list as
+    // "{plan} Plan · 0 วัน" rather than something reading "Credits purchase".
+    try {
+      await prisma.payment.create({
+        data: {
+          userId: s.metadata.userId,
+          stripeSessionId: s.id,
+          stripePaymentIntent: s.payment_intent ?? undefined,
+          plan: creditUser.plan,
+          amount: typeof s.amount_total === "number" ? s.amount_total : 0,
+          currency: "thb",
+          status: "PAID",
+          periodDays: 0,
+          paidAt: new Date(),
+          note: "credits",
+        },
+      });
+    } catch (e) {
+      console.log("[webhook] credit-pack Payment already recorded (retry), skip", s.id, (e as any)?.code ?? e);
+    }
     return;
   }
 

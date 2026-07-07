@@ -10,7 +10,7 @@
 |---|---|
 | Framework | Next.js 15 (App Router) + React 19, TypeScript |
 | Styling | Tailwind v4 + shadcn/ui |
-| Auth | **Clerk** — `src/lib/auth.ts` (NextAuth) is legacy/leftover, NOT the live auth |
+| Auth | **Clerk** — `src/lib/auth.ts` (NextAuth) is legacy/leftover, NOT the live auth. Still imported by `src/lib/api-error.ts` (session lookup fallback for admin-notify), so it's not dead code — don't delete without also touching that call site. The NextAuth API routes (`register`/`forgot-password`/`reset-password`/`[...nextauth]`) had zero callers and were deleted 2026-07-07. |
 | DB | **SQLite** via Prisma 6 — `prisma/dev.db` (NOT PostgreSQL) |
 | Hosting | **Hostinger VPS** (Ubuntu, 4 vCPU/15GB) + PM2 + Nginx + Let's Encrypt (NOT Vercel) |
 | Render | **Remotion + headless Chromium + ffmpeg**, runs locally on the VPS (software, no GPU) |
@@ -22,7 +22,7 @@
 - Dev: `npm run dev` · Build: `npm run build`
 - DB: `npm run db:migrate` · seed: `npm run db:seed`
 - Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (OOM-retry) + `pm2 restart ai-content`. Current safe low-heap deploy env used on prod: `BUILD_HEAP_MB=4096 BUILD_WORKER_HEAP_MB=512 BUILD_HEAP_MB_LOW=3072 BUILD_WORKER_HEAP_MB_LOW=512 BUILD_NO_LINT=1`.
-- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env).
+- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env). **`pm2 status` showing a cron app as `stopped` between scheduled runs is BY DESIGN** (`autorestart: false` + `cron_restart` — it runs once then exits until the next cron fire), not a crash — check `pm2 logs <name>` for actual health, don't judge by process status alone.
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
 ## Key directories
@@ -37,7 +37,7 @@
 ## Gotchas (important)
 - **`main` = production.** The VPS deploys from `main`. Never push broken code to main.
 - **Mew owns the entire project (updated 07-02):** Mew controls every vertical solo — **no coordination with wao on anything** (shared files, render backend, schema, deploy included). She rebases + merges to `main` + deploys herself. Still build-verify render-backend changes before merging (hygiene, not a coordination gate).
-- **Config shadowing (cost hours — beware):** `next.config.js` SHADOWS `next.config.ts` (Next 15 resolves .js first, on EVERY machine incl. local) → everything in `next.config.ts` (serverExternalPackages, OOM `cpus:1`, webpack externals, `/renders` rewrite, `ignoreBuildErrors`) is **INACTIVE**; effective config lives in `next.config.js`. Likewise `ecosystem.config.js` `env:` block shadows `.env` for `RENDER_*`/cache, and a plain `pm2 restart` keeps the OLD env → use `pm2 restart <app> --update-env`.
+- **Config shadowing (HISTORICAL — fixed 06-16, commit `5fb76cb`):** `next.config.js` used to SHADOW `next.config.ts` (Next 15 resolves .js first) → everything in `next.config.ts` was inactive. `next.config.js` was deleted; `next.config.ts` is now the sole active config (serverExternalPackages, OOM `cpus:1`, webpack externals, `/renders` rewrite, `ignoreBuildErrors` all live). If a `next.config.js` ever reappears, it will shadow `.ts` again — treat that as a bug. Likewise `ecosystem.config.js` `env:` block shadows `.env` for `RENDER_*`/cache, and a plain `pm2 restart` keeps the OLD env → use `pm2 restart <app> --update-env`.
 - **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
 - **Subtitle timing (06-12, PRs #35-#39):** ซับของเสียง TTS (Gemini/ElevenLabs) มาจาก `timing` ใน TTS response — exact-by-arithmetic, **ข้าม transcribe** (`src/lib/tts-timing.ts` + `_components/tts-timing-captions.ts`); การ์ด viral มาจาก `/api/videos/split-script` (text-only LLM, server validate ห้ามแก้ข้อความ). transcribe = fallback สำหรับ avatar/อัปโหลด เท่านั้น. ทุกชั้นมี fail-open → ห้าม "ซ่อม" โดยเอา transcribe กลับมาเป็น path หลัก.
 - **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.

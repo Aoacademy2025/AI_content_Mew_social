@@ -55,6 +55,7 @@ function BillingTab() {
     fetch("/api/payments/history")
       .then(r => r.json())
       .then(d => Array.isArray(d) ? setPayments(d) : null)
+      .catch(() => setPayments([])) // MON-11: fail-soft on network/JSON error — was an unhandled rejection
       .finally(() => setLoading(false));
   }
 
