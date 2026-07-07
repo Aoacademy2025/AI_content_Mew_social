@@ -2780,7 +2780,11 @@ function LegacyVideoEditorPage() {
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
-        const keysData = await keysRes.json();
+        // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
+        // Flatten to booleans so the presence checks below stay unchanged.
+        const rawKeys = await keysRes.json();
+        const keysData: Record<string, boolean> = {};
+        for (const k in rawKeys) keysData[k] = !!rawKeys[k]?.set;
         // ElevenLabs TTS ต้องการ key (ข้ามถ้าใช้ Direct URL mode)
         const needsTts = !(avatarInputMode === "direct" && !!avatarDirectUrl.trim());
         if (needsTts && ttsProvider === "elevenlabs" && !keysData.elevenlabsKey) {

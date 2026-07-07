@@ -1756,7 +1756,11 @@ export default function ShortVideoPage() {
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
-        const keys = await keysRes.json();
+        // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
+        // Flatten to booleans so the presence checks below stay unchanged.
+        const rawKeys = await keysRes.json();
+        const keys: Record<string, boolean> = {};
+        for (const k in rawKeys) keys[k] = !!rawKeys[k]?.set;
         // Stock key check
         if (stockSource === "kie-image" && !keys.kieKey) {
           setMissingKey({ type: "kie", retryStep: "runAll" });
@@ -2177,7 +2181,11 @@ export default function ShortVideoPage() {
       try {
         const keysRes = await fetch("/api/user/api-keys");
         if (keysRes.ok) {
-          const keys = await keysRes.json();
+          // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
+          // Flatten to booleans so the presence checks below stay unchanged.
+          const rawKeys = await keysRes.json();
+          const keys: Record<string, boolean> = {};
+          for (const k in rawKeys) keys[k] = !!rawKeys[k]?.set;
           if (stockSource === "kie-image" && !keys.kieKey) {
             setMissingKey({ type: "kie", retryStep: step });
             return;

@@ -5,6 +5,25 @@ import * as cheerio from "cheerio";
 import axios from "axios";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
+// SSRF-safe axios GET of a user-supplied URL: validate the host, then follow redirects
+// MANUALLY re-validating each hop (axios auto-follow is disabled), so a safe initial URL
+// can't 3xx into a private/internal target. Bounded to maxHops.
+async function safeAxiosGet(url: string, config: Parameters<typeof axios.get>[1] = {}, maxHops = 3) {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await axios.get(current, { ...config, maxRedirects: 0, validateStatus: (s: number) => s < 400 });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers?.location as string | undefined;
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 // POST /api/extract - Extract text content from URL
 export async function POST(req: Request) {
   try {
@@ -80,8 +99,8 @@ export async function POST(req: Request) {
 // Extract content from web pages using Cheerio
 async function extractWebContent(url: string): Promise<string> {
   try {
-    await assertSafeFetchUrl(url); // SSRF guard before fetching a user-supplied URL
-    const response = await axios.get(url, {
+    // SSRF guard (host + per-redirect-hop re-validation) lives in safeAxiosGet.
+    const response = await safeAxiosGet(url, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -179,8 +198,8 @@ function extractYouTubeVideoId(url: string): string | null {
 // Extract content from PDF
 async function extractPDFContent(url: string): Promise<string> {
   try {
-    // Fetch PDF file
-    const response = await axios.get(url, {
+    // Fetch PDF file (SSRF guard + per-redirect-hop re-validation via safeAxiosGet)
+    const response = await safeAxiosGet(url, {
       responseType: "arraybuffer",
       timeout: 15000,
     });

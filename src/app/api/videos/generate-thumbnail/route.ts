@@ -35,6 +35,15 @@ export async function POST(req: Request) {
     } else if (videoUrl.startsWith("/")) {
       localVideoPath = path.join(publicDir, videoUrl);
     }
+    // Containment guard: reject a body-supplied path that escapes public/ (path traversal,
+    // e.g. "/../prisma/dev.db"). Fall through to the generic 404 — never leak the resolved path.
+    if (localVideoPath) {
+      const publicRoot = path.resolve(publicDir);
+      const resolvedPath = path.resolve(localVideoPath);
+      if (resolvedPath !== publicRoot && !resolvedPath.startsWith(publicRoot + path.sep)) {
+        localVideoPath = null;
+      }
+    }
     if (!localVideoPath || !fs.existsSync(localVideoPath)) {
       return NextResponse.json({ error: "Video file not found" }, { status: 404 });
     }

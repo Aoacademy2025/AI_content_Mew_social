@@ -32,6 +32,42 @@ interface ErrorContext {
   status?: number;
 }
 
+/**
+ * Redact secrets (API keys/tokens) that may have leaked into an error message or
+ * stack trace — e.g. an outbound `fetch` to a third-party API whose URL embeds
+ * `?key=<secret>` shows up verbatim in the thrown error's `.message`. This runs
+ * before anything is written to PM2 console logs or the DB-backed admin
+ * notification, so secrets never land in either place.
+ */
+function scrubSecrets(input: string): string {
+  if (!input) return input;
+  return input
+    // query-string style: key=, api_key=, apikey=, access_key=, token=
+    .replace(/([?&](?:key|api[_-]?key|access[_-]?key|token)=)[^&\s"'<>]+/gi, "$1<redacted>")
+    // Google/Gemini style API keys (AIza...) appearing anywhere, incl. headers
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "<redacted>")
+    // x-goog-api-key header value if serialized into a message/stack
+    .replace(/(x-goog-api-key["'\s:=]+)[A-Za-z0-9_-]{10,}/gi, "$1<redacted>")
+    // Authorization: Bearer <token>
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>");
+}
+
+/** Scrub the message/stack of a caught error, preserving shape for logging. */
+function scrubError(error: unknown): { name: string; message: string; stack?: string } | string {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: scrubSecrets(error.message),
+      stack: error.stack ? scrubSecrets(error.stack) : undefined,
+    };
+  }
+  try {
+    return scrubSecrets(JSON.stringify(error));
+  } catch {
+    return scrubSecrets(String(error));
+  }
+}
+
 /** User-friendly messages for common error patterns */
 function friendlyMessage(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error);
@@ -57,17 +93,17 @@ function buildAdminBody(route: string, error: unknown, userId?: string, context?
   lines.push(`🕐 Time: ${new Date().toISOString()}`);
   if (userId) lines.push(`👤 User: ${userId}`);
   if (error instanceof Error) {
-    lines.push(`❌ Error: ${error.name}: ${error.message}`);
+    lines.push(`❌ Error: ${error.name}: ${scrubSecrets(error.message)}`);
     if (error.stack) {
-      const stackLines = error.stack.split("\n").slice(0, 6).join(" | ");
+      const stackLines = scrubSecrets(error.stack.split("\n").slice(0, 6).join(" | "));
       lines.push(`📋 Stack: ${stackLines}`);
     }
   } else {
-    lines.push(`❌ Error: ${JSON.stringify(error)}`);
+    lines.push(`❌ Error: ${scrubSecrets(JSON.stringify(error))}`);
   }
   if (context && Object.keys(context).length > 0) {
     try {
-      lines.push(`📦 Context: ${JSON.stringify(context, null, 0).slice(0, 500)}`);
+      lines.push(`📦 Context: ${scrubSecrets(JSON.stringify(context, null, 0).slice(0, 500))}`);
     } catch {
       lines.push(`📦 Context: [unserializable]`);
     }
@@ -84,8 +120,8 @@ export function apiError({
   context,
   status = 500,
 }: ErrorContext): NextResponse {
-  // 1. Log to console
-  console.error(`[API Error] ${route}:`, error);
+  // 1. Log to console (scrubbed — never let a leaked ?key=/token= reach PM2 logs)
+  console.error(`[API Error] ${route}:`, scrubError(error));
 
   const message = userMessage ?? friendlyMessage(error);
 

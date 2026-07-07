@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
 import { deleteLowResPreviewForVideoUrl } from "@/lib/low-res-preview-paths";
 import { activeRemotionBundleNames } from "@/app/api/videos/render/cancel-registry";
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import fs from "fs";
 import path from "path";
 
@@ -57,14 +58,12 @@ function cleanupOldChildren(dir: string, maxAgeMs: number, excludeNames: Iterabl
 
 // GET /api/cron/cleanup-videos
 // Called by a cron job (or Vercel Cron) every day to delete expired videos.
-// Protected by CRON_SECRET env variable.
+// Protected by CRON_SECRET env variable — fails CLOSED if it's unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const auth = req.headers.get("authorization");
+  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const now = new Date();

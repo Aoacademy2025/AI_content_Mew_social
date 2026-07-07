@@ -4,7 +4,7 @@
 //   DATABASE_URL="file:$ROOT/prisma/test-trial.db" npx prisma db push --skip-generate --accept-data-loss
 //   DATABASE_URL="file:$ROOT/prisma/test-trial.db?connection_limit=1" npx tsx scripts/verify-trial.ts
 import { prisma } from "../src/lib/prisma";
-import { grantTrial, revertExpiredTrials, trialStatus, TRIAL_DAYS_PUBLIC } from "../src/lib/trial";
+import { grantTrial, revertExpiredTrials, trialStatus, hashTrialEmail, TRIAL_DAYS_PUBLIC } from "../src/lib/trial";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -17,6 +17,7 @@ async function mkUser(over: Record<string, unknown> = {}) {
 
 async function main() {
   await prisma.user.deleteMany();
+  await prisma.usedTrialEmail.deleteMany();
 
   // grant
   const a = await mkUser();
@@ -60,7 +61,27 @@ async function main() {
   const notif = await prisma.notification.findFirst({ where: { userId: expired.id } });
   assert(!!notif, "revert created an upgrade notification");
 
+  // ── MON-5 anti-farming: delete account → re-register same email → no 2nd trial ──
+  // Reproduces the exploit: user X earns a trial, deletes their account (Clerk
+  // user.deleted hard-deletes the User row — cascading away trialStartedAt), then
+  // re-registers with the SAME email. Without the UsedTrialEmail guard the brand-new
+  // row has trialStartedAt=null and grantTrial would happily grant a second trial.
+  const farmEmail = "farmer@t.test";
+  const farmer1 = await mkUser({ email: farmEmail });
+  assert((await grantTrial(farmer1.id, TRIAL_DAYS_PUBLIC)) === true, "farming: 1st account grants trial");
+  const usedRow = await prisma.usedTrialEmail.findUnique({ where: { emailHash: hashTrialEmail(farmEmail) } });
+  assert(!!usedRow, "farming: UsedTrialEmail row written after grant");
+
+  await prisma.user.delete({ where: { id: farmer1.id } }); // simulate Clerk user.deleted hard-delete
+
+  const farmer2 = await mkUser({ email: farmEmail }); // fresh row, trialStartedAt=null
+  assert(farmer2.trialStartedAt === null, "farming: re-registered row starts with no trial (would fool the old guard)");
+  assert((await grantTrial(farmer2.id, TRIAL_DAYS_PUBLIC)) === false, "farming: 2nd account (same email) is BLOCKED from a 2nd trial");
+  const F2 = await prisma.user.findUnique({ where: { id: farmer2.id } });
+  assert(F2!.plan === "FREE" && F2!.trialStartedAt === null, "farming: re-registered account stays FREE, never trialed");
+
   await prisma.user.deleteMany();
+  await prisma.usedTrialEmail.deleteMany();
   await prisma.$disconnect();
   console.log(`\n✅ ALL ${passed} TRIAL CHECKS PASSED`);
 }

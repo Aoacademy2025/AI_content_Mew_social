@@ -9,7 +9,7 @@ import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
-import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 
@@ -20,6 +20,25 @@ const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2
 const MIN_GAP_MS = 1;
 const MIN_CAPTION_MS = 400;
 const INCOMPLETE_TRANSCRIBE_GAP_MS = 5000;
+
+// SSRF-safe fetch of a user-supplied external URL: validate the host, then follow redirects
+// MANUALLY re-validating each hop, so a safe initial URL can't 302 into a private/internal
+// target. Bounded to maxHops.
+async function safeFetchFollow(url: string, init: RequestInit = {}, maxHops = 3): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...init, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
 
 function stripSrtArtifacts(input: string): string {
   return input
@@ -536,7 +555,9 @@ async function geminiTranscribeChunk(
   // UND_ERR_HEADERS_TIMEOUT on long audio. File API accepts the binary directly.
   console.log(`[transcribe] uploading ${(audioBytes / 1024 / 1024).toFixed(1)}MB to Gemini File API...`);
   const uploadRes = await fetch(
-    `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(geminiKey)}`,
+    // Auth via the x-goog-api-key header only — no ?key= query param (keeps the key out of
+    // URLs/logs).
+    `https://generativelanguage.googleapis.com/upload/v1beta/files`,
     {
       method: "POST",
       headers: {
@@ -663,7 +684,8 @@ ${script.trim().slice(0, 2000)}` : ""}
   for (const model of TRANSCRIBE_MODELS) {
     for (let attempt = 1; attempt <= MAX_PER_MODEL; attempt++) {
       geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+        // Auth via the x-goog-api-key header only — no ?key= query param.
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           method: "POST",
           headers: {
@@ -700,7 +722,8 @@ ${script.trim().slice(0, 2000)}` : ""}
 
   // Clean up uploaded file from Gemini (best-effort)
   if (fileName) {
-    fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${encodeURIComponent(geminiKey)}`, {
+    // Auth via the x-goog-api-key header only — no ?key= query param.
+    fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, {
       method: "DELETE",
       headers: { "x-goog-api-key": geminiKey },
     }).catch(() => {});
@@ -877,10 +900,16 @@ export async function POST(req: Request) {
       if (localPath && fs.existsSync(localPath)) {
         inputPath = localPath;
       } else {
-        // SSRF guard: this remote branch fetches a user-supplied URL — block internal/private targets.
+        // SSRF guard: this remote branch fetches a user-supplied URL — block internal/private
+        // targets, and follow redirects manually so a safe URL can't 302 to an internal one.
         if (!(await isSafeFetchUrl(audioUrl)))
           return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
-        const audioRes = await fetch(audioUrl);
+        let audioRes: Response;
+        try {
+          audioRes = await safeFetchFollow(audioUrl);
+        } catch {
+          return NextResponse.json({ error: "Invalid audioUrl" }, { status: 400 });
+        }
         if (!audioRes.ok) return NextResponse.json({ error: `Failed to fetch audio file (${audioRes.status}): ${audioUrl}` }, { status: 400 });
         inputPath = path.join(tmpDir, `transcribe-tmp-${ts}.mp4`);
         fs.writeFileSync(inputPath, Buffer.from(await audioRes.arrayBuffer()));

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { decryptKey } from "@/lib/key-crypto";
 import {
   searchPexels,
   searchPixabay,
@@ -73,8 +74,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const pexelsKey = user.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
-  const pixabayKey = user.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
+  const pexelsKey = user.pexelsKey ? decryptKey(user.pexelsKey) : null;
+  const pixabayKey = user.pixabayKey ? decryptKey(user.pixabayKey) : null;
 
   const [pexelsRes, pixabayRes] = await Promise.allSettled([
     pexelsKey ? searchPexels(keyword, pexelsKey, MIN_DURATION_SEC, PER_PAGE) : Promise.resolve([] as PexelsVideo[]),

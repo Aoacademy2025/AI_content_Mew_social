@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -14,16 +16,59 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
 }
 
+// Containment guard: reject a body-supplied path that escapes public/ (path traversal).
+function containedPublicPath(url: string): string | null {
+  const joined = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedPath = path.resolve(joined);
+  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep)) return null;
+  return joined;
+}
+
+// Exact hostname match — the HeyGen key must never be attached to a substring lookalike.
+function isHeygenHost(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === "heygen.ai" || h.endsWith(".heygen.ai");
+  } catch {
+    return false;
+  }
+}
+
+// SSRF-safe fetch: validate the host, follow redirects MANUALLY re-validating each hop,
+// rebuild headers per hop so the HeyGen key never rides a 302 off-host. Bounded to maxHops.
+async function safeFetchFollow(
+  url: string,
+  buildInit: (currentUrl: string) => RequestInit,
+  maxHops = 3,
+): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...buildInit(current), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 async function downloadFile(url: string, dest: string, heygenKey?: string) {
   if (url.startsWith("/")) {
-    const src = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-    if (!fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
+    const src = containedPublicPath(url);
+    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
     return;
   }
-  const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
-  if (heygenKey && url.includes("heygen.ai")) headers["X-Api-Key"] = heygenKey;
-  const res = await fetch(url, { headers });
+  const res = await safeFetchFollow(url, (currentUrl) => {
+    const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
+    if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
+    return { headers };
+  });
   if (!res.ok) throw new Error(`Download failed ${res.status}`);
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
@@ -50,7 +95,7 @@ export async function POST(req: Request) {
   const ovW = overlayW != null && Number.isFinite(Number(overlayW)) ? Math.max(2, Math.round(Number(overlayW))) : null;
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
-  const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
+  const heygenKey = user?.heygenKey ? decryptKey(user.heygenKey) : undefined;
 
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });

@@ -111,6 +111,10 @@ export async function POST(req: NextRequest) {
   if (type === "user.deleted") {
     const user = await prisma.user.findUnique({ where: { clerkId: data.id } });
     if (user) {
+      // Hard-delete is safe re: trial farming (MON-5): the one-trial-per-email guard lives
+      // in the User-independent UsedTrialEmail table (src/lib/trial.ts), not solely on this
+      // row's trialStartedAt, so re-registering with the same email after this delete still
+      // gets blocked from a second trial by grantTrial().
       await prisma.user.delete({ where: { id: user.id } });
     }
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import path from "path";
 import fs from "fs";
 import os from "os";
@@ -157,7 +158,7 @@ async function handleTts(req: Request) {
   });
   if (user?.plan === "FREE") return NextResponse.json({ error: "ElevenLabs TTS ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
   if (!user?.elevenlabsKey) return NextResponse.json({ error: "ElevenLabs API key not set", missingKey: "elevenlabs" }, { status: 400 });
-  const apiKey = Buffer.from(user.elevenlabsKey, "base64").toString("utf-8");
+  const apiKey = decryptKey(user.elevenlabsKey);
   const selectedVoiceId = typeof voiceId === "string" && voiceId.trim() ? voiceId.trim() : "9lvVsLbaxGND6aZnt1W1";
 
   if (preview === true) {

@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import fs from "fs";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { decryptKey } from "@/lib/key-crypto";
 import {
   DEFAULT_KIE_IMAGE_MODEL,
   isKieImageModel,
@@ -129,7 +130,7 @@ export async function POST(req: Request) {
 
   // 6) Token actually sent to kie.ai — mirrors fetch-stock's resolution order:
   //    flag-off → BYOK; admin → managed key when set else own BYOK; paid → managed key only.
-  const kieKey = user.kieKey ? Buffer.from(user.kieKey, "base64").toString("utf-8") : null;
+  const kieKey = user.kieKey ? decryptKey(user.kieKey) : null;
   const kieToken: string | null = !managedKieOn
     ? kieKey
     : isAdmin

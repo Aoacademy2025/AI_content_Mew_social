@@ -3,8 +3,9 @@
 //   A. stops after the base render — NO burn render, NO gallery Video row, NO refund
 //      (the base reservation stands as the single charge) — and persists outputJson v2
 //      with captions/config/voiceUrl for the editor's subtitle phase, AND
-//   B. the full (MCP) path WITHOUT previewMode is behaviorally unchanged:
-//      2 renders (base + burn), gallery POST + PATCH, exactly 1 refund, v1 output.
+//   B. the full (MCP) path WITHOUT previewMode: 2 renders (base + burn), gallery POST + PATCH,
+//      v1 output, and — for a NON-AVATAR video — NO refund (MON-2): finalBase == baseUrl, so
+//      the burn is free (isBurnAlreadyPaid) and the base's single ChargedClip is the net-1.
 //   C. parseVideoJobOutput tolerates v1 / v2 / null / garbage.
 //
 // Run: npx tsx scripts/verify-preview-mode.ts
@@ -208,7 +209,7 @@ async function main() {
     ok(renders.length === 2, `B: TWO renders (base + burn) — got ${renders.length}`);
     ok(log.some((c) => c.method === "POST" && c.path === "/api/videos"), "B: gallery Video row created");
     ok(log.some((c) => c.method === "PATCH" && c.path === "/api/videos/gallery-vid-1"), "B: gallery PATCH → COMPLETED");
-    ok(refunds === 1, `B: exactly one refund (base reservation) — got ${refunds}`);
+    ok(refunds === 0, `B: non-avatar → NO refund; base's single ChargedClip is the net-1 charge (burn is free) — got ${refunds}`);
 
     const stockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
     ok((stockCall?.body as { stockSource?: string })?.stockSource === "both", "B: MCP default stockSource unchanged (both)");

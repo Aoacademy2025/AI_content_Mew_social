@@ -3,12 +3,9 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import { decryptKey } from "@/lib/key-crypto";
 export const maxDuration = 300;
 export const runtime = "nodejs";
-
-function decrypt(encrypted: string): string {
-  return Buffer.from(encrypted, "base64").toString("utf-8");
-}
 
 /** Properly merge multiple MP3 files using ffmpeg concat filter → correct headers + total duration */
 function mergeAudioFiles(inputPaths: string[], outputPath: string): Promise<void> {
@@ -68,7 +65,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "ElevenLabs API key ยังไม่ได้ตั้งค่า — ตั้งค่าใน Settings > API Keys", missingKey: "elevenlabs" }, { status: 400 });
     }
 
-    const elevenlabsKey = decrypt(user.elevenlabsKey);
+    const elevenlabsKey = decryptKey(user.elevenlabsKey);
 
     // 4. Generate audio per scene
     const rendersDir = path.join(process.cwd(), "public", "renders");

@@ -3,20 +3,20 @@ import { prisma } from "@/lib/prisma";
 import { runDiskWatch } from "@/lib/disk-watch";
 import { notifyAdmins } from "@/lib/notifications";
 import { sendDiskAlertEmail } from "@/lib/send-email";
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 // GET /api/cron/disk-watch — sweep safe junk, then alert admins (in-app + email)
-// when disk crosses DISK_ALERT_THRESHOLD (default 80%). Protected by CRON_SECRET.
+// when disk crosses DISK_ALERT_THRESHOLD (default 80%). Protected by CRON_SECRET
+// — fails CLOSED if it's unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (secret) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const auth = req.headers.get("authorization");
+  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {

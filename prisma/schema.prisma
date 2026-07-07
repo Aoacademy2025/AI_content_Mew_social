@@ -570,3 +570,17 @@ model RenderJob {
   @@index([parentJobId])
   @@index([scopeKey, status])
 }
+
+// Anti-farming guard for MON-5 (2026-07-07): trialStartedAt on User is a "set once,
+// never cleared" one-trial-per-user guard, but it's destroyed the moment a User row is
+// hard-deleted (account delete via Clerk user.deleted webhook) — re-registering the same
+// email then creates a fresh row with trialStartedAt=null and earns another free trial,
+// repeatably. This table is independent of the User row's lifecycle: written once when a
+// trial is granted, keyed by a normalized hash of the email (never the raw email, so a DB
+// dump doesn't leak addresses), and checked BEFORE granting so a delete+re-signup with the
+// same email can't re-earn a trial. Purely additive; no FK to User (must outlive it).
+model UsedTrialEmail {
+  id        String   @id @default(cuid())
+  emailHash String   @unique // sha256(lowercase(trim(email)))
+  createdAt DateTime @default(now())
+}

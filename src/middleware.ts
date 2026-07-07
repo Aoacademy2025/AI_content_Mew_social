@@ -1,14 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-
-// Constant-time string compare — edge-runtime safe (no Node crypto), avoids
-// leaking the service secret via comparison timing.
-function timingSafeStrEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 
 const isPublicRoute = createRouteMatcher([
   "/",

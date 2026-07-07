@@ -12,7 +12,7 @@ import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
-import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { isSafeFetchUrl, assertSafeFetchUrl, UnsafeUrlError } from "@/lib/safe-fetch";
 import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
@@ -61,6 +61,25 @@ function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, exc
   } catch {}
 }
 
+// SSRF-safe fetch: validate the host, then follow redirects MANUALLY re-validating each
+// hop, so a safe initial URL can't 302 into a private/internal target. Bounded to maxHops.
+// Throws UnsafeUrlError (from assertSafeFetchUrl) on a private-target hop.
+async function safeFetchFollow(url: string, init: RequestInit = {}, maxHops = 3): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...init, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 /** Download external image URL to local public/renders and return a full absolute URL
  *  so Remotion's Chromium (which runs on its own port) can fetch from Next.js server */
 async function cacheImageLocally(url: string, rendersDir: string, baseUrl: string): Promise<string> {
@@ -70,16 +89,19 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
     // SSRF guard: never fetch a private/internal target, and don't pass it downstream
     // to Remotion's Chromium either (drop to "" → scene renders without this image).
     if (!(await isSafeFetchUrl(url))) return "";
-    // external URL — download and re-serve via Next.js
+    // external URL — download and re-serve via Next.js (redirects re-validated per hop)
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const res = await safeFetchFollow(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) return url;
       const buf = Buffer.from(await res.arrayBuffer());
       const ext = url.includes(".png") ? "png" : "jpg";
       const filename = `img-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       fs.writeFileSync(path.join(rendersDir, filename), buf);
       return `${baseUrl}/api/renders/${filename}`;
-    } catch {
+    } catch (e) {
+      // A redirect into a private target must NOT fall back to handing the URL to
+      // Chromium (which would follow that redirect itself) — drop the image instead.
+      if (e instanceof UnsafeUrlError) return "";
       return url;
     }
   }

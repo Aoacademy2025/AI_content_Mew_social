@@ -3,10 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
-
-function decrypt(encrypted: string): string {
-  return Buffer.from(encrypted, "base64").toString("utf-8");
-}
+import { decryptKey } from "@/lib/key-crypto";
 
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
@@ -19,7 +16,7 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
 
   // Step 1 — auth + API enabled
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models`, {
       headers: { "x-goog-api-key": key },
     });
     if (!res.ok) {
@@ -44,7 +41,7 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
 
   // Step 2 — text generation
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
       method: "POST",
       headers: authHeaders,
       body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }], generationConfig: { maxOutputTokens: 5, thinkingConfig: { thinkingBudget: 0 } } }),
@@ -65,7 +62,7 @@ async function testGemini(key: string): Promise<{ ok: boolean; message: string }
   const ttsResults: string[] = [];
   for (const model of TTS_MODELS) {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: authHeaders,
         body: ttsBody,
@@ -218,7 +215,7 @@ export async function POST(req: Request) {
     const encrypted = encryptedMap[keyType];
     if (!encrypted) return NextResponse.json({ ok: false, message: "ยังไม่ได้บันทึก key นี้" });
 
-    const key = decrypt(encrypted);
+    const key = decryptKey(encrypted);
 
     let result: { ok: boolean; message: string };
     switch (keyType) {

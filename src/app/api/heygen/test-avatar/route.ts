@@ -4,13 +4,10 @@ import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
+import { decryptKey } from "@/lib/key-crypto";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
-
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 async function uploadAsset(buffer: Buffer, contentType: string, heygenKey: string) {
   const res = await fetch("https://upload.heygen.com/v1/asset", {
@@ -44,7 +41,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
-  const heygenKey = decrypt(user.heygenKey);
+  const heygenKey = decryptKey(user.heygenKey);
 
   // Framing from the shared HEYGEN_GEN_FRAMING constant (safe whole-avatar default)
   const buildPayload = (dimension: { width: number; height: number }) => ({

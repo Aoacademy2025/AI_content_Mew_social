@@ -501,12 +501,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r1.jobId) });
-    // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
-    // reservation NOW so a finished video nets exactly 1 clip, and a burn-stage failure (the
-    // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
+    // Base render reserved 1 clip. Refund it NOW *only when an avatar composite follows* —
+    // because only then does finalBase become a NEW url (the composite) that the burn step
+    // does NOT recognize as already-paid, so the burn re-reserves a clip. Refunding the base
+    // then nets exactly 1 (base +1, refund −1, burn +1), and an avatar/burn failure nets 0
+    // (the burn route refunds its own clip) — never over-charging an undelivered video.
+    //
+    // NON-AVATAR: finalBase stays == baseUrl, so the burn's isBurnAlreadyPaid() matches the
+    // base's ChargedClip (render/route.ts) and the burn SKIPS its reservation (it is free).
+    // Refunding the base here would then net 0 — a full quota bypass for every delivered
+    // clips-mode video. So do NOT refund: the base's single ChargedClip is the only charge.
+    // (MON-2: docs/audits/2026-07-07-system-optimization-audit.md.)
+    //
     // PREVIEW MODE: no burn follows in this job, so the base reservation must STAND as the
     // single charge (same as the web editor's preview render today) — skip the refund.
-    if (!input.previewMode) await refund(userId).catch(() => {});
+    if (!input.previewMode && input.avatarMode) await refund(userId).catch(() => {});
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
     let finalBase = baseUrl;

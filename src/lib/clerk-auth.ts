@@ -6,6 +6,50 @@ import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 import { syncUserEntitlement } from "@/lib/entitlements";
 import { resolveServiceActor } from "@/lib/mcp/service-actor";
 
+// ── Admin trust root (SEC-11 hardening) ──────────────────────────────────────
+// ADMIN is granted ONLY from an email Clerk has VERIFIED as the account's PRIMARY,
+// and only when that email is on the explicit ADMIN_EMAILS allowlist OR the legacy
+// internal @aoacademy.co domain. Two invariants keep this safe:
+//   1. Verified-primary-only: an attacker who merely attaches an *unverified*
+//      @aoacademy.co address to their Clerk account cannot escalate. (The old code
+//      read emailAddresses[0] with no verification/primary check — that was the hole.)
+//   2. Upgrade-only: this path never demotes. A row whose role is already ADMIN
+//      (e.g. the owner, set manually via /admin, or an explicit seed) is returned
+//      untouched, so tightening the predicate cannot lock an existing admin out.
+const ADMIN_EMAIL_DOMAIN = "@aoacademy.co";
+
+function adminEmailAllowlist(): Set<string> {
+  return new Set(
+    (process.env.ADMIN_EMAILS ?? "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+/** True if this email qualifies for ADMIN by allowlist or internal domain (case-insensitive). */
+function emailQualifiesForAdmin(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const normalized = email.toLowerCase();
+  return adminEmailAllowlist().has(normalized) || normalized.endsWith(ADMIN_EMAIL_DOMAIN);
+}
+
+/**
+ * Resolve a Clerk account's PRIMARY email and whether it should grant ADMIN.
+ * Keys off primaryEmailAddressId (like the clerk-webhook) — NOT emailAddresses[0] — and
+ * requires that primary email to be Clerk-verified before it can grant ADMIN.
+ */
+function resolveClerkIdentity(
+  clerkUser: NonNullable<Awaited<ReturnType<typeof currentUser>>>
+): { email: string | undefined; grantsAdmin: boolean } {
+  const primary =
+    clerkUser.emailAddresses.find((e) => e.id === clerkUser.primaryEmailAddressId) ??
+    clerkUser.emailAddresses[0];
+  const email = primary?.emailAddress;
+  const primaryVerified = primary?.verification?.status === "verified";
+  return { email, grantsAdmin: primaryVerified && emailQualifiesForAdmin(email) };
+}
+
 /**
  * Get the current authenticated user from Prisma (server-side, Clerk-based).
  * - Looks up by clerkId first (fast path)
@@ -24,8 +68,11 @@ export async function getCurrentUser(): Promise<User | null> {
   // Fast path: already linked
   let user = await prisma.user.findUnique({ where: { clerkId: userId } });
   if (user) {
-    // Row ที่ link ไว้ก่อนกติกา admin-domain จะค้าง role USER — upgrade ตรงนี้ด้วย
-    if (user.email.endsWith("@aoacademy.co") && user.role !== "ADMIN") {
+    // Upgrade-only ADMIN grant for an already-linked row (rows created before the admin rule,
+    // or before an ADMIN_EMAILS entry was added). Keyed on the STORED email — which is always
+    // the Clerk verified-primary (written by the webhook + the hardened slow-path below), so no
+    // Clerk round-trip is needed on this hot path. Never demotes.
+    if (user.role !== "ADMIN" && emailQualifiesForAdmin(user.email)) {
       user = await prisma.user.update({ where: { id: user.id }, data: { role: "ADMIN" } });
     }
     const synced = await syncUserEntitlement(user.id);
@@ -39,14 +86,15 @@ export async function getCurrentUser(): Promise<User | null> {
   const clerkUser = await currentUser();
   if (!clerkUser) return null;
 
-  const email = clerkUser.emailAddresses[0]?.emailAddress;
+  // Use the VERIFIED PRIMARY email (matches clerk-webhook) — not emailAddresses[0]. `email` is
+  // used for row storage/matching; `isAdminEmail` gates the ADMIN grant and is true only when
+  // that primary email is Clerk-verified AND allowlisted / internal-domain.
+  const { email, grantsAdmin: isAdminEmail } = resolveClerkIdentity(clerkUser);
   if (!email) return null;
-
-  const isAdminEmail = email.endsWith("@aoacademy.co");
 
   user = await prisma.user.findUnique({ where: { email } });
   if (user) {
-    // Link clerkId and upgrade to ADMIN if aoacademy.co domain
+    // Link clerkId and upgrade to ADMIN only if the verified-primary email qualifies (allowlist/domain)
     const linked = await prisma.user.update({
       where: { id: user.id },
       data: {

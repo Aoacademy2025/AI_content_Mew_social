@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
@@ -1031,9 +1032,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
-  const pexelsKey = user?.pexelsKey ? Buffer.from(user.pexelsKey, "base64").toString("utf-8") : null;
-  const pixabayKey = user?.pixabayKey ? Buffer.from(user.pixabayKey, "base64").toString("utf-8") : null;
-  const kieKey = user?.kieKey ? Buffer.from(user.kieKey, "base64").toString("utf-8") : null;
+  const pexelsKey = user?.pexelsKey ? decryptKey(user.pexelsKey) : null;
+  const pixabayKey = user?.pixabayKey ? decryptKey(user.pixabayKey) : null;
+  const kieKey = user?.kieKey ? decryptKey(user.kieKey) : null;
   // Token actually sent to kie.ai. Flag off → BYOK key (today). Flag on: admins
   // use the managed key when set (else fall back to their BYOK key); paid users
   // use the managed key only. Never logged. Managed key is server-side env only.
@@ -1050,8 +1051,8 @@ export async function POST(req: Request) {
   // admin can't loop the shared key. Mirrors the managed-Gemini precedent.
   const usesManagedKey = managedKieOn && !!kieEnvKey && kieToken === kieEnvKey;
   const guardImages = shouldGuardKieImages({ usesManagedKey, chargeImages });
-  const unsplashKey = user?.unsplashKey ? Buffer.from(user.unsplashKey, "base64").toString("utf-8") : null;
-  const flickrKey = user?.flickrKey ? Buffer.from(user.flickrKey, "base64").toString("utf-8") : null;
+  const unsplashKey = user?.unsplashKey ? decryptKey(user.unsplashKey) : null;
+  const flickrKey = user?.flickrKey ? decryptKey(user.flickrKey) : null;
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;

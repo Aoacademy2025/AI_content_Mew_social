@@ -5,24 +5,33 @@ import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
+import { decryptKey } from "@/lib/key-crypto";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
 /* ── helpers ─────────────────────────────────────────────── */
 
-function decrypt(encrypted: string): string {
-  return Buffer.from(encrypted, "base64").toString("utf-8");
+// Containment guard: resolve a body-supplied app path under public/ and reject anything
+// that escapes the webroot (path traversal, e.g. "/../prisma/dev.db"). Returns null on
+// escape so callers surface the route's normal 404 without leaking the resolved path.
+function containedPublicPath(url: string): string | null {
+  const joined = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedPath = path.resolve(joined);
+  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep)) return null;
+  return joined;
 }
 
 function readLocalFile(url: string): Buffer | null {
   if (!url.startsWith("/")) return null;
-  const fp = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-  return fs.existsSync(fp) ? fs.readFileSync(fp) : null;
+  const fp = containedPublicPath(url);
+  if (!fp || !fs.existsSync(fp)) return null;
+  return fs.readFileSync(fp);
 }
 
-function localPath(url: string): string {
-  return path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
+function localPath(url: string): string | null {
+  return containedPublicPath(url);
 }
 
 function getFfmpegPath(): string {
@@ -198,7 +207,7 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
     if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
-    const heygenKey = decrypt(user.heygenKey);
+    const heygenKey = decryptKey(user.heygenKey);
 
     const audioBuffer = readLocalFile(mergedAudioUrl);
     if (!audioBuffer) return NextResponse.json({ error: `Audio not found: ${mergedAudioUrl}` }, { status: 404 });
@@ -211,7 +220,8 @@ export async function POST(req: Request) {
 
     if (mode === "composite") {
       /* ── Composite: green-screen → return videoId immediately, client polls then calls /api/heygen/composite ── */
-      if (!fs.existsSync(localPath(bgVideoUrl))) return NextResponse.json({ error: `BG not found: ${bgVideoUrl}` }, { status: 404 });
+      const bgPath = localPath(bgVideoUrl);
+      if (!bgPath || !fs.existsSync(bgPath)) return NextResponse.json({ error: `BG not found: ${bgVideoUrl}` }, { status: 404 });
       const videoId = await generateVideo({ audioAssetId: audioResult.id, avatarId, heygenKey });
       console.log(`[heygen] composite videoId=${videoId} — client will poll`);
       return NextResponse.json({ videoId, bgVideoUrl, mode: "composite", status: "pending" });

@@ -374,14 +374,24 @@ export default function AdminDashboardPage() {
   const [savingEmail, setSavingEmail] = useState(false);
 
   // Stripe settings
+  // NOTE: the GET endpoint never returns live secrets in full (SEC-12) — these
+  // three inputs hold only a NEW value to write, and start empty. Current status
+  // (set / not-set + last4) comes back as a masked sentinel and is tracked
+  // separately so the UI can show "ตั้งไว้แล้ว (••••1234)" without ever holding
+  // the real secret in browser state.
+  type SecretStatus = { set: boolean; last4?: string };
+  const UNSET_SECRET: SecretStatus = { set: false };
   const [stripePublishableKey, setStripePublishableKey] = useState("");
   const [stripeSecretKey, setStripeSecretKey] = useState("");
+  const [stripeSecretKeyStatus, setStripeSecretKeyStatus] = useState<SecretStatus>(UNSET_SECRET);
   const [stripeWebhookSecret, setStripeWebhookSecret] = useState("");
+  const [stripeWebhookSecretStatus, setStripeWebhookSecretStatus] = useState<SecretStatus>(UNSET_SECRET);
   const [stripePricePro, setStripePricePro] = useState("");
   const [stripePriceBusiness, setStripePriceBusiness] = useState("");
 
   // Server-owned Gemini key (platform automation: loanword miner cron, etc.)
   const [serverGeminiKey, setServerGeminiKey] = useState("");
+  const [serverGeminiKeyStatus, setServerGeminiKeyStatus] = useState<SecretStatus>(UNSET_SECRET);
   const [savingServerKey, setSavingServerKey] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
   const [savingStripe, setSavingStripe] = useState(false);
@@ -423,8 +433,10 @@ export default function AdminDashboardPage() {
       const d = await res.json();
       if (d.support_email) { setSupportEmail(d.support_email); setSupportEmailInput(d.support_email); }
       if (d.stripe_publishable_key) setStripePublishableKey(d.stripe_publishable_key);
-      if (d.stripe_secret_key) setStripeSecretKey(d.stripe_secret_key);
-      if (d.stripe_webhook_secret) setStripeWebhookSecret(d.stripe_webhook_secret);
+      // stripe_secret_key / stripe_webhook_secret now come back masked as
+      // { set, last4 } — never populate the editable input with them.
+      if (d.stripe_secret_key && typeof d.stripe_secret_key === "object") setStripeSecretKeyStatus(d.stripe_secret_key);
+      if (d.stripe_webhook_secret && typeof d.stripe_webhook_secret === "object") setStripeWebhookSecretStatus(d.stripe_webhook_secret);
       if (d.stripe_price_pro) setStripePricePro(d.stripe_price_pro);
       if (d.stripe_price_business) setStripePriceBusiness(d.stripe_price_business);
       if (d.plan_free_price) setPlanFreePrice(d.plan_free_price);
@@ -443,7 +455,8 @@ export default function AdminDashboardPage() {
       if (typeof d.plan_free_tagline === "string") setPlanFreeTagline(d.plan_free_tagline);
       if (typeof d.plan_pro_tagline === "string") setPlanProTagline(d.plan_pro_tagline);
       if (typeof d.plan_business_tagline === "string") setPlanBusinessTagline(d.plan_business_tagline);
-      if (d.server_gemini_key) setServerGeminiKey(d.server_gemini_key);
+      // server_gemini_key is also masked to { set, last4 } — status only.
+      if (d.server_gemini_key && typeof d.server_gemini_key === "object") setServerGeminiKeyStatus(d.server_gemini_key);
       // Cost rates
       if (d.cost_render_per_minute) setCostRenderPerMinute(d.cost_render_per_minute);
       if (d.cost_image_flux_1k) setCostImageFlux1k(d.cost_image_flux_1k);
@@ -482,15 +495,22 @@ export default function AdminDashboardPage() {
   }
 
   async function saveServerGeminiKey() {
+    // Nothing typed = leave the current key untouched (GET no longer echoes it
+    // back, so an empty field must NOT be sent — that would wipe the secret).
+    const next = serverGeminiKey.trim();
+    if (!next) { toast.error("กรอกคีย์ใหม่ก่อนบันทึก"); return; }
     setSavingServerKey(true);
     try {
       const res = await fetch("/api/admin/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ server_gemini_key: serverGeminiKey.trim() }),
+        body: JSON.stringify({ server_gemini_key: next }),
       });
-      if (res.ok) toast.success("บันทึก Server Gemini Key แล้ว");
-      else toast.error("บันทึกไม่สำเร็จ");
+      if (res.ok) {
+        toast.success("บันทึก Server Gemini Key แล้ว");
+        setServerGeminiKey("");
+        await loadSettings();
+      } else toast.error("บันทึกไม่สำเร็จ");
     } catch { toast.error("เกิดข้อผิดพลาด"); }
     finally { setSavingServerKey(false); }
   }
@@ -513,19 +533,28 @@ export default function AdminDashboardPage() {
   async function saveStripeSettings() {
     setSavingStripe(true);
     try {
+      // stripe_secret_key / stripe_webhook_secret: only send if the admin
+      // actually typed a new value — GET no longer echoes the current secret,
+      // so an untouched (empty) field must be omitted, not sent as "".
+      const body: Record<string, string> = {
+        stripe_publishable_key: stripePublishableKey.trim(),
+        stripe_price_pro: stripePricePro.trim(),
+        stripe_price_business: stripePriceBusiness.trim(),
+      };
+      if (stripeSecretKey.trim()) body.stripe_secret_key = stripeSecretKey.trim();
+      if (stripeWebhookSecret.trim()) body.stripe_webhook_secret = stripeWebhookSecret.trim();
+
       const res = await fetch("/api/admin/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stripe_publishable_key: stripePublishableKey.trim(),
-          stripe_secret_key: stripeSecretKey.trim(),
-          stripe_webhook_secret: stripeWebhookSecret.trim(),
-          stripe_price_pro: stripePricePro.trim(),
-          stripe_price_business: stripePriceBusiness.trim(),
-        }),
+        body: JSON.stringify(body),
       });
-      if (res.ok) toast.success("บันทึก Stripe Settings แล้ว");
-      else toast.error("บันทึกไม่สำเร็จ");
+      if (res.ok) {
+        toast.success("บันทึก Stripe Settings แล้ว");
+        setStripeSecretKey("");
+        setStripeWebhookSecret("");
+        await loadSettings();
+      } else toast.error("บันทึกไม่สำเร็จ");
     } catch { toast.error("เกิดข้อผิดพลาด"); }
     finally { setSavingStripe(false); }
   }
@@ -1485,20 +1514,33 @@ export default function AdminDashboardPage() {
                 placeholder="pk_live_xxxx"
                 className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
             </div>
-            {/* Secret Key */}
+            {/* Secret Key — value never round-trips from the server (SEC-12); only
+                status (set/last4) does. Blank input = keep current on save. */}
             <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Secret Key <span className="text-zinc-600">(sk_live_... / sk_test_...)</span></label>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Secret Key <span className="text-zinc-600">(sk_live_... / sk_test_...)</span>{" "}
+                <span className={stripeSecretKeyStatus.set ? "text-emerald-500" : "text-amber-500"}>
+                  {stripeSecretKeyStatus.set ? `· ตั้งไว้แล้ว (••••${stripeSecretKeyStatus.last4})` : "· ยังไม่ได้ตั้งค่า"}
+                </span>
+              </label>
               <input type={showSecrets ? "text" : "password"} value={stripeSecretKey}
                 onChange={e => setStripeSecretKey(e.target.value)}
-                placeholder="sk_live_xxxx"
+                placeholder={stripeSecretKeyStatus.set ? "เว้นว่างไว้เพื่อไม่เปลี่ยน หรือกรอกคีย์ใหม่" : "sk_live_xxxx"}
+                autoComplete="off"
                 className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
             </div>
-            {/* Webhook Secret */}
+            {/* Webhook Secret — same masked-status pattern as Secret Key above. */}
             <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Webhook Secret <span className="text-zinc-600">(whsec_...)</span></label>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Webhook Secret <span className="text-zinc-600">(whsec_...)</span>{" "}
+                <span className={stripeWebhookSecretStatus.set ? "text-emerald-500" : "text-amber-500"}>
+                  {stripeWebhookSecretStatus.set ? `· ตั้งไว้แล้ว (••••${stripeWebhookSecretStatus.last4})` : "· ยังไม่ได้ตั้งค่า"}
+                </span>
+              </label>
               <input type={showSecrets ? "text" : "password"} value={stripeWebhookSecret}
                 onChange={e => setStripeWebhookSecret(e.target.value)}
-                placeholder="whsec_xxxx"
+                placeholder={stripeWebhookSecretStatus.set ? "เว้นว่างไว้เพื่อไม่เปลี่ยน หรือกรอกคีย์ใหม่" : "whsec_xxxx"}
+                autoComplete="off"
                 className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
             </div>
             {/* Price IDs */}
@@ -1537,10 +1579,16 @@ export default function AdminDashboardPage() {
             <p className="text-xs text-zinc-500 mt-0.5">คีย์ของบริษัท (ไม่ใช่ของ user) สำหรับงานอัตโนมัติฝั่ง server เช่น ตัวขุดคำตัดซับ (loanword miner) — แสดง/ซ่อนด้วยปุ่ม &quot;keys&quot; ด้านบน</p>
           </div>
           <div>
-            <label className="text-xs text-zinc-400 mb-1 block">Gemini API Key <span className="text-zinc-600">(AIza...)</span></label>
+            <label className="text-xs text-zinc-400 mb-1 block">
+              Gemini API Key <span className="text-zinc-600">(AIza...)</span>{" "}
+              <span className={serverGeminiKeyStatus.set ? "text-emerald-500" : "text-amber-500"}>
+                {serverGeminiKeyStatus.set ? `· ตั้งไว้แล้ว (••••${serverGeminiKeyStatus.last4})` : "· ยังไม่ได้ตั้งค่า"}
+              </span>
+            </label>
+            {/* Value never round-trips from the server (SEC-12) — blank = keep current on save. */}
             <input type={showSecrets ? "text" : "password"} value={serverGeminiKey}
               onChange={e => setServerGeminiKey(e.target.value)}
-              placeholder="AIzaSyxxxx"
+              placeholder={serverGeminiKeyStatus.set ? "เว้นว่างไว้เพื่อไม่เปลี่ยน หรือกรอกคีย์ใหม่" : "AIzaSyxxxx"}
               autoComplete="off"
               className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50" />
           </div>

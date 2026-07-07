@@ -19,12 +19,17 @@ interface ApiKeys {
 }
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 type TestResult = { ok: boolean; message: string } | null;
+// GET /api/user/api-keys is write-only: it returns whether each key is set + last4,
+// NEVER the raw key. `apiKeys` below is the editable buffer (only what the user types).
+type KeyStatus = { set: boolean; last4: string | null };
+type KeyStatusMap = Partial<Record<keyof ApiKeys, KeyStatus>>;
 
 const EMPTY_RESULTS: Record<KeyType, TestResult> = { gemini: null, heygen: null, elevenlabs: null, pexels: null, pixabay: null, kie: null, unsplash: null, flickr: null };
 
 export function ApiKeySettings() {
   const [loading, setLoading] = useState(false);
   const [apiKeys, setApiKeys] = useState<ApiKeys>({});
+  const [saved, setSaved] = useState<KeyStatusMap>({});
   const [testingKey, setTestingKey] = useState<KeyType | null>(null);
   const [testResults, setTestResults] = useState<Record<KeyType, TestResult>>({ ...EMPTY_RESULTS });
   const [dirty, setDirty] = useState(false);
@@ -54,14 +59,19 @@ export function ApiKeySettings() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
+  // Fetch which keys are set (+ last4) — NOT the raw keys. Never writes into the
+  // editable `apiKeys` buffer, so the actual secret never touches the input/DOM.
   async function fetchApiKeys() {
     try {
       const res = await fetch("/api/user/api-keys");
-      if (res.ok) setApiKeys(await res.json());
+      if (res.ok) setSaved(await res.json() as KeyStatusMap);
     } catch { /* silent */ }
   }
 
-  function isSet(key: keyof ApiKeys) { return !!(apiKeys[key] && String(apiKeys[key]).length > 0); }
+  // "Set" = already saved on the server OR the user has typed a new value locally.
+  function isSet(key: keyof ApiKeys) {
+    return !!saved[key]?.set || !!(apiKeys[key] && String(apiKeys[key]).length > 0);
+  }
 
   function updateKey(id: keyof ApiKeys, value: string) {
     setApiKeys(prev => ({ ...prev, [id]: value }));
@@ -88,12 +98,12 @@ export function ApiKeySettings() {
   }
 
   async function handleDelete(id: keyof ApiKeys) {
-    const updated = { ...apiKeys, [id]: "" };
-    setApiKeys(updated);
-    setDirty(false);
+    setApiKeys(prev => { const next = { ...prev }; delete next[id]; return next; });
     try {
-      const res = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updated) });
+      // Only clear this one field — never resend the (empty) buffer, which would blank other keys.
+      const res = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [id]: "" }) });
       if (!res.ok) throw new Error();
+      setSaved(prev => ({ ...prev, [id]: { set: false, last4: null } }));
       toast.success("API Key removed");
       const def = KEY_TIERS.find(k => k.apiKeysField === id);
       if (def) setTestResults(prev => ({ ...prev, [def.testKeyType as KeyType]: null }));
@@ -103,16 +113,20 @@ export function ApiKeySettings() {
   async function handleSave() {
     setLoading(true);
     try {
+      // apiKeys holds only what the user typed → PUT touches only those fields.
       const res = await fetch("/api/user/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(apiKeys) });
       if (!res.ok) throw new Error();
       toast.success("API Keys saved");
       setDirty(false);
       setTestResults({ ...EMPTY_RESULTS });
+      setApiKeys({});          // clear inputs — saved keys are never re-loaded into the DOM
+      await fetchApiKeys();    // refresh "set"/last4 status
     } catch { toast.error("Failed to save"); }
     finally { setLoading(false); }
   }
 
   function handleDiscard() {
+    setApiKeys({});
     fetchApiKeys();
     setDirty(false);
     setTestResults({ ...EMPTY_RESULTS });

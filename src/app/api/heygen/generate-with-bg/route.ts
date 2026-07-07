@@ -7,6 +7,7 @@ import { execFile } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, providerError, classifyHttpStatus, toErrorResponse } from "@/lib/provider-errors";
 import { HEYGEN_GEN_FRAMING, AVATAR_GEN_DIMENSION, AVATAR_GEN_FALLBACK_DIMENSION, isResolutionFallbackError } from "@/lib/avatar-gen-framing";
+import { decryptKey } from "@/lib/key-crypto";
 
 // Single source of truth lives in avatar-gen-framing.ts; these consts are kept so the
 // destructuring defaults at line ~116-118 are unchanged and easy to read.
@@ -36,9 +37,6 @@ function toMp3(inputPath: string): Promise<string> {
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 // Detect content type from file bytes
 function detectVideoType(buf: Buffer): string {
@@ -140,7 +138,7 @@ async function handleGenerateWithBg(req: Request) {
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
-  const heygenKey = decrypt(user.heygenKey);
+  const heygenKey = decryptKey(user.heygenKey);
 
   // Step 1: Background — remove bg / green screen / uploaded video
   let background: Record<string, unknown> | undefined;
