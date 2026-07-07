@@ -666,7 +666,11 @@ export function buildCaptionsFromCards(cards: ScriptCard[], timing: TtsTiming, f
   const caps: TimedCaption[] = [];
   for (const card of cards) {
     const raw = fullText.slice(card.startChar, card.endChar);
-    const text = raw.trim();
+    // FIX A: collapse pipeline-inherited interior whitespace/newlines (a script line
+    // break sliced into a SENTENCE-mode card) to single spaces so the card never stacks
+    // two lines via white-space:pre-line. Timing below still keys off the RAW slice's
+    // leading/trailing whitespace, so start/end arithmetic is unchanged.
+    const text = raw.replace(/\s+/g, " ").trim();
     if (!text) continue;
     // Time the trimmed content, not the surrounding whitespace.
     const lead = raw.length - raw.trimStart().length;

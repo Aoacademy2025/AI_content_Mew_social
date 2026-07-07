@@ -123,6 +123,12 @@ export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
 
 type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: number; endChar: number };
 
+// A gap (in fullText, between two consecutive words) that contains a line break or a
+// sentence-final punctuation mark is a HARD card boundary — never pair words across it.
+// LOCKSTEP with the server copy in src/lib/mcp/orchestrator-steps.ts
+// (SENTENCE_BOUNDARY_RE / cardsByWordCount) — แก้ที่นึงต้องแก้อีกที่.
+const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+
 function tagCards(cards: V2Caption[]): V2Caption[] {
   return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
 }
@@ -153,14 +159,26 @@ export function regroupCaptions(
   if (len === "sentence") return original.map((c) => ({ ...c }));
   const n = parseInt(len, 10);
   if (words?.length && fullText) {
+    const ft = fullText;
     const out: V2Caption[] = [];
-    for (let i = 0; i < words.length; i += n) {
-      const grp = words.slice(i, i + n);
-      if (!grp.length) continue;
-      const text = fullText.slice(grp[0].startChar, grp[grp.length - 1].endChar).trim();
-      if (!text) continue;
-      out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
+    let grp: V2TimedWord[] = [];
+    const flush = () => {
+      if (!grp.length) return;
+      // FIX A: collapse any interior whitespace/newline sliced into the card (a script
+      // line break) to a single space so a card never stacks two lines.
+      const text = ft.slice(grp[0].startChar, grp[grp.length - 1].endChar).replace(/\s+/g, " ").trim();
+      if (text) out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
+      grp = [];
+    };
+    for (let i = 0; i < words.length; i++) {
+      if (grp.length >= n) flush();
+      // FIX B: never cross a sentence/line boundary (gap between words in fullText).
+      if (grp.length > 0 && SENTENCE_BOUNDARY_RE.test(ft.slice(grp[grp.length - 1].endChar, words[i].startChar))) {
+        flush();
+      }
+      grp.push(words[i]);
     }
+    flush();
     return tagCards(out);
   }
   // fallback: interpolate เวลาในการ์ดเดิมตามสัดส่วนคำ (v1 page.tsx:3546-3561)
