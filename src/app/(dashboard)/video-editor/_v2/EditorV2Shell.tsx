@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check, CheckCircle2, Download } from "lucide-react";
+import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check, CheckCircle2, Download, Loader2, Trash2 } from "lucide-react";
 import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
 import { StepIndicator, BtnPrimary, BtnSecondary, BtnGhost } from "./ui";
@@ -23,6 +23,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useV2Project } from "./useV2Project";
 import { useV2Job, type V2JobState } from "./useV2Job";
 import { Step1Script } from "./Step1Script";
@@ -47,6 +57,7 @@ const PROJECT_STATUS_LABEL: Record<string, string> = {
   exporting: "Exporting",
   exported: "Exported",
 };
+const PROJECT_DELETE_BLOCKED = new Set(["rendering", "exporting"]);
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -57,6 +68,8 @@ export function EditorV2Shell() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [deleteProject, setDeleteProject] = useState<ProjectMenuItem | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
   // is on; with it off handleRender submits directly (byte-identical to before).
@@ -128,6 +141,39 @@ export function EditorV2Shell() {
     window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
   }
 
+  function requestDeleteProject(project: ProjectMenuItem) {
+    if (PROJECT_DELETE_BLOCKED.has(project.status)) {
+      toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
+      return;
+    }
+    setDeleteProject(project);
+    setProjectMenuOpen(false);
+  }
+
+  async function handleDeleteProject() {
+    const project = deleteProject;
+    if (!project || deletingProjectId) return;
+    if (PROJECT_DELETE_BLOCKED.has(project.status)) {
+      setDeleteProject(null);
+      toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
+      return;
+    }
+    setDeletingProjectId(project.id);
+    try {
+      const res = await fetch(`/api/editor-projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
+      setProjects((items) => items.filter((item) => item.id !== project.id));
+      setDeleteProject(null);
+      toast.success("ลบโปรเจกต์แล้ว");
+      if (project.id === p.projectId) handleNewProject();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ลบโปรเจกต์ไม่สำเร็จ");
+    } finally {
+      setDeletingProjectId(null);
+    }
+  }
+
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -195,10 +241,15 @@ export function EditorV2Shell() {
                 </DropdownMenuItem>
               ) : projects.map((project) => {
                 const active = project.id === p.projectId;
+                const deleteBlocked = PROJECT_DELETE_BLOCKED.has(project.status);
+                const deleting = deletingProjectId === project.id;
                 return (
                   <DropdownMenuItem
                     key={project.id}
-                    onSelect={() => openProject(project.id)}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      openProject(project.id);
+                    }}
                     className="rounded-[8px] px-2.5 py-2"
                     style={{ color: active ? color.primary300 : color.textSecondary, cursor: active ? "default" : "pointer" }}
                   >
@@ -209,6 +260,29 @@ export function EditorV2Shell() {
                     <span className="shrink-0" style={{ fontSize: 10, color: color.textFaint }}>
                       {PROJECT_STATUS_LABEL[project.status] ?? project.status}
                     </span>
+                    <button
+                      type="button"
+                      aria-label="ลบโปรเจกต์"
+                      aria-disabled={deleteBlocked || deleting}
+                      title={deleteBlocked ? "รอให้งานเสร็จก่อนลบ" : "ลบโปรเจกต์"}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (deleting) return;
+                        requestDeleteProject(project);
+                      }}
+                      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-colors"
+                      style={{
+                        color: deleteBlocked ? color.textFaintest : color.textFaint,
+                        cursor: deleteBlocked ? "not-allowed" : "pointer",
+                        opacity: deleteBlocked ? 0.45 : 1,
+                        background: "transparent",
+                        border: "none",
+                      }}
+                    >
+                      {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} strokeWidth={2} />}
+                    </button>
                   </DropdownMenuItem>
                 );
               })}
@@ -331,6 +405,37 @@ export function EditorV2Shell() {
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}
+
+      <AlertDialog open={!!deleteProject} onOpenChange={(open) => { if (!open && !deletingProjectId) setDeleteProject(null); }}>
+        <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>ลบโปรเจกต์นี้?</AlertDialogTitle>
+            <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
+              โปรเจกต์จะถูกซ่อนจากรายการล่าสุด วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ
+              {deleteProject?.title ? `: ${deleteProject.title}` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={!!deletingProjectId}
+              className="border hover:opacity-80"
+              style={{ borderColor: color.cardBorder, background: "transparent", color: color.textSecondary }}
+            >
+              ยกเลิก
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!!deletingProjectId}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteProject();
+              }}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              {deletingProjectId ? <span className="flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> กำลังลบ…</span> : "ลบโปรเจกต์"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
