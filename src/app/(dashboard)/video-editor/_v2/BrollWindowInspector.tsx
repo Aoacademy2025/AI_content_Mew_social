@@ -534,6 +534,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         <div className="flex flex-col gap-3">
           {header}
           {tabContent}
+          {stagedPreview}
           {footerSummary}
         </div>
       </div>
