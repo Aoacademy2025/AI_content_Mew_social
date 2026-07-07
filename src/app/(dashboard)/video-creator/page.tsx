@@ -1187,9 +1187,20 @@ export default function ShortVideoPage() {
       setStep("render", "error", msg);
     };
 
+    // Single consolidated poller (was two overlapping setInterval loops — this one hitting
+    // render-progress @600ms plus a second hitting render-status @3000ms for the same jobId).
+    // render-progress already returns videoUrl/error on completion, so it alone drives both
+    // the progress UI and job resolution below. Pauses while the tab is hidden — avatar
+    // renders run 10-25 min, no reason to hammer the server for a backgrounded tab — mirroring
+    // the visibilitychange pattern the HeyGen avatar poll further down this file already uses.
+    let tabHidden = document.hidden;
+    const handleRenderPollVisibility = () => { tabHidden = document.hidden; };
+    document.addEventListener("visibilitychange", handleRenderPollVisibility);
+
     let pollStopped = false;
     const stopRenderPoll = () => {
       pollStopped = true;
+      document.removeEventListener("visibilitychange", handleRenderPollVisibility);
       if (renderPollTimer !== null) {
         clearInterval(renderPollTimer);
         renderPollTimer = null;
@@ -1202,10 +1213,34 @@ export default function ShortVideoPage() {
     stopRenderPollRef.current = stopRenderPoll;
 
     let resolveRenderUrl: ((url: string) => void) | null = null;
+    let rejectRenderUrl: ((err: Error) => void) | null = null;
     let currentJobId: string | null = null;
 
     renderPollTimer = setInterval(async () => {
-      if (pollStopped || renderFailedMessage) return;
+      if (pollStopped) return;
+      if (tabHidden) return; // paused — tab is backgrounded
+      if (renderFailedMessage) {
+        // Terminal failure was flagged (by this loop or the 120min timeout below) — reject
+        // the awaited render Promise now (this used to be statusInterval's job).
+        if (rejectRenderUrl) {
+          const reject = rejectRenderUrl;
+          rejectRenderUrl = null;
+          resolveRenderUrl = null;
+          reject(new Error(renderFailedMessage));
+        }
+        return;
+      }
+      // If a newer job has taken over, silently abandon this one (was statusInterval's job).
+      if (currentJobId && activeJobIdRef.current !== currentJobId) {
+        pollStopped = true;
+        if (rejectRenderUrl) {
+          const reject = rejectRenderUrl;
+          rejectRenderUrl = null;
+          resolveRenderUrl = null;
+          reject(new Error("__SUPERSEDED__"));
+        }
+        return;
+      }
       // Don't poll without a jobId — avoids reading stale progress file from a previous render
       if (!currentJobId) return;
       try {
@@ -1229,6 +1264,7 @@ export default function ShortVideoPage() {
           if (CREDITS_LIVE_CLIENT && progressData.creditsSpent != null) creditsSpentThisRender = progressData.creditsSpent;
           resolveRenderUrl(progressData.videoUrl);
           resolveRenderUrl = null;
+          rejectRenderUrl = null;
           return;
         }
         if (progressData?.error) {
@@ -1242,8 +1278,20 @@ export default function ShortVideoPage() {
           setRenderProgress(normalized);
           setStep("render", "running", `Rendering... ${normalized}%`);
         }
-      } catch {
+      } catch (e) {
         if (pollStopped) return;
+        // Abort (e.g. user cancels) — reject immediately with the real AbortError, same as
+        // the old statusInterval loop did, so the outer catch's clean-abort path still fires.
+        if (e instanceof Error && e.name === "AbortError") {
+          pollStopped = true;
+          if (rejectRenderUrl) {
+            const reject = rejectRenderUrl;
+            rejectRenderUrl = null;
+            resolveRenderUrl = null;
+            reject(e);
+          }
+          return;
+        }
         pollFailCount += 1;
         if (pollFailCount >= 6) {
           markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
@@ -1308,45 +1356,12 @@ export default function ShortVideoPage() {
       currentJobId = jobId;
       activeJobIdRef.current = jobId; // mark this as the active job
 
-      let statusNotFoundCount = 0;
+      // Resolution/rejection now happens from inside renderPollTimer's tick above (it
+      // already reads videoUrl/error off render-progress, plus supersede + terminal-failure
+      // checks ported in from the old statusInterval loop this replaced).
       const url = await new Promise<string>((resolve, reject) => {
         resolveRenderUrl = resolve;
-        const statusInterval = setInterval(async () => {
-          // If a newer job has taken over, silently abandon this one
-          if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
-          try {
-            const statusRes = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, {
-              cache: "no-store",
-              signal: abortControllerRef.current?.signal,
-            });
-            const statusData = await statusRes.json();
-            if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (statusData.status === "done" && statusData.videoUrl) {
-              if (CREDITS_LIVE_CLIENT && statusData.creditsSpent != null) creditsSpentThisRender = statusData.creditsSpent;
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              resolve(statusData.videoUrl as string);
-            } else if (statusData.status === "error") {
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              reject(new Error(statusData.error ?? "Render failed"));
-            } else if (statusData.status === "not_found" || statusRes.status === 404) {
-              statusNotFoundCount += 1;
-              if (statusNotFoundCount >= 1200) {
-                clearInterval(statusInterval);
-                resolveRenderUrl = null;
-                reject(new Error("Render job lost — server may have restarted. Please try again."));
-              }
-            }
-          } catch (e) {
-            if (e instanceof Error && e.name === "AbortError") {
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              reject(e);
-            }
-          }
-        }, 3000);
+        rejectRenderUrl = reject;
       });
 
       // Final check: only use result if this job is still active

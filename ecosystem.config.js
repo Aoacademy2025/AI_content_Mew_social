@@ -187,6 +187,16 @@ module.exports = {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+        // CAP-1 launch-capacity knob: how many videos this single worker orchestrates at
+        // once (docs/audits/2026-07-07-system-optimization-audit.md). The code default is 2
+        // (matching the 2 render-worker instances above), but prod is GATED at "1" until Mew
+        // has load-verified that 2 concurrent renders hold the same visual quality as 1 —
+        // then flip this to "2". ecosystem env SHADOWS .env, and a plain `pm2 restart
+        // mcp-video-worker` keeps the OLD env; to apply a change here, restart against the
+        // FILE: `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
+        // Rollback = set back to "1" and restart the same way. Single worker only (NOT
+        // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
+        MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "1",
       },
     },
     {

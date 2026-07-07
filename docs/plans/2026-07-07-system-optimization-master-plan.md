@@ -128,6 +128,9 @@ Goal: pay down the LOW findings + dead code. One or two mechanical/worker passes
 
 ---
 
+### ✅ P1+P3 EXECUTED — branch `mew/p1-p3-stability-hygiene` @ e3321e3 (stacked on P0)
+tsc clean · build exit 0 · verify suites green (credits 39/34/52/27, founding 19/19, trial-cap 12/12, plan-change 11/11) · Tier-1 PASS · security-review clean. **Env to set on prod:** `ALERT_WEBHOOK_URL` (watchdog alerts — Slack/Discord webhook), `BACKUP_RSYNC_TARGET` (optional off-box backup). **Install watchdog:** root `crontab -e` line is in `scripts/ops-watchdog.sh` header (every 15 min, NOT pm2). **Start db-backup cron:** `pm2 start ecosystem.config.js --only db-backup --update-env && pm2 save`. Non-blocking notes: credit-pack purchases show as "{plan} · 0 วัน" in /payments/history until that route special-cases `note==="credits"`; `videos/upload` route has no caller (confirm before deleting).
+
 ## Cross-cutting rules
 - Each phase is an independent, deployable batch — never mix P0 security fixes with P2 render tuning in one deploy.
 - Build-verify every render-backend change before merge (hygiene per CLAUDE.md); Mew rebases + merges + deploys.
@@ -135,4 +138,4 @@ Goal: pay down the LOW findings + dead code. One or two mechanical/worker passes
 - Re-run the relevant `verify-*` script for any money/credit change.
 
 ## Status
-interviewed 2026-07-07 | approved: P0 2026-07-07 | executed: P0 DONE 2026-07-07 (branch `mew/p0-security-billing`, reviewed+build-green, awaiting Mew merge/deploy) | P1–P3: pending
+interviewed 2026-07-07 | approved: P0+P1+P3 2026-07-07 | executed: P0 DONE (branch `mew/p0-security-billing` @ 4c56f31) · P1+P3 DONE (branch `mew/p1-p3-stability-hygiene` @ e3321e3, stacked on P0) — both reviewed+build-green, awaiting Mew merge/deploy | P2: pending (needs clip-QA gates)

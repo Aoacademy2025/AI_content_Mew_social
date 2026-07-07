@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { getRenderJob } from "@/lib/render/job-store";
+import { getRenderJob, getRenderQueuePosition } from "@/lib/render/job-store";
 import path from "path";
 import fs from "fs";
 export const runtime = "nodejs";
@@ -21,6 +21,29 @@ export async function GET(req: Request) {
     if (!job) return NextResponse.json({ status: "error", error: "job not found" });
     // Ownership check: prevent one user from polling another user's job.
     if (job.userId !== authUser.id) return NextResponse.json({ status: "error", error: "job not found" });
+
+    // QUEUED → the render hasn't started; it's WAITING behind other jobs. Report
+    // stage:"queued" + a 1-based queuePosition ("you are #N in line") instead of the old
+    // stage:"running", progress:0 — which was indistinguishable from a frozen 0% render and
+    // was the reported top user pain (PERF-APP-1). The editor already renders
+    // "รอคิวเรนเดอร์ #{queuePosition}" for `d.queued || d.stage === "queued"` (page.tsx), and
+    // the MCP poller (pipeline-client.pollRender) treats any non-"done"/non-"error" stage as
+    // keep-polling — so no client change is needed. Set BOTH `queued` and `stage` so either
+    // client check matches; keep the CREDITS_LIVE receipt field for shape parity.
+    if (job.status === "QUEUED") {
+      const queuePosition = await getRenderQueuePosition(job.createdAt);
+      return NextResponse.json({
+        stage: "queued",
+        status: "queued",
+        queued: true,
+        queuePosition,
+        progress: 0,
+        videoUrl: null,
+        error: undefined,
+        ...(process.env.CREDITS_LIVE === "1" ? { creditsSpent: job.creditsSpent ?? null } : {}),
+      });
+    }
+
     const stage =
       job.status === "DONE"
         ? "done"
@@ -45,8 +68,8 @@ export async function GET(req: Request) {
       videoUrl: job.videoUrl ?? null,
       error: terminalError,
       // Surface the credit-overflow receipt amount ONLY when credits are live, so
-      // the response is byte-identical when CREDITS_LIVE is off. getRenderJob reads
-      // the full RenderJob row, so job.creditsSpent is already present (no select change).
+      // the response is byte-identical when CREDITS_LIVE is off. creditsSpent is part of
+      // getRenderJob's poll projection (RENDER_JOB_POLL_SELECT), so it's already present.
       ...(process.env.CREDITS_LIVE === "1" ? { creditsSpent: job.creditsSpent ?? null } : {}),
     });
   }

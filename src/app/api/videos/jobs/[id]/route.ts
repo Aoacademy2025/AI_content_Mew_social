@@ -11,8 +11,35 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    const job = await prisma.videoJob.findFirst({ where: { id, userId: user.id } });
+    // PERF-APP-2: project only what this poll returns/needs. NEVER select `inputJson` (the
+    // full render config) — it was hydrated on every 5s/15s poll for nothing. `outputJson`
+    // is null until the job is done (written once by finishJob), so selecting it costs ~0
+    // pre-done and is decoded only when status === "done".
+    const job = await prisma.videoJob.findFirst({
+      where: { id, userId: user.id },
+      select: {
+        id: true,
+        projectId: true,
+        status: true,
+        currentStep: true,
+        progress: true,
+        errorMessage: true,
+        createdAt: true,
+        videoId: true,
+        outputJson: true,
+      },
+    });
     if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+    // A still-queued editor-v2 job is waiting for the (serial) mcp-video-worker to claim it.
+    // Surface a 1-based queue position so the badge can show "คิว #N" instead of a frozen 0%
+    // (PERF-APP-1, editor-v2 side). Counted from the VideoJob queue (the queue an editor-v2
+    // job actually waits in) — the RenderJob-queue helper is for the render-progress route.
+    // Only queried when queued, so the hot processing/done poll path stays a single read.
+    const queuePosition =
+      job.status === "queued"
+        ? (await prisma.videoJob.count({ where: { status: "queued", createdAt: { lt: job.createdAt } } })) + 1
+        : null;
 
     return NextResponse.json({
       id: job.id,
@@ -22,6 +49,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       progress: job.progress,
       errorMessage: job.errorMessage,
       createdAt: job.createdAt.toISOString(),
+      queuePosition,
       ...(job.status === "done" ? { output: parseVideoJobOutput(job.outputJson) } : {}),
     });
   } catch (err) {

@@ -344,6 +344,37 @@ export async function sweepDeadRenderJobs(staleMs: number): Promise<number> {
   return dead.length;
 }
 
-export async function getRenderJob(id: string): Promise<RenderJobRow | null> {
-  return prisma.renderJob.findUnique({ where: { id } });
+// Poll-time projection: only the fields the render-progress route reads on each tick
+// (ownership + status/progress/receipt) plus createdAt for the queue-position count.
+// Deliberately EXCLUDES `payload` (the full render-config JSON) so a status poll never
+// hydrates it (PERF-APP-2). The worker still reads the FULL row via claimNextRenderJob
+// (findUnique, no select) — this narrow read is only for progress polling.
+const RENDER_JOB_POLL_SELECT = {
+  id: true,
+  userId: true,
+  status: true,
+  progress: true,
+  error: true,
+  videoUrl: true,
+  creditsSpent: true,
+  createdAt: true,
+} as const;
+
+export async function getRenderJob(id: string) {
+  return prisma.renderJob.findUnique({ where: { id }, select: RENDER_JOB_POLL_SELECT });
+}
+
+/**
+ * 1-based queue position for a QUEUED RenderJob = (# of QUEUED jobs created strictly
+ * before `createdAt`) + 1. `lt` (strict) mirrors the claim order (`createdAt asc` in
+ * claimNextRenderJob) so the oldest-waiting job is "#1" — i.e. "you are #N in line".
+ * Takes `createdAt` (not an id) because getRenderJob's poll projection already returns it,
+ * so this is a single indexed COUNT with no extra row fetch. Only meaningful for a job
+ * that is still QUEUED; callers gate on status === "QUEUED".
+ */
+export async function getRenderQueuePosition(createdAt: Date): Promise<number> {
+  const ahead = await prisma.renderJob.count({
+    where: { status: "QUEUED", createdAt: { lt: createdAt } },
+  });
+  return ahead + 1;
 }

@@ -26,7 +26,18 @@ export async function GET() {
     const now = new Date();
     const videos = await prisma.video.findMany({
       where: { userId: authUser.id },
-      include: { content: { select: { headline: true } } },
+      select: {
+        id: true,
+        status: true,
+        thumbnail: true,
+        videoUrl: true,
+        avatarVideoUrl: true,
+        audioUrl: true,
+        script: true,
+        createdAt: true,
+        expiresAt: true,
+        content: { select: { headline: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
 

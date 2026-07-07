@@ -19,7 +19,7 @@ function browserStorage() {
 }
 
 export function V2JobBadge() {
-  const [state, setState] = useState<{ status: string; progress: number } | null>(null);
+  const [state, setState] = useState<{ status: string; progress: number; queuePosition: number | null } | null>(null);
 
   useEffect(() => {
     let jobId: string | null = null;
@@ -33,7 +33,7 @@ export function V2JobBadge() {
         if (!res.ok) { if (res.status === 404) setState(null); return; }
         const d = await res.json();
         if (d.status === "queued" || d.status === "processing" || d.status === "done") {
-          setState({ status: d.status, progress: d.progress ?? 0 });
+          setState({ status: d.status, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null });
         } else {
           setState(null);
         }
@@ -58,7 +58,9 @@ export function V2JobBadge() {
       }}
     >
       {running
-        ? <><Loader2 size={13} className="animate-spin" /> วิดีโอของคุณกำลังเรนเดอร์อยู่ ({state.progress}%) — เปิดดูสถานะ</>
+        ? (state.queuePosition
+            ? <><Loader2 size={13} className="animate-spin" /> วิดีโอของคุณอยู่ในคิวเรนเดอร์ (คิว #{state.queuePosition}) — เปิดดูสถานะ</>
+            : <><Loader2 size={13} className="animate-spin" /> วิดีโอของคุณกำลังเรนเดอร์อยู่ ({state.progress}%) — เปิดดูสถานะ</>)
         : <><CheckCircle2 size={13} /> วิดีโอเรนเดอร์เสร็จแล้ว — เข้าไปแต่งซับ + ส่งออกได้เลย</>}
     </Link>
   );
