@@ -1,8 +1,10 @@
 import {
   appendBrollPreferenceToDirection,
+  applyBrollPreferenceToSearchQuery,
   augmentRelevanceSpecWithBrollPreference,
   brollPreferenceInstruction,
 } from "../src/lib/broll-preferences";
+import type { RelevanceSpec } from "../src/lib/relevance-spec";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -21,7 +23,16 @@ check("european avoid includes asian", (euroSpec?.avoidConcepts ?? []).some((t) 
 // 2. thai degrades to asian in fallback queries (never western)
 check("thai fallback contains asian queries", (thaiSpec?.safeFallbackQueries ?? []).some((q) => q.includes("asian")));
 check("thai fallback has no european", !(thaiSpec?.safeFallbackQueries ?? []).some((q) => /european|western/.test(q)));
-check("thai fallback includes specific asian business people query", (thaiSpec?.safeFallbackQueries ?? []).includes("asian business people"));
+// (regression fix) fallbacks used to be people-ONLY ("asian business people"); now the
+// asian degrade must be region-correct but NOT people-only — a SETTING query must survive.
+check(
+  "thai fallback keeps an asian SETTING query (region-correct, not people-only)",
+  (thaiSpec?.safeFallbackQueries ?? []).some((q) => q.includes("asian") && !/people|worker|workers|person|team/.test(q)),
+);
+check(
+  "thai fallback still keeps at least one people option for genuinely-people scenes",
+  (thaiSpec?.safeFallbackQueries ?? []).some((q) => /people|worker|workers|person|team/.test(q)),
+);
 
 // 3. Truncation: long base direction must NOT swallow the preference suffix
 const longBase = "x".repeat(300);
@@ -40,5 +51,72 @@ check("combined: suffix stays whole", combinedAppended.includes("never Western/E
 // 4. Instruction helper
 check("instruction non-empty for thai", brollPreferenceInstruction({ brollRegionPreference: "thai" }).length > 0);
 check("instruction empty for auto", brollPreferenceInstruction({}) === "");
+
+// ---------------------------------------------------------------------------
+// REGRESSION FIX: region must qualify people/place queries, NOT people-force
+// every object/abstract query (was: "growth chart" -> "asian growth chart").
+// ---------------------------------------------------------------------------
+
+// (a) pure object/abstract query -> UNCHANGED (no region prefix)
+check(
+  "object query 'growth chart' (asian) stays unchanged",
+  applyBrollPreferenceToSearchQuery("growth chart", { brollRegionPreference: "asian" }) === "growth chart",
+);
+check(
+  "object query 'rising bar graph' (asian) stays unchanged",
+  applyBrollPreferenceToSearchQuery("rising bar graph", { brollRegionPreference: "asian" }) === "rising bar graph",
+);
+check(
+  "nature query 'ocean waves' (thai) stays unchanged",
+  applyBrollPreferenceToSearchQuery("ocean waves", { brollRegionPreference: "thai" }) === "ocean waves",
+);
+
+// (b) people query -> gets the region qualifier
+check(
+  "people query 'office workers' (asian) gets asian qualifier",
+  applyBrollPreferenceToSearchQuery("office workers", { brollRegionPreference: "asian" }) === "asian office workers",
+);
+
+// (c) place/setting query -> gets the region qualifier
+check(
+  "place query 'city street' (asian) gets asian qualifier",
+  applyBrollPreferenceToSearchQuery("city street", { brollRegionPreference: "asian" }) === "asian city street",
+);
+check(
+  "place query 'coffee shop' (thai) gets thai qualifier",
+  applyBrollPreferenceToSearchQuery("coffee shop", { brollRegionPreference: "thai" }).startsWith("thai "),
+);
+
+// (d) instruction strings carry the conditional "do not add" phrasing
+for (const region of ["asian", "thai", "european"] as const) {
+  const instr = brollPreferenceInstruction({ brollRegionPreference: region });
+  check(`${region} instruction has conditional 'do not add' phrasing`, /do not add/i.test(instr));
+  check(`${region} instruction is content-first (not "prefer <region> people")`, !/^Prefer\s+\w+\s+people/i.test(instr));
+}
+
+// (e) augmented positiveConcepts for asian include SETTING terms and are NOT
+//     people-dominated (used as the ranker's "prefer footage of" list).
+const asianPos = asianSpec?.positiveConcepts ?? [];
+const asianPeople = asianPos.filter((t) => /\b(people|person|persons|worker|workers|team|teams|business|man|woman|men|women)\b/.test(t));
+const asianSetting = asianPos.filter((t) => /\b(city|street|office|market|architecture|scene|lifestyle|home|shop|building)\b/.test(t));
+check("asian positiveConcepts include setting terms", asianSetting.length > 0);
+check("asian positiveConcepts are not people-dominated", asianPeople.length <= asianSetting.length);
+
+// (f) auto / unset -> byte-identical passthrough behavior
+check(
+  "unset region leaves object query unchanged",
+  applyBrollPreferenceToSearchQuery("growth chart", {}) === "growth chart",
+);
+check("unset augment returns null spec unchanged", augmentRelevanceSpecWithBrollPreference(null, {}) === null);
+const passthroughSpec: RelevanceSpec = {
+  visualDomain: "finance",
+  positiveConcepts: ["chart"],
+  avoidConcepts: [],
+  safeFallbackQueries: [],
+};
+check(
+  "unset augment returns the same spec reference",
+  augmentRelevanceSpecWithBrollPreference(passthroughSpec, {}) === passthroughSpec,
+);
 
 process.exit(failures ? 1 : 0);

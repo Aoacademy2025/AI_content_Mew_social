@@ -30,7 +30,12 @@ export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] =
 
 type PreferenceHints = {
   instruction: string;
+  // `positive` holds SETTING/scene terms only for region hints, so it never
+  // people-loads the ranker's "prefer footage of" list (see augment* below).
   positive: string[];
+  // People vocabulary kept for region fidelity but INTENTIONALLY excluded from
+  // positiveConcepts — region qualifies people, it must not manufacture them.
+  peopleContext?: string[];
   avoid: string[];
   fallbackQueries: string[];
   domainLabel: string;
@@ -38,35 +43,40 @@ type PreferenceHints = {
 
 const REGION_HINTS: Record<Exclude<BrollRegionPreference, "auto">, PreferenceHints> = {
   asian: {
-    instruction: "Prefer Asian people (East or Southeast Asian) and Asian urban, business, or lifestyle contexts whenever people or places appear. Never use Western/European-looking people.",
-    positive: ["asian people", "asian city", "asian office", "east asian", "southeast asian", "asian business"],
+    instruction: "When people appear in a shot, make them Asian (East or Southeast Asian); do NOT add or prefer people for object, nature, or scene shots — match the subtitle's content first. Show Asian cities, streets, and local settings when a location appears; never use Western/European-looking people.",
+    positive: ["asian city", "asian street", "asian office", "asian market", "asian architecture", "asian lifestyle scene"],
+    peopleContext: ["asian people", "east asian", "southeast asian", "asian business"],
     avoid: ["caucasian people", "western people", "european people", "blonde hair"],
-    fallbackQueries: ["asian business people", "asian city street", "asian office workers"],
+    // Mix of settings + one people option (kept for genuinely-people scenes).
+    fallbackQueries: ["asian city street", "asian market stall", "asian city detail", "bangkok street scene", "asian office workers"],
     domainLabel: "asian visual context",
   },
   thai: {
-    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments. If Thai-specific footage is unavailable, other Asian people and settings are acceptable — never Western/European-looking people.",
-    positive: ["thai people", "thailand", "bangkok", "thai office", "southeast asian", "thai lifestyle"],
+    instruction: "When people appear in a shot, make them Thai or Southeast Asian; do NOT add or prefer people for object, nature, or scene shots — match the subtitle's content first. Show Bangkok or Thailand local settings when a location appears; if Thai footage is unavailable, other Asian settings are fine — never Western/European-looking people.",
+    positive: ["thailand", "bangkok", "thai street", "thai market", "thai office", "thai city scene"],
+    peopleContext: ["thai people", "southeast asian", "thai business", "thai lifestyle"],
     avoid: ["caucasian people", "western people", "european people", "blonde hair"],
     fallbackQueries: [
-      "bangkok city street", "thai office workers", "southeast asian people",
-      // degrade path: thai unavailable → asian, never western
-      "asian business people", "asian city street", "asian office workers",
+      "bangkok street scene", "thai market stall", "bangkok city detail",
+      // degrade path: thai unavailable → asian setting, never western
+      "asian city street", "thai office workers",
     ],
     domainLabel: "thai visual context",
   },
   european: {
-    instruction: "Prefer European or Western people, European city settings, and western office or lifestyle contexts whenever people or places appear. Never use Asian-looking people.",
-    positive: ["european people", "european city", "western office", "european business", "european lifestyle"],
+    instruction: "When people appear in a shot, make them European or Western; do NOT add or prefer people for object, nature, or scene shots — match the subtitle's content first. Show European cities and local settings when a location appears; never use Asian-looking people.",
+    positive: ["european city", "european street", "western office", "european architecture", "european plaza"],
+    peopleContext: ["european people", "western people", "european business"],
     avoid: ["asian people", "east asian people", "southeast asian people"],
-    fallbackQueries: ["european city street", "european office workers", "european business people"],
+    fallbackQueries: ["european city street", "european street detail", "european architecture", "european office workers"],
     domainLabel: "european visual context",
   },
   global: {
-    instruction: "Prefer diverse people, international cities, multicultural teams, and globally neutral environments.",
-    positive: ["diverse people", "international city", "global office", "multicultural team", "diverse business"],
+    instruction: "Prefer diverse, international cities and globally neutral environments; when people appear in a shot, show a multicultural mix — do not force people into object or scene shots.",
+    positive: ["international city", "global cityscape", "modern office", "international architecture"],
+    peopleContext: ["diverse people", "multicultural team", "diverse business"],
     avoid: [],
-    fallbackQueries: ["diverse business team", "international city street", "multicultural office meeting"],
+    fallbackQueries: ["international city street", "modern office space", "diverse business team"],
     domainLabel: "global visual context",
   },
   "no-people": {
@@ -188,14 +198,18 @@ export function brollPreferencePromptBlock(input: BrollPreferenceInput): string 
   const regionConstraint = region
     ? region === "no-people"
       ? "Treat the no-people setting as a hard search constraint: avoid visible faces, portraits, crowds, and full-body people unless the subtitle is impossible without a person."
-      : "Treat the region setting as a strong search constraint: every people, place, office, school, lifestyle, or city query must carry the requested region/local context."
+      : "Treat the region setting as a qualifier for people and place queries ONLY: when a shot shows people or a location (city, street, office, school, market, home), give it the requested region/local context. Never introduce people into object, nature, product, or abstract scene shots — match the subtitle's content first."
+    : "";
+  const analysisGuardrail = region && region !== "no-people"
+    ? "Do not add people the script doesn't imply; the region setting only qualifies queries that are already about people or places."
     : "";
   return [
     "B-ROLL VISUAL PREFERENCE:",
     hints.instruction,
     regionConstraint,
+    analysisGuardrail,
     "Use this to steer query wording, visualDirection, and safe fallback queries while keeping every query filmable and relevant to the subtitle.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function appendBrollPreferenceToDirection(direction: string, input: BrollPreferenceInput): string {
@@ -248,6 +262,18 @@ const REGION_SEARCH_CONSTRAINTS: Partial<Record<BrollRegionPreference, { require
 
 const PEOPLE_WORD_RE = /\b(people|person|persons|man|woman|men|women|face|faces|portrait|portraits|crowd|crowds|student|students|worker|workers|team|teams|employee|employees|teacher|teachers|doctor|doctors|patient|patients|customer|customers)\b/gi;
 
+// Non-global twin of PEOPLE_WORD_RE for stateless `.test()` (global flag carries
+// lastIndex between calls and would flap true/false).
+const PEOPLE_WORD_TEST_RE = new RegExp(PEOPLE_WORD_RE.source, "i");
+
+// Place / setting vocabulary — a query about a location legitimately carries a
+// regional look. Pure object/nature/abstract queries do NOT.
+const PLACE_WORD_RE = /\b(city|cities|street|streets|office|offices|school|schools|home|homes|house|houses|market|markets|temple|temples|shop|shops|store|stores|restaurant|restaurants|cafe|cafes|crowd|crowds|team|teams|workplace|workplaces|building|buildings|road|roads|park|parks|station|stations|village|villages|town|towns|neighborhood|neighborhoods|neighbourhood|neighbourhoods|downtown|skyline|cityscape|classroom|classrooms|apartment|apartments|hospital|hospitals|factory|factories|mall|malls|airport|airports|hotel|hotels|studio|studios)\b/i;
+
+function mentionsPeopleOrPlace(query: string): boolean {
+  return PEOPLE_WORD_TEST_RE.test(query) || PLACE_WORD_RE.test(query);
+}
+
 function hasConstraintAlias(query: string, aliases: string[]): boolean {
   const normalized = ` ${query.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
   return aliases.some((alias) => normalized.includes(` ${alias.toLowerCase()} `));
@@ -270,6 +296,10 @@ export function applyBrollPreferenceToSearchQuery(query: string, input: BrollPre
 
   const constraint = REGION_SEARCH_CONSTRAINTS[region];
   if (!constraint || hasConstraintAlias(clean, constraint.aliases)) return clean;
+  // Region is a qualifier for people/place shots — leave pure object, nature,
+  // and abstract queries untouched (e.g. "growth chart" must NOT become
+  // "asian growth chart", which returns photos of people on stock sites).
+  if (!mentionsPeopleOrPlace(clean)) return clean;
   return `${constraint.required} ${clean}`;
 }
 
