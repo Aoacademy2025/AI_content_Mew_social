@@ -132,6 +132,9 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
 
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string | null>(null);
+
+  const [selectPreviewUrl, setSelectPreviewUrl] = useState<string | null>(null);
 
   const [aiSimpleText, setAiSimpleText] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -152,6 +155,8 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     setSelectingId(null);
     setUploadBusy(false);
     setUploadError(null);
+    setUploadPreviewUrl(null);
+    setSelectPreviewUrl(null);
     setAiSimpleText("");
     setAdvancedOpen(false);
     setAdvancedOverride(null);
@@ -202,6 +207,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     setSearchLoading(true);
     setSearchError(null);
     setSearchCandidates(null);
+    setSelectPreviewUrl(null);
     try {
       const res = await fetch("/api/videos/broll-window/search", {
         method: "POST",
@@ -220,6 +226,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
 
   async function handleSelectCandidate(c: SearchCandidate) {
     setSelectingId(c.id);
+    setSelectPreviewUrl(null);
     try {
       const res = await fetch("/api/videos/broll-window/select", {
         method: "POST",
@@ -228,6 +235,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.src) { toast.error(d?.message ?? `เปลี่ยนคลิปไม่สำเร็จ (${res.status})`); return; }
+      setSelectPreviewUrl(d.src);
       markEdited("stock", d.src, searchKeyword.trim() || undefined, c.title || "สต็อก");
     } catch {
       toast.error("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -254,12 +262,14 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     }
     setUploadError(null);
     setUploadBusy(true);
+    setUploadPreviewUrl(null);
     try {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/videos/broll-window/upload", { method: "POST", body: form });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.src) { setUploadError(d?.message ?? `อัปโหลดไม่สำเร็จ (${res.status})`); return; }
+      setUploadPreviewUrl(d.src);
       markEdited("upload", d.src, undefined, "อัปโหลด");
     } catch {
       setUploadError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -366,6 +376,19 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
               ))}
             </div>
           )}
+          {selectPreviewUrl && (
+            <div className="flex flex-col gap-1.5">
+              <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>
+              <video
+                src={selectPreviewUrl}
+                muted
+                loop
+                autoPlay
+                playsInline
+                style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200, objectFit: "cover" }}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -392,6 +415,19 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
             )}
           </label>
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>รูปภาพจะถูกทำเป็นคลิปเคลื่อนไหวอัตโนมัติ</span>
+          {uploadPreviewUrl && (
+            <div className="flex flex-col gap-1.5">
+              <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>
+              <video
+                src={uploadPreviewUrl}
+                muted
+                loop
+                autoPlay
+                playsInline
+                style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200, objectFit: "cover" }}
+              />
+            </div>
+          )}
           {uploadError && <span style={{ fontSize: 11.5, color: color.danger }}>{uploadError}</span>}
         </div>
       )}
