@@ -37,8 +37,8 @@ export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; 
 export function usePostPhaseEditor(
   job: V2JobState,
   script: string,
-  { onExported, onAdoptJob }: {
-    onExported: () => void;
+  { onExportJob, onAdoptJob }: {
+    onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
     /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
      *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
     onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
@@ -294,54 +294,20 @@ export function usePostPhaseEditor(
 
   async function exportVideo() {
     if (!baseUrl || !captions.length || exp.phase === "burning" || exp.phase === "saving") return;
-    setExp({ phase: "burning", progress: 0 });
+    if (!job.jobId) {
+      setExp({ phase: "error", message: "ไม่พบวิดีโอต้นฉบับ" });
+      return;
+    }
+    setExp({ phase: "saving" });
     try {
       const overlay = buildV2BurnConfig(baseUrl, captions, preview?.audioDurationMs ?? 0, cfg, 30, overrides);
-      const res = await fetch("/api/videos/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subtitleOverlayConfig: overlay }),
+      const result = await onExportJob({
+        sourceJobId: job.jobId,
+        subtitleOverlayConfig: overlay,
+        script: script.trim() || preview?.fullText || undefined,
+        sceneCount: captions.length,
       });
-      const d = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(d?.error?.message ?? d?.error ?? `burn failed (${res.status})`);
-
-      let burnedUrl: string | null = d?.videoUrl ?? null;
-      const jobId: string | null = d?.jobId ?? null;
-      if (!burnedUrl && jobId) {
-        // poll จนเสร็จ (แนวเดียวกับ pollRender ฝั่ง worker)
-        for (let i = 0; i < 450 && !pollStop.current; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          try {
-            const p = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`).then((r) => r.json());
-            if (typeof p?.progress === "number") setExp({ phase: "burning", progress: Math.max(0, Math.min(100, Math.round(p.progress))) });
-            if (p?.stage === "done" && p?.videoUrl) { burnedUrl = p.videoUrl; break; }
-            if (p?.stage === "error") throw new Error(p?.error ?? "burn error");
-          } catch (e) {
-            if (e instanceof Error && e.message !== "Failed to fetch") throw e;
-          }
-        }
-      }
-      if (!burnedUrl) throw new Error("burn ไม่เสร็จในเวลาที่กำหนด — เช็คใน Gallery ภายหลัง");
-
-      // บันทึกเข้า Gallery (โครงเดียวกับ MCP step 7/9 แต่จบที่ COMPLETED เลย)
-      setExp({ phase: "saving" });
-      await fetch("/api/videos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoUrl: burnedUrl,
-          ...(job.projectId ? { projectId: job.projectId } : {}),
-          audioUrl: preview?.voiceUrl ?? null,
-          thumbnail: null,
-          // ชื่อใน Gallery มาจาก script (v1 ก็ทำแบบนี้) — โหมดอัปคลิปใช้ fullText ที่ถอดได้
-          script: script.trim() || preview?.fullText || null,
-          sceneCount: captions.length,
-          status: "COMPLETED",
-        }),
-      }).catch(() => {}); // gallery save best-effort — ไฟล์ burn สำเร็จแล้ว
-
-      onExported(); // งานนี้จบแล้ว — กลับเข้ามาใหม่ต้องเริ่มสด (spec ข้อ 5)
-      setExp({ phase: "done", url: burnedUrl });
+      if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
     }

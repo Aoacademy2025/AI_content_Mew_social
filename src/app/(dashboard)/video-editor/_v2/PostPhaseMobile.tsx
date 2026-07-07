@@ -41,12 +41,13 @@ const avatarModeLabel = (m?: string | null) =>
 
 const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
-export function PostPhaseMobile({ job, script, onExported, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
-  job: V2JobState; script: string; onExported: () => void;
+export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+  job: V2JobState; script: string;
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported, onAdoptJob });
+  const ed = usePostPhaseEditor(job, script, { onExportJob, onAdoptJob });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);

@@ -35,6 +35,8 @@ type Body = {
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
+  // Editor v2 durable export (mode: "export")
+  subtitleOverlayConfig?: unknown; exportSceneCount?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -113,6 +115,56 @@ export async function POST(req: Request) {
           str(body.idempotencyKey, 120),
           { projectId: srcJob.projectId },
         );
+        return NextResponse.json({ jobId: job.id, status: "queued" });
+      } catch (e) {
+        if ((e as { code?: string })?.code === "P2002") {
+          return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
+        }
+        throw e;
+      }
+    }
+
+    // ── Durable export (mode: "export") ──────────────────────────────────────
+    // The browser only submits the subtitle overlay config. The worker owns the long
+    // burn + Gallery save + project status transition, so switching projects or closing
+    // the tab cannot lose progress/finalization.
+    if (body.mode === "export") {
+      const sourceJobId = str(body.sourceJobId, 120);
+      if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
+      if (!body.subtitleOverlayConfig || typeof body.subtitleOverlayConfig !== "object" || Array.isArray(body.subtitleOverlayConfig)) {
+        return NextResponse.json({ error: "invalid_export", message: "ข้อมูลซับสำหรับส่งออกไม่ถูกต้อง" }, { status: 400 });
+      }
+
+      const srcJob = await prisma.videoJob.findUnique({
+        where: { id: sourceJobId },
+        select: { userId: true, status: true, outputJson: true, projectId: true },
+      });
+      if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
+      if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม" }, { status: 400 });
+      if (!srcJob.projectId) return NextResponse.json({ error: "project_required", message: "โปรเจกต์นี้ยังไม่พร้อมสำหรับส่งออกแบบทำงานเบื้องหลัง" }, { status: 400 });
+      const parsed = parseVideoJobOutput(srcJob.outputJson);
+      if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
+
+      const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: ["queued", "processing"] } } });
+      if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
+
+      try {
+        const job = await createVideoJob(
+          user.id,
+          {
+            mode: "export",
+            sourceJobId,
+            subtitleOverlayConfig: body.subtitleOverlayConfig,
+            exportScript: str(body.script, 20000),
+            exportSceneCount: num(body.exportSceneCount, 1, 1000),
+          },
+          str(body.idempotencyKey, 120),
+          { projectId: srcJob.projectId, type: "export" },
+        );
+        await prisma.editorProject.updateMany({
+          where: { id: srcJob.projectId, userId: user.id },
+          data: { activeExportJobId: job.id, status: "exporting", lastOpenedAt: new Date() },
+        });
         return NextResponse.json({ jobId: job.id, status: "queued" });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {

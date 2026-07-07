@@ -9,10 +9,10 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check } from "lucide-react";
+import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check, CheckCircle2, Download } from "lucide-react";
 import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
-import { StepIndicator, BtnPrimary } from "./ui";
+import { StepIndicator, BtnPrimary, BtnSecondary, BtnGhost } from "./ui";
 import { AccountMenu } from "@/components/layout/account-menu";
 import { NotificationBell } from "@/components/layout/notification-bell";
 import {
@@ -44,6 +44,7 @@ const PROJECT_STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
   rendering: "Rendering",
   post: "Post",
+  exporting: "Exporting",
   exported: "Exported",
 };
 
@@ -51,7 +52,7 @@ export function EditorV2Shell() {
   const p = useV2Project();
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, cancel, reset, markExported, adoptJob } = useV2Job(p);
+  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -287,15 +288,34 @@ export function EditorV2Shell() {
       </header>
 
       {isRendering ? (
-        <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} onCancel={handleCancel} />
+        <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} exportMode={job.jobType === "export"} onCancel={handleCancel} />
       ) : job.phase === "done" ? (
-        isMobile ? (
-          <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+        job.output?.preview ? (
+          isMobile ? (
+            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+          ) : (
+            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+          )
         ) : (
-          <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExported={markExported} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+          <ExportedView
+            job={job}
+            onNewProject={handleNewProject}
+            onEditPreview={(job.output?.sourceJobId ?? p.activeJobId) ? () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!) : undefined}
+          />
         )
       ) : job.phase === "failed" ? (
-        <FailedView job={job} onBack={() => { reset(); setStep(1); }} />
+        <FailedView
+          job={job}
+          exportMode={job.jobType === "export"}
+          onBack={() => {
+            if (job.jobType === "export" && p.activeJobId) {
+              resumeJob(p.activeJobId);
+              return;
+            }
+            reset();
+            setStep(1);
+          }}
+        />
       ) : step === 0 ? (
         <Step1Script p={p} onNext={() => setStep(1)} />
       ) : (
@@ -331,18 +351,58 @@ function SaveStatus({ status }: { status: "idle" | "saving" | "saved" }) {
   return <span>บันทึกอัตโนมัติ</span>;
 }
 
-function FailedView({ job, onBack }: { job: V2JobState; onBack: () => void }) {
+function FailedView({ job, exportMode = false, onBack }: { job: V2JobState; exportMode?: boolean; onBack: () => void }) {
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
         <div className="flex items-center gap-2">
           <XCircle size={18} color={color.danger} />
-          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>เรนเดอร์ไม่สำเร็จ</span>
+          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ"}</span>
         </div>
         <div style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.7 }}>
           {job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง"}
         </div>
-        <BtnPrimary onClick={onBack}>กลับไปตั้งค่า แล้วลองใหม่</BtnPrimary>
+        <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
+      </div>
+    </main>
+  );
+}
+
+function ExportedView({ job, onNewProject, onEditPreview }: {
+  job: V2JobState;
+  onNewProject: () => void;
+  onEditPreview?: () => void;
+}) {
+  const videoUrl = job.output?.videoUrl ?? "";
+
+  return (
+    <main className="flex flex-1 items-center justify-center p-6">
+      <div className="flex w-[520px] max-w-[92vw] flex-col items-center gap-4 text-center">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 size={18} color={color.success} />
+          <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
+        </div>
+        {videoUrl ? (
+          <video
+            src={videoUrl}
+            controls
+            playsInline
+            className="max-h-[52vh]"
+            style={{ borderRadius: 12, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
+          />
+        ) : (
+          <div style={{ fontSize: 12, color: color.textSecondary }}>ส่งออกเสร็จแล้ว แต่ไม่พบ URL วิดีโอในสถานะงาน</div>
+        )}
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          {videoUrl && (
+            <a href={videoUrl} download>
+              <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
+            </a>
+          )}
+          <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          {onEditPreview && <BtnGhost onClick={onEditPreview}>แก้ซับต่อ</BtnGhost>}
+          <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
+        </div>
       </div>
     </main>
   );

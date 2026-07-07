@@ -18,12 +18,13 @@ export async function createVideoJob(
   userId: string,
   input: unknown,
   idempotencyKey?: string,
-  opts: { projectId?: string | null } = {},
+  opts: { projectId?: string | null; type?: string | null } = {},
 ) {
   return prisma.videoJob.create({
     data: {
       userId,
       projectId: opts.projectId ?? null,
+      ...(opts.type ? { type: opts.type } : {}),
       inputJson: JSON.stringify(input),
       idempotencyKey: idempotencyKey ?? null,
       status: "queued",
@@ -53,15 +54,27 @@ export async function finishJob(id: string, output: { videoUrl: string; videoId?
     data: { status: "done", progress: 100, outputJson: JSON.stringify(output), videoId: output.videoId ?? null, finishedAt: new Date() },
   });
   if (job.projectId) {
-    await prisma.editorProject.updateMany({
-      where: { id: job.projectId, userId: job.userId },
-      data: {
-        activeJobId: job.id,
-        ...(output.videoId ? { latestVideoId: output.videoId } : {}),
-        status: output.videoId ? "exported" : "post",
-        lastOpenedAt: new Date(),
-      },
-    });
+    if (job.type === "export") {
+      await prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: job.userId },
+        data: {
+          activeExportJobId: job.id,
+          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+          status: output.videoId ? "exported" : "post",
+          lastOpenedAt: new Date(),
+        },
+      });
+    } else {
+      await prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: job.userId },
+        data: {
+          activeJobId: job.id,
+          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+          status: output.videoId ? "exported" : "post",
+          lastOpenedAt: new Date(),
+        },
+      });
+    }
   }
 }
 
@@ -99,6 +112,7 @@ export interface ParsedVideoJobOutput {
   version: 1 | 2;
   videoUrl?: string;
   videoId?: string;
+  sourceJobId?: string;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
 }
@@ -117,6 +131,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
+      sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
       ...(preview ? { preview } : {}),
     };
   } catch {
@@ -130,10 +145,17 @@ export async function failJob(id: string, message: string) {
     data: { status: "failed", errorMessage: message.slice(0, 1000), finishedAt: new Date() },
   });
   if (job.projectId) {
-    await prisma.editorProject.updateMany({
-      where: { id: job.projectId, userId: job.userId, activeJobId: job.id },
-      data: { status: "draft", lastOpenedAt: new Date() },
-    });
+    if (job.type === "export") {
+      await prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: job.userId, activeExportJobId: job.id },
+        data: { status: "post", lastOpenedAt: new Date() },
+      });
+    } else {
+      await prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: job.userId, activeJobId: job.id },
+        data: { status: "draft", lastOpenedAt: new Date() },
+      });
+    }
   }
 }
 

@@ -48,6 +48,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       ...(Object.prototype.hasOwnProperty.call(body ?? {}, "draftJson") ? { draft: body.draftJson } : {}),
       ...(Object.prototype.hasOwnProperty.call(body ?? {}, "status") ? { status: body.status } : {}),
       ...(Object.prototype.hasOwnProperty.call(body ?? {}, "activeJobId") ? { activeJobId: body.activeJobId } : {}),
+      ...(Object.prototype.hasOwnProperty.call(body ?? {}, "activeExportJobId") ? { activeExportJobId: body.activeExportJobId } : {}),
       ...(Object.prototype.hasOwnProperty.call(body ?? {}, "latestVideoId") ? { latestVideoId: body.latestVideoId } : {}),
       ...(body?.touchLastOpened === true ? { touchLastOpened: true } : {}),
     });

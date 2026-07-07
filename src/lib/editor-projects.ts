@@ -4,7 +4,7 @@ export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
 export const MAX_EDITOR_PROJECT_DRAFT_BYTES = 2 * 1024 * 1024;
 
-export const EDITOR_PROJECT_STATUSES = ["draft", "rendering", "post", "exported", "archived"] as const;
+export const EDITOR_PROJECT_STATUSES = ["draft", "rendering", "post", "exporting", "exported", "archived"] as const;
 export type EditorProjectStatus = (typeof EDITOR_PROJECT_STATUSES)[number];
 
 type ProjectRow = Awaited<ReturnType<typeof prisma.editorProject.findFirst>>;
@@ -44,6 +44,7 @@ export function editorProjectResponse(project: NonNullable<ProjectRow>) {
     status: project.status,
     draft: project.draftJson ? JSON.parse(project.draftJson) : null,
     activeJobId: project.activeJobId,
+    activeExportJobId: project.activeExportJobId,
     latestVideoId: project.latestVideoId,
     lastOpenedAt: project.lastOpenedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),
@@ -95,6 +96,7 @@ export async function updateEditorProject(
     draft?: unknown;
     status?: unknown;
     activeJobId?: unknown;
+    activeExportJobId?: unknown;
     latestVideoId?: unknown;
     touchLastOpened?: unknown;
   },
@@ -104,6 +106,7 @@ export async function updateEditorProject(
     draftJson?: string | null;
     status?: string;
     activeJobId?: string | null;
+    activeExportJobId?: string | null;
     latestVideoId?: string | null;
     lastOpenedAt?: Date;
   } = {};
@@ -122,6 +125,11 @@ export async function updateEditorProject(
   if ("activeJobId" in input) {
     data.activeJobId = typeof input.activeJobId === "string" && input.activeJobId.trim()
       ? input.activeJobId.trim()
+      : null;
+  }
+  if ("activeExportJobId" in input) {
+    data.activeExportJobId = typeof input.activeExportJobId === "string" && input.activeExportJobId.trim()
+      ? input.activeExportJobId.trim()
       : null;
   }
   if ("latestVideoId" in input) {

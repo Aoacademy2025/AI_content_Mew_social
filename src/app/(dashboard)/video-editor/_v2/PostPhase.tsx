@@ -35,12 +35,13 @@ function fmtMs(ms: number) {
 
 const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
-export function PostPhase({ job, script, onExported, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
-  job: V2JobState; script: string; onExported: () => void;
+export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+  job: V2JobState; script: string;
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported, onAdoptJob });
+  const ed = usePostPhaseEditor(job, script, { onExportJob, onAdoptJob });
   // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
   // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
   const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";

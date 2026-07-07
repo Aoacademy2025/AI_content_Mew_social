@@ -55,7 +55,7 @@ interface CreateInput {
    * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
    * previewMode เสมอ (ยิงจากเว็บเท่านั้น; MCP ไม่ส่ง). Route gates on CLIP_CUTAWAY flag.
    */
-  mode?: "script" | "upload" | "broll-rerender";
+  mode?: "script" | "upload" | "broll-rerender" | "export";
   clipUrl?: string;
   /**
    * Editor v2 free per-window b-roll re-render (Phase 2, previewMode-only): reuse the source
@@ -64,6 +64,13 @@ interface CreateInput {
    */
   sourceJobId?: string;
   windowEdits?: WindowEdit[];
+  /**
+   * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
+   * finished video to Gallery from the worker, not from a mounted browser component.
+   */
+  subtitleOverlayConfig?: Record<string, unknown>;
+  exportScript?: string;
+  exportSceneCount?: number;
   /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
@@ -278,6 +285,61 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           config: rrBaseConfig,
           compositeBaseUrl: rrCompositeBaseUrl,
         },
+      });
+      return;
+    }
+
+    // ── EDITOR V2 DURABLE EXPORT ───────────────────────────────────────────────
+    // Final subtitle burn + Gallery save must be server-owned. If the user switches to
+    // another project, closes the tab, or refreshes, this job keeps running and the
+    // project can later resume from activeExportJobId.
+    if (input.mode === "export") {
+      if (!input.sourceJobId) { await failJob(jobId, "export job missing sourceJobId"); return; }
+      if (!input.subtitleOverlayConfig || typeof input.subtitleOverlayConfig !== "object") {
+        await failJob(jobId, "export job missing subtitle overlay config");
+        return;
+      }
+      const src = await prisma.videoJob.findUnique({ where: { id: input.sourceJobId } });
+      if (!src || src.userId !== userId) { await failJob(jobId, "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง"); return; }
+      if (src.status !== "done") { await failJob(jobId, "วิดีโอต้นฉบับยังไม่พร้อมสำหรับส่งออก"); return; }
+      const parsed = parseVideoJobOutput(src.outputJson);
+      const preview = parsed?.preview;
+      if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
+
+      await step("burn", 20);
+      const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
+        subtitleOverlayConfig: input.subtitleOverlayConfig,
+      });
+      const burnedUrl = await pollRender(
+        caller,
+        burn.jobId,
+        (pct) => { void setJobStep(jobId, "burn", 20 + Math.round(pct * 0.7)).catch(() => {}); },
+        { sleep, checkCanceled: cancelInFlightRender(burn.jobId) },
+      );
+
+      await step("save", 92);
+      const saved = await caller.post<{ videoId?: string; id?: string }>("/api/videos", {
+        videoUrl: burnedUrl,
+        ...(job.projectId ? { projectId: job.projectId } : {}),
+        audioUrl: preview.voiceUrl ?? null,
+        thumbnail: null,
+        script: input.exportScript?.trim() || preview.fullText || null,
+        sceneCount: input.exportSceneCount ?? preview.captions?.length ?? 1,
+        status: "COMPLETED",
+      });
+      const videoId = saved.videoId ?? saved.id;
+
+      const exportDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, exportDuration]);
+      emitStage(phaseName, "done", exportDuration);
+      console.log(`[mcp-worker] job ${jobId} EXPORT total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s source=${input.sourceJobId}`);
+
+      await finishJob(jobId, {
+        version: 2,
+        mode: "export",
+        sourceJobId: input.sourceJobId,
+        videoUrl: burnedUrl,
+        ...(videoId ? { videoId } : {}),
       });
       return;
     }

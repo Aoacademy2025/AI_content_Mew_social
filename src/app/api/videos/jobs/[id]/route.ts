@@ -20,6 +20,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       select: {
         id: true,
         projectId: true,
+        type: true,
         status: true,
         currentStep: true,
         progress: true,
@@ -44,6 +45,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json({
       id: job.id,
       projectId: job.projectId,
+      type: job.type,
       status: job.status, // queued | processing | done | failed | canceled
       currentStep: job.currentStep,
       progress: job.progress,
@@ -69,7 +71,7 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     const { id } = await ctx.params;
     const job = await prisma.videoJob.findFirst({
       where: { id, userId: user.id },
-      select: { id: true, projectId: true },
+      select: { id: true, projectId: true, type: true },
     });
     if (!job) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
@@ -82,10 +84,17 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }
     if (job.projectId) {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: user.id, activeJobId: job.id },
-        data: { status: "draft", lastOpenedAt: new Date() },
-      });
+      if (job.type === "export") {
+        await prisma.editorProject.updateMany({
+          where: { id: job.projectId, userId: user.id, activeExportJobId: job.id },
+          data: { status: "post", lastOpenedAt: new Date() },
+        });
+      } else {
+        await prisma.editorProject.updateMany({
+          where: { id: job.projectId, userId: user.id, activeJobId: job.id },
+          data: { status: "draft", lastOpenedAt: new Date() },
+        });
+      }
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

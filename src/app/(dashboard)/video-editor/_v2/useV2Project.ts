@@ -19,6 +19,8 @@ interface V2Draft {
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }
 
+type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
+
 function browserStorage() {
   if (typeof window === "undefined") return null;
   const storage = window.localStorage;
@@ -96,6 +98,10 @@ export function useV2Project() {
   const d = draftRef.current;
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectReady, setProjectReady] = useState(false);
+  const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+  const [latestVideoId, setLatestVideoId] = useState<string | null>(null);
 
   // ── Step 1 ──
   const [projectTitle, setProjectTitle] = useState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle);
@@ -225,6 +231,10 @@ export function useV2Project() {
       if (id) {
         setProjectId(id);
         setProjectReady(true);
+        if (typeof data?.project?.status === "string") setProjectStatus(data.project.status as ProjectStatus);
+        setActiveJobId(typeof data?.project?.activeJobId === "string" ? data.project.activeJobId : null);
+        setActiveExportJobId(typeof data?.project?.activeExportJobId === "string" ? data.project.activeExportJobId : null);
+        setLatestVideoId(typeof data?.project?.latestVideoId === "string" ? data.project.latestVideoId : null);
         try { browserStorage()?.setItem(PROJECT_ID_KEY, id); } catch {}
       }
       return id;
@@ -242,6 +252,10 @@ export function useV2Project() {
     draftRef.current = nextDraft;
     setProjectId(null);
     setProjectReady(false);
+    setProjectStatus("draft");
+    setActiveJobId(null);
+    setActiveExportJobId(null);
+    setLatestVideoId(null);
     try {
       const storage = browserStorage();
       storage?.removeItem(DRAFT_KEY);
@@ -293,6 +307,10 @@ export function useV2Project() {
             if (!alive || typeof project?.id !== "string") return;
             setProjectId(project.id);
             setProjectReady(true);
+            setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
+            setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
+            setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
+            setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
             storage?.setItem(PROJECT_ID_KEY, project.id);
             if (project.draft && typeof project.draft === "object") {
               applyDraft(project.draft as V2Draft);
@@ -433,7 +451,7 @@ export function useV2Project() {
     brollVisualStyle, setBrollVisualStyle,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, projectId, projectReady, resetProject,
+    plan, canUploadOwnMedia, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, resetProject,
     saveStatus,
   };
 }

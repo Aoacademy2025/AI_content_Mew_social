@@ -79,11 +79,40 @@ async function main() {
   const job = await jobs.createVideoJob(alice.id, { script: "hello", previewMode: true }, undefined, { projectId: p.id });
   const jobRow = await prisma.videoJob.findUnique({ where: { id: job.id } });
   ok(jobRow?.projectId === p.id, "createVideoJob stores optional projectId");
+  ok(jobRow?.type === "create", "createVideoJob defaults to create type");
 
   await projects.updateEditorProject(alice.id, p.id, { activeJobId: job.id, status: "rendering" });
   await jobs.finishJob(job.id, { version: 2, mode: "preview", videoUrl: "/api/renders/base.mp4" });
   const afterFinish = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterFinish?.activeJobId === job.id && afterFinish?.status === "post", "finishJob moves preview project to post");
+
+  const exportJob = await jobs.createVideoJob(
+    alice.id,
+    { mode: "export", sourceJobId: job.id },
+    undefined,
+    { projectId: p.id, type: "export" },
+  );
+  await projects.updateEditorProject(alice.id, p.id, { activeExportJobId: exportJob.id, status: "exporting" });
+  await jobs.finishJob(exportJob.id, { version: 2, mode: "export", sourceJobId: job.id, videoUrl: "/api/renders/final.mp4", videoId: "video_export_1" });
+  const afterExport = await prisma.editorProject.findUnique({ where: { id: p.id } });
+  ok(
+    afterExport?.activeJobId === job.id &&
+    afterExport?.activeExportJobId === exportJob.id &&
+    afterExport?.latestVideoId === "video_export_1" &&
+    afterExport?.status === "exported",
+    "finishJob moves export project to exported without replacing preview job",
+  );
+
+  const failedExport = await jobs.createVideoJob(
+    alice.id,
+    { mode: "export", sourceJobId: job.id },
+    undefined,
+    { projectId: p.id, type: "export" },
+  );
+  await projects.updateEditorProject(alice.id, p.id, { activeExportJobId: failedExport.id, status: "exporting" });
+  await jobs.failJob(failedExport.id, "export failed");
+  const afterExportFail = await prisma.editorProject.findUnique({ where: { id: p.id } });
+  ok(afterExportFail?.activeJobId === job.id && afterExportFail?.status === "post", "failJob returns export project to post without clearing preview job");
 
   const failedJob = await jobs.createVideoJob(alice.id, { script: "boom", previewMode: true }, undefined, { projectId: p.id });
   await projects.updateEditorProject(alice.id, p.id, { activeJobId: failedJob.id, status: "rendering" });

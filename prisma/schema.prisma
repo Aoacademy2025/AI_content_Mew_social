@@ -172,9 +172,10 @@ model EditorProject {
   userId        String
   user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   title         String     @default("New Project")
-  status        String     @default("draft") // draft|rendering|post|exported|archived
+  status        String     @default("draft") // draft|rendering|post|exporting|exported|archived
   draftJson     String?
   activeJobId   String?
+  activeExportJobId String?
   latestVideoId String?
   lastOpenedAt  DateTime?
   createdAt     DateTime   @default(now())
@@ -185,6 +186,7 @@ model EditorProject {
   @@index([userId, updatedAt])
   @@index([userId, status, updatedAt])
   @@index([activeJobId])
+  @@index([activeExportJobId])
   @@index([latestVideoId])
 }
 
