@@ -21,4 +21,29 @@ const c4 = cardsByWordCount(words, 4, fullText);
 assert(c4.length === 3 && c4[2].text.length > 0, "9/4 = 3 cards, last = non-empty remainder");
 
 assert(POSITION_TOP_PERCENT.top < POSITION_TOP_PERCENT.middle && POSITION_TOP_PERCENT.middle < POSITION_TOP_PERCENT.bottom, "position map ordered top<middle<bottom");
+
+// --- FIX A + FIX B regression: boundary flush across an embedded \n AND sentence-final
+// punctuation, PLUS a regular (non-boundary) double-space inside a group's interior.
+// fullText layout: "ดู" <2 spaces, non-boundary> "คลิป" "นี้" <.> "ชอบ" "กด" <\n> "ไลค์" "เลย"
+const boundaryFullText = "ดู  คลิปนี้.ชอบกด\nไลค์เลย";
+const boundaryToks = ["ดู", "คลิป", "นี้", "ชอบ", "กด", "ไลค์", "เลย"];
+let bpos = 0;
+const boundaryWords = boundaryToks.map((w, i) => {
+  const s = boundaryFullText.indexOf(w, bpos);
+  const e = s + w.length;
+  bpos = e;
+  return { word: w, startMs: i * 100, endMs: i * 100 + 100, startChar: s, endChar: e };
+});
+// n=10 (> word count) so any card split below is caused ONLY by boundary flush (FIX B),
+// never by the word-count cap.
+const bCards = cardsByWordCount(boundaryWords, 10, boundaryFullText);
+assert(bCards.length === 3, "boundary flush splits 7 words into 3 cards at the . and \\n boundaries, ignoring the n=10 word cap");
+assert(!bCards.some((c) => c.text.includes("\n")), "FIX A: no card text contains a raw newline");
+assert(!bCards.some((c) => /  /.test(c.text)), "FIX A: no card text contains an interior double-space (collapsed to single)");
+assert(bCards[0].text === "ดู คลิปนี้", "FIX A: the group-interior double space (non-boundary) collapses to a single space");
+// FIX B: the words straddling each boundary must land in DIFFERENT cards.
+const cardIndexOfWord = (w: string) => bCards.findIndex((c) => c.text.includes(w));
+assert(cardIndexOfWord("นี้") !== cardIndexOfWord("ชอบ"), "FIX B: words either side of the '.' sentence boundary are in different cards");
+assert(cardIndexOfWord("กด") !== cardIndexOfWord("ไลค์"), "FIX B: words either side of the '\\n' line-break boundary are in different cards");
+
 console.log(`\n${passed} assertions passed ✅`);

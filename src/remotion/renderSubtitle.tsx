@@ -187,7 +187,9 @@ export function renderSubtitle(
     width: "100%",
     letterSpacing: "0.01em",
     whiteSpace: "pre-line",
-    wordBreak: "break-all",
+    // FIX D: no wordBreak:"break-all" — it let Chromium cut a Thai word mid-syllable.
+    // With it gone, Chromium's ICU Thai dictionary wraps on real word boundaries;
+    // overflowWrap:"anywhere" stays as the emergency valve for an unbreakable run.
     overflowWrap: "anywhere",
     color,
   };

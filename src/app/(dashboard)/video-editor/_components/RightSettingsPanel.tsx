@@ -171,7 +171,8 @@ export function RightSettingsPanel(p: RightPanelProps) {
                         {/* Static preset preview — STYLE only (no motion). The
                             arbitrary selectors force every inner span to one line and
                             shrink the box-preset paddings, because renderSubtitle sets
-                            whiteSpace:pre-line + break-all (correct for real subtitles)
+                            whiteSpace:pre-line and relies on Chromium's normal word-boundary
+                            wrapping (no break-all — removed by FIX D) for real subtitles,
                             which would otherwise wrap "ตัวอย่าง" inside the small card. */}
                         <div style={{ lineHeight: 1, transform: "scale(0.82)" }}>
                           {renderSubEl("ตัวอย่าง", dSubColor, dSubAccentColor, false, pr.value, dSubFontFamily, 15, dSubFontWeight, 1, "pop", -1, 1, p.subShadow, p.subOutline, p.subOutlineSize)}
