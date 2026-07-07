@@ -58,6 +58,14 @@ const PROJECT_STATUS_LABEL: Record<string, string> = {
   exported: "Exported",
 };
 const PROJECT_DELETE_BLOCKED = new Set(["rendering", "exporting"]);
+const PROJECT_MENU_LIMIT = 8;
+
+async function fetchRecentProjects(limit = PROJECT_MENU_LIMIT): Promise<ProjectMenuItem[]> {
+  const res = await fetch("/api/editor-projects", { cache: "no-store" });
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => null);
+  return Array.isArray(data?.projects) ? data.projects.slice(0, limit) : [];
+}
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -85,11 +93,10 @@ export function EditorV2Shell() {
     if (!projectMenuOpen) return;
     let alive = true;
     setProjectsLoading(true);
-    fetch("/api/editor-projects", { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
+    fetchRecentProjects()
+      .then((items) => {
         if (!alive) return;
-        setProjects(Array.isArray(data?.projects) ? data.projects.slice(0, 8) : []);
+        setProjects(items);
       })
       .catch(() => { if (alive) setProjects([]); })
       .finally(() => { if (alive) setProjectsLoading(false); });
@@ -163,10 +170,24 @@ export function EditorV2Shell() {
       const res = await fetch(`/api/editor-projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
-      setProjects((items) => items.filter((item) => item.id !== project.id));
+      const activeProjectDeleted = project.id === p.projectId;
+      const fallbackProjects = projects.filter((item) => item.id !== project.id);
+      const remainingProjects = (await fetchRecentProjects().catch(() => fallbackProjects))
+        .filter((item) => item.id !== project.id);
+      setProjects(remainingProjects);
       setDeleteProject(null);
+      if (activeProjectDeleted) {
+        const nextProject = remainingProjects[0];
+        if (nextProject) {
+          toast.success(`ลบโปรเจกต์แล้ว กำลังเปิด ${nextProject.title || "โปรเจกต์ถัดไป"}`);
+          openProject(nextProject.id);
+        } else {
+          toast.success("ลบโปรเจกต์แล้ว เริ่มโปรเจกต์ใหม่ให้พร้อมใช้งาน");
+          handleNewProject();
+        }
+        return;
+      }
       toast.success("ลบโปรเจกต์แล้ว");
-      if (project.id === p.projectId) handleNewProject();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบโปรเจกต์ไม่สำเร็จ");
     } finally {
@@ -409,9 +430,13 @@ export function EditorV2Shell() {
       <AlertDialog open={!!deleteProject} onOpenChange={(open) => { if (!open && !deletingProjectId) setDeleteProject(null); }}>
         <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
           <AlertDialogHeader>
-            <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>ลบโปรเจกต์นี้?</AlertDialogTitle>
+            <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>
+              {deleteProject?.id === p.projectId ? "ลบโปรเจกต์ที่เปิดอยู่?" : "ลบโปรเจกต์นี้?"}
+            </AlertDialogTitle>
             <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
-              โปรเจกต์จะถูกซ่อนจากรายการล่าสุด วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ
+              {deleteProject?.id === p.projectId
+                ? "หลังลบ ระบบจะเปิดโปรเจกต์ล่าสุดถัดไปแทน ถ้าไม่มีโปรเจกต์เหลือ จะเริ่มโปรเจกต์ใหม่เปล่าให้พร้อมใช้งาน วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ"
+                : "โปรเจกต์จะถูกลบออกจากรายการล่าสุด วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ"}
               {deleteProject?.title ? `: ${deleteProject.title}` : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
