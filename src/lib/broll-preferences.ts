@@ -1,7 +1,7 @@
 import type { RelevanceSpec } from "@/lib/relevance-spec";
 
 export type BrollRegionPreference = "auto" | "asian" | "thai" | "european" | "global" | "no-people";
-export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal";
+export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal" | "surreal";
 
 export type BrollPreferenceInput = {
   brollRegionPreference?: BrollRegionPreference | string | null;
@@ -25,6 +25,7 @@ export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] =
   { value: "lifestyle", label: "Lifestyle" },
   { value: "tech", label: "Tech" },
   { value: "minimal", label: "Minimal" },
+  { value: "surreal", label: "Surreal" },
 ];
 
 type PreferenceHints = {
@@ -37,23 +38,27 @@ type PreferenceHints = {
 
 const REGION_HINTS: Record<Exclude<BrollRegionPreference, "auto">, PreferenceHints> = {
   asian: {
-    instruction: "Prefer Asian people and Asian urban, business, or lifestyle contexts when people or places are relevant.",
+    instruction: "Prefer Asian people (East or Southeast Asian) and Asian urban, business, or lifestyle contexts whenever people or places appear. Never use Western/European-looking people.",
     positive: ["asian people", "asian city", "asian office", "east asian", "southeast asian", "asian business"],
-    avoid: [],
+    avoid: ["caucasian people", "western people", "european people", "blonde hair"],
     fallbackQueries: ["asian business people", "asian city street", "asian office workers"],
     domainLabel: "asian visual context",
   },
   thai: {
-    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments.",
+    instruction: "Prefer Thai or Southeast Asian people, Bangkok or Thailand local settings, and realistic local environments. If Thai-specific footage is unavailable, other Asian people and settings are acceptable — never Western/European-looking people.",
     positive: ["thai people", "thailand", "bangkok", "thai office", "southeast asian", "thai lifestyle"],
-    avoid: [],
-    fallbackQueries: ["bangkok city street", "thai office workers", "southeast asian people"],
+    avoid: ["caucasian people", "western people", "european people", "blonde hair"],
+    fallbackQueries: [
+      "bangkok city street", "thai office workers", "southeast asian people",
+      // degrade path: thai unavailable → asian, never western
+      "asian business people", "asian city street", "asian office workers",
+    ],
     domainLabel: "thai visual context",
   },
   european: {
-    instruction: "Prefer European people, European city settings, and western office or lifestyle contexts when relevant.",
+    instruction: "Prefer European or Western people, European city settings, and western office or lifestyle contexts whenever people or places appear. Never use Asian-looking people.",
     positive: ["european people", "european city", "western office", "european business", "european lifestyle"],
-    avoid: [],
+    avoid: ["asian people", "east asian people", "southeast asian people"],
     fallbackQueries: ["european city street", "european office workers", "european business people"],
     domainLabel: "european visual context",
   },
@@ -116,6 +121,13 @@ const STYLE_HINTS: Record<Exclude<BrollVisualStyle, "auto">, PreferenceHints> = 
     fallbackQueries: ["minimal desk setup", "clean product detail", "simple workspace light"],
     domainLabel: "minimal style",
   },
+  surreal: {
+    instruction: "Use surreal, imaginative, dreamlike visuals with unexpected juxtapositions and bold artistic composition.",
+    positive: ["surreal", "dreamlike", "imaginative", "abstract", "bold colors", "artistic"],
+    avoid: ["plain office", "corporate stock photo"],
+    fallbackQueries: ["surreal abstract art", "dreamlike landscape", "creative light installation"],
+    domainLabel: "surreal artistic style",
+  },
 };
 
 function isRegionPreference(v: string): v is BrollRegionPreference {
@@ -123,7 +135,7 @@ function isRegionPreference(v: string): v is BrollRegionPreference {
 }
 
 function isVisualStyle(v: string): v is BrollVisualStyle {
-  return v === "auto" || v === "documentary" || v === "cinematic" || v === "business" || v === "lifestyle" || v === "tech" || v === "minimal";
+  return v === "auto" || v === "documentary" || v === "cinematic" || v === "business" || v === "lifestyle" || v === "tech" || v === "minimal" || v === "surreal";
 }
 
 export function normalizeBrollRegionPreference(raw: unknown): Exclude<BrollRegionPreference, "auto"> | undefined {
@@ -189,9 +201,16 @@ export function brollPreferencePromptBlock(input: BrollPreferenceInput): string 
 export function appendBrollPreferenceToDirection(direction: string, input: BrollPreferenceInput): string {
   const hints = collectPreferenceHints(input);
   if (!hints) return direction;
-  const base = direction.trim().replace(/\s+/g, " ");
-  const suffix = hints.instruction.replace(/\s+/g, " ");
-  return `${base}${base ? " " : ""}${suffix}`.slice(0, 260);
+  const suffix = hints.instruction.replace(/\s+/g, " ").trim();
+  const MAX = 320;
+  const MIN_BASE = 160;
+  const budget = Math.max(MIN_BASE, MAX - suffix.length - 1);
+  const base = direction.trim().replace(/\s+/g, " ").slice(0, budget).trimEnd();
+  return [base, suffix].filter(Boolean).join(" ");
+}
+
+export function brollPreferenceInstruction(input: BrollPreferenceInput): string {
+  return collectPreferenceHints(input)?.instruction ?? "";
 }
 
 export function augmentRelevanceSpecWithBrollPreference(

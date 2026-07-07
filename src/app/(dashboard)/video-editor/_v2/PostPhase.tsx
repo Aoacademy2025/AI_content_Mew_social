@@ -19,21 +19,32 @@ import {
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
 } from "./subtitle-style";
+import { useMemo } from "react";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import { BrollWindowInspector, WindowEditsStickyBar } from "./BrollWindowInspector";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function PostPhase({ job, script, onExported, onNewProject }: {
-  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+
+export function PostPhase({ job, script, onExported, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+  job: V2JobState; script: string; onExported: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported });
+  const ed = usePostPhaseEditor(job, script, { onExported, onAdoptJob });
+  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
+  // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
+  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
+  const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
 
   if (ed.exp.phase === "done") {
     return (
@@ -84,6 +95,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
         </div>
       )}
+      {brollEditEnabled && <WindowEditsStickyBar ed={ed} />}
 
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
@@ -191,7 +203,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
                 tailSecs={ed.preview.avatarTailSecs ?? 5}
                 avatarVideoUrl={ed.preview.avatarVideoUrl!}
                 tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-                bgVideoUrl={ed.preview.compositeBaseUrl!}
+                bgVideoUrl={ed.compositeBaseUrl!}
                 jobId={job.jobId}
                 onClose={() => ed.setAdjustingAvatar(false)}
                 onDone={(url) => {
@@ -475,6 +487,10 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
             ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>
         </aside>
+
+        {brollEditEnabled && ed.selectedWindow != null && (
+          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+        )}
       </div>
 
       {/* Timeline 4 แทร็ก (P6b) — ซับลากขอบแก้เวลาได้, แทร็กอื่นคลิก jump */}
@@ -489,7 +505,9 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
         timeMs={ed.timeMs}
         onScrub={ed.setTimeMs}
         durationMs={Math.max(ed.preview?.audioDurationMs ?? 0, ed.captions.length ? ed.captions[ed.captions.length - 1].endMs : 0)}
-        config={(ed.preview?.config as Record<string, unknown>) ?? null}
+        config={ed.previewConfig}
+        onSelectBrollWindow={brollEditEnabled ? ed.setSelectedWindow : undefined}
+        editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}

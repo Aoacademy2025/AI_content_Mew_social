@@ -2,7 +2,9 @@ import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { refundClipUsage } from "@/lib/usage-limits";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
-import { setJobStep, finishJob, failJob } from "@/lib/mcp/video-job";
+import { setJobStep, finishJob, failJob, parseVideoJobOutput } from "@/lib/mcp/video-job";
+import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipeline-client";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
@@ -53,8 +55,15 @@ interface CreateInput {
    * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
    * previewMode เสมอ (ยิงจากเว็บเท่านั้น; MCP ไม่ส่ง). Route gates on CLIP_CUTAWAY flag.
    */
-  mode?: "script" | "upload";
+  mode?: "script" | "upload" | "broll-rerender";
   clipUrl?: string;
+  /**
+   * Editor v2 free per-window b-roll re-render (Phase 2, previewMode-only): reuse the source
+   * job's TTS/avatar, swap only the named b-roll windows, re-render the base WITHOUT charging
+   * minutes again (render route's server-trusted `rerenderOf` skip). Never sent by MCP.
+   */
+  sourceJobId?: string;
+  windowEdits?: WindowEdit[];
   /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
@@ -184,6 +193,93 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       } catch {
         if (!rawBgm.startsWith("/")) input.bgmFile = undefined; // can't resolve a name without the list → drop, don't fail the video
       }
+    }
+
+    // ── EDITOR V2 FREE PER-WINDOW B-ROLL RE-RENDER (Phase 2, previewMode-only) ──
+    // Reuse the SOURCE preview's captions/TTS/avatar; swap only the edited b-roll windows;
+    // re-render the base for FREE (render route's server-trusted `rerenderOf` skip — never a
+    // client flag). Subtitle timing is untouched: captions/voiceUrl/words/audioDurationMs are
+    // copied through verbatim. MCP never sends this mode.
+    if (input.mode === "broll-rerender") {
+      if (!input.sourceJobId) { await failJob(jobId, "broll-rerender job missing sourceJobId"); return; }
+      const src = await prisma.videoJob.findUnique({ where: { id: input.sourceJobId } });
+      if (!src || src.userId !== userId) { await failJob(jobId, "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง"); return; } // IDOR guard
+      const parsed = parseVideoJobOutput(src.outputJson);
+      const preview = parsed?.preview;
+      const srcBgVideos = (preview?.config as Record<string, unknown> | undefined)?.bgVideos;
+      if (!preview || !Array.isArray(srcBgVideos)) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูล b-roll ที่แก้ไขได้"); return; }
+
+      // Re-validate the edits server-side (defense-in-depth; the jobs route already validated).
+      const editsRes = validateWindowEdits(input.windowEdits);
+      if ("error" in editsRes) { await failJob(jobId, editsRes.error); return; }
+      const mergeRes = mergeWindowEdits(srcBgVideos, editsRes);
+      if ("error" in mergeRes) { await failJob(jobId, mergeRes.error); return; }
+
+      // New base config: source preview config with merged b-roll, no keyword popups (base render).
+      const rrBaseConfig = { ...(preview.config as Record<string, unknown>), bgVideos: mergeRes.bgVideos, keywordPopups: [] as unknown[] };
+
+      await step("render", 40);
+      const rr = await caller.post<{ jobId: string }>("/api/videos/render", {
+        shortVideoConfig: rrBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+        rerenderOf: { sourceJobId: input.sourceJobId },
+      });
+      const rrNewBase = await pollRender(caller, rr.jobId, (pct) => { void setJobStep(jobId, "render", 40 + Math.round(pct * 0.3)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(rr.jobId) });
+
+      // Avatar re-composite (HeyGen only) — EXACTLY like AvatarAdjustOverlay.apply(): a free
+      // chromakey re-composite of the SAME stored avatar assets onto the NEW base (no HeyGen call).
+      let rrFinalUrl = rrNewBase;
+      let rrCompositeBaseUrl: string | null = preview.compositeBaseUrl ?? null;
+      const rrHasAvatar = !!(preview.avatarModel && preview.avatarModel !== "none" && preview.avatarVideoUrl);
+      if (rrHasAvatar) {
+        const heygenModes = new Set(["full", "bookend", "bookend-both"]);
+        const rrAvatarTiming = preview.avatarMode;
+        // chromakey re-composite is only valid for HeyGen avatars (full/bookend/bookend-both) —
+        // the exact set AvatarAdjustOverlay operates on (its gate also requires compositeBaseUrl +
+        // avatarMode). An upload-cutaway preview (avatarModel="upload-cutaway", no avatarMode) is a
+        // DIFFERENT composite (cutaway w/ personRanges); chromakey-ing it would corrupt the video,
+        // so fail cleanly rather than emit garbage. (Per-window edit for uploaded clips = future.)
+        if (!rrAvatarTiming || !heygenModes.has(rrAvatarTiming)) {
+          await failJob(jobId, "การแก้ b-roll รายช่วงยังไม่รองรับวิดีโอที่อัปโหลดคลิปเอง");
+          return;
+        }
+        if (rrAvatarTiming === "bookend-both" && !preview.tailAvatarUrl) {
+          await failJob(jobId, "ข้อมูลอวตารท้ายคลิปไม่ครบ — ปรับ b-roll ไม่ได้"); return;
+        }
+        await step("avatar", 80);
+        const rrLayout = resolveAvatarLayout({}, await getAvatarPreset(userId, preview.avatarModel!));
+        const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+          avatarVideoUrl: preview.avatarVideoUrl,
+          ...(preview.tailAvatarUrl ? { tailAvatarVideoUrl: preview.tailAvatarUrl } : {}),
+          bgVideoUrl: rrNewBase,
+          mode: "chromakey",
+          avatarTiming: rrAvatarTiming,
+          avatarBookendSecs: preview.avatarIntroSecs ?? 5,
+          avatarTailSecs: preview.avatarTailSecs ?? 5,
+          avatarLayout: rrLayout,
+        });
+        rrFinalUrl = rrComp.videoUrl;
+        rrCompositeBaseUrl = rrNewBase; // new pre-composite base
+      }
+
+      // flush final phase + one-line log
+      const rrDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, rrDuration]);
+      emitStage(phaseName, "done", rrDuration);
+      console.log(`[mcp-worker] job ${jobId} BROLL-RERENDER total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s edits=${editsRes.length} avatar=${rrHasAvatar}`);
+
+      // Preview payload = SOURCE preview copied verbatim (captions/voiceUrl/words/audioDurationMs
+      // /avatar* unchanged — subtitle invariant) with config + videoUrl + compositeBaseUrl updated.
+      await finishJob(jobId, {
+        version: 2,
+        mode: "preview",
+        videoUrl: rrFinalUrl,
+        preview: {
+          ...preview,
+          config: rrBaseConfig,
+          compositeBaseUrl: rrCompositeBaseUrl,
+        },
+      });
+      return;
     }
 
     // ── EDITOR V2 UPLOAD → CUTAWAY (P6.5, previewMode-only) ───────────────────

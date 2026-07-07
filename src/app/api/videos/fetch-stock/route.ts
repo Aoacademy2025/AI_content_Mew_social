@@ -4,16 +4,14 @@ import { prisma } from "@/lib/prisma";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
-import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { fetchWithBudget } from "@/lib/fetch-budget";
 import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
 import {
   detectContentProfile,
   normalizeContentProfile,
   type ContentProfile,
 } from "@/lib/broll-profile";
-import { clampedLongSide, pickPixabayVariant } from "@/lib/broll-source-quality";
+import { clampedLongSide } from "@/lib/broll-source-quality";
 import { parseLlmRankResponse } from "@/lib/llm-rank-parse";
 import {
   specToTerms,
@@ -44,14 +42,38 @@ import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
   applyBrollPreferenceToSearchQueries,
+  brollPreferenceInstruction,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import {
+  kieCreateTask,
+  kiePollResult,
+  type KieImageModel,
+  DEFAULT_KIE_IMAGE_MODEL,
+  isKieImageModel,
+  buildKieImageInput,
+} from "@/lib/kie-client";
+import {
+  normalizeForRemotion,
+  type NormalizeResult,
+  normalizedMarkerPath,
+  safeUnlink,
+  isValidMp4Path,
+  downloadAndCrop,
+  searchPexels,
+  type PexelsVideo,
+  type PexelsVideoFile,
+  searchPixabay,
+  type PixabayVideo,
+  applyKenBurns,
+  generateKieImageKenBurns,
+  KEN_BURNS_DURATION_SEC,
+  NORMALIZE_CONCURRENCY,
+  NORMALIZE_TIMEOUT_MS,
+  NORMALIZE_PRESET,
+} from "@/lib/broll-asset-lib";
 import path from "path";
 import fs from "fs";
-
-const execFileAsync = promisify(execFile);
 
 function readConcurrencyEnv(name: string, fallback: number, max: number): number {
   const raw = Number(process.env[name]);
@@ -65,28 +87,9 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
   return Math.max(min, Math.min(max, Math.floor(raw)));
 }
 
-// x264 speed preset for the Remotion-safe re-encode. `ultrafast` cuts encode CPU
-// ~2-3× vs `veryfast` (the dominant cost of the b-roll step, which serializes through
-// NORMALIZE_CONCURRENCY=1 — so a faster encode drains the queue faster for everyone
-// when multiple users generate at once). Output stays CFR/no-B-frame/yuv420p (still
-// Remotion-seekable); only the file is a bit larger. Env-tunable so it can be dialed
-// back without a redeploy. Only known-good presets are accepted (no shell injection).
-const X264_PRESETS = new Set([
-  "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow",
-]);
-function readPresetEnv(name: string, fallback: string): string {
-  const raw = (process.env[name] ?? "").trim().toLowerCase();
-  return X264_PRESETS.has(raw) ? raw : fallback;
-}
-
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
-const NORMALIZE_CONCURRENCY = readConcurrencyEnv("STOCK_NORMALIZE_CONCURRENCY", 1, 4);
-// 300s default: long 4K source clips legitimately take minutes to re-encode;
-// a SIGKILL'd encode must not be the common case (override via env, max 600s).
-const NORMALIZE_TIMEOUT_MS = readIntEnv("STOCK_NORMALIZE_TIMEOUT_MS", 300_000, 30_000, 600_000);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
-const NORMALIZE_PRESET = readPresetEnv("STOCK_NORMALIZE_PRESET", "ultrafast");
 
 type StockProvider = "pexels" | "pixabay";
 
@@ -113,8 +116,6 @@ type CandidateVideo = FoundVideo & {
   thumb?: string;
 };
 
-type PixabayVideo = { id: number; duration: number; videoUrl: string; width?: number; height?: number; tags?: string; thumb?: string };
-
 type CandidateFit = {
   index: number;
   score: number;
@@ -122,114 +123,8 @@ type CandidateFit = {
   isRelevant: boolean;
 };
 
-let activeNormalizations = 0;
-const normalizeWaiters: (() => void)[] = [];
-
-async function withNormalizeSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (activeNormalizations >= NORMALIZE_CONCURRENCY) {
-    await new Promise<void>((resolve) => normalizeWaiters.push(resolve));
-  } else {
-    activeNormalizations++;
-  }
-  try {
-    return await fn();
-  } finally {
-    const next = normalizeWaiters.shift();
-    if (next) {
-      next();
-    } else {
-      activeNormalizations = Math.max(0, activeNormalizations - 1);
-    }
-  }
-}
-
-// Remotion's compositor seeks frame-accurately and fails with
-// "No frame found at position X" on clips that use B-frames or whose fps
-// doesn't match the composition (Pexels/Pixabay ship 25fps + B-frames).
-// Re-encode every downloaded clip to a clean 30fps CFR, no-B-frame stream
-// with a keyframe every frame so seeking is always exact.
-const TARGET_FPS = 30;
-// We can't rely on ffprobe (the Windows @ffmpeg-installer package ships none)
-// to detect whether a cached clip is already normalized, so drop a tiny marker
-// file next to each clip after a successful re-encode. Cheap and unambiguous.
-function normalizedMarkerPath(filePath: string): string {
-  return `${filePath}.normalized`;
-}
-
-type NormalizeResult = { status: "skipped" | "normalized" | "failed"; durationMs: number };
-
-async function normalizeForRemotion(filePath: string): Promise<NormalizeResult> {
-  const startedAt = Date.now();
-  const marker = normalizedMarkerPath(filePath);
-  if (fs.existsSync(marker)) return { status: "skipped", durationMs: 0 }; // already normalized in a previous run
-  const ffmpeg = getFfmpegPath();
-  const tmp = `${filePath}.norm.mp4`;
-  try {
-    safeUnlink(tmp);
-    await withNormalizeSlot(() => execFileAsync(ffmpeg, [
-      "-y", "-i", filePath,
-      "-an",                              // B-roll is muted in render anyway
-      // Downscale oversized sources (e.g. Pixabay 4K) to fit a 1080×1920 box
-      // BEFORE the libx264 re-encode. A full 4096×2160 normalize on the GPU-less
-      // VPS can blow past NORMALIZE_TIMEOUT_MS → SIGKILL → ~5 min of CPU burned on
-      // a clip that gets dropped anyway (and the render output is only 1080×1920,
-      // so extra resolution is wasted). decrease = never upscale; the trailing
-      // trunc pair forces even dimensions (yuv420p requires it) and is compatible
-      // with the prod ffmpeg 4.4 (avoids the newer force_divisible_by option).
-      "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
-      "-c:v", "libx264", "-preset", NORMALIZE_PRESET, "-crf", "20",
-      "-threads", "2",                     // bound CPU so one normalize can't starve the in-process render
-      "-pix_fmt", "yuv420p",
-      "-r", String(TARGET_FPS),           // force constant frame rate
-      "-g", String(TARGET_FPS),           // keyframe interval = 1s
-      "-keyint_min", String(TARGET_FPS),
-      "-bf", "0",                          // no B-frames → in-order PTS
-      "-vsync", "cfr",
-      "-movflags", "+faststart",
-      tmp,
-    ], {
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: NORMALIZE_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-    }));
-    // Swap normalized file in only if it produced a valid result
-    if (fs.existsSync(tmp) && fs.statSync(tmp).size > 1_500) {
-      fs.renameSync(tmp, filePath);
-      try { fs.writeFileSync(marker, ""); } catch {}
-      return { status: "normalized", durationMs: Date.now() - startedAt };
-    } else {
-      safeUnlink(tmp);
-      return { status: "failed", durationMs: Date.now() - startedAt };
-    }
-  } catch (e) {
-    // Normalization failed (timeout/SIGKILL or bad input). Callers DROP the
-    // clip — an un-normalized file crashes Remotion later ("Invalid data").
-    console.warn(`[fetch-stock] normalize failed for ${path.basename(filePath)}:`, e);
-    safeUnlink(tmp);
-    return { status: "failed", durationMs: Date.now() - startedAt };
-  }
-}
-
 export const maxDuration = 600;
 export const runtime = "nodejs";
-
-interface PexelsVideoFile {
-  quality: string;
-  file_type: string;
-  width: number;
-  height: number;
-  link: string;
-}
-
-interface PexelsVideo {
-  id: number;
-  duration: number;
-  width: number;
-  height: number;
-  url: string;   // e.g. https://www.pexels.com/video/woman-cooking-soup-1234567/
-  image?: string; // poster frame — used by the vision re-rank
-  video_files: PexelsVideoFile[];
-}
 
 // Extract human-readable slug from Pexels video URL
 // "https://www.pexels.com/video/woman-cooking-soup-1234567/" → "woman cooking soup"
@@ -241,27 +136,6 @@ function slugToTitle(url: string): string {
   } catch {
     return "";
   }
-}
-
-// Search Pexels for portrait videos ≥ minDuration seconds (max perPage = 80)
-async function searchPexels(query: string, apiKey: string, minDuration = 3, perPage = 15, page = 1): Promise<PexelsVideo[]> {
-  const params = new URLSearchParams({
-    query,
-    orientation: "portrait",
-    size: "medium",
-    per_page: String(Math.min(80, perPage)),
-    min_duration: String(minDuration),
-    page: String(page),
-  });
-
-  // Stock-search budget: 20s/attempt, 2 retries (429 honors Retry-After).
-  // Final non-ok throws ProviderError — existing callers already treat a
-  // throw as "no candidates for this keyword".
-  const res = await fetchWithBudget(`https://api.pexels.com/videos/search?${params}`, {
-    headers: { Authorization: apiKey },
-  }, { provider: "pexels", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
-  const data = await res.json();
-  return (data.videos ?? []) as PexelsVideo[];
 }
 
 // Pick best video file: HD portrait ≤1080p preferred, any portrait accepted.
@@ -282,12 +156,6 @@ function pickBestFile(video: PexelsVideo): PexelsVideoFile | null {
   return null; // no portrait file → skip this hit (never crop landscape into 9:16)
 }
 
-function safeUnlink(filePath: string) {
-  try {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch {}
-}
-
 function cleanupStaleTempFiles(dir: string, prefix: string, maxAgeMs: number): number {
   let deleted = 0;
   try {
@@ -305,95 +173,6 @@ function cleanupStaleTempFiles(dir: string, prefix: string, maxAgeMs: number): n
   } catch {}
   return deleted;
 }
-
-function isValidMp4Path(filePath: string): boolean {
-  try {
-    if (!fs.existsSync(filePath)) return false;
-    const size = fs.statSync(filePath).size;
-    return size > 1_500; // ignore empty/truncated files
-  } catch {
-    return false;
-  }
-}
-
-async function downloadAndCrop(url: string, outPath: string): Promise<void> {
-  const MAX_ATTEMPTS = 4;
-  const TIMEOUT_MS = 120_000; // 120s — Pixabay CDN บางไฟล์ใหญ่ช้ามาก (PR-5 stock-download budget)
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const tmp = `${outPath}.part`;
-    try {
-      // retries: 0 — downloadAndCrop's own MAX_ATTEMPTS loop already retries
-      // (it also re-validates the file on disk, which fetchWithBudget can't).
-      const res = await fetchWithBudget(url, {
-        headers: {
-          // บาง CDN บล็อก bot — ใส่ User-Agent เหมือน browser
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        },
-      }, { provider: "stock-cdn", timeoutMs: TIMEOUT_MS, retries: 0, wallClockMs: TIMEOUT_MS + 5_000 });
-
-      const data = Buffer.from(await res.arrayBuffer());
-      if (data.length < 1_500) {
-        throw new Error(`Downloaded file too small: ${data.length} bytes`);
-      }
-
-      fs.writeFileSync(tmp, data);
-      fs.renameSync(tmp, outPath);
-
-      if (!isValidMp4Path(outPath)) {
-        throw new Error(`Downloaded file failed validation (${outPath})`);
-      }
-
-      return;
-    } catch (err) {
-      safeUnlink(tmp);
-      safeUnlink(outPath);
-      if (attempt >= MAX_ATTEMPTS) throw err;
-      const delay = attempt === 1 ? 2000 : attempt === 2 ? 5000 : 10000;
-      console.warn(`[fetch-stock] download retry ${attempt + 1}/${MAX_ATTEMPTS} (wait ${delay / 1000}s): ${url}`);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-
-  throw new Error(`Download failed after ${MAX_ATTEMPTS} attempts`);
-}
-
-// Search Pixabay for portrait videos
-async function searchPixabay(query: string, pixabayKey: string, minDuration = 5, perPage = 15): Promise<PixabayVideo[]> {
-  const params = new URLSearchParams({
-    key: pixabayKey,
-    q: query,
-    video_type: "film",
-    orientation: "vertical",
-    // Honor the caller's perPage (was hardcoded 15) so per-subtitle search gets a
-    // deeper pool to rank — better/less-repetitive picks. Pixabay allows 3–200.
-    per_page: String(Math.max(3, Math.min(200, perPage))),
-    min_duration: String(minDuration),
-  });
-  const res = await fetchWithBudget(`https://pixabay.com/api/videos/?${params}`, {},
-    { provider: "pixabay", timeoutMs: 20_000, retries: 2, wallClockMs: 60_000 });
-  const data = await res.json();
-  return (data.hits ?? []).map((h: { id: number; duration: number; videos: { medium?: { url: string; width?: number; height?: number; thumbnail?: string }; large?: { url: string; width?: number; height?: number; thumbnail?: string } }; tags?: string }) => {
-    // #8 soft resolution floor: prefer medium (avoids 4K, respects #63), but fall up
-    // to large when medium is sub-720p and large stays ≤1920 — keeps soft/upscaled
-    // clips out without reintroducing the 4K download #63 removed.
-    const v = pickPixabayVariant(h.videos?.medium, h.videos?.large);
-    return {
-      id: h.id,
-      duration: h.duration,
-      videoUrl: v.url,
-      width: v.width,
-      height: v.height,
-      tags: (h.tags ?? "").slice(0, 160), // richer tag string → better LLM ranking of Pixabay clips
-      thumb: h.videos?.medium?.thumbnail ?? h.videos?.large?.thumbnail,
-    };
-  }).filter((v: PixabayVideo) =>
-    // PORTRAIT-ONLY belt (2026-07-03, same rationale as pickBestFile): drop variants that
-    // are provably landscape; keep unknown-dimension hits (orientation=vertical search).
-    v.videoUrl && !(Number(v.width) > 0 && Number(v.height) > 0 && Number(v.width) > Number(v.height)),
-  );
-}
-
 
 function scoreCandidate(
   candidate: CandidateVideo,
@@ -704,177 +483,8 @@ async function searchMet(query: string, limit = 5): Promise<MetArtwork[]> {
 // สร้างภาพด้วย AI (GPT Image, text-to-image) จาก keyword/subtitle แล้วแปลง
 // เป็นวิดีโอด้วย Kling 2.6 image-to-video ผ่าน kie.ai unified jobs API
 // (createTask → recordInfo polling) เปิดเฉพาะ admin เพื่อทดลอง pipeline ก่อน
-const KIE_API_BASE = "https://api.kie.ai/api/v1";
-const KIE_POLL_INTERVAL_MS = 4_000;
-const KIE_POLL_TIMEOUT_MS = 180_000;
-
 // กันชน id กับ source อื่นๆ — kie.ai generated item ใช้ index เป็น id ฐาน
 const KIE_ID_OFFSET = 2_000_000_000;
-
-interface KieCreateTaskResponse {
-  code: number;
-  msg?: string;
-  data?: { taskId?: string };
-}
-
-interface KieRecordInfoResponse {
-  code: number;
-  msg?: string;
-  data?: {
-    taskId: string;
-    state: "waiting" | "queuing" | "generating" | "success" | "fail";
-    resultJson?: string;
-    failMsg?: string;
-  };
-}
-
-// อ่าน body เป็น text ก่อนเสมอ — kie.ai อาจตอบ body ว่างหรือ non-JSON เวลา error
-// (เช่น 401/500 บางกรณี) ซึ่งทำให้ res.json() throw "Unexpected end of JSON input"
-async function parseKieResponse<T>(res: Response): Promise<T> {
-  const text = await res.text();
-  let data: T;
-  try {
-    data = JSON.parse(text) as T;
-  } catch {
-    throw new Error(`kie.ai returned non-JSON response (status ${res.status}): ${text.slice(0, 300) || "(empty body)"}`);
-  }
-  if (!res.ok) throw new Error(`kie.ai request failed (status ${res.status}): ${text.slice(0, 300)}`);
-  return data;
-}
-
-async function kieCreateTask(model: string, input: Record<string, unknown>, token: string): Promise<string> {
-  const res = await fetch(`${KIE_API_BASE}/jobs/createTask`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input }),
-  });
-  const data = await parseKieResponse<KieCreateTaskResponse>(res);
-  const taskId = data.data?.taskId;
-  if (data.code !== 200 || !taskId) throw new Error(`kie.ai createTask error: ${data.msg ?? data.code}`);
-  return taskId;
-}
-
-// Poll /jobs/recordInfo until state is success/fail, returns resultUrls[0]
-async function kiePollResult(taskId: string, token: string): Promise<string> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < KIE_POLL_TIMEOUT_MS) {
-    const res = await fetch(`${KIE_API_BASE}/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await parseKieResponse<KieRecordInfoResponse>(res);
-    const state = data.data?.state;
-    if (state === "success") {
-      const resultJson = data.data?.resultJson ? JSON.parse(data.data.resultJson) : {};
-      const url = resultJson.resultUrls?.[0];
-      if (!url) throw new Error(`kie.ai task ${taskId} succeeded but has no resultUrls`);
-      return url;
-    }
-    if (state === "fail") throw new Error(`kie.ai task ${taskId} failed: ${data.data?.failMsg ?? "unknown error"}`);
-    await new Promise((r) => setTimeout(r, KIE_POLL_INTERVAL_MS));
-  }
-  throw new Error(`kie.ai task ${taskId} timed out after ${KIE_POLL_TIMEOUT_MS}ms`);
-}
-
-// โมเดล text-to-image ที่เลือกได้จาก dropdown — ขนาดภาพ fix ที่ 9:16 เสมอ
-// NOTE: ห้าม export จาก route.ts (Next.js อนุญาตเฉพาะ HTTP handlers/config) —
-// export ตัวอื่นทำให้ type-check ของ .next/types fail และ build/หน้าเว็บ error
-const KIE_IMAGE_MODELS = [
-  "nano-banana-pro",
-  "nano-banana-2",
-  "gpt-image-2-text-to-image",
-  "seedream/5-lite-text-to-image",
-  "seedream/4.5-text-to-image",
-  "flux-2/pro-text-to-image",
-  "grok-imagine/text-to-image",
-  "qwen2/text-to-image",
-] as const;
-type KieImageModel = (typeof KIE_IMAGE_MODELS)[number];
-const DEFAULT_KIE_IMAGE_MODEL: KieImageModel = "gpt-image-2-text-to-image";
-
-function isKieImageModel(value: unknown): value is KieImageModel {
-  return typeof value === "string" && (KIE_IMAGE_MODELS as readonly string[]).includes(value);
-}
-
-// แต่ละโมเดลรับ input shape ต่างกันเล็กน้อย — รวม prompt + aspect ratio (fix 9:16)
-function buildKieImageInput(model: KieImageModel, prompt: string): Record<string, unknown> {
-  switch (model) {
-    case "gpt-image-2-text-to-image":
-      return { prompt, aspect_ratio: "9:16" };
-    case "seedream/5-lite-text-to-image":
-    case "seedream/4.5-text-to-image":
-      return { prompt, aspect_ratio: "9:16", quality: "basic" };
-    case "flux-2/pro-text-to-image":
-      return { prompt, aspect_ratio: "9:16", resolution: "1K" };
-    case "grok-imagine/text-to-image":
-      return { prompt, aspect_ratio: "9:16" };
-    case "qwen2/text-to-image":
-      return { prompt, image_size: "9:16", output_format: "png" };
-    case "nano-banana-pro":
-    case "nano-banana-2":
-    default:
-      return { prompt, image_input: [], aspect_ratio: "9:16", resolution: "1K", output_format: "png" };
-  }
-}
-
-const KEN_BURNS_DURATION_SEC = 5;
-const KEN_BURNS_WIDTH = 1080;
-const KEN_BURNS_HEIGHT = 1920;
-
-// แปลงภาพนิ่ง 1 ภาพเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg zoompan: pan+zoom ช้าๆ)
-async function applyKenBurns(imagePath: string, outPath: string): Promise<void> {
-  const ffmpeg = getFfmpegPath();
-  const totalFrames = KEN_BURNS_DURATION_SEC * TARGET_FPS;
-  // ซูมเข้าช้าๆ จาก 1.0 -> ~1.15 พร้อม pan ไปกลางภาพเล็กน้อย ให้ดูมีการเคลื่อนไหว
-  const zoompan = `zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
-  const tmp = `${outPath}.kb.mp4`;
-  safeUnlink(tmp);
-  await withNormalizeSlot(() => execFileAsync(ffmpeg, [
-    "-y", "-loop", "1", "-i", imagePath,
-    "-vf", zoompan,
-    "-t", String(KEN_BURNS_DURATION_SEC),
-    "-an",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-    "-pix_fmt", "yuv420p",
-    "-r", String(TARGET_FPS),
-    "-g", String(TARGET_FPS),
-    "-keyint_min", String(TARGET_FPS),
-    "-bf", "0",
-    "-vsync", "cfr",
-    "-movflags", "+faststart",
-    tmp,
-  ], {
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: NORMALIZE_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  }));
-  if (!fs.existsSync(tmp) || fs.statSync(tmp).size <= 1_500) {
-    safeUnlink(tmp);
-    throw new Error("Ken Burns ffmpeg produced an empty/invalid output");
-  }
-  fs.renameSync(tmp, outPath);
-}
-
-// Generate 1 image (text-to-image, model เลือกได้) จาก keyword/subtitle แล้ว
-// แปลงเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg pan/zoom, ~5s) แทน Kling.
-async function generateKieImageKenBurns(
-  prompt: string,
-  label: string,
-  token: string,
-  model: KieImageModel,
-  imagePath: string,
-  outPath: string,
-): Promise<{ duration: number; imageUrl: string }> {
-  const imageTaskId = await kieCreateTask(model, buildKieImageInput(model, prompt), token);
-  const imageUrl = await kiePollResult(imageTaskId, token);
-  console.log(`[fetch-stock] kie image ready for "${label}": ${imageUrl.slice(0, 80)}`);
-
-  await downloadAndCrop(imageUrl, imagePath);
-  console.log(`[fetch-stock] kie cropped "${label}" → ${imagePath.split(/[/\\]/).pop()}`);
-  await applyKenBurns(imagePath, outPath);
-  console.log(`[fetch-stock] kie Ken Burns done "${label}" → ${outPath.split(/[/\\]/).pop()}`);
-
-  return { duration: KEN_BURNS_DURATION_SEC, imageUrl };
-}
 
 // Metadata สำหรับ license/attribution ของ asset — ดู StockVideo["assetMeta"] ใน
 // video-editor/_components/types.ts (shape เดียวกัน)
@@ -1149,6 +759,7 @@ async function visionRerankCandidates(
   candidatesByKeyword: CandidateVideo[][],
   llmKey: string,
   terms: RelevanceTerms,
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   // Pick top-N judgeable candidates per subtitle by the existing soft ranking.
   const perKeyword: { ki: number; entries: { candIdx: number; thumb: string }[] }[] = [];
@@ -1194,9 +805,13 @@ async function visionRerankCandidates(
   }
   if (!groupMap.length) return keywords.map(() => -1);
 
+  const preferenceLine = preferenceInstruction
+    ? `\nSTRICT VISUAL PREFERENCE: ${preferenceInstruction} Reject options whose people clearly violate this preference.`
+    : "";
+
   const prompt = `You are a B-roll editor. Images are numbered in the order attached (image#1, image#2, …).
 For EACH subtitle below, look at its option images and pick the letter whose footage VISUALLY matches the subtitle's content best.
-Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.
+Down-rank footage of: ${terms.avoid.slice(0, 8).join(", ") || "unrelated subjects"}. Visual domain: ${terms.domainLabel}.${preferenceLine}
 Output ONLY a JSON object mapping subtitle keys to a letter, e.g. {"S0":"B","S3":"A"}. Use "NONE" only if every option is truly unrelated.
 
 ${promptGroups.join("\n")}`;
@@ -1221,6 +836,7 @@ async function llmRankBatch(
   llmKey: string,
   visualDirection?: string,
   terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   const lines = keywords.map((kw, ki) => {
     const sub = subtitleTexts[ki] ?? kw;
@@ -1232,11 +848,14 @@ async function llmRankBatch(
     ? `\nVIDEO DIRECTION: ${visualDirection}\nPrioritize candidates that match this overall visual tone/theme.\n`
     : "";
   const profileLine = `\nVISUAL DOMAIN: ${terms.domainLabel}\nPrefer footage of: ${terms.positive.slice(0, 12).join(", ") || "the subject described"}.\nDown-rank (do NOT hard-reject) footage of: ${terms.avoid.slice(0, 8).join(", ") || "obviously unrelated subjects"}.\n`;
+  const preferenceRankLine = preferenceInstruction
+    ? `\nVISUAL PREFERENCE (strict): ${preferenceInstruction} Prefer candidates matching it; use -1 rather than picking a clear violation when alternatives exist.\n`
+    : "";
 
   const lastIdx = keywords.length - 1;
   const prompt = `You are a B-roll video editor. For each subtitle, pick the candidate video index (0-based) that BEST matches the subtitle's visual content, content profile, and overall video direction.
 ${directionLine}
-${profileLine}
+${profileLine}${preferenceRankLine}
 RULES:
 - Output ONLY a JSON object mapping each subtitle index to its chosen candidate index, e.g. {"0": 2, "1": -1, "2": 0}
 - Include an entry for EVERY subtitle index from 0 to ${lastIdx}
@@ -1265,9 +884,10 @@ async function llmRankCandidates(
   llmKey: string,
   visualDirection?: string,
   terms: RelevanceTerms = { positive: [], avoid: [], fallbackQueries: [], domainLabel: "general" },
+  preferenceInstruction: string = "",
 ): Promise<number[]> {
   if (keywords.length <= RANK_BATCH_SIZE) {
-    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, terms);
+    return llmRankBatch(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, terms, preferenceInstruction);
   }
 
   // Split into chunks and call sequentially to avoid LLM output-length limits
@@ -1279,7 +899,7 @@ async function llmRankCandidates(
     const chunkTitles = candidateTitles.slice(start, end);
     console.log(`[fetch-stock] LLM ranking chunk ${start}-${end - 1} of ${keywords.length}`);
     try {
-      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, terms);
+      const chunkResult = await llmRankBatch(chunkKws, chunkSubs, chunkTitles, llmKey, visualDirection, terms, preferenceInstruction);
       for (let i = 0; i < chunkResult.length; i++) {
         results[start + i] = chunkResult[i];
       }
@@ -1344,6 +964,7 @@ export async function POST(req: Request) {
   } = body ?? {};
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
+  const preferenceInstruction = brollPreferenceInstruction(brollPreference);
   const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
     ? pipelineRunId.trim().slice(0, 120)
     : null;
@@ -1909,7 +1530,12 @@ export async function POST(req: Request) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              const genPrompt = promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }));
+              const genPrompt = promptFor(buildKieImagePrompt(keyword, {
+                visualDirection,
+                terms: relTerms,
+                region: brollPreference.brollRegionPreference,
+                style: brollPreference.brollVisualStyle,
+              }));
               const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, keyword, kieToken!, effectiveKieModel, imagePath, outPath);
               if (!isValidMp4Path(outPath)) {
                 stockTelemetry.downloadFailCount++;
@@ -1932,7 +1558,12 @@ export async function POST(req: Request) {
               console.error(`[fetch-stock] kie.ai Ken Burns failed for "${query}":`, e);
             }
           } else {
-            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, { visualDirection, terms: relTerms }))), kieToken!);
+            const imageTaskId = await kieCreateTask(effectiveKieModel, buildKieImageInput(effectiveKieModel, promptFor(buildKieImagePrompt(keyword, {
+              visualDirection,
+              terms: relTerms,
+              region: brollPreference.brollRegionPreference,
+              style: brollPreference.brollVisualStyle,
+            }))), kieToken!);
             const imageUrl = await kiePollResult(imageTaskId, kieToken!);
             results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
             success = true;
@@ -2247,7 +1878,7 @@ export async function POST(req: Request) {
       let visionDone = false;
       if (VISION_RERANK_ON) {
         try {
-          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms);
+          const v = await visionRerankCandidates(keywords, subtitleTexts, candidatesByKeyword, llmKey, relTerms, preferenceInstruction);
           const judged = v.filter((idx) => idx >= 0).length;
           if (judged > 0) {
             bestIdxByKeyword = v.map((idx, i) =>
@@ -2266,7 +1897,7 @@ export async function POST(req: Request) {
       stockTelemetry.llmRankingUsed = true;
       console.log(`[fetch-stock] LLM ranking ${keywords.length} keywords in 1 call`);
       try {
-        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, relTerms);
+        bestIdxByKeyword = await llmRankCandidates(keywords, subtitleTexts, candidateTitles, llmKey, visualDirection, relTerms, preferenceInstruction);
         console.log(`[fetch-stock] LLM picked indices:`, bestIdxByKeyword);
         stockTelemetry.llmRejectedCount = bestIdxByKeyword.filter((idx) => idx < 0).length;
         if (shouldDistrustRanker(bestIdxByKeyword, RANK_DISTRUST_PCT)) {
@@ -2562,7 +2193,12 @@ export async function POST(req: Request) {
           let success = false;
           let failureReason: string | null = null;
           try {
-            const genPrompt = promptFor(buildKieImagePrompt(kw, { visualDirection, terms: relTerms }));
+            const genPrompt = promptFor(buildKieImagePrompt(kw, {
+              visualDirection,
+              terms: relTerms,
+              region: brollPreference.brollRegionPreference,
+              style: brollPreference.brollVisualStyle,
+            }));
             const { duration, imageUrl } = await generateKieImageKenBurns(genPrompt, kw, kieToken!, effectiveKieModel, imagePath, outPath);
             if (isValidMp4Path(outPath)) {
               stockTelemetry.downloadedCount++;

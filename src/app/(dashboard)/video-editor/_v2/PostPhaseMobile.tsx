@@ -9,7 +9,7 @@
  * (nudge ±100ms / ตั้งจุด=ตำแหน่งที่เล่นอยู่) — ไม่แตะ math ของ subtitle/avatar.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   CheckCircle2, ChevronDown, Download, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
@@ -27,6 +27,9 @@ import type { V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import { BrollWindowInspector, WindowEditsStickyBar } from "./BrollWindowInspector";
+import { brollWindowSpans } from "@/lib/broll-spans";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -36,13 +39,20 @@ function fmtMs(ms: number) {
 const avatarModeLabel = (m?: string | null) =>
   m === "full" ? "ทั้งคลิป" : m === "bookend-both" ? "เปิด-ปิด" : m === "bookend" ? "เปิด" : "";
 
-export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
-  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+
+export function PostPhaseMobile({ job, script, onExported, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+  job: V2JobState; script: string; onExported: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported });
+  const ed = usePostPhaseEditor(job, script, { onExported, onAdoptJob });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
+  // (same reasoning as PostPhase.tsx's desktop gate).
+  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -52,6 +62,8 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
   );
   const pct = Math.min(100, Math.max(0, (ed.timeMs / durationMs) * 100));
   const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving";
+  // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
+  const brollSpans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
 
   function togglePlay() {
     const v = ed.videoRef.current;
@@ -167,7 +179,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
               tailSecs={ed.preview.avatarTailSecs ?? 5}
               avatarVideoUrl={ed.preview.avatarVideoUrl!}
               tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-              bgVideoUrl={ed.preview.compositeBaseUrl!}
+              bgVideoUrl={ed.compositeBaseUrl!}
               jobId={job.jobId}
               onClose={() => ed.setAdjustingAvatar(false)}
               onDone={(url) => {
@@ -220,6 +232,36 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
         {ed.exp.phase === "error" && (
           <div className="px-3.5 pt-2" style={{ fontSize: 11.5, color: color.danger }}>
             {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
+          </div>
+        )}
+
+        {brollEditEnabled && <WindowEditsStickyBar ed={ed} />}
+
+        {/* บีโรล — ไม่มี timeline บนมือถือ ชิปแนวนอนนี้คือทางเข้าเลือกหน้าต่างแทน (Task 11) */}
+        {brollEditEnabled && brollSpans.length > 0 && (
+          <div className="px-3.5 pb-1 pt-3">
+            <GroupLabel style={{ display: "block", marginBottom: 8 }}>บีโรล ({brollSpans.length})</GroupLabel>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {brollSpans.map((s) => {
+                const edited = ed.windowEdits.has(s.index);
+                return (
+                  <button
+                    key={s.index}
+                    onClick={() => ed.setSelectedWindow(s.index)}
+                    className="flex shrink-0 flex-col items-start gap-1 text-left"
+                    style={{
+                      padding: "8px 12px", minWidth: 96, borderRadius: radius.card,
+                      background: edited ? color.selectedBg : "rgba(255,255,255,.035)",
+                      border: `1px solid ${edited ? color.selectedBorder : color.cardBorder}`,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 10, color: color.textFaint }}>{fmtMs(s.startMs)}–{fmtMs(s.endMs)}</span>
+                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -533,6 +575,10 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
           </section>
         </div>
       </Sheet>
+
+      {brollEditEnabled && ed.selectedWindow != null && (
+        <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+      )}
     </div>
   );
 }
