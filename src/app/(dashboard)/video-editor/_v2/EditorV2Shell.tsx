@@ -43,21 +43,15 @@ import { PostPhaseMobile } from "./PostPhaseMobile";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
+import {
+  PROJECT_STATUS_FILTER_LABEL,
+  filterProjectMenuItems,
+  projectDeleteBlocked,
+  projectStatusLabel,
+  type ProjectMenuItem,
+  type ProjectStatusFilter,
+} from "./project-menu";
 
-type ProjectMenuItem = {
-  id: string;
-  title: string;
-  status: string;
-};
-
-const PROJECT_STATUS_LABEL: Record<string, string> = {
-  draft: "Draft",
-  rendering: "Rendering",
-  post: "Post",
-  exporting: "Exporting",
-  exported: "Exported",
-};
-const PROJECT_DELETE_BLOCKED = new Set(["rendering", "exporting"]);
 const PROJECT_MENU_LIMIT = 8;
 
 async function fetchRecentProjects(limit = PROJECT_MENU_LIMIT): Promise<ProjectMenuItem[]> {
@@ -76,6 +70,7 @@ export function EditorV2Shell() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectFilter, setProjectFilter] = useState<ProjectStatusFilter>("all");
   const [deleteProject, setDeleteProject] = useState<ProjectMenuItem | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
 
@@ -149,7 +144,7 @@ export function EditorV2Shell() {
   }
 
   function requestDeleteProject(project: ProjectMenuItem) {
-    if (PROJECT_DELETE_BLOCKED.has(project.status)) {
+    if (projectDeleteBlocked(project.status)) {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
     }
@@ -160,7 +155,7 @@ export function EditorV2Shell() {
   async function handleDeleteProject() {
     const project = deleteProject;
     if (!project || deletingProjectId) return;
-    if (PROJECT_DELETE_BLOCKED.has(project.status)) {
+    if (projectDeleteBlocked(project.status)) {
       setDeleteProject(null);
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
@@ -194,6 +189,8 @@ export function EditorV2Shell() {
       setDeletingProjectId(null);
     }
   }
+
+  const visibleProjects = filterProjectMenuItems(projects, projectFilter);
 
   return (
     <div
@@ -252,17 +249,41 @@ export function EditorV2Shell() {
                 <span style={{ fontSize: 12 }}>โปรเจกต์ใหม่</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator style={{ background: color.cardBorder }} />
+              <div className="flex gap-1 px-1 py-1.5">
+                {(Object.keys(PROJECT_STATUS_FILTER_LABEL) as ProjectStatusFilter[]).map((key) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setProjectFilter(key);
+                    }}
+                    className="rounded-[7px] px-2 py-1"
+                    style={{
+                      background: projectFilter === key ? color.selectedBg : "transparent",
+                      border: `1px solid ${projectFilter === key ? color.selectedBorder : "transparent"}`,
+                      color: projectFilter === key ? color.primary300 : color.textFaint,
+                      cursor: "pointer",
+                      fontSize: 10.5,
+                    }}
+                  >
+                    {PROJECT_STATUS_FILTER_LABEL[key]}
+                  </button>
+                ))}
+              </div>
+              <DropdownMenuSeparator style={{ background: color.cardBorder }} />
               {projectsLoading ? (
                 <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
                   <span style={{ fontSize: 12 }}>กำลังโหลด…</span>
                 </DropdownMenuItem>
-              ) : projects.length === 0 ? (
+              ) : visibleProjects.length === 0 ? (
                 <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
-                  <span style={{ fontSize: 12 }}>ยังไม่มีโปรเจกต์อื่น</span>
+                  <span style={{ fontSize: 12 }}>ไม่มีโปรเจกต์ในตัวกรองนี้</span>
                 </DropdownMenuItem>
-              ) : projects.map((project) => {
+              ) : visibleProjects.map((project) => {
                 const active = project.id === p.projectId;
-                const deleteBlocked = PROJECT_DELETE_BLOCKED.has(project.status);
+                const deleteBlocked = projectDeleteBlocked(project.status);
                 const deleting = deletingProjectId === project.id;
                 return (
                   <DropdownMenuItem
@@ -279,7 +300,7 @@ export function EditorV2Shell() {
                     </span>
                     <span className="min-w-0 flex-1 truncate" style={{ fontSize: 12 }}>{project.title || "New Project"}</span>
                     <span className="shrink-0" style={{ fontSize: 10, color: color.textFaint }}>
-                      {PROJECT_STATUS_LABEL[project.status] ?? project.status}
+                      {projectStatusLabel(project.status)}
                     </span>
                     <button
                       type="button"

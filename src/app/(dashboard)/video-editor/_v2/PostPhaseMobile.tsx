@@ -27,7 +27,7 @@ import type { V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
-import { BrollWindowInspector, WindowEditsStickyBar } from "./BrollWindowInspector";
+import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
@@ -235,8 +235,6 @@ export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewPro
             {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
           </div>
         )}
-
-        {brollEditEnabled && <WindowEditsStickyBar ed={ed} />}
 
         {/* บีโรล — ไม่มี timeline บนมือถือ ชิปแนวนอนนี้คือทางเข้าเลือกหน้าต่างแทน (Task 11) */}
         {brollEditEnabled && brollSpans.length > 0 && (
@@ -576,6 +574,8 @@ export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewPro
           </section>
         </div>
       </Sheet>
+
+      {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
         <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />

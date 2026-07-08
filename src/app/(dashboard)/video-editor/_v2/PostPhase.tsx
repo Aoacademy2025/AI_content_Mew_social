@@ -25,7 +25,7 @@ import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
-import { BrollWindowInspector, WindowEditsStickyBar } from "./BrollWindowInspector";
+import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 
 function fmtMs(ms: number) {
@@ -96,8 +96,6 @@ export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, 
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
         </div>
       )}
-      {brollEditEnabled && <WindowEditsStickyBar ed={ed} />}
-
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
         <aside className="flex min-h-0 w-[266px] shrink-0 flex-col" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
@@ -515,6 +513,7 @@ export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, 
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         voiceUrl={ed.preview?.voiceUrl ?? null}
       />
+      {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
     </div>
   );
 }

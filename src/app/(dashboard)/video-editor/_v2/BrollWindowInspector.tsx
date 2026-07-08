@@ -84,17 +84,28 @@ function fileExt(name: string): string {
 type Tab = "search" | "upload" | "ai";
 type SearchCandidate = { id: string; provider: "pexels" | "pixabay"; thumb: string; videoUrl: string; duration: number; title: string };
 
-// ── Sticky "อัปเดตวิดีโอ" bar — mounted at the PostPhase/PostPhaseMobile screen
-// level (not inside the panel) so it stays visible while the user keeps editing
+// ── Bottom "อัปเดตวิดีโอ" bar — mounted at the PostPhase/PostPhaseMobile screen
+// level (not inside the inspector) so it stays visible while the user keeps editing
 // more windows with the inspector closed. ──────────────────────────────────────
-export function WindowEditsStickyBar({ ed }: { ed: PostPhaseEditor }) {
+export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
   if (ed.windowEdits.size === 0) return null;
   const busy = !!ed.applyingWindows;
   return (
     <div
-      className="flex items-center justify-end gap-3 px-4 py-2"
-      style={{ background: "rgba(139,92,246,.08)", borderBottom: `1px solid ${color.cardBorder}` }}
+      className="flex shrink-0 items-center justify-end gap-3 px-4 py-2"
+      style={{
+        position: "sticky",
+        bottom: "0",
+        zIndex: 38,
+        background: "rgba(18,18,29,.96)",
+        borderTop: `1px solid ${color.cardBorder}`,
+        boxShadow: "0 -14px 30px rgba(0,0,0,.24)",
+        paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
+      }}
     >
+      <span className="mr-auto hidden sm:inline" style={{ fontSize: 11.5, color: color.textFaint }}>
+        แก้บีโรลไว้ {ed.windowEdits.size} จุด
+      </span>
       <BtnPrimary
         onClick={() => void ed.applyWindowEdits()}
         disabled={busy}

@@ -4,12 +4,17 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
-  RefreshCw, Clock,
+  RefreshCw, Clock, FolderOpen, Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
+import {
+  filterProjectMenuItems,
+  projectStatusLabel,
+  type ProjectMenuItem,
+} from "../video-editor/_v2/project-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,19 +46,21 @@ type NavigatorConnection = {
   effectiveType?: string;
 };
 
-type StatusFilter = "all" | "ready" | "rendering" | "failed";
+type StatusFilter = "all" | "ready" | "rendering" | "failed" | "drafts";
 
 const STATUS_FILTER_LABEL: Record<StatusFilter, string> = {
   all: "ทั้งหมด",
   ready: "เสร็จแล้ว",
   rendering: "กำลังเรนเดอร์",
   failed: "ล้มเหลว",
+  drafts: "ฉบับร่าง",
 };
 
 function matchesStatusFilter(video: VideoItem, filter: StatusFilter): boolean {
   if (filter === "all") return true;
   if (filter === "ready") return video.status === "COMPLETED";
   if (filter === "rendering") return video.status === "PROCESSING" || video.status === "PENDING";
+  if (filter === "drafts") return false;
   return video.status === "FAILED";
 }
 
@@ -93,11 +100,14 @@ function chooseGalleryPreviewUrl(video: VideoItem) {
 
 export default function VideosGalleryPage() {
   const [videos, setVideos] = useState<VideoItem[]>([]);
+  const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [projectsLoading, setProjectsLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
@@ -122,7 +132,15 @@ export default function VideosGalleryPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { fetchVideos(); }, [fetchVideos]);
+  const fetchProjects = useCallback(() => {
+    setProjectsLoading(true);
+    fetch("/api/editor-projects", { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setProjects(Array.isArray(d?.projects) ? d.projects : []))
+      .finally(() => setProjectsLoading(false));
+  }, []);
+
+  useEffect(() => { fetchVideos(); fetchProjects(); }, [fetchVideos, fetchProjects]);
   useEffect(() => {
     if (!videos.some(video => video.previewStatus === "queued")) return;
     const timer = window.setTimeout(fetchVideos, 12_000);
@@ -155,6 +173,16 @@ export default function VideosGalleryPage() {
     finally { setDeleteId(null); }
   }
 
+  async function handleDeleteProject(id: string) {
+    try {
+      const res = await fetch(`/api/editor-projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setProjects(p => p.filter(project => project.id !== id));
+      toast.success("ลบฉบับร่างแล้ว");
+    } catch { toast.error("ลบฉบับร่างไม่สำเร็จ"); }
+    finally { setDeleteProjectId(null); }
+  }
+
   const sorted = videos
     .filter(video => matchesStatusFilter(video, statusFilter))
     .sort((a, b) =>
@@ -162,6 +190,8 @@ export default function VideosGalleryPage() {
         ? new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         : new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     );
+  const draftProjects = filterProjectMenuItems(projects, "draft");
+  const showingDrafts = statusFilter === "drafts";
 
   const totalSize = videos.length * 47;
 
@@ -201,12 +231,12 @@ export default function VideosGalleryPage() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={fetchVideos}
-                disabled={loading}
+                onClick={() => { fetchVideos(); fetchProjects(); }}
+                disabled={loading || projectsLoading}
                 className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs transition-colors"
                 style={{ ...btnStyle, color: "var(--ui-text-muted)", minHeight: 44 }}
               >
-                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+                <RefreshCw className={cn("h-3.5 w-3.5", (loading || projectsLoading) && "animate-spin")} />
               </button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -260,7 +290,46 @@ export default function VideosGalleryPage() {
           </div>
 
           {/* ── Grid ── */}
-          {loading ? null : sorted.length === 0 && videos.length > 0 ? (
+          {showingDrafts ? (
+            projectsLoading ? null : draftProjects.length === 0 ? (
+              <div className="ve-rise flex flex-col items-center justify-center gap-2 rounded-2xl py-16 text-center"
+                style={{ border: "1px dashed var(--ui-card-border)" }}>
+                <FolderOpen className="h-6 w-6" style={{ color: "var(--ui-text-muted)" }} />
+                <p className="text-sm" style={{ color: "var(--ui-text-muted)" }}>ยังไม่มีฉบับร่าง</p>
+                <Link href="/video-editor?ui=v2" className="mt-1 rounded-xl px-4 py-2 text-xs font-semibold text-white transition-all hover:brightness-110"
+                  style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
+                  เริ่มโปรเจกต์ใหม่
+                </Link>
+              </div>
+            ) : (
+              <div className="ve-rise grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" style={{ animationDelay: "80ms" }}>
+                {draftProjects.map(project => (
+                  <ProjectCard
+                    key={project.id}
+                    project={project}
+                    deleteConfirm={deleteProjectId === project.id}
+                    onDelete={() => setDeleteProjectId(project.id)}
+                    onDeleteConfirm={() => handleDeleteProject(project.id)}
+                    onDeleteCancel={() => setDeleteProjectId(null)}
+                  />
+                ))}
+                <Link href="/video-editor?ui=v2">
+                  <div
+                    className="group flex aspect-3/4 cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl transition-all hover:border-violet-500/40 hover:bg-violet-500/5"
+                    style={{ border: "2px dashed var(--ui-card-border)" }}
+                  >
+                    <div
+                      className="flex h-10 w-10 items-center justify-center rounded-full transition-all group-hover:scale-110"
+                      style={{ background: "var(--ui-btn-bg)", border: "1px solid var(--ui-btn-border)" }}
+                    >
+                      <Plus className="h-5 w-5 transition-colors group-hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }} />
+                    </div>
+                    <span className="text-sm transition-colors group-hover:text-violet-400" style={{ color: "var(--ui-text-muted)" }}>New Project</span>
+                  </div>
+                </Link>
+              </div>
+            )
+          ) : loading ? null : sorted.length === 0 && videos.length > 0 ? (
             <div className="ve-rise flex flex-col items-center justify-center gap-2 rounded-2xl py-16 text-center"
               style={{ border: "1px dashed var(--ui-card-border)" }}>
               <Filter className="h-6 w-6" style={{ color: "var(--ui-text-muted)" }} />
@@ -360,6 +429,79 @@ export default function VideosGalleryPage() {
               </button>
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Project Card ── */
+function ProjectCard({
+  project, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel,
+}: {
+  project: ProjectMenuItem;
+  onDelete: () => void;
+  deleteConfirm: boolean;
+  onDeleteConfirm: () => void;
+  onDeleteCancel: () => void;
+}) {
+  const updatedAt = project.lastOpenedAt || project.updatedAt || project.createdAt;
+  const editHref = `/video-editor?ui=v2&projectId=${encodeURIComponent(project.id)}`;
+  return (
+    <div
+      className="group relative aspect-3/4 overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
+      style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
+    >
+      <div className="absolute inset-0 p-4">
+        <div className="flex h-full flex-col">
+          <div
+            className="flex h-11 w-11 items-center justify-center rounded-xl"
+            style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}
+          >
+            <FolderOpen className="h-5 w-5" style={{ color: VIOLET }} strokeWidth={2.1} />
+          </div>
+          <div className="mt-4">
+            <span
+              className="rounded-md px-2 py-0.5 text-[10px] font-bold"
+              style={{ background: "rgba(139,92,246,.14)", color: VIOLET_LIGHT, border: `1px solid ${VIOLET_TILE_BORDER}` }}
+            >
+              {projectStatusLabel(project.status)}
+            </span>
+          </div>
+          <div className="mt-auto">
+            <p className="line-clamp-3 text-base font-semibold leading-snug" style={{ color: "var(--ui-text-primary)" }}>
+              {project.title || "New Project"}
+            </p>
+            <p className="mt-2 flex items-center gap-1 text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
+              <Clock className="h-2.5 w-2.5" />
+              {updatedAt ? new Date(updatedAt).toLocaleDateString("th-TH", { month: "short", day: "numeric" }) : "ยังไม่เคยเปิด"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 transition-opacity group-hover:opacity-100"
+        style={{ background: "rgba(0,0,0,0.54)" }}>
+        <Link href={editHref}
+          className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
+          style={{ background: "rgba(139,92,246,.35)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
+          title="เปิดฉบับร่าง">
+          <Pencil className="h-4 w-4" />
+        </Link>
+        {deleteConfirm ? (
+          <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
+            style={{ background: "rgba(0,0,0,0.8)", border: `1px solid ${STATUS_DANGER}66` }}>
+            <span className="text-xs" style={{ color: STATUS_DANGER }}>Delete?</span>
+            <button onClick={onDeleteConfirm} className="text-xs transition-colors" style={{ color: STATUS_DANGER }}>Yes</button>
+            <button onClick={onDeleteCancel} className="text-xs text-white/50 transition-colors hover:text-white/80">No</button>
+          </div>
+        ) : (
+          <button onClick={onDelete}
+            className="flex h-10 w-10 items-center justify-center rounded-full text-white/70 transition-all hover:scale-110 hover:text-red-400"
+            style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}
+            title="ลบฉบับร่าง">
+            <Trash2 className="h-4 w-4" />
+          </button>
         )}
       </div>
     </div>
