@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-10
 
-**Status:** Approved in conversation; awaiting written-spec review
+**Status:** Approved on 2026-07-10
 
 **Production baseline:** `c1a1b7a` on Hostinger KVM8 (8 vCPU / 31 GiB), Next.js + PM2 + Nginx + SQLite/WAL
 
