@@ -79,7 +79,6 @@ export default function AdminUsersPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [cacheInfo, setCacheInfo] = useState<Record<string, CacheInfo>>({});
   const [cacheLoading, setCacheLoading] = useState<string | null>(null);
-  const [clearConfirm, setClearConfirm] = useState<string | null>(null);
 
   const fetchUsers = useCallback(() => {
     setLoading(true);
@@ -156,28 +155,6 @@ export default function AdminUsersPage() {
       toast.error("โหลดข้อมูลแคชไม่สำเร็จ");
     } finally {
       setCacheLoading(null);
-    }
-  }
-
-  async function clearCache(userId: string, includeRenders: boolean) {
-    setCacheLoading(userId);
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/cache`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ includeRenders }),
-      });
-      if (!res.ok) throw new Error("Failed");
-      const data = await res.json();
-      toast.success(data.message);
-      // Reload cache info
-      const res2 = await fetch(`/api/admin/users/${userId}/cache`);
-      if (res2.ok) { const d2 = await res2.json(); setCacheInfo(prev => ({ ...prev, [userId]: d2 })); }
-    } catch {
-      toast.error("เคลียร์แคชไม่สำเร็จ");
-    } finally {
-      setCacheLoading(null);
-      setClearConfirm(null);
     }
   }
 
@@ -338,6 +315,7 @@ export default function AdminUsersPage() {
                               Stock: {cacheInfo[user.id].stocks.count} ไฟล์ ({cacheInfo[user.id].stocks.sizeMb} MB)
                             </span>
                             <span>Render: {cacheInfo[user.id].renders.count} ไฟล์ ({cacheInfo[user.id].renders.sizeMb} MB)</span>
+                            <span className="text-violet-300/80">Media Retention · อ่านอย่างเดียว</span>
                             {cacheInfo[user.id].openTickets > 0 && (
                               <span className="text-orange-400">{cacheInfo[user.id].openTickets} ticket เปิดอยู่</span>
                             )}
@@ -467,27 +445,15 @@ export default function AdminUsersPage() {
                               )}
                             </Button>
 
-                            {/* Cache */}
-                            {clearConfirm === user.id ? (
-                              <div className="flex items-center gap-1">
-                                <span className="text-xs text-orange-400">เคลียร์ stock เท่านั้น?</span>
-                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, false)}
-                                  className="h-7 text-xs text-orange-400 hover:text-orange-300">Stock</Button>
-                                <Button size="sm" variant="ghost" onClick={() => clearCache(user.id, true)}
-                                  className="h-7 text-xs text-red-400 hover:text-red-300">Stock+Render</Button>
-                                <Button size="sm" variant="ghost" onClick={() => setClearConfirm(null)}
-                                  className="h-7 text-xs text-zinc-400">ยกเลิก</Button>
-                              </div>
-                            ) : (
-                              <Button size="sm" variant="ghost"
-                                onClick={() => { loadCacheInfo(user.id); setClearConfirm(user.id); }}
-                                className="h-7 gap-1 text-xs text-zinc-500 hover:text-orange-400"
-                                title="เช็คและเคลียร์แคช"
-                              >
-                                <HardDrive className="h-3 w-3" />
-                                แคช
-                              </Button>
-                            )}
+                            {/* Storage is read-only here; lifecycle mutations require reviewed graph/quarantine. */}
+                            <Button size="sm" variant="ghost"
+                              onClick={() => loadCacheInfo(user.id)}
+                              className="h-7 gap-1 text-xs text-zinc-500 hover:text-violet-300"
+                              title="ตรวจพื้นที่จัดเก็บแบบอ่านอย่างเดียว — การลบจัดการโดย Media Retention"
+                            >
+                              <HardDrive className="h-3 w-3" />
+                              ตรวจพื้นที่
+                            </Button>
 
                             {/* Delete */}
                             {deleteConfirm === user.id ? (

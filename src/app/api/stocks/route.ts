@@ -32,26 +32,15 @@ export async function GET() {
   return NextResponse.json({ count: files.length, sizeMb: Math.round(totalBytes / 1024 / 1024) });
 }
 
-/** DELETE /api/stocks — delete only THIS user's stock cache files */
+/** DELETE /api/stocks — direct deletion is gated by the reviewed media lifecycle. */
 export async function DELETE() {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const userId = authUser.id;
-
-  if (!fs.existsSync(STOCKS_DIR)) return NextResponse.json({ deleted: 0, sizeMb: 0 });
-
-  const files = fs.readdirSync(STOCKS_DIR).filter(f => isUserStock(f, userId));
-  let deleted = 0;
-  let freedBytes = 0;
-  for (const f of files) {
-    const fp = path.join(STOCKS_DIR, f);
-    try {
-      freedBytes += fs.statSync(fp).size;
-      fs.unlinkSync(fp);
-      deleted++;
-    } catch {}
-  }
-
-  return NextResponse.json({ deleted, sizeMb: Math.round(freedBytes / 1024 / 1024) });
+  return NextResponse.json({
+    error: "media_lifecycle_managed",
+    message: "การลบไฟล์สื่อโดยตรงถูกปิดไว้ โปรดใช้ Media Retention reference graph และ quarantine workflow ที่ผ่านการตรวจสอบ",
+    deleted: 0,
+    sizeMb: 0,
+  }, { status: 409 });
 }

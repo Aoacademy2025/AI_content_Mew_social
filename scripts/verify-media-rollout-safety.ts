@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import ts from "typescript";
 
 const ROOT = process.cwd();
 const read = (relativePath: string) => readFileSync(path.join(ROOT, relativePath), "utf8");
@@ -40,6 +41,155 @@ function count(source: string, pattern: RegExp): number {
   return source.match(pattern)?.length ?? 0;
 }
 
+type FetchAudit = {
+  relative: string;
+  endpoint: string | null;
+  method: string;
+  fileMentionsManagedCache: boolean;
+};
+
+function auditFetchSource(source: string, relative: string): FetchAudit[] {
+  const sourceFile = ts.createSourceFile(
+    relative,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    relative.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const constants = new Map<string, ts.Expression | null>();
+  const audits: FetchAudit[] = [];
+
+  function collectConstants(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      constants.set(
+        node.name.text,
+        constants.has(node.name.text) ? null : node.initializer,
+      );
+    }
+    ts.forEachChild(node, collectConstants);
+  }
+
+  function staticText(expression: ts.Expression | null | undefined, depth = 0): string | null {
+    if (!expression || depth > 6) return null;
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) return expression.text;
+    if (ts.isTemplateExpression(expression)) {
+      return expression.head.text + expression.templateSpans.map((span) => "${*}" + span.literal.text).join("");
+    }
+    if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const left = staticText(expression.left, depth + 1);
+      const right = staticText(expression.right, depth + 1);
+      return left !== null && right !== null ? left + right : null;
+    }
+    if (ts.isIdentifier(expression)) return staticText(constants.get(expression.text), depth + 1);
+    if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)
+      && expression.expression.text === "encodeURIComponent") return "${*}";
+    return null;
+  }
+
+  function objectMethod(expression: ts.Expression | null | undefined, depth = 0): string {
+    if (expression === undefined) return "GET";
+    if (expression === null) return "UNKNOWN";
+    if (depth > 6) return "UNKNOWN";
+    if (ts.isIdentifier(expression)) return objectMethod(constants.get(expression.text), depth + 1);
+    if (!ts.isObjectLiteralExpression(expression)) return "UNKNOWN";
+    if (expression.properties.some(ts.isSpreadAssignment)) return "UNKNOWN";
+    const methodProperty = expression.properties.find((property) =>
+      ts.isPropertyAssignment(property)
+      && ((ts.isIdentifier(property.name) && property.name.text === "method")
+        || (ts.isStringLiteral(property.name) && property.name.text === "method")),
+    );
+    if (!methodProperty || !ts.isPropertyAssignment(methodProperty)) return "GET";
+    return staticText(methodProperty.initializer, depth + 1)?.toUpperCase() ?? "UNKNOWN";
+  }
+
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node)) {
+      const isFetch = (ts.isIdentifier(node.expression) && node.expression.text === "fetch")
+        || (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "fetch");
+      const isDeleteMember = ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text.toLowerCase() === "delete";
+      const endpoint = staticText(node.arguments[0]);
+      const managedEndpoint = endpoint !== null && isManagedCacheEndpoint(endpoint);
+      const deleteReceiver = isDeleteMember && ts.isPropertyAccessExpression(node.expression)
+        ? node.expression.expression.getText(sourceFile)
+        : "";
+      const isHttpDeleteMember = isDeleteMember
+        && (managedEndpoint || /(?:axios|http|api|client)/i.test(deleteReceiver));
+      if (!isFetch && !isHttpDeleteMember) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      audits.push({
+        relative,
+        endpoint,
+        method: isHttpDeleteMember ? "DELETE" : objectMethod(node.arguments[1]),
+        fileMentionsManagedCache: source.includes("/api/stocks") || source.includes("/cache"),
+      });
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  collectConstants(sourceFile);
+  visit(sourceFile);
+  return audits;
+}
+
+function auditFetchCalls(absolute: string): FetchAudit[] {
+  return auditFetchSource(readFileSync(absolute, "utf8"), path.relative(ROOT, absolute));
+}
+
+function isManagedCacheEndpoint(endpoint: string): boolean {
+  return /^\/api\/stocks(?:[/?]|$)/.test(endpoint)
+    || /^\/api\/admin\/users\/.*\/cache(?:[/?]|$)/.test(endpoint);
+}
+
+function isDestructiveManagedCacheCall(audit: FetchAudit): boolean {
+  if (audit.endpoint !== null && isManagedCacheEndpoint(audit.endpoint)) return audit.method !== "GET";
+  return audit.method === "DELETE" && audit.endpoint === null && audit.fileMentionsManagedCache;
+}
+
+function assertDeleteHandlerCallAllowlist(source: string, label: string, allowedCalls: string[]) {
+  const sourceFile = ts.createSourceFile(label, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let deleteHandler: ts.FunctionDeclaration | undefined;
+  sourceFile.forEachChild((node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "DELETE") deleteHandler = node;
+  });
+  assert.ok(deleteHandler, `${label} must export a DELETE function declaration`);
+
+  function callName(expression: ts.LeftHandSideExpression): string {
+    if (ts.isIdentifier(expression)) return expression.text;
+    if (ts.isPropertyAccessExpression(expression)) {
+      return `${callName(expression.expression)}.${expression.name.text}`;
+    }
+    return `<${ts.SyntaxKind[expression.kind]}>`;
+  }
+
+  const calls: string[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node)) calls.push(callName(node.expression));
+    ts.forEachChild(node, visit);
+  }
+  visit(deleteHandler);
+  assert.deepEqual(
+    calls.filter((call) => !allowedCalls.includes(call)),
+    [],
+    `${label} may call only explicitly reviewed auth/response helpers`,
+  );
+}
+
+function assertLifecycleGate(handler: string, authorizationMarker: string, label: string) {
+  const authIndex = handler.indexOf(authorizationMarker);
+  const lifecycleIndex = handler.indexOf("media_lifecycle_managed");
+  assert.ok(authIndex >= 0, `${label} must keep its authorization check`);
+  assert.ok(lifecycleIndex >= 0, `${label} must expose the lifecycle-managed response code`);
+  assert.ok(authIndex < lifecycleIndex, `${label} must authorize before the lifecycle gate`);
+  assert.doesNotMatch(
+    handler,
+    /(?:fs|prisma)\.|\b(?:applyMediaCleanupPlan|executeMediaCleanup|purgeQuarantine|restoreQuarantine|unlinkSync|rmSync|writeFile|rename|copyFile|spawn|exec|fetch|\$transaction)\s*\(/,
+    `${label} must not invoke any filesystem, database, cleanup, process, or network mutation`,
+  );
+}
+
 function assertNoAutomaticCustomerMediaDeletion() {
   const cron = read("src/app/api/cron/cleanup-videos/route.ts");
   assert.doesNotMatch(cron, /deleteLowResPreviewForVideoUrl|unlinkSync|prisma\.video\./);
@@ -65,7 +215,26 @@ function assertNoAutomaticCustomerMediaDeletion() {
   const stocksGet = section(stocks, "export async function GET()", "/** DELETE /api/stocks");
   assert.doesNotMatch(stocksGet, /unlinkSync|rmSync|safeUnlink|cleanOldUserStocks|MAX_AGE_MS/);
   const stocksDelete = section(stocks, "export async function DELETE()");
-  assert.match(stocksDelete, /unlinkSync/);
+  assert.doesNotMatch(stocksDelete, /unlinkSync|rmSync|safeUnlink|readdirSync|statSync/);
+  assert.match(stocksDelete, /media_lifecycle_managed/);
+  assert.match(stocksDelete, /graph.*quarantine|quarantine.*graph/is);
+  assert.match(stocksDelete, /status:\s*409/);
+  assertLifecycleGate(stocksDelete, "if (!authUser)", "stock DELETE");
+  assertDeleteHandlerCallAllowlist(stocks, "stock DELETE", ["getCurrentUser", "NextResponse.json"]);
+
+  const adminCache = read("src/app/api/admin/users/[id]/cache/route.ts");
+  const adminCacheDelete = section(adminCache, "export async function DELETE(");
+  assert.doesNotMatch(adminCacheDelete, /unlinkSync|rmSync|safeUnlink|readdirSync|statSync|includeRenders/);
+  assert.match(adminCacheDelete, /media_lifecycle_managed/);
+  assert.match(adminCacheDelete, /graph.*quarantine|quarantine.*graph/is);
+  assert.match(adminCacheDelete, /status:\s*409/);
+  assert.match(adminCacheDelete, /if \(!authUser\)/);
+  assertLifecycleGate(adminCacheDelete, 'authUser.role !== "ADMIN"', "admin cache DELETE");
+  assertDeleteHandlerCallAllowlist(adminCache, "admin cache DELETE", ["getCurrentUser", "NextResponse.json", "apiError"]);
+  const adminCacheGet = section(adminCache, "export async function GET(", "// DELETE");
+  assert.match(adminCacheGet, /stockCount/);
+  assert.match(adminCacheGet, /renderCount/);
+  assert.match(adminCacheGet, /openTickets/);
 
   const fetchStock = read("src/app/api/videos/fetch-stock/route.ts");
   assert.doesNotMatch(fetchStock, /MAX_AGE_MS\s*=\s*7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
@@ -128,6 +297,43 @@ function assertNoAutomaticCustomerMediaDeletion() {
   assert.match(diskWatch, /const TMP_DIR = "\/tmp"/);
   assert.match(diskWatch, /path\.join\(cwd, "\.next\.old"\)/);
   assert.doesNotMatch(diskWatch, /["']stocks["']|["']renders["']/);
+
+  const creatorUi = read("src/app/(dashboard)/video-creator/page.tsx");
+  assert.doesNotMatch(creatorUi, /fetch\(["']\/api\/stocks["'][\s\S]{0,160}method:\s*["']DELETE["']/);
+  assert.doesNotMatch(creatorUi, /clearStockCache|clearingCache|ลบ stock cache สำเร็จ|ล้าง Cache แล้ว/);
+  assert.doesNotMatch(creatorUi, /Media Retention อัตโนมัติ/);
+  assert.match(creatorUi, /pipe\.current = \{\}/);
+  assert.match(creatorUi, /รีเซ็ตข้อมูลในเบราว์เซอร์/);
+  assert.match(creatorUi, /<span>Media Retention · อ่านอย่างเดียว<\/span>/);
+
+  const adminUsersUi = read("src/app/(dashboard)/admin/users/page.tsx");
+  assert.doesNotMatch(adminUsersUi, /fetch\(`\/api\/admin\/users\/\$\{userId\}\/cache`[\s\S]{0,180}method:\s*["']DELETE["']/);
+  assert.doesNotMatch(adminUsersUi, /clearCache\(|Stock\+Render|เคลียร์ stock|เคลียร์แคชสำเร็จ/);
+  assert.match(adminUsersUi, /loadCacheInfo\(user\.id\)/);
+  assert.match(adminUsersUi, /Media Retention/);
+
+  const fetchAudits = productionSources.flatMap(auditFetchCalls);
+  const destructiveCacheCallers = fetchAudits.filter(isDestructiveManagedCacheCall);
+  assert.deepEqual(destructiveCacheCallers, [], "no production UI/server caller may invoke direct cache deletion");
+
+  assert.throws(
+    () => assertDeleteHandlerCallAllowlist(
+      `export async function DELETE() { const auth = await getCurrentUser(); destroyStocks(); return NextResponse.json({ error: "media_lifecycle_managed" }, { status: 409 }); }`,
+      "synthetic helper bypass",
+      ["getCurrentUser", "NextResponse.json"],
+    ),
+    /destroyStocks/,
+    "the verifier must reject arbitrary helper-based deletion",
+  );
+  const syntheticCallerBypasses = [
+    `window.fetch("/api/stocks?confirm=1", { method: "DELETE" });`,
+    `axios.delete("/api/stocks/");`,
+    `const endpoint = "/api/admin/users/user-1/cache"; const options = { method: "DELETE" }; fetch(endpoint, options);`,
+    `function unsafe() { const endpoint = "/api/stocks"; fetch(endpoint, { method: "DELETE" }); } function unrelated() { const endpoint = "/api/health"; return endpoint; }`,
+    `function unsafe() { const options = { method: "DELETE" }; fetch("/api/stocks", options); } function unrelated() { const options = { method: "GET" }; return options; }`,
+  ].flatMap((source, index) => auditFetchSource(source, `synthetic-${index}.ts`))
+    .filter(isDestructiveManagedCacheCall);
+  assert.equal(syntheticCallerBypasses.length, 5, "query, trailing-slash, member-call, const indirection, and shadowed endpoint/options bindings must be rejected");
 }
 
 function assertDeployShaGate() {
@@ -216,8 +422,11 @@ function assertRolloutConfigurationStillSafe() {
     "src/app/api/cron/cleanup-videos/route.ts",
     "src/app/api/images/route.ts",
     "src/app/api/stocks/route.ts",
+    "src/app/api/admin/users/[id]/cache/route.ts",
     "src/app/api/videos/fetch-stock/route.ts",
     "src/app/api/videos/route.ts",
+    "src/app/(dashboard)/admin/users/page.tsx",
+    "src/app/(dashboard)/video-creator/page.tsx",
     "src/lib/mcp/video-job.ts",
   ]);
   assert.deepEqual(

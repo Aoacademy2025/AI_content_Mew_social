@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   Mic, Captions, Film, Settings2, Video, Download,
   CheckCircle2, Loader2, Wand2, Play, RefreshCw, FileText, RotateCcw, User, Layers, ChevronDown, Square,
-  Music2, Upload, X, Check,
+  Music2, Upload, X, Check, HardDrive,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
@@ -485,7 +485,6 @@ export default function ShortVideoPage() {
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
 
   const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
-  const [clearingCache, setClearingCache] = useState(false);
 
   // Render progress popup
   const [renderPopupOpen, setRenderPopupOpen] = useState(false);
@@ -603,21 +602,6 @@ export default function ShortVideoPage() {
       body: JSON.stringify({ geminiVoiceName: val }),
     }).catch(() => {});
   }
-
-  async function clearStockCache() {
-    setClearingCache(true);
-    try {
-      const res = await fetch("/api/stocks", { method: "DELETE" });
-      const d = await res.json();
-      toast.success(`ลบ stock cache สำเร็จ ${d.deleted} ไฟล์ (${d.sizeMb} MB)`);
-      setStockCacheInfo({ count: 0, sizeMb: 0 });
-    } catch {
-      toast.error("ไม่สามารถลบ cache ได้ กรุณาลองใหม่อีกครั้ง");
-    } finally {
-      setClearingCache(false);
-    }
-  }
-
 
   // Fetch avatar preview image when avatarId changes (debounced)
   useEffect(() => {
@@ -810,7 +794,7 @@ export default function ShortVideoPage() {
       return "ไม่สามารถเชื่อมต่อ Server — กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต";
     if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
       setShowClearCacheDialog(true);
-      return "Keywords ขาดหาย — กรุณาล้างแคชแล้วรันใหม่";
+      return "Keywords ขาดหาย — กรุณารีเซ็ตข้อมูลในเบราว์เซอร์แล้วรันใหม่";
     }
     if (raw.includes("pexels") || raw.includes("Pexels"))
       return "Pexels API มีปัญหา — กรุณาตรวจสอบ API Key ใน Settings แล้วลองใหม่";
@@ -2568,14 +2552,14 @@ export default function ShortVideoPage() {
           <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
             style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
             <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(0 0% 100% / 0.05)" }}>
-              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
+              <h3 className="text-base font-semibold text-white">ข้อมูล Pipeline ในเบราว์เซอร์ไม่ครบ</h3>
             </div>
             <div className="px-5 py-4 space-y-3">
               <p className="text-sm" style={{ color: "hsl(240 5% 70%)" }}>
-                ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
+                ข้อมูล Keywords ในหน้านี้ไม่ครบ กรุณารีเซ็ตเฉพาะข้อมูล Pipeline ในเบราว์เซอร์แล้วเริ่มใหม่:
               </p>
               <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(240 5% 80%)" }}>
-                <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
+                <li>กดปุ่ม <strong className="text-white">รีเซ็ตข้อมูลในเบราว์เซอร์</strong> ด้านล่าง</li>
                 <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
               </ol>
             </div>
@@ -2589,15 +2573,12 @@ export default function ShortVideoPage() {
               <button
                 className="flex-1 rounded-lg py-2 text-sm font-semibold text-white"
                 style={{ background: "hsl(14 90% 55%)" }}
-                onClick={async () => {
+                onClick={() => {
                   setShowClearCacheDialog(false);
-                  try {
-                    await fetch("/api/stocks", { method: "DELETE" });
-                  } catch {}
                   pipe.current = {};
-                  toast.success("ล้าง Cache แล้ว — กด Run ได้เลย");
+                  toast.success("รีเซ็ตข้อมูลในเบราว์เซอร์แล้ว — กด Run ได้เลย");
                 }}>
-                ล้าง Cache แล้วรันใหม่
+                รีเซ็ตข้อมูลในเบราว์เซอร์
               </button>
             </div>
           </div>
@@ -3555,13 +3536,15 @@ export default function ShortVideoPage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {stockCacheInfo && stockCacheInfo.count > 0 && (
-                  <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40"
-                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                    <span className="hidden sm:inline ml-1">Cache</span> {stockCacheInfo.sizeMb}MB
-                  </button>
+                  <div
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold"
+                    style={{ background: "hsl(215 18% 20% / 0.45)", color: "hsl(215 12% 68%)", border: "1px solid hsl(215 15% 35% / 0.35)" }}
+                    title={`พื้นที่สื่อ ${stockCacheInfo.count} ไฟล์เป็นแบบอ่านอย่างเดียว การเปลี่ยนแปลงต้องผ่าน reference graph และ quarantine workflow ที่ตรวจสอบแล้ว`}
+                  >
+                    <HardDrive className="h-3 w-3" />
+                    <span>Media Retention · อ่านอย่างเดียว</span>
+                    <span>{stockCacheInfo.sizeMb}MB</span>
+                  </div>
                 )}
                 {running && (
                   <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}
