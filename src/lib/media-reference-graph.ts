@@ -55,7 +55,11 @@ function derivedKeys(ref: CanonicalMediaRef): MediaKey[] {
   return [];
 }
 
-export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaGraph> {
+export async function buildMediaReferenceGraph(
+  now = new Date(),
+  cwd = process.cwd(),
+  knownMediaMtimes: ReadonlyMap<string, Date> = new Map(),
+): Promise<MediaGraph> {
   const refs = new Map<string, MediaReference[]>();
   const errors: MediaGraphError[] = [];
   const scannedOwners: MediaGraph["scannedOwners"] = {
@@ -65,7 +69,7 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
     "render-job": 0,
     "generated-image": 0,
   };
-  const roots = mediaRootPaths();
+  const roots = mediaRootPaths(cwd);
   const errorKeys = new Set<string>();
 
   function addError(owner: Owner, field: string, code: string): void {
@@ -389,30 +393,48 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
       }
       if (activeOwnerKeys.has(canonicalRef.key)) continue;
 
-      let stat: fs.Stats;
+      let producedAt: Date;
       try {
-        stat = fs.lstatSync(canonicalRef.absolutePath);
+        const stat = fs.lstatSync(canonicalRef.absolutePath);
+        if (stat.isSymbolicLink()) {
+          addError(owner, "draftJson", "media_path_symlink");
+          continue;
+        }
+        if (!stat.isFile()) {
+          addError(owner, "draftJson", "media_path_invalid");
+          continue;
+        }
+        producedAt = stat.mtime;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        const knownMtime = knownMediaMtimes.get(canonicalRef.key);
+        if (
+          (code === "ENOENT" || code === "ENOTDIR") &&
+          knownMtime &&
+          Number.isFinite(knownMtime.getTime())
+        ) {
+          producedAt = knownMtime;
+        } else {
+          addError(
+            owner,
+            "draftJson",
+            code === "ENOENT" || code === "ENOTDIR" ? "media_file_missing" : "media_file_stat_failed",
+          );
+          continue;
+        }
+      }
+      if (!Number.isFinite(producedAt.getTime())) {
         addError(
           owner,
           "draftJson",
-          code === "ENOENT" || code === "ENOTDIR" ? "media_file_missing" : "media_file_stat_failed",
+          "media_file_stat_failed",
         );
-        continue;
-      }
-      if (stat.isSymbolicLink()) {
-        addError(owner, "draftJson", "media_path_symlink");
-        continue;
-      }
-      if (!stat.isFile()) {
-        addError(owner, "draftJson", "media_path_invalid");
         continue;
       }
 
       const reference: MediaReference = {
         ...owner,
-        expiresAt: expiryForMedia(project.user.plan, stat.mtime),
+        expiresAt: expiryForMedia(project.user.plan, producedAt),
       };
       addCanonicalRef(canonicalRef, reference, "draftJson");
     }

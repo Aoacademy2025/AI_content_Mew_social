@@ -5,6 +5,7 @@ import {
   getMediaCleanupPlan,
   mediaCleanupSummary,
 } from "@/lib/media-cleanup";
+import { writeMediaHealthMetrics } from "@/lib/media-quarantine";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
@@ -26,41 +27,64 @@ export async function GET(req: Request) {
   const includeStocks = url.searchParams.get("includeStocks") === "1";
   const includeTmp = url.searchParams.get("includeTmp") === "1";
   const plan = await getMediaCleanupPlan({ olderThanDays, includeStocks, includeTmp });
+  const summary = mediaCleanupSummary(plan);
+
+  if (plan.graphErrors.length > 0) {
+    return NextResponse.json({ ...summary, dryRun: true }, { status: 409 });
+  }
+  await writeMediaHealthMetrics(plan);
 
   return NextResponse.json({
-    ...mediaCleanupSummary(plan),
+    ...summary,
     dryRun: true,
   });
 }
 
-// DELETE - deletes only unreferenced files selected by the same dry-run scanner.
+// DELETE - quarantines only the exact reviewed manifest; permanent purge is never available here.
 export async function DELETE(req: Request) {
   const admin = await requireAdmin();
   if (admin.error) return admin.error;
 
+  const body = await req.json().catch(() => null) as {
+    apply?: boolean;
+    manifestSha256?: string;
+    olderThanDays?: number;
+    includeStocks?: boolean;
+    includeTmp?: boolean;
+  } | null;
   const {
+    apply,
+    manifestSha256,
     olderThanDays = 3,
     includeStocks = false,
     includeTmp = false,
-    dryRun = false,
-  }: { olderThanDays?: number; includeStocks?: boolean; includeTmp?: boolean; dryRun?: boolean } =
-    await req.json().catch(() => ({}));
+  } = body ?? {};
+
+  if (apply !== true || typeof manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(manifestSha256)) {
+    return NextResponse.json(
+      { error: "apply_true_and_manifest_sha256_required" },
+      { status: 400 },
+    );
+  }
+  if (includeTmp) {
+    return NextResponse.json(
+      { error: "tmp_cleanup_requires_separate_cli_operation" },
+      { status: 400 },
+    );
+  }
 
   const plan = await getMediaCleanupPlan({ olderThanDays, includeStocks, includeTmp });
   const summary = mediaCleanupSummary(plan);
-
-  if (dryRun) {
-    return NextResponse.json({
-      ...summary,
-      dryRun: true,
-      deleted: 0,
-      savedMb: 0,
-      skipped: 0,
-      message: `Dry-run: ลบได้ ${plan.selected.total.count} รายการ ประหยัดประมาณ ${plan.selected.total.sizeMb} MB`,
-    });
+  if (plan.graphErrors.length > 0) {
+    return NextResponse.json({ ...summary, dryRun: false }, { status: 409 });
   }
 
-  const result = applyMediaCleanupPlan(plan);
+  const result = await applyMediaCleanupPlan(plan, manifestSha256);
+  const healthPlan = await getMediaCleanupPlan({ olderThanDays, includeStocks });
+  if (healthPlan.graphErrors.length > 0) {
+    throw new Error(`media graph incomplete: ${healthPlan.graphErrors.length} error(s)`);
+  }
+  await writeMediaHealthMetrics(healthPlan);
   console.log(
     `[admin/cleanup] renders=${plan.selected.renders.count} ` +
     `stocks=${plan.selected.stocks.count} tmp=${plan.selected.tmp.count} ` +

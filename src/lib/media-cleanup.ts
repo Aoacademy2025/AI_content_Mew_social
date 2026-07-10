@@ -1,7 +1,13 @@
-import fs from "fs";
-import path from "path";
-import { prisma } from "./prisma";
-import { lowResPreviewFilenamesForRender } from "./low-res-preview-paths";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  mediaManifestFingerprint,
+  mediaManifestSha256,
+  mediaRecordIsEligible,
+  quarantinedMediaMtimes,
+  quarantineMediaCleanupPlan,
+} from "./media-quarantine";
+import type { MediaGraphError } from "./media-reference-graph";
 
 export type MediaArea = "renders" | "stocks";
 export type MediaKey = `${MediaArea}/${string}`;
@@ -25,10 +31,37 @@ export type CanonicalMediaRefCollection = {
   errors: string[];
 };
 
-type FileCandidate = {
-  area: MediaArea | "tmp";
-  filePath: string;
+export type MediaManifestRecord = {
+  area: MediaArea;
+  key: MediaKey;
+  absolutePath: string;
   sizeBytes: number;
+  mtimeMs: number;
+  effectiveExpiresAt: string | null;
+  reason: "all-references-expired" | "unreferenced-14d";
+  fingerprint: string;
+};
+
+export type TmpCleanupCandidate = {
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+};
+
+export type CountBytes = {
+  count: number;
+  sizeBytes: number;
+};
+
+export type MediaOperationMetrics = {
+  scanned: CountBytes;
+  protected: CountBytes;
+  expired: CountBytes;
+  quarantined: CountBytes;
+  restored: CountBytes;
+  purged: CountBytes;
+  skipped: CountBytes;
+  errors: CountBytes;
 };
 
 export type CleanupBucket = {
@@ -37,6 +70,8 @@ export type CleanupBucket = {
 };
 
 export type MediaCleanupPlan = {
+  cwd: string;
+  generatedAt: string;
   renders: {
     total: CleanupBucket;
     older1d: CleanupBucket;
@@ -65,7 +100,17 @@ export type MediaCleanupPlan = {
     renders: number;
     stocks: number;
   };
-  candidates: FileCandidate[];
+  graphErrors: MediaGraphError[];
+  manifestSha256: string;
+  candidates: MediaManifestRecord[];
+  tmpCandidates: TmpCleanupCandidate[];
+  health: {
+    missingBeforeExpiry: number;
+    expired: number;
+    protected: number;
+    candidates: number;
+  };
+  operationMetrics: MediaOperationMetrics;
 };
 
 export type MediaCleanupOptions = {
@@ -73,10 +118,14 @@ export type MediaCleanupOptions = {
   includeStocks?: boolean;
   includeTmp?: boolean;
   cwd?: string;
+  now?: Date;
 };
 
 export type MediaCleanupApplyResult = {
-  deleted: number;
+  runId: string;
+  manifestPath: string;
+  metrics: MediaOperationMetrics;
+  quarantined: number;
   savedMb: number;
   skipped: number;
   message: string;
@@ -137,23 +186,8 @@ function pathSizeBytes(filePath: string): number {
   return total;
 }
 
-type JsonProbe =
-  | { kind: "not-json" }
-  | { kind: "parsed"; value: unknown }
-  | { kind: "malformed" };
-
-function probeJson(raw: string): JsonProbe {
-  const trimmed = raw.trim();
-  if (!trimmed || !/^[{[]/.test(trimmed)) return { kind: "not-json" };
-  try {
-    return { kind: "parsed", value: JSON.parse(trimmed) as unknown };
-  } catch {
-    return { kind: "malformed" };
-  }
-}
-
 export function mediaRootPaths(cwd = process.cwd()): MediaRootPaths {
-  const workspaceRoot = path.resolve(cwd);
+  const workspaceRoot = fs.realpathSync.native(path.resolve(cwd));
   return {
     workspaceRoot,
     renders: path.resolve(workspaceRoot, "public", "renders"),
@@ -351,170 +385,146 @@ export function collectCanonicalMediaRefs(
   return { refs, errors };
 }
 
-function addProtected(refs: Record<MediaArea, Set<string>>, area: MediaArea, filename: string) {
-  if (!filename || filename === "." || filename === "..") return;
-  refs[area].add(filename);
-  if (area === "stocks") refs[area].add(`${filename}.normalized`);
-  if (area === "renders") {
-    for (const previewFilename of lowResPreviewFilenamesForRender(filename)) refs[area].add(previewFilename);
-  }
-}
+type ScannedMediaFile = {
+  area: MediaArea;
+  key: MediaKey;
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+};
 
-function collectRefs(
-  value: unknown,
-  refs: Record<MediaArea, Set<string>>,
-  roots: MediaRootPaths,
-  depth = 0,
-): number {
-  if (depth > 8) return 1;
-  if (value == null) return 0;
-
-  if (typeof value === "string") {
-    const direct = parseCanonicalMediaRef(value, roots);
-    if (direct.kind === "reference") addProtected(refs, direct.ref.area, direct.ref.filename);
-    let errorCount = direct.kind === "error" ? 1 : 0;
-
-    const json = probeJson(value);
-    if (json.kind === "malformed") errorCount++;
-    if (json.kind === "parsed") errorCount += collectRefs(json.value, refs, roots, depth + 1);
-    return errorCount;
-  }
-
-  if (Array.isArray(value)) {
-    return value.reduce(
-      (errorCount, item) => errorCount + collectRefs(item, refs, roots, depth + 1),
-      0,
-    );
-  }
-
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>).reduce<number>(
-      (errorCount, item) => errorCount + collectRefs(item, refs, roots, depth + 1),
-      0,
-    );
-  }
-  return 0;
-}
-
-async function buildProtectedRefs(
-  cwd: string,
-): Promise<{ refs: Record<MediaArea, Set<string>>; errorCount: number }> {
-  const refs: Record<MediaArea, Set<string>> = {
-    renders: new Set(),
-    stocks: new Set(),
-  };
-  const roots = mediaRootPaths(cwd);
-  let errorCount = 0;
-
-  const videos = await prisma.video.findMany({
-    select: {
-      videoUrl: true,
-      avatarVideoUrl: true,
-      audioUrl: true,
-      thumbnail: true,
-      thumbnailConfig: true,
-      renderConfig: true,
-      generatedImages: true,
-      sceneMapping: true,
-    },
-  });
-
-  for (const video of videos) errorCount += collectRefs(video, refs, roots);
-
-  const images = await prisma.generatedImage.findMany({
-    select: { url: true },
-  });
-  for (const image of images) errorCount += collectRefs(image.url, refs, roots);
-
-  return { refs, errorCount };
-}
-
-function isProtected(filename: string, protectedSet: Set<string>): boolean {
-  if (protectedSet.has(filename)) return true;
-  if (filename.endsWith(".normalized")) {
-    return protectedSet.has(filename.slice(0, -".normalized".length));
-  }
-  return false;
-}
-
-function scanMediaDir(
-  dir: string,
-  protectedSet: Set<string>,
-  days: number[],
-): {
+type MediaScan = {
+  files: ScannedMediaFile[];
+  skipped: number;
+  errors: MediaGraphError[];
   total: CleanupBucket;
   buckets: Record<number, CleanupBucket>;
-  errorCount: number;
-  selectedFiles: (olderThanDays: number, area: MediaArea) => FileCandidate[];
-} {
+};
+
+function cleanupGraphError(field: string, code: string): MediaGraphError {
+  return {
+    ownerKind: "project-draft",
+    ownerId: "*",
+    field,
+    code,
+  };
+}
+
+function scanMediaArea(
+  area: MediaArea,
+  roots: MediaRootPaths,
+  days: number[],
+  now: Date,
+): MediaScan {
   const buckets: Record<number, CleanupBucket> = {};
   for (const day of days) buckets[day] = { count: 0, sizeMb: 0 };
-
-  const files: Array<{ filePath: string; filename: string; sizeBytes: number; mtimeMs: number }> = [];
-  let totalBytes = 0;
-  let errorCount = 0;
-
-  if (!fs.existsSync(dir)) {
+  const root = path.resolve(roots[area]);
+  const rootError = configuredMediaRootError(area, roots);
+  if (rootError) {
     return {
+      files: [],
+      skipped: 0,
+      errors: [cleanupGraphError(`$scan.${area}`, rootError)],
       total: { count: 0, sizeMb: 0 },
       buckets,
-      errorCount,
-      selectedFiles: () => [],
     };
+  }
+  if (!fs.existsSync(root)) {
+    return { files: [], skipped: 0, errors: [], total: { count: 0, sizeMb: 0 }, buckets };
   }
 
   let filenames: string[];
   try {
-    filenames = fs.readdirSync(dir);
+    filenames = fs.readdirSync(root).sort();
   } catch {
-    filenames = [];
-    errorCount++;
-  }
-  for (const filename of filenames) {
-    if (isProtected(filename, protectedSet)) continue;
-    const filePath = path.join(dir, filename);
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(filePath);
-    } catch {
-      errorCount++;
-      continue;
-    }
-    if (stat.isSymbolicLink() || !stat.isFile()) continue;
-    totalBytes += stat.size;
-    files.push({ filePath, filename, sizeBytes: stat.size, mtimeMs: stat.mtimeMs });
+    return {
+      files: [],
+      skipped: 0,
+      errors: [cleanupGraphError(`$scan.${area}`, "media_directory_read_failed")],
+      total: { count: 0, sizeMb: 0 },
+      buckets,
+    };
   }
 
-  const now = Date.now();
+  const files: ScannedMediaFile[] = [];
+  const errors: MediaGraphError[] = [];
+  let skipped = 0;
+  let totalBytes = 0;
+  const canonicalRoot = fs.realpathSync.native(root);
+  for (const filename of filenames) {
+    if (
+      !filename ||
+      filename === "." ||
+      filename === ".." ||
+      filename !== path.basename(filename) ||
+      /[/\\\u0000-\u001f\u007f]/.test(filename)
+    ) {
+      skipped++;
+      continue;
+    }
+    const absolutePath = path.resolve(root, filename);
+    if (!pathIsWithin(root, absolutePath)) {
+      errors.push(cleanupGraphError(`$scan.${area}`, "media_path_outside_root"));
+      continue;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(absolutePath);
+    } catch {
+      errors.push(cleanupGraphError(`$scan.${area}`, "media_path_lstat_failed"));
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      skipped++;
+      continue;
+    }
+    try {
+      if (!pathIsWithin(canonicalRoot, fs.realpathSync.native(absolutePath))) {
+        errors.push(cleanupGraphError(`$scan.${area}`, "media_path_outside_root"));
+        continue;
+      }
+    } catch {
+      errors.push(cleanupGraphError(`$scan.${area}`, "media_path_lstat_failed"));
+      continue;
+    }
+    totalBytes += stat.size;
+    files.push({
+      area,
+      key: `${area}/${filename}`,
+      absolutePath,
+      sizeBytes: stat.size,
+      mtimeMs: stat.mtimeMs,
+    });
+  }
+
   for (const day of days) {
-    const cutoff = now - day * 24 * 60 * 60 * 1000;
+    const cutoff = now.getTime() - day * 24 * 60 * 60 * 1000;
     const selected = files.filter((file) => file.mtimeMs < cutoff);
     buckets[day] = {
       count: selected.length,
       sizeMb: mb(selected.reduce((sum, file) => sum + file.sizeBytes, 0)),
     };
   }
-
   return {
+    files,
+    skipped,
+    errors,
     total: { count: files.length, sizeMb: mb(totalBytes) },
     buckets,
-    errorCount,
-    selectedFiles: (olderThanDays, area) => {
-      const cutoff = now - olderThanDays * 24 * 60 * 60 * 1000;
-      return files
-        .filter((file) => file.mtimeMs < cutoff)
-        .map((file) => ({ area, filePath: file.filePath, sizeBytes: file.sizeBytes }));
-    },
   };
 }
 
-function scanTmp(olderThanDays: number, cwd: string): { total: CleanupBucket; candidates: FileCandidate[] } {
+function scanTmp(
+  olderThanDays: number,
+  cwd: string,
+  now: Date,
+): { total: CleanupBucket; candidates: TmpCleanupCandidate[] } {
   const roots = [
     { dir: "/tmp", patterns: TMP_PATTERNS },
     { dir: path.join(cwd, ".tmp", "remotion"), patterns: [""] },
   ];
-  const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
-  const candidates: FileCandidate[] = [];
+  const cutoff = now.getTime() - olderThanDays * 24 * 60 * 60 * 1000;
+  const candidates: TmpCleanupCandidate[] = [];
   let totalBytes = 0;
   let count = 0;
 
@@ -530,7 +540,7 @@ function scanTmp(olderThanDays: number, cwd: string): { total: CleanupBucket; ca
         totalBytes += sizeBytes;
         count++;
         if (stat.mtimeMs < cutoff) {
-          candidates.push({ area: "tmp", filePath, sizeBytes });
+          candidates.push({ absolutePath: filePath, sizeBytes, mtimeMs: stat.mtimeMs });
         }
       }
     } catch {}
@@ -542,62 +552,125 @@ function scanTmp(olderThanDays: number, cwd: string): { total: CleanupBucket; ca
   };
 }
 
-function stripCandidates(plan: MediaCleanupPlan): Omit<MediaCleanupPlan, "candidates"> {
-  const { candidates: _candidates, ...summary } = plan;
-  return summary;
-}
-
 export function mediaCleanupSummary(plan: MediaCleanupPlan) {
-  return stripCandidates(plan);
+  return {
+    generatedAt: plan.generatedAt,
+    renders: plan.renders,
+    stocks: plan.stocks,
+    tmp: plan.tmp,
+    selected: plan.selected,
+    protectedCount: plan.protectedCount,
+    protected: plan.protected,
+    graphErrors: plan.graphErrors.length,
+    manifestSha256: plan.manifestSha256,
+    manifest: plan.candidates,
+    tmpCandidates: plan.tmpCandidates,
+    health: plan.health,
+  };
 }
 
 export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Promise<MediaCleanupPlan> {
-  const cwd = options.cwd ?? process.cwd();
+  const roots = mediaRootPaths(options.cwd ?? process.cwd());
+  const cwd = roots.workspaceRoot;
+  const now = options.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new MediaCleanupPlanningError(1);
   const olderThanDays = clampDays(options.olderThanDays, 3);
   const includeStocks = Boolean(options.includeStocks);
   const includeTmp = Boolean(options.includeTmp);
-  const roots = mediaRootPaths(cwd);
-  let protectedDiscovery: Awaited<ReturnType<typeof buildProtectedRefs>>;
+  let graph: Awaited<ReturnType<typeof import("./media-reference-graph")["buildMediaReferenceGraph"]>>;
   try {
-    protectedDiscovery = await buildProtectedRefs(cwd);
+    const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+    graph = await buildMediaReferenceGraph(now, cwd, quarantinedMediaMtimes(cwd));
   } catch {
-    throw new MediaCleanupPlanningError(1);
+    graph = {
+      refs: new Map(),
+      scannedOwners: {
+        video: 0,
+        "video-job": 0,
+        "project-draft": 0,
+        "render-job": 0,
+        "generated-image": 0,
+      },
+      errors: [cleanupGraphError("$graph", "media_graph_build_failed")],
+    };
   }
-  const rootErrorCount = (["renders", "stocks"] as const)
-    .filter((area) => configuredMediaRootError(area, roots) !== null)
-    .length;
-  const discoveryErrorCount = protectedDiscovery.errorCount + rootErrorCount;
-  if (discoveryErrorCount > 0) throw new MediaCleanupPlanningError(discoveryErrorCount);
-  const protectedRefs = protectedDiscovery.refs;
 
-  const rendersDir = path.join(cwd, "public", "renders");
-  const stocksDir = path.join(cwd, "stocks");
+  const renderScan = scanMediaArea("renders", roots, [1, 3, 7], now);
+  const stockScan = scanMediaArea("stocks", roots, [1, 3, 7, 14], now);
+  const graphErrors = [...graph.errors, ...renderScan.errors, ...stockScan.errors];
+  const tmpScan = includeTmp
+    ? scanTmp(olderThanDays, cwd, now)
+    : { total: { count: 0, sizeMb: 0 }, candidates: [] };
 
-  const renderScan = scanMediaDir(rendersDir, protectedRefs.renders, [1, 3, 7]);
-  const stockScan = scanMediaDir(stocksDir, protectedRefs.stocks, [1, 3, 7, 14]);
-  const scanErrorCount = renderScan.errorCount + stockScan.errorCount;
-  if (scanErrorCount > 0) throw new MediaCleanupPlanningError(scanErrorCount);
-  const tmpScan = scanTmp(olderThanDays, cwd);
-
-  const renderCandidates = renderScan.selectedFiles(olderThanDays, "renders");
-  const stockCandidates = includeStocks ? stockScan.selectedFiles(olderThanDays, "stocks") : [];
-  const tmpCandidates = includeTmp ? tmpScan.candidates : [];
-  const candidates = [...renderCandidates, ...stockCandidates, ...tmpCandidates];
+  const records: MediaManifestRecord[] = [];
+  const operationMetrics: MediaOperationMetrics = {
+    scanned: { count: 0, sizeBytes: 0 },
+    protected: { count: 0, sizeBytes: 0 },
+    expired: { count: 0, sizeBytes: 0 },
+    quarantined: { count: 0, sizeBytes: 0 },
+    restored: { count: 0, sizeBytes: 0 },
+    purged: { count: 0, sizeBytes: 0 },
+    skipped: { count: renderScan.skipped + stockScan.skipped, sizeBytes: 0 },
+    errors: { count: graphErrors.length, sizeBytes: 0 },
+  };
+  for (const file of [...renderScan.files, ...stockScan.files]) {
+    operationMetrics.scanned.count++;
+    operationMetrics.scanned.sizeBytes += file.sizeBytes;
+    const eligibility = mediaRecordIsEligible(file, graph, now);
+    if (!eligibility.eligible) {
+      operationMetrics.protected.count++;
+      operationMetrics.protected.sizeBytes += file.sizeBytes;
+      continue;
+    }
+    operationMetrics.expired.count++;
+    operationMetrics.expired.sizeBytes += file.sizeBytes;
+    if (file.area === "stocks" && !includeStocks) continue;
+    const record: MediaManifestRecord = {
+      ...file,
+      effectiveExpiresAt: eligibility.effectiveExpiresAt?.toISOString() ?? null,
+      reason: eligibility.reason,
+      fingerprint: "",
+    };
+    record.fingerprint = mediaManifestFingerprint(record);
+    records.push(record);
+  }
+  const candidates = graphErrors.length === 0
+    ? records.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    : [];
 
   const selectedRenders = {
-    count: renderCandidates.length,
-    sizeMb: mb(renderCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    count: candidates.filter((file) => file.area === "renders").length,
+    sizeMb: mb(candidates.filter((file) => file.area === "renders").reduce((sum, file) => sum + file.sizeBytes, 0)),
   };
   const selectedStocks = {
-    count: stockCandidates.length,
-    sizeMb: mb(stockCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    count: candidates.filter((file) => file.area === "stocks").length,
+    sizeMb: mb(candidates.filter((file) => file.area === "stocks").reduce((sum, file) => sum + file.sizeBytes, 0)),
   };
   const selectedTmp = {
-    count: tmpCandidates.length,
-    sizeMb: mb(tmpCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    count: tmpScan.candidates.length,
+    sizeMb: mb(tmpScan.candidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
   };
 
+  const scannedKeys = new Set<string>([...renderScan.files, ...stockScan.files].map((file) => file.key));
+  let missingBeforeExpiry = 0;
+  for (const [key, refs] of graph.refs) {
+    const filename = key.slice(key.indexOf("/") + 1);
+    const isDerived = filename.startsWith("preview-") || filename.endsWith(".normalized");
+    if (
+      !isDerived &&
+      !scannedKeys.has(key) &&
+      refs.some((ref) => ref.expiresAt !== null && ref.expiresAt.getTime() >= now.getTime())
+    ) {
+      missingBeforeExpiry++;
+    }
+  }
+
+  const protectedRenders = renderScan.files.filter((file) => !mediaRecordIsEligible(file, graph, now).eligible).length;
+  const protectedStocks = stockScan.files.filter((file) => !mediaRecordIsEligible(file, graph, now).eligible).length;
+
   return {
+    cwd,
+    generatedAt: now.toISOString(),
     renders: {
       total: renderScan.total,
       older1d: renderScan.buckets[1],
@@ -621,40 +694,66 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
       tmp: selectedTmp,
       total: addBucket(addBucket(selectedRenders, selectedStocks), selectedTmp),
     },
-    protectedCount: protectedRefs.renders.size + protectedRefs.stocks.size,
+    protectedCount: protectedRenders + protectedStocks,
     protected: {
-      renders: protectedRefs.renders.size,
-      stocks: protectedRefs.stocks.size,
+      renders: protectedRenders,
+      stocks: protectedStocks,
     },
+    graphErrors,
+    manifestSha256: mediaManifestSha256(candidates),
     candidates,
+    tmpCandidates: tmpScan.candidates,
+    health: {
+      missingBeforeExpiry,
+      expired: graphErrors.length === 0 ? operationMetrics.expired.count : 0,
+      protected: operationMetrics.protected.count,
+      candidates: candidates.length,
+    },
+    operationMetrics,
   };
 }
 
-export function applyMediaCleanupPlan(plan: MediaCleanupPlan): MediaCleanupApplyResult {
+export async function applyMediaCleanupPlan(
+  plan: MediaCleanupPlan,
+  reviewedHash: string,
+  options: {
+    now?: Date;
+    runId?: string;
+    batchSize?: number;
+    writeManifest?: (manifestPath: string, manifest: unknown) => Promise<void>;
+  } = {},
+): Promise<MediaCleanupApplyResult> {
+  return quarantineMediaCleanupPlan(plan, reviewedHash, options);
+}
+
+export function applyTmpCleanupPlan(plan: MediaCleanupPlan): {
+  deleted: number;
+  savedMb: number;
+  skipped: number;
+} {
+  if (plan.graphErrors.length > 0) {
+    throw new Error(`media graph incomplete: ${plan.graphErrors.length} error(s)`);
+  }
   let deleted = 0;
   let savedBytes = 0;
   let skipped = 0;
-
-  for (const candidate of plan.candidates) {
+  for (const candidate of plan.tmpCandidates) {
     try {
-      const stat = safeStat(candidate.filePath);
-      if (!stat) {
+      const stat = safeStat(candidate.absolutePath);
+      if (
+        !stat ||
+        stat.mtimeMs !== candidate.mtimeMs ||
+        pathSizeBytes(candidate.absolutePath) !== candidate.sizeBytes
+      ) {
         skipped++;
         continue;
       }
-      savedBytes += pathSizeBytes(candidate.filePath);
-      fs.rmSync(candidate.filePath, { recursive: true, force: true });
+      savedBytes += pathSizeBytes(candidate.absolutePath);
+      fs.rmSync(candidate.absolutePath, { recursive: true, force: true });
       deleted++;
     } catch {
       skipped++;
     }
   }
-
-  const savedMb = mb(savedBytes);
-  return {
-    deleted,
-    savedMb,
-    skipped,
-    message: `ลบ ${deleted} รายการ ประหยัด ${savedMb} MB${skipped ? ` (ข้าม ${skipped} รายการ)` : ""}`,
-  };
+  return { deleted, savedMb: mb(savedBytes), skipped };
 }
