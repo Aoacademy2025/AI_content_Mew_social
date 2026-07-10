@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { videoExpiryFor } from "@/lib/plan-limits";
 
 const WORKER_REQUEUE_MESSAGE_RE = /^worker restarted - requeued (\d+)\/(\d+)$/;
 
@@ -48,10 +49,28 @@ export async function setJobStep(id: string, currentStep: string, progress: numb
   await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
 }
 
-export async function finishJob(id: string, output: { videoUrl: string; videoId?: string } & Record<string, unknown>) {
+export async function finishJob(
+  id: string,
+  output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
+  opts: { now?: Date } = {},
+) {
+  const now = opts.now ?? new Date();
+  const owner = await prisma.videoJob.findUnique({
+    where: { id },
+    select: { user: { select: { plan: true } } },
+  });
+  if (!owner) throw new Error("video_job_not_found");
+  const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
   const job = await prisma.videoJob.update({
     where: { id },
-    data: { status: "done", progress: 100, outputJson: JSON.stringify(output), videoId: output.videoId ?? null, finishedAt: new Date() },
+    data: {
+      status: "done",
+      progress: 100,
+      outputJson: JSON.stringify(output),
+      videoId: output.videoId ?? null,
+      finishedAt: now,
+      mediaExpiresAt,
+    },
   });
   if (job.projectId) {
     if (job.type === "export") {
