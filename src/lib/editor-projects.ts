@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { inspectProjectMediaState } from "@/lib/media-retention";
+import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 
 export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
@@ -68,6 +70,42 @@ export async function getEditorProject(userId: string, projectId: string) {
     where: { id: projectId, userId },
   });
   return project ? editorProjectResponse(project) : null;
+}
+
+export async function getEditorProjectWithMediaState(
+  userId: string,
+  projectId: string,
+  opts: { now?: Date; cwd?: string } = {},
+) {
+  const project = await prisma.editorProject.findFirst({
+    where: { id: projectId, userId },
+  });
+  if (!project) return null;
+
+  const activeJobId = project.activeExportJobId ?? project.activeJobId;
+  if (!activeJobId) {
+    return { ...editorProjectResponse(project), previewMediaState: null };
+  }
+
+  const job = await prisma.videoJob.findFirst({
+    where: {
+      id: activeJobId,
+      userId,
+      OR: [{ projectId: project.id }, { projectId: null }],
+      status: "done",
+    },
+    select: { outputJson: true, mediaExpiresAt: true },
+  });
+  const previewMediaState = job
+    ? await inspectProjectMediaState({
+        videoUrl: parseVideoJobOutput(job.outputJson)?.videoUrl,
+        mediaExpiresAt: job.mediaExpiresAt,
+        now: opts.now,
+        cwd: opts.cwd,
+      })
+    : null;
+
+  return { ...editorProjectResponse(project), previewMediaState };
 }
 
 export async function createEditorProject(

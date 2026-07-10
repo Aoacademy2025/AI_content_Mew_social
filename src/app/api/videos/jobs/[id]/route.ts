@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
+import { inspectProjectMediaState } from "@/lib/media-retention";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -28,6 +29,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         createdAt: true,
         videoId: true,
         outputJson: true,
+        mediaExpiresAt: true,
       },
     });
     if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -42,6 +44,14 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         ? (await prisma.videoJob.count({ where: { status: "queued", createdAt: { lt: job.createdAt } } })) + 1
         : null;
 
+    const output = job.status === "done" ? parseVideoJobOutput(job.outputJson) : null;
+    const mediaState = job.status === "done"
+      ? await inspectProjectMediaState({
+          videoUrl: output?.videoUrl,
+          mediaExpiresAt: job.mediaExpiresAt,
+        })
+      : null;
+
     return NextResponse.json({
       id: job.id,
       projectId: job.projectId,
@@ -52,7 +62,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       errorMessage: job.errorMessage,
       createdAt: job.createdAt.toISOString(),
       queuePosition,
-      ...(job.status === "done" ? { output: parseVideoJobOutput(job.outputJson) } : {}),
+      ...(job.status === "done" ? { output, mediaState } : {}),
     });
   } catch (err) {
     console.error("[api/videos/jobs/:id] error:", err);
