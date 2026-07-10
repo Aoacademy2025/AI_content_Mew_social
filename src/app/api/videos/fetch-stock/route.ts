@@ -1453,18 +1453,6 @@ export async function POST(req: Request) {
     }).catch(() => {});
   }
 
-  const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-  try {
-    for (const f of fs.readdirSync(rendersDir)) {
-      if (!f.startsWith(userPrefix) || !f.endsWith(".mp4")) continue;
-      const fp = path.join(rendersDir, f);
-      if (Date.now() - fs.statSync(fp).mtimeMs > MAX_AGE_MS) {
-        fs.unlinkSync(fp);
-        safeUnlink(normalizedMarkerPath(fp)); // drop its normalize marker too
-      }
-    }
-  } catch {}
-
   const results: {
     keyword: string;
     pexelsId: number;

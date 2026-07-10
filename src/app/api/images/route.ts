@@ -15,13 +15,11 @@ export async function GET() {
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() - EXPIRY_DAYS);
 
-    // Auto-delete expired images
-    await prisma.generatedImage.deleteMany({
-      where: { userId: authUser.id, createdAt: { lt: expiryDate } },
-    });
-
+    // Preserve the existing seven-day gallery view without deleting owner rows. GeneratedImage
+    // records are always-protect references in the media graph, so lifecycle deletion must go
+    // through the reviewed graph/quarantine workflow rather than a GET request.
     const images = await prisma.generatedImage.findMany({
-      where: { userId: authUser.id },
+      where: { userId: authUser.id, createdAt: { gte: expiryDate } },
       orderBy: { createdAt: "desc" },
     });
 

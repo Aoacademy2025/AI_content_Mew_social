@@ -55,46 +55,52 @@ export async function finishJob(
   opts: { now?: Date } = {},
 ) {
   const now = opts.now ?? new Date();
-  const owner = await prisma.videoJob.findUnique({
-    where: { id },
-    select: { user: { select: { plan: true } } },
-  });
-  if (!owner) throw new Error("video_job_not_found");
-  const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
-  const job = await prisma.videoJob.update({
-    where: { id },
-    data: {
-      status: "done",
-      progress: 100,
-      outputJson: JSON.stringify(output),
-      videoId: output.videoId ?? null,
-      finishedAt: now,
-      mediaExpiresAt,
-    },
-  });
-  if (job.projectId) {
-    if (job.type === "export") {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId },
-        data: {
-          activeExportJobId: job.id,
-          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
-          status: output.videoId ? "exported" : "post",
-          lastOpenedAt: new Date(),
-        },
-      });
-    } else {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId },
-        data: {
-          activeJobId: job.id,
-          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
-          status: output.videoId ? "exported" : "post",
-          lastOpenedAt: new Date(),
-        },
-      });
+  return prisma.$transaction(async (tx) => {
+    const owner = await tx.videoJob.findUnique({
+      where: { id },
+      select: { user: { select: { plan: true } } },
+    });
+    if (!owner) throw new Error("video_job_not_found");
+
+    const completion = await tx.videoJob.updateMany({
+      where: { id, status: { not: "done" } },
+      data: {
+        status: "done",
+        progress: 100,
+        outputJson: JSON.stringify(output),
+        videoId: output.videoId ?? null,
+        finishedAt: now,
+        mediaExpiresAt: videoExpiryFor(owner.user.plan, now),
+      },
+    });
+    const job = await tx.videoJob.findUnique({ where: { id } });
+    if (!job) throw new Error("video_job_not_found");
+
+    if (completion.count === 1 && job.projectId) {
+      if (job.type === "export") {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId },
+          data: {
+            activeExportJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      } else {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId },
+          data: {
+            activeJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      }
     }
-  }
+    return job;
+  });
 }
 
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────

@@ -11,6 +11,7 @@ REPO_URL="https://github.com/Aoacademy2025/AI_content_Mew_social.git"
 APP_NAME="ai-content"
 DEFAULT_BRANCH="${DEPLOY_BRANCH:-main}"
 MIGRATE="${SKIP_DB_MIGRATE:-0}"
+APPROVED_DEPLOY_SHA="${APPROVED_DEPLOY_SHA:-}"
 
 # Build tuning for low-memory VPS
 BUILD_HEAP_MB="${BUILD_HEAP_MB:-12000}"
@@ -36,6 +37,24 @@ else
   git clone "$REPO_URL" "$APP_DIR"
   cd "$APP_DIR"
   git checkout "$DEFAULT_BRANCH"
+fi
+
+# Optional reviewed-commit assertion for gated rollouts. The operator still selects a
+# protected branch/tag via DEPLOY_BRANCH; this only proves that its resolved HEAD is the
+# exact commit that was reviewed, and never checks out arbitrary detached input.
+if [ -n "$APPROVED_DEPLOY_SHA" ]; then
+  if [[ ! "$APPROVED_DEPLOY_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "ERROR: APPROVED_DEPLOY_SHA must be a full 40-character hexadecimal SHA"
+    exit 1
+  fi
+  CURRENT_DEPLOY_SHA="$(git rev-parse --verify HEAD)"
+  CURRENT_DEPLOY_SHA_NORMALIZED="$(printf '%s' "$CURRENT_DEPLOY_SHA" | tr '[:upper:]' '[:lower:]')"
+  APPROVED_DEPLOY_SHA_NORMALIZED="$(printf '%s' "$APPROVED_DEPLOY_SHA" | tr '[:upper:]' '[:lower:]')"
+  if [ "$CURRENT_DEPLOY_SHA_NORMALIZED" != "$APPROVED_DEPLOY_SHA_NORMALIZED" ]; then
+    echo "ERROR: approved deploy SHA $APPROVED_DEPLOY_SHA does not match checked-out HEAD $CURRENT_DEPLOY_SHA"
+    exit 1
+  fi
+  echo "Verified reviewed deploy SHA: $CURRENT_DEPLOY_SHA"
 fi
 
 echo "=== [2/6] Install dependencies ==="

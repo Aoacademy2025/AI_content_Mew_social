@@ -132,6 +132,9 @@ async function main() {
     assert.equal(finishedBusinessProject?.status, "exported");
 
     const stampedFreeExpiry = finishedFreeJob.mediaExpiresAt?.toISOString();
+    const stampedFreeFinishedAt = finishedFreeJob.finishedAt?.toISOString();
+    const stampedFreeOutput = finishedFreeJob.outputJson;
+    const stampedFreeVideoId = finishedFreeJob.videoId;
     await prisma.user.update({
       where: { id: freeUser.id },
       data: { plan: "BUSINESS" },
@@ -146,6 +149,125 @@ async function main() {
       where: { id: freeJob.id },
     });
     assert.equal(freeJobAfterPlanAndProjectChanges?.mediaExpiresAt?.toISOString(), stampedFreeExpiry);
+
+    const replayedFreeJob = await finishJob(
+      freeJob.id,
+      { videoUrl: "/api/renders/replay-must-not-win.mp4", videoId: "replay-must-not-win" },
+      { now: new Date("2026-07-20T12:00:00.000Z") },
+    );
+    const freeJobAfterReplay = await prisma.videoJob.findUnique({ where: { id: freeJob.id } });
+    assert.equal(replayedFreeJob.id, freeJob.id);
+    assert.equal(freeJobAfterReplay?.mediaExpiresAt?.toISOString(), stampedFreeExpiry);
+    assert.equal(freeJobAfterReplay?.finishedAt?.toISOString(), stampedFreeFinishedAt);
+    assert.equal(freeJobAfterReplay?.outputJson, stampedFreeOutput);
+    assert.equal(freeJobAfterReplay?.videoId, stampedFreeVideoId);
+    const freeProjectAfterReplay = await prisma.editorProject.findUnique({ where: { id: freeProject.id } });
+    assert.equal(freeProjectAfterReplay?.latestVideoId, null);
+    assert.equal(freeProjectAfterReplay?.status, "post");
+
+    const concurrentJob = await prisma.videoJob.create({
+      data: {
+        userId: proUser.id,
+        status: "processing",
+        inputJson: "{}",
+      },
+    });
+    const concurrentOutputs = [
+      { videoUrl: "/api/renders/concurrent-a.mp4", videoId: "concurrent-a" },
+      { videoUrl: "/api/renders/concurrent-b.mp4", videoId: "concurrent-b" },
+    ] as const;
+    const concurrentTimes = [
+      new Date("2026-07-02T12:00:00.000Z"),
+      new Date("2026-07-03T12:00:00.000Z"),
+    ] as const;
+    const concurrentResults = await Promise.all([
+      finishJob(concurrentJob.id, concurrentOutputs[0], { now: concurrentTimes[0] }),
+      finishJob(concurrentJob.id, concurrentOutputs[1], { now: concurrentTimes[1] }),
+    ]);
+    const storedConcurrent = await prisma.videoJob.findUnique({ where: { id: concurrentJob.id } });
+    assert.ok(storedConcurrent);
+    assert.ok(
+      concurrentOutputs.some((candidate, index) =>
+        storedConcurrent.outputJson === JSON.stringify(candidate)
+        && storedConcurrent.videoId === candidate.videoId
+        && storedConcurrent.finishedAt?.toISOString() === concurrentTimes[index].toISOString()
+        && storedConcurrent.mediaExpiresAt?.toISOString()
+          === new Date(concurrentTimes[index].getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()),
+      "all completion fields must come from exactly one concurrent finisher",
+    );
+    assert.deepEqual(
+      concurrentResults.map((result) => ({
+        id: result.id,
+        outputJson: result.outputJson,
+        videoId: result.videoId,
+        finishedAt: result.finishedAt?.toISOString(),
+        mediaExpiresAt: result.mediaExpiresAt?.toISOString(),
+      })),
+      concurrentResults.map(() => ({
+        id: storedConcurrent.id,
+        outputJson: storedConcurrent.outputJson,
+        videoId: storedConcurrent.videoId,
+        finishedAt: storedConcurrent.finishedAt?.toISOString(),
+        mediaExpiresAt: storedConcurrent.mediaExpiresAt?.toISOString(),
+      })),
+      "both concurrent callers must observe the immutable winning completion",
+    );
+
+    const rollbackProject = await prisma.editorProject.create({
+      data: {
+        id: "video-job-expiry-rollback-project",
+        userId: proUser.id,
+        title: "Atomic rollback",
+        status: "rendering",
+      },
+    });
+    const rollbackJob = await prisma.videoJob.create({
+      data: {
+        userId: proUser.id,
+        projectId: rollbackProject.id,
+        status: "processing",
+        inputJson: "{}",
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: rollbackProject.id },
+      data: { activeJobId: rollbackJob.id },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER fail_video_job_project_finish
+      BEFORE UPDATE ON EditorProject
+      WHEN OLD.id = '${rollbackProject.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced project side-effect failure');
+      END
+    `);
+    try {
+      await assert.rejects(
+        finishJob(
+          rollbackJob.id,
+          { videoUrl: "/api/renders/rollback.mp4", videoId: "rollback-video" },
+          { now: FINISHED_AT },
+        ),
+      );
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS fail_video_job_project_finish");
+    }
+    const rolledBackJob = await prisma.videoJob.findUnique({ where: { id: rollbackJob.id } });
+    assert.equal(rolledBackJob?.status, "processing", "project failure rolls back the completion transition");
+    assert.equal(rolledBackJob?.finishedAt, null);
+    assert.equal(rolledBackJob?.mediaExpiresAt, null);
+    assert.equal(rolledBackJob?.outputJson, null);
+    assert.equal(rolledBackJob?.videoId, null);
+
+    const retriedRollbackJob = await finishJob(
+      rollbackJob.id,
+      { videoUrl: "/api/renders/rollback.mp4", videoId: "rollback-video" },
+      { now: FINISHED_AT },
+    );
+    assert.equal(retriedRollbackJob.status, "done", "rolled-back completion remains retryable");
+    const retriedRollbackProject = await prisma.editorProject.findUnique({ where: { id: rollbackProject.id } });
+    assert.equal(retriedRollbackProject?.status, "exported");
+    assert.equal(retriedRollbackProject?.latestVideoId, "rollback-video");
 
     await assert.rejects(
       finishJob(
