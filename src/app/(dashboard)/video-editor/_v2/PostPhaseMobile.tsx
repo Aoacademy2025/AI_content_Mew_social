@@ -41,10 +41,11 @@ const avatarModeLabel = (m?: string | null) =>
 
 const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
-export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewProject, onMediaError, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onMediaError: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
   const ed = usePostPhaseEditor(job, script, { onExportJob, onAdoptJob });
@@ -124,7 +125,7 @@ export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewPro
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 15px ${font.heading}`, color: color.success, textAlign: "center" }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
-        <video src={ed.exp.url} controls playsInline style={{ maxHeight: "44vh", borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
+        <video src={ed.exp.url} controls playsInline onError={onMediaError} style={{ maxHeight: "44vh", borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex w-full max-w-[360px] flex-col gap-2.5" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
           <a href={ed.exp.url} download className="block">
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
@@ -149,6 +150,7 @@ export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewPro
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
             onPause={() => ed.setPlaying(false)}
+            onError={onMediaError}
             className="h-full w-full object-cover"
           />
           {/* เส้นไกด์ตำแหน่งซับ */}

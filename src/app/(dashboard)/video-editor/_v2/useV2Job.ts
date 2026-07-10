@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import { PRESET_WEIGHTS } from "./mix-presets";
+import type { ProjectMediaState } from "@/lib/media-retention";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -35,9 +36,10 @@ export interface V2JobState {
   progress: number;
   errorMessage: string | null;
   output: ParsedVideoJobOutput | null;
+  mediaState: ProjectMediaState | null;
 }
 
-const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null };
+const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null };
 
 export type SubmitExportInput = {
   sourceJobId: string;
@@ -58,7 +60,7 @@ export function useV2Job(p: V2Project) {
 
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
-    errorMessage: string | null; output?: ParsedVideoJobOutput | null;
+    errorMessage: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
     // วิดีโอ+ซับยังอยู่ (บั๊กที่ Mew เจอตอน QA 07-03). ลบเฉพาะตอนผู้ใช้สั่งเอง (reset:
@@ -67,15 +69,25 @@ export function useV2Job(p: V2Project) {
       lastPreviewJobIdRef.current = d.id;
     }
     if (d.status === "done") {
+      const detailMediaJobId = p.activeExportJobId ?? p.activeJobId;
+      const detailMediaState = d.id === detailMediaJobId ? p.previewMediaState : null;
       stopPolling();
-      setJob({ phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null });
+      setJob({ phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null, mediaState: d.mediaState ?? detailMediaState ?? { status: "missing", canRerender: true, supportCode: "MEDIA_EXPIRY_UNKNOWN" } });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null, mediaState: null });
     }
-  }, [stopPolling]);
+  }, [p.activeExportJobId, p.activeJobId, p.previewMediaState, stopPolling]);
+
+  useEffect(() => {
+    if (!p.previewMediaState || p.previewMediaState.status === "available") return;
+    const detailMediaJobId = p.activeExportJobId ?? p.activeJobId;
+    setJob((current) => current.phase === "done" && current.jobId === detailMediaJobId
+      ? { ...current, mediaState: p.previewMediaState }
+      : current);
+  }, [p.activeExportJobId, p.activeJobId, p.previewMediaState]);
 
   const pollOnce = useCallback(async (jobId: string) => {
     try {
@@ -178,7 +190,7 @@ export function useV2Job(p: V2Project) {
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
       }
       try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
       startPolling(d.jobId);
       return { ok: true };
     } catch {
@@ -210,7 +222,7 @@ export function useV2Job(p: V2Project) {
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
       }
       try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
       startPolling(d.jobId);
       return { ok: true };
     } catch {
@@ -273,5 +285,11 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
-  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob };
+  const markMediaMissing = useCallback(() => {
+    setJob((current) => current.phase === "done"
+      ? { ...current, mediaState: { status: "missing", canRerender: true, supportCode: "MEDIA_FILE_MISSING" } }
+      : current);
+  }, []);
+
+  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markMediaMissing };
 }

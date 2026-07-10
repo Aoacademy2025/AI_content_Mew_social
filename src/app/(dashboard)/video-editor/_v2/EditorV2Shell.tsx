@@ -40,6 +40,7 @@ import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
 import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
+import { ExpiredPreviewView, selectUnavailablePreviewState } from "./ExpiredPreviewView";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
@@ -65,7 +66,7 @@ export function EditorV2Shell() {
   const p = useV2Project();
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob } = useV2Job(p);
+  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markMediaMissing } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -134,6 +135,11 @@ export function EditorV2Shell() {
     setStep(0);
   }
 
+  function handlePreviewRerender() {
+    reset();
+    setStep(1);
+  }
+
   function openProject(projectId: string) {
     if (!projectId || projectId === p.projectId) return;
     const url = new URL(window.location.href);
@@ -191,6 +197,7 @@ export function EditorV2Shell() {
   }
 
   const visibleProjects = filterProjectMenuItems(projects, projectFilter);
+  const unavailableMediaState = selectUnavailablePreviewState(job);
 
   return (
     <div
@@ -405,17 +412,20 @@ export function EditorV2Shell() {
 
       {isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} exportMode={job.jobType === "export"} onCancel={handleCancel} />
+      ) : unavailableMediaState ? (
+        <ExpiredPreviewView mediaState={unavailableMediaState} onRerender={handlePreviewRerender} />
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onMediaError={markMediaMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           ) : (
-            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onMediaError={markMediaMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           )
         ) : (
           <ExportedView
             job={job}
             onNewProject={handleNewProject}
+            onMediaError={markMediaMissing}
             onEditPreview={(job.output?.sourceJobId ?? p.activeJobId) ? () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!) : undefined}
           />
         )
@@ -519,10 +529,11 @@ function FailedView({ job, exportMode = false, onBack }: { job: V2JobState; expo
   );
 }
 
-function ExportedView({ job, onNewProject, onEditPreview }: {
+function ExportedView({ job, onNewProject, onEditPreview, onMediaError }: {
   job: V2JobState;
   onNewProject: () => void;
   onEditPreview?: () => void;
+  onMediaError: () => void;
 }) {
   const videoUrl = job.output?.videoUrl ?? "";
 
@@ -538,6 +549,7 @@ function ExportedView({ job, onNewProject, onEditPreview }: {
             src={videoUrl}
             controls
             playsInline
+            onError={onMediaError}
             className="max-h-[52vh]"
             style={{ borderRadius: 12, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }}
           />

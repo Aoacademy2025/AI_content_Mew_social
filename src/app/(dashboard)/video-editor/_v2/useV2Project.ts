@@ -5,6 +5,7 @@ import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { ProjectMediaState } from "@/lib/media-retention";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -102,6 +103,7 @@ export function useV2Project() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
   const [latestVideoId, setLatestVideoId] = useState<string | null>(null);
+  const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
 
   // ── Step 1 ──
   const [projectTitle, setProjectTitle] = useState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle);
@@ -235,6 +237,7 @@ export function useV2Project() {
         setActiveJobId(typeof data?.project?.activeJobId === "string" ? data.project.activeJobId : null);
         setActiveExportJobId(typeof data?.project?.activeExportJobId === "string" ? data.project.activeExportJobId : null);
         setLatestVideoId(typeof data?.project?.latestVideoId === "string" ? data.project.latestVideoId : null);
+        setPreviewMediaState((data?.project?.previewMediaState ?? null) as ProjectMediaState | null);
         try { browserStorage()?.setItem(PROJECT_ID_KEY, id); } catch {}
       }
       return id;
@@ -256,6 +259,7 @@ export function useV2Project() {
     setActiveJobId(null);
     setActiveExportJobId(null);
     setLatestVideoId(null);
+    setPreviewMediaState(null);
     try {
       const storage = browserStorage();
       storage?.removeItem(DRAFT_KEY);
@@ -311,6 +315,7 @@ export function useV2Project() {
             setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
             setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
             setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
+            setPreviewMediaState((project.previewMediaState ?? null) as ProjectMediaState | null);
             storage?.setItem(PROJECT_ID_KEY, project.id);
             if (project.draft && typeof project.draft === "object") {
               applyDraft(project.draft as V2Draft);
@@ -451,7 +456,7 @@ export function useV2Project() {
     brollVisualStyle, setBrollVisualStyle,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, resetProject,
+    plan, canUploadOwnMedia, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
     saveStatus,
   };
 }
