@@ -48,20 +48,6 @@ function refsFor(graph: { refs: Map<string, MediaReference[]> }, key: string): M
   return refs;
 }
 
-function isSanitizedCleanupPlanningError(error: unknown): boolean {
-  const candidate = error as { code?: unknown; errorCount?: unknown; message?: unknown };
-  assert.equal(candidate.code, "media_cleanup_plan_incomplete");
-  assert.equal(typeof candidate.errorCount, "number");
-  assert.ok((candidate.errorCount as number) > 0);
-  assert.match(String(candidate.message), /^media cleanup planning aborted: \d+ validation error\(s\)$/);
-  assert.doesNotMatch(
-    String(candidate.message),
-    /graph-|outside|escape|renders|stocks|[/\\]/,
-    "legacy cleanup errors expose only a sanitized count",
-  );
-  return true;
-}
-
 async function seed(prisma: PrismaClient): Promise<void> {
   await prisma.user.createMany({
     data: [
@@ -431,11 +417,12 @@ async function main(): Promise<void> {
   symlinkSync(escapedPublicRoot, join(ancestorRoot, "public"));
 
   process.chdir(FIXTURE_ROOT);
-  const [prismaModule, graphModule, cleanupModule, retentionModule] = await Promise.all([
+  const [prismaModule, graphModule, cleanupModule, retentionModule, quarantineModule] = await Promise.all([
     import("../src/lib/prisma"),
     import("../src/lib/media-reference-graph"),
     import("../src/lib/media-cleanup"),
     import("../src/lib/media-retention"),
+    import("../src/lib/media-quarantine"),
   ]);
   prisma = prismaModule.prisma;
   await seed(prisma);
@@ -694,19 +681,43 @@ async function main(): Promise<void> {
     "external URLs are ignored without a graph error",
   );
 
-  await assert.rejects(
-    cleanupModule.getMediaCleanupPlan({
-      cwd: FIXTURE_ROOT,
-      olderThanDays: 1,
-      includeStocks: true,
-    }),
-    isSanitizedCleanupPlanningError,
-    "recognized DB parser/path errors cannot produce a deletable legacy plan",
+  const incompleteCleanupPlan = await cleanupModule.getMediaCleanupPlan({
+    cwd: FIXTURE_ROOT,
+    now: NOW,
+    olderThanDays: 1,
+    includeStocks: true,
+  });
+  assert.ok(
+    incompleteCleanupPlan.graphErrors.length > 0,
+    "recognized DB parser/path errors remain visible to dry-run review",
+  );
+  assert.equal(
+    incompleteCleanupPlan.candidates.length,
+    0,
+    "recognized DB parser/path errors cannot produce a movable manifest",
   );
 
-  await prisma.generatedImage.deleteMany({
-    where: { id: { in: ["graph-generated-symlink", "graph-generated-traversal"] } },
-  });
+  await Promise.all([
+    prisma.generatedImage.deleteMany({
+      where: { id: { in: ["graph-generated-symlink", "graph-generated-traversal"] } },
+    }),
+    prisma.video.deleteMany({ where: { id: "graph-malformed-video" } }),
+    prisma.videoJob.deleteMany({
+      where: { id: { in: ["graph-malformed-job", "graph-missing-output-job"] } },
+    }),
+    prisma.editorProject.deleteMany({
+      where: {
+        id: {
+          in: [
+            "graph-project-cross-pointer",
+            "graph-project-missing",
+            "graph-project-malformed",
+          ],
+        },
+      },
+    }),
+    prisma.renderJob.deleteMany({ where: { id: "graph-render-malformed" } }),
+  ]);
   writeMedia("renders", "null-protected.mp4", dateAtOffset(-30));
   const leafTarget = join(FIXTURE_ROOT, "cleanup-leaf-target.mp4");
   writeFileSync(leafTarget, "leaf-target");
@@ -717,32 +728,35 @@ async function main(): Promise<void> {
 
   const safeLegacyPlan = await cleanupModule.getMediaCleanupPlan({
     cwd: FIXTURE_ROOT,
+    now: NOW,
     olderThanDays: 1,
     includeStocks: true,
   });
+  assert.equal(safeLegacyPlan.graphErrors.length, 0);
   assert.equal(
-    safeLegacyPlan.candidates.some((candidate) => candidate.filePath === leafLink),
+    safeLegacyPlan.candidates.some((candidate) => candidate.absolutePath === leafLink),
     false,
     "an unreferenced leaf symlink is never followed or selected",
   );
   assert.equal(
-    safeLegacyPlan.candidates.some((candidate) => candidate.filePath.endsWith("null-protected.mp4")),
+    safeLegacyPlan.candidates.some((candidate) => candidate.absolutePath.endsWith("null-protected.mp4")),
     false,
     "a legitimate referenced file remains protected",
   );
   const swapPath = join(FIXTURE_ROOT, "public", "renders", "swap-after-plan.mp4");
-  const swapCandidate = safeLegacyPlan.candidates.find((candidate) => candidate.filePath === swapPath);
+  const swapCandidate = safeLegacyPlan.candidates.find((candidate) => candidate.absolutePath === swapPath);
   assert.ok(swapCandidate, "regular old file is selected before the swap regression");
   rmSync(swapPath);
   symlinkSync(leafTarget, swapPath);
-  const swappedApply = cleanupModule.applyMediaCleanupPlan({
+  const swappedPlan = {
     ...safeLegacyPlan,
     candidates: [swapCandidate],
-  });
-  assert.deepEqual(
-    { deleted: swappedApply.deleted, skipped: swappedApply.skipped },
-    { deleted: 0, skipped: 1 },
-    "legacy apply rechecks with no-follow semantics after planning",
+    manifestSha256: quarantineModule.manifestSha256ForRecords([swapCandidate]),
+  };
+  await assert.rejects(
+    cleanupModule.applyMediaCleanupPlan(swappedPlan, swappedPlan.manifestSha256, { now: NOW }),
+    /invalid media manifest record/,
+    "apply rechecks with no-follow semantics after planning",
   );
   assert.equal(lstatSync(swapPath).isSymbolicLink(), true, "swapped symlink is left untouched");
 
@@ -752,11 +766,16 @@ async function main(): Promise<void> {
   mkdirSync(join(rootSymlinkCwd, "stocks"), { recursive: true });
   mkdirSync(rootSymlinkTarget);
   symlinkSync(rootSymlinkTarget, join(rootSymlinkCwd, "public", "renders"));
-  await assert.rejects(
-    cleanupModule.getMediaCleanupPlan({ cwd: rootSymlinkCwd, olderThanDays: 1 }),
-    isSanitizedCleanupPlanningError,
-    "a symlinked media root aborts legacy planning",
+  const rootSymlinkPlan = await cleanupModule.getMediaCleanupPlan({
+    cwd: rootSymlinkCwd,
+    now: NOW,
+    olderThanDays: 1,
+  });
+  assert.ok(
+    rootSymlinkPlan.graphErrors.some((error) => error.code === "media_path_symlink"),
+    "a symlinked media root makes planning incomplete",
   );
+  assert.equal(rootSymlinkPlan.candidates.length, 0);
 
   const ancestorSymlinkCwd = join(FIXTURE_ROOT, "cleanup-ancestor-symlink");
   const ancestorPublicTarget = join(FIXTURE_ROOT, "cleanup-ancestor-public-target");
@@ -764,11 +783,16 @@ async function main(): Promise<void> {
   mkdirSync(join(ancestorSymlinkCwd, "stocks"));
   mkdirSync(join(ancestorPublicTarget, "renders"), { recursive: true });
   symlinkSync(ancestorPublicTarget, join(ancestorSymlinkCwd, "public"));
-  await assert.rejects(
-    cleanupModule.getMediaCleanupPlan({ cwd: ancestorSymlinkCwd, olderThanDays: 1 }),
-    isSanitizedCleanupPlanningError,
-    "a symlinked media-root ancestor aborts legacy planning",
+  const ancestorSymlinkPlan = await cleanupModule.getMediaCleanupPlan({
+    cwd: ancestorSymlinkCwd,
+    now: NOW,
+    olderThanDays: 1,
+  });
+  assert.ok(
+    ancestorSymlinkPlan.graphErrors.some((error) => error.code === "media_path_outside_root"),
+    "a symlinked media-root ancestor makes planning incomplete",
   );
+  assert.equal(ancestorSymlinkPlan.candidates.length, 0);
 
   console.log("PASS media reference graph");
 }

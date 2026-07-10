@@ -27,6 +27,12 @@ export type MediaGraph = {
   scannedOwners: Record<MediaReference["ownerKind"], number>;
 };
 
+export type MediaGraphBuildOptions = {
+  workspaceRoot?: string;
+  ignoreQuarantineRunIds?: ReadonlySet<string>;
+  inFlightQuarantinedMedia?: ReadonlyMap<MediaKey, { mtimeMs: number }>;
+};
+
 type Owner = Pick<MediaReference, "ownerKind" | "ownerId">;
 type ProjectScopedOwner = { userId: string; projectId: string | null };
 
@@ -55,7 +61,10 @@ function derivedKeys(ref: CanonicalMediaRef): MediaKey[] {
   return [];
 }
 
-export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaGraph> {
+export async function buildMediaReferenceGraph(
+  now = new Date(),
+  options: MediaGraphBuildOptions = {},
+): Promise<MediaGraph> {
   const refs = new Map<string, MediaReference[]>();
   const errors: MediaGraphError[] = [];
   const scannedOwners: MediaGraph["scannedOwners"] = {
@@ -65,8 +74,9 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
     "render-job": 0,
     "generated-image": 0,
   };
-  const roots = mediaRootPaths();
+  const roots = mediaRootPaths(options.workspaceRoot);
   const errorKeys = new Set<string>();
+  let quarantinedMedia = new Map<MediaKey, { mtimeMs: number }>(options.inFlightQuarantinedMedia);
 
   function addError(owner: Owner, field: string, code: string): void {
     const identity = `${owner.ownerKind}\0${owner.ownerId}\0${field}\0${code}`;
@@ -159,6 +169,22 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
       addError(reference, field, "malformed_json");
       return null;
     }
+  }
+
+  try {
+    const { buildQuarantinedMediaIndex } = await import("./media-quarantine");
+    const persistedQuarantined = await buildQuarantinedMediaIndex(roots.workspaceRoot, {
+      ignoreRunIds: options.ignoreQuarantineRunIds,
+    });
+    for (const [key, record] of persistedQuarantined) {
+      if (!quarantinedMedia.has(key)) quarantinedMedia.set(key, { mtimeMs: record.mtimeMs });
+    }
+  } catch {
+    addError(
+      { ownerKind: "project-draft", ownerId: "*" },
+      "$quarantine",
+      "quarantine_manifest_invalid",
+    );
   }
 
   const [videos, videoJobs, projects, renderJobs, generatedImages] = await Promise.all([
@@ -379,6 +405,20 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
         stat = fs.lstatSync(canonicalRef.absolutePath);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        const quarantined = code === "ENOENT" || code === "ENOTDIR"
+          ? quarantinedMedia.get(canonicalRef.key)
+          : undefined;
+        if (quarantined && Number.isFinite(quarantined.mtimeMs)) {
+          addCanonicalRef(
+            canonicalRef,
+            {
+              ...owner,
+              expiresAt: expiryForMedia(project.user.plan, new Date(quarantined.mtimeMs)),
+            },
+            "draftJson",
+          );
+          continue;
+        }
         addError(
           owner,
           "draftJson",

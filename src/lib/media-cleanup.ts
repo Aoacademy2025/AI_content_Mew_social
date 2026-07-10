@@ -2,6 +2,16 @@ import fs from "fs";
 import path from "path";
 import { prisma } from "./prisma";
 import { lowResPreviewFilenamesForRender } from "./low-res-preview-paths";
+import {
+  fingerprintMediaRecord,
+  manifestSha256ForRecords,
+  quarantineMediaCleanupPlan,
+  type ApplyMediaCleanupOptions,
+  type CleanupTally,
+  type MediaOperationReport,
+} from "./media-quarantine";
+import { effectiveMediaExpiry, type MediaReference } from "./media-retention";
+import type { MediaGraph, MediaGraphError } from "./media-reference-graph";
 
 export type MediaArea = "renders" | "stocks";
 export type MediaKey = `${MediaArea}/${string}`;
@@ -25,11 +35,22 @@ export type CanonicalMediaRefCollection = {
   errors: string[];
 };
 
-type FileCandidate = {
-  area: MediaArea | "tmp";
+export type MediaManifestRecord = {
+  key: MediaKey;
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+  effectiveExpiresAt: string | null;
+  reason: "all_references_expired" | "unreferenced_14d";
+  fingerprint: string;
+};
+
+export type TmpCleanupCandidate = {
   filePath: string;
   sizeBytes: number;
 };
+
+type FileCandidate = TmpCleanupCandidate & { area: MediaArea | "tmp" };
 
 export type CleanupBucket = {
   count: number;
@@ -65,7 +86,23 @@ export type MediaCleanupPlan = {
     renders: number;
     stocks: number;
   };
-  candidates: FileCandidate[];
+  generatedAt: string;
+  workspaceRoot: string;
+  graphErrors: MediaGraphError[];
+  manifestSha256: string;
+  tallies: {
+    scanned: CleanupTally;
+    protected: CleanupTally;
+    expired: CleanupTally;
+  };
+  health: {
+    missingBeforeExpiry: number;
+    expired: number;
+    protected: number;
+    candidates: number;
+  };
+  candidates: MediaManifestRecord[];
+  tmpCandidates: TmpCleanupCandidate[];
 };
 
 export type MediaCleanupOptions = {
@@ -73,14 +110,17 @@ export type MediaCleanupOptions = {
   includeStocks?: boolean;
   includeTmp?: boolean;
   cwd?: string;
+  now?: Date;
 };
 
-export type MediaCleanupApplyResult = {
+export type TmpCleanupApplyResult = {
   deleted: number;
   savedMb: number;
   skipped: number;
   message: string;
 };
+
+export type MediaCleanupApplyResult = MediaOperationReport;
 
 export class MediaCleanupPlanningError extends Error {
   readonly code = "media_cleanup_plan_incomplete";
@@ -536,74 +576,274 @@ function scanTmp(olderThanDays: number, cwd: string): { total: CleanupBucket; ca
   };
 }
 
-function stripCandidates(plan: MediaCleanupPlan): Omit<MediaCleanupPlan, "candidates"> {
-  const { candidates: _candidates, ...summary } = plan;
+type ScannedMediaFile = {
+  key: MediaKey;
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+};
+
+type GraphAreaScan = {
+  files: ScannedMediaFile[];
+  candidates: MediaManifestRecord[];
+  scanned: CleanupTally;
+  protected: CleanupTally;
+};
+
+function cleanupGraphError(field: string, code: string): MediaGraphError {
+  return {
+    ownerKind: "project-draft",
+    ownerId: "*",
+    field,
+    code,
+  };
+}
+
+function addTallyValue(tally: CleanupTally, sizeBytes: number): void {
+  tally.count++;
+  tally.sizeBytes += sizeBytes;
+}
+
+function compareStableText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function refsAreAllExpired(refs: MediaReference[], now: Date): boolean {
+  return refs.length > 0 && refs.every((ref) =>
+    ref.alwaysProtect !== true &&
+    ref.expiresAt !== null &&
+    Number.isFinite(ref.expiresAt.getTime()) &&
+    ref.expiresAt.getTime() < now.getTime()
+  );
+}
+
+function scanGraphArea(
+  area: MediaArea,
+  graph: MediaGraph,
+  roots: MediaRootPaths,
+  now: Date,
+  graphErrors: MediaGraphError[],
+): GraphAreaScan {
+  const files: ScannedMediaFile[] = [];
+  const candidates: MediaManifestRecord[] = [];
+  const scanned: CleanupTally = { count: 0, sizeBytes: 0 };
+  const protectedTally: CleanupTally = { count: 0, sizeBytes: 0 };
+  const dir = roots[area];
+  const rootError = configuredMediaRootError(area, roots);
+  if (rootError) {
+    graphErrors.push(cleanupGraphError(`$scan:${area}`, rootError));
+    return { files, candidates, scanned, protected: protectedTally };
+  }
+  if (!fs.existsSync(dir)) return { files, candidates, scanned, protected: protectedTally };
+
+  let filenames: string[];
+  try {
+    filenames = fs.readdirSync(dir).sort();
+  } catch {
+    graphErrors.push(cleanupGraphError(`$scan:${area}`, "media_scan_failed"));
+    return { files, candidates, scanned, protected: protectedTally };
+  }
+
+  for (const filename of filenames) {
+    const absolutePath = path.join(dir, filename);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(absolutePath);
+    } catch {
+      graphErrors.push(cleanupGraphError(`$scan:${area}`, "media_path_lstat_failed"));
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      addTallyValue(scanned, 0);
+      addTallyValue(protectedTally, 0);
+      continue;
+    }
+
+    addTallyValue(scanned, stat.size);
+    const parsed = parseCanonicalMediaRef(
+      area === "renders"
+        ? `/api/renders/${encodeURIComponent(filename)}`
+        : `/api/stocks/${encodeURIComponent(filename)}`,
+      roots,
+    );
+    if (parsed.kind !== "reference") {
+      graphErrors.push(cleanupGraphError(`$scan:${area}`, parsed.kind === "error" ? parsed.code : "media_path_invalid"));
+      addTallyValue(protectedTally, stat.size);
+      continue;
+    }
+
+    const file: ScannedMediaFile = {
+      key: parsed.ref.key,
+      absolutePath: parsed.ref.absolutePath,
+      sizeBytes: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+    files.push(file);
+    const refs = graph.refs.get(file.key) ?? [];
+    let effectiveExpiresAt: string | null = null;
+    let reason: MediaManifestRecord["reason"] | null = null;
+    if (refs.length > 0 && refsAreAllExpired(refs, now)) {
+      effectiveExpiresAt = effectiveMediaExpiry(refs)?.toISOString() ?? null;
+      reason = "all_references_expired";
+    } else if (refs.length === 0 && stat.mtimeMs < now.getTime() - 14 * 86_400_000) {
+      reason = "unreferenced_14d";
+    }
+
+    if (!reason) {
+      addTallyValue(protectedTally, stat.size);
+      continue;
+    }
+    const base = {
+      key: file.key,
+      absolutePath: file.absolutePath,
+      sizeBytes: file.sizeBytes,
+      mtimeMs: file.mtimeMs,
+      effectiveExpiresAt,
+      reason,
+    };
+    candidates.push({ ...base, fingerprint: fingerprintMediaRecord(base) });
+  }
+  return { files, candidates, scanned, protected: protectedTally };
+}
+
+function ageBucket(files: ScannedMediaFile[], now: Date, days: number): CleanupBucket {
+  const selected = files.filter((file) => file.mtimeMs < now.getTime() - days * 86_400_000);
+  return {
+    count: selected.length,
+    sizeMb: mb(selected.reduce((sum, file) => sum + file.sizeBytes, 0)),
+  };
+}
+
+function totalBucket(files: ScannedMediaFile[]): CleanupBucket {
+  return {
+    count: files.length,
+    sizeMb: mb(files.reduce((sum, file) => sum + file.sizeBytes, 0)),
+  };
+}
+
+function missingBeforeExpiry(graph: MediaGraph, roots: MediaRootPaths, now: Date): number {
+  let missing = 0;
+  for (const [key, refs] of graph.refs) {
+    const live = refs.some((ref) =>
+      ref.alwaysProtect === true ||
+      ref.expiresAt === null ||
+      (Number.isFinite(ref.expiresAt.getTime()) && ref.expiresAt.getTime() >= now.getTime())
+    );
+    if (!live) continue;
+    const slash = key.indexOf("/");
+    const area = key.slice(0, slash);
+    const filename = key.slice(slash + 1);
+    if ((area !== "renders" && area !== "stocks") || filename !== path.basename(filename)) continue;
+    const stat = safeStat(path.join(roots[area], filename));
+    if (!stat || !stat.isFile()) missing++;
+  }
+  return missing;
+}
+
+function stripCandidates(
+  plan: MediaCleanupPlan,
+): Omit<MediaCleanupPlan, "candidates" | "tmpCandidates" | "workspaceRoot"> {
+  const {
+    candidates: _candidates,
+    tmpCandidates: _tmpCandidates,
+    workspaceRoot: _workspaceRoot,
+    ...summary
+  } = plan;
   return summary;
 }
 
 export function mediaCleanupSummary(plan: MediaCleanupPlan) {
-  return stripCandidates(plan);
+  const { graphErrors, ...summary } = stripCandidates(plan);
+  return { ...summary, graphErrorCount: graphErrors.length };
 }
 
 export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Promise<MediaCleanupPlan> {
-  const cwd = options.cwd ?? process.cwd();
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const now = options.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error("invalid cleanup clock");
   const olderThanDays = clampDays(options.olderThanDays, 3);
   const includeStocks = Boolean(options.includeStocks);
   const includeTmp = Boolean(options.includeTmp);
   const roots = mediaRootPaths(cwd);
-  let protectedDiscovery: Awaited<ReturnType<typeof buildProtectedRefs>>;
+  let graph: MediaGraph;
   try {
-    protectedDiscovery = await buildProtectedRefs(cwd);
+    const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+    graph = await buildMediaReferenceGraph(now, { workspaceRoot: cwd });
   } catch {
-    throw new MediaCleanupPlanningError(1);
+    graph = {
+      refs: new Map(),
+      errors: [cleanupGraphError("$graph", "graph_build_failed")],
+      scannedOwners: {
+        video: 0,
+        "video-job": 0,
+        "project-draft": 0,
+        "render-job": 0,
+        "generated-image": 0,
+      },
+    };
   }
-  const rootErrorCount = (["renders", "stocks"] as const)
-    .filter((area) => configuredMediaRootError(area, roots) !== null)
-    .length;
-  const discoveryErrorCount = protectedDiscovery.errorCount + rootErrorCount;
-  if (discoveryErrorCount > 0) throw new MediaCleanupPlanningError(discoveryErrorCount);
-  const protectedRefs = protectedDiscovery.refs;
-
-  const rendersDir = path.join(cwd, "public", "renders");
-  const stocksDir = path.join(cwd, "stocks");
-
-  const renderScan = scanMediaDir(rendersDir, protectedRefs.renders, [1, 3, 7]);
-  const stockScan = scanMediaDir(stocksDir, protectedRefs.stocks, [1, 3, 7, 14]);
-  const scanErrorCount = renderScan.errorCount + stockScan.errorCount;
-  if (scanErrorCount > 0) throw new MediaCleanupPlanningError(scanErrorCount);
+  const graphErrors = [...graph.errors];
+  const renderScan = scanGraphArea("renders", graph, roots, now, graphErrors);
+  const stockScan = scanGraphArea("stocks", graph, roots, now, graphErrors);
   const tmpScan = scanTmp(olderThanDays, cwd);
 
-  const renderCandidates = renderScan.selectedFiles(olderThanDays, "renders");
-  const stockCandidates = includeStocks ? stockScan.selectedFiles(olderThanDays, "stocks") : [];
-  const tmpCandidates = includeTmp ? tmpScan.candidates : [];
-  const candidates = [...renderCandidates, ...stockCandidates, ...tmpCandidates];
+  const allExpiredCustomerMedia = [
+    ...renderScan.candidates,
+    ...stockScan.candidates,
+  ].sort((a, b) => compareStableText(a.key, b.key));
+  const discoveredCandidates = allExpiredCustomerMedia.filter(
+    (record) => record.key.startsWith("renders/") || includeStocks,
+  );
+  const candidates = graphErrors.length === 0 ? discoveredCandidates : [];
+  const renderCandidates = candidates.filter((record) => record.key.startsWith("renders/"));
+  const stockCandidates = candidates.filter((record) => record.key.startsWith("stocks/"));
+  const tmpCandidates = includeTmp
+    ? tmpScan.candidates.map(({ filePath, sizeBytes }) => ({ filePath, sizeBytes }))
+    : [];
 
   const selectedRenders = {
     count: renderCandidates.length,
-    sizeMb: mb(renderCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    sizeMb: mb(renderCandidates.reduce((sum, record) => sum + record.sizeBytes, 0)),
   };
   const selectedStocks = {
     count: stockCandidates.length,
-    sizeMb: mb(stockCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    sizeMb: mb(stockCandidates.reduce((sum, record) => sum + record.sizeBytes, 0)),
   };
   const selectedTmp = {
     count: tmpCandidates.length,
     sizeMb: mb(tmpCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
   };
+  const scanned: CleanupTally = {
+    count: renderScan.scanned.count + stockScan.scanned.count,
+    sizeBytes: renderScan.scanned.sizeBytes + stockScan.scanned.sizeBytes,
+  };
+  const protectedTally: CleanupTally = graphErrors.length > 0
+    ? { ...scanned }
+    : {
+      count: renderScan.protected.count + stockScan.protected.count,
+      sizeBytes: renderScan.protected.sizeBytes + stockScan.protected.sizeBytes,
+    };
+  const expired: CleanupTally = {
+    count: graphErrors.length === 0 ? allExpiredCustomerMedia.length : 0,
+    sizeBytes: graphErrors.length === 0
+      ? allExpiredCustomerMedia.reduce((sum, record) => sum + record.sizeBytes, 0)
+      : 0,
+  };
+  const manifestSha256 = manifestSha256ForRecords(candidates);
 
   return {
     renders: {
-      total: renderScan.total,
-      older1d: renderScan.buckets[1],
-      older3d: renderScan.buckets[3],
-      older7d: renderScan.buckets[7],
+      total: totalBucket(renderScan.files),
+      older1d: ageBucket(renderScan.files, now, 1),
+      older3d: ageBucket(renderScan.files, now, 3),
+      older7d: ageBucket(renderScan.files, now, 7),
     },
     stocks: {
-      total: stockScan.total,
-      older1d: stockScan.buckets[1],
-      older3d: stockScan.buckets[3],
-      older7d: stockScan.buckets[7],
-      older14d: stockScan.buckets[14],
+      total: totalBucket(stockScan.files),
+      older1d: ageBucket(stockScan.files, now, 1),
+      older3d: ageBucket(stockScan.files, now, 3),
+      older7d: ageBucket(stockScan.files, now, 7),
+      older14d: ageBucket(stockScan.files, now, 14),
     },
     tmp: tmpScan.total,
     selected: {
@@ -615,21 +855,42 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
       tmp: selectedTmp,
       total: addBucket(addBucket(selectedRenders, selectedStocks), selectedTmp),
     },
-    protectedCount: protectedRefs.renders.size + protectedRefs.stocks.size,
+    protectedCount: protectedTally.count,
     protected: {
-      renders: protectedRefs.renders.size,
-      stocks: protectedRefs.stocks.size,
+      renders: graphErrors.length > 0 ? renderScan.scanned.count : renderScan.protected.count,
+      stocks: graphErrors.length > 0 ? stockScan.scanned.count : stockScan.protected.count,
+    },
+    generatedAt: now.toISOString(),
+    workspaceRoot: cwd,
+    graphErrors,
+    manifestSha256,
+    tallies: { scanned, protected: protectedTally, expired },
+    health: {
+      missingBeforeExpiry: missingBeforeExpiry(graph, roots, now),
+      expired: expired.count,
+      protected: protectedTally.count,
+      candidates: candidates.length,
     },
     candidates,
+    tmpCandidates,
   };
 }
 
-export function applyMediaCleanupPlan(plan: MediaCleanupPlan): MediaCleanupApplyResult {
+export async function applyMediaCleanupPlan(
+  plan: MediaCleanupPlan,
+  reviewedManifestSha256: string,
+  options: ApplyMediaCleanupOptions = {},
+): Promise<MediaCleanupApplyResult> {
+  return quarantineMediaCleanupPlan(plan, reviewedManifestSha256, options);
+}
+
+export function applyTmpCleanupPlan(plan: MediaCleanupPlan): TmpCleanupApplyResult {
   let deleted = 0;
   let savedBytes = 0;
   let skipped = 0;
 
-  for (const candidate of plan.candidates) {
+  if (!plan.selected.includeTmp) throw new Error("tmp cleanup was not explicitly selected");
+  for (const candidate of plan.tmpCandidates) {
     try {
       const stat = safeStat(candidate.filePath);
       if (!stat) {
