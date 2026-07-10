@@ -245,6 +245,22 @@ async function seed(prisma: PrismaClient): Promise<void> {
         draftJson: JSON.stringify({ clipUrl: "/api/renders/shared-owner.mp4" }),
       },
       {
+        id: "graph-project-stock-source-first",
+        userId: "graph-free",
+        draftJson: JSON.stringify({
+          source: "/api/stocks/project-order-stock.mp4",
+          normalized: "/api/stocks/project-order-stock.mp4.normalized",
+        }),
+      },
+      {
+        id: "graph-project-stock-companion-first",
+        userId: "graph-free",
+        draftJson: JSON.stringify({
+          normalized: "/api/stocks/project-order-stock.mp4.normalized",
+          source: "/api/stocks/project-order-stock.mp4",
+        }),
+      },
+      {
         id: "graph-project-active-job",
         userId: "graph-free",
         draftJson: JSON.stringify({ clipUrl: "/api/renders/active-job.mp4" }),
@@ -417,6 +433,8 @@ async function main(): Promise<void> {
   writeMedia("renders", "business-boundary.mp4", dateAtOffset(-14));
   writeMedia("renders", "saved-does-not-renew.mp4", dateAtOffset(-20));
   writeMedia("renders", "shared-owner.mp4", dateAtOffset(-10));
+  writeMedia("stocks", "project-order-stock.mp4", dateAtOffset(-10));
+  writeMedia("stocks", "project-order-stock.mp4.normalized", dateAtOffset(-2));
   writeMedia("renders", "active-job.mp4", dateAtOffset(-14));
   writeMedia("renders", "unscoped-job.mp4", dateAtOffset(-1));
   writeMedia("renders", "unscoped-video.mp4", dateAtOffset(-1));
@@ -494,7 +512,7 @@ async function main(): Promise<void> {
   assert.deepEqual(graph.scannedOwners, {
     video: 6,
     "video-job": 7,
-    "project-draft": 15,
+    "project-draft": 17,
     "render-job": 3,
     "generated-image": 5,
   });
@@ -603,6 +621,19 @@ async function main(): Promise<void> {
     dateAtOffset(5).toISOString(),
     "multiple owners use the latest expiry",
   );
+  const orderedCompanionRefs = refsFor(graph, "stocks/project-order-stock.mp4.normalized");
+  for (const projectId of [
+    "graph-project-stock-source-first",
+    "graph-project-stock-companion-first",
+  ]) {
+    const projectRefs = orderedCompanionRefs.filter((ref) => ref.ownerId === projectId);
+    assert.equal(projectRefs.length, 1, "same-owner source and companion refs merge into one ref");
+    assert.equal(
+      projectRefs[0].expiresAt?.toISOString(),
+      dateAtOffset(1).toISOString(),
+      "the later direct companion mtime wins regardless of draft field order",
+    );
+  }
   assert.equal(retentionModule.effectiveMediaExpiry(refsFor(graph, "renders/null-protected.mp4")), null);
   assert.equal(retentionModule.effectiveMediaExpiry(refsFor(graph, "renders/null-job.mp4")), null);
 
@@ -706,6 +737,19 @@ async function main(): Promise<void> {
 
   await prisma.generatedImage.deleteMany({
     where: { id: { in: ["graph-generated-symlink", "graph-generated-traversal"] } },
+  });
+  await assert.rejects(
+    cleanupModule.getMediaCleanupPlan({
+      cwd: FIXTURE_ROOT,
+      olderThanDays: 1,
+      includeStocks: true,
+    }),
+    isSanitizedCleanupPlanningError,
+    "malformed Video JSON alone aborts legacy cleanup planning",
+  );
+  await prisma.video.update({
+    where: { id: "graph-malformed-video" },
+    data: { renderConfig: "{}" },
   });
   writeMedia("renders", "null-protected.mp4", dateAtOffset(-30));
   const leafTarget = join(FIXTURE_ROOT, "cleanup-leaf-target.mp4");

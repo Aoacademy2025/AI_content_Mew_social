@@ -137,13 +137,18 @@ function pathSizeBytes(filePath: string): number {
   return total;
 }
 
-function parseJson(raw: string): unknown | null {
+type JsonProbe =
+  | { kind: "not-json" }
+  | { kind: "parsed"; value: unknown }
+  | { kind: "malformed" };
+
+function probeJson(raw: string): JsonProbe {
   const trimmed = raw.trim();
-  if (!trimmed || !/^[{[]/.test(trimmed)) return null;
+  if (!trimmed || !/^[{[]/.test(trimmed)) return { kind: "not-json" };
   try {
-    return JSON.parse(trimmed);
+    return { kind: "parsed", value: JSON.parse(trimmed) as unknown };
   } catch {
-    return null;
+    return { kind: "malformed" };
   }
 }
 
@@ -369,8 +374,9 @@ function collectRefs(
     if (direct.kind === "reference") addProtected(refs, direct.ref.area, direct.ref.filename);
     let errorCount = direct.kind === "error" ? 1 : 0;
 
-    const parsed = parseJson(value);
-    if (parsed) errorCount += collectRefs(parsed, refs, roots, depth + 1);
+    const json = probeJson(value);
+    if (json.kind === "malformed") errorCount++;
+    if (json.kind === "parsed") errorCount += collectRefs(json.value, refs, roots, depth + 1);
     return errorCount;
   }
 

@@ -91,9 +91,24 @@ export async function buildMediaReferenceGraph(now = new Date()): Promise<MediaG
 
   function addKey(key: MediaKey, reference: MediaReference): void {
     const current = refs.get(key) ?? [];
-    if (current.some(
+    const sameOwnerIndex = current.findIndex(
       (candidate) => candidate.ownerKind === reference.ownerKind && candidate.ownerId === reference.ownerId,
-    )) return;
+    );
+    if (sameOwnerIndex >= 0) {
+      const existing = current[sameOwnerIndex];
+      const alwaysProtect = existing.alwaysProtect === true || reference.alwaysProtect === true;
+      current[sameOwnerIndex] = {
+        ...existing,
+        alwaysProtect,
+        expiresAt: alwaysProtect || existing.expiresAt === null || reference.expiresAt === null
+          ? null
+          : existing.expiresAt.getTime() >= reference.expiresAt.getTime()
+            ? existing.expiresAt
+            : reference.expiresAt,
+      };
+      refs.set(key, current);
+      return;
+    }
     current.push({ ...reference });
     refs.set(key, current);
   }
