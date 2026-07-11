@@ -40,6 +40,7 @@ import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
 import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
+import { ExpiredPreviewView, prepareExpiredPreviewRerender, shouldShowUnavailablePreview } from "./ExpiredPreviewView";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
@@ -65,7 +66,7 @@ export function EditorV2Shell() {
   const p = useV2Project();
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob } = useV2Job(p);
+  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -405,12 +406,17 @@ export function EditorV2Shell() {
 
       {isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} exportMode={job.jobType === "export"} onCancel={handleCancel} />
+      ) : shouldShowUnavailablePreview(job.phase, job.mediaState) ? (
+        <ExpiredPreviewView
+          state={job.mediaState}
+          onRerender={() => prepareExpiredPreviewRerender(reset, setStep)}
+        />
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           ) : (
-            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           )
         ) : (
           <ExportedView

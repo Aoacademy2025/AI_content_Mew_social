@@ -2,14 +2,55 @@ import fs from "fs";
 import path from "path";
 import { prisma } from "./prisma";
 import { lowResPreviewFilenamesForRender } from "./low-res-preview-paths";
+import {
+  fingerprintMediaRecord,
+  manifestSha256ForRecords,
+  quarantineMediaCleanupPlan,
+  type ApplyMediaCleanupOptions,
+  type CleanupTally,
+  type MediaOperationReport,
+} from "./media-quarantine";
+import { effectiveMediaExpiry, type MediaReference } from "./media-retention";
+import type { MediaGraph, MediaGraphError } from "./media-reference-graph";
 
-type MediaArea = "renders" | "stocks";
+export type MediaArea = "renders" | "stocks";
+export type MediaKey = `${MediaArea}/${string}`;
 
-type FileCandidate = {
-  area: MediaArea | "tmp";
+export type MediaRootPaths = Record<MediaArea, string> & { workspaceRoot: string };
+
+export type CanonicalMediaRef = {
+  area: MediaArea;
+  filename: string;
+  key: MediaKey;
+  absolutePath: string;
+};
+
+export type CanonicalMediaRefParseResult =
+  | { kind: "reference"; ref: CanonicalMediaRef }
+  | { kind: "ignored" }
+  | { kind: "error"; code: string };
+
+export type CanonicalMediaRefCollection = {
+  refs: CanonicalMediaRef[];
+  errors: string[];
+};
+
+export type MediaManifestRecord = {
+  key: MediaKey;
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+  effectiveExpiresAt: string | null;
+  reason: "all_references_expired" | "unreferenced_14d";
+  fingerprint: string;
+};
+
+export type TmpCleanupCandidate = {
   filePath: string;
   sizeBytes: number;
 };
+
+type FileCandidate = TmpCleanupCandidate & { area: MediaArea | "tmp" };
 
 export type CleanupBucket = {
   count: number;
@@ -45,7 +86,23 @@ export type MediaCleanupPlan = {
     renders: number;
     stocks: number;
   };
-  candidates: FileCandidate[];
+  generatedAt: string;
+  workspaceRoot: string;
+  graphErrors: MediaGraphError[];
+  manifestSha256: string;
+  tallies: {
+    scanned: CleanupTally;
+    protected: CleanupTally;
+    expired: CleanupTally;
+  };
+  health: {
+    missingBeforeExpiry: number;
+    expired: number;
+    protected: number;
+    candidates: number;
+  };
+  candidates: MediaManifestRecord[];
+  tmpCandidates: TmpCleanupCandidate[];
 };
 
 export type MediaCleanupOptions = {
@@ -53,14 +110,26 @@ export type MediaCleanupOptions = {
   includeStocks?: boolean;
   includeTmp?: boolean;
   cwd?: string;
+  now?: Date;
 };
 
-export type MediaCleanupApplyResult = {
+export type TmpCleanupApplyResult = {
   deleted: number;
   savedMb: number;
   skipped: number;
   message: string;
 };
+
+export type MediaCleanupApplyResult = MediaOperationReport;
+
+export class MediaCleanupPlanningError extends Error {
+  readonly code = "media_cleanup_plan_incomplete";
+
+  constructor(readonly errorCount: number) {
+    super(`media cleanup planning aborted: ${errorCount} validation error(s)`);
+    this.name = "MediaCleanupPlanningError";
+  }
+}
 
 const RENDER_PREFIXES = ["/api/renders/", "/renders/"];
 const STOCK_PREFIXES = ["/api/stocks/", "/stocks/"];
@@ -86,7 +155,8 @@ function addBucket(a: CleanupBucket, b: CleanupBucket): CleanupBucket {
 
 function safeStat(filePath: string): fs.Stats | null {
   try {
-    return fs.statSync(filePath);
+    const stat = fs.lstatSync(filePath);
+    return stat.isSymbolicLink() ? null : stat;
   } catch {
     return null;
   }
@@ -117,32 +187,203 @@ function parseJson(raw: string): unknown | null {
   }
 }
 
-function extractPathname(raw: string): string {
+export function mediaRootPaths(cwd = process.cwd()): MediaRootPaths {
+  const workspaceRoot = path.resolve(cwd);
+  return {
+    workspaceRoot,
+    renders: path.resolve(workspaceRoot, "public", "renders"),
+    stocks: path.resolve(workspaceRoot, "stocks"),
+  };
+}
+
+function extractPathname(raw: string): string | null {
   const value = raw.trim();
-  if (!value) return "";
-  try {
-    if (/^https?:\/\//i.test(value)) return new URL(value).pathname;
-  } catch {}
+  if (!value) return null;
+  const absoluteMatch = /^https?:\/\//i.exec(value);
+  if (absoluteMatch) {
+    try {
+      new URL(value);
+    } catch {
+      return null;
+    }
+
+    // WHATWG URL parsing normalizes literal and percent-encoded dot segments. Retain the raw
+    // pathname for validation so `/api/renders/%2e%2e/file` cannot disappear before rejection.
+    const authorityStart = absoluteMatch[0].length;
+    const firstDelimiterOffset = value.slice(authorityStart).search(/[/?#\\]/);
+    if (firstDelimiterOffset < 0) return "";
+    const firstDelimiter = authorityStart + firstDelimiterOffset;
+    if (value[firstDelimiter] !== "/") return null;
+    const pathnameEndOffset = value.slice(firstDelimiter).search(/[?#]/);
+    return pathnameEndOffset < 0
+      ? value.slice(firstDelimiter)
+      : value.slice(firstDelimiter, firstDelimiter + pathnameEndOffset);
+  }
   return value.split("?")[0].split("#")[0];
 }
 
-function mediaRefFromString(raw: string): { area: MediaArea; filename: string } | null {
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relativePath = path.relative(root, candidate);
+  return relativePath === "" || (
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+function pathErrorCode(error: unknown): string | null {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOENT" || code === "ENOTDIR") return null;
+  return "media_path_lstat_failed";
+}
+
+function configuredMediaRootError(
+  area: MediaArea,
+  roots: MediaRootPaths,
+): string | null {
+  const root = path.resolve(roots[area]);
+  try {
+    const rootStat = fs.lstatSync(root);
+    if (rootStat.isSymbolicLink()) return "media_path_symlink";
+    if (!rootStat.isDirectory()) return "media_path_invalid";
+
+    const canonicalWorkspace = fs.realpathSync.native(path.resolve(roots.workspaceRoot));
+    const canonicalRoot = fs.realpathSync.native(root);
+    const expectedRoot = area === "renders"
+      ? path.resolve(canonicalWorkspace, "public", "renders")
+      : path.resolve(canonicalWorkspace, "stocks");
+    return canonicalRoot === expectedRoot ? null : "media_path_outside_root";
+  } catch (error) {
+    return pathErrorCode(error);
+  }
+}
+
+export function parseCanonicalMediaRef(
+  raw: string,
+  roots: MediaRootPaths = mediaRootPaths(),
+): CanonicalMediaRefParseResult {
+  const value = raw.trim();
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) {
+    try {
+      const normalizedPathname = /^https?:\/\//i.test(value)
+        ? new URL(value).pathname
+        : new URL(value, "https://local-media.invalid").pathname;
+      if (
+        RENDER_PREFIXES.some((prefix) => normalizedPathname.startsWith(prefix)) ||
+        STOCK_PREFIXES.some((prefix) => normalizedPathname.startsWith(prefix))
+      ) {
+        return { kind: "error", code: "media_path_invalid" };
+      }
+    } catch {
+      // The invalid-absolute-URL path below records an error if it resembles a local ref.
+    }
+  }
   const pathname = extractPathname(raw);
-  if (!pathname) return null;
-
-  for (const prefix of RENDER_PREFIXES) {
-    if (!pathname.startsWith(prefix)) continue;
-    const filename = path.basename(pathname.slice(prefix.length));
-    return filename ? { area: "renders", filename } : null;
+  if (!pathname) {
+    return RENDER_PREFIXES.some((prefix) => raw.includes(prefix)) ||
+      STOCK_PREFIXES.some((prefix) => raw.includes(prefix))
+      ? { kind: "error", code: "media_path_invalid" }
+      : { kind: "ignored" };
   }
 
-  for (const prefix of STOCK_PREFIXES) {
-    if (!pathname.startsWith(prefix)) continue;
-    const filename = path.basename(pathname.slice(prefix.length));
-    return filename ? { area: "stocks", filename } : null;
+  let area: MediaArea | null = null;
+  let encodedFilename = "";
+  for (const [candidateArea, prefixes] of [
+    ["renders", RENDER_PREFIXES],
+    ["stocks", STOCK_PREFIXES],
+  ] as const) {
+    const prefix = prefixes.find((candidate) => pathname.startsWith(candidate));
+    if (!prefix) continue;
+    area = candidateArea;
+    encodedFilename = pathname.slice(prefix.length);
+    break;
+  }
+  if (!area) return { kind: "ignored" };
+
+  let filename: string;
+  try {
+    filename = decodeURIComponent(encodedFilename);
+  } catch {
+    return { kind: "error", code: "media_path_invalid" };
   }
 
-  return null;
+  // A remaining escape can be decoded by a second HTTP layer. Reject it so double-encoded
+  // traversal/separators never become a different filesystem path after validation.
+  if (/%[0-9a-f]{2}/i.test(filename)) {
+    return { kind: "error", code: "media_path_invalid" };
+  }
+  if (
+    !filename ||
+    filename === "." ||
+    filename === ".." ||
+    filename !== path.basename(filename) ||
+    /[/\\\u0000-\u001f\u007f]/.test(filename)
+  ) {
+    return { kind: "error", code: "media_path_invalid" };
+  }
+
+  const root = path.resolve(roots[area]);
+  const absolutePath = path.resolve(root, filename);
+  if (!pathIsWithin(root, absolutePath)) {
+    return { kind: "error", code: "media_path_outside_root" };
+  }
+
+  const rootError = configuredMediaRootError(area, roots);
+  if (rootError) return { kind: "error", code: rootError };
+
+  try {
+    const stat = fs.lstatSync(absolutePath);
+    if (stat.isSymbolicLink()) return { kind: "error", code: "media_path_symlink" };
+    if (!stat.isFile()) return { kind: "error", code: "media_path_invalid" };
+    const canonicalRoot = fs.realpathSync.native(root);
+    const canonicalPath = fs.realpathSync.native(absolutePath);
+    if (!pathIsWithin(canonicalRoot, canonicalPath)) {
+      return { kind: "error", code: "media_path_outside_root" };
+    }
+  } catch (error) {
+    const code = pathErrorCode(error);
+    if (code) return { kind: "error", code };
+  }
+
+  return {
+    kind: "reference",
+    ref: {
+      area,
+      filename,
+      key: `${area}/${filename}`,
+      absolutePath,
+    },
+  };
+}
+
+export function collectCanonicalMediaRefs(
+  value: unknown,
+  roots: MediaRootPaths = mediaRootPaths(),
+  depth = 0,
+): CanonicalMediaRefCollection {
+  if (depth > 8) return { refs: [], errors: ["media_reference_depth_exceeded"] };
+  if (value == null) return { refs: [], errors: [] };
+
+  if (typeof value === "string") {
+    const result = parseCanonicalMediaRef(value, roots);
+    if (result.kind === "reference") return { refs: [result.ref], errors: [] };
+    if (result.kind === "error") return { refs: [], errors: [result.code] };
+    return { refs: [], errors: [] };
+  }
+
+  const refs: CanonicalMediaRef[] = [];
+  const errors: string[] = [];
+  const children = Array.isArray(value)
+    ? value
+    : typeof value === "object"
+      ? Object.values(value as Record<string, unknown>)
+      : [];
+  for (const child of children) {
+    const collected = collectCanonicalMediaRefs(child, roots, depth + 1);
+    refs.push(...collected.refs);
+    errors.push(...collected.errors);
+  }
+  return { refs, errors };
 }
 
 function addProtected(refs: Record<MediaArea, Set<string>>, area: MediaArea, filename: string) {
@@ -154,35 +395,50 @@ function addProtected(refs: Record<MediaArea, Set<string>>, area: MediaArea, fil
   }
 }
 
-function collectRefs(value: unknown, refs: Record<MediaArea, Set<string>>, depth = 0) {
-  if (depth > 8 || value == null) return;
+function collectRefs(
+  value: unknown,
+  refs: Record<MediaArea, Set<string>>,
+  roots: MediaRootPaths,
+  depth = 0,
+): number {
+  if (depth > 8) return 1;
+  if (value == null) return 0;
 
   if (typeof value === "string") {
-    const direct = mediaRefFromString(value);
-    if (direct) addProtected(refs, direct.area, direct.filename);
+    const direct = parseCanonicalMediaRef(value, roots);
+    if (direct.kind === "reference") addProtected(refs, direct.ref.area, direct.ref.filename);
+    let errorCount = direct.kind === "error" ? 1 : 0;
 
     const parsed = parseJson(value);
-    if (parsed) collectRefs(parsed, refs, depth + 1);
-    return;
+    if (parsed) errorCount += collectRefs(parsed, refs, roots, depth + 1);
+    return errorCount;
   }
 
   if (Array.isArray(value)) {
-    for (const item of value) collectRefs(item, refs, depth + 1);
-    return;
+    return value.reduce(
+      (errorCount, item) => errorCount + collectRefs(item, refs, roots, depth + 1),
+      0,
+    );
   }
 
   if (typeof value === "object") {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      collectRefs(item, refs, depth + 1);
-    }
+    return Object.values(value as Record<string, unknown>).reduce<number>(
+      (errorCount, item) => errorCount + collectRefs(item, refs, roots, depth + 1),
+      0,
+    );
   }
+  return 0;
 }
 
-async function buildProtectedRefs(): Promise<Record<MediaArea, Set<string>>> {
+async function buildProtectedRefs(
+  cwd: string,
+): Promise<{ refs: Record<MediaArea, Set<string>>; errorCount: number }> {
   const refs: Record<MediaArea, Set<string>> = {
     renders: new Set(),
     stocks: new Set(),
   };
+  const roots = mediaRootPaths(cwd);
+  let errorCount = 0;
 
   const videos = await prisma.video.findMany({
     select: {
@@ -197,14 +453,14 @@ async function buildProtectedRefs(): Promise<Record<MediaArea, Set<string>>> {
     },
   });
 
-  for (const video of videos) collectRefs(video, refs);
+  for (const video of videos) errorCount += collectRefs(video, refs, roots);
 
   const images = await prisma.generatedImage.findMany({
     select: { url: true },
   });
-  for (const image of images) collectRefs(image.url, refs);
+  for (const image of images) errorCount += collectRefs(image.url, refs, roots);
 
-  return refs;
+  return { refs, errorCount };
 }
 
 function isProtected(filename: string, protectedSet: Set<string>): boolean {
@@ -219,31 +475,49 @@ function scanMediaDir(
   dir: string,
   protectedSet: Set<string>,
   days: number[],
-): { total: CleanupBucket; buckets: Record<number, CleanupBucket>; selectedFiles: (olderThanDays: number, area: MediaArea) => FileCandidate[] } {
+): {
+  total: CleanupBucket;
+  buckets: Record<number, CleanupBucket>;
+  errorCount: number;
+  selectedFiles: (olderThanDays: number, area: MediaArea) => FileCandidate[];
+} {
   const buckets: Record<number, CleanupBucket> = {};
   for (const day of days) buckets[day] = { count: 0, sizeMb: 0 };
 
   const files: Array<{ filePath: string; filename: string; sizeBytes: number; mtimeMs: number }> = [];
   let totalBytes = 0;
+  let errorCount = 0;
 
+  if (!fs.existsSync(dir)) {
+    return {
+      total: { count: 0, sizeMb: 0 },
+      buckets,
+      errorCount,
+      selectedFiles: () => [],
+    };
+  }
+
+  let filenames: string[];
   try {
-    if (!fs.existsSync(dir)) {
-      return {
-        total: { count: 0, sizeMb: 0 },
-        buckets,
-        selectedFiles: () => [],
-      };
+    filenames = fs.readdirSync(dir);
+  } catch {
+    filenames = [];
+    errorCount++;
+  }
+  for (const filename of filenames) {
+    if (isProtected(filename, protectedSet)) continue;
+    const filePath = path.join(dir, filename);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(filePath);
+    } catch {
+      errorCount++;
+      continue;
     }
-
-    for (const filename of fs.readdirSync(dir)) {
-      if (isProtected(filename, protectedSet)) continue;
-      const filePath = path.join(dir, filename);
-      const stat = safeStat(filePath);
-      if (!stat?.isFile()) continue;
-      totalBytes += stat.size;
-      files.push({ filePath, filename, sizeBytes: stat.size, mtimeMs: stat.mtimeMs });
-    }
-  } catch {}
+    if (stat.isSymbolicLink() || !stat.isFile()) continue;
+    totalBytes += stat.size;
+    files.push({ filePath, filename, sizeBytes: stat.size, mtimeMs: stat.mtimeMs });
+  }
 
   const now = Date.now();
   for (const day of days) {
@@ -258,6 +532,7 @@ function scanMediaDir(
   return {
     total: { count: files.length, sizeMb: mb(totalBytes) },
     buckets,
+    errorCount,
     selectedFiles: (olderThanDays, area) => {
       const cutoff = now - olderThanDays * 24 * 60 * 60 * 1000;
       return files
@@ -301,60 +576,274 @@ function scanTmp(olderThanDays: number, cwd: string): { total: CleanupBucket; ca
   };
 }
 
-function stripCandidates(plan: MediaCleanupPlan): Omit<MediaCleanupPlan, "candidates"> {
-  const { candidates: _candidates, ...summary } = plan;
+type ScannedMediaFile = {
+  key: MediaKey;
+  absolutePath: string;
+  sizeBytes: number;
+  mtimeMs: number;
+};
+
+type GraphAreaScan = {
+  files: ScannedMediaFile[];
+  candidates: MediaManifestRecord[];
+  scanned: CleanupTally;
+  protected: CleanupTally;
+};
+
+function cleanupGraphError(field: string, code: string): MediaGraphError {
+  return {
+    ownerKind: "project-draft",
+    ownerId: "*",
+    field,
+    code,
+  };
+}
+
+function addTallyValue(tally: CleanupTally, sizeBytes: number): void {
+  tally.count++;
+  tally.sizeBytes += sizeBytes;
+}
+
+function compareStableText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function refsAreAllExpired(refs: MediaReference[], now: Date): boolean {
+  return refs.length > 0 && refs.every((ref) =>
+    ref.alwaysProtect !== true &&
+    ref.expiresAt !== null &&
+    Number.isFinite(ref.expiresAt.getTime()) &&
+    ref.expiresAt.getTime() < now.getTime()
+  );
+}
+
+function scanGraphArea(
+  area: MediaArea,
+  graph: MediaGraph,
+  roots: MediaRootPaths,
+  now: Date,
+  graphErrors: MediaGraphError[],
+): GraphAreaScan {
+  const files: ScannedMediaFile[] = [];
+  const candidates: MediaManifestRecord[] = [];
+  const scanned: CleanupTally = { count: 0, sizeBytes: 0 };
+  const protectedTally: CleanupTally = { count: 0, sizeBytes: 0 };
+  const dir = roots[area];
+  const rootError = configuredMediaRootError(area, roots);
+  if (rootError) {
+    graphErrors.push(cleanupGraphError(`$scan:${area}`, rootError));
+    return { files, candidates, scanned, protected: protectedTally };
+  }
+  if (!fs.existsSync(dir)) return { files, candidates, scanned, protected: protectedTally };
+
+  let filenames: string[];
+  try {
+    filenames = fs.readdirSync(dir).sort();
+  } catch {
+    graphErrors.push(cleanupGraphError(`$scan:${area}`, "media_scan_failed"));
+    return { files, candidates, scanned, protected: protectedTally };
+  }
+
+  for (const filename of filenames) {
+    const absolutePath = path.join(dir, filename);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(absolutePath);
+    } catch {
+      graphErrors.push(cleanupGraphError(`$scan:${area}`, "media_path_lstat_failed"));
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      addTallyValue(scanned, 0);
+      addTallyValue(protectedTally, 0);
+      continue;
+    }
+
+    addTallyValue(scanned, stat.size);
+    const parsed = parseCanonicalMediaRef(
+      area === "renders"
+        ? `/api/renders/${encodeURIComponent(filename)}`
+        : `/api/stocks/${encodeURIComponent(filename)}`,
+      roots,
+    );
+    if (parsed.kind !== "reference") {
+      graphErrors.push(cleanupGraphError(`$scan:${area}`, parsed.kind === "error" ? parsed.code : "media_path_invalid"));
+      addTallyValue(protectedTally, stat.size);
+      continue;
+    }
+
+    const file: ScannedMediaFile = {
+      key: parsed.ref.key,
+      absolutePath: parsed.ref.absolutePath,
+      sizeBytes: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+    files.push(file);
+    const refs = graph.refs.get(file.key) ?? [];
+    let effectiveExpiresAt: string | null = null;
+    let reason: MediaManifestRecord["reason"] | null = null;
+    if (refs.length > 0 && refsAreAllExpired(refs, now)) {
+      effectiveExpiresAt = effectiveMediaExpiry(refs)?.toISOString() ?? null;
+      reason = "all_references_expired";
+    } else if (refs.length === 0 && stat.mtimeMs < now.getTime() - 14 * 86_400_000) {
+      reason = "unreferenced_14d";
+    }
+
+    if (!reason) {
+      addTallyValue(protectedTally, stat.size);
+      continue;
+    }
+    const base = {
+      key: file.key,
+      absolutePath: file.absolutePath,
+      sizeBytes: file.sizeBytes,
+      mtimeMs: file.mtimeMs,
+      effectiveExpiresAt,
+      reason,
+    };
+    candidates.push({ ...base, fingerprint: fingerprintMediaRecord(base) });
+  }
+  return { files, candidates, scanned, protected: protectedTally };
+}
+
+function ageBucket(files: ScannedMediaFile[], now: Date, days: number): CleanupBucket {
+  const selected = files.filter((file) => file.mtimeMs < now.getTime() - days * 86_400_000);
+  return {
+    count: selected.length,
+    sizeMb: mb(selected.reduce((sum, file) => sum + file.sizeBytes, 0)),
+  };
+}
+
+function totalBucket(files: ScannedMediaFile[]): CleanupBucket {
+  return {
+    count: files.length,
+    sizeMb: mb(files.reduce((sum, file) => sum + file.sizeBytes, 0)),
+  };
+}
+
+function missingBeforeExpiry(graph: MediaGraph, roots: MediaRootPaths, now: Date): number {
+  let missing = 0;
+  for (const [key, refs] of graph.refs) {
+    const live = refs.some((ref) =>
+      ref.alwaysProtect === true ||
+      ref.expiresAt === null ||
+      (Number.isFinite(ref.expiresAt.getTime()) && ref.expiresAt.getTime() >= now.getTime())
+    );
+    if (!live) continue;
+    const slash = key.indexOf("/");
+    const area = key.slice(0, slash);
+    const filename = key.slice(slash + 1);
+    if ((area !== "renders" && area !== "stocks") || filename !== path.basename(filename)) continue;
+    const stat = safeStat(path.join(roots[area], filename));
+    if (!stat || !stat.isFile()) missing++;
+  }
+  return missing;
+}
+
+function stripCandidates(
+  plan: MediaCleanupPlan,
+): Omit<MediaCleanupPlan, "candidates" | "tmpCandidates" | "workspaceRoot"> {
+  const {
+    candidates: _candidates,
+    tmpCandidates: _tmpCandidates,
+    workspaceRoot: _workspaceRoot,
+    ...summary
+  } = plan;
   return summary;
 }
 
 export function mediaCleanupSummary(plan: MediaCleanupPlan) {
-  return stripCandidates(plan);
+  const { graphErrors, ...summary } = stripCandidates(plan);
+  return { ...summary, graphErrorCount: graphErrors.length };
 }
 
 export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Promise<MediaCleanupPlan> {
-  const cwd = options.cwd ?? process.cwd();
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const now = options.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error("invalid cleanup clock");
   const olderThanDays = clampDays(options.olderThanDays, 3);
   const includeStocks = Boolean(options.includeStocks);
   const includeTmp = Boolean(options.includeTmp);
-  const protectedRefs = await buildProtectedRefs();
-
-  const rendersDir = path.join(cwd, "public", "renders");
-  const stocksDir = path.join(cwd, "stocks");
-
-  const renderScan = scanMediaDir(rendersDir, protectedRefs.renders, [1, 3, 7]);
-  const stockScan = scanMediaDir(stocksDir, protectedRefs.stocks, [1, 3, 7, 14]);
+  const roots = mediaRootPaths(cwd);
+  let graph: MediaGraph;
+  try {
+    const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+    graph = await buildMediaReferenceGraph(now, { workspaceRoot: cwd });
+  } catch {
+    graph = {
+      refs: new Map(),
+      errors: [cleanupGraphError("$graph", "graph_build_failed")],
+      scannedOwners: {
+        video: 0,
+        "video-job": 0,
+        "project-draft": 0,
+        "render-job": 0,
+        "generated-image": 0,
+      },
+    };
+  }
+  const graphErrors = [...graph.errors];
+  const renderScan = scanGraphArea("renders", graph, roots, now, graphErrors);
+  const stockScan = scanGraphArea("stocks", graph, roots, now, graphErrors);
   const tmpScan = scanTmp(olderThanDays, cwd);
 
-  const renderCandidates = renderScan.selectedFiles(olderThanDays, "renders");
-  const stockCandidates = includeStocks ? stockScan.selectedFiles(olderThanDays, "stocks") : [];
-  const tmpCandidates = includeTmp ? tmpScan.candidates : [];
-  const candidates = [...renderCandidates, ...stockCandidates, ...tmpCandidates];
+  const allExpiredCustomerMedia = [
+    ...renderScan.candidates,
+    ...stockScan.candidates,
+  ].sort((a, b) => compareStableText(a.key, b.key));
+  const discoveredCandidates = allExpiredCustomerMedia.filter(
+    (record) => record.key.startsWith("renders/") || includeStocks,
+  );
+  const candidates = graphErrors.length === 0 ? discoveredCandidates : [];
+  const renderCandidates = candidates.filter((record) => record.key.startsWith("renders/"));
+  const stockCandidates = candidates.filter((record) => record.key.startsWith("stocks/"));
+  const tmpCandidates = includeTmp
+    ? tmpScan.candidates.map(({ filePath, sizeBytes }) => ({ filePath, sizeBytes }))
+    : [];
 
   const selectedRenders = {
     count: renderCandidates.length,
-    sizeMb: mb(renderCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    sizeMb: mb(renderCandidates.reduce((sum, record) => sum + record.sizeBytes, 0)),
   };
   const selectedStocks = {
     count: stockCandidates.length,
-    sizeMb: mb(stockCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
+    sizeMb: mb(stockCandidates.reduce((sum, record) => sum + record.sizeBytes, 0)),
   };
   const selectedTmp = {
     count: tmpCandidates.length,
     sizeMb: mb(tmpCandidates.reduce((sum, file) => sum + file.sizeBytes, 0)),
   };
+  const scanned: CleanupTally = {
+    count: renderScan.scanned.count + stockScan.scanned.count,
+    sizeBytes: renderScan.scanned.sizeBytes + stockScan.scanned.sizeBytes,
+  };
+  const protectedTally: CleanupTally = graphErrors.length > 0
+    ? { ...scanned }
+    : {
+      count: renderScan.protected.count + stockScan.protected.count,
+      sizeBytes: renderScan.protected.sizeBytes + stockScan.protected.sizeBytes,
+    };
+  const expired: CleanupTally = {
+    count: graphErrors.length === 0 ? allExpiredCustomerMedia.length : 0,
+    sizeBytes: graphErrors.length === 0
+      ? allExpiredCustomerMedia.reduce((sum, record) => sum + record.sizeBytes, 0)
+      : 0,
+  };
+  const manifestSha256 = manifestSha256ForRecords(candidates);
 
   return {
     renders: {
-      total: renderScan.total,
-      older1d: renderScan.buckets[1],
-      older3d: renderScan.buckets[3],
-      older7d: renderScan.buckets[7],
+      total: totalBucket(renderScan.files),
+      older1d: ageBucket(renderScan.files, now, 1),
+      older3d: ageBucket(renderScan.files, now, 3),
+      older7d: ageBucket(renderScan.files, now, 7),
     },
     stocks: {
-      total: stockScan.total,
-      older1d: stockScan.buckets[1],
-      older3d: stockScan.buckets[3],
-      older7d: stockScan.buckets[7],
-      older14d: stockScan.buckets[14],
+      total: totalBucket(stockScan.files),
+      older1d: ageBucket(stockScan.files, now, 1),
+      older3d: ageBucket(stockScan.files, now, 3),
+      older7d: ageBucket(stockScan.files, now, 7),
+      older14d: ageBucket(stockScan.files, now, 14),
     },
     tmp: tmpScan.total,
     selected: {
@@ -366,21 +855,42 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
       tmp: selectedTmp,
       total: addBucket(addBucket(selectedRenders, selectedStocks), selectedTmp),
     },
-    protectedCount: protectedRefs.renders.size + protectedRefs.stocks.size,
+    protectedCount: protectedTally.count,
     protected: {
-      renders: protectedRefs.renders.size,
-      stocks: protectedRefs.stocks.size,
+      renders: graphErrors.length > 0 ? renderScan.scanned.count : renderScan.protected.count,
+      stocks: graphErrors.length > 0 ? stockScan.scanned.count : stockScan.protected.count,
+    },
+    generatedAt: now.toISOString(),
+    workspaceRoot: cwd,
+    graphErrors,
+    manifestSha256,
+    tallies: { scanned, protected: protectedTally, expired },
+    health: {
+      missingBeforeExpiry: missingBeforeExpiry(graph, roots, now),
+      expired: expired.count,
+      protected: protectedTally.count,
+      candidates: candidates.length,
     },
     candidates,
+    tmpCandidates,
   };
 }
 
-export function applyMediaCleanupPlan(plan: MediaCleanupPlan): MediaCleanupApplyResult {
+export async function applyMediaCleanupPlan(
+  plan: MediaCleanupPlan,
+  reviewedManifestSha256: string,
+  options: ApplyMediaCleanupOptions = {},
+): Promise<MediaCleanupApplyResult> {
+  return quarantineMediaCleanupPlan(plan, reviewedManifestSha256, options);
+}
+
+export function applyTmpCleanupPlan(plan: MediaCleanupPlan): TmpCleanupApplyResult {
   let deleted = 0;
   let savedBytes = 0;
   let skipped = 0;
 
-  for (const candidate of plan.candidates) {
+  if (!plan.selected.includeTmp) throw new Error("tmp cleanup was not explicitly selected");
+  for (const candidate of plan.tmpCandidates) {
     try {
       const stat = safeStat(candidate.filePath);
       if (!stat) {

@@ -74,3 +74,16 @@ ls -lh /var/www/ai-content/prisma/ | grep dev.db
 
 Expected: `wal`; `dev.db-wal` / `dev.db-shm` appear next to `dev.db` after the first write (SQLite creates them lazily and removes them when the last connection closes cleanly) (all
 `prisma/*.db*` paths are gitignored, so `git pull` never touches them).
+
+## 3. Permanent media quarantine purge
+
+Permanent purge is disabled pending shared writer exclusion across every process that can
+create or update media references. A reference-graph scan alone cannot close the database
+writer race, so the library and CLI reject purge requests before discovery or unlink.
+Supplying extra or forged options does not enable the path.
+
+Keep scheduled cleanup in dry-run and keep quarantined customer media recoverable through
+restore. The first 14-day rollout cycle must accumulate and inspect quarantine state without
+permanent deletion. Enabling purge later requires a separately reviewed coordinated writer
+barrier used by the web process, workers, and maintenance operation; do not add a cron flag or
+manual purge command until that shared exclusion mechanism exists and has race coverage.

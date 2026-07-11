@@ -41,10 +41,11 @@ const avatarModeLabel = (m?: string | null) =>
 
 const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
-export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewProject, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewProject, onPreviewError, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onPreviewError: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
   const ed = usePostPhaseEditor(job, script, { onExportJob, onAdoptJob });
@@ -149,6 +150,7 @@ export function PostPhaseMobile({ job, script, onExportJob, onAdoptJob, onNewPro
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
             onPause={() => ed.setPlaying(false)}
+            onError={onPreviewError}
             className="h-full w-full object-cover"
           />
           {/* เส้นไกด์ตำแหน่งซับ */}

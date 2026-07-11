@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
+import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
+import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -26,6 +28,28 @@ function browserStorage() {
 
 export type V2JobPhase = "idle" | "submitting" | "rendering" | "done" | "failed";
 
+export function pollResponseIsCurrent({
+  responseGeneration,
+  currentGeneration,
+  responseJobId,
+  currentJobId,
+  responseRequestId,
+  lastAppliedRequestId,
+}: {
+  responseGeneration: number;
+  currentGeneration: number;
+  responseJobId: string;
+  currentJobId: string | null;
+  responseRequestId: number;
+  lastAppliedRequestId: number;
+}): boolean {
+  return (
+    responseGeneration === currentGeneration &&
+    responseJobId === currentJobId &&
+    responseRequestId > lastAppliedRequestId
+  );
+}
+
 export interface V2JobState {
   phase: V2JobPhase;
   jobId: string | null;
@@ -35,9 +59,10 @@ export interface V2JobState {
   progress: number;
   errorMessage: string | null;
   output: ParsedVideoJobOutput | null;
+  mediaState: ProjectMediaState | null;
 }
 
-const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null };
+const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null };
 
 export type SubmitExportInput = {
   sourceJobId: string;
@@ -51,14 +76,23 @@ export function useV2Job(p: V2Project) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const lastPreviewJobIdRef = useRef<string | null>(null);
+  const pollGenerationRef = useRef(0);
+  const pollRequestSequenceRef = useRef(0);
+  const lastAppliedPollRequestRef = useRef(0);
+  const previewMediaStateRef = useRef(p.previewMediaState);
+
+  useEffect(() => {
+    previewMediaStateRef.current = p.previewMediaState;
+  }, [p.previewMediaState]);
 
   const stopPolling = useCallback(() => {
+    pollGenerationRef.current += 1;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
   }, []);
 
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
-    errorMessage: string | null; output?: ParsedVideoJobOutput | null;
+    errorMessage: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
     // วิดีโอ+ซับยังอยู่ (บั๊กที่ Mew เจอตอน QA 07-03). ลบเฉพาะตอนผู้ใช้สั่งเอง (reset:
@@ -68,19 +102,34 @@ export function useV2Job(p: V2Project) {
     }
     if (d.status === "done") {
       stopPolling();
-      setJob({ phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null });
+      setJob({
+        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null,
+        currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null,
+        // A fresh job poll is authoritative. Project detail is only a compatibility
+        // fallback for a rolling deploy where the poll response lacks mediaState.
+        mediaState: mediaStateFromJobPoll(d.mediaState, previewMediaStateRef.current),
+      });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 
-  const pollOnce = useCallback(async (jobId: string) => {
+  const pollOnce = useCallback(async (jobId: string, generation: number, requestId: number) => {
     try {
       const res = await fetch(`/api/videos/jobs/${encodeURIComponent(jobId)}`);
+      if (!pollResponseIsCurrent({
+        responseGeneration: generation,
+        currentGeneration: pollGenerationRef.current,
+        responseJobId: jobId,
+        currentJobId: jobIdRef.current,
+        responseRequestId: requestId,
+        lastAppliedRequestId: lastAppliedPollRequestRef.current,
+      })) return;
       if (res.status === 404) {
+        lastAppliedPollRequestRef.current = requestId;
         stopPolling();
         try { browserStorage()?.removeItem(storageKey(p.projectId)); } catch {}
         setJob(IDLE);
@@ -88,15 +137,29 @@ export function useV2Job(p: V2Project) {
       }
       if (!res.ok) return; // transient — คง state เดิม รอรอบถัดไป
       const d = await res.json();
+      if (!pollResponseIsCurrent({
+        responseGeneration: generation,
+        currentGeneration: pollGenerationRef.current,
+        responseJobId: jobId,
+        currentJobId: jobIdRef.current,
+        responseRequestId: requestId,
+        lastAppliedRequestId: lastAppliedPollRequestRef.current,
+      })) return;
+      lastAppliedPollRequestRef.current = requestId;
       applyStatus(d);
     } catch { /* transient network — รอรอบถัดไป */ }
   }, [applyStatus, p.projectId, stopPolling]);
 
   const startPolling = useCallback((jobId: string) => {
-    jobIdRef.current = jobId;
     stopPolling();
-    void pollOnce(jobId);
-    pollRef.current = setInterval(() => { void pollOnce(jobId); }, POLL_MS);
+    jobIdRef.current = jobId;
+    const generation = pollGenerationRef.current;
+    const request = () => {
+      const requestId = ++pollRequestSequenceRef.current;
+      void pollOnce(jobId, generation, requestId);
+    };
+    request();
+    pollRef.current = setInterval(request, POLL_MS);
   }, [pollOnce, stopPolling]);
 
   // Resume from the server project row first. localStorage is only a per-project fallback
@@ -110,7 +173,7 @@ export function useV2Job(p: V2Project) {
     let stored: string | null = null;
     try { stored = browserStorage()?.getItem(storageKey(p.projectId)) ?? null; } catch {}
     const nextJobId = serverJobId ?? stored;
-    if (nextJobId && nextJobId !== jobIdRef.current) {
+    if (nextJobId && (nextJobId !== jobIdRef.current || pollRef.current === null)) {
       startPolling(nextJobId);
     } else if (!nextJobId) {
       stopPolling();
@@ -178,7 +241,7 @@ export function useV2Job(p: V2Project) {
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
       }
       try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
       startPolling(d.jobId);
       return { ok: true };
     } catch {
@@ -210,7 +273,7 @@ export function useV2Job(p: V2Project) {
         return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
       }
       try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null });
+      setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
       startPolling(d.jobId);
       return { ok: true };
     } catch {
@@ -273,5 +336,15 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
-  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob };
+  const markPreviewMissing = useCallback(() => {
+    // Invalidate any response that began before the player reported the incident.
+    // Usually done jobs have already stopped polling, but this also closes the
+    // overlap window during slow/out-of-order network responses.
+    stopPolling();
+    setJob((current) => current.phase === "done"
+      ? { ...current, mediaState: previewMediaStateAfterVideoError(current.mediaState) }
+      : current);
+  }, [stopPolling]);
+
+  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing };
 }

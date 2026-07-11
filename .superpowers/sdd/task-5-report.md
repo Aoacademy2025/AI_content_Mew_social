@@ -1,0 +1,117 @@
+# Task 5 Report — Reviewed Media Quarantine
+
+## Result
+
+Task 5 replaces direct customer-media deletion with a reviewed, graph-rechecked quarantine flow. Customer files move into unique exclusively claimed `.media-quarantine/<runId>/<area>/` runs. Tmp cleanup remains an explicitly selected, separate direct-cleanup function. Restore remains available; permanent purge is disabled pending shared writer exclusion.
+
+Production data was not read or changed. PM2 remains dry-run, no production apply/purge flag was enabled, and Discord configuration/code was neither changed nor printed.
+
+### Final purge safety correction
+
+A later formal review proved that per-record graph rescans still cannot close the interval in
+which a database or filesystem writer may create a live reference. The prior purge design and
+its tests are retained below only as historical RED/review context; the production unlink path
+has been removed. `purgeMediaQuarantine()` and the CLI now fail before discovery or unlink with
+a nonzero sanitized error. No option, environment variable, or CLI flag can forge the missing
+barrier. Enabling permanent purge requires a separate shared writer-exclusion design and review.
+
+## RED evidence
+
+The verifier was created before production implementation. The first run failed with:
+
+```text
+Cannot find module '../src/lib/media-quarantine'
+```
+
+Subsequent targeted RED cycles caught and locked these failures before their fixes:
+
+- orphan 14-day boundary, expired/live/null/shared owners, exact record shape, and zero dry-run mutation;
+- reviewed-hash mismatch and malformed graph producing zero moves;
+- reference and mtime/fingerprint changes after planning;
+- traversal and symlink rejection;
+- manifest-write rollback, including a concurrent original-path collision;
+- restore collision races and rollback collision races;
+- purge before 24 hours, changed fingerprints, and references added between purge batches;
+- sanitized metrics and failed-graph no-overwrite;
+- `.media-quarantine` and `.ops-metrics` ancestor symlink redirection;
+- restore availability during an unrelated graph incident;
+- deterministic run-ID collision between same-plan/same-millisecond applies;
+- manifest timestamp/run-ID tampering;
+- stale pre-apply metrics and heartbeat ordering;
+- CLI mode/hash gates and incomplete-graph no-heartbeat behavior;
+- raw owner/path disclosure in CLI/admin failures;
+- missing exact reviewed-manifest artifact;
+- apply invalidating its own graph through an in-progress run directory;
+- expired project-draft post-apply graph/metrics failure;
+- missing project metadata after legitimate mature purge;
+- an older purge tombstone masking a newer restored-then-missing lifecycle.
+
+## GREEN implementation
+
+- Stable records contain exactly `key`, `absolutePath`, `sizeBytes`, `mtimeMs`, `effectiveExpiresAt`, `reason`, and `fingerprint`.
+- Fingerprints hash only key/size/mtime. The reviewed manifest hash deterministically covers every record field.
+- Planning uses the complete reference graph. At least one owner is eligible only when every owner is expired; zero-owner files require strictly more than 14 days.
+- Null expiry, `alwaysProtect`, graph/scan/path/stat errors, symlinks, root escapes, active work, and exact boundaries remain protected/fail closed.
+- Apply requires the reviewed hash, exclusively claims a unique timestamp/hash/random run, rebuilds the graph per batch, supplies in-flight moved mtimes, revalidates canonical path/stat/fingerprint, and moves customer files into quarantine.
+- Atomic final/recovery manifests preserve moved records. A failed manifest write rolls back with atomic no-replace hard links; unresolved collisions preserve the quarantined copy and recovery manifest.
+- Restore uses atomic no-replace transfer, validates manifest/path/fingerprint, clears purge intent before move, skips collisions, and remains available during unrelated DB graph errors.
+- Permanent purge contains no production unlink path and fails closed with a nonzero operation error pending shared writer exclusion.
+- Existing manifest `purgeIntents` remain readable for compatibility with historical quarantine state, but current code does not create new purge intents or tombstones.
+- Quarantine-aware project fallback accepts only validated manifest state and recomputes expiry from original mtime plus the owner's current plan. Unexpected missing or tampered quarantine state remains a graph error.
+- Health metrics contain only the six required sanitized fields and are atomically replaced only from a complete dry-run or fresh post-apply plan.
+- Complete dry-runs atomically write mode-0600 `.ops-metrics/media-cleanup-review.json` containing the exact reviewed records and hash. CLI output exposes only the relative artifact label and safe counts/hash; authenticated admin GET may return exact candidates.
+- CLI dry-run/apply writes the review/metrics artifacts before heartbeat. Restore, disabled purge attempts, graph failures, artifact failures, metrics failures, and apply failures never advance the heartbeat.
+- Admin DELETE requires `{ apply: true, manifestSha256 }`, awaits quarantine, optionally invokes the separate explicit tmp function, writes fresh metrics, and has no restore/purge entry point.
+
+## Verification
+
+Fresh final commands and results:
+
+```text
+npx tsx scripts/verify-media-quarantine.ts                 PASS (run 1)
+npx tsx scripts/verify-media-quarantine.ts                 PASS (run 2)
+npx tsx scripts/verify-media-reference-graph.ts            PASS
+npx tsx scripts/verify-media-retention.ts                  PASS
+npx tsx scripts/verify-media-cleanup-mode.ts               PASS
+DATABASE_URL=file:/tmp/<unique-backfill>.db npx prisma db push --skip-generate  PASS
+DATABASE_URL=file:/tmp/<unique-backfill>.db npx tsx scripts/verify-media-expiry-backfill.ts  PASS
+DATABASE_URL=file:/tmp/<unique-video-job>.db npx prisma db push --skip-generate  PASS
+DATABASE_URL=file:/tmp/<unique-video-job>.db npx tsx scripts/verify-video-job-expiry.ts      PASS
+npx tsc --noEmit                                           PASS
+git diff --check                                           PASS
+```
+
+The initial Task 5 independent read-only re-review finished with **Spec PASS / Quality Approved**, with no Critical or Important findings. The later formal root review reopened the task as documented below.
+
+## Formal-review reopen fixes
+
+The formal root review reopened Task 5 for two Important findings and three Minor findings. Each was reproduced before the then-current fix. The later writer-exclusion review superseded the purge-specific fixes by removing the unlink path entirely:
+
+- Purge TOCTOU RED: a verifier hook recreated the original file after purge intents were persisted but before unlink; the old implementation ignored the race and permanently removed the quarantined file. GREEN: every record is now revalidated after intent persistence and immediately before unlink (canonical paths and hierarchy, original-path absence, current stat/fingerprint). Any mismatch preserves the file and atomically removes only that record's purge intent while the run lock is held. A second race test changes the quarantined fingerprint in the same window and proves the same fail-closed behavior.
+- Canonical-failure RED: after an intent was persisted, a newly invalid canonical record caused the normal manifest loader to repeat the failing canonical validation and abort before intent removal. GREEN: intent removal reads the cryptographically integrity-checked manifest state without repeating canonical validation, removes only the matching intent under the existing run lock, and atomically rewrites the state hash. The quarantined file remains intact.
+- Indeterminate-stat RED: the old absence helper collapsed every `lstat` error to missing. GREEN: the immediate original-path check treats only `ENOENT`/`ENOTDIR` as absent; permission, I/O, and other errors enter the mismatch path, preserve the quarantine file, and clear the intent.
+- Admin consumer RED: static contract verification found no parameterized review query, retained reviewed hash, hash-gated apply request, stale-review invalidation, or 409 handling in the dashboard consumer. A later deferred-request review also found that an old render closure could start a newer-ID GET for a prior selection after DELETE. GREEN: the UI reviews the exact `olderThanDays`/`includeStocks`/`includeTmp` selection, retains the hash and candidates, invalidates review/confirmation on selection changes, discards stale GET results, refreshes through a stable coordinator that reads the latest selection, sends `{ apply: true, manifestSha256, ...review.selected }`, treats 409 as mandatory re-review without retry, consumes the nested apply result, and explicitly distinguishes customer quarantine from optional permanent tmp deletion. No purge control is exposed.
+- Minor fixes: disabled purge attempts attach a nonzero error tally; restore and purge requests reject both `--olderThanDays=<value>` and a bare `--olderThanDays` instead of silently ignoring either form.
+
+Dashboard coverage for this reopen includes an executable deferred-promise test of `createAdminCleanupReviewCoordinator`, proving that an older GET cannot become current and that a stable post-DELETE refresh reads the latest selection. It is combined with source wiring assertions and the existing API-route/child-CLI integration coverage. This focused coverage is not browser E2E; the final independent reviewer was explicitly asked to judge whether the boundary is sufficient.
+
+Before the environment quota was exhausted, the first-round reopen passed the exact quarantine verifier twice, the complete related verifier suite, isolated temporary SQLite schema-dependent verifiers, TypeScript compilation, and whitespace validation. After the final canonical/stat/coordinator fixes, the sandbox-safe equivalent `node --import tsx scripts/verify-media-quarantine.ts` passed twice; TypeScript compilation and whitespace validation also pass. Exact final `npx tsx` reruns were attempted by both the implementer and root, but the environment-wide escalation usage limit rejected them because the sandbox denies tsx CLI IPC sockets; this was an infrastructure rejection, not a test failure.
+
+The final fresh no-history child review found no Critical, Important, or Minor issues, judged the focused non-browser UI coverage sufficient, and returned **Spec PASS / Quality Approved**.
+
+## Commit
+
+Exact subject: `feat(media): quarantine cleanup with recheck and restore`
+
+Formal-review follow-up subject: `fix(media): close quarantine review races`
+
+The immutable commit hash is reported in the Task 5 handoff and can be read with `git log -1 --format=%H` after this report is committed.
+
+## Self-review and operational notes
+
+- Customer apply and tmp apply are deliberately separate. The reviewed manifest hash gates customer records only; tmp requires its own explicit flag and candidate list.
+- A crash-left `.operation.lock` fails closed and requires validated manual recovery after confirming no restore process owns the run. Automatic stale-lock deletion is intentionally out of scope.
+- Disabled purge attempts report through a thrown operation report with a nonzero error count and cannot reach a permanent deletion path.
+- The review artifact intentionally contains absolute paths and is mode 0600. Ordinary CLI/admin failure output is allowlisted and does not print paths, URLs, owner IDs, or graph-error arrays.
+- `src/lib/media-reference-graph.ts` changed only for the authorized Task 5 integration: explicit workspace roots, owned in-progress run exclusion, validated quarantine metadata, and project expiry reconstruction.
+- No production runtime, schema, PM2 apply configuration, or Discord code changed.
