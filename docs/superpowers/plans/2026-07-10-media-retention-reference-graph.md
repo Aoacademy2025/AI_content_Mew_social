@@ -4,7 +4,7 @@
 
 **Goal:** Enforce FREE/PRO/BUSINESS media retention as 3/7/14 days across Gallery, VideoJob previews, project drafts, and render work without allowing a filesystem-age rule to delete live media.
 
-**Architecture:** Persist immutable expiry on completed VideoJobs, build one fail-closed reference graph from all database owners, resolve each file's effective expiry as the latest valid owner expiry, and replace direct deletion with rechecked quarantine plus a 24-hour purge. APIs expose a typed media state so the editor displays expired or unexpectedly missing previews without rendering a broken player.
+**Architecture:** Persist immutable expiry on completed VideoJobs, build one fail-closed reference graph from all database owners, resolve each file's effective expiry as the latest valid owner expiry, and replace direct deletion with rechecked quarantine plus manifest-validated restore. Permanent purge remains disabled pending a separately reviewed shared writer-exclusion design. APIs expose a typed media state so the editor displays expired or unexpectedly missing previews without rendering a broken player.
 
 **Tech Stack:** Prisma/SQLite, TypeScript, Node filesystem APIs, Next.js route handlers, React editor v2, tsx verification scripts.
 
@@ -251,7 +251,7 @@ if (reviewedHash !== plan.manifestSha256) throw new Error("reviewed manifest has
 
 - [ ] In `scripts/media-cleanup.ts`, call `writeCronHeartbeat("media-cleanup")` only after the full dry-run/apply and metrics write succeed. An incomplete graph, quarantine rollback, or metrics failure exits non-zero without advancing the heartbeat.
 
-- [ ] Tests use a temporary cwd and prove: default dry-run mutates zero files; malformed JSON yields zero moves; reviewed hash mismatch yields zero moves; reference added after planning prevents move; symlink/traversal is rejected; restore works; purge before 24 hours deletes nothing; purge after 24 hours only deletes unchanged unreferenced entries.
+- [ ] Tests use a temporary cwd and prove: default dry-run mutates zero files; malformed JSON yields zero moves; reviewed hash mismatch yields zero moves; reference added after planning prevents move; symlink/traversal is rejected; restore works; ordinary/library/CLI purge requests delete nothing and fail explicitly with a nonzero error; forged barrier-like options cannot enable purge; historical integrity-checked purge intents remain readable for compatibility.
 
 - [ ] Run: `npx tsx scripts/verify-media-quarantine.ts && npx tsc --noEmit && git diff --check`.
 
@@ -341,7 +341,7 @@ if (job.phase === "done" && job.mediaState?.status !== "available") {
 
 - [ ] Enable quarantine apply in a separate reviewed change by restoring `--apply` plus the reviewed-manifest mechanism. Monitor one full 14-day retention cycle while permanent purge remains disabled.
 
-- [ ] Enable 24-hour purge only after restore testing on a production copy and a clean cycle. Never combine the first quarantine move and first purge in the same window.
+- [ ] Keep permanent purge disabled after restore testing and a clean cycle. Enabling it requires a separate reviewed shared writer-exclusion implementation across all media-reference writers and filesystem mutation paths.
 
 ## Final Verification
 

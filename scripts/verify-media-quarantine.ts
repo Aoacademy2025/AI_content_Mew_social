@@ -710,6 +710,34 @@ async function main(): Promise<void> {
     true,
     "disabled purge preserves the only quarantined copy",
   );
+  await prisma.video.create({
+    data: {
+      id: "quarantine-disabled-purge-live-reference",
+      userId: "quarantine-user",
+      avatarModel: "none",
+      voiceModel: "none",
+      sceneCount: 1,
+      videoUrl: "/api/renders/purge-disabled.mp4",
+      expiresAt: atDays(3),
+    },
+  });
+  let forgedBarrierRan = false;
+  await assert.rejects(
+    purgeMediaQuarantine({
+      cwd: FIXTURE_ROOT,
+      writerBarrier: {
+        runExclusive: async (operation: () => Promise<unknown>) => {
+          forgedBarrierRan = true;
+          return operation();
+        },
+      },
+    } as Parameters<typeof purgeMediaQuarantine>[0]),
+    /permanent purge disabled pending shared writer exclusion/,
+    "an actual live reference remains protected when a caller supplies a forged barrier object",
+  );
+  assert.equal(forgedBarrierRan, false);
+  assert.equal(existsSync(disabledPurgeQuarantinePath), true);
+  await prisma.video.delete({ where: { id: "quarantine-disabled-purge-live-reference" } });
   await restoreQuarantineRun(disabledPurgeRun.runId, { cwd: FIXTURE_ROOT, now: NOW });
 
   const metricsPlan = await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW });
@@ -920,6 +948,111 @@ async function main(): Promise<void> {
     "restored media later removed without a purge tombstone remains fail-closed",
   );
   await prisma.editorProject.delete({ where: { id: "quarantine-restored-project" } });
+
+  const historicalIntentPath = writeMedia("historical-purge-intent.mp4", -30);
+  await prisma.editorProject.create({
+    data: {
+      id: "quarantine-historical-purge-intent",
+      userId: "quarantine-user",
+      draftJson: JSON.stringify({ clipUrl: "/api/renders/historical-purge-intent.mp4" }),
+    },
+  });
+  const historicalIntentPlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
+    "renders/historical-purge-intent.mp4",
+  );
+  const historicalIntentRun = await cleanupModule.applyMediaCleanupPlan(
+    historicalIntentPlan,
+    historicalIntentPlan.manifestSha256,
+    { now: NOW },
+  );
+  assert.equal(existsSync(historicalIntentPath), false);
+  const historicalManifestPath = join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    historicalIntentRun.runId,
+    "manifest.json",
+  );
+  const historicalManifest = JSON.parse(readFileSync(historicalManifestPath, "utf8")) as {
+    version: 1;
+    runId: string;
+    generatedAt: string;
+    reviewedManifestSha256: string;
+    recordsSha256: string;
+    records: Array<{ key: string; fingerprint: string }>;
+    purgeIntents: Array<{ key: string; fingerprint: string; markedAt: string }>;
+    stateSha256: string;
+  };
+  const historicalRecord = historicalManifest.records.find(
+    (record) => record.key === "renders/historical-purge-intent.mp4",
+  );
+  assert.ok(historicalRecord);
+  historicalManifest.purgeIntents = [{
+    key: historicalRecord.key,
+    fingerprint: historicalRecord.fingerprint,
+    markedAt: new Date(NOW.getTime() + 25 * 60 * 60 * 1000).toISOString(),
+  }];
+  historicalManifest.stateSha256 = createHash("sha256").update(JSON.stringify({
+    version: historicalManifest.version,
+    runId: historicalManifest.runId,
+    generatedAt: historicalManifest.generatedAt,
+    reviewedManifestSha256: historicalManifest.reviewedManifestSha256,
+    recordsSha256: historicalManifest.recordsSha256,
+    purgeIntents: historicalManifest.purgeIntents,
+  })).digest("hex");
+  writeFileSync(historicalManifestPath, `${JSON.stringify(historicalManifest, null, 2)}\n`);
+  rmSync(join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    historicalIntentRun.runId,
+    "renders",
+    "historical-purge-intent.mp4",
+  ));
+  const historicalIntentPostPlan = await cleanupModule.getMediaCleanupPlan({
+    cwd: FIXTURE_ROOT,
+    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+  });
+  assert.equal(
+    historicalIntentPostPlan.graphErrors.length,
+    0,
+    "historical integrity-checked purge intents remain readable without enabling new purge",
+  );
+  writeMedia("historical-purge-intent.mp4", -30);
+  const newerHistoricalNow = new Date(NOW.getTime() + 26 * 60 * 60 * 1000);
+  const newerHistoricalPlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: newerHistoricalNow }),
+    "renders/historical-purge-intent.mp4",
+  );
+  const newerHistoricalRun = await cleanupModule.applyMediaCleanupPlan(
+    newerHistoricalPlan,
+    newerHistoricalPlan.manifestSha256,
+    { now: newerHistoricalNow },
+  );
+  await restoreQuarantineRun(newerHistoricalRun.runId, {
+    cwd: FIXTURE_ROOT,
+    now: newerHistoricalNow,
+  });
+  rmSync(historicalIntentPath);
+  const newerHistoricalMissingPlan = await cleanupModule.getMediaCleanupPlan({
+    cwd: FIXTURE_ROOT,
+    now: newerHistoricalNow,
+  });
+  assert.ok(
+    newerHistoricalMissingPlan.graphErrors.some((error) =>
+      error.ownerId === "quarantine-historical-purge-intent" &&
+      error.code === "media_file_missing"
+    ),
+    "a newer restored-then-missing lifecycle overrides an older historical purge intent",
+  );
+  await prisma.editorProject.delete({ where: { id: "quarantine-historical-purge-intent" } });
+  rmSync(join(FIXTURE_ROOT, ".media-quarantine", historicalIntentRun.runId), {
+    recursive: true,
+    force: true,
+  });
+  rmSync(join(FIXTURE_ROOT, ".media-quarantine", newerHistoricalRun.runId), {
+    recursive: true,
+    force: true,
+  });
 
   await prisma.editorProject.create({
     data: {

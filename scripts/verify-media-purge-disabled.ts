@@ -61,7 +61,7 @@ async function main(): Promise<void> {
       },
     });
     assert.equal(forgedBarrierRan, false, "an injected object cannot forge writer exclusion");
-    assert.equal(existsSync(quarantined), true, "live-reference scenario performs zero deletes");
+    assert.equal(existsSync(quarantined), true, "forged barrier-like options perform zero deletes");
 
     const repoRoot = process.cwd();
     const cli = spawnSync(
