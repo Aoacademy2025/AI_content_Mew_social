@@ -209,12 +209,14 @@ model VideoJob {
   updatedAt      DateTime       @updatedAt
   startedAt      DateTime?
   finishedAt     DateTime?
+  mediaExpiresAt DateTime?
 
   @@unique([userId, idempotencyKey])
   @@index([status])
   @@index([userId])
   @@index([projectId])
   @@index([createdAt]) // DB-1: admin/insights does createdAt-range scans across ALL users
+  @@index([mediaExpiresAt])
 }
 
 model ToolCallAudit {

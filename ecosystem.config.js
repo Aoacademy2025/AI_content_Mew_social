@@ -91,8 +91,8 @@ module.exports = {
       name: "media-cleanup",
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/tsx",
-      args: "scripts/media-cleanup.ts --olderThanDays=3 --includeStocks --apply",
-      cron_restart: "30 3 * * *", // daily 3:30 AM — reference-aware orphan media cleanup
+      args: "scripts/media-cleanup.ts --olderThanDays=3 --includeStocks",
+      cron_restart: "30 3 * * *", // daily 3:30 AM — apply disabled until retention/reference-graph rollout is approved
       autorestart: false,
       watch: false,
       env: {

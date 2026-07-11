@@ -82,6 +82,7 @@ async function main() {
   ok(jobRow?.type === "create", "createVideoJob defaults to create type");
 
   await projects.updateEditorProject(alice.id, p.id, { activeJobId: job.id, status: "rendering" });
+  await prisma.videoJob.update({ where: { id: job.id }, data: { status: "processing" } });
   await jobs.finishJob(job.id, { version: 2, mode: "preview", videoUrl: "/api/renders/base.mp4" });
   const afterFinish = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterFinish?.activeJobId === job.id && afterFinish?.status === "post", "finishJob moves preview project to post");
@@ -93,6 +94,7 @@ async function main() {
     { projectId: p.id, type: "export" },
   );
   await projects.updateEditorProject(alice.id, p.id, { activeExportJobId: exportJob.id, status: "exporting" });
+  await prisma.videoJob.update({ where: { id: exportJob.id }, data: { status: "processing" } });
   await jobs.finishJob(exportJob.id, { version: 2, mode: "export", sourceJobId: job.id, videoUrl: "/api/renders/final.mp4", videoId: "video_export_1" });
   const afterExport = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(
@@ -110,12 +112,14 @@ async function main() {
     { projectId: p.id, type: "export" },
   );
   await projects.updateEditorProject(alice.id, p.id, { activeExportJobId: failedExport.id, status: "exporting" });
+  await prisma.videoJob.update({ where: { id: failedExport.id }, data: { status: "processing" } });
   await jobs.failJob(failedExport.id, "export failed");
   const afterExportFail = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterExportFail?.activeJobId === job.id && afterExportFail?.status === "post", "failJob returns export project to post without clearing preview job");
 
   const failedJob = await jobs.createVideoJob(alice.id, { script: "boom", previewMode: true }, undefined, { projectId: p.id });
   await projects.updateEditorProject(alice.id, p.id, { activeJobId: failedJob.id, status: "rendering" });
+  await prisma.videoJob.update({ where: { id: failedJob.id }, data: { status: "processing" } });
   await jobs.failJob(failedJob.id, "expected failure");
   const afterFail = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterFail?.status === "draft", "failJob clears rendering project back to draft");

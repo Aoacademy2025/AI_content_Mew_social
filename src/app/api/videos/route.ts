@@ -7,7 +7,6 @@ import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { isGalleryClipFileMissing } from "@/lib/gallery-clip-cleanup";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
 import {
-  deleteLowResPreviewForVideoUrl,
   existingLowResPreviewFallbackUrlForVideoUrl,
   existingLowResPreviewUrlForVideoUrl,
 } from "@/lib/low-res-preview-paths";
@@ -52,20 +51,8 @@ export async function GET() {
       return fs.existsSync(filePath);
     }
 
-    function deleteFileIfLocal(url: string | null) {
-      if (!url || url.startsWith("http://") || url.startsWith("https://")) return;
-      try {
-        deleteLowResPreviewForVideoUrl(url);
-        const filePath = url.startsWith("/api/renders/")
-          ? path.join(publicDir, "renders", url.slice("/api/renders/".length))
-          : path.join(publicDir, url);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      } catch { /* ignore */ }
-    }
-
-    // ── Lazy cleanup: delete expired records + their files on read ────────
-    const expiredIds: string[] = [];
-    const brokenIds: string[] = [];
+    // GET is deliberately read-only. Hide expired/missing entries, but leave
+    // ownership rows and files for the reviewed graph/quarantine lifecycle.
     const valid: Array<(typeof videos)[number] & {
       previewVideoUrl: string | null;
       previewFallbackVideoUrl: string | null;
@@ -75,39 +62,19 @@ export async function GET() {
     for (const v of videos) {
       // Expired by retention?
       if (v.expiresAt && v.expiresAt <= now) {
-        expiredIds.push(v.id);
-        deleteFileIfLocal(v.videoUrl);
-        deleteFileIfLocal(v.avatarVideoUrl);
-        deleteFileIfLocal(v.audioUrl);
-        deleteFileIfLocal(v.thumbnail);
         continue;
       }
       // Primary playable file missing on disk? (A remote avatarVideoUrl must NOT mask a
       // swept-away local render — see isGalleryClipFileMissing.)
       if (isGalleryClipFileMissing(v, localFileExists)) {
-        brokenIds.push(v.id);
         continue;
       }
 
       const primaryVideoUrl = v.videoUrl || v.avatarVideoUrl;
       const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
       const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
-      let previewStatus: "ready" | "queued" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
-      if (!previewVideoUrl && v.status === "COMPLETED") {
-        const queued = enqueueLowResPreview(primaryVideoUrl, {
-          userId: authUser.id,
-          videoId: v.id,
-          reason: "gallery_fetch",
-        });
-        previewStatus = queued.status === "queued" ? "queued" : "unavailable";
-      }
+      const previewStatus: "ready" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
       valid.push({ ...v, previewVideoUrl, previewFallbackVideoUrl, previewStatus });
-    }
-
-    const toDelete = [...expiredIds, ...brokenIds];
-    if (toDelete.length > 0) {
-      await prisma.video.deleteMany({ where: { id: { in: toDelete } } });
-      console.log(`[videos] cleaned up ${expiredIds.length} expired + ${brokenIds.length} broken records`);
     }
 
     return NextResponse.json(valid);

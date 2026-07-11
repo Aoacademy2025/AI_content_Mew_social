@@ -2,7 +2,13 @@ import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { refundClipUsage } from "@/lib/usage-limits";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
-import { setJobStep, finishJob, failJob, parseVideoJobOutput } from "@/lib/mcp/video-job";
+import {
+  setJobStep,
+  finishJob,
+  failJob,
+  parseVideoJobOutput,
+  VIDEO_JOB_CANCELED_ERROR,
+} from "@/lib/mcp/video-job";
 import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipeline-client";
@@ -141,13 +147,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   // step() logs the phase that just ended (worker log, for audits) + emits its `done`
   // telemetry, then advances and emits the new phase's `started`. Render/burn progress
   // callbacks keep calling setJobStep directly so they don't spam this.
-  const JOB_CANCELED = "__job_canceled__";
   async function step(name: string, progress: number) {
     // Cooperative cancel (incident 07-03: kie runaway had no stop lever): the cancel
     // route marks processing jobs `canceled`; we honor it at every step boundary —
     // the current step finishes, nothing further starts, no failJob overwrite.
     const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
-    if (current?.status === "canceled") throw new Error(JOB_CANCELED);
+    if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
     const now = Date.now();
     const ended = now - phaseStartedAt;
     timings.push([phaseName, ended]);
@@ -169,7 +174,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const cur = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
     if (cur?.status !== "canceled") return;
     await caller.post(`/api/videos/render-cancel?jobId=${encodeURIComponent(renderJobId)}`, {}).catch(() => {});
-    throw new Error(JOB_CANCELED);
+    throw new Error(VIDEO_JOB_CANCELED_ERROR);
   };
 
   try {
@@ -663,7 +668,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
-    if (message === "__job_canceled__") {
+    if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       return; // status is already 'canceled'; don't overwrite with failed
     }

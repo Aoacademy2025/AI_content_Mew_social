@@ -27,6 +27,7 @@ function ok(cond: boolean, msg: string) {
 
 // สคริปต์สั้น (<120 ตัวอักษร) → orchestrator ข้าม split-script โดยดีไซน์
 const SCRIPT = "สวัสดีค่ะ วันนี้มาดูรีวิวครีมกันแดดกัน เนื้อบางเบามาก ซึมไวสุดๆ";
+const FINAL_GAP_CANCELED_AT = new Date("2026-07-01T11:59:00.000Z");
 
 const TIMING = {
   provider: "gemini",
@@ -83,8 +84,12 @@ function makeStubCaller(log: CallLog[]) {
 
 async function main() {
   const { runOrchestrator } = await import("../src/lib/mcp/orchestrator");
-  const { createVideoJob, parseVideoJobOutput } = await import("../src/lib/mcp/video-job");
+  const { createVideoJob: createQueuedVideoJob, parseVideoJobOutput } = await import("../src/lib/mcp/video-job");
   const { prisma } = await import("../src/lib/prisma");
+  const createProcessingVideoJob = async (...args: Parameters<typeof createQueuedVideoJob>) => {
+    const job = await createQueuedVideoJob(...args);
+    return prisma.videoJob.update({ where: { id: job.id }, data: { status: "processing" } });
+  };
 
   const now = new Date();
   await prisma.user.create({
@@ -101,7 +106,7 @@ async function main() {
     const log: CallLog[] = [];
     let refunds = 0;
     // voiceProvider explicit — mirrors the web route (user rows default ttsProvider="elevenlabs")
-    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck", stockSource: "kie-image", targetClipCount: 7, kieModel: "gpt-image-2-text-to-image" });
+    const job = await createProcessingVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", geminiVoiceName: "Puck", stockSource: "kie-image", targetClipCount: 7, kieModel: "gpt-image-2-text-to-image" });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
@@ -165,7 +170,7 @@ async function main() {
           return base.post<T>(path, body);
         },
       };
-      const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", stockSource: "kie-image", kieModel: "gpt-image-2-text-to-image" });
+      const job = await createProcessingVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini", stockSource: "kie-image", kieModel: "gpt-image-2-text-to-image" });
       await runOrchestrator(job.id, "u-preview", {
         caller: windowCaller,
         refundOneClip: async () => {},
@@ -195,7 +200,7 @@ async function main() {
   {
     const log: CallLog[] = [];
     let refunds = 0;
-    const job = await createVideoJob("u-preview", { script: SCRIPT });
+    const job = await createProcessingVideoJob("u-preview", { script: SCRIPT });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
@@ -224,7 +229,7 @@ async function main() {
   // ── D. cooperative cancel: canceled mid-run → stops at next step boundary ──
   {
     const log: CallLog[] = [];
-    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
+    const job = await createProcessingVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
     const base = makeStubCaller(log);
     const cancelingCaller = {
       ...base,
@@ -251,7 +256,7 @@ async function main() {
   // fix, the render ran to completion and finishJob flipped the job back to done). ──
   {
     const log: CallLog[] = [];
-    const job = await createVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
+    const job = await createProcessingVideoJob("u-preview", { script: SCRIPT, previewMode: true, voiceProvider: "gemini" });
     const base = makeStubCaller(log);
     let progressPolls = 0;
     const midRenderCancelCaller = {
@@ -279,11 +284,47 @@ async function main() {
     ok(done?.outputJson === null, "F: no output persisted after cancel");
   }
 
+  // ── H. final-gap cancel: cancellation after the last poll but before finish
+  // must remain canceled instead of being caught and rewritten to failed. ────
+  {
+    const log: CallLog[] = [];
+    const job = await createProcessingVideoJob("u-preview", { script: SCRIPT });
+    const base = makeStubCaller(log);
+    const finalGapCancelCaller = {
+      ...base,
+      patch: async <T,>(path: string, body: unknown): Promise<T> => {
+        const result = await base.patch<T>(path, body);
+        if (path === "/api/videos/gallery-vid-1") {
+          await prisma.videoJob.update({
+            where: { id: job.id },
+            data: {
+              status: "canceled",
+              finishedAt: FINAL_GAP_CANCELED_AT,
+              errorMessage: "canceled by user (editor v2)",
+            },
+          });
+        }
+        return result;
+      },
+    };
+    await runOrchestrator(job.id, "u-preview", {
+      caller: finalGapCancelCaller,
+      refundOneClip: async () => {},
+      sleep: async () => {},
+    });
+    const canceled = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(canceled?.status === "canceled", `H: final-gap cancellation stays canceled (got ${canceled?.status})`);
+    ok(canceled?.finishedAt?.toISOString() === FINAL_GAP_CANCELED_AT.toISOString(), "H: cancellation timestamp stays immutable");
+    ok(canceled?.errorMessage === "canceled by user (editor v2)", "H: cancellation reason stays immutable");
+    ok(canceled?.outputJson === null, "H: no output persisted after final-gap cancellation");
+    ok(canceled?.mediaExpiresAt === null, "H: no expiry stamped after final-gap cancellation");
+  }
+
   // ── E. upload/cutaway branch: no TTS, composite cutaway, v2 preview output ──
   {
     const log: CallLog[] = [];
     let refunds = 0;
-    const job = await createVideoJob("u-preview", { script: "", mode: "upload", clipUrl: "/api/renders/my-clip.mp4", previewMode: true });
+    const job = await createProcessingVideoJob("u-preview", { script: "", mode: "upload", clipUrl: "/api/renders/my-clip.mp4", previewMode: true });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
