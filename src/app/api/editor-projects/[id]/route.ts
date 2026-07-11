@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import {
   archiveEditorProject,
-  getEditorProject,
+  getEditorProjectWithMediaState,
   updateEditorProject,
 } from "@/lib/editor-projects";
 
@@ -26,7 +26,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    const project = await getEditorProject(user.id, id);
+    const project = await getEditorProjectWithMediaState(user.id, id);
     if (!project) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ project });
   } catch (error) {
