@@ -360,13 +360,25 @@ export async function buildMediaReferenceGraph(
     const collected = collectCanonicalMediaRefs(draft, roots);
     for (const code of collected.errors) addError(owner, "draftJson", code);
 
-    const activeOwnerKeys = new Set<MediaKey>();
+    const activeOwnerKeys = new Map<MediaKey, boolean>();
     const inFlightExpiries: Array<{ expiresAt: Date | null }> = [];
     const exactProjectOwnerMatches = (candidate: ProjectScopedOwner): boolean =>
       candidate.userId === project.userId && candidate.projectId === project.id;
     const ownerConflictsWithProject = (candidate: ProjectScopedOwner): boolean =>
       candidate.userId !== project.userId ||
       (candidate.projectId !== null && candidate.projectId !== project.id);
+    const addExactOwnerKeys = (
+      keys: Iterable<MediaKey>,
+      ownerKind: "video" | "video-job",
+      ownerId: string,
+    ): void => {
+      for (const key of keys) {
+        const exactOwnerIsCritical = refs.get(key)?.some((ref) =>
+          ref.ownerKind === ownerKind && ref.ownerId === ownerId && ref.critical === true
+        ) ?? false;
+        activeOwnerKeys.set(key, activeOwnerKeys.get(key) === true || exactOwnerIsCritical);
+      }
+    };
     for (const [field, jobId] of [
       ["activeJobId", project.activeJobId],
       ["activeExportJobId", project.activeExportJobId],
@@ -376,7 +388,7 @@ export async function buildMediaReferenceGraph(
       const inFlightOwner = inFlightJobById.get(jobId);
       if (doneOwner) {
         if (exactProjectOwnerMatches(doneOwner)) {
-          for (const key of videoJobKeysById.get(jobId) ?? []) activeOwnerKeys.add(key);
+          addExactOwnerKeys(videoJobKeysById.get(jobId) ?? [], "video-job", jobId);
         } else if (ownerConflictsWithProject(doneOwner)) {
           addError(owner, field, "owner_mismatch");
         }
@@ -386,7 +398,7 @@ export async function buildMediaReferenceGraph(
         // Preserve it conservatively; unlike frozen done/latest expiry, null cannot shorten life.
         if (ownerConflictsWithProject(inFlightOwner)) {
           addError(owner, field, "owner_mismatch");
-        } else {
+        } else if (project.status !== "archived") {
           inFlightExpiries.push({ expiresAt: inFlightOwner.mediaExpiresAt });
         }
       }
@@ -394,18 +406,18 @@ export async function buildMediaReferenceGraph(
     if (project.latestVideoId) {
       const latestVideoOwner = videoOwnerById.get(project.latestVideoId);
       if (latestVideoOwner && exactProjectOwnerMatches(latestVideoOwner)) {
-        for (const key of videoKeysById.get(project.latestVideoId) ?? []) activeOwnerKeys.add(key);
+        addExactOwnerKeys(videoKeysById.get(project.latestVideoId) ?? [], "video", project.latestVideoId);
       } else if (latestVideoOwner && ownerConflictsWithProject(latestVideoOwner)) {
         addError(owner, "latestVideoId", "owner_mismatch");
       }
     }
     if (project.status !== "archived") {
-      for (const key of activeOwnerKeys) {
+      for (const [key, critical] of activeOwnerKeys) {
         addKey(key, {
           ...owner,
           expiresAt: null,
           alwaysProtect: true,
-          critical: refs.get(key)?.some((ref) => ref.critical === true),
+          critical: critical || undefined,
         });
       }
     }

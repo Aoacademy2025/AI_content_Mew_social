@@ -135,6 +135,15 @@ async function seed(prisma: PrismaClient): Promise<void> {
         videoUrl: "/api/renders/archived-video.mp4",
         expiresAt: dateAtOffset(-5),
       },
+      {
+        id: "graph-unrelated-critical-video",
+        userId: "graph-pro",
+        avatarModel: "none",
+        voiceModel: "none",
+        sceneCount: 1,
+        videoUrl: "/api/renders/shared-criticality.mp4",
+        expiresAt: dateAtOffset(-5),
+      },
     ],
   });
 
@@ -147,7 +156,10 @@ async function seed(prisma: PrismaClient): Promise<void> {
         inputJson: "{}",
         outputJson: JSON.stringify({
           videoUrl: "/api/renders/active-job.mp4",
-          preview: { voiceUrl: "/api/renders/active-voice.mp3" },
+          preview: {
+            voiceUrl: "/api/renders/active-voice.mp3",
+            brollUrl: "/api/renders/shared-criticality.mp4",
+          },
         }),
         mediaExpiresAt: dateAtOffset(-3),
       },
@@ -310,6 +322,8 @@ async function seed(prisma: PrismaClient): Promise<void> {
         id: "graph-project-archived",
         userId: "graph-free",
         status: "archived",
+        draftJson: JSON.stringify({ clipUrl: "/api/renders/archived-inflight-input.mp4" }),
+        activeJobId: "graph-processing-job",
         latestVideoId: "graph-archived-video",
       },
     ],
@@ -425,6 +439,7 @@ async function main(): Promise<void> {
   writeMedia("renders", "active-job.mp4", dateAtOffset(-14));
   writeMedia("renders", "unscoped-job.mp4", dateAtOffset(-1));
   writeMedia("renders", "unscoped-video.mp4", dateAtOffset(-1));
+  writeMedia("renders", "archived-inflight-input.mp4", dateAtOffset(-20));
   const outsideTarget = join(FIXTURE_ROOT, "outside.mp4");
   writeFileSync(outsideTarget, "outside");
   symlinkSync(outsideTarget, join(FIXTURE_ROOT, "public", "renders", "escape-link.mp4"));
@@ -498,7 +513,7 @@ async function main(): Promise<void> {
   const graph = await graphModule.buildMediaReferenceGraph(NOW);
 
   assert.deepEqual(graph.scannedOwners, {
-    video: 7,
+    video: 8,
     "video-job": 7,
     "project-draft": 16,
     "render-job": 3,
@@ -606,6 +621,24 @@ async function main(): Promise<void> {
     refsFor(graph, "renders/archived-video.mp4").some((ref) => ref.ownerKind === "project-draft"),
     false,
     "an archived project does not indefinitely protect its expired latest video",
+  );
+  const archivedInFlightRef = refsFor(graph, "renders/archived-inflight-input.mp4").find(
+    (ref) => ref.ownerKind === "project-draft" && ref.ownerId === "graph-project-archived",
+  );
+  assert.equal(
+    archivedInFlightRef?.expiresAt?.toISOString(),
+    dateAtOffset(-17).toISOString(),
+    "an archived project's in-flight pointer does not create indefinite draft protection",
+  );
+  assert.notEqual(archivedInFlightRef?.alwaysProtect, true);
+  const sharedCriticalityProjectRef = refsFor(graph, "renders/shared-criticality.mp4").find(
+    (ref) => ref.ownerKind === "project-draft" && ref.ownerId === "graph-project-active-job",
+  );
+  assert.equal(sharedCriticalityProjectRef?.alwaysProtect, true);
+  assert.notEqual(
+    sharedCriticalityProjectRef?.critical,
+    true,
+    "critical lineage comes from the exact pointer owner, not an unrelated owner sharing the key",
   );
 
   const processingActiveRef = refsFor(graph, "renders/processing-active-input.mp4").find(
