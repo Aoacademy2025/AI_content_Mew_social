@@ -800,6 +800,67 @@ async function main(): Promise<void> {
     "failed immediate recheck clears the persisted purge intent",
   );
 
+  const purgeReferenceRacePath = writeMedia("purge-reference-race.mp4", -30);
+  const purgeReferenceRacePlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
+    "renders/purge-reference-race.mp4",
+  );
+  const purgeReferenceRaceRun = await cleanupModule.applyMediaCleanupPlan(
+    purgeReferenceRacePlan,
+    purgeReferenceRacePlan.manifestSha256,
+    { now: NOW },
+  );
+  const purgeReferenceRaceQuarantinePath = join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeReferenceRaceRun.runId,
+    "renders",
+    "purge-reference-race.mp4",
+  );
+  let insertedImmediatelyBeforeUnlink = false;
+  const purgeReferenceRace = await purgeMediaQuarantine({
+    cwd: FIXTURE_ROOT,
+    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+    batchSize: 1,
+    beforeUnlink: async (record) => {
+      if (record.key !== "renders/purge-reference-race.mp4") return;
+      await prisma!.video.create({
+        data: {
+          id: "quarantine-purge-reference-race",
+          userId: "quarantine-user",
+          avatarModel: "none",
+          voiceModel: "none",
+          sceneCount: 1,
+          videoUrl: "/api/renders/purge-reference-race.mp4",
+          expiresAt: atDays(3),
+        },
+      });
+      insertedImmediatelyBeforeUnlink = true;
+    },
+  });
+  assert.equal(insertedImmediatelyBeforeUnlink, true);
+  assert.equal(existsSync(purgeReferenceRacePath), false);
+  assert.equal(
+    existsSync(purgeReferenceRaceQuarantinePath),
+    true,
+    "a live reference inserted after purge intent persistence blocks permanent unlink",
+  );
+  assert.ok(purgeReferenceRace.skipped.count >= 1);
+  const purgeReferenceRaceManifest = JSON.parse(readFileSync(join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeReferenceRaceRun.runId,
+    "manifest.json",
+  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
+  assert.equal(
+    purgeReferenceRaceManifest.purgeIntents.some((intent) =>
+      intent.key === "renders/purge-reference-race.mp4"
+    ),
+    false,
+    "a newly live reference clears only its persisted purge intent",
+  );
+  await prisma.video.delete({ where: { id: "quarantine-purge-reference-race" } });
+
   const purgeFingerprintRacePath = writeMedia("purge-fingerprint-race.mp4", -30);
   const purgeFingerprintRacePlan = singleRecordPlan(
     await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),

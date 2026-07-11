@@ -74,3 +74,24 @@ ls -lh /var/www/ai-content/prisma/ | grep dev.db
 
 Expected: `wal`; `dev.db-wal` / `dev.db-shm` appear next to `dev.db` after the first write (SQLite creates them lazily and removes them when the last connection closes cleanly) (all
 `prisma/*.db*` paths are gitignored, so `git pull` never touches them).
+
+## 3. Permanent media quarantine purge
+
+Permanent purge deliberately rebuilds the complete media reference graph immediately
+before every file unlink. This closes the race where a live database reference is added
+after the batch review or purge-intent write, at the cost of one complete reference scan
+per purged file. Run purge only as an explicitly approved, off-peak maintenance command;
+do not put it in the regular cleanup cron:
+
+```bash
+npx tsx scripts/media-cleanup.ts --purge-quarantine
+```
+
+Keep quarantine apply and the normal scheduled cleanup in dry-run until the rollout gates
+are approved. One purge invocation processes the mature set it discovers sequentially; it
+does not currently expose a record limit. Do not start a large backlog unless the maintenance
+window can cover the full run, and do not interrupt it merely to bound runtime because a
+crash-left operation lock requires validated manual recovery. Stage quarantine apply volume
+ahead of time, then monitor the sanitized `scanned`, `purged`, `skipped`, and `errors` tallies
+after each approved purge. Any incomplete graph, new live reference, original-path collision,
+unsafe hierarchy, or fingerprint change fails closed and preserves the quarantined copy.

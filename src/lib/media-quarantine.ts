@@ -614,6 +614,25 @@ function quarantinePathFor(cwd: string, runId: string, record: MediaManifestReco
   return path.join(cwd, ".media-quarantine", runId, record.key.slice(0, slash), record.key.slice(slash + 1));
 }
 
+async function clearPurgeIntent(
+  cwd: string,
+  runId: string,
+  key: MediaKey,
+): Promise<void> {
+  const manifest = await loadManifestIntegrity(cwd, runId);
+  if (!manifest.purgeIntents.some((intent) => intent.key === key)) return;
+  const { stateSha256: _stateSha256, ...manifestState } = manifest;
+  const updated = completeManifest({
+    ...manifestState,
+    purgeIntents: manifest.purgeIntents.filter((intent) => intent.key !== key),
+  });
+  await atomicWriteJson(
+    path.join(cwd, ".media-quarantine", runId, "manifest.json"),
+    updated,
+    cwd,
+  );
+}
+
 async function restoreQuarantineRunLocked(
   runId: string,
   options: RestoreQuarantineOptions = {},
@@ -799,11 +818,21 @@ export async function purgeMediaQuarantine(
             const hierarchySafe = await existingPathHasNoSymlink(quarantinePath, cwd);
             const originalStillAbsent = pathIsStrictlyAbsent(record.absolutePath);
             const currentStat = hierarchySafe ? safeLstat(quarantinePath) : null;
+            // This intentionally rebuilds the complete graph once per permanent unlink.
+            // Purge is an off-peak maintenance operation: bounded runs cost more DB reads,
+            // but a batch snapshot cannot close the post-intent live-reference race.
+            const { buildMediaReferenceGraph } = await import("./media-reference-graph");
+            const currentGraph = await buildMediaReferenceGraph(now, { workspaceRoot: cwd });
+            assertGraphComplete(currentGraph);
+            const currentRefs = currentGraph.refs.get(record.key) ?? [];
+            const referencesStillEligible = currentRefs.length === 0 ||
+              referenceSetIsExpired(currentRefs, now);
             stillEligible = Boolean(
               hierarchySafe &&
               originalStillAbsent &&
               currentStat &&
-              statMatchesRecord(currentStat, record)
+              statMatchesRecord(currentStat, record) &&
+              referencesStillEligible
             );
           } catch {
             stillEligible = false;
@@ -812,19 +841,7 @@ export async function purgeMediaQuarantine(
             // The immediate recheck can fail because a previously canonical path became
             // unavailable. Clear the durable intent from the integrity-checked state
             // without requiring the same canonical validation to succeed again.
-            const manifest = await loadManifestIntegrity(cwd, runId);
-            if (manifest.purgeIntents.some((intent) => intent.key === record.key)) {
-              const { stateSha256: _stateSha256, ...manifestState } = manifest;
-              const updated = completeManifest({
-                ...manifestState,
-                purgeIntents: manifest.purgeIntents.filter((intent) => intent.key !== record.key),
-              });
-              await atomicWriteJson(
-                path.join(cwd, ".media-quarantine", runId, "manifest.json"),
-                updated,
-                cwd,
-              );
-            }
+            await clearPurgeIntent(cwd, runId, record.key);
             addTally(report.skipped, record.sizeBytes);
             continue;
           }
