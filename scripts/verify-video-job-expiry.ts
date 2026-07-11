@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { updateEditorProject } from "../src/lib/editor-projects";
-import { finishJob } from "../src/lib/mcp/video-job";
+import { failJob, finishJob } from "../src/lib/mcp/video-job";
 import { prisma } from "../src/lib/prisma";
 
 const FINISHED_AT = new Date("2026-07-01T12:00:00.000Z");
 const REPLAYED_AT = new Date("2026-07-10T12:00:00.000Z");
+const CANCELED_AT = new Date("2026-07-01T11:59:00.000Z");
 const FIXTURE_USER_IDS = [
   "video-job-expiry-free",
   "video-job-expiry-pro",
@@ -154,6 +155,247 @@ async function main() {
       businessProjectAfterReplay?.lastOpenedAt.toISOString(),
       finishedBusinessProject?.lastOpenedAt.toISOString(),
     );
+
+    // Cancellation and completion are competing terminal transitions. When
+    // cancellation wins first, a delayed worker completion must not resurrect
+    // the job or apply completion side effects to its project.
+    const canceledProject = await prisma.editorProject.create({
+      data: {
+        id: "video-job-expiry-canceled-project",
+        userId: proUser.id,
+        title: "Canceled project",
+        status: "rendering",
+      },
+    });
+    const canceledJob = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-canceled-job",
+        userId: proUser.id,
+        projectId: canceledProject.id,
+        status: "processing",
+        inputJson: "{}",
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: canceledProject.id },
+      data: { activeJobId: canceledJob.id },
+    });
+    const canceledTransition = await prisma.videoJob.updateMany({
+      where: { id: canceledJob.id, status: { in: ["queued", "processing"] } },
+      data: {
+        status: "canceled",
+        finishedAt: CANCELED_AT,
+        errorMessage: "canceled by user (editor v2)",
+      },
+    });
+    assert.equal(canceledTransition.count, 1);
+    await prisma.editorProject.updateMany({
+      where: { id: canceledProject.id, userId: proUser.id, activeJobId: canceledJob.id },
+      data: { status: "draft", lastOpenedAt: CANCELED_AT },
+    });
+    await assert.rejects(
+      finishJob(
+        canceledJob.id,
+        { videoUrl: "/api/renders/must-not-complete.mp4", videoId: "must-not-complete-video" },
+        { now: FINISHED_AT },
+      ),
+      /__job_canceled__/,
+    );
+    // The worker's catch path historically passed every finish error to failJob.
+    // Even if that defensive call occurs, terminal cancellation must remain immutable.
+    await failJob(canceledJob.id, "video_job_not_processing");
+    const canceledAfterFinish = await prisma.videoJob.findUnique({ where: { id: canceledJob.id } });
+    const canceledProjectAfterFinish = await prisma.editorProject.findUnique({
+      where: { id: canceledProject.id },
+    });
+    assert.equal(canceledAfterFinish?.status, "canceled");
+    assert.equal(canceledAfterFinish?.finishedAt?.toISOString(), CANCELED_AT.toISOString());
+    assert.equal(canceledAfterFinish?.mediaExpiresAt, null);
+    assert.equal(canceledAfterFinish?.outputJson, null);
+    assert.equal(canceledAfterFinish?.videoId, null);
+    assert.equal(canceledProjectAfterFinish?.status, "draft");
+    assert.equal(canceledProjectAfterFinish?.latestVideoId, null);
+    assert.equal(canceledProjectAfterFinish?.lastOpenedAt.toISOString(), CANCELED_AT.toISOString());
+
+    assert.equal(canceledAfterFinish?.errorMessage, "canceled by user (editor v2)");
+
+    // When completion wins first, the cancellation endpoint's guarded update
+    // must lose and leave the immutable completion and project side effects intact.
+    const completedBeforeCancelProject = await prisma.editorProject.create({
+      data: {
+        id: "video-job-expiry-completed-before-cancel-project",
+        userId: proUser.id,
+        title: "Completed before cancel",
+        status: "rendering",
+      },
+    });
+    const completedBeforeCancelJob = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-completed-before-cancel-job",
+        userId: proUser.id,
+        projectId: completedBeforeCancelProject.id,
+        status: "processing",
+        inputJson: "{}",
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: completedBeforeCancelProject.id },
+      data: { activeJobId: completedBeforeCancelJob.id },
+    });
+    const completedBeforeCancel = await finishJob(
+      completedBeforeCancelJob.id,
+      {
+        videoUrl: "/api/renders/completed-before-cancel.mp4",
+        videoId: "completed-before-cancel-video",
+      },
+      { now: FINISHED_AT },
+    );
+    const losingCancellation = await prisma.videoJob.updateMany({
+      where: {
+        id: completedBeforeCancelJob.id,
+        status: { in: ["queued", "processing"] },
+      },
+      data: {
+        status: "canceled",
+        finishedAt: CANCELED_AT,
+        errorMessage: "canceled by user (editor v2)",
+      },
+    });
+    assert.equal(losingCancellation.count, 0);
+    const completedAfterCancel = await prisma.videoJob.findUnique({
+      where: { id: completedBeforeCancelJob.id },
+    });
+    const completedProjectAfterCancel = await prisma.editorProject.findUnique({
+      where: { id: completedBeforeCancelProject.id },
+    });
+    assert.equal(completedAfterCancel?.status, "done");
+    assert.equal(completedAfterCancel?.finishedAt?.toISOString(), FINISHED_AT.toISOString());
+    assert.equal(completedAfterCancel?.mediaExpiresAt?.toISOString(), "2026-07-08T12:00:00.000Z");
+    assert.equal(completedAfterCancel?.outputJson, completedBeforeCancel.outputJson);
+    assert.equal(completedAfterCancel?.videoId, "completed-before-cancel-video");
+    assert.equal(completedProjectAfterCancel?.status, "exported");
+    assert.equal(completedProjectAfterCancel?.latestVideoId, "completed-before-cancel-video");
+
+    // Failure reporting is also a guarded terminal transition. A late error
+    // cannot replace an immutable successful completion.
+    await failJob(completedBeforeCancelJob.id, "late worker error after completion");
+    const completedAfterLateFailure = await prisma.videoJob.findUnique({
+      where: { id: completedBeforeCancelJob.id },
+    });
+    const completedProjectAfterLateFailure = await prisma.editorProject.findUnique({
+      where: { id: completedBeforeCancelProject.id },
+    });
+    assert.equal(completedAfterLateFailure?.status, "done");
+    assert.equal(completedAfterLateFailure?.outputJson, completedBeforeCancel.outputJson);
+    assert.equal(completedProjectAfterLateFailure?.status, "exported");
+    assert.equal(completedProjectAfterLateFailure?.latestVideoId, "completed-before-cancel-video");
+
+    const alreadyFailedProject = await prisma.editorProject.create({
+      data: {
+        id: "video-job-expiry-already-failed-project",
+        userId: proUser.id,
+        title: "Already failed project",
+        status: "draft",
+        lastOpenedAt: CANCELED_AT,
+      },
+    });
+    const alreadyFailedJob = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-already-failed-job",
+        userId: proUser.id,
+        projectId: alreadyFailedProject.id,
+        status: "failed",
+        inputJson: "{}",
+        errorMessage: "original failure",
+        finishedAt: CANCELED_AT,
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: alreadyFailedProject.id },
+      data: { activeJobId: alreadyFailedJob.id },
+    });
+    await assert.rejects(
+      finishJob(
+        alreadyFailedJob.id,
+        { videoUrl: "/api/renders/must-not-revive-failed.mp4" },
+        { now: FINISHED_AT },
+      ),
+      /video_job_not_processing/,
+    );
+    await failJob(alreadyFailedJob.id, "replacement failure");
+    const alreadyFailedAfterReplay = await prisma.videoJob.findUnique({ where: { id: alreadyFailedJob.id } });
+    const alreadyFailedProjectAfterReplay = await prisma.editorProject.findUnique({
+      where: { id: alreadyFailedProject.id },
+    });
+    assert.equal(alreadyFailedAfterReplay?.status, "failed");
+    assert.equal(alreadyFailedAfterReplay?.errorMessage, "original failure");
+    assert.equal(alreadyFailedAfterReplay?.finishedAt?.toISOString(), CANCELED_AT.toISOString());
+    assert.equal(alreadyFailedAfterReplay?.outputJson, null);
+    assert.equal(alreadyFailedAfterReplay?.mediaExpiresAt, null);
+    assert.equal(alreadyFailedProjectAfterReplay?.status, "draft");
+    assert.equal(alreadyFailedProjectAfterReplay?.lastOpenedAt.toISOString(), CANCELED_AT.toISOString());
+
+    const queuedLoser = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-queued-loser",
+        userId: proUser.id,
+        status: "queued",
+        inputJson: "{}",
+      },
+    });
+    await assert.rejects(
+      finishJob(
+        queuedLoser.id,
+        { videoUrl: "/api/renders/must-not-finish-queued.mp4" },
+        { now: FINISHED_AT },
+      ),
+      /video_job_not_processing/,
+    );
+    const queuedAfterFinish = await prisma.videoJob.findUnique({ where: { id: queuedLoser.id } });
+    assert.equal(queuedAfterFinish?.status, "queued");
+    assert.equal(queuedAfterFinish?.outputJson, null);
+    assert.equal(queuedAfterFinish?.mediaExpiresAt, null);
+
+    // Failure state and its project side effect are one transaction. If the
+    // project write fails, the processing job must remain retryable.
+    const failureRollbackProject = await prisma.editorProject.create({
+      data: {
+        id: "video-job-expiry-failure-rollback-project",
+        userId: proUser.id,
+        title: "Failure rollback project",
+        status: "rendering",
+      },
+    });
+    const failureRollbackJob = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-failure-rollback-job",
+        userId: proUser.id,
+        projectId: failureRollbackProject.id,
+        status: "processing",
+        inputJson: "{}",
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: failureRollbackProject.id },
+      data: { activeJobId: failureRollbackJob.id },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER verify_fail_job_project_failure
+      BEFORE UPDATE ON EditorProject
+      WHEN OLD.id = 'video-job-expiry-failure-rollback-project'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced_failure_project_update_failure');
+      END
+    `);
+    try {
+      await assert.rejects(failJob(failureRollbackJob.id, "worker failed"));
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS verify_fail_job_project_failure");
+    }
+    const failureRolledBackJob = await prisma.videoJob.findUnique({ where: { id: failureRollbackJob.id } });
+    assert.equal(failureRolledBackJob?.status, "processing");
+    assert.equal(failureRolledBackJob?.errorMessage, null);
+    assert.equal(failureRolledBackJob?.finishedAt, null);
 
     // The first status transition and owner-scoped project update are one
     // transaction. Force the project write to fail and prove the job rolls back,

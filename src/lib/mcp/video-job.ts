@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
 
 const WORKER_REQUEUE_MESSAGE_RE = /^worker restarted - requeued (\d+)\/(\d+)$/;
+export const VIDEO_JOB_CANCELED_ERROR = "__job_canceled__";
+export const VIDEO_JOB_NOT_PROCESSING_ERROR = "video_job_not_processing";
 
 function restartRequeueCount(errorMessage: string | null): number {
   const match = (errorMessage ?? "").match(WORKER_REQUEUE_MESSAGE_RE);
@@ -68,7 +70,7 @@ export async function finishJob(
 
   return prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
-      where: { id, status: { not: "done" } },
+      where: { id, status: "processing" },
       data: {
         status: "done",
         progress: 100,
@@ -79,10 +81,13 @@ export async function finishJob(
       },
     });
 
-    // Another finisher won after the initial owner lookup. Return its immutable
-    // completion and do not repeat any project side effect.
+    // Another terminal transition won after the initial owner lookup. Return an
+    // immutable completion, but never resurrect canceled/failed/queued jobs.
     if (transitioned.count === 0) {
-      return tx.videoJob.findUniqueOrThrow({ where: { id } });
+      const winner = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+      if (winner.status === "done") return winner;
+      if (winner.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      throw new Error(VIDEO_JOB_NOT_PROCESSING_ERROR);
     }
 
     const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
@@ -176,23 +181,31 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
 }
 
 export async function failJob(id: string, message: string) {
-  const job = await prisma.videoJob.update({
-    where: { id },
-    data: { status: "failed", errorMessage: message.slice(0, 1000), finishedAt: new Date() },
-  });
-  if (job.projectId) {
-    if (job.type === "export") {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId, activeExportJobId: job.id },
-        data: { status: "post", lastOpenedAt: new Date() },
-      });
-    } else {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId, activeJobId: job.id },
-        data: { status: "draft", lastOpenedAt: new Date() },
-      });
+  return prisma.$transaction(async (tx) => {
+    const transitioned = await tx.videoJob.updateMany({
+      where: { id, status: "processing" },
+      data: { status: "failed", errorMessage: message.slice(0, 1000), finishedAt: new Date() },
+    });
+    if (transitioned.count === 0) {
+      return tx.videoJob.findUniqueOrThrow({ where: { id } });
     }
-  }
+
+    const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    if (job.projectId) {
+      if (job.type === "export") {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, activeExportJobId: job.id },
+          data: { status: "post", lastOpenedAt: new Date() },
+        });
+      } else {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, activeJobId: job.id },
+          data: { status: "draft", lastOpenedAt: new Date() },
+        });
+      }
+    }
+    return job;
+  });
 }
 
 /**
