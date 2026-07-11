@@ -101,9 +101,14 @@ export async function buildMediaReferenceGraph(
 
   function addKey(key: MediaKey, reference: MediaReference): void {
     const current = refs.get(key) ?? [];
-    if (current.some(
+    const existing = current.find(
       (candidate) => candidate.ownerKind === reference.ownerKind && candidate.ownerId === reference.ownerId,
-    )) return;
+    );
+    if (existing) {
+      if (reference.alwaysProtect) existing.alwaysProtect = true;
+      if (reference.critical) existing.critical = true;
+      return;
+    }
     current.push({ ...reference });
     refs.set(key, current);
   }
@@ -218,6 +223,7 @@ export async function buildMediaReferenceGraph(
       select: {
         id: true,
         userId: true,
+        status: true,
         draftJson: true,
         activeJobId: true,
         activeExportJobId: true,
@@ -251,7 +257,10 @@ export async function buildMediaReferenceGraph(
     };
     const ownerKeys = new Set<MediaKey>();
     for (const field of DIRECT_VIDEO_FIELDS) {
-      for (const key of collectOwnerValue(video[field], reference, field).keys) ownerKeys.add(key);
+      const fieldReference = field === "videoUrl"
+        ? { ...reference, critical: true }
+        : reference;
+      for (const key of collectOwnerValue(video[field], fieldReference, field).keys) ownerKeys.add(key);
     }
     for (const field of JSON_VIDEO_FIELDS) {
       const parsed = parseJsonOwnerField(video[field], reference, field);
@@ -276,10 +285,17 @@ export async function buildMediaReferenceGraph(
       continue;
     }
     const output = parseJsonOwnerField(job.outputJson, reference, "outputJson");
-    videoJobKeysById.set(
-      job.id,
-      collectOwnerValue(output, reference, "outputJson").keys,
-    );
+    const ownerKeys = new Set<MediaKey>();
+    if (output && typeof output === "object" && !Array.isArray(output)) {
+      const finalVideoUrl = (output as Record<string, unknown>).videoUrl;
+      for (const key of collectOwnerValue(
+        finalVideoUrl,
+        { ...reference, critical: true },
+        "outputJson.videoUrl",
+      ).keys) ownerKeys.add(key);
+    }
+    for (const key of collectOwnerValue(output, reference, "outputJson").keys) ownerKeys.add(key);
+    videoJobKeysById.set(job.id, ownerKeys);
     videoJobOwnerById.set(job.id, { userId: job.userId, projectId: job.projectId });
   }
 
@@ -381,6 +397,16 @@ export async function buildMediaReferenceGraph(
         for (const key of videoKeysById.get(project.latestVideoId) ?? []) activeOwnerKeys.add(key);
       } else if (latestVideoOwner && ownerConflictsWithProject(latestVideoOwner)) {
         addError(owner, "latestVideoId", "owner_mismatch");
+      }
+    }
+    if (project.status !== "archived") {
+      for (const key of activeOwnerKeys) {
+        addKey(key, {
+          ...owner,
+          expiresAt: null,
+          alwaysProtect: true,
+          critical: refs.get(key)?.some((ref) => ref.critical === true),
+        });
       }
     }
 

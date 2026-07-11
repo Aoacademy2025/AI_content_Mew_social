@@ -79,7 +79,7 @@ async function seed(prisma: PrismaClient): Promise<void> {
         }),
         generatedImages: JSON.stringify([{ url: "/api/stocks/generated-nested.png" }]),
         sceneMapping: JSON.stringify({ localUrl: "/api/stocks/scene-map.mp4" }),
-        expiresAt: dateAtOffset(2),
+        expiresAt: dateAtOffset(-2),
       },
       {
         id: "graph-shared-video",
@@ -126,6 +126,15 @@ async function seed(prisma: PrismaClient): Promise<void> {
         videoUrl: "/api/renders/unscoped-video.mp4",
         expiresAt: dateAtOffset(-5),
       },
+      {
+        id: "graph-archived-video",
+        userId: "graph-free",
+        avatarModel: "none",
+        voiceModel: "none",
+        sceneCount: 1,
+        videoUrl: "/api/renders/archived-video.mp4",
+        expiresAt: dateAtOffset(-5),
+      },
     ],
   });
 
@@ -140,7 +149,7 @@ async function seed(prisma: PrismaClient): Promise<void> {
           videoUrl: "/api/renders/active-job.mp4",
           preview: { voiceUrl: "/api/renders/active-voice.mp3" },
         }),
-        mediaExpiresAt: dateAtOffset(3),
+        mediaExpiresAt: dateAtOffset(-3),
       },
       {
         id: "graph-active-export-job",
@@ -148,7 +157,7 @@ async function seed(prisma: PrismaClient): Promise<void> {
         status: "done",
         inputJson: "{}",
         outputJson: JSON.stringify({ videoUrl: "/api/renders/active-export.mp4" }),
-        mediaExpiresAt: dateAtOffset(14),
+        mediaExpiresAt: dateAtOffset(-14),
       },
       {
         id: "graph-transition-preview-job",
@@ -297,6 +306,12 @@ async function seed(prisma: PrismaClient): Promise<void> {
         userId: "graph-pro",
         draftJson: "{not-json",
       },
+      {
+        id: "graph-project-archived",
+        userId: "graph-free",
+        status: "archived",
+        latestVideoId: "graph-archived-video",
+      },
     ],
   });
 
@@ -304,6 +319,10 @@ async function seed(prisma: PrismaClient): Promise<void> {
     prisma.video.update({
       where: { id: "graph-gallery-live" },
       data: { projectId: "graph-project-latest-gallery" },
+    }),
+    prisma.video.update({
+      where: { id: "graph-archived-video" },
+      data: { projectId: "graph-project-archived" },
     }),
     prisma.videoJob.update({
       where: { id: "graph-active-job" },
@@ -479,9 +498,9 @@ async function main(): Promise<void> {
   const graph = await graphModule.buildMediaReferenceGraph(NOW);
 
   assert.deepEqual(graph.scannedOwners, {
-    video: 6,
+    video: 7,
     "video-job": 7,
-    "project-draft": 15,
+    "project-draft": 16,
     "render-job": 3,
     "generated-image": 5,
   });
@@ -507,8 +526,30 @@ async function main(): Promise<void> {
   );
 
   const galleryRefs = refsFor(graph, "renders/gallery-live.mp4");
-  assert.deepEqual(galleryRefs.map((ref) => ref.ownerKind), ["video"]);
-  assert.equal(galleryRefs[0].expiresAt?.toISOString(), dateAtOffset(2).toISOString());
+  assert.equal(
+    galleryRefs.find((ref) => ref.ownerKind === "video")?.expiresAt?.toISOString(),
+    dateAtOffset(-2).toISOString(),
+  );
+  assert.equal(
+    galleryRefs.find((ref) => ref.ownerKind === "video")?.critical,
+    true,
+    "Video.videoUrl is marked as a critical final playback reference",
+  );
+  assert.equal(
+    refsFor(graph, "renders/video-audio.mp3").find((ref) => ref.ownerKind === "video")?.critical,
+    undefined,
+    "non-final Video media is not marked critical",
+  );
+  assert.equal(
+    galleryRefs.some((ref) =>
+      ref.ownerKind === "project-draft" &&
+      ref.ownerId === "graph-project-latest-gallery" &&
+      ref.alwaysProtect === true &&
+      ref.critical === true
+    ),
+    true,
+    "a non-archived latestVideo pointer fail-closes and preserves final-media criticality",
+  );
   assert.equal(
     graph.errors.some((error) => error.ownerId === "graph-project-latest-gallery"),
     false,
@@ -516,16 +557,21 @@ async function main(): Promise<void> {
   );
 
   for (const [key, ownerId, projectId, expiry] of [
-    ["renders/active-job.mp4", "graph-active-job", "graph-project-active-job", dateAtOffset(3)],
-    ["renders/active-export.mp4", "graph-active-export-job", "graph-project-active-export", dateAtOffset(14)],
+    ["renders/active-job.mp4", "graph-active-job", "graph-project-active-job", dateAtOffset(-3)],
+    ["renders/active-export.mp4", "graph-active-export-job", "graph-project-active-export", dateAtOffset(-14)],
   ] as const) {
     const refs = refsFor(graph, key);
     const jobRef = refs.find((ref) => ref.ownerKind === "video-job" && ref.ownerId === ownerId);
     assert.equal(jobRef?.expiresAt?.toISOString(), expiry.toISOString());
     assert.equal(
-      refs.some((ref) => ref.ownerId === projectId),
-      false,
-      "a done key-specific job owner replaces the same project's mtime fallback",
+      refs.some((ref) =>
+        ref.ownerKind === "project-draft" &&
+        ref.ownerId === projectId &&
+        ref.alwaysProtect === true &&
+        ref.critical === true
+      ),
+      true,
+      "a non-archived active job/export pointer fail-closes and preserves final-media criticality",
     );
     assert.equal(
       graph.errors.some((error) => error.ownerId === projectId),
@@ -533,6 +579,34 @@ async function main(): Promise<void> {
       "active job ownership avoids a false missing-file graph error",
     );
   }
+  assert.equal(
+    refsFor(graph, "renders/active-job.mp4").find(
+      (ref) => ref.ownerKind === "video-job" && ref.ownerId === "graph-active-job",
+    )?.critical,
+    true,
+    "top-level VideoJob outputJson.videoUrl is marked critical",
+  );
+  assert.equal(
+    refsFor(graph, "renders/active-voice.mp3").find(
+      (ref) => ref.ownerKind === "video-job" && ref.ownerId === "graph-active-job",
+    )?.critical,
+    undefined,
+    "nested non-final VideoJob media is not marked critical",
+  );
+  assert.equal(
+    refsFor(graph, "renders/preview-active-job-720p.mp4").some((ref) =>
+      ref.ownerKind === "project-draft" &&
+      ref.ownerId === "graph-project-active-job" &&
+      ref.alwaysProtect === true
+    ),
+    true,
+    "active project containment covers derived preview keys",
+  );
+  assert.equal(
+    refsFor(graph, "renders/archived-video.mp4").some((ref) => ref.ownerKind === "project-draft"),
+    false,
+    "an archived project does not indefinitely protect its expired latest video",
+  );
 
   const processingActiveRef = refsFor(graph, "renders/processing-active-input.mp4").find(
     (ref) => ref.ownerId === "graph-project-processing-active",

@@ -170,6 +170,17 @@ async function seed(prisma: PrismaClient): Promise<void> {
         videoUrl: "/api/renders/shared-owned.mp4",
         expiresAt: atDays(2),
       },
+      {
+        id: "quarantine-missing-inventory",
+        userId: "quarantine-user",
+        avatarModel: "none",
+        voiceModel: "none",
+        sceneCount: 1,
+        videoUrl: "/api/renders/missing-final.mp4",
+        audioUrl: "/api/renders/missing-audio.wav",
+        renderConfig: JSON.stringify({ source: "/api/stocks/missing-stock.mp4" }),
+        expiresAt: atDays(2),
+      },
     ],
   });
 }
@@ -252,6 +263,36 @@ async function main(): Promise<void> {
 
   const plan = await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW });
   assert.equal(plan.graphErrors.length, 0);
+  const missingByKey = new Map(plan.missingInventory.map((record) => [record.key, record]));
+  for (const [key, category, sourceKey] of [
+    ["renders/missing-final.mp4", "critical", undefined],
+    ["renders/missing-audio.wav", "primary", undefined],
+    ["stocks/missing-stock.mp4", "primary", undefined],
+    ["renders/preview-missing-final-540p.mp4", "derived", "renders/missing-final.mp4"],
+    ["renders/preview-missing-final-720p.mp4", "derived", "renders/missing-final.mp4"],
+    ["stocks/missing-stock.mp4.normalized", "derived", "stocks/missing-stock.mp4"],
+  ] as const) {
+    const record = missingByKey.get(key);
+    assert.equal(record?.category, category, `${key} receives its exclusive missing category`);
+    assert.equal(record?.sourceKey, sourceKey);
+    assert.deepEqual(record?.ownerKinds, ["video"]);
+    assert.deepEqual(record?.ownerIds, ["quarantine-missing-inventory"]);
+    assert.equal(record?.effectiveExpiresAt, atDays(2).toISOString());
+    assert.equal("absolutePath" in (record ?? {}), false, "private inventory omits absolute paths");
+  }
+  assert.equal(
+    plan.health.missingBeforeExpiry,
+    plan.health.missingCriticalBeforeExpiry +
+      plan.health.missingPrimaryBeforeExpiry +
+      plan.health.missingDerivedBeforeExpiry,
+    "missing category counts are mutually exclusive and sum to the compatibility total",
+  );
+  assert.equal(plan.health.missingBeforeExpiry, plan.missingInventory.length);
+  assert.equal(
+    "missingInventory" in cleanupModule.mediaCleanupSummary(plan),
+    false,
+    "admin and CLI summaries do not expose private inventory records",
+  );
   assert.deepEqual(
     plan.candidates.map((record) => record.key),
     ["renders/expired-owned.mp4", "renders/orphan-15d.mp4"],
@@ -338,9 +379,12 @@ async function main(): Promise<void> {
   const reviewPayload = JSON.parse(readFileSync(reviewArtifactPath, "utf8")) as {
     manifestSha256: string;
     candidates: unknown[];
+    missingBeforeExpiry: unknown[];
   };
   assert.equal(reviewPayload.manifestSha256, plan.manifestSha256);
   assert.deepEqual(reviewPayload.candidates, plan.candidates);
+  assert.deepEqual(reviewPayload.missingBeforeExpiry, plan.missingInventory);
+  assert.doesNotMatch(JSON.stringify(reviewPayload.missingBeforeExpiry), /absolutePath|[/\\]Users[/\\]/);
   rmSync(join(FIXTURE_ROOT, ".ops-metrics"), { recursive: true, force: true });
   if (process.argv.includes("--metrics-only")) {
     console.log("PASS media health scope semantics");
@@ -753,9 +797,15 @@ async function main(): Promise<void> {
     "generatedAt",
     "graphErrors",
     "missingBeforeExpiry",
+    "missingCriticalBeforeExpiry",
+    "missingDerivedBeforeExpiry",
+    "missingPrimaryBeforeExpiry",
     "protected",
   ]);
   assert.equal(metrics.graphErrors, 0);
+  assert.equal(metrics.missingCriticalBeforeExpiry, metricsPlan.health.missingCriticalBeforeExpiry);
+  assert.equal(metrics.missingPrimaryBeforeExpiry, metricsPlan.health.missingPrimaryBeforeExpiry);
+  assert.equal(metrics.missingDerivedBeforeExpiry, metricsPlan.health.missingDerivedBeforeExpiry);
   assert.doesNotMatch(metricsRaw, /quarantine-user|api\/renders|media-quarantine-|[/\\]Users[/\\]/);
 
   const restoreDespiteGraphPath = writeMedia("restore-despite-graph-error.mp4", -30);
