@@ -129,10 +129,10 @@ function iso(date: Date, field: string, targetId: string): string {
 function resolveCalculationPlan(
   candidate: MediaExpiryBackfillCandidate,
   baseAt: Date,
-): { plan: MediaExpiryBackfillOwnerPlan; historicalTrialFloor: boolean } {
+): { plan: MediaExpiryBackfillOwnerPlan; historicalTrialEvidence: boolean } {
   const trialStartedAt = candidate.trialStartedAt;
   if (!trialStartedAt) {
-    return { plan: candidate.ownerPlan, historicalTrialFloor: false };
+    return { plan: candidate.ownerPlan, historicalTrialEvidence: false };
   }
 
   const trialStartedAtMs = trialStartedAt.getTime();
@@ -146,9 +146,24 @@ function resolveCalculationPlan(
   const trialExtendsRetention =
     storageDaysForPlan(candidate.ownerPlan) < storageDaysForPlan("PRO");
 
-  return insideTrial && trialExtendsRetention
-    ? { plan: "PRO", historicalTrialFloor: true }
-    : { plan: candidate.ownerPlan, historicalTrialFloor: false };
+  if (!insideTrial) {
+    return { plan: candidate.ownerPlan, historicalTrialEvidence: false };
+  }
+
+  return {
+    plan: trialExtendsRetention ? "PRO" : candidate.ownerPlan,
+    historicalTrialEvidence: true,
+  };
+}
+
+function historicalTrialReason(ownerPlan: MediaExpiryBackfillOwnerPlan): string {
+  const retentionComparison =
+    ownerPlan === "FREE"
+      ? "historical PRO trial raises current FREE retention"
+      : ownerPlan === "PRO"
+        ? "current PRO retention matches the floor"
+        : "current BUSINESS retention is longer";
+  return `historical PRO trial retention floor is proven by trialStartedAt; ${retentionComparison}`;
 }
 
 export function planMediaExpiryBackfill(
@@ -171,8 +186,8 @@ export function planMediaExpiryBackfill(
           baseAt: iso(baseAt, "createdAt", candidate.targetId),
           calculatedExpiresAt: iso(calculatedExpiresAt, "calculatedExpiresAt", candidate.targetId),
           alreadyExpired: calculatedExpiresAt.getTime() < nowMs,
-          reason: calculation.historicalTrialFloor
-            ? "legacy Video expiresAt is null; historical PRO trial retention floor is proven by trialStartedAt; base=createdAt"
+          reason: calculation.historicalTrialEvidence
+            ? `legacy Video expiresAt is null; ${historicalTrialReason(candidate.ownerPlan)}; base=createdAt`
             : "legacy Video expiresAt is null; current owner plan is the fallback because historical plan-at-creation is unavailable; base=createdAt",
         };
       }
@@ -192,8 +207,8 @@ export function planMediaExpiryBackfill(
         baseAt: iso(baseAt, baseField, candidate.targetId),
         calculatedExpiresAt: iso(calculatedExpiresAt, "calculatedExpiresAt", candidate.targetId),
         alreadyExpired: calculatedExpiresAt.getTime() < nowMs,
-        reason: calculation.historicalTrialFloor
-          ? `legacy completed VideoJob mediaExpiresAt is null; historical PRO trial retention floor is proven by trialStartedAt; base=${baseField}`
+        reason: calculation.historicalTrialEvidence
+          ? `legacy completed VideoJob mediaExpiresAt is null; ${historicalTrialReason(candidate.ownerPlan)}; base=${baseField}`
           : `legacy completed VideoJob mediaExpiresAt is null; current owner plan is the fallback because historical plan-at-completion is unavailable; base=${baseField}`,
       };
     })

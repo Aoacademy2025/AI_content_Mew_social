@@ -166,7 +166,11 @@ function verifyPurePlanner() {
   assert.match(rows[1].reason, /createdAt/);
   assert.match(rows[2].reason, /finishedAt/);
   assert.match(rows[3].reason, /updatedAt/);
-  assert.equal(hashMediaExpiryBackfillRows(rows), hashMediaExpiryBackfillRows([...rows]));
+  assert.equal(
+    hashMediaExpiryBackfillRows(rows),
+    hashMediaExpiryBackfillRows([...rows].reverse()),
+    "row hashing is deterministic across input order",
+  );
 }
 
 function verifyHistoricalTrialPlanner() {
@@ -199,6 +203,15 @@ function verifyHistoricalTrialPlanner() {
       },
       {
         targetKind: "video-job",
+        targetId: "trial-pro-inside",
+        ownerPlan: "PRO",
+        createdAt: new Date("2026-07-04T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+      },
+      {
+        targetKind: "video-job",
         targetId: "trial-business-inside",
         ownerPlan: "BUSINESS",
         createdAt: new Date("2026-07-04T00:00:00.000Z"),
@@ -225,9 +238,16 @@ function verifyHistoricalTrialPlanner() {
   assert.equal(exactEnd?.ownerPlan, "FREE", "trial end is exclusive");
   assert.match(exactEnd?.reason ?? "", /current owner plan/);
 
+  const pro = rows.find((row) => row.targetId === "trial-pro-inside");
+  assert.equal(pro?.ownerPlan, "PRO");
+  assert.match(pro?.reason ?? "", /historical PRO trial/);
+  assert.match(pro?.reason ?? "", /current PRO retention matches/);
+
   const business = rows.find((row) => row.targetId === "trial-business-inside");
   assert.equal(business?.ownerPlan, "BUSINESS", "trial evidence never shortens BUSINESS");
   assert.equal(business?.calculatedExpiresAt, "2026-07-19T00:00:00.000Z");
+  assert.match(business?.reason ?? "", /historical PRO trial/);
+  assert.match(business?.reason ?? "", /current BUSINESS retention is longer/);
 
   assert.throws(
     () =>
