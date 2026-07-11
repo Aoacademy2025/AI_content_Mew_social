@@ -115,6 +115,11 @@ if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
   exit 1
 fi
 
+echo "=== [5a/6] Normalize staged build permissions ==="
+# Build output inherits the caller's umask. Nginx runs as a different user and
+# must be able to traverse directories and read static assets before the swap.
+chmod -R a+rX "$STAGING_DIR"
+
 echo "=== [5b/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
