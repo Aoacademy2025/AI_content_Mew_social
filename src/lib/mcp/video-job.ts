@@ -57,44 +57,61 @@ export async function finishJob(
   const now = opts.now ?? new Date();
   const owner = await prisma.videoJob.findUnique({
     where: { id },
-    select: { user: { select: { plan: true } } },
+    select: { status: true, user: { select: { plan: true } } },
   });
   if (!owner) throw new Error("video_job_not_found");
-  const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
-  const job = await prisma.videoJob.update({
-    where: { id },
-    data: {
-      status: "done",
-      progress: 100,
-      outputJson: JSON.stringify(output),
-      videoId: output.videoId ?? null,
-      finishedAt: now,
-      mediaExpiresAt,
-    },
-  });
-  if (job.projectId) {
-    if (job.type === "export") {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId },
-        data: {
-          activeExportJobId: job.id,
-          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
-          status: output.videoId ? "exported" : "post",
-          lastOpenedAt: new Date(),
-        },
-      });
-    } else {
-      await prisma.editorProject.updateMany({
-        where: { id: job.projectId, userId: job.userId },
-        data: {
-          activeJobId: job.id,
-          ...(output.videoId ? { latestVideoId: output.videoId } : {}),
-          status: output.videoId ? "exported" : "post",
-          lastOpenedAt: new Date(),
-        },
-      });
-    }
+  if (owner.status === "done") {
+    return prisma.videoJob.findUniqueOrThrow({ where: { id } });
   }
+
+  const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
+
+  return prisma.$transaction(async (tx) => {
+    const transitioned = await tx.videoJob.updateMany({
+      where: { id, status: { not: "done" } },
+      data: {
+        status: "done",
+        progress: 100,
+        outputJson: JSON.stringify(output),
+        videoId: output.videoId ?? null,
+        finishedAt: now,
+        mediaExpiresAt,
+      },
+    });
+
+    // Another finisher won after the initial owner lookup. Return its immutable
+    // completion and do not repeat any project side effect.
+    if (transitioned.count === 0) {
+      return tx.videoJob.findUniqueOrThrow({ where: { id } });
+    }
+
+    const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    if (job.projectId) {
+      if (job.type === "export") {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId },
+          data: {
+            activeExportJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      } else {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId },
+          data: {
+            activeJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    return job;
+  });
 }
 
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────

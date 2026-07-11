@@ -3,22 +3,12 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 
-const EXPIRY_DAYS = 7;
-
 export async function GET() {
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() - EXPIRY_DAYS);
-
-    // Auto-delete expired images
-    await prisma.generatedImage.deleteMany({
-      where: { userId: authUser.id, createdAt: { lt: expiryDate } },
-    });
 
     const images = await prisma.generatedImage.findMany({
       where: { userId: authUser.id },

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { stripe } from "@/lib/stripe";
-import { deleteLowResPreviewForVideoUrl } from "@/lib/low-res-preview-paths";
 import { activeRemotionBundleNames } from "@/app/api/videos/render/cancel-registry";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
@@ -14,29 +13,6 @@ export const runtime = "nodejs";
 const PENDING_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 const REMOTION_TMP_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours; avoid active long renders
 const TELEMETRY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000; // keep last 90 days (DB-1)
-
-function safePublicPath(publicDir: string, ...segments: string[]): string | null {
-  const base = path.resolve(publicDir);
-  const resolved = path.resolve(base, ...segments);
-  return resolved === base || resolved.startsWith(`${base}${path.sep}`) ? resolved : null;
-}
-
-function renderFile(publicDir: string, filename: string): string | null {
-  if (!filename || /[/\\]/.test(filename)) return null;
-  return safePublicPath(publicDir, "renders", filename);
-}
-
-function localFilePath(publicDir: string, url: string | null): string | null {
-  if (!url || url.startsWith("http://") || url.startsWith("https://")) return null;
-  if (url.startsWith("/api/renders/")) {
-    return renderFile(publicDir, url.slice("/api/renders/".length));
-  }
-  if (url.startsWith("/renders/")) {
-    return renderFile(publicDir, url.slice("/renders/".length));
-  }
-  if (!url.startsWith("/")) return null;
-  return safePublicPath(publicDir, url.replace(/^\/+/, ""));
-}
 
 function cleanupOldChildren(dir: string, maxAgeMs: number, excludeNames: Iterable<string> = []): number {
   let deleted = 0;
@@ -59,7 +35,8 @@ function cleanupOldChildren(dir: string, maxAgeMs: number, excludeNames: Iterabl
 }
 
 // GET /api/cron/cleanup-videos
-// Called by a cron job (or Vercel Cron) every day to delete expired videos.
+// Called by a daily cron for bounded operational housekeeping. Customer media
+// retention is handled exclusively by the reviewed graph/quarantine pipeline.
 // Protected by CRON_SECRET env variable — fails CLOSED if it's unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -69,7 +46,7 @@ export async function GET(req: Request) {
   }
 
   const now = new Date();
-  const result = { videosDeleted: 0, pendingPaymentsCancelled: 0, remotionTmpDeleted: 0, telemetryEventsDeleted: 0 };
+  const result = { pendingPaymentsCancelled: 0, remotionTmpDeleted: 0, telemetryEventsDeleted: 0 };
 
   // ── 1. Expire stale PENDING payments (> 2 hours old) ───────────────────
   try {
@@ -108,33 +85,7 @@ export async function GET(req: Request) {
     activeRemotionBundleNames(),
   );
 
-  // ── 3. Delete expired videos ──────────────────────────────────────────
-  const expired = await prisma.video.findMany({
-    where: { expiresAt: { lte: now } },
-    select: { id: true, videoUrl: true, avatarVideoUrl: true, audioUrl: true, thumbnail: true },
-  });
-
-  if (expired.length > 0) {
-    const publicDir = path.join(process.cwd(), "public");
-    for (const video of expired) {
-      for (const url of [video.videoUrl, video.avatarVideoUrl, video.audioUrl, video.thumbnail]) {
-        deleteLowResPreviewForVideoUrl(url);
-        const filePath = localFilePath(publicDir, url);
-        if (!filePath) continue;
-        try {
-          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        } catch { /* ignore file errors */ }
-      }
-    }
-
-    const { count } = await prisma.video.deleteMany({
-      where: { expiresAt: { lte: now } },
-    });
-    result.videosDeleted = count;
-    console.log(`[cron] Deleted ${count} expired videos`);
-  }
-
-  // ── 4. TelemetryEvent retention: keep last 90 days (DB-1) ─────────────────
+  // ── 3. TelemetryEvent retention: keep last 90 days (DB-1) ─────────────────
   // Additive sweep for the largest, previously-unbounded table (~123k rows in prod,
   // no prior sweeper). Fail-open — a retention error must not break the cleanup response.
   try {
