@@ -6,14 +6,14 @@ import {
   mediaCleanupSummary,
 } from "../src/lib/media-cleanup";
 import {
-  purgeMediaQuarantine,
   restoreQuarantineRun,
   writeMediaCleanupReviewArtifact,
   writeMediaHealthMetrics,
 } from "../src/lib/media-quarantine";
 import { writeCronHeartbeat } from "../src/lib/cron-heartbeat";
 
-const MODE_USAGE = "default dry-run | --apply --manifestSha256=<sha256> | --restore-run=<runId> | --purge-quarantine";
+const MODE_USAGE = "default dry-run | --apply --manifestSha256=<sha256> | --restore-run=<runId>";
+const PURGE_DISABLED_MESSAGE = "permanent purge disabled pending shared writer exclusion";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -34,6 +34,7 @@ function stringArg(name: string): string | undefined {
 function sanitizedFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (/^media graph incomplete: \d+ error\(s\)$/.test(message)) return message;
+  if (message === PURGE_DISABLED_MESSAGE) return message;
   if (message === "reviewed manifest hash mismatch") return message;
   if (message === "invalid quarantine run id" || message === "invalid quarantine manifest") return message;
   if (
@@ -78,9 +79,7 @@ async function main() {
     return;
   }
   if (purgeQuarantine) {
-    const result = await purgeMediaQuarantine();
-    console.log(JSON.stringify({ mode: "purge-quarantine", result }, null, 2));
-    return;
+    throw new Error(PURGE_DISABLED_MESSAGE);
   }
 
   const plan = await getMediaCleanupPlan({ olderThanDays, includeStocks, includeTmp });

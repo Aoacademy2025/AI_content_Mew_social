@@ -671,340 +671,46 @@ async function main(): Promise<void> {
     "failed rollback preserves the only quarantined copy for manual recovery",
   );
 
-  const purgePath = writeMedia("purge-unchanged.mp4", -30);
-  const purgePlan = singleRecordPlan(
+  const disabledPurgePath = writeMedia("purge-disabled.mp4", -30);
+  const disabledPurgePlan = singleRecordPlan(
     await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-unchanged.mp4",
+    "renders/purge-disabled.mp4",
   );
-  const purgeRun = await cleanupModule.applyMediaCleanupPlan(
-    purgePlan,
-    purgePlan.manifestSha256,
+  const disabledPurgeRun = await cleanupModule.applyMediaCleanupPlan(
+    disabledPurgePlan,
+    disabledPurgePlan.manifestSha256,
     { now: NOW },
   );
-  const purgedQuarantinePath = join(
+  const disabledPurgeQuarantinePath = join(
     FIXTURE_ROOT,
     ".media-quarantine",
-    purgeRun.runId,
+    disabledPurgeRun.runId,
     "renders",
-    "purge-unchanged.mp4",
+    "purge-disabled.mp4",
   );
-  assert.equal(existsSync(purgePath), false);
-  const earlyPurge = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 23 * 60 * 60 * 1000),
-  });
-  assert.equal(earlyPurge.purged.count, 0, "quarantine younger than 24 hours is never purged");
-  assert.equal(existsSync(purgedQuarantinePath), true);
-
-  const referencedPurgePath = writeMedia("purge-reference-added.mp4", -30);
-  const referencedPurgePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-reference-added.mp4",
-  );
-  const referencedPurgeRun = await cleanupModule.applyMediaCleanupPlan(
-    referencedPurgePlan,
-    referencedPurgePlan.manifestSha256,
-    { now: NOW },
-  );
-  const referencedQuarantinePath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    referencedPurgeRun.runId,
-    "renders",
-    "purge-reference-added.mp4",
-  );
-  await prisma.video.create({
-    data: {
-      id: "quarantine-purge-reference-added",
-      userId: "quarantine-user",
-      avatarModel: "none",
-      voiceModel: "none",
-      sceneCount: 1,
-      videoUrl: "/api/renders/purge-reference-added.mp4",
-      expiresAt: atDays(3),
-    },
-  });
-  assert.equal(existsSync(referencedPurgePath), false);
-
-  const changedPurgePath = writeMedia("purge-fingerprint-changed.mp4", -30);
-  const changedPurgePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-fingerprint-changed.mp4",
-  );
-  const changedPurgeRun = await cleanupModule.applyMediaCleanupPlan(
-    changedPurgePlan,
-    changedPurgePlan.manifestSha256,
-    { now: NOW },
-  );
-  const changedQuarantinePath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    changedPurgeRun.runId,
-    "renders",
-    "purge-fingerprint-changed.mp4",
-  );
-  writeFileSync(changedQuarantinePath, "changed while quarantined");
-  assert.equal(existsSync(changedPurgePath), false);
-
-  const maturePurge = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-  });
-  assert.ok(maturePurge.purged.count >= 1);
-  assert.equal(existsSync(purgedQuarantinePath), false, "unchanged unreferenced entry is purged");
-  assert.equal(existsSync(referencedQuarantinePath), true, "new live graph reference blocks purge");
-  assert.equal(existsSync(changedQuarantinePath), true, "changed quarantine fingerprint blocks purge");
-
-  const purgeOriginalRacePath = writeMedia("purge-original-race.mp4", -30);
-  const purgeOriginalRacePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-original-race.mp4",
-  );
-  const purgeOriginalRaceRun = await cleanupModule.applyMediaCleanupPlan(
-    purgeOriginalRacePlan,
-    purgeOriginalRacePlan.manifestSha256,
-    { now: NOW },
-  );
-  const purgeOriginalRaceQuarantinePath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeOriginalRaceRun.runId,
-    "renders",
-    "purge-original-race.mp4",
-  );
-  const purgeOriginalRace = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-    beforeUnlink: async (record) => {
-      if (record.key === "renders/purge-original-race.mp4") {
-        writeFileSync(record.absolutePath, "concurrent-new-original");
-      }
-    },
-  });
-  assert.equal(existsSync(purgeOriginalRacePath), true);
-  assert.equal(readFileSync(purgeOriginalRacePath, "utf8"), "concurrent-new-original");
-  assert.equal(existsSync(purgeOriginalRaceQuarantinePath), true);
-  assert.ok(purgeOriginalRace.skipped.count >= 1);
-  const purgeOriginalRaceManifest = JSON.parse(readFileSync(join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeOriginalRaceRun.runId,
-    "manifest.json",
-  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
-  assert.equal(
-    purgeOriginalRaceManifest.purgeIntents.some((intent) =>
-      intent.key === "renders/purge-original-race.mp4"
-    ),
-    false,
-    "failed immediate recheck clears the persisted purge intent",
-  );
-
-  const purgeReferenceRacePath = writeMedia("purge-reference-race.mp4", -30);
-  const purgeReferenceRacePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-reference-race.mp4",
-  );
-  const purgeReferenceRaceRun = await cleanupModule.applyMediaCleanupPlan(
-    purgeReferenceRacePlan,
-    purgeReferenceRacePlan.manifestSha256,
-    { now: NOW },
-  );
-  const purgeReferenceRaceQuarantinePath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeReferenceRaceRun.runId,
-    "renders",
-    "purge-reference-race.mp4",
-  );
-  let insertedImmediatelyBeforeUnlink = false;
-  const purgeReferenceRace = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-    beforeUnlink: async (record) => {
-      if (record.key !== "renders/purge-reference-race.mp4") return;
-      await prisma!.video.create({
-        data: {
-          id: "quarantine-purge-reference-race",
-          userId: "quarantine-user",
-          avatarModel: "none",
-          voiceModel: "none",
-          sceneCount: 1,
-          videoUrl: "/api/renders/purge-reference-race.mp4",
-          expiresAt: atDays(3),
-        },
-      });
-      insertedImmediatelyBeforeUnlink = true;
-    },
-  });
-  assert.equal(insertedImmediatelyBeforeUnlink, true);
-  assert.equal(existsSync(purgeReferenceRacePath), false);
-  assert.equal(
-    existsSync(purgeReferenceRaceQuarantinePath),
-    true,
-    "a live reference inserted after purge intent persistence blocks permanent unlink",
-  );
-  assert.ok(purgeReferenceRace.skipped.count >= 1);
-  const purgeReferenceRaceManifest = JSON.parse(readFileSync(join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeReferenceRaceRun.runId,
-    "manifest.json",
-  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
-  assert.equal(
-    purgeReferenceRaceManifest.purgeIntents.some((intent) =>
-      intent.key === "renders/purge-reference-race.mp4"
-    ),
-    false,
-    "a newly live reference clears only its persisted purge intent",
-  );
-  await prisma.video.delete({ where: { id: "quarantine-purge-reference-race" } });
-
-  const purgeFingerprintRacePath = writeMedia("purge-fingerprint-race.mp4", -30);
-  const purgeFingerprintRacePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-fingerprint-race.mp4",
-  );
-  const purgeFingerprintRaceRun = await cleanupModule.applyMediaCleanupPlan(
-    purgeFingerprintRacePlan,
-    purgeFingerprintRacePlan.manifestSha256,
-    { now: NOW },
-  );
-  const purgeFingerprintRaceQuarantinePath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeFingerprintRaceRun.runId,
-    "renders",
-    "purge-fingerprint-race.mp4",
-  );
-  await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-    beforeUnlink: async (record) => {
-      if (record.key === "renders/purge-fingerprint-race.mp4") {
-        writeFileSync(purgeFingerprintRaceQuarantinePath, "changed-after-intent");
-      }
-    },
-  });
-  assert.equal(existsSync(purgeFingerprintRacePath), false);
-  assert.equal(existsSync(purgeFingerprintRaceQuarantinePath), true);
-  const purgeFingerprintRaceManifest = JSON.parse(readFileSync(join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeFingerprintRaceRun.runId,
-    "manifest.json",
-  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
-  assert.equal(
-    purgeFingerprintRaceManifest.purgeIntents.some((intent) =>
-      intent.key === "renders/purge-fingerprint-race.mp4"
-    ),
-    false,
-    "fingerprint race clears the persisted purge intent",
-  );
-
-  const purgeCanonicalRacePath = writeMedia("purge-canonical-race.mp4", -30);
-  const purgeCanonicalRacePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-canonical-race.mp4",
-  );
-  const purgeCanonicalRaceRun = await cleanupModule.applyMediaCleanupPlan(
-    purgeCanonicalRacePlan,
-    purgeCanonicalRacePlan.manifestSha256,
-    { now: NOW },
-  );
-  const purgeCanonicalManifestPath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeCanonicalRaceRun.runId,
-    "manifest.json",
-  );
-  const rewriteCanonicalRaceManifest = (absolutePath: string) => {
-    const manifest = JSON.parse(readFileSync(purgeCanonicalManifestPath, "utf8")) as {
-      version: number;
-      runId: string;
-      generatedAt: string;
-      reviewedManifestSha256: string;
-      recordsSha256: string;
-      records: Array<{
-        key: string;
-        absolutePath: string;
-        sizeBytes: number;
-        mtimeMs: number;
-        effectiveExpiresAt: string | null;
-        reason: "all_references_expired" | "unreferenced_14d";
-        fingerprint: string;
-      }>;
-      purgeIntents: Array<{ key: string; fingerprint: string; markedAt: string }>;
-      stateSha256: string;
-    };
-    const record = manifest.records.find(({ key }) => key === "renders/purge-canonical-race.mp4");
-    assert.ok(record);
-    record.absolutePath = absolutePath;
-    manifest.recordsSha256 = manifestSha256ForRecords(manifest.records);
-    manifest.stateSha256 = createHash("sha256").update(JSON.stringify({
-      version: manifest.version,
-      runId: manifest.runId,
-      generatedAt: manifest.generatedAt,
-      reviewedManifestSha256: manifest.reviewedManifestSha256,
-      recordsSha256: manifest.recordsSha256,
-      purgeIntents: [...manifest.purgeIntents].sort((a, b) =>
-        a.key < b.key ? -1 : a.key > b.key ? 1 : a.fingerprint < b.fingerprint ? -1 : 1
-      ),
-    })).digest("hex");
-    writeFileSync(purgeCanonicalManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  };
-  try {
-    const canonicalRaceReport = await purgeMediaQuarantine({
-      cwd: FIXTURE_ROOT,
-      now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-      batchSize: 1_000,
-      beforeUnlink: async (record) => {
-        if (record.key === "renders/purge-canonical-race.mp4") {
-          const invalidPath = join(FIXTURE_ROOT, "missing-parent", "purge-canonical-race.mp4");
-          rewriteCanonicalRaceManifest(invalidPath);
-          record.absolutePath = invalidPath;
-        }
-      },
-    });
-    assert.ok(canonicalRaceReport.skipped.count >= 1);
-  } finally {
-    rewriteCanonicalRaceManifest(purgeCanonicalRacePath);
-  }
-  const purgeCanonicalRaceManifest = JSON.parse(
-    readFileSync(purgeCanonicalManifestPath, "utf8"),
-  ) as { purgeIntents: Array<{ key: string }> };
-  assert.equal(
-    purgeCanonicalRaceManifest.purgeIntents.some((intent) =>
-      intent.key === "renders/purge-canonical-race.mp4"
-    ),
-    false,
-    "canonical recheck failure clears intent without repeating canonical validation",
-  );
-
-  await assert.rejects(
-    purgeMediaQuarantine({ cwd: FIXTURE_ROOT, now: new Date(Number.NaN) }),
-    /invalid purge clock/,
-  );
-  let forcedPurgeError: unknown;
+  let disabledPurgeError: unknown;
   try {
     await purgeMediaQuarantine({
       cwd: FIXTURE_ROOT,
       now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-      beforeBatch: async () => {
-        throw new Error("forced purge operation failure");
-      },
     });
   } catch (error) {
-    forcedPurgeError = error;
+    disabledPurgeError = error;
   }
+  assert.match(String(disabledPurgeError), /permanent purge disabled pending shared writer exclusion/);
   assert.equal(
-    (forcedPurgeError as { operationReport?: { errors?: { count?: number } } })
+    (disabledPurgeError as { operationReport?: { errors?: { count?: number } } })
       .operationReport?.errors?.count,
     1,
-    "operation-level purge failures increment the sanitized error tally",
+    "disabled purge reports a nonzero error tally",
   );
+  assert.equal(existsSync(disabledPurgePath), false);
+  assert.equal(
+    existsSync(disabledPurgeQuarantinePath),
+    true,
+    "disabled purge preserves the only quarantined copy",
+  );
+  await restoreQuarantineRun(disabledPurgeRun.runId, { cwd: FIXTURE_ROOT, now: NOW });
 
   const metricsPlan = await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW });
   const metricsPath = await writeMediaHealthMetrics(metricsPlan, {
@@ -1097,41 +803,6 @@ async function main(): Promise<void> {
   renameSync(outsideRestoreArea, restoreAreaPath);
   await restoreQuarantineRun(restoreHierarchyRun.runId, { cwd: FIXTURE_ROOT, now: NOW });
 
-  const purgeHierarchyPath = writeMedia("purge-area-symlink.mp4", -30);
-  const purgeHierarchyPlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/purge-area-symlink.mp4",
-  );
-  const purgeHierarchyRun = await cleanupModule.applyMediaCleanupPlan(
-    purgeHierarchyPlan,
-    purgeHierarchyPlan.manifestSha256,
-    { now: NOW },
-  );
-  const purgeAreaPath = join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    purgeHierarchyRun.runId,
-    "renders",
-  );
-  const outsidePurgeHierarchy = mkdtempSync(join(tmpdir(), "media-purge-area-symlink-"));
-  EXTERNAL_ROOTS.push(outsidePurgeHierarchy);
-  const outsidePurgeArea = join(outsidePurgeHierarchy, "renders");
-  renameSync(purgeAreaPath, outsidePurgeArea);
-  symlinkSync(outsidePurgeArea, purgeAreaPath);
-  await assert.rejects(
-    purgeMediaQuarantine({
-      cwd: FIXTURE_ROOT,
-      now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    }),
-    /unsafe quarantine path|media graph incomplete/,
-    "purge rejects a symlinked quarantine area instead of unlinking an external file",
-  );
-  assert.equal(existsSync(purgeHierarchyPath), false);
-  assert.equal(existsSync(join(outsidePurgeArea, "purge-area-symlink.mp4")), true);
-  rmSync(purgeAreaPath, { force: true });
-  renameSync(outsidePurgeArea, purgeAreaPath);
-  await restoreQuarantineRun(purgeHierarchyRun.runId, { cwd: FIXTURE_ROOT, now: NOW });
-
   const concurrentPath = writeMedia("concurrent-run-claim.mp4", -30);
   const concurrentPlan = singleRecordPlan(
     await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
@@ -1176,59 +847,6 @@ async function main(): Promise<void> {
   assert.equal(readFileSync(firstConcurrentManifestPath, "utf8"), firstConcurrentManifest);
   assert.equal(existsSync(concurrentPath), true, "collision failure leaves the source untouched");
 
-  const purgeBatchRuns = [];
-  for (const filename of ["purge-batch-first.mp4", "purge-batch-later.mp4"]) {
-    writeMedia(filename, -30);
-    const batchPlan = singleRecordPlan(
-      await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-      `renders/${filename}`,
-    );
-    purgeBatchRuns.push(await cleanupModule.applyMediaCleanupPlan(
-      batchPlan,
-      batchPlan.manifestSha256,
-      { now: NOW },
-    ));
-  }
-  purgeBatchRuns.sort((a, b) => a.runId.localeCompare(b.runId));
-  const laterBatchRun = purgeBatchRuns[1];
-  const laterBatchManifest = JSON.parse(readFileSync(join(
-    FIXTURE_ROOT,
-    ".media-quarantine",
-    laterBatchRun.runId,
-    "manifest.json",
-  ), "utf8")) as { records: Array<{ key: string }> };
-  const laterBatchKey = laterBatchManifest.records[0].key;
-  let insertedBetweenPurgeBatches = false;
-  const batchPurge = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-    beforeBatch: async (batchIndex, records) => {
-      if (!records.some((record) => record.key === laterBatchKey)) return;
-      assert.ok(batchIndex > 0, "reference is inserted only after an earlier purge batch");
-      await prisma!.video.create({
-        data: {
-          id: "quarantine-purge-between-batches",
-          userId: "quarantine-user",
-          avatarModel: "none",
-          voiceModel: "none",
-          sceneCount: 1,
-          videoUrl: `/api/${laterBatchKey}`,
-          expiresAt: atDays(3),
-        },
-      });
-      insertedBetweenPurgeBatches = true;
-    },
-  });
-  assert.equal(insertedBetweenPurgeBatches, true);
-  assert.ok(batchPurge.purged.count >= 1);
-  assert.equal(
-    existsSync(join(FIXTURE_ROOT, ".media-quarantine", laterBatchRun.runId, laterBatchKey)),
-    true,
-    "reference inserted between purge batches preserves the later quarantined file",
-  );
-  await prisma.video.delete({ where: { id: "quarantine-purge-between-batches" } });
-
   const expiredProjectPath = writeMedia("expired-project-post-metrics.mp4", -30);
   await prisma.editorProject.create({
     data: {
@@ -1257,12 +875,6 @@ async function main(): Promise<void> {
     "intentional quarantine of an expired project file keeps post-apply graph complete",
   );
   await writeMediaHealthMetrics(expiredProjectPostPlan, { cwd: FIXTURE_ROOT, now: NOW });
-  const expiredProjectPurge = await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-  });
-  assert.ok(expiredProjectPurge.purged.count >= 1);
   assert.equal(
     existsSync(join(
       FIXTURE_ROOT,
@@ -1271,18 +883,11 @@ async function main(): Promise<void> {
       "renders",
       "expired-project-post-metrics.mp4",
     )),
-    false,
-    "validated expired project fallback remains purge-eligible",
+    true,
+    "expired project media remains recoverable in quarantine",
   );
-  const expiredProjectAfterPurgePlan = await cleanupModule.getMediaCleanupPlan({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-  });
-  assert.equal(
-    expiredProjectAfterPurgePlan.graphErrors.length,
-    0,
-    "integrity-checked purge tombstone keeps later graphs complete",
-  );
+  await restoreQuarantineRun(expiredProjectRun.runId, { cwd: FIXTURE_ROOT, now: NOW });
+  assert.equal(existsSync(expiredProjectPath), true);
   await prisma.editorProject.delete({ where: { id: "quarantine-expired-project" } });
 
   const restoredProjectPath = writeMedia("restored-project-then-missing.mp4", -30);
@@ -1315,56 +920,6 @@ async function main(): Promise<void> {
     "restored media later removed without a purge tombstone remains fail-closed",
   );
   await prisma.editorProject.delete({ where: { id: "quarantine-restored-project" } });
-
-  const repeatedLifecyclePath = writeMedia("project-multi-run-lifecycle.mp4", -30);
-  await prisma.editorProject.create({
-    data: {
-      id: "quarantine-project-multi-run",
-      userId: "quarantine-user",
-      draftJson: JSON.stringify({ clipUrl: "/api/renders/project-multi-run-lifecycle.mp4" }),
-    },
-  });
-  const oldLifecyclePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
-    "renders/project-multi-run-lifecycle.mp4",
-  );
-  await cleanupModule.applyMediaCleanupPlan(
-    oldLifecyclePlan,
-    oldLifecyclePlan.manifestSha256,
-    { now: NOW },
-  );
-  await purgeMediaQuarantine({
-    cwd: FIXTURE_ROOT,
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
-    batchSize: 1,
-  });
-  writeMedia("project-multi-run-lifecycle.mp4", -30);
-  const newerLifecycleNow = new Date(NOW.getTime() + 26 * 60 * 60 * 1000);
-  const newerLifecyclePlan = singleRecordPlan(
-    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: newerLifecycleNow }),
-    "renders/project-multi-run-lifecycle.mp4",
-  );
-  const newerLifecycleRun = await cleanupModule.applyMediaCleanupPlan(
-    newerLifecyclePlan,
-    newerLifecyclePlan.manifestSha256,
-    { now: newerLifecycleNow },
-  );
-  await restoreQuarantineRun(newerLifecycleRun.runId, {
-    cwd: FIXTURE_ROOT,
-    now: newerLifecycleNow,
-  });
-  rmSync(repeatedLifecyclePath);
-  const repeatedLifecycleMissingPlan = await cleanupModule.getMediaCleanupPlan({
-    cwd: FIXTURE_ROOT,
-    now: newerLifecycleNow,
-  });
-  assert.ok(
-    repeatedLifecycleMissingPlan.graphErrors.some((error) =>
-      error.ownerId === "quarantine-project-multi-run" && error.code === "media_file_missing"
-    ),
-    "an older purge tombstone never masks a newer restored-then-missing lifecycle",
-  );
-  await prisma.editorProject.delete({ where: { id: "quarantine-project-multi-run" } });
 
   await prisma.editorProject.create({
     data: {
@@ -1413,14 +968,6 @@ async function main(): Promise<void> {
     "tampered quarantine metadata makes the graph fail closed",
   );
   assert.equal(tamperedGraphPlan.candidates.length, 0);
-  await assert.rejects(
-    purgeMediaQuarantine({
-      cwd: FIXTURE_ROOT,
-      now: new Date(NOW.getTime() + 23 * 60 * 60 * 1000),
-    }),
-    /invalid quarantine manifest/,
-    "manifest timestamp tampering cannot bypass the 24-hour purge delay",
-  );
   assert.equal(existsSync(tamperedAgePath), false);
   assert.equal(
     existsSync(join(
@@ -1480,9 +1027,19 @@ async function main(): Promise<void> {
     join(REPO_ROOT, "src", "app", "(dashboard)", "admin", "page.tsx"),
     "utf8",
   );
+  const quarantineSource = readFileSync(
+    join(REPO_ROOT, "src", "lib", "media-quarantine.ts"),
+    "utf8",
+  );
+  const opsRunbookSource = readFileSync(
+    join(REPO_ROOT, "docs", "ops", "ops-guardrails-runbook.md"),
+    "utf8",
+  );
   assert.match(cliSource, /--manifestSha256/);
   assert.match(cliSource, /--restore-run=/);
-  assert.match(cliSource, /--purge-quarantine/);
+  assert.match(cliSource, /purge-quarantine/);
+  assert.match(cliSource, /permanent purge disabled pending shared writer exclusion/);
+  assert.doesNotMatch(cliSource, /purgeMediaQuarantine/);
   assert.match(cliSource, /writeMediaCleanupReviewArtifact/);
   assert.ok(
     cliSource.lastIndexOf("writeMediaHealthMetrics") < cliSource.lastIndexOf("writeCronHeartbeat"),
@@ -1520,6 +1077,17 @@ async function main(): Promise<void> {
   assert.match(adminPageSource, /result\?\.quarantined\?\.count/);
   assert.match(adminPageSource, /cleanupInfo\.manifestSha256\.slice/);
   assert.doesNotMatch(adminPageSource, /purge-quarantine|purgeMediaQuarantine/);
+  assert.match(opsRunbookSource, /permanent purge is disabled pending shared writer exclusion/i);
+  assert.doesNotMatch(opsRunbookSource, /closes the race/i);
+  const purgeFunctionIndex = quarantineSource.indexOf("export async function purgeMediaQuarantine");
+  const nextFunctionIndex = quarantineSource.indexOf(
+    "export async function writeMediaHealthMetrics",
+    purgeFunctionIndex,
+  );
+  const purgeSource = quarantineSource.slice(purgeFunctionIndex, nextFunctionIndex);
+  assert.ok(purgeFunctionIndex >= 0 && nextFunctionIndex > purgeFunctionIndex);
+  assert.match(purgeSource, /permanent purge disabled pending shared writer exclusion/);
+  assert.doesNotMatch(purgeSource, /\b(?:unlink|rm)\s*\(|buildMediaReferenceGraph|writerBarrier/);
 
   const tsconfigPath = join(REPO_ROOT, "tsconfig.json");
   const tsxLoader = join(REPO_ROOT, "node_modules", "tsx", "dist", "loader.mjs");
@@ -1563,6 +1131,15 @@ async function main(): Promise<void> {
   );
   assert.notEqual(conflictingCli.status, 0, "cleanup operation modes are mutually exclusive");
   assert.equal(existsSync(join(conflictingHeartbeatDir, "media-cleanup")), false);
+
+  const disabledPurgeHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-disabled-purge");
+  const disabledPurgeCli = spawnCleanupCli(["--purge-quarantine"], disabledPurgeHeartbeatDir);
+  assert.notEqual(disabledPurgeCli.status, 0, "CLI permanent purge remains disabled");
+  assert.match(
+    disabledPurgeCli.stderr,
+    /permanent purge disabled pending shared writer exclusion/,
+  );
+  assert.equal(existsSync(join(disabledPurgeHeartbeatDir, "media-cleanup")), false);
 
   const ignoredAgeHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-ignored-age");
   const ignoredAgeCli = spawnCleanupCli(

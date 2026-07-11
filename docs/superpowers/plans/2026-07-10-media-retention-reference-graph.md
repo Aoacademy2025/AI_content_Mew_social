@@ -245,7 +245,7 @@ if (reviewedHash !== plan.manifestSha256) throw new Error("reviewed manifest has
 
 - [ ] After a successful dry-run or apply, atomically write `.ops-metrics/media-health.json` with sanitized counts only: `generatedAt`, `missingBeforeExpiry`, `expired`, `protected`, `candidates`, and `graphErrors`. Do not include user IDs, paths, URLs, or owner data. A failed/incomplete graph must not replace the last good metrics file.
 
-- [ ] Add `--purge-quarantine` as a separate command. It deletes only entries older than 24 hours whose current graph remains unreferenced/expired and whose quarantine fingerprint still matches. Add `--restore-run=<runId>` for reversible restore; collision must skip and report rather than overwrite.
+- [ ] Keep permanent purge disabled pending shared writer exclusion; library and CLI requests must fail before unlink. Add `--restore-run=<runId>` for reversible restore; collision must skip and report rather than overwrite.
 
 - [ ] Change the admin DELETE route to require `{ apply: true, manifestSha256 }`; dry-run remains GET/default. The route must never invoke permanent purge.
 

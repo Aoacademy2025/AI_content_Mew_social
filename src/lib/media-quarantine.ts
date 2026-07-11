@@ -7,7 +7,6 @@ import type { MediaGraph, MediaGraphError } from "./media-reference-graph";
 import type { MediaReference } from "./media-retention";
 
 const DAY_MS = 86_400_000;
-const QUARANTINE_MIN_AGE_MS = DAY_MS;
 const MANIFEST_RECORD_KEYS = [
   "absolutePath",
   "effectiveExpiresAt",
@@ -61,8 +60,6 @@ export type PurgeQuarantineOptions = {
   cwd?: string;
   now?: Date;
   batchSize?: number;
-  beforeBatch?: (batchIndex: number, records: MediaManifestRecord[]) => Promise<void>;
-  beforeUnlink?: (record: MediaManifestRecord) => Promise<void>;
 };
 
 type FingerprintInput = Pick<MediaManifestRecord, "key" | "sizeBytes" | "mtimeMs">;
@@ -614,25 +611,6 @@ function quarantinePathFor(cwd: string, runId: string, record: MediaManifestReco
   return path.join(cwd, ".media-quarantine", runId, record.key.slice(0, slash), record.key.slice(slash + 1));
 }
 
-async function clearPurgeIntent(
-  cwd: string,
-  runId: string,
-  key: MediaKey,
-): Promise<void> {
-  const manifest = await loadManifestIntegrity(cwd, runId);
-  if (!manifest.purgeIntents.some((intent) => intent.key === key)) return;
-  const { stateSha256: _stateSha256, ...manifestState } = manifest;
-  const updated = completeManifest({
-    ...manifestState,
-    purgeIntents: manifest.purgeIntents.filter((intent) => intent.key !== key),
-  });
-  await atomicWriteJson(
-    path.join(cwd, ".media-quarantine", runId, "manifest.json"),
-    updated,
-    cwd,
-  );
-}
-
 async function restoreQuarantineRunLocked(
   runId: string,
   options: RestoreQuarantineOptions = {},
@@ -718,150 +696,14 @@ export async function restoreQuarantineRun(
 }
 
 export async function purgeMediaQuarantine(
-  options: PurgeQuarantineOptions = {},
+  _options: PurgeQuarantineOptions = {},
 ): Promise<MediaOperationReport> {
-  const cwd = path.resolve(options.cwd ?? process.cwd());
-  const now = options.now ?? new Date();
-  if (!Number.isFinite(now.getTime())) throw new Error("invalid purge clock");
-  const quarantineRoot = path.join(cwd, ".media-quarantine");
   const report = reportForPlan();
-  const mature: Array<{ runId: string; record: MediaManifestRecord }> = [];
-  try {
-    const rootStat = safeLstat(quarantineRoot);
-    if (!rootStat) return report;
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("unsafe quarantine root");
-
-    for (const runId of (await fsp.readdir(quarantineRoot)).sort()) {
-      const runStat = safeLstat(path.join(quarantineRoot, runId));
-      if (!runStat || runStat.isSymbolicLink() || !runStat.isDirectory()) {
-        throw new Error("invalid quarantine run directory");
-      }
-      const manifest = await loadManifest(cwd, runId);
-      const generatedAt = new Date(manifest.generatedAt);
-      if (!Number.isFinite(generatedAt.getTime())) throw new Error("invalid quarantine manifest clock");
-      if (generatedAt.getTime() >= now.getTime() - QUARANTINE_MIN_AGE_MS) continue;
-      for (const record of manifest.records) mature.push({ runId, record });
-    }
-  } catch (error) {
-    addTally(report.errors, 0);
-    throwWithReport(error, report);
-  }
-
-  report.scanned = tally(mature.map(({ record }) => record));
-
-  try {
-    const purgeBatches = batches(mature, options.batchSize);
-    for (let batchIndex = 0; batchIndex < purgeBatches.length; batchIndex++) {
-      const batch = purgeBatches[batchIndex];
-      await options.beforeBatch?.(batchIndex, batch.map(({ record }) => record));
-      const locks: QuarantineRunLock[] = [];
-      try {
-        for (const runId of [...new Set(batch.map((entry) => entry.runId))].sort()) {
-          locks.push(await acquireQuarantineRunLock(cwd, runId));
-        }
-        const { buildMediaReferenceGraph } = await import("./media-reference-graph");
-        const graph = await buildMediaReferenceGraph(now, { workspaceRoot: cwd });
-        assertGraphComplete(graph);
-
-        const deletable: Array<{ runId: string; record: MediaManifestRecord; quarantinePath: string }> = [];
-        for (const { runId, record } of batch) {
-          await canonicalRecordPath(record, cwd);
-          const refs = graph.refs.get(record.key) ?? [];
-          if ((refs.length > 0 && !referenceSetIsExpired(refs, now)) || safeLstat(record.absolutePath)) {
-            addTally(report.skipped, record.sizeBytes);
-            continue;
-          }
-          const quarantinePath = quarantinePathFor(cwd, runId, record);
-          if (!await existingPathHasNoSymlink(quarantinePath, cwd)) {
-            addTally(report.skipped, record.sizeBytes);
-            continue;
-          }
-          const stat = safeLstat(quarantinePath);
-          if (!stat || !statMatchesRecord(stat, record)) {
-            addTally(report.skipped, record.sizeBytes);
-            continue;
-          }
-          deletable.push({ runId, record, quarantinePath });
-        }
-
-        // Persist an integrity-checked purge intent before unlink. If the process crashes after
-        // unlink, the graph still has durable evidence that this missing project file is expected.
-        for (const runId of new Set(deletable.map((entry) => entry.runId))) {
-          const manifest = await loadManifest(cwd, runId);
-          const existingKeys = new Set(manifest.purgeIntents.map((intent) => intent.key));
-          const additions = deletable
-            .filter((entry) => entry.runId === runId && !existingKeys.has(entry.record.key))
-            .map((entry) => ({
-              key: entry.record.key,
-              fingerprint: entry.record.fingerprint,
-              markedAt: now.toISOString(),
-            }));
-          if (additions.length > 0) {
-            const { stateSha256: _stateSha256, ...manifestState } = manifest;
-            const updated = completeManifest({
-              ...manifestState,
-              purgeIntents: [...manifest.purgeIntents, ...additions],
-            });
-            await atomicWriteJson(
-              path.join(cwd, ".media-quarantine", runId, "manifest.json"),
-              updated,
-              cwd,
-            );
-          }
-        }
-
-        for (const { runId, record, quarantinePath } of deletable) {
-          await options.beforeUnlink?.(record);
-          let stillEligible = false;
-          try {
-            await canonicalRecordPath(record, cwd);
-            const hierarchySafe = await existingPathHasNoSymlink(quarantinePath, cwd);
-            const originalStillAbsent = pathIsStrictlyAbsent(record.absolutePath);
-            const currentStat = hierarchySafe ? safeLstat(quarantinePath) : null;
-            // This intentionally rebuilds the complete graph once per permanent unlink.
-            // Purge is an off-peak maintenance operation: bounded runs cost more DB reads,
-            // but a batch snapshot cannot close the post-intent live-reference race.
-            const { buildMediaReferenceGraph } = await import("./media-reference-graph");
-            const currentGraph = await buildMediaReferenceGraph(now, { workspaceRoot: cwd });
-            assertGraphComplete(currentGraph);
-            const currentRefs = currentGraph.refs.get(record.key) ?? [];
-            const referencesStillEligible = currentRefs.length === 0 ||
-              referenceSetIsExpired(currentRefs, now);
-            stillEligible = Boolean(
-              hierarchySafe &&
-              originalStillAbsent &&
-              currentStat &&
-              statMatchesRecord(currentStat, record) &&
-              referencesStillEligible
-            );
-          } catch {
-            stillEligible = false;
-          }
-          if (!stillEligible) {
-            // The immediate recheck can fail because a previously canonical path became
-            // unavailable. Clear the durable intent from the integrity-checked state
-            // without requiring the same canonical validation to succeed again.
-            await clearPurgeIntent(cwd, runId, record.key);
-            addTally(report.skipped, record.sizeBytes);
-            continue;
-          }
-          try {
-            await fsp.unlink(quarantinePath);
-            addTally(report.purged, record.sizeBytes);
-          } catch (error) {
-            addTally(report.errors, record.sizeBytes);
-            throw error;
-          }
-        }
-      } finally {
-        for (const lock of [...locks].reverse()) await lock.release();
-      }
-    }
-    return report;
-  } catch (error) {
-    if (report.errors.count === 0) addTally(report.errors, 0);
-    throwWithReport(error, report);
-  }
+  addTally(report.errors, 0);
+  throwWithReport(
+    new Error("permanent purge disabled pending shared writer exclusion"),
+    report,
+  );
 }
 
 export async function writeMediaHealthMetrics(
