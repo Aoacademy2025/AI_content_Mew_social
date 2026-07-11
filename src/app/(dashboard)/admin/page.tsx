@@ -1,6 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  adminCleanupSelectionsEqual,
+  createAdminCleanupReviewCoordinator,
+  type AdminCleanupSelection,
+} from "@/lib/admin-cleanup-review";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -82,6 +87,32 @@ interface CleanupInfo {
   stocks: { older1d: { count: number; sizeMb: number } };
   tmp: { sizeMb: number; count: number };
   protectedCount: number;
+  generatedAt: string;
+  manifestSha256: string;
+  graphErrorCount: number;
+  selected: {
+    olderThanDays: number;
+    includeStocks: boolean;
+    includeTmp: boolean;
+    renders: { count: number; sizeMb: number };
+    stocks: { count: number; sizeMb: number };
+    tmp: { count: number; sizeMb: number };
+    total: { count: number; sizeMb: number };
+  };
+  candidates: Array<{
+    key: string;
+    sizeBytes: number;
+    effectiveExpiresAt: string | null;
+    reason: "all_references_expired" | "unreferenced_14d";
+    fingerprint: string;
+  }>;
+}
+
+function cleanupReviewMatches(
+  review: CleanupInfo,
+  selection: AdminCleanupSelection,
+) {
+  return adminCleanupSelectionsEqual(review.selected, selection);
 }
 
 interface StorageHealth {
@@ -639,17 +670,41 @@ export default function AdminDashboardPage() {
   const [includeStocks, setIncludeStocks] = useState(false);
   const [includeTmp, setIncludeTmp] = useState(false);
   const [showCleanConfirm, setShowCleanConfirm] = useState(false);
+  const cleanupReviewCoordinator = useRef(createAdminCleanupReviewCoordinator({
+    olderThanDays: 3,
+    includeStocks: false,
+    includeTmp: false,
+  }));
+  const cleanupSelection = { olderThanDays: cleanDays, includeStocks, includeTmp };
+  cleanupReviewCoordinator.current.setSelection(cleanupSelection);
   const [storageHealth, setStorageHealth] = useState<StorageHealth | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
 
-  function loadCleanupInfo() {
+  const loadCleanupInfo = useCallback(async () => {
     setCleanupLoading(true);
-    fetch("/api/admin/cleanup")
-      .then(r => r.json())
-      .then(d => setCleanupInfo(d))
-      .catch(() => {})
-      .finally(() => setCleanupLoading(false));
-  }
+    const request = await cleanupReviewCoordinator.current.request(async (selection) => {
+      const params = new URLSearchParams({
+        olderThanDays: String(selection.olderThanDays),
+        includeStocks: selection.includeStocks ? "1" : "0",
+        includeTmp: selection.includeTmp ? "1" : "0",
+      });
+      const response = await fetch(`/api/admin/cleanup?${params.toString()}`, { cache: "no-store" });
+      return { response, data: await response.json() };
+    });
+    if (!request.current) return;
+    setCleanupLoading(false);
+    if (!request.ok) {
+      setCleanupInfo(null);
+      toast.error("สร้างรายการตรวจสอบไม่สำเร็จ");
+      return;
+    }
+    if (!request.value.response.ok) {
+      setCleanupInfo(null);
+      toast.error(request.value.data.error ?? "สร้างรายการตรวจสอบไม่สำเร็จ");
+      return;
+    }
+    setCleanupInfo(request.value.data);
+  }, []);
 
   function loadStorageHealth() {
     setStorageLoading(true);
@@ -668,20 +723,42 @@ export default function AdminDashboardPage() {
   }
 
   async function runCleanup() {
+    const review = cleanupInfo;
+    const selected = cleanupReviewCoordinator.current.getSelection();
+    if (!review || !cleanupReviewMatches(review, selected)) {
+      setCleanupInfo(null);
+      setShowCleanConfirm(false);
+      toast.error("ตัวเลือกเปลี่ยนแล้ว กรุณาตรวจสอบรายการใหม่");
+      await loadCleanupInfo();
+      return;
+    }
     setCleaning(true);
     setShowCleanConfirm(false);
     try {
       const res = await fetch("/api/admin/cleanup", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ olderThanDays: cleanDays, includeStocks, includeTmp }),
+        body: JSON.stringify({
+          apply: true,
+          manifestSha256: review.manifestSha256,
+          olderThanDays: review.selected.olderThanDays,
+          includeStocks: review.selected.includeStocks,
+          includeTmp: review.selected.includeTmp,
+        }),
       });
       const d = await res.json();
       if (res.ok) {
-        toast.success(d.message);
+        const quarantined = d.result?.quarantined?.count ?? 0;
+        const skipped = d.result?.skipped?.count ?? 0;
+        const tmpDeleted = d.tmpResult?.deleted ?? 0;
+        toast.success(`กักกัน ${quarantined} ไฟล์ · ข้าม ${skipped} · ล้าง tmp ${tmpDeleted}`);
         refreshStorageInfo();
+      } else if (res.status === 409) {
+        setCleanupInfo(null);
+        toast.error("รายการตรวจสอบเปลี่ยนแล้ว กรุณาตรวจสอบและยืนยันใหม่");
+        await loadCleanupInfo();
       } else {
-        toast.error(d.error ?? "ลบไม่สำเร็จ");
+        toast.error(d.error ?? "กักกันไฟล์ไม่สำเร็จ");
       }
     } catch {
       toast.error("เกิดข้อผิดพลาด");
@@ -692,11 +769,19 @@ export default function AdminDashboardPage() {
 
   useEffect(() => {
     fetch("/api/admin/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
-    loadCleanupInfo();
     loadStorageHealth();
     loadTracks();
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    setCleanupInfo(null);
+    setShowCleanConfirm(false);
+    void loadCleanupInfo();
+    return () => {
+      cleanupReviewCoordinator.current.invalidate();
+    };
+  }, [cleanDays, includeStocks, includeTmp, loadCleanupInfo]);
 
   // Fetch tickets — `silent` skips the loading spinner so background polling
   // doesn't make the list flicker. Latest data always wins (DB is the source
@@ -852,6 +937,10 @@ export default function AdminDashboardPage() {
       bar: "bg-red-400",
     },
   }[storageHealth?.status ?? "ok"];
+  const cleanupReviewCurrent = cleanupInfo
+    ? cleanupReviewMatches(cleanupInfo, cleanupSelection)
+    : false;
+  const cleanupReviewCount = cleanupReviewCurrent ? cleanupInfo?.selected.total.count ?? 0 : 0;
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
@@ -1306,12 +1395,12 @@ export default function AdminDashboardPage() {
               </div>
             </div>
 
-            {/* Gallery protection notice */}
+            {/* Reference-graph protection notice */}
             <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs"
               style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
               <ShieldCheck className="h-4 w-4 text-green-400 shrink-0" />
               <span className="text-green-400/80">
-                ไฟล์ที่บันทึกใน Gallery จะ<strong className="text-green-400"> ไม่ถูกลบ</strong> เด็ดขาด
+                ไฟล์ที่ยังมี reference หรือยังไม่หมดอายุจะ<strong className="text-green-400"> ถูกปกป้อง</strong>
                 {cleanupInfo && ` (ปกป้องอยู่ ${cleanupInfo.protectedCount} ไฟล์)`}
               </span>
             </div>
@@ -1319,10 +1408,19 @@ export default function AdminDashboardPage() {
             {/* Controls */}
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-zinc-400">ลบไฟล์เกิน</span>
+                <span className="text-xs text-zinc-400">เกณฑ์อายุ /tmp</span>
                 <div className="flex gap-1">
                   {[1, 3, 7].map(d => (
-                    <button key={d} onClick={() => setCleanDays(d)}
+                    <button key={d} onClick={() => {
+                      cleanupReviewCoordinator.current.setSelection({
+                        olderThanDays: d,
+                        includeStocks,
+                        includeTmp,
+                      });
+                      setCleanupInfo(null);
+                      setShowCleanConfirm(false);
+                      setCleanDays(d);
+                    }}
                       className="px-3 py-1 rounded-lg text-xs font-semibold transition-all border"
                       style={cleanDays === d
                         ? { background: VIOLET_TILE_BG, color: VIOLET_LIGHT, borderColor: VIOLET_TILE_BORDER }
@@ -1334,13 +1432,31 @@ export default function AdminDashboardPage() {
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={includeStocks} onChange={e => setIncludeStocks(e.target.checked)}
+                <input type="checkbox" checked={includeStocks} onChange={e => {
+                  cleanupReviewCoordinator.current.setSelection({
+                    olderThanDays: cleanDays,
+                    includeStocks: e.target.checked,
+                    includeTmp,
+                  });
+                  setCleanupInfo(null);
+                  setShowCleanConfirm(false);
+                  setIncludeStocks(e.target.checked);
+                }}
                   className="accent-[#8B5CF6] h-3.5 w-3.5" />
                 <span className="text-xs text-zinc-400">รวม /stocks (stock video cache)</span>
               </label>
 
               <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={includeTmp} onChange={e => setIncludeTmp(e.target.checked)}
+                <input type="checkbox" checked={includeTmp} onChange={e => {
+                  cleanupReviewCoordinator.current.setSelection({
+                    olderThanDays: cleanDays,
+                    includeStocks,
+                    includeTmp: e.target.checked,
+                  });
+                  setCleanupInfo(null);
+                  setShowCleanConfirm(false);
+                  setIncludeTmp(e.target.checked);
+                }}
                   className="accent-red-500 h-3.5 w-3.5" />
                 <span className="text-xs text-zinc-400">
                   รวม /tmp Remotion temp
@@ -1349,33 +1465,58 @@ export default function AdminDashboardPage() {
               </label>
             </div>
 
-            {/* Confirm / Delete button */}
+            {cleanupReviewCurrent && cleanupInfo && (
+              <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-violet-200">
+                  <ClipboardCheck className="h-4 w-4" />
+                  <span>ตรวจสอบแล้ว {cleanupReviewCount} รายการ · {cleanupInfo.selected.total.sizeMb} MB</span>
+                  <code className="rounded bg-black/25 px-2 py-0.5 text-[10px] text-violet-300">
+                    {cleanupInfo.manifestSha256.slice(0, 12)}…
+                  </code>
+                </div>
+                {cleanupInfo.candidates.length > 0 && (
+                  <div className="mt-2 space-y-1 text-[10px] text-zinc-500">
+                    {cleanupInfo.candidates.slice(0, 5).map(candidate => (
+                      <p key={candidate.fingerprint} className="truncate">
+                        {candidate.key} · {candidate.reason === "all_references_expired" ? "references หมดอายุ" : "ไม่มี reference เกิน 14 วัน"}
+                      </p>
+                    ))}
+                    {cleanupInfo.candidates.length > 5 && <p>+ อีก {cleanupInfo.candidates.length - 5} รายการ</p>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Reviewed quarantine confirmation */}
             {!showCleanConfirm ? (
-              <button onClick={() => setShowCleanConfirm(true)} disabled={cleaning || cleanupLoading}
+              <button onClick={() => {
+                if (cleanupReviewCurrent) setShowCleanConfirm(true);
+                else void loadCleanupInfo();
+              }} disabled={cleaning || cleanupLoading}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40 hover:brightness-110"
                 style={{ background: "hsl(0 75% 55% / 0.2)", border: "1px solid hsl(0 75% 60% / 0.45)" }}>
-                <Trash2 className="h-4 w-4" />
-                ลบไฟล์เก่าที่ไม่ใช้
+                <ClipboardCheck className="h-4 w-4" />
+                {cleanupReviewCurrent ? "ตรวจสอบก่อนกักกัน" : "สร้างรายการตรวจสอบ"}
               </button>
-            ) : (
+            ) : cleanupReviewCurrent && cleanupInfo ? (
               <div className="flex items-center gap-3 rounded-xl px-4 py-3"
                 style={{ background: "hsl(14 90% 50% / 0.1)", border: "1px solid hsl(14 90% 50% / 0.3)" }}>
                 <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0" />
                 <p className="text-xs text-orange-300 flex-1">
-                  ยืนยันลบไฟล์ใน /renders ที่เก่ากว่า {cleanDays} วัน
-                  {includeStocks ? " + /stocks" : ""} ?
+                  ยืนยันกักกันไฟล์ customer media {cleanupInfo.candidates.length} รายการตาม hash ที่ตรวจสอบแล้ว
+                  {includeTmp ? ` และล้าง tmp ${cleanupInfo.selected.tmp.count} รายการแบบถาวร` : ""} ?
                 </p>
                 <button onClick={runCleanup} disabled={cleaning}
                   className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-red-500/80 hover:bg-red-500 transition-all flex items-center gap-1.5">
                   {cleaning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                  ยืนยัน
+                  ยืนยันกักกัน
                 </button>
                 <button onClick={() => setShowCleanConfirm(false)}
                   className="px-3 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
                   ยกเลิก
                 </button>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
         )}

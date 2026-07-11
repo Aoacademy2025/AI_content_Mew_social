@@ -72,11 +72,29 @@ npx tsc --noEmit                                           PASS
 git diff --check                                           PASS
 ```
 
-The independent read-only re-review finished with **Spec PASS / Quality Approved**, with no Critical or Important findings.
+The initial Task 5 independent read-only re-review finished with **Spec PASS / Quality Approved**, with no Critical or Important findings. The later formal root review reopened the task as documented below.
+
+## Formal-review reopen fixes
+
+The formal root review reopened Task 5 for two Important findings and three Minor findings. Each was reproduced before the fix:
+
+- Purge TOCTOU RED: a verifier hook recreated the original file after purge intents were persisted but before unlink; the old implementation ignored the race and permanently removed the quarantined file. GREEN: every record is now revalidated after intent persistence and immediately before unlink (canonical paths and hierarchy, original-path absence, current stat/fingerprint). Any mismatch preserves the file and atomically removes only that record's purge intent while the run lock is held. A second race test changes the quarantined fingerprint in the same window and proves the same fail-closed behavior.
+- Canonical-failure RED: after an intent was persisted, a newly invalid canonical record caused the normal manifest loader to repeat the failing canonical validation and abort before intent removal. GREEN: intent removal reads the cryptographically integrity-checked manifest state without repeating canonical validation, removes only the matching intent under the existing run lock, and atomically rewrites the state hash. The quarantined file remains intact.
+- Indeterminate-stat RED: the old absence helper collapsed every `lstat` error to missing. GREEN: the immediate original-path check treats only `ENOENT`/`ENOTDIR` as absent; permission, I/O, and other errors enter the mismatch path, preserve the quarantine file, and clear the intent.
+- Admin consumer RED: static contract verification found no parameterized review query, retained reviewed hash, hash-gated apply request, stale-review invalidation, or 409 handling in the dashboard consumer. A later deferred-request review also found that an old render closure could start a newer-ID GET for a prior selection after DELETE. GREEN: the UI reviews the exact `olderThanDays`/`includeStocks`/`includeTmp` selection, retains the hash and candidates, invalidates review/confirmation on selection changes, discards stale GET results, refreshes through a stable coordinator that reads the latest selection, sends `{ apply: true, manifestSha256, ...review.selected }`, treats 409 as mandatory re-review without retry, consumes the nested apply result, and explicitly distinguishes customer quarantine from optional permanent tmp deletion. No purge control is exposed.
+- Minor fixes: purge rejects a non-finite clock before discovery or mutation; operational purge failures attach a nonzero error tally; restore and purge reject both `--olderThanDays=<value>` and a bare `--olderThanDays` instead of silently ignoring either form.
+
+Dashboard coverage for this reopen includes an executable deferred-promise test of `createAdminCleanupReviewCoordinator`, proving that an older GET cannot become current and that a stable post-DELETE refresh reads the latest selection. It is combined with source wiring assertions and the existing API-route/child-CLI integration coverage. This focused coverage is not browser E2E; the final independent reviewer was explicitly asked to judge whether the boundary is sufficient.
+
+Before the environment quota was exhausted, the first-round reopen passed the exact quarantine verifier twice, the complete related verifier suite, isolated temporary SQLite schema-dependent verifiers, TypeScript compilation, and whitespace validation. After the final canonical/stat/coordinator fixes, the sandbox-safe equivalent `node --import tsx scripts/verify-media-quarantine.ts` passed twice; TypeScript compilation and whitespace validation also pass. Exact final `npx tsx` reruns were attempted by both the implementer and root, but the environment-wide escalation usage limit rejected them because the sandbox denies tsx CLI IPC sockets; this was an infrastructure rejection, not a test failure.
+
+The final fresh no-history child review found no Critical, Important, or Minor issues, judged the focused non-browser UI coverage sufficient, and returned **Spec PASS / Quality Approved**.
 
 ## Commit
 
 Exact subject: `feat(media): quarantine cleanup with recheck and restore`
+
+Formal-review follow-up subject: `fix(media): close quarantine review races`
 
 The immutable commit hash is reported in the Task 5 handoff and can be read with `git log -1 --format=%H` after this report is committed.
 
@@ -84,7 +102,7 @@ The immutable commit hash is reported in the Task 5 handoff and can be read with
 
 - Customer apply and tmp apply are deliberately separate. The reviewed manifest hash gates customer records only; tmp requires its own explicit flag and candidate list.
 - A crash-left `.operation.lock` fails closed and requires validated manual recovery after confirming no restore/purge process owns the run. Automatic stale-lock deletion is intentionally out of scope.
-- Some pre-mutation purge failures report through a thrown operation report with a zero-byte operational error rather than a file-sized error; no deletion occurs in those paths.
+- Operational purge failures report through a thrown operation report with a nonzero error count; no deletion occurs in the reopened failure-path tests.
 - The review artifact intentionally contains absolute paths and is mode 0600. Ordinary CLI/admin failure output is allowlisted and does not print paths, URLs, owner IDs, or graph-error arrays.
 - `src/lib/media-reference-graph.ts` changed only for the authorized Task 5 integration: explicit workspace roots, owned in-progress run exclusion, validated quarantine metadata, and project expiry reconstruction.
 - No production runtime, schema, PM2 apply configuration, or Discord code changed.

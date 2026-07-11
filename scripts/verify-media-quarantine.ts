@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -16,10 +17,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
+import { createAdminCleanupReviewCoordinator } from "../src/lib/admin-cleanup-review";
 import {
   buildQuarantinedMediaIndex,
   fingerprintMediaRecord,
   manifestSha256ForRecords,
+  pathIsStrictlyAbsent,
   purgeMediaQuarantine,
   restoreQuarantineRun,
   writeMediaCleanupReviewArtifact,
@@ -45,6 +48,19 @@ assert.notEqual(
   manifestSha256ForRecords([{ ...first, fingerprint: fingerprintMediaRecord(first) }]),
   manifestSha256ForRecords([{ ...second, fingerprint: fingerprintMediaRecord(second) }]),
   "review hashes cover the mutation-relevant absolute path",
+);
+
+const missingPathError = Object.assign(new Error("missing"), { code: "ENOENT" });
+const permissionPathError = Object.assign(new Error("indeterminate"), { code: "EACCES" });
+assert.equal(
+  pathIsStrictlyAbsent("/not-observed", () => { throw missingPathError; }),
+  true,
+  "strict absence accepts only a missing-path result",
+);
+assert.throws(
+  () => pathIsStrictlyAbsent("/not-observed", () => { throw permissionPathError; }),
+  /indeterminate original path/,
+  "strict absence propagates indeterminate lstat failures",
 );
 
 const REPO_ROOT = process.cwd();
@@ -161,6 +177,48 @@ async function seed(prisma: PrismaClient): Promise<void> {
 let prisma: PrismaClient | undefined;
 
 async function main(): Promise<void> {
+  let resolveOldReview!: (value: string) => void;
+  let resolveCurrentReview!: (value: string) => void;
+  const oldReview = new Promise<string>((resolve) => { resolveOldReview = resolve; });
+  const currentReview = new Promise<string>((resolve) => { resolveCurrentReview = resolve; });
+  const reviewCoordinator = createAdminCleanupReviewCoordinator({
+    olderThanDays: 3,
+    includeStocks: false,
+    includeTmp: false,
+  });
+  const oldRequest = reviewCoordinator.request(async (selection) => {
+    assert.equal(selection.olderThanDays, 3);
+    return oldReview;
+  });
+  reviewCoordinator.setSelection({
+    olderThanDays: 7,
+    includeStocks: true,
+    includeTmp: false,
+  });
+  const currentRequest = reviewCoordinator.request(async (selection) => {
+    assert.deepEqual(selection, {
+      olderThanDays: 7,
+      includeStocks: true,
+      includeTmp: false,
+    });
+    return currentReview;
+  });
+  resolveCurrentReview("current");
+  assert.deepEqual(await currentRequest, {
+    current: true,
+    ok: true,
+    selection: { olderThanDays: 7, includeStocks: true, includeTmp: false },
+    value: "current",
+  });
+  resolveOldReview("stale");
+  assert.equal((await oldRequest).current, false, "older deferred GET cannot become current");
+  const postDeleteRefresh = await reviewCoordinator.request(async (selection) => selection);
+  assert.deepEqual(
+    postDeleteRefresh.ok ? postDeleteRefresh.value : null,
+    { olderThanDays: 7, includeStocks: true, includeTmp: false },
+    "a stable post-DELETE refresh reads the latest selection instead of an old closure",
+  );
+
   const oldOrphanPath = writeMedia("orphan-15d.mp4", -15);
   const youngOrphanPath = writeMedia("orphan-14d-boundary.mp4", -14);
   const expiredPath = writeMedia("expired-owned.mp4", -30);
@@ -697,6 +755,196 @@ async function main(): Promise<void> {
   assert.equal(existsSync(referencedQuarantinePath), true, "new live graph reference blocks purge");
   assert.equal(existsSync(changedQuarantinePath), true, "changed quarantine fingerprint blocks purge");
 
+  const purgeOriginalRacePath = writeMedia("purge-original-race.mp4", -30);
+  const purgeOriginalRacePlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
+    "renders/purge-original-race.mp4",
+  );
+  const purgeOriginalRaceRun = await cleanupModule.applyMediaCleanupPlan(
+    purgeOriginalRacePlan,
+    purgeOriginalRacePlan.manifestSha256,
+    { now: NOW },
+  );
+  const purgeOriginalRaceQuarantinePath = join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeOriginalRaceRun.runId,
+    "renders",
+    "purge-original-race.mp4",
+  );
+  const purgeOriginalRace = await purgeMediaQuarantine({
+    cwd: FIXTURE_ROOT,
+    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+    batchSize: 1,
+    beforeUnlink: async (record) => {
+      if (record.key === "renders/purge-original-race.mp4") {
+        writeFileSync(record.absolutePath, "concurrent-new-original");
+      }
+    },
+  });
+  assert.equal(existsSync(purgeOriginalRacePath), true);
+  assert.equal(readFileSync(purgeOriginalRacePath, "utf8"), "concurrent-new-original");
+  assert.equal(existsSync(purgeOriginalRaceQuarantinePath), true);
+  assert.ok(purgeOriginalRace.skipped.count >= 1);
+  const purgeOriginalRaceManifest = JSON.parse(readFileSync(join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeOriginalRaceRun.runId,
+    "manifest.json",
+  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
+  assert.equal(
+    purgeOriginalRaceManifest.purgeIntents.some((intent) =>
+      intent.key === "renders/purge-original-race.mp4"
+    ),
+    false,
+    "failed immediate recheck clears the persisted purge intent",
+  );
+
+  const purgeFingerprintRacePath = writeMedia("purge-fingerprint-race.mp4", -30);
+  const purgeFingerprintRacePlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
+    "renders/purge-fingerprint-race.mp4",
+  );
+  const purgeFingerprintRaceRun = await cleanupModule.applyMediaCleanupPlan(
+    purgeFingerprintRacePlan,
+    purgeFingerprintRacePlan.manifestSha256,
+    { now: NOW },
+  );
+  const purgeFingerprintRaceQuarantinePath = join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeFingerprintRaceRun.runId,
+    "renders",
+    "purge-fingerprint-race.mp4",
+  );
+  await purgeMediaQuarantine({
+    cwd: FIXTURE_ROOT,
+    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+    batchSize: 1,
+    beforeUnlink: async (record) => {
+      if (record.key === "renders/purge-fingerprint-race.mp4") {
+        writeFileSync(purgeFingerprintRaceQuarantinePath, "changed-after-intent");
+      }
+    },
+  });
+  assert.equal(existsSync(purgeFingerprintRacePath), false);
+  assert.equal(existsSync(purgeFingerprintRaceQuarantinePath), true);
+  const purgeFingerprintRaceManifest = JSON.parse(readFileSync(join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeFingerprintRaceRun.runId,
+    "manifest.json",
+  ), "utf8")) as { purgeIntents: Array<{ key: string }> };
+  assert.equal(
+    purgeFingerprintRaceManifest.purgeIntents.some((intent) =>
+      intent.key === "renders/purge-fingerprint-race.mp4"
+    ),
+    false,
+    "fingerprint race clears the persisted purge intent",
+  );
+
+  const purgeCanonicalRacePath = writeMedia("purge-canonical-race.mp4", -30);
+  const purgeCanonicalRacePlan = singleRecordPlan(
+    await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW }),
+    "renders/purge-canonical-race.mp4",
+  );
+  const purgeCanonicalRaceRun = await cleanupModule.applyMediaCleanupPlan(
+    purgeCanonicalRacePlan,
+    purgeCanonicalRacePlan.manifestSha256,
+    { now: NOW },
+  );
+  const purgeCanonicalManifestPath = join(
+    FIXTURE_ROOT,
+    ".media-quarantine",
+    purgeCanonicalRaceRun.runId,
+    "manifest.json",
+  );
+  const rewriteCanonicalRaceManifest = (absolutePath: string) => {
+    const manifest = JSON.parse(readFileSync(purgeCanonicalManifestPath, "utf8")) as {
+      version: number;
+      runId: string;
+      generatedAt: string;
+      reviewedManifestSha256: string;
+      recordsSha256: string;
+      records: Array<{
+        key: string;
+        absolutePath: string;
+        sizeBytes: number;
+        mtimeMs: number;
+        effectiveExpiresAt: string | null;
+        reason: "all_references_expired" | "unreferenced_14d";
+        fingerprint: string;
+      }>;
+      purgeIntents: Array<{ key: string; fingerprint: string; markedAt: string }>;
+      stateSha256: string;
+    };
+    const record = manifest.records.find(({ key }) => key === "renders/purge-canonical-race.mp4");
+    assert.ok(record);
+    record.absolutePath = absolutePath;
+    manifest.recordsSha256 = manifestSha256ForRecords(manifest.records);
+    manifest.stateSha256 = createHash("sha256").update(JSON.stringify({
+      version: manifest.version,
+      runId: manifest.runId,
+      generatedAt: manifest.generatedAt,
+      reviewedManifestSha256: manifest.reviewedManifestSha256,
+      recordsSha256: manifest.recordsSha256,
+      purgeIntents: [...manifest.purgeIntents].sort((a, b) =>
+        a.key < b.key ? -1 : a.key > b.key ? 1 : a.fingerprint < b.fingerprint ? -1 : 1
+      ),
+    })).digest("hex");
+    writeFileSync(purgeCanonicalManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  };
+  try {
+    const canonicalRaceReport = await purgeMediaQuarantine({
+      cwd: FIXTURE_ROOT,
+      now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+      batchSize: 1_000,
+      beforeUnlink: async (record) => {
+        if (record.key === "renders/purge-canonical-race.mp4") {
+          const invalidPath = join(FIXTURE_ROOT, "missing-parent", "purge-canonical-race.mp4");
+          rewriteCanonicalRaceManifest(invalidPath);
+          record.absolutePath = invalidPath;
+        }
+      },
+    });
+    assert.ok(canonicalRaceReport.skipped.count >= 1);
+  } finally {
+    rewriteCanonicalRaceManifest(purgeCanonicalRacePath);
+  }
+  const purgeCanonicalRaceManifest = JSON.parse(
+    readFileSync(purgeCanonicalManifestPath, "utf8"),
+  ) as { purgeIntents: Array<{ key: string }> };
+  assert.equal(
+    purgeCanonicalRaceManifest.purgeIntents.some((intent) =>
+      intent.key === "renders/purge-canonical-race.mp4"
+    ),
+    false,
+    "canonical recheck failure clears intent without repeating canonical validation",
+  );
+
+  await assert.rejects(
+    purgeMediaQuarantine({ cwd: FIXTURE_ROOT, now: new Date(Number.NaN) }),
+    /invalid purge clock/,
+  );
+  let forcedPurgeError: unknown;
+  try {
+    await purgeMediaQuarantine({
+      cwd: FIXTURE_ROOT,
+      now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+      beforeBatch: async () => {
+        throw new Error("forced purge operation failure");
+      },
+    });
+  } catch (error) {
+    forcedPurgeError = error;
+  }
+  assert.equal(
+    (forcedPurgeError as { operationReport?: { errors?: { count?: number } } })
+      .operationReport?.errors?.count,
+    1,
+    "operation-level purge failures increment the sanitized error tally",
+  );
+
   const metricsPlan = await cleanupModule.getMediaCleanupPlan({ cwd: FIXTURE_ROOT, now: NOW });
   const metricsPath = await writeMediaHealthMetrics(metricsPlan, {
     cwd: FIXTURE_ROOT,
@@ -1167,6 +1415,10 @@ async function main(): Promise<void> {
     join(REPO_ROOT, "src", "app", "api", "admin", "cleanup", "route.ts"),
     "utf8",
   );
+  const adminPageSource = readFileSync(
+    join(REPO_ROOT, "src", "app", "(dashboard)", "admin", "page.tsx"),
+    "utf8",
+  );
   assert.match(cliSource, /--manifestSha256/);
   assert.match(cliSource, /--restore-run=/);
   assert.match(cliSource, /--purge-quarantine/);
@@ -1190,16 +1442,43 @@ async function main(): Promise<void> {
     adminSource.indexOf("getMediaCleanupPlan", adminApplyIndex + 1) > adminApplyIndex,
     "admin apply rebuilds the plan after mutations for fresh health metrics",
   );
+  assert.match(adminPageSource, /new URLSearchParams/);
+  assert.match(adminPageSource, /createAdminCleanupReviewCoordinator/);
+  assert.match(adminPageSource, /cleanupReviewCoordinator\.current\.request/);
+  assert.match(adminPageSource, /olderThanDays:\s*String\(selection\.olderThanDays\)/);
+  assert.match(adminPageSource, /includeStocks:\s*selection\.includeStocks\s*\?\s*"1"\s*:\s*"0"/);
+  assert.match(adminPageSource, /includeTmp:\s*selection\.includeTmp\s*\?\s*"1"\s*:\s*"0"/);
+  assert.match(adminPageSource, /\/api\/admin\/cleanup\?\$\{params\.toString\(\)\}/);
+  assert.match(adminPageSource, /apply:\s*true/);
+  assert.match(adminPageSource, /manifestSha256:\s*review\.manifestSha256/);
+  assert.match(adminPageSource, /olderThanDays:\s*review\.selected\.olderThanDays/);
+  assert.match(adminPageSource, /includeStocks:\s*review\.selected\.includeStocks/);
+  assert.match(adminPageSource, /includeTmp:\s*review\.selected\.includeTmp/);
+  assert.match(adminPageSource, /res\.status\s*===\s*409/);
+  assert.match(adminPageSource, /setCleanupInfo\(null\)/);
+  assert.match(adminPageSource, /result\?\.quarantined\?\.count/);
+  assert.match(adminPageSource, /cleanupInfo\.manifestSha256\.slice/);
+  assert.doesNotMatch(adminPageSource, /purge-quarantine|purgeMediaQuarantine/);
 
-  const tsxBin = join(REPO_ROOT, "node_modules", ".bin", "tsx");
   const tsconfigPath = join(REPO_ROOT, "tsconfig.json");
+  const tsxLoader = join(REPO_ROOT, "node_modules", "tsx", "dist", "loader.mjs");
   const cleanupScript = join(REPO_ROOT, "scripts", "media-cleanup.ts");
+  const spawnCleanupCli = (args: string[], heartbeatDir: string) => spawnSync(
+    process.execPath,
+    ["--import", tsxLoader, cleanupScript, ...args],
+    {
+      cwd: FIXTURE_ROOT,
+      env: {
+        ...process.env,
+        DATABASE_URL,
+        HEARTBEAT_DIR: heartbeatDir,
+        TSX_TSCONFIG_PATH: tsconfigPath,
+      },
+      encoding: "utf8",
+    },
+  );
   const successfulHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-success");
-  const successfulCli = spawnSync(tsxBin, ["--tsconfig", tsconfigPath, cleanupScript], {
-    cwd: FIXTURE_ROOT,
-    env: { ...process.env, DATABASE_URL, HEARTBEAT_DIR: successfulHeartbeatDir },
-    encoding: "utf8",
-  });
+  const successfulCli = spawnCleanupCli([], successfulHeartbeatDir);
   assert.equal(successfulCli.status, 0, successfulCli.stderr);
   assert.equal(existsSync(join(successfulHeartbeatDir, "media-cleanup")), true);
   assert.equal(existsSync(join(FIXTURE_ROOT, ".ops-metrics", "media-health.json")), true);
@@ -1212,26 +1491,35 @@ async function main(): Promise<void> {
   assert.match(successfulCliOutput.manifestSha256 ?? "", /^[a-f0-9]{64}$/);
 
   const missingHashHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-missing-hash");
-  const missingHashCli = spawnSync(tsxBin, ["--tsconfig", tsconfigPath, cleanupScript, "--apply"], {
-    cwd: FIXTURE_ROOT,
-    env: { ...process.env, DATABASE_URL, HEARTBEAT_DIR: missingHashHeartbeatDir },
-    encoding: "utf8",
-  });
+  const missingHashCli = spawnCleanupCli(["--apply"], missingHashHeartbeatDir);
   assert.notEqual(missingHashCli.status, 0, "apply without reviewed hash must fail");
   assert.equal(existsSync(join(missingHashHeartbeatDir, "media-cleanup")), false);
 
   const conflictingHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-conflicting-mode");
-  const conflictingCli = spawnSync(
-    tsxBin,
-    ["--tsconfig", tsconfigPath, cleanupScript, "--purge-quarantine", "--restore-run=invalid"],
-    {
-      cwd: FIXTURE_ROOT,
-      env: { ...process.env, DATABASE_URL, HEARTBEAT_DIR: conflictingHeartbeatDir },
-      encoding: "utf8",
-    },
+  const conflictingCli = spawnCleanupCli(
+    ["--purge-quarantine", "--restore-run=invalid"],
+    conflictingHeartbeatDir,
   );
   assert.notEqual(conflictingCli.status, 0, "cleanup operation modes are mutually exclusive");
   assert.equal(existsSync(join(conflictingHeartbeatDir, "media-cleanup")), false);
+
+  const ignoredAgeHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-ignored-age");
+  const ignoredAgeCli = spawnCleanupCli(
+    ["--purge-quarantine", "--olderThanDays=3"],
+    ignoredAgeHeartbeatDir,
+  );
+  assert.notEqual(ignoredAgeCli.status, 0, "purge rejects irrelevant --olderThanDays");
+  assert.match(ignoredAgeCli.stderr, /restore and purge do not accept cleanup selection flags/);
+  assert.equal(existsSync(join(ignoredAgeHeartbeatDir, "media-cleanup")), false);
+
+  const bareIgnoredAgeHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-bare-ignored-age");
+  const bareIgnoredAgeCli = spawnCleanupCli(
+    ["--purge-quarantine", "--olderThanDays"],
+    bareIgnoredAgeHeartbeatDir,
+  );
+  assert.notEqual(bareIgnoredAgeCli.status, 0, "purge rejects bare --olderThanDays");
+  assert.match(bareIgnoredAgeCli.stderr, /restore and purge do not accept cleanup selection flags/);
+  assert.equal(existsSync(join(bareIgnoredAgeHeartbeatDir, "media-cleanup")), false);
 
   await prisma.video.create({
     data: {
@@ -1245,11 +1533,7 @@ async function main(): Promise<void> {
     },
   });
   const failedHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-graph-failure");
-  const failedCli = spawnSync(tsxBin, ["--tsconfig", tsconfigPath, cleanupScript], {
-    cwd: FIXTURE_ROOT,
-    env: { ...process.env, DATABASE_URL, HEARTBEAT_DIR: failedHeartbeatDir },
-    encoding: "utf8",
-  });
+  const failedCli = spawnCleanupCli([], failedHeartbeatDir);
   assert.notEqual(failedCli.status, 0, "incomplete graph must fail the CLI dry-run");
   assert.equal(existsSync(join(failedHeartbeatDir, "media-cleanup")), false);
   const failedCliOutput = `${failedCli.stdout}\n${failedCli.stderr}`;
@@ -1266,11 +1550,7 @@ async function main(): Promise<void> {
   EXTERNAL_ROOTS.push(failedArtifactOutsideRoot);
   symlinkSync(failedArtifactOutsideRoot, join(FIXTURE_ROOT, ".ops-metrics"));
   const failedArtifactHeartbeatDir = join(FIXTURE_ROOT, "heartbeat-artifact-failure");
-  const failedArtifactCli = spawnSync(tsxBin, ["--tsconfig", tsconfigPath, cleanupScript], {
-    cwd: FIXTURE_ROOT,
-    env: { ...process.env, DATABASE_URL, HEARTBEAT_DIR: failedArtifactHeartbeatDir },
-    encoding: "utf8",
-  });
+  const failedArtifactCli = spawnCleanupCli([], failedArtifactHeartbeatDir);
   assert.notEqual(failedArtifactCli.status, 0, "review artifact failure aborts dry-run completion");
   assert.equal(existsSync(join(failedArtifactHeartbeatDir, "media-cleanup")), false);
   assert.deepEqual(fsNames(failedArtifactOutsideRoot), []);

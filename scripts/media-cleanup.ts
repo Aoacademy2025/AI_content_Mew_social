@@ -45,6 +45,8 @@ function sanitizedFailureMessage(error: unknown): string {
 }
 
 async function main() {
+  const olderThanDaysArg = stringArg("olderThanDays");
+  const olderThanDaysSelected = olderThanDaysArg !== undefined || hasFlag("olderThanDays");
   const olderThanDays = numberArg("olderThanDays", 3);
   const includeStocks = hasFlag("includeStocks");
   const includeTmp = hasFlag("includeTmp");
@@ -63,7 +65,10 @@ async function main() {
   if (apply && !/^[a-f0-9]{64}$/.test(reviewedManifestSha256 ?? "")) {
     throw new Error("--apply requires --manifestSha256=<reviewed sha256>");
   }
-  if ((restoreRunId || purgeQuarantine) && (includeStocks || includeTmp)) {
+  if (
+    (restoreRunId || purgeQuarantine) &&
+    (includeStocks || includeTmp || olderThanDaysSelected)
+  ) {
     throw new Error("restore and purge do not accept cleanup selection flags");
   }
 

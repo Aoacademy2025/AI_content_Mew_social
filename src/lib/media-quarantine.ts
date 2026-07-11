@@ -62,6 +62,7 @@ export type PurgeQuarantineOptions = {
   now?: Date;
   batchSize?: number;
   beforeBatch?: (batchIndex: number, records: MediaManifestRecord[]) => Promise<void>;
+  beforeUnlink?: (record: MediaManifestRecord) => Promise<void>;
 };
 
 type FingerprintInput = Pick<MediaManifestRecord, "key" | "sizeBytes" | "mtimeMs">;
@@ -234,6 +235,20 @@ function safeLstat(filePath: string): fs.Stats | null {
     return fs.lstatSync(filePath);
   } catch {
     return null;
+  }
+}
+
+export function pathIsStrictlyAbsent(
+  filePath: string,
+  lstat: (candidate: string) => fs.Stats = fs.lstatSync,
+): boolean {
+  try {
+    lstat(filePath);
+    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return true;
+    throw new Error("indeterminate original path");
   }
 }
 
@@ -540,7 +555,7 @@ async function acquireQuarantineRunLock(cwd: string, runId: string): Promise<Qua
   };
 }
 
-async function loadManifest(cwd: string, runId: string): Promise<QuarantineManifest> {
+async function loadManifestIntegrity(cwd: string, runId: string): Promise<QuarantineManifest> {
   if (!safeRunId(runId)) throw new Error("invalid quarantine run id");
   const manifestPath = path.join(cwd, ".media-quarantine", runId, "manifest.json");
   if (!await existingPathHasNoSymlink(manifestPath, cwd)) {
@@ -585,6 +600,11 @@ async function loadManifest(cwd: string, runId: string): Promise<QuarantineManif
   ) {
     throw new Error("invalid quarantine manifest");
   }
+  return parsed;
+}
+
+async function loadManifest(cwd: string, runId: string): Promise<QuarantineManifest> {
+  const parsed = await loadManifestIntegrity(cwd, runId);
   for (const record of parsed.records) await canonicalRecordPath(record, cwd);
   return parsed;
 }
@@ -683,23 +703,29 @@ export async function purgeMediaQuarantine(
 ): Promise<MediaOperationReport> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const now = options.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error("invalid purge clock");
   const quarantineRoot = path.join(cwd, ".media-quarantine");
   const report = reportForPlan();
-  const rootStat = safeLstat(quarantineRoot);
-  if (!rootStat) return report;
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("unsafe quarantine root");
-
   const mature: Array<{ runId: string; record: MediaManifestRecord }> = [];
-  for (const runId of (await fsp.readdir(quarantineRoot)).sort()) {
-    const runStat = safeLstat(path.join(quarantineRoot, runId));
-    if (!runStat || runStat.isSymbolicLink() || !runStat.isDirectory()) {
-      throw new Error("invalid quarantine run directory");
+  try {
+    const rootStat = safeLstat(quarantineRoot);
+    if (!rootStat) return report;
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("unsafe quarantine root");
+
+    for (const runId of (await fsp.readdir(quarantineRoot)).sort()) {
+      const runStat = safeLstat(path.join(quarantineRoot, runId));
+      if (!runStat || runStat.isSymbolicLink() || !runStat.isDirectory()) {
+        throw new Error("invalid quarantine run directory");
+      }
+      const manifest = await loadManifest(cwd, runId);
+      const generatedAt = new Date(manifest.generatedAt);
+      if (!Number.isFinite(generatedAt.getTime())) throw new Error("invalid quarantine manifest clock");
+      if (generatedAt.getTime() >= now.getTime() - QUARANTINE_MIN_AGE_MS) continue;
+      for (const record of manifest.records) mature.push({ runId, record });
     }
-    const manifest = await loadManifest(cwd, runId);
-    const generatedAt = new Date(manifest.generatedAt);
-    if (!Number.isFinite(generatedAt.getTime())) throw new Error("invalid quarantine manifest clock");
-    if (generatedAt.getTime() >= now.getTime() - QUARANTINE_MIN_AGE_MS) continue;
-    for (const record of manifest.records) mature.push({ runId, record });
+  } catch (error) {
+    addTally(report.errors, 0);
+    throwWithReport(error, report);
   }
 
   report.scanned = tally(mature.map(({ record }) => record));
@@ -765,7 +791,43 @@ export async function purgeMediaQuarantine(
           }
         }
 
-        for (const { record, quarantinePath } of deletable) {
+        for (const { runId, record, quarantinePath } of deletable) {
+          await options.beforeUnlink?.(record);
+          let stillEligible = false;
+          try {
+            await canonicalRecordPath(record, cwd);
+            const hierarchySafe = await existingPathHasNoSymlink(quarantinePath, cwd);
+            const originalStillAbsent = pathIsStrictlyAbsent(record.absolutePath);
+            const currentStat = hierarchySafe ? safeLstat(quarantinePath) : null;
+            stillEligible = Boolean(
+              hierarchySafe &&
+              originalStillAbsent &&
+              currentStat &&
+              statMatchesRecord(currentStat, record)
+            );
+          } catch {
+            stillEligible = false;
+          }
+          if (!stillEligible) {
+            // The immediate recheck can fail because a previously canonical path became
+            // unavailable. Clear the durable intent from the integrity-checked state
+            // without requiring the same canonical validation to succeed again.
+            const manifest = await loadManifestIntegrity(cwd, runId);
+            if (manifest.purgeIntents.some((intent) => intent.key === record.key)) {
+              const { stateSha256: _stateSha256, ...manifestState } = manifest;
+              const updated = completeManifest({
+                ...manifestState,
+                purgeIntents: manifest.purgeIntents.filter((intent) => intent.key !== record.key),
+              });
+              await atomicWriteJson(
+                path.join(cwd, ".media-quarantine", runId, "manifest.json"),
+                updated,
+                cwd,
+              );
+            }
+            addTally(report.skipped, record.sizeBytes);
+            continue;
+          }
           try {
             await fsp.unlink(quarantinePath);
             addTally(report.purged, record.sizeBytes);
@@ -780,6 +842,7 @@ export async function purgeMediaQuarantine(
     }
     return report;
   } catch (error) {
+    if (report.errors.count === 0) addTally(report.errors, 0);
     throwWithReport(error, report);
   }
 }
