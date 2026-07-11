@@ -135,4 +135,3 @@ gh pr edit 178 --base main
 ```
 
 Expected: normal push succeeds and PR #178 reports base `main` and a mergeable state.
-
