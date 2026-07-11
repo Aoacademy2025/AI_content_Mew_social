@@ -10,7 +10,11 @@ import {
   type CleanupTally,
   type MediaOperationReport,
 } from "./media-quarantine";
-import { effectiveMediaExpiry, type MediaReference } from "./media-retention";
+import {
+  effectiveMediaExpiry,
+  mediaReferenceIsLive,
+  type MediaReference,
+} from "./media-retention";
 import type { MediaGraph, MediaGraphError } from "./media-reference-graph";
 
 export type MediaArea = "renders" | "stocks";
@@ -43,6 +47,17 @@ export type MediaManifestRecord = {
   effectiveExpiresAt: string | null;
   reason: "all_references_expired" | "unreferenced_14d";
   fingerprint: string;
+};
+
+export type MissingMediaCategory = "critical" | "primary" | "derived";
+
+export type MissingMediaInventoryRecord = {
+  key: MediaKey;
+  category: MissingMediaCategory;
+  ownerKinds: MediaReference["ownerKind"][];
+  ownerIds: string[];
+  effectiveExpiresAt: string | null;
+  sourceKey?: MediaKey;
 };
 
 export type TmpCleanupCandidate = {
@@ -97,10 +112,14 @@ export type MediaCleanupPlan = {
   };
   health: {
     missingBeforeExpiry: number;
+    missingCriticalBeforeExpiry: number;
+    missingPrimaryBeforeExpiry: number;
+    missingDerivedBeforeExpiry: number;
     expired: number;
     protected: number;
     candidates: number;
   };
+  missingInventory: MissingMediaInventoryRecord[];
   candidates: MediaManifestRecord[];
   tmpCandidates: TmpCleanupCandidate[];
 };
@@ -721,32 +740,65 @@ function totalBucket(files: ScannedMediaFile[]): CleanupBucket {
   };
 }
 
-function missingBeforeExpiry(graph: MediaGraph, roots: MediaRootPaths, now: Date): number {
-  let missing = 0;
-  for (const [key, refs] of graph.refs) {
-    const live = refs.some((ref) =>
-      ref.alwaysProtect === true ||
-      ref.expiresAt === null ||
-      (Number.isFinite(ref.expiresAt.getTime()) && ref.expiresAt.getTime() >= now.getTime())
-    );
-    if (!live) continue;
+function derivedSourceKey(key: MediaKey, graph: MediaGraph): MediaKey | undefined {
+  if (key.startsWith("stocks/") && key.endsWith(".normalized")) {
+    const sourceKey = key.slice(0, -".normalized".length) as MediaKey;
+    return graph.refs.has(sourceKey) ? sourceKey : undefined;
+  }
+  if (key.startsWith("renders/")) {
+    const filename = key.slice("renders/".length);
+    const match = /^preview-(.+)-(?:540|720)p\.mp4$/.exec(filename);
+    if (match) {
+      const sourceKey = `renders/${match[1]}.mp4` as MediaKey;
+      return graph.refs.has(sourceKey) ? sourceKey : undefined;
+    }
+  }
+  return undefined;
+}
+
+function missingMediaInventory(
+  graph: MediaGraph,
+  roots: MediaRootPaths,
+  now: Date,
+): MissingMediaInventoryRecord[] {
+  const inventory: MissingMediaInventoryRecord[] = [];
+  for (const [rawKey, refs] of [...graph.refs.entries()].sort(([a], [b]) => compareStableText(a, b))) {
+    const liveRefs = refs.filter((ref) => mediaReferenceIsLive(ref, now));
+    if (liveRefs.length === 0) continue;
+    const key = rawKey as MediaKey;
     const slash = key.indexOf("/");
     const area = key.slice(0, slash);
     const filename = key.slice(slash + 1);
     if ((area !== "renders" && area !== "stocks") || filename !== path.basename(filename)) continue;
     const stat = safeStat(path.join(roots[area], filename));
-    if (!stat || !stat.isFile()) missing++;
+    if (stat?.isFile()) continue;
+
+    const sourceKey = derivedSourceKey(key, graph);
+    const category: MissingMediaCategory = sourceKey
+      ? "derived"
+      : liveRefs.some((ref) => ref.critical === true)
+        ? "critical"
+        : "primary";
+    inventory.push({
+      key,
+      category,
+      ownerKinds: [...new Set(liveRefs.map((ref) => ref.ownerKind))].sort(compareStableText),
+      ownerIds: [...new Set(liveRefs.map((ref) => ref.ownerId))].sort(compareStableText),
+      effectiveExpiresAt: effectiveMediaExpiry(liveRefs)?.toISOString() ?? null,
+      ...(sourceKey ? { sourceKey } : {}),
+    });
   }
-  return missing;
+  return inventory;
 }
 
 function stripCandidates(
   plan: MediaCleanupPlan,
-): Omit<MediaCleanupPlan, "candidates" | "tmpCandidates" | "workspaceRoot"> {
+): Omit<MediaCleanupPlan, "candidates" | "tmpCandidates" | "workspaceRoot" | "missingInventory"> {
   const {
     candidates: _candidates,
     tmpCandidates: _tmpCandidates,
     workspaceRoot: _workspaceRoot,
+    missingInventory: _missingInventory,
     ...summary
   } = plan;
   return summary;
@@ -830,6 +882,16 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
       : 0,
   };
   const manifestSha256 = manifestSha256ForRecords(candidates);
+  const missingInventory = missingMediaInventory(graph, roots, now);
+  const missingCriticalBeforeExpiry = missingInventory.filter(
+    (record) => record.category === "critical",
+  ).length;
+  const missingPrimaryBeforeExpiry = missingInventory.filter(
+    (record) => record.category === "primary",
+  ).length;
+  const missingDerivedBeforeExpiry = missingInventory.filter(
+    (record) => record.category === "derived",
+  ).length;
 
   return {
     renders: {
@@ -866,11 +928,15 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
     manifestSha256,
     tallies: { scanned, protected: protectedTally, expired },
     health: {
-      missingBeforeExpiry: missingBeforeExpiry(graph, roots, now),
+      missingBeforeExpiry: missingInventory.length,
+      missingCriticalBeforeExpiry,
+      missingPrimaryBeforeExpiry,
+      missingDerivedBeforeExpiry,
       expired: expired.count,
       protected: protectedTally.count,
       candidates: candidates.length,
     },
+    missingInventory,
     candidates,
     tmpCandidates,
   };

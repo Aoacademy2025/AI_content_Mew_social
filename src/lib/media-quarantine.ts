@@ -716,6 +716,9 @@ export async function writeMediaHealthMetrics(
   const metrics = {
     generatedAt: now.toISOString(),
     missingBeforeExpiry: plan.health.missingBeforeExpiry,
+    missingCriticalBeforeExpiry: plan.health.missingCriticalBeforeExpiry,
+    missingPrimaryBeforeExpiry: plan.health.missingPrimaryBeforeExpiry,
+    missingDerivedBeforeExpiry: plan.health.missingDerivedBeforeExpiry,
     expired: plan.health.expired,
     protected: plan.health.protected,
     candidates: plan.health.candidates,
@@ -741,6 +744,7 @@ export async function writeMediaCleanupReviewArtifact(
     generatedAt: now.toISOString(),
     manifestSha256: plan.manifestSha256,
     candidates: plan.candidates,
+    missingBeforeExpiry: plan.missingInventory,
   }, cwd);
   return relativePath;
 }

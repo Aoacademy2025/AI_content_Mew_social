@@ -27,6 +27,7 @@ export type MediaReference = {
   ownerId: string;
   expiresAt: Date | null;
   alwaysProtect?: boolean;
+  critical?: boolean;
 };
 
 export function expiryForMedia(plan: string, producedAt: Date): Date {

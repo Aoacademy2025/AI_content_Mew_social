@@ -101,9 +101,14 @@ export async function buildMediaReferenceGraph(
 
   function addKey(key: MediaKey, reference: MediaReference): void {
     const current = refs.get(key) ?? [];
-    if (current.some(
+    const existing = current.find(
       (candidate) => candidate.ownerKind === reference.ownerKind && candidate.ownerId === reference.ownerId,
-    )) return;
+    );
+    if (existing) {
+      if (reference.alwaysProtect) existing.alwaysProtect = true;
+      if (reference.critical) existing.critical = true;
+      return;
+    }
     current.push({ ...reference });
     refs.set(key, current);
   }
@@ -218,6 +223,7 @@ export async function buildMediaReferenceGraph(
       select: {
         id: true,
         userId: true,
+        status: true,
         draftJson: true,
         activeJobId: true,
         activeExportJobId: true,
@@ -251,7 +257,10 @@ export async function buildMediaReferenceGraph(
     };
     const ownerKeys = new Set<MediaKey>();
     for (const field of DIRECT_VIDEO_FIELDS) {
-      for (const key of collectOwnerValue(video[field], reference, field).keys) ownerKeys.add(key);
+      const fieldReference = field === "videoUrl"
+        ? { ...reference, critical: true }
+        : reference;
+      for (const key of collectOwnerValue(video[field], fieldReference, field).keys) ownerKeys.add(key);
     }
     for (const field of JSON_VIDEO_FIELDS) {
       const parsed = parseJsonOwnerField(video[field], reference, field);
@@ -276,10 +285,17 @@ export async function buildMediaReferenceGraph(
       continue;
     }
     const output = parseJsonOwnerField(job.outputJson, reference, "outputJson");
-    videoJobKeysById.set(
-      job.id,
-      collectOwnerValue(output, reference, "outputJson").keys,
-    );
+    const ownerKeys = new Set<MediaKey>();
+    if (output && typeof output === "object" && !Array.isArray(output)) {
+      const finalVideoUrl = (output as Record<string, unknown>).videoUrl;
+      for (const key of collectOwnerValue(
+        finalVideoUrl,
+        { ...reference, critical: true },
+        "outputJson.videoUrl",
+      ).keys) ownerKeys.add(key);
+    }
+    for (const key of collectOwnerValue(output, reference, "outputJson").keys) ownerKeys.add(key);
+    videoJobKeysById.set(job.id, ownerKeys);
     videoJobOwnerById.set(job.id, { userId: job.userId, projectId: job.projectId });
   }
 
@@ -344,13 +360,25 @@ export async function buildMediaReferenceGraph(
     const collected = collectCanonicalMediaRefs(draft, roots);
     for (const code of collected.errors) addError(owner, "draftJson", code);
 
-    const activeOwnerKeys = new Set<MediaKey>();
+    const activeOwnerKeys = new Map<MediaKey, boolean>();
     const inFlightExpiries: Array<{ expiresAt: Date | null }> = [];
     const exactProjectOwnerMatches = (candidate: ProjectScopedOwner): boolean =>
       candidate.userId === project.userId && candidate.projectId === project.id;
     const ownerConflictsWithProject = (candidate: ProjectScopedOwner): boolean =>
       candidate.userId !== project.userId ||
       (candidate.projectId !== null && candidate.projectId !== project.id);
+    const addExactOwnerKeys = (
+      keys: Iterable<MediaKey>,
+      ownerKind: "video" | "video-job",
+      ownerId: string,
+    ): void => {
+      for (const key of keys) {
+        const exactOwnerIsCritical = refs.get(key)?.some((ref) =>
+          ref.ownerKind === ownerKind && ref.ownerId === ownerId && ref.critical === true
+        ) ?? false;
+        activeOwnerKeys.set(key, activeOwnerKeys.get(key) === true || exactOwnerIsCritical);
+      }
+    };
     for (const [field, jobId] of [
       ["activeJobId", project.activeJobId],
       ["activeExportJobId", project.activeExportJobId],
@@ -360,7 +388,7 @@ export async function buildMediaReferenceGraph(
       const inFlightOwner = inFlightJobById.get(jobId);
       if (doneOwner) {
         if (exactProjectOwnerMatches(doneOwner)) {
-          for (const key of videoJobKeysById.get(jobId) ?? []) activeOwnerKeys.add(key);
+          addExactOwnerKeys(videoJobKeysById.get(jobId) ?? [], "video-job", jobId);
         } else if (ownerConflictsWithProject(doneOwner)) {
           addError(owner, field, "owner_mismatch");
         }
@@ -370,7 +398,7 @@ export async function buildMediaReferenceGraph(
         // Preserve it conservatively; unlike frozen done/latest expiry, null cannot shorten life.
         if (ownerConflictsWithProject(inFlightOwner)) {
           addError(owner, field, "owner_mismatch");
-        } else {
+        } else if (project.status !== "archived") {
           inFlightExpiries.push({ expiresAt: inFlightOwner.mediaExpiresAt });
         }
       }
@@ -378,9 +406,19 @@ export async function buildMediaReferenceGraph(
     if (project.latestVideoId) {
       const latestVideoOwner = videoOwnerById.get(project.latestVideoId);
       if (latestVideoOwner && exactProjectOwnerMatches(latestVideoOwner)) {
-        for (const key of videoKeysById.get(project.latestVideoId) ?? []) activeOwnerKeys.add(key);
+        addExactOwnerKeys(videoKeysById.get(project.latestVideoId) ?? [], "video", project.latestVideoId);
       } else if (latestVideoOwner && ownerConflictsWithProject(latestVideoOwner)) {
         addError(owner, "latestVideoId", "owner_mismatch");
+      }
+    }
+    if (project.status !== "archived") {
+      for (const [key, critical] of activeOwnerKeys) {
+        addKey(key, {
+          ...owner,
+          expiresAt: null,
+          alwaysProtect: true,
+          critical: critical || undefined,
+        });
       }
     }
 
