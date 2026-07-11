@@ -3,10 +3,12 @@ import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
-import { videoExpiryFor } from "@/lib/plan-limits";
+import { storageDaysForPlan, videoExpiryFor } from "@/lib/plan-limits";
 
 const TEMPORARY_DATABASE_ERROR =
   "verification requires an explicit temporary SQLite DATABASE_URL under /tmp";
+const PUBLIC_TRIAL_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function pathIsMissing(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
@@ -75,6 +77,7 @@ type BaseCandidate = {
   targetId: string;
   ownerPlan: MediaExpiryBackfillOwnerPlan;
   createdAt: Date;
+  trialStartedAt: Date | null;
 };
 
 export type MediaExpiryBackfillCandidate =
@@ -123,6 +126,46 @@ function iso(date: Date, field: string, targetId: string): string {
   return date.toISOString();
 }
 
+function resolveCalculationPlan(
+  candidate: MediaExpiryBackfillCandidate,
+  baseAt: Date,
+): { plan: MediaExpiryBackfillOwnerPlan; historicalTrialEvidence: boolean } {
+  const trialStartedAt = candidate.trialStartedAt;
+  if (!trialStartedAt) {
+    return { plan: candidate.ownerPlan, historicalTrialEvidence: false };
+  }
+
+  const trialStartedAtMs = trialStartedAt.getTime();
+  if (!Number.isFinite(trialStartedAtMs)) {
+    throw new Error(`invalid trialStartedAt for media expiry backfill target ${candidate.targetId}`);
+  }
+
+  const baseAtMs = baseAt.getTime();
+  const trialEndsAtMs = trialStartedAtMs + PUBLIC_TRIAL_DAYS * DAY_MS;
+  const insideTrial = baseAtMs >= trialStartedAtMs && baseAtMs < trialEndsAtMs;
+  const trialExtendsRetention =
+    storageDaysForPlan(candidate.ownerPlan) < storageDaysForPlan("PRO");
+
+  if (!insideTrial) {
+    return { plan: candidate.ownerPlan, historicalTrialEvidence: false };
+  }
+
+  return {
+    plan: trialExtendsRetention ? "PRO" : candidate.ownerPlan,
+    historicalTrialEvidence: true,
+  };
+}
+
+function historicalTrialReason(ownerPlan: MediaExpiryBackfillOwnerPlan): string {
+  const retentionComparison =
+    ownerPlan === "FREE"
+      ? "historical PRO trial raises current FREE retention"
+      : ownerPlan === "PRO"
+        ? "current PRO retention matches the floor"
+        : "current BUSINESS retention is longer";
+  return `historical PRO trial retention floor is proven by trialStartedAt; ${retentionComparison}`;
+}
+
 export function planMediaExpiryBackfill(
   candidates: MediaExpiryBackfillCandidate[],
   now = new Date(),
@@ -134,16 +177,18 @@ export function planMediaExpiryBackfill(
     .map((candidate): MediaExpiryBackfillRow => {
       if (candidate.targetKind === "video") {
         const baseAt = candidate.createdAt;
-        const calculatedExpiresAt = videoExpiryFor(candidate.ownerPlan, baseAt);
+        const calculation = resolveCalculationPlan(candidate, baseAt);
+        const calculatedExpiresAt = videoExpiryFor(calculation.plan, baseAt);
         return {
           targetKind: candidate.targetKind,
           targetId: candidate.targetId,
-          ownerPlan: candidate.ownerPlan,
+          ownerPlan: calculation.plan,
           baseAt: iso(baseAt, "createdAt", candidate.targetId),
           calculatedExpiresAt: iso(calculatedExpiresAt, "calculatedExpiresAt", candidate.targetId),
           alreadyExpired: calculatedExpiresAt.getTime() < nowMs,
-          reason:
-            "legacy Video expiresAt is null; current owner plan is the fallback because historical plan-at-creation is unavailable; base=createdAt",
+          reason: calculation.historicalTrialEvidence
+            ? `legacy Video expiresAt is null; ${historicalTrialReason(candidate.ownerPlan)}; base=createdAt`
+            : "legacy Video expiresAt is null; current owner plan is the fallback because historical plan-at-creation is unavailable; base=createdAt",
         };
       }
 
@@ -153,16 +198,18 @@ export function planMediaExpiryBackfill(
           ? "updatedAt"
           : "createdAt";
       const baseAt = candidate.finishedAt ?? candidate.updatedAt ?? candidate.createdAt;
-      const calculatedExpiresAt = videoExpiryFor(candidate.ownerPlan, baseAt);
+      const calculation = resolveCalculationPlan(candidate, baseAt);
+      const calculatedExpiresAt = videoExpiryFor(calculation.plan, baseAt);
       return {
         targetKind: candidate.targetKind,
         targetId: candidate.targetId,
-        ownerPlan: candidate.ownerPlan,
+        ownerPlan: calculation.plan,
         baseAt: iso(baseAt, baseField, candidate.targetId),
         calculatedExpiresAt: iso(calculatedExpiresAt, "calculatedExpiresAt", candidate.targetId),
         alreadyExpired: calculatedExpiresAt.getTime() < nowMs,
-        reason:
-          `legacy completed VideoJob mediaExpiresAt is null; current owner plan is the fallback because historical plan-at-completion is unavailable; base=${baseField}`,
+        reason: calculation.historicalTrialEvidence
+          ? `legacy completed VideoJob mediaExpiresAt is null; ${historicalTrialReason(candidate.ownerPlan)}; base=${baseField}`
+          : `legacy completed VideoJob mediaExpiresAt is null; current owner plan is the fallback because historical plan-at-completion is unavailable; base=${baseField}`,
       };
     })
     .sort(compareRows);
@@ -186,7 +233,7 @@ export async function discoverMediaExpiryBackfill(
         createdAt: true,
         updatedAt: true,
         finishedAt: true,
-        user: { select: { plan: true } },
+        user: { select: { plan: true, trialStartedAt: true } },
       },
     }),
     client.video.findMany({
@@ -195,7 +242,7 @@ export async function discoverMediaExpiryBackfill(
       select: {
         id: true,
         createdAt: true,
-        user: { select: { plan: true } },
+        user: { select: { plan: true, trialStartedAt: true } },
       },
     }),
   ]);
@@ -208,6 +255,7 @@ export async function discoverMediaExpiryBackfill(
           targetId: job.id,
           ownerPlan: job.user.plan,
           createdAt: job.createdAt,
+          trialStartedAt: job.user.trialStartedAt,
           updatedAt: job.updatedAt,
           finishedAt: job.finishedAt,
         }),
@@ -218,6 +266,7 @@ export async function discoverMediaExpiryBackfill(
           targetId: video.id,
           ownerPlan: video.user.plan,
           createdAt: video.createdAt,
+          trialStartedAt: video.user.trialStartedAt,
         }),
       ),
     ],

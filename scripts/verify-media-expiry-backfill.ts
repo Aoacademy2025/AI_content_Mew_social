@@ -23,6 +23,7 @@ import {
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "";
 const FIXTURE_USER_IDS = ["media-backfill-pro", "media-backfill-business"];
+const HISTORICAL_TRIAL_USER_ID = "media-backfill-historical-trial";
 const NOW = new Date("2026-07-10T00:00:00.000Z");
 let prisma: PrismaClient;
 
@@ -83,6 +84,7 @@ function verifyPurePlanner() {
         targetId: "job-finished-base",
         ownerPlan: "FREE",
         createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        trialStartedAt: null,
         updatedAt: new Date("2026-07-02T00:00:00.000Z"),
         finishedAt: new Date("2026-07-03T00:00:00.000Z"),
       },
@@ -91,6 +93,7 @@ function verifyPurePlanner() {
         targetId: "job-updated-base",
         ownerPlan: "PRO",
         createdAt: new Date("2026-06-01T00:00:00.000Z"),
+        trialStartedAt: null,
         updatedAt: new Date("2026-07-02T00:00:00.000Z"),
         finishedAt: null,
       },
@@ -99,6 +102,7 @@ function verifyPurePlanner() {
         targetId: "job-created-base",
         ownerPlan: "BUSINESS",
         createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        trialStartedAt: null,
         updatedAt: null,
         finishedAt: null,
       },
@@ -107,6 +111,7 @@ function verifyPurePlanner() {
         targetId: "video-created-base",
         ownerPlan: "FREE",
         createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        trialStartedAt: null,
       },
     ],
     NOW,
@@ -161,7 +166,143 @@ function verifyPurePlanner() {
   assert.match(rows[1].reason, /createdAt/);
   assert.match(rows[2].reason, /finishedAt/);
   assert.match(rows[3].reason, /updatedAt/);
-  assert.equal(hashMediaExpiryBackfillRows(rows), hashMediaExpiryBackfillRows([...rows]));
+  assert.equal(
+    hashMediaExpiryBackfillRows(rows),
+    hashMediaExpiryBackfillRows([...rows].reverse()),
+    "row hashing is deterministic across input order",
+  );
+}
+
+function verifyHistoricalTrialPlanner() {
+  const rows = planMediaExpiryBackfill(
+    [
+      {
+        targetKind: "video",
+        targetId: "trial-video-exact-start",
+        ownerPlan: "FREE",
+        createdAt: new Date("2026-07-04T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+      },
+      {
+        targetKind: "video-job",
+        targetId: "trial-free-inside",
+        ownerPlan: "FREE",
+        createdAt: new Date("2026-07-04T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+      },
+      {
+        targetKind: "video-job",
+        targetId: "trial-free-exact-end",
+        ownerPlan: "FREE",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-08T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-08T00:00:00.000Z"),
+      },
+      {
+        targetKind: "video-job",
+        targetId: "trial-pro-inside",
+        ownerPlan: "PRO",
+        createdAt: new Date("2026-07-04T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+      },
+      {
+        targetKind: "video-job",
+        targetId: "trial-business-inside",
+        ownerPlan: "BUSINESS",
+        createdAt: new Date("2026-07-04T00:00:00.000Z"),
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+      },
+    ],
+    NOW,
+  );
+
+  const inside = rows.find((row) => row.targetId === "trial-free-inside");
+  assert.equal(inside?.ownerPlan, "PRO", "historical trial raises current FREE to PRO");
+  assert.equal(inside?.calculatedExpiresAt, "2026-07-12T00:00:00.000Z");
+  assert.equal(inside?.alreadyExpired, false, "seven-day trial media is not expired at day five");
+  assert.match(inside?.reason ?? "", /historical PRO trial/);
+
+  const videoAtStart = rows.find((row) => row.targetId === "trial-video-exact-start");
+  assert.equal(videoAtStart?.ownerPlan, "PRO", "trial start is inclusive for Video media");
+  assert.equal(videoAtStart?.calculatedExpiresAt, "2026-07-11T00:00:00.000Z");
+  assert.match(videoAtStart?.reason ?? "", /historical PRO trial/);
+
+  const exactEnd = rows.find((row) => row.targetId === "trial-free-exact-end");
+  assert.equal(exactEnd?.ownerPlan, "FREE", "trial end is exclusive");
+  assert.match(exactEnd?.reason ?? "", /current owner plan/);
+
+  const pro = rows.find((row) => row.targetId === "trial-pro-inside");
+  assert.equal(pro?.ownerPlan, "PRO");
+  assert.match(pro?.reason ?? "", /historical PRO trial/);
+  assert.match(pro?.reason ?? "", /current PRO retention matches/);
+
+  const business = rows.find((row) => row.targetId === "trial-business-inside");
+  assert.equal(business?.ownerPlan, "BUSINESS", "trial evidence never shortens BUSINESS");
+  assert.equal(business?.calculatedExpiresAt, "2026-07-19T00:00:00.000Z");
+  assert.match(business?.reason ?? "", /historical PRO trial/);
+  assert.match(business?.reason ?? "", /current BUSINESS retention is longer/);
+
+  assert.throws(
+    () =>
+      planMediaExpiryBackfill(
+        [
+          {
+            targetKind: "video-job",
+            targetId: "trial-invalid-start",
+            ownerPlan: "FREE",
+            createdAt: new Date("2026-07-04T00:00:00.000Z"),
+            trialStartedAt: new Date("invalid"),
+            updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+            finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+          },
+        ],
+        NOW,
+      ),
+    /invalid trialStartedAt/,
+    "invalid historical evidence fails closed",
+  );
+}
+
+async function verifyHistoricalTrialDiscovery() {
+  await prisma.user.deleteMany({ where: { id: HISTORICAL_TRIAL_USER_ID } });
+  try {
+    await prisma.user.create({
+      data: {
+        id: HISTORICAL_TRIAL_USER_ID,
+        name: "Historical Trial",
+        email: "historical-trial@example.test",
+        plan: "FREE",
+        trialStartedAt: new Date("2026-07-04T00:00:00.000Z"),
+      },
+    });
+    await prisma.videoJob.create({
+      data: {
+        id: "media-backfill-job-historical-trial",
+        userId: HISTORICAL_TRIAL_USER_ID,
+        status: "done",
+        inputJson: "{}",
+        createdAt: new Date("2026-07-05T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+        mediaExpiresAt: null,
+      },
+    });
+
+    const report = await discoverMediaExpiryBackfill(prisma, NOW);
+    const row = report.rows.find((candidate) => candidate.targetId === "media-backfill-job-historical-trial");
+    assert.equal(row?.ownerPlan, "PRO", "discovery carries historical trial evidence");
+    assert.equal(row?.calculatedExpiresAt, "2026-07-12T00:00:00.000Z");
+    assert.equal(row?.alreadyExpired, false);
+  } finally {
+    await prisma.user.deleteMany({ where: { id: HISTORICAL_TRIAL_USER_ID } });
+  }
 }
 
 async function seedFixtures() {
@@ -249,7 +390,9 @@ async function main() {
   assertTemporarySqliteDatabaseUrl(DATABASE_URL);
   prisma = (await import("../src/lib/prisma")).prisma;
   verifyPurePlanner();
+  verifyHistoricalTrialPlanner();
   await cleanFixtures();
+  await verifyHistoricalTrialDiscovery();
 
   const fileDir = mkdtempSync(join(tmpdir(), "media-backfill-files-"));
   const sentinel = join(fileDir, "must-not-be-deleted.mp4");
