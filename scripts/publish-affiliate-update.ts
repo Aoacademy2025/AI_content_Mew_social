@@ -7,14 +7,14 @@
 // Idempotent: if an affiliate-2026-07 ProductUpdate already exists it skips (safe to re-run).
 import { prisma } from "../src/lib/prisma";
 
-const VERSION = "affiliate-2026-07";
+const VERSION = "v1.2.2";
 
-const TITLE = "เปิดตัวโปรแกรมพันธมิตร — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน";
+const TITLE = "เปิดตัว HERO AI Affiliate — แนะนำเพื่อน รับค่าคอม 25% ทุกเดือน";
 
 const SUMMARY =
   "ชวนเพื่อนมาใช้ HERO AI แล้วรับค่าคอมมิชชั่น 25% ของทุกยอดจ่าย ทุกเดือน ตลอดที่ลูกค้ายังใช้งาน";
 
-const BODY = `เปิดตัวโปรแกรมพันธมิตร HERO AI อย่างเป็นทางการ
+const BODY = `เปิดตัว HERO AI Affiliate อย่างเป็นทางการ
 
 แนะนำ HERO AI Creator Studio ให้เพื่อนหรือผู้ติดตามของคุณ แล้วรับค่าคอมมิชชั่น 25% ของยอดที่ลูกค้าจ่ายจริง ทุกเดือน ตลอดอายุการใช้งานของลูกค้า ไม่ใช่จ่ายครั้งเดียวจบ
 
@@ -26,7 +26,7 @@ const BODY = `เปิดตัวโปรแกรมพันธมิตร
 
 — อัปเดตระบบล่าสุด —
 
-นอกจากโปรแกรมพันธมิตร รอบนี้เราปรับปรุงระบบเพิ่มเติม:
+นอกจากระบบ Affiliate รอบนี้เราปรับปรุงระบบเพิ่มเติม:
 • ลบโปรเจกต์ที่ไม่ใช้แล้วได้จากหน้ารวมโปรเจกต์
 • สลับไปทำโปรเจกต์อื่นระหว่างรอ export ได้ — งานเดินต่อไม่หลุด
 • โปรเจกต์ฉบับร่างแสดงในรายการครบ ไม่หายอีกต่อไป
@@ -50,7 +50,7 @@ async function main() {
       state: "PUBLISHED",
       isPinned: true,
       publishedAt: new Date(),
-      ctaLabel: "สมัครเป็นพันธมิตร",
+      ctaLabel: "สมัครทำ Affiliate",
       ctaHref: "https://affiliate.heroaiengine.com/affiliate-program",
     },
   });

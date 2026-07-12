@@ -357,7 +357,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             <DropdownMenuItem asChild className="cursor-pointer">
               <a href="https://affiliate.heroaiengine.com/affiliate-program" target="_blank" rel="noopener noreferrer">
                 <Handshake className="mr-2 h-4 w-4" />
-                โปรแกรมพันธมิตร
+                Affiliate — รับค่าคอม 25%
               </a>
             </DropdownMenuItem>
             <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
