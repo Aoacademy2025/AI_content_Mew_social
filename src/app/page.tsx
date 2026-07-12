@@ -345,7 +345,7 @@ export default async function Home() {
               href="https://affiliate.heroaiengine.com/affiliate-program"
               className="text-sm text-white/50 underline-offset-4 hover:text-white hover:underline"
             >
-              โปรแกรมพันธมิตร — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน
+              Affiliate — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน
             </a>
           </p>
         </Reveal>
