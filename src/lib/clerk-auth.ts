@@ -1,10 +1,12 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { User } from "@prisma/client";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 import { syncUserEntitlement, classifyEntitlement } from "@/lib/entitlements";
 import { resolveServiceActor } from "@/lib/mcp/service-actor";
+import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
 
 // ── Admin trust root (SEC-11 hardening) ──────────────────────────────────────
 // ADMIN is granted ONLY from an email Clerk has VERIFIED as the account's PRIMARY,
@@ -140,6 +142,17 @@ export async function getCurrentUser(): Promise<User | null> {
   // to create the same row. The first wins; the rest hit a P2002 unique violation
   // (email/clerkId) — recover by reusing the row the winner just created instead of
   // surfacing a 500.
+  // Stamp the affiliate ref ONCE, at first sign-in — read from the aff_ref cookie set by
+  // the middleware (logged-in ?ref=) or the tracking script (anonymous). Written only here;
+  // never updated later, by design.
+  let affiliateRefCode: string | null = null;
+  try {
+    const jar = await cookies();
+    affiliateRefCode = sanitizeRefCode(jar.get(AFF_COOKIE)?.value);
+  } catch {
+    // outside request scope (service actor path) — no stamp
+  }
+
   let created: User;
   try {
     created = await prisma.user.create({
@@ -151,6 +164,7 @@ export async function getCurrentUser(): Promise<User | null> {
         email,
         image: clerkUser.imageUrl ?? null,
         ...(isAdminEmail ? { role: "ADMIN" } : {}),
+        ...(affiliateRefCode ? { affiliateRefCode } : {}),
       },
     });
   } catch (e) {

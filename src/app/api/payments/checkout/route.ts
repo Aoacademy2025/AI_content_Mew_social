@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { stripe, PLANS, PlanKey, BillingPeriod, resolvePrice } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
@@ -6,6 +7,7 @@ import { apiError } from "@/lib/api-error";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { claimSeat, attachReservation, releaseUnattachedSeat } from "@/lib/founding";
 import { checkoutAllowed } from "@/lib/plan-change";
+import { AFF_COOKIE, sanitizeRefCode, studioProductSlug } from "@/lib/affiliate-ref";
 
 export async function POST(req: Request) {
   try {
@@ -36,6 +38,19 @@ export async function POST(req: Request) {
       select: { email: true, name: true, stripeCustomerId: true, plan: true, subStatus: true, trialEndsAt: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    // ── Affiliate attribution (cookie wins, first-sign-in stamp is fallback) ──
+    // Tags the Stripe session + subscription so the hero-affiliate webhook can attribute
+    // the initial payment AND every renewal invoice. Empty when there's no ref → no-op.
+    let refCode: string | null = null;
+    try {
+      const jar = await cookies();
+      refCode = sanitizeRefCode(jar.get(AFF_COOKIE)?.value);
+    } catch {}
+    refCode = refCode ?? authUser.affiliateRefCode ?? null;
+    const affiliateMeta = refCode
+      ? { ref_code: refCode, product_id: studioProductSlug(plan, period), ha_brand: "hero-ai" }
+      : {};
 
     // ── Plan-change guard (defense-in-depth; the pricing UI is gated too) ──
     // Prevents the two ways the old equality-only UI could mis-charge:
@@ -115,10 +130,11 @@ export async function POST(req: Request) {
           userId, plan, period, periodDays: String(priceCfg.periodDays), method,
           ...(appliedCouponId ? { couponId: appliedCouponId } : {}),
           ...(isFounding ? { founding: "1" } : {}),
+          ...affiliateMeta,
         },
         ...(isSub
           ? {
-              subscription_data: { metadata: { userId, plan, period } },
+              subscription_data: { metadata: { userId, plan, period, ...affiliateMeta } },
               // bound how long a founding seat is held even for subscription sessions
               ...(isFounding ? { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 } : {}),
             }

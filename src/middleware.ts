@@ -1,6 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
 
 const isPublicRoute = createRouteMatcher([
   "/",
@@ -40,7 +41,17 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   if (userId && req.nextUrl.pathname === "/") {
-    return NextResponse.redirect(new URL("/dashboard", req.url));
+    const res = NextResponse.redirect(new URL("/dashboard", req.url));
+    const ref = sanitizeRefCode(req.nextUrl.searchParams.get("ref"));
+    if (ref) {
+      res.cookies.set(AFF_COOKIE, ref, {
+        maxAge: 30 * 24 * 60 * 60,
+        path: "/",
+        sameSite: "lax",
+        secure: true,
+      });
+    }
+    return res;
   }
 
   if (isPublicRoute(req)) return NextResponse.next();

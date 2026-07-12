@@ -54,6 +54,7 @@ model User {
   aiAudioMinutesUsed    Float     @default(0) // managed-Gemini side-channel audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
   aiTextCallsUsed       Float     @default(0) // managed-Gemini text-LLM call count (keywords/ranker/content/analyze/split) per usage window; ceiling = minutesLimit × AI_TEXT_CALLS_MULT
   geminiKeyMode         String    @default("byok")
+  affiliateRefCode      String?   // hero-affiliate refCode stamped once at first sign-in; never updated after
   resetToken            String?
   resetExpires          DateTime?
   createdAt             DateTime  @default(now())
