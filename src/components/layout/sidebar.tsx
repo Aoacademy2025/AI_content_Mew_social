@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -353,6 +353,12 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
                 <CreditCard className="mr-2 h-4 w-4" />
                 Billing
               </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <a href="https://affiliate.heroaiengine.com/affiliate-program" target="_blank" rel="noopener noreferrer">
+                <Handshake className="mr-2 h-4 w-4" />
+                โปรแกรมพันธมิตร
+              </a>
             </DropdownMenuItem>
             <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
             <DropdownMenuItem
