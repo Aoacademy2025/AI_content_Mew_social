@@ -2,7 +2,7 @@
 // Start (prod): export MCP_SERVICE_SECRET=...; pm2 start ecosystem.config.js --only mcp-video-worker --update-env && pm2 save
 import "dotenv/config"; // load .env BEFORE prisma init — tsx (unlike Next) doesn't auto-load it
 import { prisma } from "../src/lib/prisma";
-import { claimNextQueuedJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
+import { claimNextRunnableJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
 import { hydrateServerGeminiKeyEnv } from "../src/lib/server-keys";
@@ -20,7 +20,7 @@ const ORPHAN_MAX_REQUEUES = Number(process.env.MCP_WORKER_ORPHAN_MAX_REQUEUES ??
 // blindly requeues/fails ALL `processing` jobs on boot with no worker-id/heartbeat guard, so a
 // second PM2 instance restarting mid-job would treat a live sibling's job as orphaned and
 // double-run it. A single process keeps that boot-recovery invariant intact; in-process
-// concurrency is the low-risk path. claimNextQueuedJob is an atomic guarded update, and slots
+// concurrency is the low-risk path. claimNextRunnableJob is an atomic guarded update, and slots
 // are filled by claiming sequentially (below), so two slots never claim the same VideoJob.
 const CONCURRENCY = (() => {
   const raw = Number(process.env.MCP_WORKER_CONCURRENCY ?? 2);
@@ -71,14 +71,14 @@ async function main() {
   const recovered = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: ORPHAN_MAX_REQUEUES });
   if (recovered.inspected > 0) {
     console.log(
-      `[mcp-worker] recovered orphaned processing job(s): inspected=${recovered.inspected} requeued=${recovered.requeued} failed=${recovered.failed}`,
+      `[mcp-worker] recovered orphaned processing job(s): inspected=${recovered.inspected} requeued=${recovered.requeued} parked=${recovered.parked} failed=${recovered.failed}`,
     );
   }
   startLoanwordRefresh(); // load auto-mined loanwords now + refresh every 10 min (unref'd)
   console.log(`[mcp-worker] started (concurrency=${CONCURRENCY})`);
 
   // Concurrency pool: keep up to CONCURRENCY orchestrations in flight. Slots are filled by
-  // claiming SEQUENTIALLY — each claimNextQueuedJob() is awaited before the next, so the
+  // claiming SEQUENTIALLY — each claimNextRunnableJob() is awaited before the next, so the
   // just-claimed job is already `processing` (its atomic guarded updateMany committed) before
   // the next findFirst runs. Two slots therefore never claim the same row. Claimed jobs then
   // RUN concurrently: their promises live in `active` and are not awaited by this dispatch loop.
@@ -87,7 +87,7 @@ async function main() {
     let claimedThisRound = false;
     try {
       while (running && active.size < CONCURRENCY) {
-        const job = await claimNextQueuedJob();
+        const job = await claimNextRunnableJob();
         if (!job) break; // queue empty right now
         claimedThisRound = true;
         const p: Promise<void> = runJob(job);
