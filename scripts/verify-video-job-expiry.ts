@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { updateEditorProject } from "../src/lib/editor-projects";
-import { failJob, finishJob } from "../src/lib/mcp/video-job";
+import {
+  failJob,
+  finishJob,
+  parkProviderJob,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "../src/lib/mcp/video-job";
+import type { AvatarProviderCheckpointV1 } from "../src/lib/mcp/avatar-provider-checkpoint";
 import { prisma } from "../src/lib/prisma";
 
 const FINISHED_AT = new Date("2026-07-01T12:00:00.000Z");
@@ -218,6 +224,56 @@ async function main() {
     assert.equal(canceledProjectAfterFinish?.lastOpenedAt.toISOString(), CANCELED_AT.toISOString());
 
     assert.equal(canceledAfterFinish?.errorMessage, "canceled by user (editor v2)");
+
+    const providerCheckpoint: AvatarProviderCheckpointV1 = {
+      version: 1,
+      provider: "heygen",
+      phase: "intro_wait",
+      providerStartedAt: "2026-07-01T10:00:00.000Z",
+      providerDeadlineAt: "2026-07-01T12:00:00.000Z",
+      baseUrl: "/api/renders/provider-base.mp4",
+      voiceUrl: "/api/renders/provider-voice.mp3",
+      audioDurationMs: 30_000,
+      captions: [{ text: "provider", startMs: 0, endMs: 900 }],
+      words: [],
+      fullText: "provider",
+      baseConfig: { voiceFile: "/api/renders/provider-voice.mp3" },
+      avatar: {
+        mode: "full",
+        id: "avatar-provider",
+        introSecs: 5,
+        tailSecs: 5,
+        layout: { scale: 1, offsetX: 0, offsetY: 0 },
+        introVideoId: "hg-provider",
+      },
+    };
+    const waitingProviderJob = await prisma.videoJob.create({
+      data: {
+        id: "video-job-expiry-waiting-provider",
+        userId: proUser.id,
+        status: "waiting_provider",
+        inputJson: "{}",
+        providerCheckpointJson: JSON.stringify(providerCheckpoint),
+        providerNextPollAt: FINISHED_AT,
+      },
+    });
+    const inflightWithWait = await prisma.videoJob.count({
+      where: { userId: proUser.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
+    });
+    assert.ok(inflightWithWait >= 1, "waiting provider jobs count toward the in-flight limit");
+    const cancelProviderWait = await prisma.videoJob.updateMany({
+      where: { id: waitingProviderJob.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
+      data: { status: "canceled", finishedAt: CANCELED_AT, errorMessage: "canceled by user (editor v2)" },
+    });
+    assert.equal(cancelProviderWait.count, 1, "waiting provider jobs can be canceled atomically");
+    assert.equal((await parkProviderJob(waitingProviderJob.id, providerCheckpoint, FINISHED_AT)).count, 0, "late park cannot resurrect cancellation");
+    await assert.rejects(
+      finishJob(waitingProviderJob.id, { videoUrl: "/api/renders/provider-must-not-finish.mp4" }, { now: FINISHED_AT }),
+      /__job_canceled__/,
+    );
+    const canceledProviderWait = await prisma.videoJob.findUniqueOrThrow({ where: { id: waitingProviderJob.id } });
+    assert.equal(canceledProviderWait.status, "canceled");
+    assert.equal(canceledProviderWait.providerCheckpointJson, JSON.stringify(providerCheckpoint), "cancellation preserves checkpoint for audit");
 
     // When completion wins first, the cancellation endpoint's guarded update
     // must lose and leave the immutable completion and project side effects intact.

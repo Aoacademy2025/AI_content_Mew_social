@@ -1,10 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
+import {
+  parseAvatarProviderCheckpoint,
+  serializeAvatarProviderCheckpoint,
+  type AvatarProviderCheckpointV1,
+} from "@/lib/mcp/avatar-provider-checkpoint";
+export {
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job-status";
 
 const WORKER_REQUEUE_MESSAGE_RE = /^worker restarted - requeued (\d+)\/(\d+)$/;
 export const VIDEO_JOB_CANCELED_ERROR = "__job_canceled__";
 export const VIDEO_JOB_NOT_PROCESSING_ERROR = "video_job_not_processing";
-
 function restartRequeueCount(errorMessage: string | null): number {
   const match = (errorMessage ?? "").match(WORKER_REQUEUE_MESSAGE_RE);
   return match ? Number(match[1]) : 0;
@@ -23,15 +32,18 @@ export async function createVideoJob(
   idempotencyKey?: string,
   opts: { projectId?: string | null; type?: string | null } = {},
 ) {
-  return prisma.videoJob.create({
-    data: {
-      userId,
-      projectId: opts.projectId ?? null,
-      ...(opts.type ? { type: opts.type } : {}),
-      inputJson: JSON.stringify(input),
-      idempotencyKey: idempotencyKey ?? null,
-      status: "queued",
-    },
+  return prisma.$transaction(async (tx) => {
+    await assertRenderEnqueueOpen(tx);
+    return tx.videoJob.create({
+      data: {
+        userId,
+        projectId: opts.projectId ?? null,
+        ...(opts.type ? { type: opts.type } : {}),
+        inputJson: JSON.stringify(input),
+        idempotencyKey: idempotencyKey ?? null,
+        status: "queued",
+      },
+    });
   });
 }
 
@@ -45,6 +57,59 @@ export async function claimNextQueuedJob() {
   });
   if (res.count !== 1) return null; // lost the race
   return prisma.videoJob.findUnique({ where: { id: next.id } });
+}
+
+/**
+ * Atomically claim either a due provider wait or the oldest queued job. Provider waits have
+ * priority so a completed external job does not sit behind newly-created work.
+ */
+export async function claimNextRunnableJob(now: Date = new Date()) {
+  const due = await prisma.videoJob.findFirst({
+    where: { status: "waiting_provider", providerNextPollAt: { lte: now } },
+    orderBy: [{ providerNextPollAt: "asc" }, { createdAt: "asc" }],
+  });
+  if (due) {
+    const claimed = await prisma.videoJob.updateMany({
+      where: {
+        id: due.id,
+        status: "waiting_provider",
+        providerNextPollAt: { lte: now },
+      },
+      data: { status: "processing", providerNextPollAt: null },
+    });
+    if (claimed.count === 1) return prisma.videoJob.findUnique({ where: { id: due.id } });
+  }
+
+  return claimNextQueuedJob();
+}
+
+export async function saveProviderCheckpoint(id: string, checkpoint: AvatarProviderCheckpointV1) {
+  const composite = checkpoint.phase === "composite";
+  return prisma.videoJob.updateMany({
+    where: { id, status: "processing" },
+    data: {
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
+      currentStep: composite ? "composite" : "avatar",
+      progress: composite ? 86 : 84,
+    },
+  });
+}
+
+export async function parkProviderJob(
+  id: string,
+  checkpoint: AvatarProviderCheckpointV1,
+  nextPollAt: Date,
+) {
+  return prisma.videoJob.updateMany({
+    where: { id, status: "processing" },
+    data: {
+      status: "waiting_provider",
+      currentStep: "avatar",
+      progress: 84,
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
+      providerNextPollAt: nextPollAt,
+    },
+  });
 }
 
 export async function setJobStep(id: string, currentStep: string, progress: number) {
@@ -78,6 +143,8 @@ export async function finishJob(
         videoId: output.videoId ?? null,
         finishedAt: now,
         mediaExpiresAt,
+        providerCheckpointJson: null,
+        providerNextPollAt: null,
       },
     });
 
@@ -184,7 +251,12 @@ export async function failJob(id: string, message: string) {
   return prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
       where: { id, status: "processing" },
-      data: { status: "failed", errorMessage: message.slice(0, 1000), finishedAt: new Date() },
+      data: {
+        status: "failed",
+        errorMessage: message.slice(0, 1000),
+        finishedAt: new Date(),
+        providerNextPollAt: null,
+      },
     });
     if (transitioned.count === 0) {
       return tx.videoJob.findUniqueOrThrow({ where: { id } });
@@ -219,18 +291,74 @@ export async function failJob(id: string, message: string) {
  * duplicate gallery entries. Resuming those stages idempotently is a larger change — see
  * SAFE_TO_REQUEUE_STEPS.
  */
-export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeues?: number } = {}) {
+export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeues?: number; now?: Date } = {}) {
   const rawMaxRequeues = Number(opts.maxRequeues ?? 2);
   const maxRequeues = Number.isFinite(rawMaxRequeues) ? Math.max(0, Math.floor(rawMaxRequeues)) : 2;
+  const now = opts.now ?? new Date();
   const jobs = await prisma.videoJob.findMany({
     where: { status: "processing" },
-    select: { id: true, currentStep: true, errorMessage: true },
+    select: {
+      id: true,
+      currentStep: true,
+      errorMessage: true,
+      providerCheckpointJson: true,
+      providerNextPollAt: true,
+    },
   });
 
   let requeued = 0;
   let failed = 0;
+  let parked = 0;
 
   for (const job of jobs) {
+    const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
+    const isProviderStage = job.currentStep === "avatar" || job.currentStep === "composite";
+    if (checkpoint && isProviderStage) {
+      let resumable = checkpoint;
+      if (checkpoint.phase === "intro_generate") {
+        if (!checkpoint.avatar.introVideoId) {
+          const res = await prisma.videoJob.updateMany({
+            where: { id: job.id, status: "processing" },
+            data: {
+              status: "failed",
+              errorMessage: "worker restarted during HeyGen generate with unknown provider outcome - manual recovery required",
+              finishedAt: now,
+              providerNextPollAt: null,
+            },
+          });
+          if (res.count === 1) failed++;
+          continue;
+        }
+        resumable = { ...checkpoint, phase: "intro_wait" };
+      } else if (checkpoint.phase === "tail_generate") {
+        if (!checkpoint.avatar.tailVideoId) {
+          const res = await prisma.videoJob.updateMany({
+            where: { id: job.id, status: "processing" },
+            data: {
+              status: "failed",
+              errorMessage: "worker restarted during HeyGen generate with unknown provider outcome - manual recovery required",
+              finishedAt: now,
+              providerNextPollAt: null,
+            },
+          });
+          if (res.count === 1) failed++;
+          continue;
+        }
+        resumable = { ...checkpoint, phase: "tail_wait" };
+      }
+
+      const res = await prisma.videoJob.updateMany({
+        where: { id: job.id, status: "processing" },
+        data: {
+          status: "waiting_provider",
+          providerCheckpointJson: serializeAvatarProviderCheckpoint(resumable),
+          providerNextPollAt: job.providerNextPollAt ?? now,
+        },
+      });
+      if (res.count === 1) parked++;
+      continue;
+    }
+
     const previousRequeues = restartRequeueCount(job.errorMessage);
     const isSafeToReplay = job.currentStep === null || SAFE_TO_REQUEUE_STEPS.has(job.currentStep);
     const retryLimitReached = previousRequeues >= maxRequeues;
@@ -246,7 +374,8 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
         data: {
           status: "failed",
           errorMessage: reason,
-          finishedAt: new Date(),
+          finishedAt: now,
+          providerNextPollAt: null,
         },
       });
       if (res.count === 1) failed++;
@@ -268,5 +397,5 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
     if (res.count === 1) requeued++;
   }
 
-  return { inspected: jobs.length, requeued, failed };
+  return { inspected: jobs.length, requeued, parked, failed };
 }

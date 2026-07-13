@@ -7,6 +7,8 @@ import {
   finishJob,
   failJob,
   parseVideoJobOutput,
+  parkProviderJob,
+  saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
 } from "@/lib/mcp/video-job";
 import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
@@ -17,7 +19,21 @@ import {
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
   cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
-import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
+import {
+  compositeAvatarVideo,
+  generateAvatarVideo,
+  pollAvatarOnce,
+  prepareAvatarAudio,
+} from "@/lib/mcp/avatar-steps";
+import {
+  parseAvatarProviderCheckpoint,
+  providerPollDelayMs,
+  type AvatarProviderCheckpointV1,
+} from "@/lib/mcp/avatar-provider-checkpoint";
+import {
+  advanceAvatarProvider,
+  type AvatarProviderAdvanceResult,
+} from "@/lib/mcp/avatar-provider-resume";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
@@ -184,6 +200,145 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+
+    const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
+      const saved = await saveProviderCheckpoint(jobId, checkpoint);
+      return saved.count === 1;
+    };
+
+    const advanceProvider = (
+      checkpoint: AvatarProviderCheckpointV1,
+      allowGenerate = false,
+    ) => advanceAvatarProvider(checkpoint, {
+      now: () => new Date(),
+      allowGenerate,
+      generate: (avatarId, audioUrl) => generateAvatarVideo(caller, avatarId, audioUrl),
+      poll: (providerVideoId) => pollAvatarOnce(caller, providerVideoId),
+      composite: async (value) => {
+        const introVideoUrl = value.avatar.introVideoUrl;
+        if (!introVideoUrl) throw new Error("avatar checkpoint missing intro video URL");
+        if (value.avatar.mode === "bookend-both" && !value.avatar.tailVideoUrl) {
+          throw new Error("avatar checkpoint missing tail video URL");
+        }
+        return compositeAvatarVideo(caller, {
+          baseUrl: value.baseUrl,
+          avatarMode: value.avatar.mode,
+          introSecs: value.avatar.introSecs,
+          tailSecs: value.avatar.tailSecs,
+          introVideoUrl,
+          tailVideoUrl: value.avatar.tailVideoUrl,
+          layout: value.avatar.layout,
+        });
+      },
+      persist: persistProviderCheckpoint,
+    });
+
+    const finishPreparedAvatarJob = async (
+      checkpoint: AvatarProviderCheckpointV1,
+      compositeUrl: string,
+    ): Promise<void> => {
+      const avatarVideoUrl = checkpoint.avatar.introVideoUrl;
+      if (!avatarVideoUrl) throw new Error("avatar checkpoint missing intro video URL");
+      const captions: OrchCaption[] = checkpoint.captions.map((caption, index) => ({
+        ...caption,
+        tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+      }));
+
+      if (input.previewMode) {
+        const previewDuration = Date.now() - phaseStartedAt;
+        timings.push([phaseName, previewDuration]);
+        emitStage(phaseName, "done", previewDuration);
+        const totalPreviewS = (Date.now() - jobStartedAt) / 1000;
+        console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+        await finishJob(jobId, {
+          version: 2,
+          mode: "preview",
+          videoUrl: compositeUrl,
+          preview: {
+            captions,
+            config: checkpoint.baseConfig,
+            voiceUrl: checkpoint.voiceUrl,
+            audioDurationMs: checkpoint.audioDurationMs,
+            avatarModel: checkpoint.avatar.id,
+            avatarVideoUrl,
+            avatarMode: checkpoint.avatar.mode,
+            avatarIntroSecs: checkpoint.avatar.introSecs,
+            avatarTailSecs: checkpoint.avatar.tailSecs,
+            compositeBaseUrl: checkpoint.baseUrl,
+            tailAvatarUrl: checkpoint.avatar.tailVideoUrl ?? null,
+            words: checkpoint.words,
+            fullText: checkpoint.fullText,
+          },
+        });
+        return;
+      }
+
+      const created = await caller.post<{ id: string }>("/api/videos", {
+        videoUrl: compositeUrl,
+        audioUrl: checkpoint.voiceUrl,
+        thumbnail: null,
+        script: input.script.trim() || null,
+        avatarModel: checkpoint.avatar.id,
+        avatarVideoUrl,
+        voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
+        sceneCount: captions.length,
+        renderConfig: checkpoint.baseConfig,
+        status: "PROCESSING",
+      });
+
+      await step("burn", 88);
+      const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
+      const render = await caller.post<{ jobId: string }>("/api/videos/render", {
+        subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, RENDER_FPS, subTop),
+      });
+      const burnedUrl = await pollRender(
+        caller,
+        render.jobId,
+        (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); },
+        { sleep, checkCanceled: cancelInFlightRender(render.jobId) },
+      );
+      await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
+
+      const finalDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, finalDuration]);
+      emitStage(phaseName, "done", finalDuration);
+      const totalS = (Date.now() - jobStartedAt) / 1000;
+      console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+      await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
+    };
+
+    const settleProviderAdvance = async (result: AvatarProviderAdvanceResult): Promise<void> => {
+      if (result.kind === "failed") {
+        if (result.message === "provider checkpoint guard rejected") {
+          const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+          if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        }
+        throw new Error(result.message);
+      }
+      if (result.kind === "ready") {
+        await finishPreparedAvatarJob(result.checkpoint, result.compositeUrl);
+        return;
+      }
+
+      const nowMs = Date.now();
+      const delayMs = providerPollDelayMs(Date.parse(result.checkpoint.providerStartedAt), nowMs, result.retryAfterSec);
+      const parked = await parkProviderJob(jobId, result.checkpoint, new Date(nowMs + delayMs));
+      if (parked.count === 1) return;
+      const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      throw new Error("video_job_not_processing");
+    };
+
+    const rawProviderCheckpoint = job.providerCheckpointJson;
+    const providerCheckpoint = parseAvatarProviderCheckpoint(rawProviderCheckpoint);
+    if (rawProviderCheckpoint && !providerCheckpoint) {
+      throw new Error("invalid avatar provider checkpoint - manual recovery required");
+    }
+    if (providerCheckpoint) {
+      await step(providerCheckpoint.phase === "composite" ? "composite" : "avatar", providerCheckpoint.phase === "composite" ? 86 : 84);
+      await settleProviderAdvance(await advanceProvider(providerCheckpoint));
+      return;
+    }
 
     // Resolve BGM (path | track title | mood word like "ชิล"/"chill"/"ดราม่า") → a
     // real /music path. In chat the client usually sends a title or mood, not a path,
@@ -595,16 +750,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // malformed job rather than generating with avatarModel=undefined.
       if (!input.avatarId) throw new Error("avatar job missing avatarId");
       await step("avatar", 80);
-      const av = await runAvatarComposite(caller, {
-        baseUrl, ttsAudioUrl: tts.voiceUrl, avatarMode: input.avatarMode, avatarId: input.avatarId,
-        introSecs: input.avatarIntroSecs ?? 5, tailSecs: input.avatarTailSecs ?? 5, sleep,
-        layout: { scale: input.avatarScale ?? 1, offsetX: input.avatarOffsetX ?? 0, offsetY: input.avatarOffsetY ?? 0 },
-        onStep: (label) => { void setJobStep(jobId, label, 84).catch(() => {}); },
+      const introSecs = input.avatarIntroSecs ?? 5;
+      const tailSecs = input.avatarTailSecs ?? 5;
+      const preparedAudio = await prepareAvatarAudio(caller, {
+        ttsAudioUrl: tts.voiceUrl,
+        avatarMode: input.avatarMode,
+        introSecs,
+        tailSecs,
       });
-      finalBase = av.compositeUrl;
-      avatarModel = input.avatarId;
-      avatarVideoUrl = av.avatarUrl;
-      tailAvatarUrl = av.tailAvatarUrl ?? null;
+      const startedAt = new Date();
+      const checkpoint: AvatarProviderCheckpointV1 = {
+        version: 1,
+        provider: "heygen",
+        phase: "intro_generate",
+        providerStartedAt: startedAt.toISOString(),
+        providerDeadlineAt: new Date(startedAt.getTime() + 2 * 60 * 60_000).toISOString(),
+        baseUrl,
+        voiceUrl: tts.voiceUrl,
+        audioDurationMs: durMs,
+        captions,
+        words: capRes.words,
+        fullText: capRes.fullText,
+        baseConfig,
+        avatar: {
+          mode: input.avatarMode,
+          id: input.avatarId,
+          introSecs,
+          tailSecs,
+          layout: {
+            scale: Number.isFinite(input.avatarScale) ? Number(input.avatarScale) : 1,
+            offsetX: Number.isFinite(input.avatarOffsetX) ? Number(input.avatarOffsetX) : 0,
+            offsetY: Number.isFinite(input.avatarOffsetY) ? Number(input.avatarOffsetY) : 0,
+          },
+          introAudioUrl: preparedAudio.introAudioUrl,
+          tailAudioUrl: preparedAudio.tailAudioUrl,
+        },
+      };
+      if (!await persistProviderCheckpoint(checkpoint)) throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      await settleProviderAdvance(await advanceProvider(checkpoint, true));
+      return;
     }
 
     // PREVIEW MODE (Editor v2): stop here — no burn, no gallery Video row (the web burn

@@ -120,7 +120,19 @@ echo "=== [5a/6] Normalize staged build permissions ==="
 # must be able to traverse directories and read static assets before the swap.
 chmod -R a+rX "$STAGING_DIR"
 
-echo "=== [5b/6] Atomic swap .next-staging -> .next ==="
+echo "=== [5b/6] Empty render queue gate ==="
+# Production rollouts set REQUIRE_EMPTY_RENDER_QUEUES=1 after external ingress is
+# blocked. The checker is fail-closed: active queues exit 2 and DB/unknown errors exit
+# nonzero. Abort before touching live .next or restarting any PM2 process.
+if [ "${REQUIRE_EMPTY_RENDER_QUEUES:-0}" = "1" ]; then
+  if ! npx tsx scripts/check-empty-render-queues.ts; then
+    rm -rf "$STAGING_DIR"
+    echo "ERROR: render queues are active or unreadable. Old .next untouched; PM2 was not restarted."
+    exit 1
+  fi
+fi
+
+echo "=== [5c/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
 rm -rf "$APP_DIR/.next.old"

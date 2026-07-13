@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import { parseVideoJobOutput } from "@/lib/mcp/video-job";
+import {
+  parseVideoJobOutput,
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job";
 import { resolveProjectMediaState } from "@/lib/media-retention";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
@@ -56,7 +60,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       id: job.id,
       projectId: job.projectId,
       type: job.type,
-      status: job.status, // queued | processing | done | failed | canceled
+      status: toPublicVideoJobStatus(job.status), // queued | processing | done | failed | canceled
       currentStep: job.currentStep,
       progress: job.progress,
       errorMessage: job.errorMessage,
@@ -87,7 +91,7 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }
     const res = await prisma.videoJob.updateMany({
-      where: { id, userId: user.id, status: { in: ["queued", "processing"] } },
+      where: { id, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
       data: { status: "canceled", finishedAt: new Date(), errorMessage: "canceled by user (editor v2)" },
     });
     if (res.count !== 1) {

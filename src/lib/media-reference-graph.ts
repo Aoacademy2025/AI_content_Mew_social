@@ -13,6 +13,8 @@ import {
   expiryForMedia,
   type MediaReference,
 } from "@/lib/media-retention";
+import { parseAvatarProviderCheckpoint } from "@/lib/mcp/avatar-provider-checkpoint";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 
 export type MediaGraphError = {
   ownerKind: MediaReference["ownerKind"];
@@ -210,13 +212,15 @@ export async function buildMediaReferenceGraph(
       },
     })),
     safeQuery("video-job", () => prisma.videoJob.findMany({
-      where: { status: "done" },
+      where: { status: { in: ["done", "waiting_provider"] } },
       select: {
         id: true,
         userId: true,
         projectId: true,
+        status: true,
         outputJson: true,
         mediaExpiresAt: true,
+        providerCheckpointJson: true,
       },
     })),
     safeQuery("project-draft", () => prisma.editorProject.findMany({
@@ -273,11 +277,33 @@ export async function buildMediaReferenceGraph(
   const videoJobKeysById = new Map<string, Set<MediaKey>>();
   const videoJobOwnerById = new Map<string, ProjectScopedOwner>();
   for (const job of videoJobs) {
+    const waitingForProvider = job.status === "waiting_provider";
     const reference: MediaReference = {
       ownerKind: "video-job",
       ownerId: job.id,
-      expiresAt: job.mediaExpiresAt,
+      expiresAt: waitingForProvider ? null : job.mediaExpiresAt,
+      alwaysProtect: waitingForProvider || undefined,
     };
+    if (waitingForProvider) {
+      const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
+      const ownerKeys = new Set<MediaKey>();
+      if (!checkpoint) {
+        addError(reference, "providerCheckpointJson", job.providerCheckpointJson ? "malformed_json" : "missing_json");
+      } else {
+        const checkpointMedia = {
+          baseUrl: checkpoint.baseUrl,
+          voiceUrl: checkpoint.voiceUrl,
+          introVideoUrl: checkpoint.avatar.introVideoUrl,
+          tailVideoUrl: checkpoint.avatar.tailVideoUrl,
+        };
+        for (const [field, value] of Object.entries(checkpointMedia)) {
+          for (const key of collectOwnerValue(value, reference, `providerCheckpointJson.${field}`).keys) ownerKeys.add(key);
+        }
+      }
+      videoJobKeysById.set(job.id, ownerKeys);
+      videoJobOwnerById.set(job.id, { userId: job.userId, projectId: job.projectId });
+      continue;
+    }
     if (job.outputJson === null) {
       addError(reference, "outputJson", "missing_json");
       videoJobKeysById.set(job.id, new Set());
@@ -310,7 +336,7 @@ export async function buildMediaReferenceGraph(
       const inFlightJobs = await prisma.videoJob.findMany({
         where: {
           id: { in: activePointerIds },
-          status: { in: ["queued", "processing"] },
+          status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] },
         },
         select: {
           id: true,
