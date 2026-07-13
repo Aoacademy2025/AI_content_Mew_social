@@ -219,6 +219,38 @@ async function seed(prisma: PrismaClient): Promise<void> {
         outputJson: "{ignored-because-not-done",
         mediaExpiresAt: null,
       },
+      {
+        id: "graph-provider-wait-job",
+        userId: "graph-pro",
+        status: "waiting_provider",
+        inputJson: "{}",
+        providerCheckpointJson: JSON.stringify({
+          version: 1,
+          provider: "heygen",
+          phase: "tail_wait",
+          providerStartedAt: "2026-07-19T22:00:00.000Z",
+          providerDeadlineAt: "2026-07-20T00:30:00.000Z",
+          baseUrl: "/api/renders/provider-base.mp4",
+          voiceUrl: "/api/renders/provider-voice.mp3",
+          audioDurationMs: 90_000,
+          captions: [{ text: "provider", startMs: 0, endMs: 900 }],
+          words: [],
+          fullText: "provider",
+          baseConfig: { voiceFile: "/api/renders/provider-voice.mp3" },
+          avatar: {
+            mode: "bookend-both",
+            id: "avatar-provider",
+            introSecs: 5,
+            tailSecs: 5,
+            layout: { scale: 1, offsetX: 0, offsetY: 0 },
+            introVideoId: "hg-intro",
+            introVideoUrl: "/api/renders/provider-intro.mp4",
+            tailVideoId: "hg-tail",
+          },
+        }),
+        providerNextPollAt: new Date("2026-07-20T00:00:30.000Z"),
+        mediaExpiresAt: null,
+      },
     ],
   });
 
@@ -440,6 +472,9 @@ async function main(): Promise<void> {
   writeMedia("renders", "unscoped-job.mp4", dateAtOffset(-1));
   writeMedia("renders", "unscoped-video.mp4", dateAtOffset(-1));
   writeMedia("renders", "archived-inflight-input.mp4", dateAtOffset(-20));
+  writeMedia("renders", "provider-base.mp4", dateAtOffset(-20));
+  writeMedia("renders", "provider-voice.mp3", dateAtOffset(-20));
+  writeMedia("renders", "provider-intro.mp4", dateAtOffset(-20));
   const outsideTarget = join(FIXTURE_ROOT, "outside.mp4");
   writeFileSync(outsideTarget, "outside");
   symlinkSync(outsideTarget, join(FIXTURE_ROOT, "public", "renders", "escape-link.mp4"));
@@ -514,7 +549,7 @@ async function main(): Promise<void> {
 
   assert.deepEqual(graph.scannedOwners, {
     video: 8,
-    "video-job": 7,
+    "video-job": 8,
     "project-draft": 16,
     "render-job": 3,
     "generated-image": 5,
@@ -608,6 +643,12 @@ async function main(): Promise<void> {
     undefined,
     "nested non-final VideoJob media is not marked critical",
   );
+  for (const key of ["renders/provider-base.mp4", "renders/provider-voice.mp3", "renders/provider-intro.mp4"]) {
+    const providerRef = refsFor(graph, key).find((ref) => ref.ownerId === "graph-provider-wait-job");
+    assert.equal(providerRef?.ownerKind, "video-job", `${key} belongs to the waiting provider job`);
+    assert.equal(providerRef?.alwaysProtect, true, `${key} is protected for the full provider wait`);
+    assert.equal(providerRef?.expiresAt, null, `${key} has no cleanup deadline while waiting`);
+  }
   assert.equal(
     refsFor(graph, "renders/preview-active-job-720p.mp4").some((ref) =>
       ref.ownerKind === "project-draft" &&
