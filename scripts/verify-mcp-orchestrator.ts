@@ -3,6 +3,7 @@
 //   DATABASE_URL="file:$ROOT/prisma/test-mcp.db?connection_limit=1" npx tsx scripts/verify-mcp-orchestrator.ts
 import { prisma } from "../src/lib/prisma";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
+import { claimNextRunnableJob } from "../src/lib/mcp/video-job";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -125,6 +126,19 @@ async function main() {
     sleep: async () => {},
   });
 
+  const jobAvWaiting = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobAv.id } });
+  assert(jobAvWaiting.status === "waiting_provider" && !!jobAvWaiting.providerCheckpointJson, "avatar case: first run parks with durable provider checkpoint");
+  assert((avPostBodies["/api/heygen/generate-with-bg"] ?? []).length === 1, "avatar case: first run generates exactly once");
+  assert((avPostBodies["/api/videos/tts-gemini"] ?? []).length === 1 && avRenderCount === 1, "avatar case: first run performs TTS/base render once");
+  assert((await claimNextRunnableJob(new Date(Date.now() + 3 * 60 * 60_000)))?.id === jobAv.id, "avatar case: due provider wait is reclaimed");
+  await runOrchestrator(jobAv.id, u.id, {
+    caller: avCaller as never,
+    refundOneClip: async () => { avRefunded++; },
+    sleep: async () => {},
+  });
+  assert((avPostBodies["/api/heygen/generate-with-bg"] ?? []).length === 1, "avatar case: resume never generates again");
+  assert((avPostBodies["/api/videos/tts-gemini"] ?? []).length === 1, "avatar case: resume skips TTS");
+
   // AVATAR (MON-2): the composite makes finalBase a NEW url ("COMPOSITE") the burn does NOT
   // recognize as paid, so the burn re-reserves a clip. The orchestrator therefore refunds the
   // base exactly once → net 1 (base +1, refund −1, burn +1).
@@ -189,6 +203,12 @@ async function main() {
     },
   };
   await runOrchestrator(jobAvPrev.id, u.id, { caller: avPrevCaller as never, refundOneClip: async () => { avPrevRefunded++; }, sleep: async () => {} });
+  const avPrevWaiting = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobAvPrev.id } });
+  assert(avPrevWaiting.status === "waiting_provider", "avatar+preview: first run parks instead of occupying a worker slot");
+  assert((await claimNextRunnableJob(new Date(Date.now() + 3 * 60 * 60_000)))?.id === jobAvPrev.id, "avatar+preview: due wait is reclaimed");
+  await runOrchestrator(jobAvPrev.id, u.id, { caller: avPrevCaller as never, refundOneClip: async () => { avPrevRefunded++; }, sleep: async () => {} });
+  assert(avPrevPaths.filter((p) => p === "/api/heygen/generate-with-bg").length === 1, "avatar+preview: resume does not generate twice");
+  assert(avPrevPaths.filter((p) => p === "/api/videos/tts-gemini").length === 1, "avatar+preview: resume skips TTS");
   assert(avPrevPaths.filter((p) => p === "/api/videos/render").length === 1, "avatar+preview: ONE render (base only, no burn)");
   assert(!avPrevPaths.includes("/api/videos"), "avatar+preview: NO gallery row (web burn creates it)");
   assert(avPrevRefunded === 0, "avatar+preview: NO refund — base charge stands (net 1)");
