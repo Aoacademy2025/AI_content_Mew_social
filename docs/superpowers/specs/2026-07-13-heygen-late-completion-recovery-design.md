@@ -99,7 +99,7 @@ and execute concurrently as it does today.
 type AvatarProviderCheckpointV1 = {
   version: 1;
   provider: "heygen";
-  phase: "intro_wait" | "tail_wait" | "composite";
+  phase: "intro_generate" | "intro_wait" | "tail_generate" | "tail_wait" | "composite";
   providerStartedAt: string;
   providerDeadlineAt: string;
   baseUrl: string;
@@ -132,14 +132,18 @@ in orchestrator memory.
 ### 6.1 Initial generation
 
 1. Run TTS, captions, stock, config, and base render exactly as today.
-2. Write the prepared avatar checkpoint before calling HeyGen.
+2. Write the prepared avatar checkpoint with `phase=intro_generate` before calling HeyGen.
 3. Generate the intro HeyGen video once.
-4. Persist `introVideoId` immediately after the successful generate response.
+4. Persist `introVideoId` and advance to `phase=intro_wait` immediately after the successful
+   generate response.
 5. Set `status=waiting_provider`, `currentStep=avatar`, `progress=84`, and
    `providerNextPollAt` in one guarded update, then return the worker slot.
 
 The generate request remains non-retried because it spends external credits. A transport failure
 whose outcome is unknowable remains a terminal error rather than risking a duplicate generation.
+Likewise, a restart that finds `intro_generate` or `tail_generate` without a persisted provider ID
+fails closed as an unknown generate outcome; it never guesses that the external request was absent
+and never generates again.
 
 ### 6.2 Provider polling and resume
 
@@ -157,8 +161,10 @@ Honor a larger valid `Retry-After` up to 120 seconds. The absolute provider dead
 At that deadline the job becomes failed with an explicit provider-wait timeout, but its checkpoint
 is preserved for operator recovery if HeyGen completes later.
 
-For `bookend-both`, completion of the intro advances to tail generation. The tail ID is persisted
-before waiting again. No transition may regenerate an ID already present in the checkpoint.
+For `bookend-both`, completion of the intro first persists `phase=tail_generate`, then performs tail
+generation. The tail ID and `phase=tail_wait` are persisted before waiting again. No transition may
+regenerate an ID already present in the checkpoint, and a stranded generate phase without an ID
+uses the same fail-closed unknown-outcome rule.
 
 When all required HeyGen URLs exist, advance to `phase=composite`, call the existing composite
 route, and continue the current preview or full-video finalization path. A restart during composite
@@ -173,8 +179,10 @@ preserve it for audit but never auto-resume it.
 
 `recoverProcessingJobsAfterWorkerRestart` changes only for jobs with a valid avatar checkpoint:
 
-- `processing` at `avatar` or `composite` with a valid checkpoint becomes `waiting_provider` and
-  resumes from the saved phase.
+- `processing` at `avatar` or `composite` with a valid wait/composite checkpoint becomes
+  `waiting_provider` and resumes from the saved phase.
+- `intro_generate` or `tail_generate` without its persisted provider ID fails with the explicit
+  unknown-generate-outcome error and is never requeued or regenerated.
 - An invalid checkpoint follows the existing fail-closed behavior.
 - Other post-billable processing jobs retain the current no-replay behavior.
 
