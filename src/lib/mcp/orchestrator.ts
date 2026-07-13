@@ -203,9 +203,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
       const saved = await saveProviderCheckpoint(jobId, checkpoint);
-      if (saved.count !== 1) return false;
-      await setJobStep(jobId, checkpoint.phase === "composite" ? "composite" : "avatar", checkpoint.phase === "composite" ? 86 : 84);
-      return true;
+      return saved.count === 1;
     };
 
     const advanceProvider = (

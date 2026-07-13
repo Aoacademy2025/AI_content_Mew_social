@@ -84,9 +84,14 @@ export async function claimNextRunnableJob(now: Date = new Date()) {
 }
 
 export async function saveProviderCheckpoint(id: string, checkpoint: AvatarProviderCheckpointV1) {
+  const composite = checkpoint.phase === "composite";
   return prisma.videoJob.updateMany({
     where: { id, status: "processing" },
-    data: { providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint) },
+    data: {
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
+      currentStep: composite ? "composite" : "avatar",
+      progress: composite ? 86 : 84,
+    },
   });
 }
 

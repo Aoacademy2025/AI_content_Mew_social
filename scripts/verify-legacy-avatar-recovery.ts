@@ -174,6 +174,32 @@ async function main() {
     const pending = await inspectLegacyAvatarRecovery({ jobId: pendingJob.id, heygenVideoId: "hg-pending" }, deps);
     assert.equal(pending.status, "pending");
 
+    // A successful retry that lands after inspection but before apply still wins.
+    const racedProject = await createProject("legacy-project-raced-supersede");
+    const racedJob = await createFailedJob("legacy-job-raced-supersede", racedProject.id, 10);
+    await createBaseRender("legacy-render-raced-supersede", 10, writeRender("raced-base.mp4"), writeRender("raced-voice.mp3"));
+    const racedInspection = await inspectLegacyAvatarRecovery(
+      { jobId: racedJob.id, heygenVideoId: "hg-completed" },
+      deps,
+    );
+    assert.equal(racedInspection.status, "recoverable");
+    await prisma.videoJob.create({
+      data: {
+        id: "legacy-job-raced-newer-done",
+        userId: USER_ID,
+        projectId: racedProject.id,
+        status: "done",
+        inputJson: JSON.stringify(input),
+        outputJson: JSON.stringify({ videoUrl: "/api/renders/raced-newer.mp4" }),
+        createdAt: at(10, 30),
+      },
+    });
+    const racedApply = await applyLegacyAvatarRecovery(racedInspection);
+    assert.deepEqual(racedApply, { applied: false, idempotent: false, jobId: racedJob.id });
+    const racedRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: racedJob.id } });
+    assert.equal(racedRow.status, "failed", "late successful retry blocks recovery apply");
+    assert.equal(racedRow.providerCheckpointJson, null, "late successful retry receives zero recovery writes");
+
     // Wrong status/error/provider ID fail closed.
     const badProject = await createProject("legacy-project-bad");
     const wrongStatus = await createFailedJob("legacy-job-wrong-status", badProject.id, 4, { status: "done" });

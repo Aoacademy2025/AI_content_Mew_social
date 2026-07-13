@@ -8,6 +8,7 @@ import {
   claimNextRunnableJob,
   VIDEO_JOB_INFLIGHT_STATUSES,
   toPublicVideoJobStatus,
+  saveProviderCheckpoint,
   parkProviderJob,
   setJobStep,
   finishJob,
@@ -79,6 +80,19 @@ async function main() {
       introVideoId: "hg-1",
     },
   };
+  const prepared = await createVideoJob(u.id, { script: "checkpoint intent" });
+  await claimNextRunnableJob();
+  const generateIntent: AvatarProviderCheckpointV1 = {
+    ...checkpoint,
+    phase: "intro_generate",
+    avatar: { ...checkpoint.avatar, introVideoId: undefined },
+  };
+  assert((await saveProviderCheckpoint(prepared.id, generateIntent)).count === 1, "checkpoint intent saves only while processing");
+  const preparedRow = await prisma.videoJob.findUniqueOrThrow({ where: { id: prepared.id } });
+  assert(preparedRow.currentStep === "avatar" && preparedRow.progress === 84, "checkpoint intent atomically records the provider step");
+  await prisma.videoJob.update({ where: { id: prepared.id }, data: { status: "canceled" } });
+  assert((await saveProviderCheckpoint(prepared.id, checkpoint)).count === 0, "cancellation blocks every later checkpoint write");
+
   const waiting = await createVideoJob(u.id, { script: "avatar" });
   assert((await claimNextRunnableJob())?.id === waiting.id, "runnable claim claims a queued job");
   const dueAt = new Date("2026-07-13T09:00:00.000Z");

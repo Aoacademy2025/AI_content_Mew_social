@@ -25,6 +25,9 @@ export type LegacyAvatarRecoveryDeps = {
 
 type RecoveryGuard = {
   userId: string;
+  projectId: string;
+  jobCreatedAt: Date;
+  inputFingerprint: string;
   errorMessage: string;
   checkpointJson: string;
 };
@@ -233,7 +236,14 @@ export async function inspectLegacyAvatarRecovery(
   };
   recoverySecrets.set(inspection, {
     checkpoint: validatedCheckpoint,
-    guard: { userId: job.userId, errorMessage: job.errorMessage, checkpointJson },
+    guard: {
+      userId: job.userId,
+      projectId: job.projectId,
+      jobCreatedAt: job.createdAt,
+      inputFingerprint: fingerprint,
+      errorMessage: job.errorMessage,
+      checkpointJson,
+    },
   });
   return inspection;
 }
@@ -245,33 +255,49 @@ export async function applyLegacyAvatarRecovery(
   if ((inspection.status !== "recoverable" && inspection.status !== "pending") || !secret) {
     throw new Error("legacy_recovery_not_applicable");
   }
-  const now = new Date();
-  const updated = await prisma.videoJob.updateMany({
-    where: {
-      id: inspection.jobId,
-      userId: secret.guard.userId,
-      status: "failed",
-      currentStep: "avatar",
-      errorMessage: secret.guard.errorMessage,
-      providerCheckpointJson: null,
-    },
-    data: {
-      status: "waiting_provider",
-      currentStep: "avatar",
-      progress: 84,
-      finishedAt: null,
-      providerCheckpointJson: secret.guard.checkpointJson,
-      providerNextPollAt: now,
-    },
-  });
-  if (updated.count === 1) return { applied: true, idempotent: false, jobId: inspection.jobId };
+  return prisma.$transaction(async (tx) => {
+    // Re-check the superseded invariant at the write boundary. A normal retry may
+    // finish after inspection's provider call; recovery must never overtake it.
+    const newerDone = await tx.videoJob.findMany({
+      where: {
+        projectId: secret.guard.projectId,
+        userId: secret.guard.userId,
+        status: "done",
+        createdAt: { gt: secret.guard.jobCreatedAt },
+      },
+      select: { inputJson: true },
+    });
+    if (newerDone.some((candidate) => videoJobInputFingerprint(candidate.inputJson) === secret.guard.inputFingerprint)) {
+      return { applied: false, idempotent: false, jobId: inspection.jobId };
+    }
 
-  const current = await prisma.videoJob.findUnique({
-    where: { id: inspection.jobId },
-    select: { status: true, providerCheckpointJson: true },
+    const updated = await tx.videoJob.updateMany({
+      where: {
+        id: inspection.jobId,
+        userId: secret.guard.userId,
+        status: "failed",
+        currentStep: "avatar",
+        errorMessage: secret.guard.errorMessage,
+        providerCheckpointJson: null,
+      },
+      data: {
+        status: "waiting_provider",
+        currentStep: "avatar",
+        progress: 84,
+        finishedAt: null,
+        providerCheckpointJson: secret.guard.checkpointJson,
+        providerNextPollAt: new Date(),
+      },
+    });
+    if (updated.count === 1) return { applied: true, idempotent: false, jobId: inspection.jobId };
+
+    const current = await tx.videoJob.findUnique({
+      where: { id: inspection.jobId },
+      select: { status: true, providerCheckpointJson: true },
+    });
+    const idempotent = current?.status === "waiting_provider" && current.providerCheckpointJson === secret.guard.checkpointJson;
+    return { applied: false, idempotent, jobId: inspection.jobId };
   });
-  const idempotent = current?.status === "waiting_provider" && current.providerCheckpointJson === secret.guard.checkpointJson;
-  return { applied: false, idempotent, jobId: inspection.jobId };
 }
 
 export function formatLegacyAvatarRecoveryResult(inspection: LegacyAvatarRecoveryInspection): string {

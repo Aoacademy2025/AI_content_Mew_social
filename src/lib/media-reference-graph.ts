@@ -14,7 +14,7 @@ import {
   type MediaReference,
 } from "@/lib/media-retention";
 import { parseAvatarProviderCheckpoint } from "@/lib/mcp/avatar-provider-checkpoint";
-import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job";
+import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 
 export type MediaGraphError = {
   ownerKind: MediaReference["ownerKind"];
