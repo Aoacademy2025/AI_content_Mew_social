@@ -168,3 +168,18 @@ export function videoJobInputFingerprint(inputJson: string): string {
   }
   return createHash("sha256").update(normalized).digest("hex");
 }
+
+/**
+ * Fingerprint only the authored script. Recovery uses this narrower identity because
+ * a normal retry may change layout/search settings while still superseding the same
+ * failed deliverable in the same editor project.
+ */
+export function videoJobScriptFingerprint(inputJson: string): string | null {
+  try {
+    const value = JSON.parse(inputJson) as unknown;
+    if (!isRecord(value) || typeof value.script !== "string" || value.script.length === 0) return null;
+    return createHash("sha256").update(`script:${value.script}`).digest("hex");
+  } catch {
+    return null;
+  }
+}

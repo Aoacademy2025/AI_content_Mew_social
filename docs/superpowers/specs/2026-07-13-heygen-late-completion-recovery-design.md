@@ -214,7 +214,8 @@ For every pair, the script must verify:
 4. The render payload contains the captions/config/audio data required to reconstruct a valid
    version-2 preview checkpoint. Missing data aborts that row; it is never guessed.
 5. The target project still belongs to the same user.
-6. No newer `done` job in the same project has the same normalized input fingerprint. A matching
+6. No newer `done` job in the same project has the same exact script fingerprint. Other retry
+   settings may differ without making the older deliverable recoverable. A matching
    successful retry supersedes the timed-out row; recovery must report it and make no write.
 
 The apply path writes a legacy-reconstructed checkpoint and atomically moves only the matching
@@ -224,7 +225,7 @@ waiting; a completed video proceeds without regeneration.
 
 For the 2026-07-13 incident, operator mappings are taken from the audited production logs. IDs and
 signed URLs are not committed to the repository. The three `sumawad` timeout rows share the same
-project and script fingerprint as a newer successful retry, so the expected production action for
+project and exact-script fingerprint as a newer successful retry, so the expected production action for
 those rows is a dry-run `superseded` result and zero recovery writes. Each genuinely recoverable
 job is verified in its project before moving to the next.
 
