@@ -206,6 +206,8 @@ For every pair, the script must verify:
 4. The render payload contains the captions/config/audio data required to reconstruct a valid
    version-2 preview checkpoint. Missing data aborts that row; it is never guessed.
 5. The target project still belongs to the same user.
+6. No newer `done` job in the same project has the same normalized input fingerprint. A matching
+   successful retry supersedes the timed-out row; recovery must report it and make no write.
 
 The apply path writes a legacy-reconstructed checkpoint and atomically moves only the matching
 failed job to `waiting_provider`. The normal worker then performs provider validation, composite,
@@ -213,8 +215,10 @@ and `finishJob`, preserving one completion path. A provider video that is still 
 waiting; a completed video proceeds without regeneration.
 
 For the 2026-07-13 incident, operator mappings are taken from the audited production logs. IDs and
-signed URLs are not committed to the repository. Each recovered job is verified in its project
-before moving to the next.
+signed URLs are not committed to the repository. The three `sumawad` timeout rows share the same
+project and script fingerprint as a newer successful retry, so the expected production action for
+those rows is a dry-run `superseded` result and zero recovery writes. Each genuinely recoverable
+job is verified in its project before moving to the next.
 
 ## 9. Production drain and deploy gate
 
@@ -276,7 +280,8 @@ Add focused verification scripts/tests that prove:
 - cancellation wins every waiting/claim/composite/finish race and cannot be resurrected;
 - `waiting_provider` counts toward in-flight limits and is normalized for public APIs;
 - finish clears provider fields atomically and updates the EditorProject once;
-- recovery defaults to dry-run, rejects ownership/status/media mismatches, and is idempotent;
+- recovery defaults to dry-run, rejects ownership/status/media mismatches and newer successful
+  duplicates, and is idempotent;
 - drain mode blocks every enqueue boundary before quota reservation while allowing status/cancel;
 - queue-zero deploy check fails closed when either queue is active.
 
@@ -297,7 +302,8 @@ The change is accepted when:
 2. The same job survives MCP worker restart and completes once.
 3. A canceled waiting job never resumes.
 4. Production deployment does not begin its restart phase until both queues are empty under drain.
-5. Recoverable `sumawad` jobs finish from their existing HeyGen/base-render assets without new
-   HeyGen generation or clip reservation.
+5. The `sumawad` timeout rows are identified as superseded by the newer successful retry and
+   receive no production write; a non-superseded recovery fixture finishes from existing
+   HeyGen/base-render assets without new HeyGen generation or clip reservation.
 6. No existing non-avatar render, export, quota, project-resume, or media-retention verification
    regresses.
