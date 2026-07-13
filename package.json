@@ -15,6 +15,7 @@
     "verify:avatar-provider-checkpoint": "tsx scripts/verify-avatar-provider-checkpoint.ts",
     "verify:avatar-provider-resume": "tsx scripts/verify-avatar-provider-resume.ts",
     "verify:render-deploy-drain": "tsx scripts/verify-render-deploy-drain.ts",
+    "verify:deploy-render-gate": "tsx scripts/verify-deploy-render-gate.ts",
     "ops:render-drain": "tsx scripts/set-render-deploy-drain.ts",
     "ops:check-render-queues": "tsx scripts/check-empty-render-queues.ts",
     "verify:legacy-avatar-recovery": "tsx scripts/verify-legacy-avatar-recovery.ts",
