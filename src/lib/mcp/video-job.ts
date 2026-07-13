@@ -1,20 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
 import {
   parseAvatarProviderCheckpoint,
   serializeAvatarProviderCheckpoint,
   type AvatarProviderCheckpointV1,
 } from "@/lib/mcp/avatar-provider-checkpoint";
+export {
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job-status";
 
 const WORKER_REQUEUE_MESSAGE_RE = /^worker restarted - requeued (\d+)\/(\d+)$/;
 export const VIDEO_JOB_CANCELED_ERROR = "__job_canceled__";
 export const VIDEO_JOB_NOT_PROCESSING_ERROR = "video_job_not_processing";
-export const VIDEO_JOB_INFLIGHT_STATUSES = ["queued", "processing", "waiting_provider"] as const;
-
-export function toPublicVideoJobStatus(status: string): string {
-  return status === "waiting_provider" ? "processing" : status;
-}
-
 function restartRequeueCount(errorMessage: string | null): number {
   const match = (errorMessage ?? "").match(WORKER_REQUEUE_MESSAGE_RE);
   return match ? Number(match[1]) : 0;
@@ -33,15 +32,18 @@ export async function createVideoJob(
   idempotencyKey?: string,
   opts: { projectId?: string | null; type?: string | null } = {},
 ) {
-  return prisma.videoJob.create({
-    data: {
-      userId,
-      projectId: opts.projectId ?? null,
-      ...(opts.type ? { type: opts.type } : {}),
-      inputJson: JSON.stringify(input),
-      idempotencyKey: idempotencyKey ?? null,
-      status: "queued",
-    },
+  return prisma.$transaction(async (tx) => {
+    await assertRenderEnqueueOpen(tx);
+    return tx.videoJob.create({
+      data: {
+        userId,
+        projectId: opts.projectId ?? null,
+        ...(opts.type ? { type: opts.type } : {}),
+        inputJson: JSON.stringify(input),
+        idempotencyKey: idempotencyKey ?? null,
+        status: "queued",
+      },
+    });
   });
 }
 

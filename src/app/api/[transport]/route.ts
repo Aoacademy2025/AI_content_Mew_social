@@ -22,6 +22,7 @@ import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 
 export const runtime = "nodejs";
 
@@ -144,6 +145,14 @@ const handler = createMcpHandler(
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
+          try {
+            await assertRenderEnqueueOpen();
+          } catch (error) {
+            if (error instanceof RenderDeployDrainError) {
+              return { error: "render_maintenance", retryable: true, message: "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่" };
+            }
+            throw error;
+          }
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();

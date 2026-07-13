@@ -15,6 +15,7 @@ import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -61,6 +62,7 @@ export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    await assertRenderEnqueueOpen();
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
@@ -323,6 +325,9 @@ export async function POST(req: Request) {
       throw e;
     }
   } catch (err) {
+    if (err instanceof RenderDeployDrainError) {
+      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+    }
     if ((err as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });
     }

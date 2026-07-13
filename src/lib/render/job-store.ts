@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { reserveClipUsage } from "@/lib/usage-limits";
 import { refundReservation } from "@/lib/minute-credits";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import type { RenderJobType, RenderPayload } from "@/lib/render/types";
 
 // Refund a job's reserved quota in the SAME bucket it was reserved. Credit-funded
@@ -74,6 +75,7 @@ export async function enqueueRenderJob(input: {
    */
   scopeKey?: string | null;
 }): Promise<{ id: string }> {
+  await assertRenderEnqueueOpen();
   let reserved = false;
   if (input.reserveQuotaFor) {
     const r = await reserveClipUsage(input.userId);
@@ -89,23 +91,41 @@ export async function enqueueRenderJob(input: {
     // but do NOT reserve again (no double-charge).
     reserved = true;
   }
-  const job = await prisma.renderJob.create({
-    data: {
-      userId: input.userId,
-      type: input.type,
-      payload: JSON.stringify(input.payload),
-      videoId: input.videoId ?? null,
-      parentJobId: input.parentJobId ?? null,
-      idempotencyKey: input.idempotencyKey ?? null,
-      scopeKey: input.scopeKey ?? null,
-      reservedQuota: reserved,
-      reservedMinutes: input.reservedMinutes ?? null,
-      creditsSpent: input.creditsSpent ?? null,
-      creditsFromGranted: input.creditsFromGranted ?? null,
-      status: "QUEUED",
-    },
-  });
-  return { id: job.id };
+  try {
+    const job = await prisma.$transaction(async (tx) => {
+      await assertRenderEnqueueOpen(tx);
+      return tx.renderJob.create({
+        data: {
+          userId: input.userId,
+          type: input.type,
+          payload: JSON.stringify(input.payload),
+          videoId: input.videoId ?? null,
+          parentJobId: input.parentJobId ?? null,
+          idempotencyKey: input.idempotencyKey ?? null,
+          scopeKey: input.scopeKey ?? null,
+          reservedQuota: reserved,
+          reservedMinutes: input.reservedMinutes ?? null,
+          creditsSpent: input.creditsSpent ?? null,
+          creditsFromGranted: input.creditsFromGranted ?? null,
+          status: "QUEUED",
+        },
+      });
+    });
+    return { id: job.id };
+  } catch (error) {
+    if (error instanceof RenderDeployDrainError && reserved) {
+      await error.refundOnce(() => refundReservation(
+        input.userId,
+        {
+          reservedMinutes: input.reservedMinutes ?? null,
+          creditsSpent: input.creditsSpent ?? null,
+          creditsFromGranted: input.creditsFromGranted ?? null,
+        },
+        "render-drain-race",
+      ));
+    }
+    throw error;
+  }
 }
 
 /**
