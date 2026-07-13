@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import {
   parseAvatarProviderCheckpoint,
   serializeAvatarProviderCheckpoint,
-  videoJobInputFingerprint,
+  videoJobScriptFingerprint,
   type AvatarProviderCheckpointV1,
 } from "@/lib/mcp/avatar-provider-checkpoint";
 import type { AvatarProviderPollResult } from "@/lib/mcp/avatar-provider-resume";
@@ -27,7 +27,7 @@ type RecoveryGuard = {
   userId: string;
   projectId: string;
   jobCreatedAt: Date;
-  inputFingerprint: string;
+  scriptFingerprint: string;
   errorMessage: string;
   checkpointJson: string;
 };
@@ -131,7 +131,8 @@ export async function inspectLegacyAvatarRecovery(
   const project = await prisma.editorProject.findUnique({ where: { id: job.projectId }, select: { userId: true } });
   if (!project || project.userId !== job.userId) return rejected(input, "project_owner_mismatch");
 
-  const fingerprint = videoJobInputFingerprint(job.inputJson);
+  const scriptFingerprint = videoJobScriptFingerprint(job.inputJson);
+  if (!scriptFingerprint) return rejected(input, "script_missing");
   const newerDone = await prisma.videoJob.findMany({
     where: {
       projectId: job.projectId,
@@ -142,7 +143,9 @@ export async function inspectLegacyAvatarRecovery(
     select: { id: true, inputJson: true },
     orderBy: { createdAt: "desc" },
   });
-  const superseding = newerDone.find((candidate) => videoJobInputFingerprint(candidate.inputJson) === fingerprint);
+  const superseding = newerDone.find(
+    (candidate) => videoJobScriptFingerprint(candidate.inputJson) === scriptFingerprint,
+  );
   if (superseding) {
     return {
       status: "superseded",
@@ -240,7 +243,7 @@ export async function inspectLegacyAvatarRecovery(
       userId: job.userId,
       projectId: job.projectId,
       jobCreatedAt: job.createdAt,
-      inputFingerprint: fingerprint,
+      scriptFingerprint,
       errorMessage: job.errorMessage,
       checkpointJson,
     },
@@ -267,7 +270,7 @@ export async function applyLegacyAvatarRecovery(
       },
       select: { inputJson: true },
     });
-    if (newerDone.some((candidate) => videoJobInputFingerprint(candidate.inputJson) === secret.guard.inputFingerprint)) {
+    if (newerDone.some((candidate) => videoJobScriptFingerprint(candidate.inputJson) === secret.guard.scriptFingerprint)) {
       return { applied: false, idempotent: false, jobId: inspection.jobId };
     }
 

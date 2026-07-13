@@ -530,7 +530,7 @@ Create temporary DB/media fixtures covering:
 - dry-run makes zero writes;
 - wrong owner/status/error/provider ID is rejected;
 - missing base file or required render payload is rejected;
-- newer `done` same-project/same-fingerprint row returns `superseded`;
+- newer `done` same-project/same-script row returns `superseded` even when non-script retry settings differ;
 - completed non-superseded fixture becomes `waiting_provider` exactly once under `--apply`;
 - re-running apply is idempotent;
 - logs contain no key or signed URL.
@@ -554,7 +554,7 @@ npx tsx scripts/recover-heygen-timeout.ts --apply --job-id "$JOB_ID" --heygen-vi
 
 Inspection reads only masked/provider-status fields, validates same-user `RenderJob`, checks local
 media containment/existence, reconstructs only when `resolvedShortConfig`, `captionsData`, and voice
-media are sufficient, and checks a newer successful fingerprint before provider/media work. Apply
+media are sufficient, and checks a newer same-project/same-script success before provider/media work. Apply
 uses one `updateMany` guard matching `failed`, `currentStep=avatar`, exact timeout error, and null
 checkpoint. It writes a checkpoint and `waiting_provider`; it never calls HeyGen generate,
 reserves quota, or moves `EditorProject` pointers directly.

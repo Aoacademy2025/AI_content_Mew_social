@@ -5,6 +5,7 @@ import {
   providerPollDelayMs,
   serializeAvatarProviderCheckpoint,
   videoJobInputFingerprint,
+  videoJobScriptFingerprint,
 } from "../src/lib/mcp/avatar-provider-checkpoint";
 
 const validObject = {
@@ -62,5 +63,13 @@ const fingerprintA = videoJobInputFingerprint('{"script":"x","avatarMode":"full"
 const fingerprintB = videoJobInputFingerprint('{"nested":{"a":1,"b":2},"avatarMode":"full","script":"x"}');
 assert.equal(fingerprintA, fingerprintB);
 assert.notEqual(fingerprintA, videoJobInputFingerprint('{"script":"x","avatarMode":"bookend"}'));
+
+assert.equal(
+  videoJobScriptFingerprint('{"script":"x","avatarMode":"full"}'),
+  videoJobScriptFingerprint('{"script":"x","avatarMode":"bookend","previewMode":true}'),
+);
+assert.notEqual(videoJobScriptFingerprint('{"script":"x"}'), videoJobScriptFingerprint('{"script":"y"}'));
+assert.equal(videoJobScriptFingerprint('{'), null);
+assert.equal(videoJobScriptFingerprint('{"avatarMode":"full"}'), null);
 
 console.log("ALL PASS");
