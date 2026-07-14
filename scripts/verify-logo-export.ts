@@ -26,11 +26,12 @@ function imageFile(bytes: Buffer, name: string): File {
 }
 
 async function main(): Promise<void> {
-  const [{ prisma }, brandAssets, logoExport, { buildMediaReferenceGraph }] = await Promise.all([
+  const [{ prisma }, brandAssets, logoExport, { buildMediaReferenceGraph }, orchestrator] = await Promise.all([
     import("../src/lib/prisma"),
     import("@/lib/brand-assets.server"),
     import("../src/lib/logo-export.server"),
     import("@/lib/media-reference-graph"),
+    import("../src/lib/mcp/orchestrator"),
   ]);
 
   async function expectBrandError(
@@ -443,6 +444,242 @@ async function main(): Promise<void> {
       );
       assert.equal(ref?.alwaysProtect, true, `${jobId} input is always protected`);
     }
+
+    const sourceJob = await prisma.videoJob.create({
+      data: {
+        id: "logo-export-telemetry-source",
+        userId: USER_B,
+        projectId: PROJECT_B,
+        type: "create",
+        status: "done",
+        progress: 100,
+        inputJson: JSON.stringify({ previewMode: true }),
+        outputJson: JSON.stringify({
+          version: 2,
+          mode: "preview",
+          videoUrl: "/api/renders/logo-telemetry-preview.mp4",
+          preview: {
+            captions: [{ text: "logo telemetry", startMs: 0, endMs: 45_000 }],
+            config: {},
+            voiceUrl: "/api/renders/logo-telemetry-voice.wav",
+            audioDurationMs: 45_000,
+            fullText: "logo telemetry",
+          },
+        }),
+      },
+    });
+
+    function telemetryExportCaller(label: string) {
+      return {
+        async post<T>(requestPath: string): Promise<T> {
+          if (requestPath === "/api/videos/render") return { jobId: `render-${label}` } as T;
+          if (requestPath === "/api/videos") return { id: `video-${label}` } as T;
+          throw new Error(`unexpected POST ${requestPath}`);
+        },
+        async patch<T>(requestPath: string): Promise<T> {
+          throw new Error(`unexpected PATCH ${requestPath}`);
+        },
+        async get<T>(requestPath: string): Promise<T> {
+          if (requestPath.startsWith("/api/videos/render-progress")) {
+            return {
+              progress: 100,
+              videoUrl: `/api/renders/${label}.mp4`,
+              error: null,
+              stage: "done",
+            } as T;
+          }
+          throw new Error(`unexpected GET ${requestPath}`);
+        },
+      };
+    }
+
+    async function runTelemetryExport(
+      label: string,
+      logoOverlay: unknown,
+      recordTelemetryEvent: (userId: string | null, input: unknown) => Promise<unknown>,
+    ) {
+      const exportJob = await prisma.videoJob.create({
+        data: {
+          id: `logo-export-telemetry-${label}`,
+          userId: USER_B,
+          projectId: PROJECT_B,
+          type: "export",
+          status: "processing",
+          inputJson: JSON.stringify({
+            mode: "export",
+            sourceJobId: sourceJob.id,
+            subtitleOverlayConfig: {
+              videoUrl: "/api/renders/logo-telemetry-preview.mp4",
+              ...(logoOverlay === undefined ? {} : { logoOverlay }),
+            },
+          }),
+        },
+      });
+      await orchestrator.runOrchestrator(exportJob.id, USER_B, {
+        caller: telemetryExportCaller(label),
+        refundOneClip: async () => {},
+        sleep: async () => {},
+        recordTelemetryEvent,
+      } as never);
+      await new Promise((resolve) => setImmediate(resolve));
+      return prisma.videoJob.findUniqueOrThrow({ where: { id: exportJob.id } });
+    }
+
+    const completionEvents: Array<{ userId: string | null; input: Record<string, unknown> }> = [];
+    let resolveCompletionStatus: (status: string) => void = () => {};
+    const completionStatusObserved = new Promise<string>((resolve) => {
+      resolveCompletionStatus = resolve;
+    });
+    const captureTelemetry = async (userId: string | null, input: unknown) => {
+      const telemetryInput = input as Record<string, unknown>;
+      completionEvents.push({ userId, input: telemetryInput });
+      if (telemetryInput.name === "logo_overlay_export_completed") {
+        const completed = await prisma.videoJob.findUnique({
+          where: { id: "logo-export-telemetry-with-logo" },
+          select: { status: true },
+        });
+        resolveCompletionStatus(completed?.status ?? "missing");
+      }
+    };
+    const withoutLogo = await runTelemetryExport("without-logo", undefined, captureTelemetry);
+    assert.equal(withoutLogo.status, "done", "a logo-free export still finalizes");
+    assert.equal(
+      completionEvents.some((event) => event.input.name === "logo_overlay_export_completed"),
+      false,
+      "logo-free exports do not record logo completion",
+    );
+
+    const untrustedLogo = await runTelemetryExport("untrusted-logo", {
+      ...stagedB.trusted,
+      src: "https://attacker.example/logo.webp",
+    }, captureTelemetry);
+    assert.equal(untrustedLogo.status, "done", "an untrusted test fixture still reaches finalization");
+    assert.equal(
+      completionEvents.some((event) => event.input.name === "logo_overlay_export_completed"),
+      false,
+      "untrusted logo config does not record logo completion",
+    );
+
+    const withLogo = await runTelemetryExport("with-logo", stagedB.trusted, captureTelemetry);
+    assert.equal(withLogo.status, "done", "a trusted-logo export finalizes");
+    const logoCompletionEvents = completionEvents.filter(
+      (event) => event.input.name === "logo_overlay_export_completed",
+    );
+    assert.equal(logoCompletionEvents.length, 1, "trusted-logo completion is recorded exactly once");
+    assert.equal(logoCompletionEvents[0].userId, USER_B);
+    assert.deepEqual(logoCompletionEvents[0].input, {
+      name: "logo_overlay_export_completed",
+      category: "product",
+      source: "server",
+      status: "done",
+      properties: {
+        position: "middle-right",
+        durationBucket: "30-60s",
+      },
+    });
+    assert.equal(
+      await completionStatusObserved,
+      "done",
+      "completion telemetry is invoked only after the durable job is done",
+    );
+
+    const completionBuilder = (
+      orchestrator as typeof orchestrator & {
+        buildLogoExportCompletedTelemetryProperties?: (
+          subtitleOverlayConfig: unknown,
+          durationMs: unknown,
+        ) => Record<string, unknown> | null;
+      }
+    ).buildLogoExportCompletedTelemetryProperties;
+    assert.equal(typeof completionBuilder, "function", "server completion payload builder is exported");
+    const completionProperties = completionBuilder!({
+      logoOverlay: {
+        ...stagedB.trusted,
+        assetId: assetB.id,
+        filename: "secret.png",
+        url: "https://private.example/logo.webp",
+        storageKey: "private/logo.webp",
+        originalName: "secret.png",
+      },
+    }, 45_000);
+    assert.deepEqual(completionProperties, {
+      position: "middle-right",
+      durationBucket: "30-60s",
+    });
+    for (const forbidden of [
+      "assetId",
+      "filename",
+      "src",
+      "url",
+      "storageKey",
+      "originalName",
+    ]) {
+      assert.equal(forbidden in completionProperties!, false, `completion telemetry leaked ${forbidden}`);
+    }
+    assert.equal(
+      completionBuilder!({
+        logoOverlay: {
+          ...stagedB.trusted,
+          src: "https://attacker.example/logo.webp",
+        },
+      }, 45_000),
+      null,
+      "untrusted logo shapes do not produce completion telemetry",
+    );
+
+    let thrownTelemetryAttempts = 0;
+    const thrownTelemetryJob = await runTelemetryExport(
+      "telemetry-throws",
+      stagedB.trusted,
+      (() => {
+        thrownTelemetryAttempts += 1;
+        throw new Error("simulated synchronous telemetry failure");
+      }) as never,
+    );
+    assert.ok(thrownTelemetryAttempts > 0, "the throwing telemetry seam is exercised");
+    assert.equal(
+      thrownTelemetryJob.status,
+      "done",
+      "synchronously thrown telemetry cannot fail export finalization",
+    );
+
+    let rejectedTelemetryAttempts = 0;
+    const rejectedTelemetryJob = await runTelemetryExport(
+      "telemetry-rejects",
+      stagedB.trusted,
+      () => {
+        rejectedTelemetryAttempts += 1;
+        return Promise.reject(new Error("simulated rejected telemetry write"));
+      },
+    );
+    assert.ok(rejectedTelemetryAttempts > 0, "the rejected telemetry seam is exercised");
+    assert.equal(
+      rejectedTelemetryJob.status,
+      "done",
+      "rejected telemetry cannot fail export finalization",
+    );
+
+    let pendingTelemetryAttempts = 0;
+    const pendingTelemetryRun = runTelemetryExport(
+      "telemetry-pending",
+      stagedB.trusted,
+      () => {
+        pendingTelemetryAttempts += 1;
+        return new Promise(() => {});
+      },
+    );
+    const pendingTelemetryJob = await Promise.race([
+      pendingTelemetryRun,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("pending telemetry delayed finalization")), 500);
+      }),
+    ]);
+    assert.ok(pendingTelemetryAttempts > 0, "the pending telemetry seam is exercised");
+    assert.equal(
+      pendingTelemetryJob.status,
+      "done",
+      "pending telemetry cannot delay export finalization",
+    );
 
     const routeSource = readFileSync(
       path.join(process.cwd(), "src", "app", "api", "videos", "jobs", "route.ts"),

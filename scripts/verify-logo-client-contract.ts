@@ -764,6 +764,7 @@ async function main() {
       surface: "mobile",
       assetId: asset.id,
       filename: asset.displayName,
+      src: "https://attacker.example/private-logo.webp",
       url: asset.imageUrl,
       path: "/private/logo.webp",
       storageKey: "user/private.webp",
@@ -780,6 +781,7 @@ async function main() {
     for (const forbidden of [
       "assetId",
       "filename",
+      "src",
       "url",
       "path",
       "storageKey",
@@ -839,6 +841,10 @@ async function main() {
 
   const hookSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor.ts",
+    "utf8",
+  );
+  const postPhaseEditorSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
     "utf8",
   );
   await check("cleanup schedules any reloaded project asset and survives hook unmount", async () => {
@@ -914,6 +920,30 @@ async function main() {
     assert.doesNotMatch(
       hookSource,
       /trackEvent\([^)]*\{[\s\S]{0,240}\b(assetId|filename|imageUrl|storageKey|originalName)\b/,
+    );
+  });
+
+  await check("logo export submission telemetry follows accepted durable job creation", () => {
+    const exportStart = postPhaseEditorSource.indexOf("async function exportVideo()");
+    const exportEnd = postPhaseEditorSource.indexOf("\n  return {", exportStart);
+    assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
+    const exportSource = postPhaseEditorSource.slice(exportStart, exportEnd);
+    const acceptedIndex = exportSource.indexOf("if (!result.ok)");
+    const telemetryIndex = exportSource.indexOf('trackEvent("logo_overlay_export_submitted"');
+    assert.ok(acceptedIndex >= 0, "export acceptance guard is missing");
+    assert.ok(
+      telemetryIndex > acceptedIndex,
+      "submission telemetry must run only after onExportJob accepts the durable job",
+    );
+    assert.match(
+      exportSource.slice(telemetryIndex),
+      /properties:\s*buildLogoTelemetryProperties\(\{\s*surface,\s*position:\s*submittedLogo\.position,?\s*\}\)/,
+      "submission telemetry payload must contain only surface and position",
+    );
+    assert.doesNotMatch(
+      exportSource.slice(telemetryIndex, telemetryIndex + 320),
+      /\b(assetId|filename|src|url|storageKey|originalName)\b/,
+      "submission telemetry must not include asset identity",
     );
   });
 
