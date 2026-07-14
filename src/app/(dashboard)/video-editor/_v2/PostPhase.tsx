@@ -19,14 +19,18 @@ import {
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
 } from "./subtitle-style";
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import { LogoOverlayControls } from "./LogoOverlayControls";
+import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import { trackEvent } from "@/lib/client-telemetry";
+import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -35,14 +39,54 @@ function fmtMs(ms: number) {
 
 const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
 
-export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, onPreviewError, brollRegionPreference = "auto", brollVisualStyle = "auto" }: {
+export function PostPhase({
+  job,
+  script,
+  onExportJob,
+  onAdoptJob,
+  onNewProject,
+  onPreviewError,
+  projectId,
+  logoOverlay,
+  onLogoOverlayChange,
+  logoEligible,
+  projectSaveStatus,
+  onRetryProjectSave,
+  brollRegionPreference = "auto",
+  brollVisualStyle = "auto",
+}: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
+  projectId: string | null;
+  logoOverlay?: LogoOverlayConfig;
+  onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  logoEligible: boolean;
+  projectSaveStatus: "idle" | "saving" | "saved" | "error";
+  onRetryProjectSave: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExportJob, onAdoptJob });
+  const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const logoPanelOpenedRef = useRef(false);
+  const ed = usePostPhaseEditor(job, script, {
+    onExportJob,
+    onAdoptJob,
+    projectId,
+    logoOverlay,
+    onLogoOverlayChange,
+    logoEligible,
+    projectSaveStatus,
+    onRetryProjectSave,
+    surface: "desktop",
+  });
+  const handleRightTabChange = (next: "subtitle" | "logo") => {
+    setRightTab(next);
+    if (next === "logo" && !logoPanelOpenedRef.current) {
+      logoPanelOpenedRef.current = true;
+      trackEvent("logo_overlay_panel_opened", { properties: { surface: "desktop" } });
+    }
+  };
   // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
   // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
   const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
@@ -185,6 +229,7 @@ export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, 
               className="h-full w-full object-cover"
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
             />
+            <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
             {/* เส้นไกด์ตำแหน่งซับ */}
             <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
             {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
@@ -223,8 +268,20 @@ export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, 
           </div>
         </main>
 
-        {/* ── ขวา 330px: คุมซับ ── */}
+        {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          <Segmented
+            value={rightTab}
+            onChange={handleRightTabChange}
+            options={[
+              { value: "subtitle", label: "ซับ" },
+              { value: "logo", label: "โลโก้" },
+            ]}
+            style={{ width: "100%", justifyContent: "center" }}
+          />
+
+          {rightTab === "subtitle" && (
+            <>
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -487,6 +544,16 @@ export function PostPhase({ job, script, onExportJob, onAdoptJob, onNewProject, 
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
             ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>
+            </>
+          )}
+
+          {rightTab === "logo" && (
+            <LogoOverlayControls
+              value={logoOverlay}
+              eligible={logoEligible}
+              editor={ed.logo}
+            />
+          )}
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (

@@ -290,6 +290,82 @@ async function main() {
     assert.match(previewSource, /objectFit:\s*["']contain["']/);
   });
 
+  const desktopSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx",
+    "utf8",
+  );
+  await check("desktop exposes subtitle and logo branches with project wiring", () => {
+    assert.match(desktopSource, /useState<\s*["']subtitle["']\s*\|\s*["']logo["']\s*>\(\s*["']subtitle["']\s*\)/);
+    assert.match(desktopSource, /value:\s*["']subtitle["']\s*,\s*label:\s*["']ซับ["']/);
+    assert.match(desktopSource, /value:\s*["']logo["']\s*,\s*label:\s*["']โลโก้["']/);
+    assert.match(desktopSource, /surface:\s*["']desktop["']/);
+    for (const prop of [
+      "projectId",
+      "logoOverlay",
+      "onLogoOverlayChange",
+      "logoEligible",
+      "projectSaveStatus",
+      "onRetryProjectSave",
+    ]) {
+      assert.match(desktopSource, new RegExp(`\\b${prop}\\b`), `desktop is missing ${prop}`);
+    }
+  });
+
+  const shellSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx",
+    "utf8",
+  );
+  await check("editor shell supplies the project logo contract to desktop", () => {
+    assert.match(shellSource, /projectId:\s*p\.projectId/);
+    assert.match(shellSource, /logoOverlay:\s*p\.logoOverlay/);
+    assert.match(shellSource, /onLogoOverlayChange:\s*p\.setLogoOverlay/);
+    assert.match(shellSource, /logoEligible:\s*p\.canUseLogoOverlay/);
+    assert.match(shellSource, /projectSaveStatus:\s*p\.saveStatus/);
+    assert.match(shellSource, /onRetryProjectSave:\s*p\.retryProjectSave/);
+    assert.match(shellSource, /<PostPhase\s+\{\.\.\.postPhaseProjectProps\}/);
+  });
+
+  await check("desktop mounts logo controls only in the logo branch", () => {
+    assert.match(desktopSource, /rightTab\s*===\s*["']subtitle["'][\s\S]*rightTab\s*===\s*["']logo["']/);
+    assert.match(desktopSource, /rightTab\s*===\s*["']logo["'][\s\S]{0,240}<LogoOverlayControls/);
+    assert.equal(
+      desktopSource.match(/<LogoOverlayControls\b/g)?.length,
+      1,
+      "desktop must have exactly one shared LogoOverlayControls instance",
+    );
+  });
+
+  await check("desktop records the first logo-tab transition once per mount", () => {
+    assert.match(desktopSource, /logoPanelOpenedRef\s*=\s*useRef\(false\)/);
+    assert.match(
+      desktopSource,
+      /if\s*\(\s*next\s*===\s*["']logo["']\s*&&\s*!logoPanelOpenedRef\.current\s*\)[\s\S]{0,180}logoPanelOpenedRef\.current\s*=\s*true[\s\S]{0,180}logo_overlay_panel_opened[\s\S]{0,180}surface:\s*["']desktop["']/,
+    );
+  });
+
+  await check("desktop logo preview shares video bounds below captions and ignores input", () => {
+    const videoIndex = desktopSource.indexOf("ref={ed.videoRef}");
+    const logoIndex = desktopSource.indexOf("<LogoOverlayPreview", videoIndex);
+    const captionsIndex = desktopSource.indexOf("<V2CaptionOverlay", videoIndex);
+    assert.ok(videoIndex >= 0, "desktop editor video is missing");
+    assert.ok(logoIndex > videoIndex, "logo preview must render after the displayed video");
+    assert.ok(captionsIndex > logoIndex, "logo preview must render before captions");
+    assert.match(desktopSource.slice(logoIndex, captionsIndex), /value=\{logoOverlay\}/);
+    assert.match(desktopSource.slice(logoIndex, captionsIndex), /asset=\{ed\.logo\.asset\}/);
+    assert.match(previewSource, /position:\s*["']absolute["'][\s\S]{0,100}inset:\s*0/);
+    assert.match(previewSource, /pointerEvents:\s*["']none["']/);
+  });
+
+  const controlsSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/LogoOverlayControls.tsx",
+    "utf8",
+  );
+  await check("desktop shared controls preserve accessible anchor order", () => {
+    assert.match(controlsSource, /LOGO_POSITIONS\.map/);
+    assert.match(controlsSource, /aria-label=\{`วางโลโก้\$\{POSITION_LABELS\[position\]\}`\}/);
+    assert.match(controlsSource, /aria-pressed=\{selected\}/);
+  });
+
   if (failures.length > 0) {
     throw new Error(`logo client verifier failed (${failures.length}):\n${failures.join("\n")}`);
   }
