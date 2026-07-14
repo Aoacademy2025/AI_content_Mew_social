@@ -20,14 +20,14 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const projects = await import("../src/lib/editor-projects");
   const jobs = await import("../src/lib/mcp/video-job");
-  const projectRoute = await import("../src/app/api/editor-projects/[id]/route");
+  const projectPatch = await import("../src/lib/editor-project-patch");
   const updateWithRevision = projects.updateEditorProject as unknown as (
     userId: string,
     projectId: string,
     input: Record<string, unknown>,
   ) => Promise<Record<string, unknown> | null>;
   const patchEditorProjectForUser = (
-    projectRoute as typeof projectRoute & {
+    projectPatch as typeof projectPatch & {
       patchEditorProjectForUser?: (
         userId: string,
         projectId: string,
