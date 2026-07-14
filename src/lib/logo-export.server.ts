@@ -87,12 +87,17 @@ type LogoExportStagingInput = {
   rendersRoot?: string;
 };
 
-function parseClientLogoExportInput(value: unknown): ClientLogoExportInput | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+type ParsedClientLogoExportInput =
+  | { kind: "absent" }
+  | { kind: "invalid-enabled" }
+  | { kind: "valid"; logo: ClientLogoExportInput };
+
+function parseClientLogoExportInput(value: unknown): ParsedClientLogoExportInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { kind: "absent" };
   const candidate = value as Record<string, unknown>;
+  if (candidate.enabled !== true) return { kind: "absent" };
   if (
-    candidate.enabled !== true
-    || typeof candidate.assetId !== "string"
+    typeof candidate.assetId !== "string"
     || !candidate.assetId.trim()
     || typeof candidate.position !== "string"
     || !LOGO_POSITIONS.some((position) => position === candidate.position)
@@ -101,16 +106,16 @@ function parseClientLogoExportInput(value: unknown): ClientLogoExportInput | nul
     || typeof candidate.opacity !== "number"
     || !Number.isFinite(candidate.opacity)
   ) {
-    return null;
+    return { kind: "invalid-enabled" };
   }
 
   const normalized = normalizeLogoOverlayConfig(candidate);
-  if (!normalized) return null;
-  return { ...normalized, enabled: true };
+  if (!normalized) return { kind: "invalid-enabled" };
+  return { kind: "valid", logo: { ...normalized, enabled: true } };
 }
 
 function exportError(
-  code: "plan_required" | "project_not_found" | "asset_not_found",
+  code: "plan_required" | "project_not_found" | "asset_not_found" | "invalid_config",
   status: number,
   message: string,
 ): BrandAssetError {
@@ -122,8 +127,8 @@ function exportError(
 export async function stageLogoForExport(
   input: LogoExportStagingInput,
 ): Promise<{ trusted: TrustedLogoRenderInput; snapshotPath: string } | null> {
-  const logo = parseClientLogoExportInput(input.rawLogoOverlay);
-  if (!logo) return null;
+  const parsedLogo = parseClientLogoExportInput(input.rawLogoOverlay);
+  if (parsedLogo.kind === "absent") return null;
 
   if (!canUseLogoOverlay(input.plan)) {
     throw exportError(
@@ -132,6 +137,14 @@ export async function stageLogoForExport(
       "ฟีเจอร์โลโก้แบรนด์ใช้ได้เฉพาะแผน Pro หรือ Business",
     );
   }
+  if (parsedLogo.kind === "invalid-enabled") {
+    throw exportError(
+      "invalid_config",
+      400,
+      "ข้อมูลโลโก้สำหรับส่งออกไม่ถูกต้อง",
+    );
+  }
+  const logo = parsedLogo.logo;
   const projectId = input.projectId.trim();
   if (!projectId) {
     throw exportError("project_not_found", 404, "ไม่พบโปรเจกต์");

@@ -126,19 +126,46 @@ async function main(): Promise<void> {
       },
       rendersRoot,
     }), null, "a disabled logo is a no-op");
-    assert.equal(await logoExport.stageLogoForExport({
-      userId: USER_A,
-      plan: "PRO",
-      projectId: PROJECT_A,
-      rawLogoOverlay: {
-        enabled: true,
-        assetId: assetA.id,
-        position: "not-a-position",
-        sizePct: 18,
-        opacity: 0.9,
-      },
-      rendersRoot,
-    }), null, "a malformed enabled logo is never staged");
+    const malformedEnabledLogo = {
+      enabled: true,
+      assetId: assetA.id,
+      position: "not-a-position",
+      sizePct: 18,
+      opacity: 0.9,
+    };
+    let malformedCreateAttempts = 0;
+    await expectBrandError(
+      () => logoExport.createDurableExportWithStagedLogo({
+        staging: {
+          userId: USER_A,
+          plan: "PRO",
+          projectId: PROJECT_A,
+          rawLogoOverlay: malformedEnabledLogo,
+          rendersRoot,
+        },
+        createDurableJob: async () => {
+          malformedCreateAttempts += 1;
+          return { id: "must-not-queue" };
+        },
+      }),
+      "invalid_config",
+      400,
+      /โลโก้.*ไม่ถูกต้อง/u,
+    );
+    assert.equal(malformedCreateAttempts, 0, "a malformed enabled logo is rejected before queue creation");
+
+    await expectBrandError(
+      () => logoExport.stageLogoForExport({
+        userId: USER_A,
+        plan: "FREE",
+        projectId: PROJECT_A,
+        rawLogoOverlay: malformedEnabledLogo,
+        rendersRoot,
+      }),
+      "plan_required",
+      403,
+      /Pro หรือ Business/u,
+    );
 
     await expectBrandError(
       () => logoExport.stageLogoForExport({
