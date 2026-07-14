@@ -5,6 +5,7 @@ import { resolveProjectMediaState } from "@/lib/media-retention";
 export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
 export const MAX_EDITOR_PROJECT_DRAFT_BYTES = 2 * 1024 * 1024;
+export const MAX_EDITOR_PROJECT_DRAFT_REVISION = 2_147_483_647;
 
 export const EDITOR_PROJECT_STATUSES = ["draft", "rendering", "post", "exporting", "exported", "archived"] as const;
 export type EditorProjectStatus = (typeof EDITOR_PROJECT_STATUSES)[number];
@@ -39,12 +40,22 @@ export function encodeEditorProjectDraft(value: unknown): string | null | undefi
   return raw;
 }
 
+function parseEditorProjectDraftRevision(value: unknown): number | null {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value > 0
+    && value <= MAX_EDITOR_PROJECT_DRAFT_REVISION
+    ? value
+    : null;
+}
+
 export function editorProjectResponse(project: NonNullable<ProjectRow>) {
   return {
     id: project.id,
     title: project.title,
     status: project.status,
     draft: project.draftJson ? JSON.parse(project.draftJson) : null,
+    draftRevision: project.draftRevision,
     activeJobId: project.activeJobId,
     activeExportJobId: project.activeExportJobId,
     latestVideoId: project.latestVideoId,
@@ -133,11 +144,13 @@ export async function updateEditorProject(
     activeExportJobId?: unknown;
     latestVideoId?: unknown;
     touchLastOpened?: unknown;
+    draftRevision?: unknown;
   },
 ) {
   const data: {
     title?: string;
     draftJson?: string | null;
+    draftRevision?: number;
     status?: string;
     activeJobId?: string | null;
     activeExportJobId?: string | null;
@@ -145,8 +158,20 @@ export async function updateEditorProject(
     lastOpenedAt?: Date;
   } = {};
 
+  const hasDraftRevision = Object.prototype.hasOwnProperty.call(input, "draftRevision");
+  let draftRevision: number | undefined;
+  if (hasDraftRevision) {
+    draftRevision = parseEditorProjectDraftRevision(input.draftRevision) ?? undefined;
+    if (draftRevision === undefined || !("draft" in input)) {
+      const err = new Error("invalid_draft_revision");
+      (err as { code?: string }).code = "invalid_draft_revision";
+      throw err;
+    }
+  }
+
   if ("title" in input) data.title = sanitizeEditorProjectTitle(input.title);
   if ("draft" in input) data.draftJson = encodeEditorProjectDraft(input.draft) ?? null;
+  if (draftRevision !== undefined) data.draftRevision = draftRevision;
   if ("status" in input) {
     const status = normalizeEditorProjectStatus(input.status);
     if (!status) {
@@ -180,10 +205,24 @@ export async function updateEditorProject(
   }
 
   const updated = await prisma.editorProject.updateMany({
-    where: { id: projectId, userId },
+    where: {
+      id: projectId,
+      userId,
+      ...(draftRevision !== undefined ? { draftRevision: { lt: draftRevision } } : {}),
+    },
     data,
   });
-  if (updated.count !== 1) return null;
+  if (updated.count !== 1) {
+    const current = await getEditorProject(userId, projectId);
+    if (!current) return null;
+    if (draftRevision !== undefined) {
+      const err = new Error("stale_revision");
+      (err as { code?: string; project?: typeof current }).code = "stale_revision";
+      (err as { code?: string; project?: typeof current }).project = current;
+      throw err;
+    }
+    return null;
+  }
   return getEditorProject(userId, projectId);
 }
 

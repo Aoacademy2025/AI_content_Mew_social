@@ -20,6 +20,21 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const projects = await import("../src/lib/editor-projects");
   const jobs = await import("../src/lib/mcp/video-job");
+  const projectRoute = await import("../src/app/api/editor-projects/[id]/route");
+  const updateWithRevision = projects.updateEditorProject as unknown as (
+    userId: string,
+    projectId: string,
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, unknown> | null>;
+  const patchEditorProjectForUser = (
+    projectRoute as typeof projectRoute & {
+      patchEditorProjectForUser?: (
+        userId: string,
+        projectId: string,
+        body: Record<string, unknown>,
+      ) => Promise<Response>;
+    }
+  ).patchEditorProjectForUser;
 
   const now = new Date();
   const alice = await prisma.user.create({
@@ -53,6 +68,13 @@ async function main() {
   });
   ok(p.title === "Launch Reel", "create trims title");
   ok(p.draft?.script === "hello", "create stores structured draft JSON");
+  ok((p as unknown as { draftRevision?: number }).draftRevision === 0, "create response starts at draft revision zero");
+
+  const loadedAtZero = await projects.getEditorProject(alice.id, p.id);
+  ok(
+    (loadedAtZero as unknown as { draftRevision?: number } | null)?.draftRevision === 0,
+    "GET response includes the stored draft revision",
+  );
 
   const usageAfterCreate = await prisma.user.findUnique({ where: { id: alice.id } });
   ok(usageAfterCreate?.usageCount === 7 && usageAfterCreate?.minutesUsed === 12, "project create does not mutate quota counters");
@@ -75,6 +97,112 @@ async function main() {
   ok(updated?.title === "New Project", "empty title falls back to New Project");
   ok(updated?.status === "rendering", "update accepts known status");
   ok(updated?.draft?.mode === "upload", "update accepts JSON-string draft");
+
+  const revisionProject = await projects.createEditorProject(alice.id, {
+    title: "Revision ordering",
+    draft: { script: "initial" },
+  });
+  const acceptedRevisionTwo = await updateWithRevision(alice.id, revisionProject.id, {
+    draft: { script: "B" },
+    draftRevision: 2,
+  });
+  ok(
+    acceptedRevisionTwo?.draftRevision === 2
+      && (acceptedRevisionTwo.draft as { script?: string } | undefined)?.script === "B",
+    "newer revision B is accepted",
+  );
+  let staleRevisionError: unknown;
+  try {
+    await updateWithRevision(alice.id, revisionProject.id, {
+      draft: { script: "late A" },
+      draftRevision: 1,
+    });
+  } catch (error) {
+    staleRevisionError = error;
+  }
+  ok(
+    (staleRevisionError as { code?: string })?.code === "stale_revision",
+    "late lower revision A is rejected",
+  );
+  const afterLateA = await projects.getEditorProject(alice.id, revisionProject.id);
+  ok(
+    (afterLateA as unknown as { draftRevision?: number } | null)?.draftRevision === 2
+      && (afterLateA?.draft as { script?: string } | undefined)?.script === "B",
+    "late A cannot overwrite B in the database",
+  );
+
+  const equalRevisionProject = await projects.createEditorProject(alice.id, {
+    title: "Equal revision race",
+    draft: { script: "initial" },
+  });
+  const equalRevisionResults = await Promise.allSettled([
+    updateWithRevision(alice.id, equalRevisionProject.id, {
+      draft: { script: "same revision first" },
+      draftRevision: 1,
+    }),
+    updateWithRevision(alice.id, equalRevisionProject.id, {
+      draft: { script: "same revision second" },
+      draftRevision: 1,
+    }),
+  ]);
+  ok(
+    equalRevisionResults.filter((result) => result.status === "fulfilled").length === 1
+      && equalRevisionResults.filter(
+        (result) => result.status === "rejected"
+          && (result.reason as { code?: string })?.code === "stale_revision",
+      ).length === 1,
+    "concurrent equal revisions have exactly one winner",
+  );
+  const retryAfterConflict = await updateWithRevision(alice.id, equalRevisionProject.id, {
+    draft: { script: "retry latest" },
+    draftRevision: 2,
+  });
+  ok(
+    retryAfterConflict?.draftRevision === 2
+      && (retryAfterConflict.draft as { script?: string } | undefined)?.script === "retry latest",
+    "retry with a newer revision succeeds",
+  );
+
+  const legacyDraftUpdate = await projects.updateEditorProject(alice.id, equalRevisionProject.id, {
+    draft: { script: "legacy no-logo caller" },
+  });
+  ok(
+    (legacyDraftUpdate as unknown as { draftRevision?: number } | null)?.draftRevision === 2
+      && legacyDraftUpdate?.draft?.script === "legacy no-logo caller"
+      && legacyDraftUpdate?.draft?.logoOverlay === undefined,
+    "revision-less existing caller remains compatible without adding a logo",
+  );
+
+  ok(typeof patchEditorProjectForUser === "function", "PATCH contract exposes a directly testable authenticated-user seam");
+  if (patchEditorProjectForUser) {
+    const apiProject = await projects.createEditorProject(alice.id, {
+      title: "API revision ordering",
+      draft: { script: "initial" },
+    });
+    const apiB = await patchEditorProjectForUser(alice.id, apiProject.id, {
+      draft: { script: "API B" },
+      draftRevision: 2,
+    });
+    const apiBPayload = await apiB.json() as Record<string, unknown>;
+    ok(
+      apiB.status === 200
+        && ((apiBPayload.project as Record<string, unknown> | undefined)?.draftRevision === 2),
+      "PATCH accepts and returns a newer draft revision",
+    );
+    const apiLateA = await patchEditorProjectForUser(alice.id, apiProject.id, {
+      draft: { script: "API late A" },
+      draftRevision: 1,
+    });
+    const apiLatePayload = await apiLateA.json() as Record<string, unknown>;
+    ok(
+      apiLateA.status === 409
+        && apiLatePayload.error === "stale_revision"
+        && ((apiLatePayload.project as Record<string, unknown> | undefined)?.draftRevision === 2),
+      "PATCH returns stale without overwriting for a late lower revision",
+    );
+    const apiFinal = await projects.getEditorProject(alice.id, apiProject.id);
+    ok(apiFinal?.draft?.script === "API B", "PATCH-level late A leaves API B durable");
+  }
 
   const job = await jobs.createVideoJob(alice.id, { script: "hello", previewMode: true }, undefined, { projectId: p.id });
   const jobRow = await prisma.videoJob.findUnique({ where: { id: job.id } });
@@ -126,8 +254,14 @@ async function main() {
 
   const archived = await projects.archiveEditorProject(alice.id, p.id);
   ok(archived, "archive succeeds for owner");
-  ok((await projects.listEditorProjects(alice.id)).length === 0, "archived projects are hidden by default");
-  ok((await projects.listEditorProjects(alice.id, { includeArchived: true })).length === 1, "includeArchived returns archived projects");
+  ok(
+    !(await projects.listEditorProjects(alice.id)).some((project) => project.id === p.id),
+    "archived projects are hidden by default",
+  );
+  ok(
+    (await projects.listEditorProjects(alice.id, { includeArchived: true })).some((project) => project.id === p.id),
+    "includeArchived returns archived projects",
+  );
 
   let archivedDenied = false;
   try { await projects.assertEditorProjectOwner(alice.id, p.id); } catch { archivedDenied = true; }

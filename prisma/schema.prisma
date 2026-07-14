@@ -177,6 +177,7 @@ model EditorProject {
   title         String     @default("New Project")
   status        String     @default("draft") // draft|rendering|post|exporting|exported|archived
   draftJson     String?
+  draftRevision Int        @default(0)
   activeJobId   String?
   activeExportJobId String?
   latestVideoId String?
