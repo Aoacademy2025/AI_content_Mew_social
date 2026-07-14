@@ -75,6 +75,8 @@ model User {
   userMusic          UserMusic[]
   avatarPresets      AvatarPreset[]
   editorProjects     EditorProject[]
+  brandAssets        BrandAsset[]
+  brandPreference    BrandPreference?
 }
 
 model Style {
@@ -183,12 +185,45 @@ model EditorProject {
   updatedAt     DateTime   @updatedAt
   jobs          VideoJob[]
   videos        Video[]
+  brandAssets   BrandAsset[]
 
   @@index([userId, updatedAt])
   @@index([userId, status, updatedAt])
   @@index([activeJobId])
   @@index([activeExportJobId])
   @@index([latestVideoId])
+}
+
+model BrandAsset {
+  id              String           @id @default(cuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId       String?
+  project         EditorProject?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  storageKey      String           @unique
+  originalName    String
+  mimeType        String
+  sizeBytes       Int
+  width           Int
+  height          Int
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  defaultFor      BrandPreference? @relation("DefaultBrandAsset")
+
+  @@index([userId, createdAt])
+  @@index([projectId])
+}
+
+model BrandPreference {
+  userId         String     @id
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultAssetId String     @unique
+  defaultAsset   BrandAsset @relation("DefaultBrandAsset", fields: [defaultAssetId], references: [id], onDelete: Cascade)
+  position       String     @default("top-right")
+  sizePct        Float      @default(18)
+  opacity        Float      @default(0.9)
+  enabled        Boolean    @default(true)
+  updatedAt      DateTime   @updatedAt
 }
 
 model VideoJob {
