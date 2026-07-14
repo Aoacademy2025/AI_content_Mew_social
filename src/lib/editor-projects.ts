@@ -150,7 +150,7 @@ export async function updateEditorProject(
   const data: {
     title?: string;
     draftJson?: string | null;
-    draftRevision?: number;
+    draftRevision?: number | { increment: number };
     status?: string;
     activeJobId?: string | null;
     activeExportJobId?: string | null;
@@ -170,8 +170,10 @@ export async function updateEditorProject(
   }
 
   if ("title" in input) data.title = sanitizeEditorProjectTitle(input.title);
-  if ("draft" in input) data.draftJson = encodeEditorProjectDraft(input.draft) ?? null;
-  if (draftRevision !== undefined) data.draftRevision = draftRevision;
+  if ("draft" in input) {
+    data.draftJson = encodeEditorProjectDraft(input.draft) ?? null;
+    data.draftRevision = draftRevision ?? { increment: 1 };
+  }
   if ("status" in input) {
     const status = normalizeEditorProjectStatus(input.status);
     if (!status) {

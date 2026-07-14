@@ -31,7 +31,7 @@ async function main() {
       patchEditorProjectForUser?: (
         userId: string,
         projectId: string,
-        body: Record<string, unknown>,
+        body: unknown,
       ) => Promise<Response>;
     }
   ).patchEditorProjectForUser;
@@ -167,10 +167,52 @@ async function main() {
     draft: { script: "legacy no-logo caller" },
   });
   ok(
-    (legacyDraftUpdate as unknown as { draftRevision?: number } | null)?.draftRevision === 2
+    (legacyDraftUpdate as unknown as { draftRevision?: number } | null)?.draftRevision === 3
       && legacyDraftUpdate?.draft?.script === "legacy no-logo caller"
       && legacyDraftUpdate?.draft?.logoOverlay === undefined,
-    "revision-less existing caller remains compatible without adding a logo",
+    "revision-less draft caller succeeds and atomically advances the revision",
+  );
+  let lateIssuedRevisionThreeError: unknown;
+  try {
+    await updateWithRevision(alice.id, equalRevisionProject.id, {
+      draft: { script: "late issued revision three" },
+      draftRevision: 3,
+    });
+  } catch (error) {
+    lateIssuedRevisionThreeError = error;
+  }
+  ok(
+    (lateIssuedRevisionThreeError as { code?: string })?.code === "stale_revision",
+    "a revision issued before the legacy write cannot overwrite that write",
+  );
+  const metadataOnly = await projects.updateEditorProject(alice.id, equalRevisionProject.id, {
+    title: "Metadata only",
+    touchLastOpened: true,
+  });
+  ok(
+    (metadataOnly as unknown as { draftRevision?: number } | null)?.draftRevision === 3
+      && metadataOnly?.draft?.script === "legacy no-logo caller",
+    "revision-less metadata-only updates do not advance the draft revision",
+  );
+
+  const concurrentLegacyProject = await projects.createEditorProject(alice.id, {
+    title: "Concurrent legacy writes",
+    draft: { script: "initial" },
+  });
+  const concurrentLegacyResults = await Promise.allSettled([
+    projects.updateEditorProject(alice.id, concurrentLegacyProject.id, {
+      draft: { script: "legacy concurrent one" },
+    }),
+    projects.updateEditorProject(alice.id, concurrentLegacyProject.id, {
+      draft: { script: "legacy concurrent two" },
+    }),
+  ]);
+  const afterConcurrentLegacy = await projects.getEditorProject(alice.id, concurrentLegacyProject.id);
+  ok(
+    concurrentLegacyResults.every((result) => result.status === "fulfilled")
+      && (afterConcurrentLegacy as unknown as { draftRevision?: number } | null)?.draftRevision === 2
+      && ["legacy concurrent one", "legacy concurrent two"].includes(afterConcurrentLegacy?.draft?.script ?? ""),
+    "concurrent revision-less draft writes each atomically advance the revision",
   );
 
   ok(typeof patchEditorProjectForUser === "function", "PATCH contract exposes a directly testable authenticated-user seam");
@@ -189,19 +231,47 @@ async function main() {
         && ((apiBPayload.project as Record<string, unknown> | undefined)?.draftRevision === 2),
       "PATCH accepts and returns a newer draft revision",
     );
-    const apiLateA = await patchEditorProjectForUser(alice.id, apiProject.id, {
-      draft: { script: "API late A" },
-      draftRevision: 1,
+    const apiLegacy = await patchEditorProjectForUser(alice.id, apiProject.id, {
+      draft: { script: "API legacy newer" },
     });
-    const apiLatePayload = await apiLateA.json() as Record<string, unknown>;
+    const apiLegacyPayload = await apiLegacy.json() as Record<string, unknown>;
     ok(
-      apiLateA.status === 409
+      apiLegacy.status === 200
+        && ((apiLegacyPayload.project as Record<string, unknown> | undefined)?.draftRevision === 3),
+      "revision-less PATCH preserves its success response and advances the revision",
+    );
+    const apiLateIssued = await patchEditorProjectForUser(alice.id, apiProject.id, {
+      draft: { script: "API late issued revision three" },
+      draftRevision: 3,
+    });
+    const apiLatePayload = await apiLateIssued.json() as Record<string, unknown>;
+    ok(
+      apiLateIssued.status === 409
         && apiLatePayload.error === "stale_revision"
-        && ((apiLatePayload.project as Record<string, unknown> | undefined)?.draftRevision === 2),
-      "PATCH returns stale without overwriting for a late lower revision",
+        && ((apiLatePayload.project as Record<string, unknown> | undefined)?.draftRevision === 3),
+      "PATCH returns stale for a revision issued before a legacy write",
     );
     const apiFinal = await projects.getEditorProject(alice.id, apiProject.id);
-    ok(apiFinal?.draft?.script === "API B", "PATCH-level late A leaves API B durable");
+    ok(apiFinal?.draft?.script === "API legacy newer", "PATCH-level late request leaves the legacy write durable");
+
+    for (const [label, invalidBody] of [
+      ["null", null],
+      ["array", []],
+      ["string", "draft"],
+      ["number", 42],
+    ] as const) {
+      let response: Response | null = null;
+      try {
+        response = await patchEditorProjectForUser(alice.id, apiProject.id, invalidBody);
+      } catch {
+        response = null;
+      }
+      const payload = response ? await response.json() as Record<string, unknown> : null;
+      ok(
+        response?.status === 400 && payload?.error === "no_fields",
+        `PATCH ${label} JSON returns 400 no_fields`,
+      );
+    }
   }
 
   const job = await jobs.createVideoJob(alice.id, { script: "hello", previewMode: true }, undefined, { projectId: p.id });

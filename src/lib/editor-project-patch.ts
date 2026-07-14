@@ -30,27 +30,31 @@ function projectError(error: unknown) {
 export async function patchEditorProjectForUser(
   userId: string,
   id: string,
-  body: Record<string, unknown>,
+  body: unknown,
 ): Promise<NextResponse> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "no_fields" }, { status: 400 });
+  }
+  const fields = body as Record<string, unknown>;
   try {
     const project = await updateEditorProject(userId, id, {
-      ...(Object.prototype.hasOwnProperty.call(body, "title") ? { title: body.title } : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "draft") ? { draft: body.draft } : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "draftJson") ? { draft: body.draftJson } : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "draftRevision")
-        ? { draftRevision: body.draftRevision }
+      ...(Object.prototype.hasOwnProperty.call(fields, "title") ? { title: fields.title } : {}),
+      ...(Object.prototype.hasOwnProperty.call(fields, "draft") ? { draft: fields.draft } : {}),
+      ...(Object.prototype.hasOwnProperty.call(fields, "draftJson") ? { draft: fields.draftJson } : {}),
+      ...(Object.prototype.hasOwnProperty.call(fields, "draftRevision")
+        ? { draftRevision: fields.draftRevision }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "status") ? { status: body.status } : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "activeJobId")
-        ? { activeJobId: body.activeJobId }
+      ...(Object.prototype.hasOwnProperty.call(fields, "status") ? { status: fields.status } : {}),
+      ...(Object.prototype.hasOwnProperty.call(fields, "activeJobId")
+        ? { activeJobId: fields.activeJobId }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "activeExportJobId")
-        ? { activeExportJobId: body.activeExportJobId }
+      ...(Object.prototype.hasOwnProperty.call(fields, "activeExportJobId")
+        ? { activeExportJobId: fields.activeExportJobId }
         : {}),
-      ...(Object.prototype.hasOwnProperty.call(body, "latestVideoId")
-        ? { latestVideoId: body.latestVideoId }
+      ...(Object.prototype.hasOwnProperty.call(fields, "latestVideoId")
+        ? { latestVideoId: fields.latestVideoId }
         : {}),
-      ...(body.touchLastOpened === true ? { touchLastOpened: true } : {}),
+      ...(fields.touchLastOpened === true ? { touchLastOpened: true } : {}),
     });
     if (!project) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ project });

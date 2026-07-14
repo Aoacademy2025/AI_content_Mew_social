@@ -27,7 +27,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    const body: unknown = await req.json().catch(() => ({}));
     return await patchEditorProjectForUser(user.id, id, body);
   } catch (error) {
     console.error("[api/editor-projects/:id] patch error:", error);
