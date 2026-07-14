@@ -3,7 +3,7 @@
 // BRAND_ASSET_ROOT=/tmp/heroai-brand-assets-export \
 // npx tsx scripts/verify-logo-export.ts
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -19,6 +19,7 @@ const USER_A = "logo-export-user-a";
 const USER_B = "logo-export-user-b";
 const PROJECT_A = "logo-export-project-a";
 const PROJECT_B = "logo-export-project-b";
+const PROJECT_ARCHIVED = "logo-export-project-archived";
 
 function imageFile(bytes: Buffer, name: string): File {
   return new File([new Uint8Array(bytes)], name, { type: "image/png" });
@@ -66,6 +67,7 @@ async function main(): Promise<void> {
       data: [
         { id: PROJECT_A, userId: USER_A, title: "Logo export A" },
         { id: PROJECT_B, userId: USER_B, title: "Logo export B" },
+        { id: PROJECT_ARCHIVED, userId: USER_A, title: "Archived logo export", status: "archived" },
       ],
     });
 
@@ -188,6 +190,57 @@ async function main(): Promise<void> {
       "project_not_found",
       404,
     );
+    await expectBrandError(
+      () => logoExport.stageLogoForExport({
+        userId: USER_A,
+        plan: "PRO",
+        projectId: PROJECT_ARCHIVED,
+        rawLogoOverlay: {
+          enabled: true,
+          assetId: assetA.id,
+          position: "top-left",
+          sizePct: 18,
+          opacity: 0.9,
+        },
+        rendersRoot,
+      }),
+      "project_not_found",
+      404,
+    );
+    await expectBrandError(
+      () => logoExport.stageLogoForExport({
+        userId: USER_A,
+        plan: "PRO",
+        projectId: "",
+        rawLogoOverlay: {
+          enabled: true,
+          assetId: assetA.id,
+          position: "top-left",
+          sizePct: 18,
+          opacity: 0.9,
+        },
+        rendersRoot,
+      }),
+      "project_not_found",
+      404,
+    );
+    await expectBrandError(
+      () => logoExport.stageLogoForExport({
+        userId: USER_A,
+        plan: "PRO",
+        projectId: "   ",
+        rawLogoOverlay: {
+          enabled: true,
+          assetId: assetA.id,
+          position: "top-left",
+          sizePct: 18,
+          opacity: 0.9,
+        },
+        rendersRoot,
+      }),
+      "project_not_found",
+      404,
+    );
 
     const stagedA = await logoExport.stageLogoForExport({
       userId: USER_A,
@@ -269,26 +322,89 @@ async function main(): Promise<void> {
     assert.equal(stagedB.trusted.intrinsicHeight, 36);
 
     writeFileSync(assetPathA, normalizedSourceA);
-    const failedQueueStage = await logoExport.stageLogoForExport({
-      userId: USER_A,
-      plan: "PRO",
-      projectId: PROJECT_A,
-      rawLogoOverlay: {
-        enabled: true,
-        assetId: assetA.id,
-        position: "top-right",
-        sizePct: 18,
-        opacity: 0.9,
-      },
-      rendersRoot,
-    });
-    assert.ok(failedQueueStage);
-    try {
-      throw new Error("simulated queue failure");
-    } catch {
-      await logoExport.removeLogoSnapshot(failedQueueStage.snapshotPath);
-    }
-    assert.equal(existsSync(failedQueueStage.snapshotPath), false, "queue failure cleanup removes the staged snapshot");
+    const logoInput = {
+      enabled: true,
+      assetId: assetA.id,
+      position: "top-right",
+      sizePct: 18,
+      opacity: 0.9,
+    } as const;
+    const snapshotsBeforeFailedCreate = new Set(
+      readdirSync(rendersRoot).filter((filename) => filename.startsWith("logo-snapshot-")),
+    );
+    const failedJobId = "logo-export-forced-create-failure";
+    let failedSnapshotPath: string | null = null;
+    await assert.rejects(
+      () => logoExport.createDurableExportWithStagedLogo({
+        staging: {
+          userId: USER_A,
+          plan: "PRO",
+          projectId: PROJECT_A,
+          rawLogoOverlay: logoInput,
+          rendersRoot,
+        },
+        createDurableJob: async (trustedLogo) => {
+          assert.ok(trustedLogo, "staging completes before durable creation is attempted");
+          failedSnapshotPath = path.join(rendersRoot, path.basename(trustedLogo.src));
+          assert.equal(existsSync(failedSnapshotPath), true, "the snapshot exists during create");
+          return prisma.videoJob.create({
+            data: {
+              id: failedJobId,
+              userId: "missing-logo-export-user",
+              projectId: PROJECT_A,
+              type: "export",
+              status: "queued",
+              inputJson: JSON.stringify({ logoOverlay: trustedLogo }),
+            },
+          });
+        },
+      }),
+    );
+    assert.ok(failedSnapshotPath);
+    assert.equal(existsSync(failedSnapshotPath), false, "a real durable-create failure removes the staged snapshot");
+    assert.equal(await prisma.videoJob.findUnique({ where: { id: failedJobId } }), null, "failed creation leaves no durable job");
+    assert.deepEqual(
+      new Set(readdirSync(rendersRoot).filter((filename) => filename.startsWith("logo-snapshot-"))),
+      snapshotsBeforeFailedCreate,
+      "failed creation leaves no new snapshot behind",
+    );
+
+    const durableJobId = "logo-export-durable-before-pointer-failure";
+    let durableSnapshotPath: string | null = null;
+    await assert.rejects(
+      () => logoExport.createDurableExportWithStagedLogo({
+        staging: {
+          userId: USER_A,
+          plan: "PRO",
+          projectId: PROJECT_A,
+          rawLogoOverlay: logoInput,
+          rendersRoot,
+        },
+        createDurableJob: async (trustedLogo) => {
+          assert.ok(trustedLogo);
+          durableSnapshotPath = path.join(rendersRoot, path.basename(trustedLogo.src));
+          return prisma.videoJob.create({
+            data: {
+              id: durableJobId,
+              userId: USER_A,
+              projectId: PROJECT_A,
+              type: "export",
+              status: "queued",
+              inputJson: JSON.stringify({ logoOverlay: trustedLogo }),
+            },
+          });
+        },
+        afterDurableJobCreated: async () => {
+          throw new Error("simulated project-pointer failure");
+        },
+      }),
+      /simulated project-pointer failure/,
+    );
+    assert.ok(await prisma.videoJob.findUnique({ where: { id: durableJobId } }), "successful create leaves a durable queued job");
+    assert.ok(durableSnapshotPath);
+    assert.equal(existsSync(durableSnapshotPath), true, "post-create pointer failure retains the referenced snapshot");
+    await prisma.videoJob.delete({ where: { id: durableJobId } });
+    await logoExport.removeLogoSnapshot(durableSnapshotPath);
 
     await prisma.videoJob.createMany({
       data: [
@@ -339,15 +455,8 @@ async function main(): Promise<void> {
     );
     assert.match(routeSource, /delete\s+subtitleOverlayConfig\.logoOverlay/);
     assert.match(routeSource, /rawLogoOverlay:\s*rawLogoOverlay/);
-    assert.match(routeSource, /subtitleOverlayConfig\.logoOverlay\s*=\s*stagedLogo\.trusted/);
-    const durableMarker = routeSource.indexOf("jobIsDurable = true");
-    const pointerUpdate = routeSource.indexOf("await prisma.editorProject.updateMany", durableMarker);
-    assert.ok(durableMarker >= 0 && pointerUpdate > durableMarker, "job creation becomes durable before the project-pointer update");
-    assert.match(
-      routeSource,
-      /if\s*\(!jobIsDurable\s*&&\s*snapshotPath\)/,
-      "only pre-durable failures remove the snapshot",
-    );
+    assert.match(routeSource, /createDurableExportWithStagedLogo/);
+    assert.match(routeSource, /subtitleOverlayConfig\.logoOverlay\s*=\s*trustedLogo/);
 
     await logoExport.removeLogoSnapshot(stagedA.snapshotPath);
     await logoExport.removeLogoSnapshot(stagedB.snapshotPath);

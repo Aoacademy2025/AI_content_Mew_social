@@ -32,6 +32,14 @@ export type TrustedLogoRenderInput = {
   intrinsicHeight: number;
 };
 
+type LogoExportStagingInput = {
+  userId: string;
+  plan: string;
+  projectId: string;
+  rawLogoOverlay: unknown;
+  rendersRoot?: string;
+};
+
 function parseClientLogoExportInput(value: unknown): ClientLogoExportInput | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -64,13 +72,9 @@ function exportError(
   return error;
 }
 
-export async function stageLogoForExport(input: {
-  userId: string;
-  plan: string;
-  projectId: string;
-  rawLogoOverlay: unknown;
-  rendersRoot?: string;
-}): Promise<{ trusted: TrustedLogoRenderInput; snapshotPath: string } | null> {
+export async function stageLogoForExport(
+  input: LogoExportStagingInput,
+): Promise<{ trusted: TrustedLogoRenderInput; snapshotPath: string } | null> {
   const logo = parseClientLogoExportInput(input.rawLogoOverlay);
   if (!logo) return null;
 
@@ -81,8 +85,12 @@ export async function stageLogoForExport(input: {
       "ฟีเจอร์โลโก้แบรนด์ใช้ได้เฉพาะแผน Pro หรือ Business",
     );
   }
+  const projectId = input.projectId.trim();
+  if (!projectId) {
+    throw exportError("project_not_found", 404, "ไม่พบโปรเจกต์");
+  }
   try {
-    await assertEditorProjectOwner(input.userId, input.projectId);
+    await assertEditorProjectOwner(input.userId, projectId);
   } catch (error) {
     if ((error as { code?: string }).code === "project_not_found") {
       throw exportError("project_not_found", 404, "ไม่พบโปรเจกต์");
@@ -141,5 +149,27 @@ export async function removeLogoSnapshot(snapshotPath: string): Promise<void> {
     await unlink(snapshotPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+export async function createDurableExportWithStagedLogo<Job>(input: {
+  staging: LogoExportStagingInput;
+  createDurableJob: (trustedLogo: TrustedLogoRenderInput | null) => Promise<Job>;
+  afterDurableJobCreated?: (job: Job) => Promise<void>;
+}): Promise<Job> {
+  let snapshotPath: string | null = null;
+  let jobIsDurable = false;
+  try {
+    const stagedLogo = await stageLogoForExport(input.staging);
+    snapshotPath = stagedLogo?.snapshotPath ?? null;
+    const job = await input.createDurableJob(stagedLogo?.trusted ?? null);
+    jobIsDurable = true;
+    await input.afterDurableJobCreated?.(job);
+    return job;
+  } catch (error) {
+    if (!jobIsDurable && snapshotPath) {
+      await removeLogoSnapshot(snapshotPath);
+    }
+    throw error;
   }
 }
