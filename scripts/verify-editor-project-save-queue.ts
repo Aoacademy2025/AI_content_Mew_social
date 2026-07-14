@@ -83,8 +83,10 @@ type BootstrapOutcome =
 
 type ResolveBootstrap = (input: {
   projectId: string;
-  localDraft: unknown;
-  localDirty: boolean;
+  localDraft?: unknown;
+  localDirty?: boolean;
+  readLocalDraft?: () => unknown;
+  isLocalDirty?: () => boolean;
   revisionWatermark: number;
   loadProject: () => Promise<{ status: number; project?: unknown }>;
 }) => Promise<BootstrapOutcome>;
@@ -389,6 +391,39 @@ async function main(): Promise<void> {
     }),
   });
   assert.equal(dirtyOutcome.kind, "local", "edits made during bootstrap failure win on retry");
+  let draftDuringLoad: unknown = { script: "before-load" };
+  let dirtyDuringLoad = false;
+  const pendingEditOutcome = await resolveBootstrap({
+    projectId: "project-edit-during-load",
+    readLocalDraft: () => draftDuringLoad,
+    isLocalDirty: () => dirtyDuringLoad,
+    revisionWatermark: 0,
+    loadProject: async () => {
+      draftDuringLoad = { script: "edited-while-get-pending" };
+      dirtyDuringLoad = true;
+      return {
+        status: 200,
+        project: {
+          id: "project-edit-during-load",
+          draftRevision: 4,
+          draft: { script: "server-current" },
+        },
+      };
+    },
+  });
+  assert.deepEqual(
+    pendingEditOutcome,
+    {
+      kind: "local",
+      project: {
+        id: "project-edit-during-load",
+        draftRevision: 4,
+        draft: { script: "server-current" },
+      },
+      draft: { script: "edited-while-get-pending" },
+    },
+    "bootstrap samples local recovery after GET so an edit made while pending wins",
+  );
   const serverOutcome = await resolveBootstrap({
     projectId: "project-server-current",
     localDraft: { script: "old-local" },
