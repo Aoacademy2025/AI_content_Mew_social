@@ -444,10 +444,20 @@ async function main(): Promise<void> {
   const serverLoadEnd = projectSource.indexOf("const hasLocalDraft =", serverLoadStart);
   assert.ok(serverLoadStart >= 0 && serverLoadEnd > serverLoadStart);
   const serverLoadSource = projectSource.slice(serverLoadStart, serverLoadEnd);
+  const earlyLocalApplyIndex = serverLoadSource.indexOf("applyDraft(associatedLocalDraft)");
   const idleIndex = serverLoadSource.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
-  const getIndex = serverLoadSource.indexOf("fetch(`/api/editor-projects/");
+  const resolverIndex = serverLoadSource.indexOf("await resolveEditorProjectBootstrap({");
+  const getIndex = serverLoadSource.indexOf("const res = await fetch(", resolverIndex);
   const applyIndex = serverLoadSource.indexOf("applyDraft(project.draft as V2Draft)");
-  assert.ok(idleIndex >= 0 && getIndex > idleIndex && applyIndex > getIndex, "bootstrap waits before GET and apply");
+  assert.ok(
+    earlyLocalApplyIndex >= 0
+      && idleIndex > earlyLocalApplyIndex
+      && resolverIndex > idleIndex
+      && getIndex > resolverIndex
+      && applyIndex > getIndex,
+    "bootstrap applies recovery early, then waits before GET and safe server apply",
+  );
+  assert.match(serverLoadSource, /revisionWatermark:\s*editorProjectSaveQueue\.revisionWatermark/);
   assert.match(serverLoadSource, /seedRevision\(project\.id,\s*project\.draftRevision\)/);
 
   const autosaveStart = projectSource.indexOf("// Persist draft (debounce 1s)");

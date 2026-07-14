@@ -8,6 +8,10 @@ import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-prefer
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
+  isEditorProjectRecoveryDraft,
+  resolveEditorProjectBootstrap,
+} from "@/lib/editor-project-bootstrap";
+import {
   canonicalizeDraftLogoOverlay,
   logoOverlayForNewProject,
   normalizeLogoOverlayConfig,
@@ -36,12 +40,14 @@ function browserStorage() {
   return storage && typeof storage.getItem === "function" ? storage : null;
 }
 
-function loadDraft(): V2Draft {
+function loadDraft(): V2Draft | null {
   try {
     const storage = browserStorage();
     const raw = storage?.getItem(DRAFT_KEY);
-    return raw ? (JSON.parse(raw) as V2Draft) : {};
-  } catch { return {}; }
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    return isEditorProjectRecoveryDraft(value) ? value as V2Draft : null;
+  } catch { return null; }
 }
 
 async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
@@ -225,6 +231,9 @@ export function useV2Project() {
     };
   }
 
+  const latestDraftRef = useRef<V2Draft>({});
+  latestDraftRef.current = buildDraft();
+
   function applyDraft(next: V2Draft) {
     draftRef.current = next;
     if (next.projectTitle !== undefined) setProjectTitle(next.projectTitle || DEFAULT_PROJECT.projectTitle);
@@ -257,7 +266,34 @@ export function useV2Project() {
   //    "idle" until the first user-driven change, then "saving" → "saved". ──
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveRevision, setSaveRevision] = useState(0);
-  const retryProjectSave = useCallback(() => setSaveRevision((revision) => revision + 1), []);
+  const [bootstrapRetryRevision, setBootstrapRetryRevision] = useState(0);
+  const projectReadyRef = useRef(projectReady);
+  projectReadyRef.current = projectReady;
+  const existingBootstrapProjectIdRef = useRef<string | null>(null);
+  const bootstrapLocalDirtyRef = useRef(false);
+  const bootstrapLocalRecoveryValidRef = useRef(false);
+  const bootstrapStateRef = useRef<"idle" | "loading" | "error">("idle");
+  const skipNextPersistRef = useRef(false);
+  const retryProjectSave = useCallback(() => {
+    if (!projectReadyRef.current && existingBootstrapProjectIdRef.current) {
+      let localWriteSucceeded = false;
+      try {
+        const storage = browserStorage();
+        if (storage) {
+          storage.setItem(DRAFT_KEY, JSON.stringify(latestDraftRef.current));
+          storage.setItem(PROJECT_ID_KEY, existingBootstrapProjectIdRef.current);
+          localWriteSucceeded = true;
+        }
+      } catch { /* quota/private mode */ }
+      bootstrapLocalDirtyRef.current = true;
+      bootstrapLocalRecoveryValidRef.current = localWriteSucceeded;
+      bootstrapStateRef.current = "loading";
+      setSaveStatus("saving");
+      setBootstrapRetryRevision((revision) => revision + 1);
+      return;
+    }
+    setSaveRevision((revision) => revision + 1);
+  }, []);
   const firstPersistRun = useRef(true);
   const mountedRef = useRef(false);
   const currentProjectIdRef = useRef<string | null>(projectId);
@@ -316,6 +352,11 @@ export function useV2Project() {
       ...(inherited ? { logoOverlay: inherited } : {}),
     };
     draftRef.current = nextDraft;
+    existingBootstrapProjectIdRef.current = null;
+    bootstrapLocalDirtyRef.current = false;
+    bootstrapLocalRecoveryValidRef.current = false;
+    bootstrapStateRef.current = "idle";
+    skipNextPersistRef.current = false;
     setProjectId(null);
     setProjectReady(false);
     setProjectStatus("draft");
@@ -361,44 +402,96 @@ export function useV2Project() {
     let alive = true;
     async function ensureServerProject() {
       const storage = browserStorage();
-      const localDraft = loadDraft();
+      const storedLocalDraft = loadDraft();
       const urlProjectId = new URLSearchParams(window.location.search).get("projectId");
       const storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null;
       const existingProjectId = urlProjectId || storedProjectId;
 
       if (existingProjectId) {
+        existingBootstrapProjectIdRef.current = existingProjectId;
+        bootstrapStateRef.current = "loading";
+        setProjectId(existingProjectId);
+        setProjectReady(false);
+        const associatedLocalDraft = storedProjectId === existingProjectId && storedLocalDraft
+          ? canonicalizeDraftLogoOverlay(storedLocalDraft) as V2Draft
+          : null;
+        bootstrapLocalRecoveryValidRef.current = associatedLocalDraft !== null;
+        if (associatedLocalDraft) {
+          skipNextPersistRef.current = true;
+          applyDraft(associatedLocalDraft);
+        }
         await editorProjectSaveQueue.whenIdle(existingProjectId);
         if (!alive) return;
-        try {
-          const res = await fetch(`/api/editor-projects/${encodeURIComponent(existingProjectId)}`, { cache: "no-store" });
-          if (res.ok) {
-            const data = await res.json();
-            const project = data?.project;
-            if (!alive || typeof project?.id !== "string") return;
-            editorProjectSaveQueue.seedRevision(project.id, project.draftRevision);
-            setProjectId(project.id);
-            setProjectReady(true);
-            setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
-            setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
-            setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
-            setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
-            setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
-            storage?.setItem(PROJECT_ID_KEY, project.id);
-            if (project.draft && typeof project.draft === "object") {
+        const outcome = await resolveEditorProjectBootstrap({
+          projectId: existingProjectId,
+          readLocalDraft: () => {
+            if (bootstrapLocalDirtyRef.current && !bootstrapLocalRecoveryValidRef.current) {
+              return null;
+            }
+            const currentStoredProjectId = browserStorage()?.getItem(PROJECT_ID_KEY) ?? null;
+            const latest = currentStoredProjectId === existingProjectId ? loadDraft() : null;
+            return latest ? canonicalizeDraftLogoOverlay(latest) : null;
+          },
+          isLocalDirty: () => bootstrapLocalDirtyRef.current,
+          revisionWatermark: editorProjectSaveQueue.revisionWatermark(existingProjectId),
+          loadProject: async () => {
+            const res = await fetch(
+              `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
+              { cache: "no-store" },
+            );
+            const data = res.ok ? await res.json().catch(() => null) : null;
+            return { status: res.status, project: data?.project };
+          },
+        });
+        if (!alive) return;
+        if (outcome.kind === "error") {
+          setProjectId(existingProjectId);
+          setProjectReady(false);
+          bootstrapStateRef.current = "error";
+          setSaveStatus("error");
+          if (outcome.recoveryDraft) {
+            skipNextPersistRef.current = true;
+            applyDraft(outcome.recoveryDraft as V2Draft);
+          }
+          return;
+        }
+        if (outcome.kind !== "missing") {
+          const project = outcome.project;
+          editorProjectSaveQueue.seedRevision(project.id, project.draftRevision);
+          setProjectId(project.id);
+          setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
+          setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
+          setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
+          setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
+          setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+          storage?.setItem(PROJECT_ID_KEY, project.id);
+          bootstrapLocalDirtyRef.current = false;
+          bootstrapStateRef.current = "idle";
+          if (outcome.kind === "local") {
+            skipNextPersistRef.current = false;
+            applyDraft(outcome.draft as V2Draft);
+            setSaveStatus("saving");
+          } else if (outcome.kind === "server") {
+            skipNextPersistRef.current = true;
+            if (project.draft && typeof project.draft === "object" && !Array.isArray(project.draft)) {
               applyDraft(project.draft as V2Draft);
             } else if (typeof project.title === "string") {
               setProjectTitle(project.title);
             }
-            return;
+            setSaveStatus("idle");
           }
-          if (res.status !== 404) return;
-        } catch {
-          // Keep the local draft but do not requeue it behind an unconfirmed existing project.
+          setProjectReady(true);
           return;
         }
+        existingBootstrapProjectIdRef.current = null;
+        bootstrapStateRef.current = "idle";
+        setProjectId(null);
       }
 
-      const hasLocalDraft = Object.keys(localDraft).length > 0;
+      const localDraft = urlProjectId && urlProjectId !== storedProjectId
+        ? null
+        : storedLocalDraft;
+      const hasLocalDraft = localDraft !== null;
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         const accountDefault = await loadAccountLogoDefault();
@@ -415,7 +508,7 @@ export function useV2Project() {
     return () => { alive = false; };
     // Server project bootstrap should run once. Subsequent field autosaves are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createServerProject]);
+  }, [createServerProject, bootstrapRetryRevision]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -463,9 +556,33 @@ export function useV2Project() {
   useEffect(() => {
     const isFirst = firstPersistRun.current;
     firstPersistRun.current = false;
+    if (!isFirst && skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
+    if (isFirst && !projectReady && existingBootstrapProjectIdRef.current) return;
+    if (!isFirst && !projectReady && existingBootstrapProjectIdRef.current) {
+      bootstrapLocalDirtyRef.current = true;
+      bootstrapLocalRecoveryValidRef.current = false;
+    }
     if (!isFirst) setSaveStatus("saving");
     const t = setTimeout(() => {
       const draft = buildDraft();
+      if (!projectReady && existingBootstrapProjectIdRef.current) {
+        let localWriteSucceeded = false;
+        try {
+          const storage = browserStorage();
+          if (storage) {
+            storage.setItem(DRAFT_KEY, JSON.stringify(draft));
+            storage.setItem(PROJECT_ID_KEY, existingBootstrapProjectIdRef.current);
+            localWriteSucceeded = true;
+          }
+        } catch { /* quota/private mode */ }
+        bootstrapLocalDirtyRef.current = true;
+        bootstrapLocalRecoveryValidRef.current = localWriteSucceeded;
+        setSaveStatus(bootstrapStateRef.current === "error" ? "error" : "saving");
+        return;
+      }
       try {
         browserStorage()?.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* quota/private mode */ }
@@ -485,8 +602,6 @@ export function useV2Project() {
             ? { onStatus: ({ status }: { status: "saving" | "saved" | "error" }) => setSaveStatus(status) }
             : {}),
         });
-      } else if (!isFirst) {
-        setSaveStatus("saved");
       }
     }, 1000);
     return () => { clearTimeout(t); };
