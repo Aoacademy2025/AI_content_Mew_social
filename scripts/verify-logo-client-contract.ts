@@ -163,6 +163,27 @@ function assertSingleSpanTemplate(
   assert.equal(current.templateSpans[0].literal.text, tail, message);
 }
 
+function isExactTabSemanticsGate(expression: ts.Expression) {
+  const condition = unwrapExpression(expression);
+  if (
+    !ts.isBinaryExpression(condition)
+    || condition.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken
+    || expressionPath(condition.right) !== "id"
+  ) {
+    return false;
+  }
+  const semanticsCheck = unwrapExpression(condition.left);
+  if (
+    !ts.isBinaryExpression(semanticsCheck)
+    || semanticsCheck.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken
+    || expressionPath(semanticsCheck.left) !== "semantics"
+  ) {
+    return false;
+  }
+  const expectedValue = unwrapExpression(semanticsCheck.right);
+  return ts.isStringLiteral(expectedValue) && expectedValue.text === "tabs";
+}
+
 function assertDynamicTabLinkExpression(
   expression: ts.Expression | undefined,
   tail: "-tab" | "-panel",
@@ -171,18 +192,7 @@ function assertDynamicTabLinkExpression(
   const current = expression && unwrapExpression(expression);
   assert.ok(current && ts.isConditionalExpression(current), message);
   assert.equal(expressionPath(current.whenFalse), "undefined", message);
-  assert.ok(
-    containsNode(current.condition, (node) => ts.isIdentifier(node) && node.text === "semantics"),
-    message,
-  );
-  assert.ok(
-    containsNode(current.condition, (node) => ts.isStringLiteral(node) && node.text === "tabs"),
-    message,
-  );
-  assert.ok(
-    containsNode(current.condition, (node) => ts.isIdentifier(node) && node.text === "id"),
-    message,
-  );
+  assert.ok(isExactTabSemanticsGate(current.condition), message);
   const template = unwrapExpression(current.whenTrue);
   assert.ok(ts.isTemplateExpression(template) && template.head.text === "", message);
   assert.equal(template.templateSpans.length, 2, message);
@@ -820,7 +830,7 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/ui.tsx",
     "utf8",
   );
-  await check("AST tab linkage contract rejects mismatched panel IDs", () => {
+  await check("AST panel ID contract rejects an independent mismatch", () => {
     const brokenFixture = `
       function BrokenTabs() {
         const rightTabsId = useId();
@@ -835,10 +845,10 @@ async function main() {
               options={[{ value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
             />
             {rightTab === "subtitle" && (
-              <div id="wrong-panel" role="tabpanel" aria-labelledby="wrong-tab" />
+              <div id="wrong-panel" role="tabpanel" aria-labelledby={\`\${rightTabsId}-subtitle-tab\`} />
             )}
             {rightTab === "logo" && (
-              <div id="logo-panel" role="tabpanel" aria-labelledby="logo-tab" />
+              <div id={\`\${rightTabsId}-logo-panel\`} role="tabpanel" aria-labelledby={\`\${rightTabsId}-logo-tab\`} />
             )}
           </aside>
         );
@@ -852,6 +862,61 @@ async function main() {
     );
     assertDesktopTabLinkageStructure(desktopSource, uiSource);
   });
+
+  await check("AST panel label contract rejects an independent aria-labelledby mismatch", () => {
+    const brokenFixture = `
+      function BrokenTabs() {
+        const rightTabsId = useId();
+        return (
+          <aside>
+            <Segmented
+              id={rightTabsId}
+              semantics="tabs"
+              ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
+              value={rightTab}
+              onChange={setRightTab}
+              options={[{ value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
+            />
+            {rightTab === "subtitle" && (
+              <div id={\`\${rightTabsId}-subtitle-panel\`} role="tabpanel" aria-labelledby="wrong-tab" />
+            )}
+            {rightTab === "logo" && (
+              <div id={\`\${rightTabsId}-logo-panel\`} role="tabpanel" aria-labelledby={\`\${rightTabsId}-logo-tab\`} />
+            )}
+          </aside>
+        );
+      }
+    `;
+    assert.throws(
+      () => assertDesktopTabLinkageStructure(brokenFixture, uiSource),
+      /subtitle tabpanel aria-labelledby must match/,
+    );
+  });
+
+  await check("AST Segmented tab ID rejects a non-strict semantics gate", () => {
+    const brokenUiSource = uiSource.replace(
+      'id={semantics === "tabs" && id ?',
+      'id={semantics !== "tabs" && id ?',
+    );
+    assert.notEqual(brokenUiSource, uiSource, "tab ID mutation did not apply");
+    assert.throws(
+      () => assertDesktopTabLinkageStructure(desktopSource, brokenUiSource),
+      /Segmented tab IDs must be derived/,
+    );
+  });
+
+  await check("AST Segmented aria-controls rejects a disjunctive gate", () => {
+    const brokenUiSource = uiSource.replace(
+      'aria-controls={semantics === "tabs" && id ?',
+      'aria-controls={semantics === "tabs" || id ?',
+    );
+    assert.notEqual(brokenUiSource, uiSource, "aria-controls mutation did not apply");
+    assert.throws(
+      () => assertDesktopTabLinkageStructure(desktopSource, brokenUiSource),
+      /Segmented aria-controls must be derived/,
+    );
+  });
+
   await check("desktop segmented control opts into complete tab semantics", () => {
     assertDesktopTabLinkageStructure(desktopSource, uiSource);
     assert.match(uiSource, /ArrowLeft/);
