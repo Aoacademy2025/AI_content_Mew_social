@@ -249,6 +249,150 @@ function assertPreviewSiblingStructure(source: string) {
   assert.equal(allLogos.length, 1, "desktop must have exactly one LogoOverlayPreview instance");
 }
 
+function assertMobileActionStructure(source: string) {
+  const root = parseTsx(source, "mobile-action-contract.tsx");
+  const previewFrames = collectNodes(
+    root,
+    (node): node is ts.JsxElement => ts.isJsxElement(node)
+      && jsxStringAttribute(node, "data-mobile-preview") === "true",
+  );
+  const actionRows = collectNodes(
+    root,
+    (node): node is ts.JsxElement => ts.isJsxElement(node)
+      && jsxStringAttribute(node, "data-mobile-editor-actions") === "true",
+  );
+  assert.equal(previewFrames.length, 1, "mobile sticky preview marker is missing");
+  assert.equal(actionRows.length, 1, "mobile editor action row is missing");
+  assert.equal(
+    previewFrames[0].parent,
+    actionRows[0].parent,
+    "mobile actions must share the preview's direct layout parent",
+  );
+  const layoutChildren = (previewFrames[0].parent as ts.JsxElement).children.filter(isJsxElementNode);
+  assert.equal(
+    layoutChildren.indexOf(actionRows[0]),
+    layoutChildren.indexOf(previewFrames[0]) + 1,
+    "mobile actions must be directly below the sticky preview",
+  );
+
+  const directButtons = actionRows[0].children.filter(
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "button",
+  );
+  const subtitleActions = directButtons.filter(
+    (button) => jsxStringAttribute(button, "data-mobile-editor-action") === "subtitle",
+  );
+  const logoActions = directButtons.filter(
+    (button) => jsxStringAttribute(button, "data-mobile-editor-action") === "logo",
+  );
+  assert.equal(subtitleActions.length, 1, "mobile must expose one แก้ซับ action");
+  assert.equal(logoActions.length, 1, "mobile must expose one โลโก้ action");
+  assert.match(subtitleActions[0].getText(), /แก้ซับ/);
+  assert.match(logoActions[0].getText(), /โลโก้/);
+  assert.equal(
+    expressionPath(jsxExpressionAttribute(subtitleActions[0], "style")),
+    "mobileEditorActionStyle",
+    "subtitle action must use the shared equal-size style",
+  );
+  assert.equal(
+    expressionPath(jsxExpressionAttribute(logoActions[0], "style")),
+    "mobileEditorActionStyle",
+    "logo action must use the shared equal-size style",
+  );
+
+  const enabledIndicators = collectNodes(
+    logoActions[0],
+    (node): node is JsxElementNode => isJsxElementNode(node)
+      && jsxStringAttribute(node, "data-logo-enabled-indicator") === "true",
+  );
+  assert.equal(enabledIndicators.length, 1, "enabled logo needs one explicit indicator");
+  assert.match(enabledIndicators[0].getText(), /เปิดอยู่/);
+  assert.ok(
+    collectNodes(
+      enabledIndicators[0],
+      (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "Check",
+    ).length === 1,
+    "enabled logo indicator needs a non-color check icon",
+  );
+  assert.ok(
+    collectNodes(
+      logoActions[0],
+      (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "ImageIcon",
+    ).length === 1,
+    "mobile logo action needs an icon alongside its text",
+  );
+}
+
+function assertMobilePreviewSiblingStructure(source: string) {
+  const root = parseTsx(source, "mobile-preview-contract.tsx");
+  const frames = collectNodes(
+    root,
+    (node): node is ts.JsxElement => ts.isJsxElement(node)
+      && jsxStringAttribute(node, "data-mobile-video-preview-frame") === "true",
+  );
+  assert.equal(frames.length, 1, "mobile must have exactly one marked video preview frame");
+  const directChildren = frames[0].children.filter(isJsxElementNode);
+  const videos = directChildren.filter(
+    (node) => jsxTagName(node) === "video"
+      && expressionPath(jsxExpressionAttribute(node, "ref")) === "ed.videoRef",
+  );
+  const logos = directChildren.filter((node) => jsxTagName(node) === "LogoOverlayPreview");
+  const captions = directChildren.filter((node) => jsxTagName(node) === "V2CaptionOverlay");
+  assert.equal(videos.length, 1, "mobile displayed video must be a direct preview-frame child");
+  assert.equal(logos.length, 1, "mobile LogoOverlayPreview must be a direct video sibling");
+  assert.equal(captions.length, 1, "mobile V2CaptionOverlay must be a direct video sibling");
+  assert.ok(
+    videos[0].pos < logos[0].pos && logos[0].pos < captions[0].pos,
+    "mobile displayed video, logo, and captions must be direct siblings in that order",
+  );
+  assert.equal(expressionPath(jsxExpressionAttribute(logos[0], "value")), "logoOverlay");
+  assert.equal(expressionPath(jsxExpressionAttribute(logos[0], "asset")), "ed.logo.asset");
+}
+
+function assertMobileLogoSheetStructure(source: string) {
+  const root = parseTsx(source, "mobile-logo-sheet-contract.tsx");
+  const logoSheets = collectNodes(
+    root,
+    (node): node is ts.JsxElement => ts.isJsxElement(node)
+      && jsxTagName(node) === "MobileSheet"
+      && jsxStringAttribute(node, "size") === "medium",
+  ).filter((sheet) => collectNodes(
+    sheet,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "LogoOverlayControls",
+  ).length === 1);
+  assert.equal(logoSheets.length, 1, "mobile logo controls need exactly one medium MobileSheet");
+  assert.equal(expressionPath(jsxExpressionAttribute(logoSheets[0], "open")), "logoOpen");
+  assert.equal(expressionPath(jsxExpressionAttribute(logoSheets[0], "triggerRef")), "logoTriggerRef");
+}
+
+function assertMobilePostPhaseEditorForwardingStructure(source: string) {
+  const root = parseTsx(source, "mobile-editor-options-contract.tsx");
+  const editorCalls = collectNodes(
+    root,
+    (node): node is ts.CallExpression => ts.isCallExpression(node)
+      && expressionPath(node.expression) === "usePostPhaseEditor",
+  );
+  assert.equal(editorCalls.length, 1, "mobile must call usePostPhaseEditor exactly once");
+  const options = editorCalls[0].arguments[2];
+  assert.ok(options && ts.isObjectLiteralExpression(options), "mobile editor options object is missing");
+  for (const name of [
+    "projectId",
+    "logoOverlay",
+    "onLogoOverlayChange",
+    "logoEligible",
+    "projectSaveStatus",
+    "onRetryProjectSave",
+  ]) {
+    assert.equal(
+      options.properties.filter(
+        (property) => ts.isShorthandPropertyAssignment(property) && property.name.text === name,
+      ).length,
+      1,
+      `mobile must forward ${name} unchanged into usePostPhaseEditor`,
+    );
+  }
+  assert.equal(objectLiteralStringProperty(options, "surface"), "mobile");
+}
+
 function objectLiteralStringProperty(object: ts.ObjectLiteralExpression, name: string) {
   const property = object.properties.find(
     (candidate): candidate is ts.PropertyAssignment =>
@@ -786,6 +930,30 @@ async function main() {
     assertPreviewSiblingStructure(desktopSource);
     assert.match(previewSource, /position:\s*["']absolute["'][\s\S]{0,100}inset:\s*0/);
     assert.match(previewSource, /pointerEvents:\s*["']none["']/);
+  });
+
+  const mobileSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx",
+    "utf8",
+  );
+  await check("mobile exposes equal subtitle and logo actions with a non-color enabled indicator", () => {
+    assertMobileActionStructure(mobileSource);
+    assert.match(
+      mobileSource,
+      /mobileEditorActionStyle[\s\S]{0,180}minHeight:\s*44[\s\S]{0,180}flex:\s*1/,
+    );
+  });
+
+  await check("mobile logo controls use the reusable medium sheet", () => {
+    assertMobileLogoSheetStructure(mobileSource);
+  });
+
+  await check("mobile logo preview is layered before captions", () => {
+    assertMobilePreviewSiblingStructure(mobileSource);
+  });
+
+  await check("mobile forwards the project logo contract with the mobile surface", () => {
+    assertMobilePostPhaseEditorForwardingStructure(mobileSource);
   });
 
   const controlsSource = readFileSync(
