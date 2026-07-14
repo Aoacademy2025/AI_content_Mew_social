@@ -6,6 +6,7 @@ import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageMod
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
+import { createEditorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
   canonicalizeDraftLogoOverlay,
   logoOverlayForNewProject,
@@ -26,6 +27,8 @@ interface V2Draft {
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
 }
+
+const projectSaveQueue = createEditorProjectSaveQueue<V2Draft>();
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
 
@@ -52,6 +55,15 @@ async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
   } catch {
     return null;
   }
+}
+
+async function saveEditorProjectDraft(projectId: string, draft: V2Draft): Promise<boolean> {
+  const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: draft.projectTitle, draft, touchLastOpened: true }),
+  });
+  return res.ok;
 }
 
 /**
@@ -234,6 +246,14 @@ export function useV2Project() {
   const [saveRevision, setSaveRevision] = useState(0);
   const retryProjectSave = useCallback(() => setSaveRevision((revision) => revision + 1), []);
   const firstPersistRun = useRef(true);
+  const mountedRef = useRef(false);
+  const currentProjectIdRef = useRef<string | null>(projectId);
+  currentProjectIdRef.current = projectId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // ── Read-only wiring ──
   const [usage, setUsage] = useState<V2Usage | null>(null);
@@ -425,27 +445,28 @@ export function useV2Project() {
     const isFirst = firstPersistRun.current;
     firstPersistRun.current = false;
     if (!isFirst) setSaveStatus("saving");
-    let active = true;
     const t = setTimeout(() => {
       const draft = buildDraft();
       try {
         browserStorage()?.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* quota/private mode */ }
       if (projectReady && projectId) {
-        fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: draft.projectTitle, draft, touchLastOpened: true }),
-        })
-          .then((res) => {
-            if (!isFirst && active) setSaveStatus(res.ok ? "saved" : "error");
-          })
-          .catch(() => { if (!isFirst && active) setSaveStatus("error"); });
+        const saveProjectId = projectId;
+        projectSaveQueue.enqueue({
+          projectId: saveProjectId,
+          draft,
+          save: saveEditorProjectDraft,
+          isActive: () => mountedRef.current
+            && currentProjectIdRef.current === saveProjectId,
+          ...(!isFirst
+            ? { onStatus: ({ status }: { status: "saving" | "saved" | "error" }) => setSaveStatus(status) }
+            : {}),
+        });
       } else if (!isFirst) {
         setSaveStatus("saved");
       }
     }, 1000);
-    return () => { active = false; clearTimeout(t); };
+    return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady, saveRevision]);
 

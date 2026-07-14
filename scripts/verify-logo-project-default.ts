@@ -154,14 +154,24 @@ const autosaveSource = sourceBetween(
   "// ข้อมูลอวตาร",
 );
 assert.match(
-  autosaveSource,
-  /setSaveStatus\(res\.ok \? "saved" : "error"\)/,
-  "non-OK autosave responses produce error status",
+  projectSource,
+  /async function saveEditorProjectDraft[\s\S]{0,520}return res\.ok;/,
+  "the queued save reports non-OK PATCH responses as failures",
 );
 assert.match(
   autosaveSource,
-  /\.catch\(\(\) => \{ if \(!isFirst && active\) setSaveStatus\("error"\); \}\);/,
-  "rejected autosave requests produce error status",
+  /onStatus:[\s\S]{0,160}setSaveStatus\(status\)/,
+  "the queue's latest terminal result drives visible save status",
+);
+assert.doesNotMatch(
+  autosaveSource,
+  /\bfetch\(/,
+  "autosave never launches an unordered PATCH directly",
+);
+assert.match(
+  autosaveSource,
+  /mountedRef\.current[\s\S]{0,100}currentProjectIdRef\.current\s*===\s*saveProjectId/,
+  "unmounted and previous-project saves cannot update visible status",
 );
 assert.match(
   projectSource,
