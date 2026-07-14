@@ -133,6 +133,7 @@ export function LogoOverlayControls({
         type="file"
         accept={LOGO_PICKER_ACCEPT}
         aria-label="เลือกไฟล์โลโก้"
+        tabIndex={-1}
         disabled={controlsDisabled}
         onChange={onFileSelected}
       />

@@ -298,7 +298,11 @@ async function main() {
     assert.match(desktopSource, /useState<\s*["']subtitle["']\s*\|\s*["']logo["']\s*>\(\s*["']subtitle["']\s*\)/);
     assert.match(desktopSource, /value:\s*["']subtitle["']\s*,\s*label:\s*["']ซับ["']/);
     assert.match(desktopSource, /value:\s*["']logo["']\s*,\s*label:\s*["']โลโก้["']/);
-    assert.match(desktopSource, /surface:\s*["']desktop["']/);
+    const editorCallStart = desktopSource.indexOf("usePostPhaseEditor(job, script, {");
+    const editorCallEnd = desktopSource.indexOf("});", editorCallStart);
+    assert.ok(editorCallStart >= 0 && editorCallEnd > editorCallStart, "desktop editor call is missing");
+    const editorOptionsSource = desktopSource.slice(editorCallStart, editorCallEnd);
+    assert.match(editorOptionsSource, /surface:\s*["']desktop["']/);
     for (const prop of [
       "projectId",
       "logoOverlay",
@@ -307,7 +311,11 @@ async function main() {
       "projectSaveStatus",
       "onRetryProjectSave",
     ]) {
-      assert.match(desktopSource, new RegExp(`\\b${prop}\\b`), `desktop is missing ${prop}`);
+      assert.match(
+        editorOptionsSource,
+        new RegExp(`(?:^|\\n)\\s*${prop},`),
+        `desktop does not forward ${prop} into usePostPhaseEditor`,
+      );
     }
   });
 
@@ -325,9 +333,18 @@ async function main() {
     assert.match(shellSource, /<PostPhase\s+\{\.\.\.postPhaseProjectProps\}/);
   });
 
-  await check("desktop mounts logo controls only in the logo branch", () => {
-    assert.match(desktopSource, /rightTab\s*===\s*["']subtitle["'][\s\S]*rightTab\s*===\s*["']logo["']/);
-    assert.match(desktopSource, /rightTab\s*===\s*["']logo["'][\s\S]{0,240}<LogoOverlayControls/);
+  await check("desktop mounts each control tree inside its matching tab panel", () => {
+    const subtitleBranchStart = desktopSource.indexOf('rightTab === "subtitle"');
+    const logoBranchStart = desktopSource.indexOf('rightTab === "logo"', subtitleBranchStart);
+    const panelEnd = desktopSource.indexOf("</aside>", logoBranchStart);
+    assert.ok(subtitleBranchStart >= 0 && logoBranchStart > subtitleBranchStart && panelEnd > logoBranchStart);
+    const subtitleBranch = desktopSource.slice(subtitleBranchStart, logoBranchStart);
+    const logoBranch = desktopSource.slice(logoBranchStart, panelEnd);
+    assert.match(subtitleBranch, /role=["']tabpanel["']/);
+    assert.match(subtitleBranch, /ความยาวการ์ดซับ/);
+    assert.doesNotMatch(subtitleBranch, /<LogoOverlayControls\b/);
+    assert.match(logoBranch, /role=["']tabpanel["']/);
+    assert.match(logoBranch, /<LogoOverlayControls\b/);
     assert.equal(
       desktopSource.match(/<LogoOverlayControls\b/g)?.length,
       1,
@@ -344,12 +361,16 @@ async function main() {
   });
 
   await check("desktop logo preview shares video bounds below captions and ignores input", () => {
-    const videoIndex = desktopSource.indexOf("ref={ed.videoRef}");
+    const frameIndex = desktopSource.indexOf('data-video-preview-frame="true"');
+    const frameEnd = desktopSource.indexOf("</main>", frameIndex);
+    const videoIndex = desktopSource.indexOf("ref={ed.videoRef}", frameIndex);
     const logoIndex = desktopSource.indexOf("<LogoOverlayPreview", videoIndex);
     const captionsIndex = desktopSource.indexOf("<V2CaptionOverlay", videoIndex);
+    assert.ok(frameIndex >= 0 && frameEnd > frameIndex, "desktop preview frame marker is missing");
     assert.ok(videoIndex >= 0, "desktop editor video is missing");
     assert.ok(logoIndex > videoIndex, "logo preview must render after the displayed video");
     assert.ok(captionsIndex > logoIndex, "logo preview must render before captions");
+    assert.ok(captionsIndex < frameEnd, "video, logo, and captions must share one preview frame");
     assert.match(desktopSource.slice(logoIndex, captionsIndex), /value=\{logoOverlay\}/);
     assert.match(desktopSource.slice(logoIndex, captionsIndex), /asset=\{ed\.logo\.asset\}/);
     assert.match(previewSource, /position:\s*["']absolute["'][\s\S]{0,100}inset:\s*0/);
@@ -360,10 +381,71 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/LogoOverlayControls.tsx",
     "utf8",
   );
+  await check("hidden logo picker is not a duplicate invisible tab stop", () => {
+    const pickerStart = controlsSource.indexOf('className="logo-controls__file"');
+    const pickerEnd = controlsSource.indexOf("/>", pickerStart);
+    assert.ok(pickerStart >= 0 && pickerEnd > pickerStart, "hidden logo picker is missing");
+    const pickerSource = controlsSource.slice(pickerStart, pickerEnd);
+    assert.match(pickerSource, /tabIndex=\{-1\}/);
+    assert.match(pickerSource, /aria-label=["']เลือกไฟล์โลโก้["']/);
+    assert.match(controlsSource, /fileInputRef\.current\?\.click\(\)/);
+    assert.match(controlsSource, /className=["']logo-controls__upload["'][\s\S]{0,140}onClick=\{chooseFile\}/);
+    assert.match(controlsSource, /className=["']logo-controls__text-action["'][\s\S]{0,140}onClick=\{chooseFile\}/);
+  });
+
   await check("desktop shared controls preserve accessible anchor order", () => {
     assert.match(controlsSource, /LOGO_POSITIONS\.map/);
     assert.match(controlsSource, /aria-label=\{`วางโลโก้\$\{POSITION_LABELS\[position\]\}`\}/);
     assert.match(controlsSource, /aria-pressed=\{selected\}/);
+    const switchIndex = controlsSource.indexOf("<LogoSwitch");
+    const replaceIndex = controlsSource.indexOf("logo-controls__text-action", switchIndex);
+    const removeIndex = controlsSource.indexOf("logo-controls__remove-action", replaceIndex);
+    const positionsIndex = controlsSource.indexOf("LOGO_POSITIONS.map", removeIndex);
+    const sizeIndex = controlsSource.indexOf("ขนาดโลโก้", positionsIndex);
+    const opacityIndex = controlsSource.indexOf("ความทึบของโลโก้", sizeIndex);
+    const defaultIndex = controlsSource.indexOf("logo-controls__default-choice", opacityIndex);
+    assert.ok(
+      switchIndex < replaceIndex
+      && replaceIndex < removeIndex
+      && removeIndex < positionsIndex
+      && positionsIndex < sizeIndex
+      && sizeIndex < opacityIndex
+      && opacityIndex < defaultIndex,
+      "configured logo controls are not in the required keyboard reading order",
+    );
+  });
+
+  const uiSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/ui.tsx",
+    "utf8",
+  );
+  await check("desktop segmented control opts into complete tab semantics", () => {
+    assert.match(uiSource, /semantics\?:\s*["']tabs["']/);
+    assert.match(uiSource, /role=\{semantics\s*===\s*["']tabs["']\s*\?\s*["']tablist["']/);
+    assert.match(uiSource, /role=\{semantics\s*===\s*["']tabs["']\s*\?\s*["']tab["']/);
+    assert.match(uiSource, /aria-selected=\{semantics\s*===\s*["']tabs["']\s*\?\s*active/);
+    assert.match(uiSource, /tabIndex=\{semantics\s*===\s*["']tabs["']\s*\?\s*\(active\s*\?\s*0\s*:\s*-1\)/);
+    assert.match(uiSource, /ArrowLeft/);
+    assert.match(uiSource, /ArrowRight/);
+    const rightTabsStart = desktopSource.indexOf("<Segmented", desktopSource.indexOf("ขวา 330px"));
+    const rightTabsEnd = desktopSource.indexOf("/>", rightTabsStart);
+    const rightTabsSource = desktopSource.slice(rightTabsStart, rightTabsEnd);
+    assert.match(rightTabsSource, /semantics=["']tabs["']/);
+    assert.match(rightTabsSource, /id=\{rightTabsId\}/);
+    assert.match(rightTabsSource, /ariaLabel=["']ตั้งค่าองค์ประกอบวิดีโอ["']/);
+  });
+
+  await check("desktop export remains visually first but follows the editor in DOM order", () => {
+    const panelEnd = desktopSource.indexOf("</aside>", desktopSource.indexOf("ขวา 330px"));
+    const exportIndex = desktopSource.indexOf("onClick={() => void ed.exportVideo()}", panelEnd);
+    assert.ok(panelEnd >= 0, "desktop right panel is missing");
+    assert.ok(exportIndex > panelEnd, "export must follow the editor and right panel in DOM focus order");
+    const exportBarMarker = desktopSource.lastIndexOf('data-desktop-export-bar="true"', exportIndex);
+    assert.ok(exportBarMarker >= 0, "late-DOM export bar marker is missing");
+    const exportBarSource = desktopSource.slice(Math.max(0, exportBarMarker - 180), exportIndex);
+    assert.match(exportBarSource, /data-desktop-export-bar=["']true["']/);
+    assert.match(exportBarSource, /order-first/);
+    assert.match(desktopSource.slice(exportIndex, exportIndex + 520), /["']ส่งออกวิดีโอ["']/);
   });
 
   if (failures.length > 0) {

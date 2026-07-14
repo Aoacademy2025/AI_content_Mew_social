@@ -19,7 +19,7 @@ import {
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
 } from "./subtitle-style";
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
@@ -68,6 +68,7 @@ export function PostPhase({
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
 }) {
   const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
@@ -114,28 +115,6 @@ export function PostPhase({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* แถบสถานะ + CTA เดียว */}
-      <div className="flex shrink-0 items-center justify-between px-5 py-2.5" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
-        <span className="flex items-center gap-2" style={{ fontSize: 12 }}>
-          <CheckCircle2 size={14} color={color.success} />
-          <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
-          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
-        </span>
-        {!ed.adjustingAvatar && (
-          <div className="flex items-center gap-3">
-            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-              เรนเดอร์ใหม่
-            </button>
-            <BtnPrimary
-              onClick={() => void ed.exportVideo()}
-              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving"}
-              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
-            >
-              {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
-            </BtnPrimary>
-          </div>
-        )}
-      </div>
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
@@ -216,7 +195,11 @@ export function PostPhase({
 
         {/* ── กลาง: preview + ซับสด ── */}
         <main className="flex min-w-0 flex-1 items-center justify-center p-4" style={{ background: color.bg0 }}>
-          <div className="relative" style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}>
+          <div
+            className="relative"
+            data-video-preview-frame="true"
+            style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}
+          >
             <video
               ref={ed.videoRef}
               src={ed.baseUrl}
@@ -271,6 +254,9 @@ export function PostPhase({
         {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <Segmented
+            id={rightTabsId}
+            semantics="tabs"
+            ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
             value={rightTab}
             onChange={handleRightTabChange}
             options={[
@@ -281,7 +267,12 @@ export function PostPhase({
           />
 
           {rightTab === "subtitle" && (
-            <>
+            <div
+              id={`${rightTabsId}-subtitle-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-subtitle-tab`}
+              className="flex flex-col gap-5"
+            >
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -544,20 +535,53 @@ export function PostPhase({
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
             ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>
-            </>
+            </div>
           )}
 
           {rightTab === "logo" && (
-            <LogoOverlayControls
-              value={logoOverlay}
-              eligible={logoEligible}
-              editor={ed.logo}
-            />
+            <div
+              id={`${rightTabsId}-logo-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-logo-tab`}
+            >
+              <LogoOverlayControls
+                value={logoOverlay}
+                eligible={logoEligible}
+                editor={ed.logo}
+              />
+            </div>
           )}
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (
           <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+        )}
+      </div>
+
+      {/* DOM order keeps export after editor controls; flex order preserves its top-bar position. */}
+      <div
+        data-desktop-export-bar="true"
+        className="order-first flex shrink-0 items-center justify-between px-5 py-2.5"
+        style={{ borderBottom: `1px solid ${color.cardBorder}` }}
+      >
+        <span className="flex items-center gap-2" style={{ fontSize: 12 }}>
+          <CheckCircle2 size={14} color={color.success} />
+          <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
+          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
+        </span>
+        {!ed.adjustingAvatar && (
+          <div className="flex items-center gap-3">
+            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+              เรนเดอร์ใหม่
+            </button>
+            <BtnPrimary
+              onClick={() => void ed.exportVideo()}
+              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving"}
+              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
+            >
+              {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
+            </BtnPrimary>
+          </div>
         )}
       </div>
 
