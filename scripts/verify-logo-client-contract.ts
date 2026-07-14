@@ -1,6 +1,7 @@
 // Run with: npx tsx scripts/verify-logo-client-contract.ts
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import * as logoEditorModule from "../src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor";
 import {
   LOGO_PICKER_ACCEPT,
   LOGO_PICKER_FORMAT_LABEL,
@@ -50,6 +51,14 @@ const config: LogoOverlayConfig = {
 const captions: V2Caption[] = [
   { text: "ทดสอบ", startMs: 0, endMs: 1_000, tag: "hook" },
 ];
+
+type ScheduleLogoAssetCleanup = (
+  assetId: string,
+  dependencies?: {
+    schedule?: (task: () => void, delayMs: number) => void;
+    deleteAsset?: (assetId: string) => Promise<unknown>;
+  },
+) => boolean;
 
 async function main() {
   await check("picker advertises every accepted MIME type, extension, and the limit", () => {
@@ -193,6 +202,75 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor.ts",
     "utf8",
   );
+  await check("cleanup schedules any reloaded project asset and survives hook unmount", async () => {
+    const scheduleLogoAssetCleanup = (
+      logoEditorModule as typeof logoEditorModule & {
+        scheduleLogoAssetCleanup?: ScheduleLogoAssetCleanup;
+      }
+    ).scheduleLogoAssetCleanup;
+    const cleanupDelay = (
+      logoEditorModule as typeof logoEditorModule & {
+        LOGO_ASSET_CLEANUP_DELAY_MS?: number;
+      }
+    ).LOGO_ASSET_CLEANUP_DELAY_MS;
+    assert.equal(
+      typeof scheduleLogoAssetCleanup,
+      "function",
+      "scheduleLogoAssetCleanup is not exported",
+    );
+    assert.equal(cleanupDelay, 1_100, "cleanup waits beyond the one-second autosave window");
+
+    const pendingTasks: Array<() => void> = [];
+    const delays: number[] = [];
+    const deletedAssetIds: string[] = [];
+    let markDeleteStarted: (() => void) | undefined;
+    const deleteStarted = new Promise<void>((resolve) => { markDeleteStarted = resolve; });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const accepted = scheduleLogoAssetCleanup!("  asset_from_reloaded_project  ", {
+        schedule(task, delayMs) {
+          pendingTasks.push(task);
+          delays.push(delayMs);
+        },
+        async deleteAsset(assetId) {
+          deletedAssetIds.push(assetId);
+          markDeleteStarted?.();
+          throw new Error("network failure must stay invisible");
+        },
+      });
+      assert.equal(accepted, true, "a persisted/reloaded asset does not need mount-local provenance");
+      assert.deepEqual(delays, [1_100]);
+      assert.equal(pendingTasks.length, 1);
+
+      // Simulate the hook unmounting before the timeout: no hook cleanup is allowed to
+      // cancel this independently owned task, so the queued callback still executes.
+      pendingTasks[0]();
+      await deleteStarted;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(deletedAssetIds, ["asset_from_reloaded_project"]);
+      assert.deepEqual(unhandled, [], "best-effort DELETE failures remain invisible");
+      assert.equal(scheduleLogoAssetCleanup!("   ", {
+        schedule() { throw new Error("blank ids must not schedule"); },
+      }), false);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  await check("replacement/removal cleanup is server-protected rather than mount-gated", () => {
+    assert.doesNotMatch(hookSource, /projectOnlyAssetIds|cleanupTimers|clearTimeout/);
+    assert.match(
+      hookSource,
+      /previous\.assetId\s*!==\s*parsed\.asset\.id[\s\S]{0,160}scheduleLogoAssetCleanup\(previous\.assetId\)/,
+    );
+    assert.match(
+      hookSource,
+      /removeFromProject[\s\S]{0,420}scheduleLogoAssetCleanup\(normalizedValue\.assetId\)/,
+    );
+  });
+
   await check("client mutations never include sensitive asset data in telemetry", () => {
     assert.doesNotMatch(
       hookSource,

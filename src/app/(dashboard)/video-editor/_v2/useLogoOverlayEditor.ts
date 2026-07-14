@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { trackEvent } from "@/lib/client-telemetry";
 import {
   DEFAULT_LOGO_OPACITY,
@@ -16,6 +16,7 @@ import {
 export const LOGO_PICKER_ACCEPT =
   "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
 export const LOGO_PICKER_FORMAT_LABEL = "PNG, JPG หรือ WebP · สูงสุด 5 MB";
+export const LOGO_ASSET_CLEANUP_DELAY_MS = 1_100;
 
 export type LogoEditorSurface = "desktop" | "mobile";
 export type LogoProjectSaveStatus = "idle" | "saving" | "saved" | "error";
@@ -171,6 +172,33 @@ export function parseLogoUploadResponse(
   };
 }
 
+export function scheduleLogoAssetCleanup(
+  assetId: string,
+  dependencies: {
+    schedule?: (task: () => void, delayMs: number) => void;
+    deleteAsset?: (assetId: string) => Promise<unknown>;
+  } = {},
+): boolean {
+  const normalizedAssetId = assetId.trim();
+  if (!normalizedAssetId) return false;
+
+  const schedule = dependencies.schedule
+    ?? ((task: () => void, delayMs: number) => { setTimeout(task, delayMs); });
+  const deleteAsset = dependencies.deleteAsset
+    ?? ((id: string) => fetch(`/api/user/brand-assets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }));
+
+  schedule(() => {
+    try {
+      void deleteAsset(normalizedAssetId).catch(() => {});
+    } catch {
+      // Cleanup is best-effort. Reference protection and 409 handling live on the server.
+    }
+  }, LOGO_ASSET_CLEANUP_DELAY_MS);
+  return true;
+}
+
 function trackLogoEvent(
   name:
     | "logo_overlay_upload_started"
@@ -211,8 +239,6 @@ export function useLogoOverlayEditor(input: {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const projectOnlyAssetIds = useRef(new Set<string>());
-  const cleanupTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     const assetId = normalizedValue?.assetId;
@@ -255,23 +281,6 @@ export function useLogoOverlayEditor(input: {
       });
     return () => controller.abort();
   }, [normalizedValue?.assetId]);
-
-  useEffect(() => () => {
-    for (const timer of cleanupTimers.current) clearTimeout(timer);
-    cleanupTimers.current.clear();
-  }, []);
-
-  const deleteAfterAutosave = useCallback((assetId: string) => {
-    if (!projectOnlyAssetIds.current.has(assetId)) return;
-    projectOnlyAssetIds.current.delete(assetId);
-    const timer = setTimeout(() => {
-      cleanupTimers.current.delete(timer);
-      void fetch(`/api/user/brand-assets/${encodeURIComponent(assetId)}`, {
-        method: "DELETE",
-      }).catch(() => {});
-    }, 1_100);
-    cleanupTimers.current.add(timer);
-  }, []);
 
   const updateConfig = useCallback((patch: Partial<LogoOverlayConfig>) => {
     if (!eligible || !normalizedValue) return;
@@ -366,11 +375,10 @@ export function useLogoOverlayEditor(input: {
         return false;
       }
 
-      projectOnlyAssetIds.current.add(parsed.asset.id);
       setAsset(parsed.asset);
       onChange(next);
       if (previous && previous.assetId !== parsed.asset.id) {
-        deleteAfterAutosave(previous.assetId);
+        scheduleLogoAssetCleanup(previous.assetId);
       }
       trackLogoEvent("logo_overlay_upload_done", {
         planEligible: true,
@@ -391,7 +399,7 @@ export function useLogoOverlayEditor(input: {
     } finally {
       setSaving(false);
     }
-  }, [deleteAfterAutosave, eligible, normalizedValue, onChange, projectId, surface]);
+  }, [eligible, normalizedValue, onChange, projectId, surface]);
 
   const saveAsDefault = useCallback(async (): Promise<boolean> => {
     if (!eligible || !normalizedValue) return false;
@@ -417,7 +425,6 @@ export function useLogoOverlayEditor(input: {
         setMutationError("ตั้งเป็นโลโก้หลักไม่สำเร็จ");
         return false;
       }
-      projectOnlyAssetIds.current.delete(normalizedValue.assetId);
       trackLogoEvent("logo_overlay_default_saved", {
         planEligible: true,
         position: normalizedValue.position,
@@ -437,8 +444,8 @@ export function useLogoOverlayEditor(input: {
     onChange(undefined);
     setAsset(null);
     setMutationError(null);
-    deleteAfterAutosave(normalizedValue.assetId);
-  }, [deleteAfterAutosave, eligible, normalizedValue, onChange]);
+    scheduleLogoAssetCleanup(normalizedValue.assetId);
+  }, [eligible, normalizedValue, onChange]);
 
   const error = projectSaveStatus === "error"
     ? "ยังไม่ได้บันทึก"
