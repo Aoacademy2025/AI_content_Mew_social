@@ -1,6 +1,7 @@
 // Run with: npx tsx scripts/verify-logo-client-contract.ts
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import * as logoEditorModule from "../src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor";
 import {
   LOGO_PICKER_ACCEPT,
@@ -18,6 +19,409 @@ import {
 import type { BrandAssetView, LogoOverlayConfig } from "../src/lib/logo-overlay";
 
 const failures: string[] = [];
+
+type JsxElementNode = ts.JsxElement | ts.JsxSelfClosingElement;
+
+function parseTsx(source: string, fileName = "contract-fixture.tsx") {
+  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+}
+
+function collectNodes<T extends ts.Node>(
+  root: ts.Node,
+  guard: (node: ts.Node) => node is T,
+) {
+  const matches: T[] = [];
+  const visit = (node: ts.Node) => {
+    if (guard(node)) matches.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return matches;
+}
+
+function isJsxElementNode(node: ts.Node): node is JsxElementNode {
+  return ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node);
+}
+
+function jsxOpening(node: JsxElementNode) {
+  return ts.isJsxElement(node) ? node.openingElement : node;
+}
+
+function jsxTagName(node: JsxElementNode) {
+  return jsxOpening(node).tagName.getText();
+}
+
+function jsxAttribute(node: JsxElementNode, name: string) {
+  return jsxOpening(node).attributes.properties.find(
+    (property): property is ts.JsxAttribute =>
+      ts.isJsxAttribute(property) && property.name.getText() === name,
+  );
+}
+
+function jsxStringAttribute(node: JsxElementNode, name: string) {
+  const initializer = jsxAttribute(node, name)?.initializer;
+  return initializer && ts.isStringLiteral(initializer) ? initializer.text : undefined;
+}
+
+function jsxExpressionAttribute(node: JsxElementNode, name: string) {
+  const initializer = jsxAttribute(node, name)?.initializer;
+  return initializer && ts.isJsxExpression(initializer) ? initializer.expression : undefined;
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isTypeAssertionExpression(current)
+    || ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function expressionPath(expression: ts.Expression | undefined): string | undefined {
+  if (!expression) return undefined;
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) return current.text;
+  if (ts.isPropertyAccessExpression(current)) {
+    const owner = expressionPath(current.expression);
+    return owner ? `${owner}.${current.name.text}` : undefined;
+  }
+  return undefined;
+}
+
+function containsNode(root: ts.Node, predicate: (node: ts.Node) => boolean) {
+  let found = false;
+  const visit = (node: ts.Node) => {
+    if (found) return;
+    if (predicate(node)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
+function branchValueFromEquality(expression: ts.Expression) {
+  const current = unwrapExpression(expression);
+  if (
+    !ts.isBinaryExpression(current)
+    || ![
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsToken,
+    ].includes(current.operatorToken.kind)
+  ) {
+    return undefined;
+  }
+  const pairs: Array<[ts.Expression, ts.Expression]> = [
+    [current.left, current.right],
+    [current.right, current.left],
+  ];
+  for (const [candidate, value] of pairs) {
+    const literal = unwrapExpression(value);
+    if (
+      expressionPath(candidate) === "rightTab"
+      && ts.isStringLiteral(literal)
+      && (literal.text === "subtitle" || literal.text === "logo")
+    ) {
+      return literal.text;
+    }
+  }
+  return undefined;
+}
+
+function rightTabBranchValue(node: ts.Node) {
+  let child = node;
+  for (let parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (
+      ts.isBinaryExpression(parent)
+      && parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      && child === parent.right
+    ) {
+      const value = branchValueFromEquality(parent.left);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function assertSingleSpanTemplate(
+  expression: ts.Expression | undefined,
+  identifierPath: string,
+  tail: string,
+  message: string,
+) {
+  const current = expression && unwrapExpression(expression);
+  assert.ok(current && ts.isTemplateExpression(current), message);
+  assert.equal(current.head.text, "", message);
+  assert.equal(current.templateSpans.length, 1, message);
+  assert.equal(expressionPath(current.templateSpans[0].expression), identifierPath, message);
+  assert.equal(current.templateSpans[0].literal.text, tail, message);
+}
+
+function assertDynamicTabLinkExpression(
+  expression: ts.Expression | undefined,
+  tail: "-tab" | "-panel",
+  message: string,
+) {
+  const current = expression && unwrapExpression(expression);
+  assert.ok(current && ts.isConditionalExpression(current), message);
+  assert.equal(expressionPath(current.whenFalse), "undefined", message);
+  assert.ok(
+    containsNode(current.condition, (node) => ts.isIdentifier(node) && node.text === "semantics"),
+    message,
+  );
+  assert.ok(
+    containsNode(current.condition, (node) => ts.isStringLiteral(node) && node.text === "tabs"),
+    message,
+  );
+  assert.ok(
+    containsNode(current.condition, (node) => ts.isIdentifier(node) && node.text === "id"),
+    message,
+  );
+  const template = unwrapExpression(current.whenTrue);
+  assert.ok(ts.isTemplateExpression(template) && template.head.text === "", message);
+  assert.equal(template.templateSpans.length, 2, message);
+  const [idSpan, valueSpan] = template.templateSpans;
+  assert.equal(expressionPath(idSpan.expression), "id", message);
+  assert.equal(idSpan.literal.text, "-", message);
+  assert.equal(expressionPath(valueSpan.expression), "o.value", message);
+  assert.equal(valueSpan.literal.text, tail, message);
+}
+
+function assertLogoControlsBranchStructure(source: string) {
+  const root = parseTsx(source, "logo-branch-contract.tsx");
+  const controls = collectNodes(
+    root,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "LogoOverlayControls",
+  );
+  assert.equal(controls.length, 1, "desktop must have exactly one LogoOverlayControls instance");
+  assert.equal(
+    rightTabBranchValue(controls[0]),
+    "logo",
+    'LogoOverlayControls must be inside the rightTab === "logo" branch and nowhere outside it',
+  );
+}
+
+function assertPreviewSiblingStructure(source: string) {
+  const root = parseTsx(source, "preview-sibling-contract.tsx");
+  const frames = collectNodes(
+    root,
+    (node): node is ts.JsxElement =>
+      ts.isJsxElement(node) && jsxStringAttribute(node, "data-video-preview-frame") === "true",
+  );
+  assert.equal(frames.length, 1, "desktop must have exactly one data-video-preview-frame element");
+
+  const directChildren = frames[0].children.filter(isJsxElementNode);
+  const videos = directChildren.filter(
+    (node) => jsxTagName(node) === "video"
+      && expressionPath(jsxExpressionAttribute(node, "ref")) === "ed.videoRef",
+  );
+  const logos = directChildren.filter((node) => jsxTagName(node) === "LogoOverlayPreview");
+  const captions = directChildren.filter((node) => jsxTagName(node) === "V2CaptionOverlay");
+  assert.equal(videos.length, 1, "the displayed ed.videoRef video must be a direct preview-frame child");
+  assert.equal(logos.length, 1, "LogoOverlayPreview must be a direct sibling of the displayed video");
+  assert.equal(captions.length, 1, "V2CaptionOverlay must be a direct sibling of the displayed video");
+  assert.ok(
+    videos[0].pos < logos[0].pos && logos[0].pos < captions[0].pos,
+    "displayed video, LogoOverlayPreview, and V2CaptionOverlay must be direct siblings in that order",
+  );
+  assert.equal(expressionPath(jsxExpressionAttribute(logos[0], "value")), "logoOverlay");
+  assert.equal(expressionPath(jsxExpressionAttribute(logos[0], "asset")), "ed.logo.asset");
+  const allLogos = collectNodes(
+    root,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "LogoOverlayPreview",
+  );
+  assert.equal(allLogos.length, 1, "desktop must have exactly one LogoOverlayPreview instance");
+}
+
+function objectLiteralStringProperty(object: ts.ObjectLiteralExpression, name: string) {
+  const property = object.properties.find(
+    (candidate): candidate is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(candidate) && candidate.name.getText() === name,
+  );
+  return property && ts.isStringLiteral(unwrapExpression(property.initializer))
+    ? (unwrapExpression(property.initializer) as ts.StringLiteral).text
+    : undefined;
+}
+
+function assertDesktopTabLinkageStructure(desktopSource: string, uiSource: string) {
+  const desktopRoot = parseTsx(desktopSource, "desktop-tab-contract.tsx");
+  const rightTabsIds = collectNodes(
+    desktopRoot,
+    (node): node is ts.VariableDeclaration => ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.name.text === "rightTabsId"
+      && !!node.initializer
+      && ts.isCallExpression(node.initializer)
+      && expressionPath(node.initializer.expression) === "useId"
+      && node.initializer.arguments.length === 0,
+  );
+  assert.equal(rightTabsIds.length, 1, "rightTabsId must be initialized once from useId()");
+
+  const tabControls = collectNodes(
+    desktopRoot,
+    (node): node is JsxElementNode => isJsxElementNode(node)
+      && jsxTagName(node) === "Segmented"
+      && jsxStringAttribute(node, "semantics") === "tabs",
+  );
+  assert.equal(tabControls.length, 1, "desktop must have exactly one tab-semantic Segmented control");
+  const tabControl = tabControls[0];
+  assert.equal(expressionPath(jsxExpressionAttribute(tabControl, "id")), "rightTabsId");
+  assert.equal(jsxStringAttribute(tabControl, "ariaLabel"), "ตั้งค่าองค์ประกอบวิดีโอ");
+  const options = jsxExpressionAttribute(tabControl, "options");
+  assert.ok(options && ts.isArrayLiteralExpression(unwrapExpression(options)), "tab options must be an array literal");
+  const optionValues = (unwrapExpression(options) as ts.ArrayLiteralExpression).elements
+    .filter(ts.isObjectLiteralExpression)
+    .map((option) => objectLiteralStringProperty(option, "value"));
+  assert.deepEqual(optionValues, ["subtitle", "logo"], "desktop tab values must remain stable");
+
+  const tabPanels = collectNodes(
+    desktopRoot,
+    (node): node is JsxElementNode =>
+      isJsxElementNode(node) && jsxStringAttribute(node, "role") === "tabpanel",
+  );
+  for (const value of ["subtitle", "logo"] as const) {
+    const panels = tabPanels.filter((panel) => rightTabBranchValue(panel) === value);
+    assert.equal(panels.length, 1, `${value} must have exactly one active tabpanel branch`);
+    assertSingleSpanTemplate(
+      jsxExpressionAttribute(panels[0], "id"),
+      "rightTabsId",
+      `-${value}-panel`,
+      `${value} tabpanel ID must match the Segmented aria-controls contract`,
+    );
+    assertSingleSpanTemplate(
+      jsxExpressionAttribute(panels[0], "aria-labelledby"),
+      "rightTabsId",
+      `-${value}-tab`,
+      `${value} tabpanel aria-labelledby must match its tab ID`,
+    );
+  }
+
+  const uiRoot = parseTsx(uiSource, "segmented-tab-contract.tsx");
+  const segmentedFunctions = collectNodes(
+    uiRoot,
+    (node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "Segmented",
+  );
+  assert.equal(segmentedFunctions.length, 1, "Segmented function declaration is missing");
+  const tabButtons = collectNodes(
+    segmentedFunctions[0],
+    (node): node is JsxElementNode => isJsxElementNode(node)
+      && jsxTagName(node) === "button"
+      && !!jsxExpressionAttribute(node, "role")
+      && containsNode(jsxExpressionAttribute(node, "role")!, (child) =>
+        ts.isStringLiteral(child) && child.text === "tab"),
+  );
+  assert.equal(tabButtons.length, 1, "Segmented must render its tab button structurally");
+  assertDynamicTabLinkExpression(
+    jsxExpressionAttribute(tabButtons[0], "id"),
+    "-tab",
+    "Segmented tab IDs must be derived from id and o.value",
+  );
+  assertDynamicTabLinkExpression(
+    jsxExpressionAttribute(tabButtons[0], "aria-controls"),
+    "-panel",
+    "Segmented aria-controls must be derived from id and o.value",
+  );
+  const ariaSelected = jsxExpressionAttribute(tabButtons[0], "aria-selected");
+  assert.ok(
+    ariaSelected
+    && containsNode(ariaSelected, (node) => ts.isIdentifier(node) && node.text === "active"),
+    "Segmented tabs must expose their active state through aria-selected",
+  );
+  const tabIndex = jsxExpressionAttribute(tabButtons[0], "tabIndex");
+  assert.ok(
+    tabIndex
+    && containsNode(tabIndex, (node) => ts.isIdentifier(node) && node.text === "active")
+    && containsNode(tabIndex, (node) => ts.isNumericLiteral(node) && node.text === "0")
+    && containsNode(tabIndex, (node) => ts.isPrefixUnaryExpression(node)
+      && node.operator === ts.SyntaxKind.MinusToken
+      && ts.isNumericLiteral(node.operand)
+      && node.operand.text === "1"),
+    "Segmented tabs must retain a 0/-1 roving tabIndex",
+  );
+  const tabLists = collectNodes(
+    segmentedFunctions[0],
+    (node): node is JsxElementNode => isJsxElementNode(node)
+      && jsxTagName(node) === "div"
+      && !!jsxExpressionAttribute(node, "role")
+      && containsNode(jsxExpressionAttribute(node, "role")!, (child) =>
+        ts.isStringLiteral(child) && child.text === "tablist"),
+  );
+  assert.equal(tabLists.length, 1, "Segmented tabs must share one tablist");
+}
+
+function assertPostPhaseEditorForwardingStructure(source: string) {
+  const root = parseTsx(source, "desktop-editor-options-contract.tsx");
+  const editorCalls = collectNodes(
+    root,
+    (node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && expressionPath(node.expression) === "usePostPhaseEditor",
+  );
+  assert.equal(editorCalls.length, 1, "desktop must call usePostPhaseEditor exactly once");
+  const options = editorCalls[0].arguments[2];
+  assert.ok(options && ts.isObjectLiteralExpression(options), "desktop editor options object is missing");
+  const requiredShorthand = [
+    "projectId",
+    "logoOverlay",
+    "onLogoOverlayChange",
+    "logoEligible",
+    "projectSaveStatus",
+    "onRetryProjectSave",
+  ];
+  for (const name of requiredShorthand) {
+    const forwarded = options.properties.filter(
+      (property) => ts.isShorthandPropertyAssignment(property) && property.name.text === name,
+    );
+    assert.equal(forwarded.length, 1, `desktop must forward ${name} unchanged into usePostPhaseEditor`);
+  }
+  assert.equal(objectLiteralStringProperty(options, "surface"), "desktop");
+}
+
+function assertDesktopExportFocusStructure(source: string) {
+  const root = parseTsx(source, "desktop-focus-contract.tsx");
+  const rightPanels = collectNodes(
+    root,
+    (node): node is ts.JsxElement => ts.isJsxElement(node)
+      && jsxTagName(node) === "aside"
+      && collectNodes(
+        node,
+        (child): child is JsxElementNode => isJsxElementNode(child)
+          && jsxTagName(child) === "Segmented"
+          && jsxStringAttribute(child, "semantics") === "tabs",
+      ).length === 1,
+  );
+  assert.equal(rightPanels.length, 1, "desktop right tab panel is missing");
+  const exportBars = collectNodes(
+    root,
+    (node): node is ts.JsxElement =>
+      ts.isJsxElement(node) && jsxStringAttribute(node, "data-desktop-export-bar") === "true",
+  );
+  assert.equal(exportBars.length, 1, "late-DOM export bar marker is missing");
+  const exportBar = exportBars[0];
+  assert.ok(exportBar.pos > rightPanels[0].end, "export must follow the editor and right panel in DOM focus order");
+  assert.match(jsxStringAttribute(exportBar, "className") ?? "", /(?:^|\s)order-first(?:\s|$)/);
+  const exportButtons = collectNodes(
+    exportBar,
+    (node): node is JsxElementNode => isJsxElementNode(node)
+      && jsxTagName(node) === "BtnPrimary"
+      && !!jsxExpressionAttribute(node, "onClick")
+      && containsNode(jsxExpressionAttribute(node, "onClick")!, (child) =>
+        ts.isCallExpression(child) && expressionPath(child.expression) === "ed.exportVideo"),
+  );
+  assert.equal(exportButtons.length, 1, "late-DOM export bar must contain the export action");
+  const timelines = collectNodes(
+    root,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "TimelinePanel",
+  );
+  assert.equal(timelines.length, 1, "desktop TimelinePanel is missing");
+  assert.ok(exportBar.end < timelines[0].pos, "export bar must remain before the timeline in DOM order");
+}
 
 async function check(name: string, run: () => void | Promise<void>) {
   try {
@@ -294,29 +698,52 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx",
     "utf8",
   );
+  await check("AST logo branch contract rejects proximity-only false positives", () => {
+    const brokenFixture = `
+      function BrokenLogoBranch() {
+        return (
+          <aside>
+            {rightTab === "logo" && <div role="tabpanel" />}
+            <LogoOverlayControls value={logoOverlay} eligible={logoEligible} editor={ed.logo} />
+          </aside>
+        );
+      }
+    `;
+    assert.match(brokenFixture, /rightTab\s*===\s*["']logo["'][\s\S]{0,240}<LogoOverlayControls/);
+    assert.throws(
+      () => assertLogoControlsBranchStructure(brokenFixture),
+      /inside the rightTab === "logo" branch/,
+    );
+    assertLogoControlsBranchStructure(desktopSource);
+  });
+
+  await check("AST preview contract rejects nested-layer proximity false positives", () => {
+    const brokenFixture = `
+      function BrokenPreviewFrame() {
+        return (
+          <div data-video-preview-frame="true">
+            <video ref={ed.videoRef} />
+            <div><LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} /></div>
+            <V2CaptionOverlay />
+          </div>
+        );
+      }
+    `;
+    const videoIndex = brokenFixture.indexOf("ref={ed.videoRef}");
+    const logoIndex = brokenFixture.indexOf("<LogoOverlayPreview", videoIndex);
+    const captionsIndex = brokenFixture.indexOf("<V2CaptionOverlay", videoIndex);
+    assert.ok(videoIndex >= 0 && logoIndex > videoIndex && captionsIndex > logoIndex);
+    assert.throws(
+      () => assertPreviewSiblingStructure(brokenFixture),
+      /LogoOverlayPreview must be a direct sibling/,
+    );
+    assertPreviewSiblingStructure(desktopSource);
+  });
   await check("desktop exposes subtitle and logo branches with project wiring", () => {
     assert.match(desktopSource, /useState<\s*["']subtitle["']\s*\|\s*["']logo["']\s*>\(\s*["']subtitle["']\s*\)/);
     assert.match(desktopSource, /value:\s*["']subtitle["']\s*,\s*label:\s*["']ซับ["']/);
     assert.match(desktopSource, /value:\s*["']logo["']\s*,\s*label:\s*["']โลโก้["']/);
-    const editorCallStart = desktopSource.indexOf("usePostPhaseEditor(job, script, {");
-    const editorCallEnd = desktopSource.indexOf("});", editorCallStart);
-    assert.ok(editorCallStart >= 0 && editorCallEnd > editorCallStart, "desktop editor call is missing");
-    const editorOptionsSource = desktopSource.slice(editorCallStart, editorCallEnd);
-    assert.match(editorOptionsSource, /surface:\s*["']desktop["']/);
-    for (const prop of [
-      "projectId",
-      "logoOverlay",
-      "onLogoOverlayChange",
-      "logoEligible",
-      "projectSaveStatus",
-      "onRetryProjectSave",
-    ]) {
-      assert.match(
-        editorOptionsSource,
-        new RegExp(`(?:^|\\n)\\s*${prop},`),
-        `desktop does not forward ${prop} into usePostPhaseEditor`,
-      );
-    }
+    assertPostPhaseEditorForwardingStructure(desktopSource);
   });
 
   const shellSource = readFileSync(
@@ -334,22 +761,7 @@ async function main() {
   });
 
   await check("desktop mounts each control tree inside its matching tab panel", () => {
-    const subtitleBranchStart = desktopSource.indexOf('rightTab === "subtitle"');
-    const logoBranchStart = desktopSource.indexOf('rightTab === "logo"', subtitleBranchStart);
-    const panelEnd = desktopSource.indexOf("</aside>", logoBranchStart);
-    assert.ok(subtitleBranchStart >= 0 && logoBranchStart > subtitleBranchStart && panelEnd > logoBranchStart);
-    const subtitleBranch = desktopSource.slice(subtitleBranchStart, logoBranchStart);
-    const logoBranch = desktopSource.slice(logoBranchStart, panelEnd);
-    assert.match(subtitleBranch, /role=["']tabpanel["']/);
-    assert.match(subtitleBranch, /ความยาวการ์ดซับ/);
-    assert.doesNotMatch(subtitleBranch, /<LogoOverlayControls\b/);
-    assert.match(logoBranch, /role=["']tabpanel["']/);
-    assert.match(logoBranch, /<LogoOverlayControls\b/);
-    assert.equal(
-      desktopSource.match(/<LogoOverlayControls\b/g)?.length,
-      1,
-      "desktop must have exactly one shared LogoOverlayControls instance",
-    );
+    assertLogoControlsBranchStructure(desktopSource);
   });
 
   await check("desktop records the first logo-tab transition once per mount", () => {
@@ -361,18 +773,7 @@ async function main() {
   });
 
   await check("desktop logo preview shares video bounds below captions and ignores input", () => {
-    const frameIndex = desktopSource.indexOf('data-video-preview-frame="true"');
-    const frameEnd = desktopSource.indexOf("</main>", frameIndex);
-    const videoIndex = desktopSource.indexOf("ref={ed.videoRef}", frameIndex);
-    const logoIndex = desktopSource.indexOf("<LogoOverlayPreview", videoIndex);
-    const captionsIndex = desktopSource.indexOf("<V2CaptionOverlay", videoIndex);
-    assert.ok(frameIndex >= 0 && frameEnd > frameIndex, "desktop preview frame marker is missing");
-    assert.ok(videoIndex >= 0, "desktop editor video is missing");
-    assert.ok(logoIndex > videoIndex, "logo preview must render after the displayed video");
-    assert.ok(captionsIndex > logoIndex, "logo preview must render before captions");
-    assert.ok(captionsIndex < frameEnd, "video, logo, and captions must share one preview frame");
-    assert.match(desktopSource.slice(logoIndex, captionsIndex), /value=\{logoOverlay\}/);
-    assert.match(desktopSource.slice(logoIndex, captionsIndex), /asset=\{ed\.logo\.asset\}/);
+    assertPreviewSiblingStructure(desktopSource);
     assert.match(previewSource, /position:\s*["']absolute["'][\s\S]{0,100}inset:\s*0/);
     assert.match(previewSource, /pointerEvents:\s*["']none["']/);
   });
@@ -419,33 +820,46 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/ui.tsx",
     "utf8",
   );
+  await check("AST tab linkage contract rejects mismatched panel IDs", () => {
+    const brokenFixture = `
+      function BrokenTabs() {
+        const rightTabsId = useId();
+        return (
+          <aside>
+            <Segmented
+              id={rightTabsId}
+              semantics="tabs"
+              ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
+              value={rightTab}
+              onChange={setRightTab}
+              options={[{ value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
+            />
+            {rightTab === "subtitle" && (
+              <div id="wrong-panel" role="tabpanel" aria-labelledby="wrong-tab" />
+            )}
+            {rightTab === "logo" && (
+              <div id="logo-panel" role="tabpanel" aria-labelledby="logo-tab" />
+            )}
+          </aside>
+        );
+      }
+    `;
+    assert.match(brokenFixture, /semantics=["']tabs["']/);
+    assert.match(brokenFixture, /id=\{rightTabsId\}/);
+    assert.throws(
+      () => assertDesktopTabLinkageStructure(brokenFixture, uiSource),
+      /subtitle tabpanel ID must match/,
+    );
+    assertDesktopTabLinkageStructure(desktopSource, uiSource);
+  });
   await check("desktop segmented control opts into complete tab semantics", () => {
-    assert.match(uiSource, /semantics\?:\s*["']tabs["']/);
-    assert.match(uiSource, /role=\{semantics\s*===\s*["']tabs["']\s*\?\s*["']tablist["']/);
-    assert.match(uiSource, /role=\{semantics\s*===\s*["']tabs["']\s*\?\s*["']tab["']/);
-    assert.match(uiSource, /aria-selected=\{semantics\s*===\s*["']tabs["']\s*\?\s*active/);
-    assert.match(uiSource, /tabIndex=\{semantics\s*===\s*["']tabs["']\s*\?\s*\(active\s*\?\s*0\s*:\s*-1\)/);
+    assertDesktopTabLinkageStructure(desktopSource, uiSource);
     assert.match(uiSource, /ArrowLeft/);
     assert.match(uiSource, /ArrowRight/);
-    const rightTabsStart = desktopSource.indexOf("<Segmented", desktopSource.indexOf("ขวา 330px"));
-    const rightTabsEnd = desktopSource.indexOf("/>", rightTabsStart);
-    const rightTabsSource = desktopSource.slice(rightTabsStart, rightTabsEnd);
-    assert.match(rightTabsSource, /semantics=["']tabs["']/);
-    assert.match(rightTabsSource, /id=\{rightTabsId\}/);
-    assert.match(rightTabsSource, /ariaLabel=["']ตั้งค่าองค์ประกอบวิดีโอ["']/);
   });
 
   await check("desktop export remains visually first but follows the editor in DOM order", () => {
-    const panelEnd = desktopSource.indexOf("</aside>", desktopSource.indexOf("ขวา 330px"));
-    const exportIndex = desktopSource.indexOf("onClick={() => void ed.exportVideo()}", panelEnd);
-    assert.ok(panelEnd >= 0, "desktop right panel is missing");
-    assert.ok(exportIndex > panelEnd, "export must follow the editor and right panel in DOM focus order");
-    const exportBarMarker = desktopSource.lastIndexOf('data-desktop-export-bar="true"', exportIndex);
-    assert.ok(exportBarMarker >= 0, "late-DOM export bar marker is missing");
-    const exportBarSource = desktopSource.slice(Math.max(0, exportBarMarker - 180), exportIndex);
-    assert.match(exportBarSource, /data-desktop-export-bar=["']true["']/);
-    assert.match(exportBarSource, /order-first/);
-    assert.match(desktopSource.slice(exportIndex, exportIndex + 520), /["']ส่งออกวิดีโอ["']/);
+    assertDesktopExportFocusStructure(desktopSource);
   });
 
   if (failures.length > 0) {
