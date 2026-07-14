@@ -1,3 +1,6 @@
+export const EDITOR_PROJECT_SAVE_TIMEOUT_MS = 10_000;
+const MAX_DRAFT_REVISION = 2_147_483_647;
+
 export type EditorProjectSaveStatus = "saving" | "saved" | "error";
 
 export type EditorProjectSaveEvent = {
@@ -6,53 +9,87 @@ export type EditorProjectSaveEvent = {
   status: EditorProjectSaveStatus;
 };
 
-type SaveRequest<Draft> = {
+export type EditorProjectSaveContext = {
+  revision: number;
+  signal: AbortSignal;
+};
+
+type SaveRequest = {
   projectId: string;
-  draft: Draft;
-  save: (projectId: string, draft: Draft) => Promise<boolean>;
+  save: (context: EditorProjectSaveContext) => Promise<boolean>;
   isActive: () => boolean;
   onStatus?: (event: EditorProjectSaveEvent) => void;
   revision: number;
 };
 
-type SaveLane<Draft> = {
+type SaveLane = {
+  projectId: string;
   running: boolean;
-  pending: SaveRequest<Draft> | null;
-  latest: SaveRequest<Draft> | null;
+  pending: SaveRequest | null;
+  latestRevision: number;
   idleWaiters: Array<() => void>;
 };
 
-export type EditorProjectSaveInput<Draft> = {
+export type EditorProjectSaveInput = {
   projectId: string;
-  draft: Draft;
-  save: (projectId: string, draft: Draft) => Promise<boolean>;
+  save: (context: EditorProjectSaveContext) => Promise<boolean>;
   isActive?: () => boolean;
   onStatus?: (event: EditorProjectSaveEvent) => void;
 };
 
-type RetryObserver = {
-  isActive?: () => boolean;
-  onStatus?: (event: EditorProjectSaveEvent) => void;
+type SaveQueueOptions = {
+  requestTimeoutMs?: number;
+  scheduleTimeout?: (task: () => void, delayMs: number) => unknown;
+  cancelTimeout?: (token: unknown) => void;
 };
 
-export function createEditorProjectSaveQueue<Draft>() {
-  const lanes = new Map<string, SaveLane<Draft>>();
-  let nextRevision = 0;
+export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
+  const lanes = new Map<string, SaveLane>();
+  const revisionWatermarks = new Map<string, number>();
+  const requestTimeoutMs = options.requestTimeoutMs ?? EDITOR_PROJECT_SAVE_TIMEOUT_MS;
+  const scheduleTimeout = options.scheduleTimeout
+    ?? ((task: () => void, delayMs: number) => setTimeout(task, delayMs));
+  const cancelTimeout = options.cancelTimeout
+    ?? ((token: unknown) => clearTimeout(token as ReturnType<typeof setTimeout>));
 
-  function laneFor(projectId: string): SaveLane<Draft> {
+  function normalizedProjectId(projectId: string): string {
+    const normalized = projectId.trim();
+    if (!normalized) throw new Error("projectId is required");
+    return normalized;
+  }
+
+  function seedRevision(projectId: string, revision: number): void {
+    const normalized = normalizedProjectId(projectId);
+    if (!Number.isInteger(revision) || revision < 0 || revision > MAX_DRAFT_REVISION) return;
+    revisionWatermarks.set(
+      normalized,
+      Math.max(revisionWatermarks.get(normalized) ?? 0, revision),
+    );
+  }
+
+  function nextRevision(projectId: string): number {
+    const current = revisionWatermarks.get(projectId) ?? 0;
+    if (current >= MAX_DRAFT_REVISION) throw new Error("draft revision exhausted");
+    const revision = current + 1;
+    revisionWatermarks.set(projectId, revision);
+    return revision;
+  }
+
+  function laneFor(projectId: string): SaveLane {
     const existing = lanes.get(projectId);
     if (existing) return existing;
-    const lane: SaveLane<Draft> = {
+    const lane: SaveLane = {
+      projectId,
       running: false,
       pending: null,
-      latest: null,
+      latestRevision: revisionWatermarks.get(projectId) ?? 0,
       idleWaiters: [],
     };
     lanes.set(projectId, lane);
     return lane;
   }
 
-  function publish(request: SaveRequest<Draft>, status: EditorProjectSaveStatus): void {
+  function publish(request: SaveRequest, status: EditorProjectSaveStatus): void {
     if (!request.onStatus || !request.isActive()) return;
     try {
       request.onStatus({
@@ -61,65 +98,77 @@ export function createEditorProjectSaveQueue<Draft>() {
         status,
       });
     } catch {
-      // Save ordering must not depend on a presentation callback.
+      // Presentation callbacks cannot affect persistence ordering.
     }
   }
 
-  function resolveIdle(lane: SaveLane<Draft>): void {
+  async function runWithTimeout(request: SaveRequest): Promise<boolean> {
+    const controller = new AbortController();
+    let timeoutToken: unknown;
+    let rawSaveResult: Promise<boolean>;
+    try {
+      rawSaveResult = request.save({ revision: request.revision, signal: controller.signal });
+    } catch {
+      rawSaveResult = Promise.resolve(false);
+    }
+    const saveResult = rawSaveResult.then((ok) => ok === true, () => false);
+    const timeoutResult = new Promise<boolean>((resolve) => {
+      timeoutToken = scheduleTimeout(() => {
+        controller.abort();
+        resolve(false);
+      }, requestTimeoutMs);
+    });
+    const ok = await Promise.race([saveResult, timeoutResult]);
+    if (timeoutToken !== undefined) cancelTimeout(timeoutToken);
+    return ok;
+  }
+
+  function releaseIdleLane(lane: SaveLane): void {
     if (lane.running || lane.pending) return;
     const waiters = lane.idleWaiters.splice(0);
+    if (lanes.get(lane.projectId) === lane) lanes.delete(lane.projectId);
     for (const resolve of waiters) resolve();
   }
 
-  async function drain(lane: SaveLane<Draft>): Promise<void> {
+  async function drain(lane: SaveLane): Promise<void> {
     if (lane.running) return;
     lane.running = true;
-    while (lane.pending) {
-      const request = lane.pending;
-      lane.pending = null;
-      let ok = false;
-      try {
-        ok = await request.save(request.projectId, request.draft);
-      } catch {
-        ok = false;
+    try {
+      while (lane.pending) {
+        const request = lane.pending;
+        lane.pending = null;
+        let ok = false;
+        try {
+          ok = await runWithTimeout(request);
+        } catch {
+          ok = false;
+        }
+        if (lane.latestRevision === request.revision && !lane.pending) {
+          publish(request, ok ? "saved" : "error");
+        }
       }
-      if (lane.latest?.revision === request.revision && !lane.pending) {
-        publish(request, ok ? "saved" : "error");
-      }
+    } finally {
+      lane.running = false;
+      releaseIdleLane(lane);
     }
-    lane.running = false;
-    resolveIdle(lane);
   }
 
-  function enqueue(input: EditorProjectSaveInput<Draft>): number {
-    const projectId = input.projectId.trim();
-    if (!projectId) throw new Error("projectId is required");
+  function enqueue(input: EditorProjectSaveInput): number {
+    const projectId = normalizedProjectId(input.projectId);
+    const revision = nextRevision(projectId);
     const lane = laneFor(projectId);
-    const request: SaveRequest<Draft> = {
+    const request: SaveRequest = {
       projectId,
-      draft: input.draft,
       save: input.save,
       isActive: input.isActive ?? (() => true),
       onStatus: input.onStatus,
-      revision: ++nextRevision,
+      revision,
     };
-    lane.latest = request;
+    lane.latestRevision = revision;
     lane.pending = request;
     publish(request, "saving");
     void drain(lane);
-    return request.revision;
-  }
-
-  function retry(projectId: string, observer: RetryObserver = {}): number | null {
-    const latest = lanes.get(projectId.trim())?.latest;
-    if (!latest) return null;
-    return enqueue({
-      projectId: latest.projectId,
-      draft: latest.draft,
-      save: latest.save,
-      isActive: observer.isActive ?? latest.isActive,
-      onStatus: observer.onStatus ?? latest.onStatus,
-    });
+    return revision;
   }
 
   function whenIdle(projectId: string): Promise<void> {
@@ -128,5 +177,11 @@ export function createEditorProjectSaveQueue<Draft>() {
     return new Promise((resolve) => lane.idleWaiters.push(resolve));
   }
 
-  return { enqueue, retry, whenIdle };
+  function laneCount(): number {
+    return lanes.size;
+  }
+
+  return { seedRevision, enqueue, whenIdle, laneCount };
 }
+
+export const editorProjectSaveQueue = createEditorProjectSaveQueue();

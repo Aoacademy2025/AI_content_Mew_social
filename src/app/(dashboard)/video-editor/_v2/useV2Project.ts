@@ -6,7 +6,7 @@ import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageMod
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
-import { createEditorProjectSaveQueue } from "@/lib/editor-project-save-queue";
+import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
   canonicalizeDraftLogoOverlay,
   logoOverlayForNewProject,
@@ -27,8 +27,6 @@ interface V2Draft {
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
 }
-
-const projectSaveQueue = createEditorProjectSaveQueue<V2Draft>();
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
 
@@ -57,12 +55,27 @@ async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
   }
 }
 
-async function saveEditorProjectDraft(projectId: string, draft: V2Draft): Promise<boolean> {
+async function saveEditorProjectDraft(
+  projectId: string,
+  draft: V2Draft,
+  revision: number,
+  signal: AbortSignal,
+): Promise<boolean> {
   const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: draft.projectTitle, draft, touchLastOpened: true }),
+    body: JSON.stringify({
+      title: draft.projectTitle,
+      draft,
+      draftRevision: revision,
+      touchLastOpened: true,
+    }),
+    signal,
   });
+  if (res.status === 409) {
+    const payload = await res.json().catch(() => null);
+    editorProjectSaveQueue.seedRevision(projectId, payload?.project?.draftRevision);
+  }
   return res.ok;
 }
 
@@ -274,6 +287,7 @@ export function useV2Project() {
       const data = await res.json();
       const id = typeof data?.project?.id === "string" ? data.project.id : null;
       if (id) {
+        editorProjectSaveQueue.seedRevision(id, data.project.draftRevision);
         setProjectId(id);
         setProjectReady(true);
         if (typeof data?.project?.status === "string") setProjectStatus(data.project.status as ProjectStatus);
@@ -353,12 +367,15 @@ export function useV2Project() {
       const existingProjectId = urlProjectId || storedProjectId;
 
       if (existingProjectId) {
+        await editorProjectSaveQueue.whenIdle(existingProjectId);
+        if (!alive) return;
         try {
           const res = await fetch(`/api/editor-projects/${encodeURIComponent(existingProjectId)}`, { cache: "no-store" });
           if (res.ok) {
             const data = await res.json();
             const project = data?.project;
             if (!alive || typeof project?.id !== "string") return;
+            editorProjectSaveQueue.seedRevision(project.id, project.draftRevision);
             setProjectId(project.id);
             setProjectReady(true);
             setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
@@ -374,8 +391,10 @@ export function useV2Project() {
             }
             return;
           }
+          if (res.status !== 404) return;
         } catch {
-          // Fall back to local draft + create a fresh server project below.
+          // Keep the local draft but do not requeue it behind an unconfirmed existing project.
+          return;
         }
       }
 
@@ -452,10 +471,14 @@ export function useV2Project() {
       } catch { /* quota/private mode */ }
       if (projectReady && projectId) {
         const saveProjectId = projectId;
-        projectSaveQueue.enqueue({
+        editorProjectSaveQueue.enqueue({
           projectId: saveProjectId,
-          draft,
-          save: saveEditorProjectDraft,
+          save: ({ revision, signal }) => saveEditorProjectDraft(
+            saveProjectId,
+            draft,
+            revision,
+            signal,
+          ),
           isActive: () => mountedRef.current
             && currentProjectIdRef.current === saveProjectId,
           ...(!isFirst

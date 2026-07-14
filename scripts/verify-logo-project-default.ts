@@ -155,8 +155,8 @@ const autosaveSource = sourceBetween(
 );
 assert.match(
   projectSource,
-  /async function saveEditorProjectDraft[\s\S]{0,520}return res\.ok;/,
-  "the queued save reports non-OK PATCH responses as failures",
+  /async function saveEditorProjectDraft[\s\S]{0,900}draftRevision:\s*revision[\s\S]{0,500}signal,[\s\S]{0,500}return res\.ok;/,
+  "the queued save sends its revision and abort signal while reporting non-OK responses as failures",
 );
 assert.match(
   autosaveSource,
