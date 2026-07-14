@@ -17,6 +17,8 @@ export const LOGO_PICKER_ACCEPT =
   "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
 export const LOGO_PICKER_FORMAT_LABEL = "PNG, JPG หรือ WebP · สูงสุด 5 MB";
 export const LOGO_ASSET_CLEANUP_DELAY_MS = 1_100;
+export const LOGO_ASSET_CLEANUP_RETRY_DELAY_MS = 1_500;
+export const LOGO_ASSET_CLEANUP_MAX_ATTEMPTS = 5;
 
 export type LogoEditorSurface = "desktop" | "mobile";
 export type LogoProjectSaveStatus = "idle" | "saving" | "saved" | "error";
@@ -175,7 +177,7 @@ export function parseLogoUploadResponse(
 export function scheduleLogoAssetCleanup(
   assetId: string,
   dependencies: {
-    schedule?: (task: () => void, delayMs: number) => void;
+    schedule?: (task: () => void | Promise<void>, delayMs: number) => void;
     deleteAsset?: (assetId: string) => Promise<unknown>;
   } = {},
 ): boolean {
@@ -183,20 +185,38 @@ export function scheduleLogoAssetCleanup(
   if (!normalizedAssetId) return false;
 
   const schedule = dependencies.schedule
-    ?? ((task: () => void, delayMs: number) => { setTimeout(task, delayMs); });
+    ?? ((task: () => void | Promise<void>, delayMs: number) => {
+      setTimeout(() => { void task(); }, delayMs);
+    });
   const deleteAsset = dependencies.deleteAsset
     ?? ((id: string) => fetch(`/api/user/brand-assets/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }));
 
-  schedule(() => {
+  const scheduleAttempt = (attempt: number, delayMs: number): boolean => {
     try {
-      void deleteAsset(normalizedAssetId).catch(() => {});
+      schedule(async () => {
+        let retry = false;
+        try {
+          const result = await deleteAsset(normalizedAssetId);
+          const status = isRecord(result) && typeof result.status === "number"
+            ? result.status
+            : null;
+          retry = status === 409 || status === 429 || (status !== null && status >= 500);
+        } catch {
+          retry = true;
+        }
+        if (retry && attempt < LOGO_ASSET_CLEANUP_MAX_ATTEMPTS) {
+          scheduleAttempt(attempt + 1, LOGO_ASSET_CLEANUP_RETRY_DELAY_MS);
+        }
+      }, delayMs);
+      return true;
     } catch {
-      // Cleanup is best-effort. Reference protection and 409 handling live on the server.
+      return false;
     }
-  }, LOGO_ASSET_CLEANUP_DELAY_MS);
-  return true;
+  };
+
+  return scheduleAttempt(1, LOGO_ASSET_CLEANUP_DELAY_MS);
 }
 
 function trackLogoEvent(

@@ -746,7 +746,7 @@ const captions: V2Caption[] = [
 type ScheduleLogoAssetCleanup = (
   assetId: string,
   dependencies?: {
-    schedule?: (task: () => void, delayMs: number) => void;
+    schedule?: (task: () => void | Promise<void>, delayMs: number) => void;
     deleteAsset?: (assetId: string) => Promise<unknown>;
   },
 ) => boolean;
@@ -899,7 +899,7 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
     "utf8",
   );
-  await check("cleanup schedules any reloaded project asset and survives hook unmount", async () => {
+  await check("cleanup retries a delayed autosave 409 after unmount and then succeeds", async () => {
     const scheduleLogoAssetCleanup = (
       logoEditorModule as typeof logoEditorModule & {
         scheduleLogoAssetCleanup?: ScheduleLogoAssetCleanup;
@@ -910,49 +910,107 @@ async function main() {
         LOGO_ASSET_CLEANUP_DELAY_MS?: number;
       }
     ).LOGO_ASSET_CLEANUP_DELAY_MS;
+    const retryDelay = (
+      logoEditorModule as typeof logoEditorModule & {
+        LOGO_ASSET_CLEANUP_RETRY_DELAY_MS?: number;
+      }
+    ).LOGO_ASSET_CLEANUP_RETRY_DELAY_MS;
     assert.equal(
       typeof scheduleLogoAssetCleanup,
       "function",
       "scheduleLogoAssetCleanup is not exported",
     );
     assert.equal(cleanupDelay, 1_100, "cleanup waits beyond the one-second autosave window");
+    assert.ok(
+      typeof retryDelay === "number" && retryDelay >= 1_000,
+      "cleanup retries must be delayed rather than a tight loop",
+    );
 
-    const pendingTasks: Array<() => void> = [];
+    const pendingTasks: Array<() => void | Promise<void>> = [];
     const delays: number[] = [];
-    const deletedAssetIds: string[] = [];
-    let markDeleteStarted: (() => void) | undefined;
-    const deleteStarted = new Promise<void>((resolve) => { markDeleteStarted = resolve; });
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const accepted = scheduleLogoAssetCleanup!("  asset_from_reloaded_project  ", {
-        schedule(task, delayMs) {
-          pendingTasks.push(task);
-          delays.push(delayMs);
-        },
-        async deleteAsset(assetId) {
-          deletedAssetIds.push(assetId);
-          markDeleteStarted?.();
-          throw new Error("network failure must stay invisible");
+    let projectPatchFinished = false;
+    let deleteAttempts = 0;
+    let deleted = false;
+    const accepted = scheduleLogoAssetCleanup!("  asset_from_reloaded_project  ", {
+      schedule(task, delayMs) {
+        pendingTasks.push(task);
+        delays.push(delayMs);
+      },
+      async deleteAsset(assetId) {
+        assert.equal(assetId, "asset_from_reloaded_project");
+        deleteAttempts += 1;
+        if (!projectPatchFinished) return { ok: false, status: 409 };
+        deleted = true;
+        return { ok: true, status: 200 };
+      },
+    });
+    assert.equal(accepted, true, "a persisted/reloaded asset does not need mount-local provenance");
+    assert.deepEqual(delays, [1_100]);
+
+    // The owning hook has unmounted. Its delayed project PATCH is still in flight, so the
+    // authoritative DELETE sees the old project reference and refuses with 409.
+    await pendingTasks.shift()!();
+    assert.equal(deleteAttempts, 1);
+    assert.equal(deleted, false);
+    assert.deepEqual(delays, [1_100, retryDelay]);
+    assert.equal(pendingTasks.length, 1, "409 schedules one delayed condition recheck");
+
+    projectPatchFinished = true;
+    await pendingTasks.shift()!();
+    assert.equal(deleteAttempts, 2);
+    assert.equal(deleted, true, "cleanup succeeds after autosave removes the reference");
+    assert.equal(pendingTasks.length, 0);
+    assert.equal(scheduleLogoAssetCleanup!("   ", {
+      schedule() { throw new Error("blank ids must not schedule"); },
+    }), false);
+  });
+
+  await check("cleanup retries network races but bounds continuing authoritative 409", async () => {
+    const scheduleLogoAssetCleanup = (
+      logoEditorModule as typeof logoEditorModule & {
+        scheduleLogoAssetCleanup?: ScheduleLogoAssetCleanup;
+      }
+    ).scheduleLogoAssetCleanup!;
+    const maxAttempts = (
+      logoEditorModule as typeof logoEditorModule & {
+        LOGO_ASSET_CLEANUP_MAX_ATTEMPTS?: number;
+      }
+    ).LOGO_ASSET_CLEANUP_MAX_ATTEMPTS;
+    assert.ok(
+      typeof maxAttempts === "number" && maxAttempts >= 2 && maxAttempts <= 10,
+      "cleanup retry count must be finite and useful",
+    );
+
+    const networkTasks: Array<() => void | Promise<void>> = [];
+    let networkAttempts = 0;
+    let networkRaceDeleted = false;
+    scheduleLogoAssetCleanup("network-race", {
+      schedule(task) { networkTasks.push(task); },
+      async deleteAsset() {
+        networkAttempts += 1;
+        if (networkAttempts === 1) throw new Error("temporary disconnect");
+        networkRaceDeleted = true;
+        return { ok: true, status: 200 };
+      },
+    });
+    while (networkTasks.length > 0) await networkTasks.shift()!();
+    assert.equal(networkAttempts, 2);
+    assert.equal(networkRaceDeleted, true, "a transient network failure is retried");
+
+    for (const protectedAsset of ["account-default", "other-project-reference"]) {
+      const protectedTasks: Array<() => void | Promise<void>> = [];
+      let attempts = 0;
+      let forcedDeletion = false;
+      scheduleLogoAssetCleanup(protectedAsset, {
+        schedule(task) { protectedTasks.push(task); },
+        async deleteAsset() {
+          attempts += 1;
+          return { ok: false, status: 409, forcedDeletion };
         },
       });
-      assert.equal(accepted, true, "a persisted/reloaded asset does not need mount-local provenance");
-      assert.deepEqual(delays, [1_100]);
-      assert.equal(pendingTasks.length, 1);
-
-      // Simulate the hook unmounting before the timeout: no hook cleanup is allowed to
-      // cancel this independently owned task, so the queued callback still executes.
-      pendingTasks[0]();
-      await deleteStarted;
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(deletedAssetIds, ["asset_from_reloaded_project"]);
-      assert.deepEqual(unhandled, [], "best-effort DELETE failures remain invisible");
-      assert.equal(scheduleLogoAssetCleanup!("   ", {
-        schedule() { throw new Error("blank ids must not schedule"); },
-      }), false);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
+      while (protectedTasks.length > 0) await protectedTasks.shift()!();
+      assert.equal(attempts, maxAttempts, `${protectedAsset} retries stop at the finite cap`);
+      assert.equal(forcedDeletion, false, `${protectedAsset} is never force-deleted by the client`);
     }
   });
 
