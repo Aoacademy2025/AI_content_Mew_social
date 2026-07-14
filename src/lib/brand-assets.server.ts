@@ -300,13 +300,12 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
     if (!asset) return null;
 
     const defaultPreference = await tx.brandPreference.findFirst({
-      where: { userId, defaultAssetId: assetId },
+      where: { defaultAssetId: assetId },
       select: { userId: true },
     });
     if (defaultPreference) throw new BrandAssetError("asset_in_use", 409);
 
     const projects = await tx.editorProject.findMany({
-      where: { userId },
       select: { draftJson: true },
     });
     if (projects.some((project) => draftReferencesAsset(project.draftJson, assetId))) {

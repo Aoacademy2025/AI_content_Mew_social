@@ -41,6 +41,15 @@ async function main() {
     assert.equal(caught.status, status, `${code} should expose HTTP ${status}`);
   }
 
+  async function captureDeleteOutcome(task: () => Promise<boolean>): Promise<string> {
+    try {
+      return `returned:${await task()}`;
+    } catch (error) {
+      if (error instanceof service.BrandAssetError) return `error:${error.code}:${error.status}`;
+      throw error;
+    }
+  }
+
   try {
     await prisma.user.deleteMany({ where: { id: { in: [USER_A, USER_B] } } });
     await prisma.user.createMany({
@@ -281,6 +290,39 @@ async function main() {
     assert.equal(await service.getOwnedBrandAsset(USER_A, businessAsset.id), null, "asset metadata is owner-scoped");
     assert.equal(await service.getBrandAssetPath(USER_A, businessAsset.id), null, "asset paths are owner-scoped");
     assert.equal(await service.deleteBrandAssetIfUnreferenced(USER_A, businessAsset.id), false, "cross-owner deletion is hidden as not found");
+
+    await prisma.brandPreference.create({
+      data: {
+        userId: USER_B,
+        defaultAssetId: alphaAsset.id,
+        enabled: true,
+        position: "top-right",
+        sizePct: 18,
+        opacity: 0.9,
+      },
+    });
+    await prisma.editorProject.update({
+      where: { id: PROJECT_B },
+      data: { draftJson: JSON.stringify({ logoOverlay: { enabled: true, assetId: webpAsset.id } }) },
+    });
+    const crossUserReferenceOutcomes = {
+      defaultPreference: await captureDeleteOutcome(
+        () => service.deleteBrandAssetIfUnreferenced(USER_A, alphaAsset.id),
+      ),
+      projectDraft: await captureDeleteOutcome(
+        () => service.deleteBrandAssetIfUnreferenced(USER_A, webpAsset.id),
+      ),
+    };
+    assert.deepEqual(
+      crossUserReferenceOutcomes,
+      {
+        defaultPreference: "error:asset_in_use:409",
+        projectDraft: "error:asset_in_use:409",
+      },
+      "references owned by other users still block deletion of the referenced asset",
+    );
+    await prisma.brandPreference.delete({ where: { userId: USER_B } });
+    await prisma.editorProject.update({ where: { id: PROJECT_B }, data: { draftJson: null } });
 
     const defaultConfig = {
       enabled: true,
