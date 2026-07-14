@@ -12,6 +12,8 @@ import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
+import { BrandAssetError } from "@/lib/brand-assets.server";
+import { removeLogoSnapshot, stageLogoForExport } from "@/lib/logo-export.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -134,6 +136,9 @@ export async function POST(req: Request) {
       if (!body.subtitleOverlayConfig || typeof body.subtitleOverlayConfig !== "object" || Array.isArray(body.subtitleOverlayConfig)) {
         return NextResponse.json({ error: "invalid_export", message: "ข้อมูลซับสำหรับส่งออกไม่ถูกต้อง" }, { status: 400 });
       }
+      const rawLogoOverlay = (body.subtitleOverlayConfig as Record<string, unknown>).logoOverlay;
+      const subtitleOverlayConfig: Record<string, unknown> = { ...body.subtitleOverlayConfig };
+      delete subtitleOverlayConfig.logoOverlay;
 
       const srcJob = await prisma.videoJob.findUnique({
         where: { id: sourceJobId },
@@ -148,25 +153,41 @@ export async function POST(req: Request) {
       const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: ["queued", "processing"] } } });
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
+      let snapshotPath: string | null = null;
+      let jobIsDurable = false;
       try {
+        const stagedLogo = await stageLogoForExport({
+          userId: user.id,
+          plan: user.plan,
+          projectId: srcJob.projectId,
+          rawLogoOverlay: rawLogoOverlay,
+        });
+        if (stagedLogo) {
+          snapshotPath = stagedLogo.snapshotPath;
+          subtitleOverlayConfig.logoOverlay = stagedLogo.trusted;
+        }
         const job = await createVideoJob(
           user.id,
           {
             mode: "export",
             sourceJobId,
-            subtitleOverlayConfig: body.subtitleOverlayConfig,
+            subtitleOverlayConfig,
             exportScript: str(body.script, 20000),
             exportSceneCount: num(body.exportSceneCount, 1, 1000),
           },
           str(body.idempotencyKey, 120),
           { projectId: srcJob.projectId, type: "export" },
         );
+        jobIsDurable = true;
         await prisma.editorProject.updateMany({
           where: { id: srcJob.projectId, userId: user.id },
           data: { activeExportJobId: job.id, status: "exporting", lastOpenedAt: new Date() },
         });
         return NextResponse.json({ jobId: job.id, status: "queued" });
       } catch (e) {
+        if (!jobIsDurable && snapshotPath) {
+          await removeLogoSnapshot(snapshotPath);
+        }
         if ((e as { code?: string })?.code === "P2002") {
           return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
         }
@@ -320,6 +341,12 @@ export async function POST(req: Request) {
       throw e;
     }
   } catch (err) {
+    if (err instanceof BrandAssetError) {
+      return NextResponse.json(
+        { error: err.code, message: err.message },
+        { status: err.status },
+      );
+    }
     if ((err as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });
     }

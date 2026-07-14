@@ -99,6 +99,19 @@ export async function buildMediaReferenceGraph(
     }
   }
 
+  async function safeSupplementalQuery<T>(
+    ownerKind: MediaReference["ownerKind"],
+    field: string,
+    query: () => Promise<T[]>,
+  ): Promise<T[]> {
+    try {
+      return await query();
+    } catch {
+      addError({ ownerKind, ownerId: "*" }, field, "db_query_failed");
+      return [];
+    }
+  }
+
   function addKey(key: MediaKey, reference: MediaReference): void {
     const current = refs.get(key) ?? [];
     const existing = current.find(
@@ -192,7 +205,7 @@ export async function buildMediaReferenceGraph(
     );
   }
 
-  const [videos, videoJobs, projects, renderJobs, generatedImages] = await Promise.all([
+  const [videos, videoJobs, inFlightVideoJobs, projects, renderJobs, generatedImages] = await Promise.all([
     safeQuery("video", () => prisma.video.findMany({
       select: {
         id: true,
@@ -217,6 +230,13 @@ export async function buildMediaReferenceGraph(
         projectId: true,
         outputJson: true,
         mediaExpiresAt: true,
+      },
+    })),
+    safeSupplementalQuery("video-job", "$inputQuery", () => prisma.videoJob.findMany({
+      where: { status: { in: ["queued", "processing"] } },
+      select: {
+        id: true,
+        inputJson: true,
       },
     })),
     safeQuery("project-draft", () => prisma.editorProject.findMany({
@@ -272,6 +292,16 @@ export async function buildMediaReferenceGraph(
 
   const videoJobKeysById = new Map<string, Set<MediaKey>>();
   const videoJobOwnerById = new Map<string, ProjectScopedOwner>();
+  for (const job of inFlightVideoJobs) {
+    const reference: MediaReference = {
+      ownerKind: "video-job",
+      ownerId: job.id,
+      expiresAt: null,
+      alwaysProtect: true,
+    };
+    const input = parseJsonOwnerField(job.inputJson, reference, "inputJson");
+    collectOwnerValue(input, reference, "inputJson");
+  }
   for (const job of videoJobs) {
     const reference: MediaReference = {
       ownerKind: "video-job",
