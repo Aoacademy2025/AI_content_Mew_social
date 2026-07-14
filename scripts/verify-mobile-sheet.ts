@@ -24,6 +24,8 @@ type SheetCoordinator = {
   register(ownerId: string): void;
   unregister(ownerId: string): void;
   isActive(ownerId: string): boolean;
+  getSnapshot(): string | null;
+  subscribe(listener: () => void): () => void;
   requestClose(ownerId: string): "history" | "direct" | "ignored";
   handlePopState(): string | null;
 };
@@ -120,7 +122,12 @@ function assertSheetJsxContract(source: string) {
     (node): node is JsxNode => isJsxNode(node) && jsxStringAttribute(node, "role") === "dialog",
   );
   assert.equal(dialogs.length, 1, "exactly one dialog role is required");
-  assert.equal(jsxStringAttribute(dialogs[0], "aria-modal"), "true");
+  assert.equal(
+    jsxExpressionAttribute(dialogs[0], "aria-modal")?.getText(),
+    'isActive ? "true" : undefined',
+  );
+  assert.equal(jsxExpressionAttribute(dialogs[0], "aria-hidden")?.getText(), "!isActive");
+  assert.equal(jsxExpressionAttribute(dialogs[0], "inert")?.getText(), "!isActive");
   assert.equal(expressionPath(jsxExpressionAttribute(dialogs[0], "aria-labelledby")), "titleId");
   assert.equal(jsxStringAttribute(dialogs[0], "data-mobile-sheet-size"), undefined);
   assert.equal(expressionPath(jsxExpressionAttribute(dialogs[0], "data-mobile-sheet-size")), "size");
@@ -170,8 +177,13 @@ function assertSheetRuntimeContract(source: string) {
   assert.match(source, /height:\s*medium\s*\?\s*["']min\(60dvh, 620px\)["']/);
   assert.match(source, /maxHeight:\s*medium\s*\?\s*["']min\(60dvh, 620px\)["']\s*:\s*["']94dvh["']/);
   assert.match(source, /paddingBottom:\s*["']calc\(20px \+ env\(safe-area-inset-bottom\)\)["']/);
-  assert.match(source, /zIndex:\s*80[\s\S]{0,180}pointerEvents:\s*["']auto["']/);
-  assert.match(source, /zIndex:\s*81/);
+  assert.match(source, /useSyncExternalStore\(\s*coordinator\.subscribe,\s*coordinator\.getSnapshot/);
+  assert.match(source, /const isActive\s*=\s*activeOwnerId\s*===\s*id/);
+  assert.match(source, /onNextPopState:[\s\S]{0,180}queueMicrotask\(task\)/);
+  assert.match(source, /zIndex:\s*isActive\s*\?\s*80\s*:\s*70/);
+  assert.match(source, /zIndex:\s*isActive\s*\?\s*81\s*:\s*71/);
+  assert.match(source, /pointerEvents:\s*isActive\s*\?\s*["']auto["']\s*:\s*["']none["']/);
+  assert.match(source, /visibility:\s*isActive\s*\?\s*["']visible["']\s*:\s*["']hidden["']/);
   assert.match(source, /event\.key\s*===\s*["']Escape["']/);
   assert.match(source, /document\.addEventListener\(["']keydown["'],\s*onKeyDown,\s*true\)/);
   assert.match(source, /document\.addEventListener\(["']focusin["'],\s*onFocusIn,\s*true\)/);
@@ -182,6 +194,10 @@ function assertSheetRuntimeContract(source: string) {
   assert.match(source, /const onFocusIn[\s\S]{0,140}if \(!coordinator\.isActive\(id\)\) return/);
   assert.match(source, /const onPopState[\s\S]{0,140}if \(!coordinator\.isActive\(id\)\) return/);
   assert.match(source, /const restoreFocus\s*=\s*coordinator\.isActive\(id\)[\s\S]{0,300}if \(restoreFocus\)/);
+  assert.match(source, /if \(!open \|\| !isActive\) return[\s\S]{0,260}focus/);
+  assert.match(source, /function startDrag[\s\S]{0,140}if \(!isActive\) return/);
+  assert.match(source, /function moveDrag[\s\S]{0,140}if \(!isActive\) return/);
+  assert.match(source, /data-mobile-sheet-scrim[\s\S]{0,220}if \(!isActive\) return/);
   assert.match(source, /createSheetDragSession/);
   assert.match(source, /moveSheetDragSession/);
   assert.match(source, /releaseSheetDragSession/);
@@ -314,6 +330,68 @@ check("browser Back identifies the active owner to close", () => {
   assert.equal(fake.backs, 0);
 });
 
+check("repeated UI, Escape, or drag closes cannot bypass a pending history pop", () => {
+  const createCoordinator = requireFunction<(adapter: HistoryAdapter, token: string) => SheetCoordinator>("createMobileSheetCoordinator");
+  const fake = createFakeHistory();
+  const coordinator = createCoordinator(fake.adapter, "sheet-token");
+  coordinator.register("logo");
+  assert.equal(coordinator.requestClose("logo"), "history");
+  assert.equal(coordinator.requestClose("logo"), "ignored");
+  assert.equal(coordinator.requestClose("logo"), "ignored");
+  assert.equal(fake.backs, 1, "only the first close may traverse history");
+  assert.equal(coordinator.handlePopState(), "logo");
+});
+
+check("pending close stays bound to its requester across active-owner transfer", () => {
+  const createCoordinator = requireFunction<(adapter: HistoryAdapter, token: string) => SheetCoordinator>("createMobileSheetCoordinator");
+  const fake = createFakeHistory();
+  const coordinator = createCoordinator(fake.adapter, "sheet-token");
+  coordinator.register("edit");
+  assert.equal(coordinator.requestClose("edit"), "history");
+  coordinator.register("logo");
+  assert.equal(coordinator.getSnapshot(), "logo");
+  assert.equal(coordinator.handlePopState(), null, "stale edit pop must not close logo");
+  assert.equal(coordinator.isActive("logo"), true);
+  assert.equal(coordinator.requestClose("logo"), "history");
+  assert.equal(fake.backs, 2);
+});
+
+check("unregistering a pending owner consumes its stale pop without closing its successor", () => {
+  const createCoordinator = requireFunction<(adapter: HistoryAdapter, token: string) => SheetCoordinator>("createMobileSheetCoordinator");
+  const fake = createFakeHistory();
+  const coordinator = createCoordinator(fake.adapter, "sheet-token");
+  coordinator.register("edit");
+  coordinator.register("logo");
+  assert.equal(coordinator.requestClose("logo"), "history");
+  coordinator.unregister("logo");
+  fake.flush();
+  assert.equal(coordinator.getSnapshot(), "edit");
+  assert.equal(coordinator.handlePopState(), null, "removed logo requester must stay stale");
+  assert.equal(coordinator.isActive("edit"), true);
+});
+
+check("subscribers observe registration order and active transfer independent of DOM labels", () => {
+  const createCoordinator = requireFunction<(adapter: HistoryAdapter, token: string) => SheetCoordinator>("createMobileSheetCoordinator");
+  const fake = createFakeHistory();
+  const coordinator = createCoordinator(fake.adapter, "sheet-token");
+  assert.equal(typeof coordinator.subscribe, "function", "reactive coordinator subscription is missing");
+  assert.equal(typeof coordinator.getSnapshot, "function", "reactive coordinator snapshot is missing");
+  const snapshots: Array<string | null> = [];
+  const unsubscribe = coordinator.subscribe(() => snapshots.push(coordinator.getSnapshot()));
+  coordinator.register("dom-second-registers-first");
+  coordinator.register("dom-first-registers-last");
+  coordinator.unregister("dom-first-registers-last");
+  assert.deepEqual(snapshots, [
+    "dom-second-registers-first",
+    "dom-first-registers-last",
+    "dom-second-registers-first",
+  ]);
+  assert.equal(coordinator.getSnapshot(), "dom-second-registers-first");
+  unsubscribe();
+  coordinator.unregister("dom-second-registers-first");
+  assert.equal(snapshots.length, 3, "unsubscribed listeners must not receive transfers");
+});
+
 check("same-commit switches and StrictMode cleanup do not duplicate history", () => {
   const createCoordinator = requireFunction<(adapter: HistoryAdapter, token: string) => SheetCoordinator>("createMobileSheetCoordinator");
   const fake = createFakeHistory();
@@ -384,6 +462,13 @@ check("MobileSheet runtime contract covers sizing, safe area, focus, Escape, bod
       "const onKeyDown = (event: KeyboardEvent) => {",
     )),
     /onKeyDown/,
+  );
+  assert.throws(
+    () => assertSheetRuntimeContract(sheetSource.replaceAll(
+      'pointerEvents: isActive ? "auto" : "none"',
+      'pointerEvents: "auto"',
+    )),
+    /pointerEvents/,
   );
 });
 

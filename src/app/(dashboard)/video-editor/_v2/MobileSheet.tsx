@@ -6,6 +6,7 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -38,6 +39,7 @@ let historyToken: string | null = null;
 let sheetCoordinator: MobileSheetCoordinator | null = null;
 let bodyLockCount = 0;
 let savedBodyStyles: { overflow: string; overscrollBehavior: string; paddingRight: string } | null = null;
+const getServerSheetOwner = () => null;
 
 function getHistoryToken() {
   if (!historyToken) {
@@ -56,7 +58,11 @@ function getSheetCoordinator() {
       pushState: (state, url) => window.history.pushState(state, "", url),
       back: () => window.history.back(),
       schedule: (task) => queueMicrotask(task),
-      onNextPopState: (task) => window.addEventListener("popstate", task, { once: true }),
+      onNextPopState: (task) => window.addEventListener(
+        "popstate",
+        () => queueMicrotask(task),
+        { once: true },
+      ),
     }, getHistoryToken());
   }
   return sheetCoordinator;
@@ -125,12 +131,26 @@ export function MobileSheet({
   const [dragTranslation, setDragTranslation] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [sheetVisible, setSheetVisible] = useState(false);
+  const coordinator = getSheetCoordinator();
+  const activeOwnerId = useSyncExternalStore(
+    coordinator.subscribe,
+    coordinator.getSnapshot,
+    getServerSheetOwner,
+  );
+  const isActive = activeOwnerId === id;
   onCloseRef.current = onClose;
 
   const requestClose = useCallback(() => {
-    const action = getSheetCoordinator().requestClose(id);
+    const action = coordinator.requestClose(id);
     if (action === "direct") onCloseRef.current();
-  }, [id]);
+  }, [coordinator, id]);
+
+  const focusFirstControl = useCallback(() => {
+    const sheet = sheetRef.current;
+    if (!sheet || !coordinator.isActive(id)) return;
+    const first = focusableDescendants(sheet)[0];
+    (first ?? sheet).focus({ preventScroll: true });
+  }, [coordinator, id]);
 
   useEffect(() => {
     if (!open) return;
@@ -140,19 +160,10 @@ export function MobileSheet({
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const coordinator = getSheetCoordinator();
     coordinator.register(id);
     lockBodyScroll();
 
-    const focusFirstControl = () => {
-      if (!coordinator.isActive(id)) return;
-      const first = focusableDescendants(sheet)[0];
-      (first ?? sheet).focus({ preventScroll: true });
-    };
-    const focusFrame = window.requestAnimationFrame(() => {
-      setSheetVisible(true);
-      focusFirstControl();
-    });
+    const visibilityFrame = window.requestAnimationFrame(() => setSheetVisible(true));
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (!coordinator.isActive(id)) return;
@@ -193,7 +204,7 @@ export function MobileSheet({
     window.addEventListener("popstate", onPopState);
 
     return () => {
-      window.cancelAnimationFrame(focusFrame);
+      window.cancelAnimationFrame(visibilityFrame);
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("popstate", onPopState);
@@ -208,9 +219,16 @@ export function MobileSheet({
         window.requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
       }
     };
-  }, [id, open, requestClose, triggerRef]);
+  }, [coordinator, focusFirstControl, id, open, requestClose, triggerRef]);
+
+  useEffect(() => {
+    if (!open || !isActive) return;
+    const focusFrame = window.requestAnimationFrame(() => focusFirstControl());
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [focusFirstControl, isActive, open]);
 
   function startDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!isActive) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -222,6 +240,7 @@ export function MobileSheet({
   }
 
   function moveDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!isActive) return;
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
@@ -241,6 +260,10 @@ export function MobileSheet({
     }
     dragRef.current = null;
     setDragging(false);
+    if (!isActive) {
+      setDragTranslation(0);
+      return;
+    }
     const motion = releaseSheetDragSession(
       drag.session,
       { y: event.clientY, atMs: event.timeStamp },
@@ -261,15 +284,17 @@ export function MobileSheet({
         data-mobile-sheet-scrim="true"
         aria-hidden="true"
         onPointerDown={(event) => {
+          if (!isActive) return;
           event.preventDefault();
           requestClose();
         }}
         style={{
           position: "fixed",
           inset: 0,
-          zIndex: 80,
+          zIndex: isActive ? 80 : 70,
           background: "rgba(0,0,0,.62)",
-          pointerEvents: "auto",
+          pointerEvents: isActive ? "auto" : "none",
+          visibility: isActive ? "visible" : "hidden",
           touchAction: "none",
           animation: "mobile-sheet-scrim-in 180ms ease-out both",
         }}
@@ -277,8 +302,10 @@ export function MobileSheet({
       <div
         ref={sheetRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={isActive ? "true" : undefined}
+        aria-hidden={!isActive}
         aria-labelledby={titleId}
+        inert={!isActive}
         tabIndex={-1}
         data-mobile-sheet-size={size}
         style={{
@@ -286,7 +313,7 @@ export function MobileSheet({
           left: 0,
           right: 0,
           bottom: 0,
-          zIndex: 81,
+          zIndex: isActive ? 81 : 71,
           height: medium ? "min(60dvh, 620px)" : undefined,
           maxHeight: medium ? "min(60dvh, 620px)" : "94dvh",
           display: "flex",
@@ -295,7 +322,8 @@ export function MobileSheet({
             ? `translate3d(0, ${dragTranslation}px, 0)`
             : sheetVisible ? "translate3d(0, 0, 0)" : "translate3d(0, 100%, 0)",
           transition: dragging ? "none" : "transform 240ms cubic-bezier(.22,1,.36,1)",
-          pointerEvents: "auto",
+          pointerEvents: isActive ? "auto" : "none",
+          visibility: isActive ? "visible" : "hidden",
           background: "rgba(20,20,32,.96)",
           backdropFilter: "blur(28px) saturate(150%)",
           WebkitBackdropFilter: "blur(28px) saturate(150%)",

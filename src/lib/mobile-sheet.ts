@@ -32,6 +32,8 @@ export type MobileSheetCoordinator = {
   register(ownerId: string): void;
   unregister(ownerId: string): void;
   isActive(ownerId: string): boolean;
+  getSnapshot(): string | null;
+  subscribe(listener: () => void): () => void;
   requestClose(ownerId: string): MobileSheetCloseAction;
   handlePopState(): string | null;
 };
@@ -80,8 +82,11 @@ export function createMobileSheetCoordinator(
   adapter: MobileSheetHistoryAdapter,
   token: string,
 ): MobileSheetCoordinator {
-  const owners: string[] = [];
-  let historyPopPending = false;
+  type OwnerRegistration = { ownerId: string; registration: number };
+  const owners: OwnerRegistration[] = [];
+  const listeners = new Set<() => void>();
+  let nextRegistration = 1;
+  let pendingPopRequest: OwnerRegistration | null = null;
 
   function currentEntryIsSheet() {
     const state = adapter.getState();
@@ -102,10 +107,14 @@ export function createMobileSheetCoordinator(
     );
   }
 
-  function consumeHistoryEntry() {
-    if (!currentEntryIsSheet() || historyPopPending) return false;
-    historyPopPending = true;
-    adapter.onNextPopState?.(() => { historyPopPending = false; });
+  function consumeHistoryEntry(requester: OwnerRegistration) {
+    if (!currentEntryIsSheet() || pendingPopRequest) return false;
+    pendingPopRequest = requester;
+    adapter.onNextPopState?.(() => {
+      if (pendingPopRequest !== requester) return;
+      pendingPopRequest = null;
+      if (activeOwner()) ensureHistoryEntry();
+    });
     adapter.back();
     return true;
   }
@@ -114,31 +123,60 @@ export function createMobileSheetCoordinator(
     return owners.at(-1) ?? null;
   }
 
+  function activeOwnerId() {
+    return activeOwner()?.ownerId ?? null;
+  }
+
+  function notifyIfActiveChanged(previousOwnerId: string | null) {
+    if (activeOwnerId() === previousOwnerId) return;
+    for (const listener of listeners) listener();
+  }
+
   return {
     register(ownerId) {
-      const previousIndex = owners.indexOf(ownerId);
+      const previousOwnerId = activeOwnerId();
+      const previousIndex = owners.findIndex((owner) => owner.ownerId === ownerId);
       if (previousIndex >= 0) owners.splice(previousIndex, 1);
-      owners.push(ownerId);
+      owners.push({ ownerId, registration: nextRegistration });
+      nextRegistration += 1;
       ensureHistoryEntry();
+      notifyIfActiveChanged(previousOwnerId);
     },
     unregister(ownerId) {
-      const index = owners.indexOf(ownerId);
-      if (index >= 0) owners.splice(index, 1);
+      const previousOwnerId = activeOwnerId();
+      const index = owners.findIndex((owner) => owner.ownerId === ownerId);
+      const removedOwner = index >= 0 ? owners.splice(index, 1)[0] : null;
+      notifyIfActiveChanged(previousOwnerId);
       adapter.schedule(() => {
-        if (owners.length === 0) consumeHistoryEntry();
-        else ensureHistoryEntry();
+        if (owners.length === 0) {
+          if (removedOwner) consumeHistoryEntry(removedOwner);
+          return;
+        }
+        ensureHistoryEntry();
       });
     },
     isActive(ownerId) {
-      return activeOwner() === ownerId;
+      return activeOwnerId() === ownerId;
+    },
+    getSnapshot() {
+      return activeOwnerId();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
     },
     requestClose(ownerId) {
-      if (activeOwner() !== ownerId) return "ignored";
-      return consumeHistoryEntry() ? "history" : "direct";
+      const owner = activeOwner();
+      if (owner?.ownerId !== ownerId || pendingPopRequest) return "ignored";
+      return consumeHistoryEntry(owner) ? "history" : "direct";
     },
     handlePopState() {
-      historyPopPending = false;
-      return activeOwner();
+      const request = pendingPopRequest;
+      pendingPopRequest = null;
+      if (!request) return activeOwnerId();
+      if (activeOwner() === request && owners.includes(request)) return request.ownerId;
+      if (activeOwner()) ensureHistoryEntry();
+      return null;
     },
   };
 }
