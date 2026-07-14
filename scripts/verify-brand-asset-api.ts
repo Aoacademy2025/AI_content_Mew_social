@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import sharp from "sharp";
@@ -7,17 +7,18 @@ import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
 import { BrandAssetError } from "@/lib/brand-assets.server";
 import {
-  getBrandAssetCollection,
-  mapBrandAssetError,
-  postBrandAsset,
-} from "@/app/api/user/brand-assets/route";
-import {
   deleteBrandAssetItem,
+  getBrandAssetCollection,
+  getBrandAssetImage,
   getBrandAssetItem,
+  mapBrandAssetError,
   patchBrandAssetItem,
-} from "@/app/api/user/brand-assets/[id]/route";
-import { getBrandAssetImage } from "@/app/api/user/brand-assets/[id]/image/route";
+  postBrandAsset,
+} from "@/lib/brand-asset-api.server";
 import { POST as clerkWebhookPost } from "@/app/api/clerk-webhook/route";
+import * as collectionRoute from "@/app/api/user/brand-assets/route";
+import * as itemRoute from "@/app/api/user/brand-assets/[id]/route";
+import * as imageRoute from "@/app/api/user/brand-assets/[id]/image/route";
 
 const root = path.resolve(
   process.env.BRAND_ASSET_ROOT || "/tmp/heroai-brand-assets-api",
@@ -29,6 +30,7 @@ const OWNER_ASSET_ID = "brand-api-owner-default";
 const OWNER_SPARE_ASSET_ID = "brand-api-owner-spare";
 const DELETE_USER_ID = "brand-api-delete";
 const DELETE_FAIL_USER_ID = "brand-api-delete-fail";
+const ADMIN_DELETE_USER_ID = "brand-api-admin-delete";
 const CLERK_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 
 const errorCases = [
@@ -59,7 +61,13 @@ async function seed(): Promise<void> {
   await prisma.user.deleteMany({
     where: {
       id: {
-        in: [OWNER_ID, OTHER_ID, DELETE_USER_ID, DELETE_FAIL_USER_ID],
+        in: [
+          OWNER_ID,
+          OTHER_ID,
+          DELETE_USER_ID,
+          DELETE_FAIL_USER_ID,
+          ADMIN_DELETE_USER_ID,
+        ],
       },
     },
   });
@@ -173,8 +181,95 @@ async function createDeletionFixture(input: {
   return filePath;
 }
 
+function verifyRouteExportContract(): void {
+  assert.deepEqual(
+    Object.keys(collectionRoute).sort(),
+    ["GET", "POST"],
+    "collection route exports only supported App Router entrypoints",
+  );
+  assert.deepEqual(
+    Object.keys(itemRoute).sort(),
+    ["DELETE", "GET", "PATCH"],
+    "item route exports only supported App Router entrypoints",
+  );
+  assert.deepEqual(
+    Object.keys(imageRoute).sort(),
+    ["GET"],
+    "image route exports only supported App Router entrypoints",
+  );
+}
+
+async function verifyAdminHardDeleteRegression(): Promise<void> {
+  const { hardDeleteUserWithBrandAssets } = await import(
+    "@/lib/account-hard-delete.server"
+  );
+  const adminSource = await readFile(
+    path.join(process.cwd(), "src/app/api/admin/users/[id]/route.ts"),
+    "utf8",
+  );
+  const clerkSource = await readFile(
+    path.join(process.cwd(), "src/app/api/clerk-webhook/route.ts"),
+    "utf8",
+  );
+  assert.match(
+    adminSource,
+    /hardDeleteUserWithBrandAssets\(id\)/,
+    "admin DELETE delegates to the shared idempotent hard-delete helper",
+  );
+  assert.match(
+    clerkSource,
+    /hardDeleteUserWithBrandAssets\(user\.id\)/,
+    "Clerk deletion delegates to the same hard-delete helper",
+  );
+
+  const filePath = await createDeletionFixture({
+    userId: ADMIN_DELETE_USER_ID,
+    clerkId: "clerk-brand-api-admin-delete",
+    filename: "admin-delete.webp",
+  });
+  assert.equal(
+    await hardDeleteUserWithBrandAssets(ADMIN_DELETE_USER_ID),
+    true,
+    "admin hard delete reports a deleted user",
+  );
+  assert.equal(
+    await prisma.user.findUnique({ where: { id: ADMIN_DELETE_USER_ID } }),
+    null,
+  );
+  await assert.rejects(
+    access(filePath),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "admin hard delete removes captured brand files",
+  );
+  assert.equal(
+    await hardDeleteUserWithBrandAssets(ADMIN_DELETE_USER_ID),
+    false,
+    "admin hard-delete retry is an idempotent missing-user no-op",
+  );
+  assert.equal(
+    await hardDeleteUserWithBrandAssets("brand-api-never-existed"),
+    false,
+    "hard deleting an unknown user is an idempotent no-op",
+  );
+}
+
 async function main(): Promise<void> {
+  const mode = process.argv[2];
+  if (mode === "--route-contract") {
+    verifyRouteExportContract();
+    console.log("brand-asset-api: route export contract passed");
+    return;
+  }
+
   await seed();
+
+  if (mode === "--admin-delete") {
+    await verifyAdminHardDeleteRegression();
+    console.log("brand-asset-api: admin hard delete passed");
+    return;
+  }
+
+  verifyRouteExportContract();
 
   for (const [code, status, message] of errorCases) {
     const mapped = mapBrandAssetError(new BrandAssetError(code, 599, "raw service message"));
@@ -420,6 +515,8 @@ async function main(): Promise<void> {
   } finally {
     await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS block_brand_api_user_delete");
   }
+
+  await verifyAdminHardDeleteRegression();
 
   console.log("brand-asset-api: all checks passed");
 }
