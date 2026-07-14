@@ -54,33 +54,38 @@ function getSegmenter(locale: string, granularity: "word" | "grapheme" | "senten
   }
 }
 
-// Tokenize for per-word effects (highlight / karaoke).
+// Tokenize for per-word effects (highlight / karaoke) without losing any source
+// characters. Separators stay in the output but do not participate in timing.
 // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
 // returns the whole line as one token → the entire caption highlights at once
 // (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
-// real words; it also handles spaced scripts (English) correctly. Falls back
-// to whitespace splitting where Segmenter is unavailable.
-function segmentWords(s: string): string[] {
+// real words; it also handles spaced scripts (English) correctly.
+type TokenPart = { text: string; isWordLike: boolean };
+
+function segmentParts(s: string): TokenPart[] {
   const seg = getSegmenter("th", "word");
   if (seg) {
-    const out: string[] = [];
+    const out: TokenPart[] = [];
     for (const { segment, isWordLike } of seg.segment(s)) {
-      // Keep word-like tokens; skip pure whitespace/punctuation separators
-      if (isWordLike && segment.trim().length > 0) out.push(segment);
+      out.push({
+        text: segment,
+        isWordLike: isWordLike === true && segment.trim().length > 0,
+      });
     }
     if (out.length > 0) return out;
   }
-  return s.split(/\s+/).filter(w => w.length > 0);
+
+  const pieces = s.match(/\s+|[\p{L}\p{M}\p{N}]+|[^\s\p{L}\p{M}\p{N}]+/gu) ?? [];
+  return pieces.map((part) => ({
+    text: part,
+    isWordLike: /[\p{L}\p{N}]/u.test(part),
+  }));
 }
 
-type TokenLine = { tokens: string[]; hasInlineSpaces: boolean };
+type TokenLine = { parts: TokenPart[] };
 
 function splitManualLines(s: string): string[] {
   return s.replace(/\r\n?/g, "\n").split("\n");
-}
-
-function lineHasInlineSpaces(s: string): boolean {
-  return /[^\S\r\n]/.test(s);
 }
 
 // Bounded cache: tokenization is frame-invariant, but tokenLines runs once per caption
@@ -94,8 +99,7 @@ function tokenLines(text: string): TokenLine[] {
   const cached = tokenLinesCache.get(text);
   if (cached) return cached;
   const result = splitManualLines(text).map((line) => ({
-    tokens: segmentWords(line),
-    hasInlineSpaces: lineHasInlineSpaces(line),
+    parts: segmentParts(line),
   }));
   if (tokenLinesCache.size >= TOKEN_LINES_CACHE_MAX) {
     const oldest = tokenLinesCache.keys().next().value; // Map preserves insertion order
@@ -106,13 +110,13 @@ function tokenLines(text: string): TokenLine[] {
 }
 
 function activeTokenIndex(lines: TokenLine[], frame: number, captionDurFrames: number): number {
-  const tokens = lines.flatMap((line) => line.tokens);
+  const tokens = lines.flatMap((line) => line.parts).filter((part) => part.isWordLike);
   if (tokens.length === 0) return -1;
-  const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
+  const totalChars = tokens.reduce((sum, part) => sum + part.text.length, 0) || 1;
   const cumulative: number[] = [];
   let cum = 0;
-  for (const w of tokens) {
-    cum += w.length / totalChars;
+  for (const part of tokens) {
+    cum += part.text.length / totalChars;
     cumulative.push(cum);
   }
   const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
@@ -214,6 +218,9 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
+      if (frame < 0) {
+        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+      }
       const lines = tokenLines(text);
       const active = activeTokenIndex(lines, frame, captionDurFrames);
       if (active < 0) {
@@ -227,24 +234,24 @@ export function renderSubtitle(
         <span style={withDecorations({ ...base, display: "inline" })}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
-              {line.tokens.map((word, wordIdx) => {
+              {line.parts.map((part, partIdx) => {
+                if (!part.isWordLike) {
+                  return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+                }
                 const currentIdx = tokenIdx++;
                 const isActive = currentIdx === active;
                 return (
-                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
-                    <span style={withDecorations({
-                      background: isActive ? accentColor : "transparent",
-                      color: isActive ? "#000" : color,
-                      borderRadius: "0.12em",
-                      padding: isActive ? "0.02em 0.18em" : undefined,
-                      textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
-                      WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
-                      paintOrder: "stroke fill",
-                      boxDecorationBreak: "clone",
-                      WebkitBoxDecorationBreak: "clone",
-                    } as React.CSSProperties)}>{word}</span>
-                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
-                  </React.Fragment>
+                  <span key={`${lineIdx}-${partIdx}`} style={withDecorations({
+                    background: isActive ? accentColor : "transparent",
+                    color: isActive ? "#000" : color,
+                    borderRadius: "0.12em",
+                    padding: isActive ? "0.02em 0.18em" : undefined,
+                    textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
+                    WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
+                    paintOrder: "stroke fill",
+                    boxDecorationBreak: "clone",
+                    WebkitBoxDecorationBreak: "clone",
+                  } as React.CSSProperties)}>{part.text}</span>
                 );
               })}
               {lineIdx < lines.length - 1 ? <br /> : null}
@@ -255,28 +262,41 @@ export function renderSubtitle(
     }
 
     if (textEffect === "karaoke") {
+      const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const lines = tokenLines(text);
+      const wrapKaraoke = (inner: React.ReactNode) => {
+        if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;
+        if (preset === "box-rounded") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>{inner}</div>;
+        if (preset === "karaoke-box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>{inner}</div>;
+        return inner;
+      };
+      if (frame < 0) {
+        return wrapKaraoke(
+          <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
+        );
+      }
       const active = activeTokenIndex(lines, frame, captionDurFrames);
       if (active < 0) {
-        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+        return wrapKaraoke(
+          <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
+        );
       }
-      const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       let tokenIdx = 0;
       const inner = (
         <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
-              {line.tokens.map((word, wordIdx) => {
+              {line.parts.map((part, partIdx) => {
+                if (!part.isWordLike) {
+                  return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+                }
                 const currentIdx = tokenIdx++;
                 const isActive = currentIdx === active;
                 return (
-                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
-                    <span style={{
-                      color: isActive ? accentColor : `${color}60`,
-                      fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
-                    }}>{word}</span>
-                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
-                  </React.Fragment>
+                  <span key={`${lineIdx}-${partIdx}`} style={{
+                    color: isActive ? accentColor : `${color}60`,
+                    fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
+                  }}>{part.text}</span>
                 );
               })}
               {lineIdx < lines.length - 1 ? <br /> : null}
@@ -284,10 +304,7 @@ export function renderSubtitle(
           ))}
         </span>
       );
-      if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;
-      if (preset === "box-rounded") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>{inner}</div>;
-      if (preset === "karaoke-box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>{inner}</div>;
-      return inner;
+      return wrapKaraoke(inner);
     }
 
     if (textEffect === "typewriter") {
