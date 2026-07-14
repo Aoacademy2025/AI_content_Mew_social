@@ -393,6 +393,87 @@ function assertMobilePostPhaseEditorForwardingStructure(source: string) {
   assert.equal(objectLiteralStringProperty(options, "surface"), "mobile");
 }
 
+function assertMobileLogoRuntimeStructure(source: string) {
+  const root = parseTsx(source, "mobile-logo-runtime-contract.tsx");
+  const openLogoFunctions = collectNodes(
+    root,
+    (node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node)
+      && node.name?.text === "openLogo",
+  );
+  assert.equal(openLogoFunctions.length, 1, "mobile openLogo handler is missing");
+  assert.ok(
+    containsNode(openLogoFunctions[0], (node) => ts.isCallExpression(node)
+      && expressionPath(node.expression) === "ed.videoRef.current.pause"),
+    "opening the mobile logo sheet must pause preview playback",
+  );
+
+  const telemetryEffects = collectNodes(
+    root,
+    (node): node is ts.CallExpression => ts.isCallExpression(node)
+      && expressionPath(node.expression) === "useEffect"
+      && node.getText().includes("logo_overlay_panel_opened"),
+  );
+  assert.equal(telemetryEffects.length, 1, "mobile panel telemetry needs one effect");
+  const dependencies = telemetryEffects[0].arguments[1];
+  assert.ok(dependencies && ts.isArrayLiteralExpression(dependencies), "mobile panel telemetry dependencies are missing");
+  assert.deepEqual(
+    dependencies.elements.map((element) => expressionPath(element as ts.Expression)),
+    ["logoOpen"],
+    "mobile panel telemetry must run once per closed-to-open transition",
+  );
+  assert.match(telemetryEffects[0].getText(), /if\s*\(\s*!logoOpen\s*\)\s*return/);
+  assert.match(telemetryEffects[0].getText(), /surface:\s*["']mobile["']/);
+
+  const localSheetFunctions = collectNodes(
+    root,
+    (node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node)
+      && node.name?.text === "Sheet",
+  );
+  assert.equal(localSheetFunctions.length, 0, "legacy local Sheet function must stay removed");
+  const legacySheetUsages = collectNodes(
+    root,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "Sheet",
+  );
+  assert.equal(legacySheetUsages.length, 0, "legacy <Sheet> usages must stay removed");
+  const mobileSheets = collectNodes(
+    root,
+    (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "MobileSheet",
+  );
+  assert.equal(mobileSheets.length, 3, "edit, style, and logo must share MobileSheet");
+  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "large").length, 2);
+  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 1);
+}
+
+function assertExactResponsiveBranchStructure(breakpointSource: string, shellSource: string) {
+  assert.match(breakpointSource, /matchMedia\(\s*["']\(max-width: 1023px\)["']\s*\)/);
+  assert.doesNotMatch(breakpointSource, /max-width:\s*1024px/);
+  const root = parseTsx(shellSource, "editor-shell-responsive-contract.tsx");
+  const responsiveBranches = collectNodes(
+    root,
+    (node): node is ts.ConditionalExpression => ts.isConditionalExpression(node)
+      && expressionPath(node.condition) === "isMobile"
+      && containsNode(node.whenTrue, (child) => isJsxElementNode(child) && jsxTagName(child) === "PostPhaseMobile")
+      && containsNode(node.whenFalse, (child) => isJsxElementNode(child) && jsxTagName(child) === "PostPhase"),
+  );
+  assert.equal(responsiveBranches.length, 1, "shell must select mobile below 1024 and desktop at 1024+");
+  assert.equal(
+    collectNodes(
+      responsiveBranches[0].whenTrue,
+      (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "PostPhase",
+    ).length,
+    0,
+    "desktop PostPhase cannot render in the mobile branch",
+  );
+  assert.equal(
+    collectNodes(
+      responsiveBranches[0].whenFalse,
+      (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "PostPhaseMobile",
+    ).length,
+    0,
+    "PostPhaseMobile cannot render at the 1024 desktop boundary",
+  );
+}
+
 function objectLiteralStringProperty(object: ts.ObjectLiteralExpression, name: string) {
   const property = object.properties.find(
     (candidate): candidate is ts.PropertyAssignment =>
@@ -954,6 +1035,49 @@ async function main() {
 
   await check("mobile forwards the project logo contract with the mobile surface", () => {
     assertMobilePostPhaseEditorForwardingStructure(mobileSource);
+  });
+
+  await check("mobile pauses preview, emits once-per-open telemetry, and reuses MobileSheet", () => {
+    assertMobileLogoRuntimeStructure(mobileSource);
+
+    const playbackMutation = mobileSource.replace(
+      "ed.videoRef.current?.pause();",
+      "ed.videoRef.current?.play();",
+    );
+    assert.notEqual(playbackMutation, mobileSource, "pause mutation did not apply");
+    assert.throws(
+      () => assertMobileLogoRuntimeStructure(playbackMutation),
+      /pause preview playback/,
+    );
+
+    const telemetryMutation = mobileSource.replace("}, [logoOpen]);", "}, []);");
+    assert.notEqual(telemetryMutation, mobileSource, "telemetry mutation did not apply");
+    assert.throws(
+      () => assertMobileLogoRuntimeStructure(telemetryMutation),
+      /closed-to-open transition/,
+    );
+  });
+
+  const breakpointSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useIsMobile.ts",
+    "utf8",
+  );
+  await check("responsive shell switches exactly below the 1024px desktop boundary", () => {
+    assertExactResponsiveBranchStructure(breakpointSource, shellSource);
+
+    const breakpointMutation = breakpointSource.replace("1023px", "1024px");
+    assert.notEqual(breakpointMutation, breakpointSource, "breakpoint mutation did not apply");
+    assert.throws(
+      () => assertExactResponsiveBranchStructure(breakpointMutation, shellSource),
+      /1023px/,
+    );
+
+    const branchMutation = shellSource.replace("isMobile ? (", "!isMobile ? (");
+    assert.notEqual(branchMutation, shellSource, "responsive branch mutation did not apply");
+    assert.throws(
+      () => assertExactResponsiveBranchStructure(breakpointSource, branchMutation),
+      /select mobile below 1024/,
+    );
   });
 
   const controlsSource = readFileSync(

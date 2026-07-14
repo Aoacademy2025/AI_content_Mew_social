@@ -12,14 +12,19 @@ import {
 } from "react";
 import {
   clampSheetDragTranslation,
+  createMobileSheetCoordinator,
+  createSheetDragSession,
+  moveSheetDragSession,
+  releaseSheetDragSession,
   shouldDismissSheetDrag,
+  type MobileSheetCoordinator,
   type MobileSheetSize,
+  type SheetDragSession,
 } from "@/lib/mobile-sheet";
 import { color, font, radius } from "./tokens";
 
 export type { MobileSheetSize } from "@/lib/mobile-sheet";
 
-const SHEET_HISTORY_KEY = "__heroAiMobileSheet";
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
@@ -30,8 +35,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(",");
 
 let historyToken: string | null = null;
-let historyPopPending = false;
-const openSheetIds = new Set<string>();
+let sheetCoordinator: MobileSheetCoordinator | null = null;
 let bodyLockCount = 0;
 let savedBodyStyles: { overflow: string; overscrollBehavior: string; paddingRight: string } | null = null;
 
@@ -44,45 +48,18 @@ function getHistoryToken() {
   return historyToken;
 }
 
-function currentHistoryEntryIsSheet() {
-  if (typeof window === "undefined") return false;
-  const state = window.history.state;
-  return !!state
-    && typeof state === "object"
-    && state[SHEET_HISTORY_KEY] === getHistoryToken();
-}
-
-function ensureSheetHistoryEntry() {
-  if (typeof window === "undefined" || currentHistoryEntryIsSheet()) return;
-  const state = window.history.state;
-  const preservedState = state && typeof state === "object" ? state : {};
-  window.history.pushState(
-    { ...preservedState, [SHEET_HISTORY_KEY]: getHistoryToken() },
-    "",
-    window.location.href,
-  );
-}
-
-function consumeSheetHistoryEntry() {
-  if (typeof window === "undefined" || !currentHistoryEntryIsSheet() || historyPopPending) {
-    return false;
+function getSheetCoordinator() {
+  if (!sheetCoordinator) {
+    sheetCoordinator = createMobileSheetCoordinator({
+      getState: () => window.history.state,
+      getUrl: () => window.location.href,
+      pushState: (state, url) => window.history.pushState(state, "", url),
+      back: () => window.history.back(),
+      schedule: (task) => queueMicrotask(task),
+      onNextPopState: (task) => window.addEventListener("popstate", task, { once: true }),
+    }, getHistoryToken());
   }
-  historyPopPending = true;
-  window.addEventListener("popstate", () => { historyPopPending = false; }, { once: true });
-  window.history.back();
-  return true;
-}
-
-function registerOpenSheet(id: string) {
-  openSheetIds.add(id);
-  ensureSheetHistoryEntry();
-}
-
-function unregisterOpenSheet(id: string) {
-  openSheetIds.delete(id);
-  queueMicrotask(() => {
-    if (openSheetIds.size === 0) consumeSheetHistoryEntry();
-  });
+  return sheetCoordinator;
 }
 
 function lockBodyScroll() {
@@ -119,12 +96,9 @@ function focusableDescendants(container: HTMLElement) {
   ));
 }
 
-type DragState = {
+type ActiveDrag = {
   pointerId: number;
-  startY: number;
-  lastY: number;
-  lastAt: number;
-  velocityY: number;
+  session: SheetDragSession;
 };
 
 export function MobileSheet({
@@ -147,15 +121,16 @@ export function MobileSheet({
   const sheetRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
-  const dragRef = useRef<DragState | null>(null);
+  const dragRef = useRef<ActiveDrag | null>(null);
   const [dragTranslation, setDragTranslation] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [sheetVisible, setSheetVisible] = useState(false);
   onCloseRef.current = onClose;
 
   const requestClose = useCallback(() => {
-    if (!consumeSheetHistoryEntry()) onCloseRef.current();
-  }, []);
+    const action = getSheetCoordinator().requestClose(id);
+    if (action === "direct") onCloseRef.current();
+  }, [id]);
 
   useEffect(() => {
     if (!open) return;
@@ -165,10 +140,12 @@ export function MobileSheet({
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    registerOpenSheet(id);
+    const coordinator = getSheetCoordinator();
+    coordinator.register(id);
     lockBodyScroll();
 
     const focusFirstControl = () => {
+      if (!coordinator.isActive(id)) return;
       const first = focusableDescendants(sheet)[0];
       (first ?? sheet).focus({ preventScroll: true });
     };
@@ -178,6 +155,7 @@ export function MobileSheet({
     });
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!coordinator.isActive(id)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -202,9 +180,13 @@ export function MobileSheet({
       }
     };
     const onFocusIn = (event: FocusEvent) => {
+      if (!coordinator.isActive(id)) return;
       if (!sheet.contains(event.target as Node)) focusFirstControl();
     };
-    const onPopState = () => onCloseRef.current();
+    const onPopState = () => {
+      if (!coordinator.isActive(id)) return;
+      if (coordinator.handlePopState() === id) onCloseRef.current();
+    };
 
     document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("focusin", onFocusIn, true);
@@ -215,13 +197,16 @@ export function MobileSheet({
       document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("popstate", onPopState);
-      unregisterOpenSheet(id);
+      const restoreFocus = coordinator.isActive(id);
+      coordinator.unregister(id);
       unlockBodyScroll();
       setDragTranslation(0);
       setDragging(false);
       setSheetVisible(false);
       const focusTarget = triggerRef?.current ?? previousFocusRef.current;
-      window.requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+      if (restoreFocus) {
+        window.requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+      }
     };
   }, [id, open, requestClose, triggerRef]);
 
@@ -231,10 +216,7 @@ export function MobileSheet({
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
       pointerId: event.pointerId,
-      startY: event.clientY,
-      lastY: event.clientY,
-      lastAt: event.timeStamp,
-      velocityY: 0,
+      session: createSheetDragSession({ y: event.clientY, atMs: event.timeStamp }),
     };
     setDragging(true);
   }
@@ -243,11 +225,12 @@ export function MobileSheet({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    const elapsed = event.timeStamp - drag.lastAt;
-    if (elapsed > 0) drag.velocityY = (event.clientY - drag.lastY) / elapsed;
-    drag.lastY = event.clientY;
-    drag.lastAt = event.timeStamp;
-    setDragTranslation(clampSheetDragTranslation(event.clientY - drag.startY));
+    const session = moveSheetDragSession(
+      drag.session,
+      { y: event.clientY, atMs: event.timeStamp },
+    );
+    dragRef.current = { ...drag, session };
+    setDragTranslation(clampSheetDragTranslation(event.clientY - session.startY));
   }
 
   function finishDrag(event: ReactPointerEvent<HTMLButtonElement>, canceled = false) {
@@ -258,12 +241,11 @@ export function MobileSheet({
     }
     dragRef.current = null;
     setDragging(false);
-    const distanceY = event.clientY - drag.startY;
-    const releaseElapsed = event.timeStamp - drag.lastAt;
-    const releaseVelocity = releaseElapsed > 0
-      ? (event.clientY - drag.lastY) / releaseElapsed
-      : drag.velocityY;
-    if (!canceled && shouldDismissSheetDrag({ distanceY, velocityY: releaseVelocity })) {
+    const motion = releaseSheetDragSession(
+      drag.session,
+      { y: event.clientY, atMs: event.timeStamp },
+    );
+    if (!canceled && shouldDismissSheetDrag(motion)) {
       requestClose();
       return;
     }
@@ -326,6 +308,7 @@ export function MobileSheet({
       >
         <button
           type="button"
+          data-mobile-sheet-handle="true"
           aria-label="ลากลงเพื่อปิดแผง"
           onPointerDown={startDrag}
           onPointerMove={moveDrag}
