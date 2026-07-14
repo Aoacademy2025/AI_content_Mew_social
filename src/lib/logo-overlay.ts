@@ -77,6 +77,15 @@ export function normalizeLogoOverlayConfig(value: unknown): LogoOverlayConfig | 
   };
 }
 
+export function logoOverlayForNewProject(input: {
+  hasExistingDraft: boolean;
+  accountDefault: LogoOverlayConfig | null;
+}): LogoOverlayConfig | undefined {
+  return input.hasExistingDraft || !input.accountDefault
+    ? undefined
+    : { ...input.accountDefault };
+}
+
 export function logoOverlayFrame(input: {
   position: LogoPosition;
   sizePct: number;

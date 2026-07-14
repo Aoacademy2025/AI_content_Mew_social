@@ -131,7 +131,7 @@ export function EditorV2Shell() {
 
   function handleNewProject() {
     reset();
-    p.resetProject();
+    void p.resetProject();
     setStep(0);
   }
 
@@ -192,6 +192,14 @@ export function EditorV2Shell() {
   }
 
   const visibleProjects = filterProjectMenuItems(projects, projectFilter);
+  const postPhaseProjectProps = {
+    projectId: p.projectId,
+    logoOverlay: p.logoOverlay,
+    onLogoOverlayChange: p.setLogoOverlay,
+    logoEligible: p.canUseLogoOverlay,
+    projectSaveStatus: p.saveStatus,
+    onRetryProjectSave: p.retryProjectSave,
+  };
 
   return (
     <div
@@ -345,7 +353,7 @@ export function EditorV2Shell() {
               style={{ font: `500 13.5px ${font.heading}`, color: color.text }}
             />
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
-              <SaveStatus status={p.saveStatus} />
+              <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />
               <span>·</span>
               <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
             </div>
@@ -414,9 +422,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           ) : (
-            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           )
         ) : (
           <ExportedView
@@ -493,7 +501,10 @@ export function EditorV2Shell() {
 }
 
 /** Autosave hint in the topbar subline — reflects useV2Project's debounced persist. */
-function SaveStatus({ status }: { status: "idle" | "saving" | "saved" }) {
+function SaveStatus({ status, onRetry }: {
+  status: "idle" | "saving" | "saved" | "error";
+  onRetry: () => void;
+}) {
   if (status === "saving") {
     return <span>กำลังบันทึก…</span>;
   }
@@ -502,6 +513,20 @@ function SaveStatus({ status }: { status: "idle" | "saving" | "saved" }) {
       <span className="inline-flex items-center gap-1" style={{ color: color.textSecondary }}>
         <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: color.success }} />
         บันทึกแล้ว
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5" style={{ color: color.danger }}>
+        ยังไม่ได้บันทึก
+        <button
+          type="button"
+          onClick={onRetry}
+          style={{ color: color.link, background: "none", border: "none", padding: 0, cursor: "pointer" }}
+        >
+          ลองใหม่
+        </button>
       </span>
     );
   }

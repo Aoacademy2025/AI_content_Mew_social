@@ -6,6 +6,11 @@ import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageMod
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
+import {
+  logoOverlayForNewProject,
+  normalizeLogoOverlayConfig,
+  type LogoOverlayConfig,
+} from "@/lib/logo-overlay";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -18,6 +23,7 @@ interface V2Draft {
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  logoOverlay?: LogoOverlayConfig;
 }
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
@@ -34,6 +40,17 @@ function loadDraft(): V2Draft {
     const raw = storage?.getItem(DRAFT_KEY);
     return raw ? (JSON.parse(raw) as V2Draft) : {};
   } catch { return {}; }
+}
+
+async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
+  try {
+    const res = await fetch("/api/user/brand-assets", { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -157,6 +174,7 @@ export function useV2Project() {
   const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS);
   const [brollRegionPreference, setBrollRegionPreference] = useState<BrollRegionPreference>(d.brollRegionPreference ?? "auto");
   const [brollVisualStyle, setBrollVisualStyle] = useState<BrollVisualStyle>(d.brollVisualStyle ?? "auto");
+  const [logoOverlay, setLogoOverlay] = useState<LogoOverlayConfig | undefined>(d.logoOverlay);
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
@@ -177,7 +195,7 @@ export function useV2Project() {
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
+      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay,
     };
   }
 
@@ -206,11 +224,14 @@ export function useV2Project() {
     if (next.mixPreset) setMixPresetState(next.mixPreset);
     if (next.brollRegionPreference) setBrollRegionPreference(next.brollRegionPreference);
     if (next.brollVisualStyle) setBrollVisualStyle(next.brollVisualStyle);
+    setLogoOverlay(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
   //    "idle" until the first user-driven change, then "saving" → "saved". ──
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveRevision, setSaveRevision] = useState(0);
+  const retryProjectSave = useCallback(() => setSaveRevision((revision) => revision + 1), []);
   const firstPersistRun = useRef(true);
 
   // ── Read-only wiring ──
@@ -219,6 +240,7 @@ export function useV2Project() {
   /** รายชื่อเสียง ElevenLabs ของผู้ใช้ (แสดงชื่อแทน Voice ID) · null = ยังไม่โหลด/โหลดไม่ได้ */
   const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
+  const logoEligible = plan === "PRO" || plan === "BUSINESS";
 
   const createServerProject = useCallback(async (draft: V2Draft) => {
     try {
@@ -246,11 +268,17 @@ export function useV2Project() {
     }
   }, []);
 
-  const resetProject = useCallback(() => {
+  const resetProject = useCallback(async () => {
+    const accountDefault = await loadAccountLogoDefault();
+    const inherited = logoOverlayForNewProject({
+      hasExistingDraft: false,
+      accountDefault,
+    });
     const nextDraft: V2Draft = {
       ...DEFAULT_PROJECT,
       autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
       mixPreset: isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset,
+      ...(inherited ? { logoOverlay: inherited } : {}),
     };
     draftRef.current = nextDraft;
     setProjectId(null);
@@ -289,8 +317,9 @@ export function useV2Project() {
     setBrollRegionPreference(DEFAULT_PROJECT.brollRegionPreference);
     setBrollVisualStyle(DEFAULT_PROJECT.brollVisualStyle);
     setMixPreset(isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset);
+    setLogoOverlay(inherited);
     setSaveStatus("idle");
-    void createServerProject(nextDraft);
+    await createServerProject(nextDraft);
   }, [createServerProject, isPaidManagedKie, setMixPreset]);
 
   useEffect(() => {
@@ -329,7 +358,14 @@ export function useV2Project() {
         }
       }
 
-      const seedDraft = Object.keys(localDraft).length > 0 ? localDraft : buildDraft();
+      const hasLocalDraft = Object.keys(localDraft).length > 0;
+      const seedDraft = hasLocalDraft ? localDraft : buildDraft();
+      if (!hasLocalDraft) {
+        const accountDefault = await loadAccountLogoDefault();
+        const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
+        if (inherited) seedDraft.logoOverlay = inherited;
+      }
+      applyDraft(seedDraft);
       const id = await createServerProject(seedDraft);
       if (!alive || !id) return;
       storage?.setItem(PROJECT_ID_KEY, id);
@@ -387,6 +423,7 @@ export function useV2Project() {
     const isFirst = firstPersistRun.current;
     firstPersistRun.current = false;
     if (!isFirst) setSaveStatus("saving");
+    let active = true;
     const t = setTimeout(() => {
       const draft = buildDraft();
       try {
@@ -398,15 +435,17 @@ export function useV2Project() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title: draft.projectTitle, draft, touchLastOpened: true }),
         })
-          .then((res) => { if (!isFirst && res.ok) setSaveStatus("saved"); })
-          .catch(() => { if (!isFirst) setSaveStatus("saved"); });
+          .then((res) => {
+            if (!isFirst && active) setSaveStatus(res.ok ? "saved" : "error");
+          })
+          .catch(() => { if (!isFirst && active) setSaveStatus("error"); });
       } else if (!isFirst) {
         setSaveStatus("saved");
       }
     }, 1000);
-    return () => clearTimeout(t);
+    return () => { active = false; clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, projectId, projectReady]);
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
@@ -454,10 +493,11 @@ export function useV2Project() {
     autoMixProviders, setAutoMixProviders,
     brollRegionPreference, setBrollRegionPreference,
     brollVisualStyle, setBrollVisualStyle,
+    logoOverlay, setLogoOverlay,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
-    saveStatus,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
+    saveStatus, retryProjectSave,
   };
 }
 
