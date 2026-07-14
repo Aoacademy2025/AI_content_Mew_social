@@ -11,6 +11,10 @@ import {
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import {
   LOGO_POSITIONS,
+  MAX_LOGO_OPACITY,
+  MAX_LOGO_SIZE_PCT,
+  MIN_LOGO_OPACITY,
+  MIN_LOGO_SIZE_PCT,
   normalizeLogoOverlayConfig,
   type LogoPosition,
 } from "@/lib/logo-overlay";
@@ -31,6 +35,49 @@ export type TrustedLogoRenderInput = {
   intrinsicWidth: number;
   intrinsicHeight: number;
 };
+
+const TRUSTED_LOGO_SNAPSHOT_SRC =
+  /^\/api\/renders\/logo-snapshot-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/;
+
+export function normalizeTrustedLogoRenderInput(
+  value: unknown,
+): TrustedLogoRenderInput | null | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.src !== "string"
+    || !TRUSTED_LOGO_SNAPSHOT_SRC.test(candidate.src)
+    || typeof candidate.position !== "string"
+    || !LOGO_POSITIONS.some((position) => position === candidate.position)
+    || typeof candidate.sizePct !== "number"
+    || !Number.isFinite(candidate.sizePct)
+    || candidate.sizePct < MIN_LOGO_SIZE_PCT
+    || candidate.sizePct > MAX_LOGO_SIZE_PCT
+    || typeof candidate.opacity !== "number"
+    || !Number.isFinite(candidate.opacity)
+    || candidate.opacity < MIN_LOGO_OPACITY
+    || candidate.opacity > MAX_LOGO_OPACITY
+    || typeof candidate.intrinsicWidth !== "number"
+    || !Number.isInteger(candidate.intrinsicWidth)
+    || candidate.intrinsicWidth <= 0
+    || typeof candidate.intrinsicHeight !== "number"
+    || !Number.isInteger(candidate.intrinsicHeight)
+    || candidate.intrinsicHeight <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    src: candidate.src,
+    position: candidate.position as LogoPosition,
+    sizePct: candidate.sizePct,
+    opacity: candidate.opacity,
+    intrinsicWidth: candidate.intrinsicWidth,
+    intrinsicHeight: candidate.intrinsicHeight,
+  };
+}
 
 type LogoExportStagingInput = {
   userId: string;
