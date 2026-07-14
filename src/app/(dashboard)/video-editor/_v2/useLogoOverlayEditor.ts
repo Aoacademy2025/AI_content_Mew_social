@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { trackEvent } from "@/lib/client-telemetry";
+import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
   DEFAULT_LOGO_OPACITY,
   DEFAULT_LOGO_POSITION,
@@ -177,12 +178,17 @@ export function parseLogoUploadResponse(
 export function scheduleLogoAssetCleanup(
   assetId: string,
   dependencies: {
+    projectId?: string | null;
     schedule?: (task: () => void | Promise<void>, delayMs: number) => void;
     deleteAsset?: (assetId: string) => Promise<unknown>;
+    waitForProjectIdle?: (projectId: string) => Promise<void>;
   } = {},
 ): boolean {
   const normalizedAssetId = assetId.trim();
   if (!normalizedAssetId) return false;
+  const projectId = typeof dependencies.projectId === "string"
+    ? dependencies.projectId.trim()
+    : "";
 
   const schedule = dependencies.schedule
     ?? ((task: () => void | Promise<void>, delayMs: number) => {
@@ -192,17 +198,28 @@ export function scheduleLogoAssetCleanup(
     ?? ((id: string) => fetch(`/api/user/brand-assets/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }));
+  const waitForProjectIdle = dependencies.waitForProjectIdle
+    ?? ((id: string) => editorProjectSaveQueue.whenIdle(id));
+  let projectLaneIdle = !projectId;
 
   const scheduleAttempt = (attempt: number, delayMs: number): boolean => {
     try {
       schedule(async () => {
         let retry = false;
         try {
+          if (!projectLaneIdle) {
+            await waitForProjectIdle(projectId);
+            projectLaneIdle = true;
+          }
           const result = await deleteAsset(normalizedAssetId);
           const status = isRecord(result) && typeof result.status === "number"
             ? result.status
             : null;
-          retry = status === 409 || status === 429 || (status !== null && status >= 500);
+          if (status === 409) projectLaneIdle = !projectId;
+          retry = status === 408
+            || status === 409
+            || status === 429
+            || (status !== null && status >= 500);
         } catch {
           retry = true;
         }
@@ -398,7 +415,7 @@ export function useLogoOverlayEditor(input: {
       setAsset(parsed.asset);
       onChange(next);
       if (previous && previous.assetId !== parsed.asset.id) {
-        scheduleLogoAssetCleanup(previous.assetId);
+        scheduleLogoAssetCleanup(previous.assetId, { projectId });
       }
       trackLogoEvent("logo_overlay_upload_done", {
         planEligible: true,
@@ -464,8 +481,8 @@ export function useLogoOverlayEditor(input: {
     onChange(undefined);
     setAsset(null);
     setMutationError(null);
-    scheduleLogoAssetCleanup(normalizedValue.assetId);
-  }, [eligible, normalizedValue, onChange]);
+    scheduleLogoAssetCleanup(normalizedValue.assetId, { projectId });
+  }, [eligible, normalizedValue, onChange, projectId]);
 
   const error = projectSaveStatus === "error"
     ? "ยังไม่ได้บันทึก"

@@ -17,6 +17,7 @@ import {
   type V2Caption,
 } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { BrandAssetView, LogoOverlayConfig } from "../src/lib/logo-overlay";
+import { createEditorProjectSaveQueue } from "../src/lib/editor-project-save-queue";
 
 const failures: string[] = [];
 
@@ -746,8 +747,10 @@ const captions: V2Caption[] = [
 type ScheduleLogoAssetCleanup = (
   assetId: string,
   dependencies?: {
+    projectId?: string | null;
     schedule?: (task: () => void | Promise<void>, delayMs: number) => void;
     deleteAsset?: (assetId: string) => Promise<unknown>;
+    waitForProjectIdle?: (projectId: string) => Promise<void>;
   },
 ) => boolean;
 
@@ -899,7 +902,7 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
     "utf8",
   );
-  await check("cleanup retries a delayed autosave 409 after unmount and then succeeds", async () => {
+  await check("cleanup waits for an eight-second project save after its debounce", async () => {
     const scheduleLogoAssetCleanup = (
       logoEditorModule as typeof logoEditorModule & {
         scheduleLogoAssetCleanup?: ScheduleLogoAssetCleanup;
@@ -926,43 +929,103 @@ async function main() {
       "cleanup retries must be delayed rather than a tight loop",
     );
 
-    const pendingTasks: Array<() => void | Promise<void>> = [];
-    const delays: number[] = [];
-    let projectPatchFinished = false;
-    let deleteAttempts = 0;
-    let deleted = false;
+    const requestTimeouts = new Map<symbol, () => void>();
+    const queue = createEditorProjectSaveQueue({
+      scheduleTimeout(task) {
+        const token = Symbol("request-timeout");
+        requestTimeouts.set(token, task);
+        return token;
+      },
+      cancelTimeout(token) {
+        requestTimeouts.delete(token as symbol);
+      },
+    });
+    let finishPatch: ((ok: boolean) => void) | undefined;
+    queue.enqueue({
+      projectId: "project-slow-save",
+      save: () => new Promise<boolean>((resolve) => { finishPatch = resolve; }),
+    });
+
+    let nowMs = 0;
+    const pendingTasks: Array<{ task: () => void | Promise<void>; delayMs: number }> = [];
+    const deletedAt: number[] = [];
     const accepted = scheduleLogoAssetCleanup!("  asset_from_reloaded_project  ", {
+      projectId: "project-slow-save",
+      waitForProjectIdle: queue.whenIdle,
       schedule(task, delayMs) {
-        pendingTasks.push(task);
-        delays.push(delayMs);
+        pendingTasks.push({ task, delayMs });
       },
       async deleteAsset(assetId) {
         assert.equal(assetId, "asset_from_reloaded_project");
-        deleteAttempts += 1;
-        if (!projectPatchFinished) return { ok: false, status: 409 };
-        deleted = true;
+        deletedAt.push(nowMs);
         return { ok: true, status: 200 };
       },
     });
     assert.equal(accepted, true, "a persisted/reloaded asset does not need mount-local provenance");
-    assert.deepEqual(delays, [1_100]);
+    assert.deepEqual(pendingTasks.map(({ delayMs }) => delayMs), [1_100]);
 
-    // The owning hook has unmounted. Its delayed project PATCH is still in flight, so the
-    // authoritative DELETE sees the old project reference and refuses with 409.
-    await pendingTasks.shift()!();
-    assert.equal(deleteAttempts, 1);
-    assert.equal(deleted, false);
-    assert.deepEqual(delays, [1_100, retryDelay]);
-    assert.equal(pendingTasks.length, 1, "409 schedules one delayed condition recheck");
+    nowMs = 1_100;
+    const cleanupCompletion = pendingTasks.shift()!.task();
+    await Promise.resolve();
+    assert.deepEqual(deletedAt, [], "debounce completion cannot delete during the active save lane");
 
-    projectPatchFinished = true;
-    await pendingTasks.shift()!();
-    assert.equal(deleteAttempts, 2);
-    assert.equal(deleted, true, "cleanup succeeds after autosave removes the reference");
+    nowMs = 8_000;
+    finishPatch!(true);
+    await cleanupCompletion;
+    assert.deepEqual(deletedAt, [8_000], "cleanup starts immediately after the actual lane becomes idle");
     assert.equal(pendingTasks.length, 0);
+    assert.equal(requestTimeouts.size, 0, "the completed save cancels its request timeout");
     assert.equal(scheduleLogoAssetCleanup!("   ", {
       schedule() { throw new Error("blank ids must not schedule"); },
     }), false);
+  });
+
+  await check("cleanup waits through the save request timeout before deleting", async () => {
+    const scheduleLogoAssetCleanup = (
+      logoEditorModule as typeof logoEditorModule & {
+        scheduleLogoAssetCleanup?: ScheduleLogoAssetCleanup;
+      }
+    ).scheduleLogoAssetCleanup!;
+    let requestTimeout: (() => void) | undefined;
+    const queue = createEditorProjectSaveQueue({
+      requestTimeoutMs: 10_000,
+      scheduleTimeout(task, delayMs) {
+        assert.equal(delayMs, 10_000);
+        requestTimeout = task;
+        return 1;
+      },
+      cancelTimeout() {},
+    });
+    queue.enqueue({
+      projectId: "project-timeout-save",
+      save: () => new Promise<boolean>(() => {}),
+    });
+
+    let nowMs = 0;
+    let cleanupTask: (() => void | Promise<void>) | undefined;
+    const deletedAt: number[] = [];
+    scheduleLogoAssetCleanup("asset-after-timeout", {
+      projectId: "project-timeout-save",
+      waitForProjectIdle: queue.whenIdle,
+      schedule(task, delayMs) {
+        assert.equal(delayMs, 1_100);
+        cleanupTask = task;
+      },
+      async deleteAsset() {
+        deletedAt.push(nowMs);
+        return { ok: true, status: 200 };
+      },
+    });
+
+    nowMs = 1_100;
+    const cleanupCompletion = cleanupTask!();
+    await Promise.resolve();
+    nowMs = 9_999;
+    assert.deepEqual(deletedAt, [], "cleanup remains blocked immediately before the save timeout");
+    requestTimeout!();
+    nowMs = 10_000;
+    await cleanupCompletion;
+    assert.deepEqual(deletedAt, [10_000], "timeout releases the lane before cleanup deletes");
   });
 
   await check("cleanup retries network races but bounds continuing authoritative 409", async () => {
@@ -997,6 +1060,57 @@ async function main() {
     assert.equal(networkAttempts, 2);
     assert.equal(networkRaceDeleted, true, "a transient network failure is retried");
 
+    for (const transientStatus of [408, 429, 503]) {
+      const transientTasks: Array<() => void | Promise<void>> = [];
+      let attempts = 0;
+      scheduleLogoAssetCleanup(`transient-${transientStatus}`, {
+        schedule(task) { transientTasks.push(task); },
+        async deleteAsset() {
+          attempts += 1;
+          return attempts === 1
+            ? { ok: false, status: transientStatus }
+            : { ok: true, status: 200 };
+        },
+      });
+      while (transientTasks.length > 0) await transientTasks.shift()!();
+      assert.equal(attempts, 2, `${transientStatus} is treated as a transient deletion failure`);
+    }
+
+    for (const terminalStatus of [400, 401, 403, 404, 422]) {
+      const terminalTasks: Array<() => void | Promise<void>> = [];
+      let attempts = 0;
+      scheduleLogoAssetCleanup(`terminal-${terminalStatus}`, {
+        schedule(task) { terminalTasks.push(task); },
+        async deleteAsset() {
+          attempts += 1;
+          return { ok: false, status: terminalStatus };
+        },
+      });
+      while (terminalTasks.length > 0) await terminalTasks.shift()!();
+      assert.equal(attempts, 1, `${terminalStatus} is not retried`);
+    }
+
+    const conflictTasks: Array<() => void | Promise<void>> = [];
+    let conflictAttempts = 0;
+    let idleChecks = 0;
+    scheduleLogoAssetCleanup("same-project-conflict", {
+      projectId: "project-conflict",
+      schedule(task) { conflictTasks.push(task); },
+      async waitForProjectIdle(projectId) {
+        assert.equal(projectId, "project-conflict");
+        idleChecks += 1;
+      },
+      async deleteAsset() {
+        conflictAttempts += 1;
+        return conflictAttempts === 1
+          ? { ok: false, status: 409 }
+          : { ok: true, status: 200 };
+      },
+    });
+    while (conflictTasks.length > 0) await conflictTasks.shift()!();
+    assert.equal(conflictAttempts, 2);
+    assert.equal(idleChecks, 2, "a reference race re-checks the project lane before retrying");
+
     for (const protectedAsset of ["account-default", "other-project-reference"]) {
       const protectedTasks: Array<() => void | Promise<void>> = [];
       let attempts = 0;
@@ -1018,11 +1132,16 @@ async function main() {
     assert.doesNotMatch(hookSource, /projectOnlyAssetIds|cleanupTimers|clearTimeout/);
     assert.match(
       hookSource,
-      /previous\.assetId\s*!==\s*parsed\.asset\.id[\s\S]{0,160}scheduleLogoAssetCleanup\(previous\.assetId\)/,
+      /waitForProjectIdle[\s\S]{0,220}editorProjectSaveQueue\.whenIdle/,
+      "production cleanup uses the same shared project save coordinator",
     );
     assert.match(
       hookSource,
-      /removeFromProject[\s\S]{0,420}scheduleLogoAssetCleanup\(normalizedValue\.assetId\)/,
+      /previous\.assetId\s*!==\s*parsed\.asset\.id[\s\S]{0,220}scheduleLogoAssetCleanup\(previous\.assetId,\s*\{\s*projectId\s*\}\)/,
+    );
+    assert.match(
+      hookSource,
+      /removeFromProject[\s\S]{0,480}scheduleLogoAssetCleanup\(normalizedValue\.assetId,\s*\{\s*projectId\s*\}\)/,
     );
   });
 
