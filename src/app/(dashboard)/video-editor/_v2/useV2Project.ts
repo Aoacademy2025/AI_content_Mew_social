@@ -7,6 +7,7 @@ import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-prese
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import {
+  canonicalizeDraftLogoOverlay,
   logoOverlayForNewProject,
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
@@ -365,8 +366,9 @@ export function useV2Project() {
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }
-      applyDraft(seedDraft);
-      const id = await createServerProject(seedDraft);
+      const canonicalSeedDraft = canonicalizeDraftLogoOverlay(seedDraft);
+      applyDraft(canonicalSeedDraft);
+      const id = await createServerProject(canonicalSeedDraft);
       if (!alive || !id) return;
       storage?.setItem(PROJECT_ID_KEY, id);
     }

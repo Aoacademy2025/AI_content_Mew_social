@@ -77,6 +77,18 @@ export function normalizeLogoOverlayConfig(value: unknown): LogoOverlayConfig | 
   };
 }
 
+export function canonicalizeDraftLogoOverlay<T extends object>(
+  draft: T,
+): Omit<T, "logoOverlay"> & { logoOverlay?: LogoOverlayConfig } {
+  const { logoOverlay, ...draftWithoutLogo } = draft as T & {
+    logoOverlay?: unknown;
+  };
+  const normalized = normalizeLogoOverlayConfig(logoOverlay);
+  return normalized
+    ? { ...draftWithoutLogo, logoOverlay: normalized }
+    : draftWithoutLogo;
+}
+
 export function logoOverlayForNewProject(input: {
   hasExistingDraft: boolean;
   accountDefault: LogoOverlayConfig | null;
