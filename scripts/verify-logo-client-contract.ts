@@ -658,6 +658,58 @@ function assertDesktopExportFocusStructure(source: string) {
   assert.ok(exportBar.end < timelines[0].pos, "export bar must remain before the timeline in DOM order");
 }
 
+function assertLogoExportTelemetryControlFlow(source: string) {
+  const root = parseTsx(source, "usePostPhaseEditor.ts");
+  const exportFunctions = collectNodes(
+    root,
+    (node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node)
+      && node.name?.text === "exportVideo",
+  );
+  assert.equal(exportFunctions.length, 1, "exportVideo function is missing or duplicated");
+  const exportFunction = exportFunctions[0];
+  assert.ok(exportFunction.body, "exportVideo body is missing");
+
+  const acceptanceGuards = collectNodes(
+    exportFunction.body,
+    (node): node is ts.IfStatement => {
+      if (!ts.isIfStatement(node)) return false;
+      const condition = unwrapExpression(node.expression);
+      return ts.isPrefixUnaryExpression(condition)
+        && condition.operator === ts.SyntaxKind.ExclamationToken
+        && expressionPath(condition.operand) === "result.ok";
+    },
+  );
+  assert.equal(acceptanceGuards.length, 1, "export must have one !result.ok acceptance guard");
+  const guard = acceptanceGuards[0];
+  const guardExit = ts.isBlock(guard.thenStatement)
+    ? guard.thenStatement.statements.some((statement) => ts.isThrowStatement(statement))
+    : ts.isThrowStatement(guard.thenStatement);
+  assert.equal(guardExit, true, "a rejected export job must throw/exit before telemetry");
+
+  const telemetryCalls = collectNodes(
+    exportFunction.body,
+    (node): node is ts.CallExpression => ts.isCallExpression(node)
+      && expressionPath(node.expression) === "trackEvent"
+      && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === "logo_overlay_export_submitted",
+  );
+  assert.equal(telemetryCalls.length, 1, "submission telemetry must be emitted exactly once");
+  assert.ok(telemetryCalls[0].pos > guard.end, "submission telemetry must follow the acceptance guard");
+
+  assert.ok(ts.isBlock(guard.parent), "acceptance guard must live in a block");
+  let telemetryStatement: ts.Node = telemetryCalls[0];
+  while (telemetryStatement.parent !== guard.parent) {
+    assert.ok(telemetryStatement.parent, "telemetry is outside the acceptance-guard block");
+    telemetryStatement = telemetryStatement.parent;
+  }
+  const guardIndex = guard.parent.statements.findIndex((statement) => statement === guard);
+  const telemetryIndex = guard.parent.statements.findIndex((statement) => statement === telemetryStatement);
+  assert.ok(
+    guardIndex >= 0 && telemetryIndex > guardIndex,
+    "submission telemetry must be in a later statement after the exiting guard",
+  );
+}
+
 async function check(name: string, run: () => void | Promise<void>) {
   try {
     await run();
@@ -924,17 +976,22 @@ async function main() {
   });
 
   await check("logo export submission telemetry follows accepted durable job creation", () => {
+    assertLogoExportTelemetryControlFlow(postPhaseEditorSource);
+    const nonExitingMutation = postPhaseEditorSource.replace(
+      'if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");',
+      "if (!result.ok) void result;",
+    );
+    assert.notEqual(nonExitingMutation, postPhaseEditorSource, "acceptance-guard mutation did not apply");
+    assert.throws(
+      () => assertLogoExportTelemetryControlFlow(nonExitingMutation),
+      /must throw\/exit/,
+    );
     const exportStart = postPhaseEditorSource.indexOf("async function exportVideo()");
     const exportEnd = postPhaseEditorSource.indexOf("\n  return {", exportStart);
     assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
     const exportSource = postPhaseEditorSource.slice(exportStart, exportEnd);
-    const acceptedIndex = exportSource.indexOf("if (!result.ok)");
     const telemetryIndex = exportSource.indexOf('trackEvent("logo_overlay_export_submitted"');
-    assert.ok(acceptedIndex >= 0, "export acceptance guard is missing");
-    assert.ok(
-      telemetryIndex > acceptedIndex,
-      "submission telemetry must run only after onExportJob accepts the durable job",
-    );
+    assert.ok(telemetryIndex >= 0, "submission telemetry is missing");
     assert.match(
       exportSource.slice(telemetryIndex),
       /properties:\s*buildLogoTelemetryProperties\(\{\s*surface,\s*position:\s*submittedLogo\.position,?\s*\}\)/,

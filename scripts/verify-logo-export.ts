@@ -26,12 +26,13 @@ function imageFile(bytes: Buffer, name: string): File {
 }
 
 async function main(): Promise<void> {
-  const [{ prisma }, brandAssets, logoExport, { buildMediaReferenceGraph }, orchestrator] = await Promise.all([
+  const [{ prisma }, brandAssets, logoExport, { buildMediaReferenceGraph }, orchestrator, videoJobs] = await Promise.all([
     import("../src/lib/prisma"),
     import("@/lib/brand-assets.server"),
     import("../src/lib/logo-export.server"),
     import("@/lib/media-reference-graph"),
     import("../src/lib/mcp/orchestrator"),
+    import("../src/lib/mcp/video-job"),
   ]);
 
   async function expectBrandError(
@@ -493,12 +494,8 @@ async function main(): Promise<void> {
       };
     }
 
-    async function runTelemetryExport(
-      label: string,
-      logoOverlay: unknown,
-      recordTelemetryEvent: (userId: string | null, input: unknown) => Promise<unknown>,
-    ) {
-      const exportJob = await prisma.videoJob.create({
+    async function createTelemetryExport(label: string, logoOverlay: unknown) {
+      return prisma.videoJob.create({
         data: {
           id: `logo-export-telemetry-${label}`,
           userId: USER_B,
@@ -515,14 +512,30 @@ async function main(): Promise<void> {
           }),
         },
       });
-      await orchestrator.runOrchestrator(exportJob.id, USER_B, {
+    }
+
+    async function runExistingTelemetryExport(
+      exportJobId: string,
+      label: string,
+      recordTelemetryEvent: (userId: string | null, input: unknown) => Promise<unknown>,
+    ) {
+      await orchestrator.runOrchestrator(exportJobId, USER_B, {
         caller: telemetryExportCaller(label),
         refundOneClip: async () => {},
         sleep: async () => {},
         recordTelemetryEvent,
       } as never);
       await new Promise((resolve) => setImmediate(resolve));
-      return prisma.videoJob.findUniqueOrThrow({ where: { id: exportJob.id } });
+      return prisma.videoJob.findUniqueOrThrow({ where: { id: exportJobId } });
+    }
+
+    async function runTelemetryExport(
+      label: string,
+      logoOverlay: unknown,
+      recordTelemetryEvent: (userId: string | null, input: unknown) => Promise<unknown>,
+    ) {
+      const exportJob = await createTelemetryExport(label, logoOverlay);
+      return runExistingTelemetryExport(exportJob.id, label, recordTelemetryEvent);
     }
 
     const completionEvents: Array<{ userId: string | null; input: Record<string, unknown> }> = [];
@@ -582,6 +595,70 @@ async function main(): Promise<void> {
       "done",
       "completion telemetry is invoked only after the durable job is done",
     );
+    await runExistingTelemetryExport(withLogo.id, "with-logo-replay", captureTelemetry);
+    assert.equal(
+      completionEvents.filter((event) => event.input.name === "logo_overlay_export_completed").length,
+      1,
+      "replaying the same completed trusted-logo job cannot emit completion twice",
+    );
+
+    const concurrentJob = await createTelemetryExport("concurrent", stagedB.trusted);
+    const concurrentCompletionEvents: Record<string, unknown>[] = [];
+    const captureConcurrentTelemetry = async (_userId: string | null, input: unknown) => {
+      const telemetryInput = input as Record<string, unknown>;
+      if (telemetryInput.name === "logo_overlay_export_completed") {
+        concurrentCompletionEvents.push(telemetryInput);
+      }
+    };
+    await Promise.all([
+      runExistingTelemetryExport(concurrentJob.id, "concurrent-a", captureConcurrentTelemetry),
+      runExistingTelemetryExport(concurrentJob.id, "concurrent-b", captureConcurrentTelemetry),
+    ]);
+    assert.equal(
+      (await prisma.videoJob.findUniqueOrThrow({ where: { id: concurrentJob.id } })).status,
+      "done",
+      "concurrent export completion leaves one durable done job",
+    );
+    assert.equal(
+      concurrentCompletionEvents.length,
+      1,
+      "only the invocation winning processing-to-done emits completion telemetry",
+    );
+
+    const transitionAwareFinish = (
+      videoJobs as unknown as {
+        finishJobWithTransition?: (
+          ...args: Parameters<typeof videoJobs.finishJob>
+        ) => Promise<{ job: { id: string; status: string }; transitioned: boolean }>;
+      }
+    ).finishJobWithTransition;
+    assert.equal(typeof transitionAwareFinish, "function", "transition-aware finish helper is exported");
+    const transitionJob = await prisma.videoJob.create({
+      data: {
+        id: "logo-export-transition-aware-helper",
+        userId: USER_B,
+        projectId: PROJECT_B,
+        type: "export",
+        status: "processing",
+        inputJson: JSON.stringify({ mode: "export" }),
+      },
+    });
+    const transitionResults = await Promise.all([
+      transitionAwareFinish!(transitionJob.id, { videoUrl: "/api/renders/transition-a.mp4" }),
+      transitionAwareFinish!(transitionJob.id, { videoUrl: "/api/renders/transition-b.mp4" }),
+    ]);
+    assert.deepEqual(
+      transitionResults.map((result) => result.transitioned).sort(),
+      [false, true],
+      "the conditional processing-to-done update has exactly one winner",
+    );
+    const legacyReplay = await videoJobs.finishJob(
+      transitionJob.id,
+      { videoUrl: "/api/renders/legacy-replay.mp4" },
+    );
+    assert.equal(legacyReplay.id, transitionJob.id, "legacy finishJob still returns the job row");
+    assert.equal(legacyReplay.status, "done", "legacy finishJob replay remains compatible");
+    assert.equal("transitioned" in legacyReplay, false, "legacy finishJob return shape is unchanged");
 
     const completionBuilder = (
       orchestrator as typeof orchestrator & {
@@ -627,59 +704,94 @@ async function main(): Promise<void> {
       "untrusted logo shapes do not produce completion telemetry",
     );
 
-    let thrownTelemetryAttempts = 0;
-    const thrownTelemetryJob = await runTelemetryExport(
-      "telemetry-throws",
-      stagedB.trusted,
-      (() => {
-        thrownTelemetryAttempts += 1;
-        throw new Error("simulated synchronous telemetry failure");
-      }) as never,
-    );
-    assert.ok(thrownTelemetryAttempts > 0, "the throwing telemetry seam is exercised");
-    assert.equal(
-      thrownTelemetryJob.status,
-      "done",
-      "synchronously thrown telemetry cannot fail export finalization",
-    );
+    const bucketFor = (durationMs: unknown) => completionBuilder!(
+      { logoOverlay: stagedB.trusted },
+      durationMs,
+    )?.durationBucket;
+    for (const [durationMs, expected] of [
+      [0, "under-30s"],
+      [29_999, "under-30s"],
+      [30_000, "30-60s"],
+      [59_999, "30-60s"],
+      [60_000, "1-3m"],
+      [179_999, "1-3m"],
+      [180_000, "over-3m"],
+      [Number.POSITIVE_INFINITY, "unknown"],
+      [Number.NaN, "unknown"],
+      [-1, "unknown"],
+      [undefined, "unknown"],
+      ["45000", "unknown"],
+    ] as const) {
+      assert.equal(bucketFor(durationMs), expected, `duration bucket mismatch for ${String(durationMs)}`);
+    }
 
-    let rejectedTelemetryAttempts = 0;
-    const rejectedTelemetryJob = await runTelemetryExport(
-      "telemetry-rejects",
-      stagedB.trusted,
-      () => {
-        rejectedTelemetryAttempts += 1;
-        return Promise.reject(new Error("simulated rejected telemetry write"));
-      },
-    );
-    assert.ok(rejectedTelemetryAttempts > 0, "the rejected telemetry seam is exercised");
-    assert.equal(
-      rejectedTelemetryJob.status,
-      "done",
-      "rejected telemetry cannot fail export finalization",
-    );
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => { unhandledRejections.push(reason); };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      let thrownTelemetryAttempts = 0;
+      const thrownTelemetryJob = await runTelemetryExport(
+        "telemetry-throws",
+        stagedB.trusted,
+        ((_: string | null, input: unknown) => {
+          if ((input as Record<string, unknown>).name !== "logo_overlay_export_completed") {
+            return Promise.resolve();
+          }
+          thrownTelemetryAttempts += 1;
+          throw new Error("simulated synchronous telemetry failure");
+        }) as never,
+      );
+      assert.equal(thrownTelemetryAttempts, 1, "the throwing completion telemetry seam is exercised");
+      assert.equal(
+        thrownTelemetryJob.status,
+        "done",
+        "synchronously thrown telemetry cannot fail export finalization",
+      );
 
-    let pendingTelemetryAttempts = 0;
-    const pendingTelemetryRun = runTelemetryExport(
-      "telemetry-pending",
-      stagedB.trusted,
-      () => {
-        pendingTelemetryAttempts += 1;
-        return new Promise(() => {});
-      },
-    );
-    const pendingTelemetryJob = await Promise.race([
-      pendingTelemetryRun,
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("pending telemetry delayed finalization")), 500);
-      }),
-    ]);
-    assert.ok(pendingTelemetryAttempts > 0, "the pending telemetry seam is exercised");
-    assert.equal(
-      pendingTelemetryJob.status,
-      "done",
-      "pending telemetry cannot delay export finalization",
-    );
+      let rejectedTelemetryAttempts = 0;
+      const rejectedTelemetryJob = await runTelemetryExport(
+        "telemetry-rejects",
+        stagedB.trusted,
+        async (_userId, input) => {
+          if ((input as Record<string, unknown>).name !== "logo_overlay_export_completed") return;
+          rejectedTelemetryAttempts += 1;
+          throw new Error("simulated rejected completion telemetry write");
+        },
+      );
+      assert.equal(rejectedTelemetryAttempts, 1, "the rejected completion telemetry seam is exercised");
+      assert.equal(
+        rejectedTelemetryJob.status,
+        "done",
+        "rejected telemetry cannot fail export finalization",
+      );
+
+      let pendingTelemetryAttempts = 0;
+      const pendingTelemetryRun = runTelemetryExport(
+        "telemetry-pending",
+        stagedB.trusted,
+        async (_userId, input) => {
+          if ((input as Record<string, unknown>).name !== "logo_overlay_export_completed") return;
+          pendingTelemetryAttempts += 1;
+          return new Promise(() => {});
+        },
+      );
+      const pendingTelemetryJob = await Promise.race([
+        pendingTelemetryRun,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("pending telemetry delayed finalization")), 500);
+        }),
+      ]);
+      assert.equal(pendingTelemetryAttempts, 1, "the pending completion telemetry seam is exercised");
+      assert.equal(
+        pendingTelemetryJob.status,
+        "done",
+        "pending telemetry cannot delay export finalization",
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(unhandledRejections, [], "completion telemetry failures never leak unhandled rejections");
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
 
     const routeSource = readFileSync(
       path.join(process.cwd(), "src", "app", "api", "videos", "jobs", "route.ts"),

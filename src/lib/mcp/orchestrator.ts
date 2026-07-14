@@ -5,6 +5,7 @@ import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_component
 import {
   setJobStep,
   finishJob,
+  finishJobWithTransition,
   failJob,
   parseVideoJobOutput,
   VIDEO_JOB_CANCELED_ERROR,
@@ -392,7 +393,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       emitStage(phaseName, "done", exportDuration);
       console.log(`[mcp-worker] job ${jobId} EXPORT total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s source=${input.sourceJobId}`);
 
-      const completedJob = await finishJob(jobId, {
+      const completion = await finishJobWithTransition(jobId, {
         version: 2,
         mode: "export",
         sourceJobId: input.sourceJobId,
@@ -403,7 +404,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         input.subtitleOverlayConfig,
         preview.audioDurationMs,
       );
-      if (completedJob.status === "done" && logoCompletionProperties) {
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && logoCompletionProperties
+      ) {
         emitTelemetry({
           name: "logo_overlay_export_completed",
           category: "product",
