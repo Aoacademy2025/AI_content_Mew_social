@@ -6,6 +6,10 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { markUserPaid, type PaidPlan } from "@/lib/paid-term";
 import { grantOnPaidActivation } from "@/lib/entitlements";
+import {
+  listBrandAssetPathsForUser,
+  removeBrandAssetFiles,
+} from "@/lib/brand-assets.server";
 
 const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
 const VALID_ROLES = new Set(["ADMIN", "USER"]);
@@ -126,7 +130,11 @@ export async function DELETE(
       return NextResponse.json({ error: "Cannot delete yourself" }, { status: 400 });
     }
 
+    const brandAssetPaths = await listBrandAssetPathsForUser(id);
     await prisma.user.delete({ where: { id } });
+    await removeBrandAssetFiles(brandAssetPaths).catch(() => {
+      console.error("[admin/users/DELETE] brand asset cleanup failed");
+    });
     return NextResponse.json({ success: true });
   } catch (error) {
     return apiError({ route: "admin/users/[id]", error });

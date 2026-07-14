@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
+import {
+  listBrandAssetPathsForUser,
+  removeBrandAssetFiles,
+} from "@/lib/brand-assets.server";
 
 type ClerkUserEvent = {
   type: string;
@@ -115,7 +119,11 @@ export async function POST(req: NextRequest) {
       // in the User-independent UsedTrialEmail table (src/lib/trial.ts), not solely on this
       // row's trialStartedAt, so re-registering with the same email after this delete still
       // gets blocked from a second trial by grantTrial().
+      const brandAssetPaths = await listBrandAssetPathsForUser(user.id);
       await prisma.user.delete({ where: { id: user.id } });
+      await removeBrandAssetFiles(brandAssetPaths).catch(() => {
+        console.error("[clerk-webhook] brand asset cleanup failed");
+      });
     }
   }
 
