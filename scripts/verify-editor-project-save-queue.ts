@@ -14,6 +14,7 @@ type SaveInput = {
 };
 type Queue = {
   seedRevision(projectId: string, revision: number): void;
+  revisionWatermark(projectId: string): number;
   enqueue(input: SaveInput): number;
   whenIdle(projectId: string): Promise<void>;
   laneCount(): number;
@@ -68,10 +69,32 @@ async function nextTurn(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+type BootstrapProject = {
+  id: string;
+  draftRevision: number;
+  draft?: Record<string, unknown> | null;
+};
+
+type BootstrapOutcome =
+  | { kind: "server"; project: BootstrapProject }
+  | { kind: "local"; project: BootstrapProject; draft: Record<string, unknown> }
+  | { kind: "error"; recoveryDraft: Record<string, unknown> | null }
+  | { kind: "missing" };
+
+type ResolveBootstrap = (input: {
+  projectId: string;
+  localDraft: unknown;
+  localDirty: boolean;
+  revisionWatermark: number;
+  loadProject: () => Promise<{ status: number; project?: unknown }>;
+}) => Promise<BootstrapOutcome>;
+
 async function main(): Promise<void> {
   {
     const queue = createQueue();
     assert.equal(typeof queue.seedRevision, "function", "queue exposes a server revision seed");
+    assert.equal(typeof queue.revisionWatermark, "function", "queue exposes its per-project watermark");
+    assert.equal(queue.revisionWatermark("project-unseen"), 0, "an unseen project starts at revision zero");
     assert.equal(typeof queue.laneCount, "function", "queue exposes an eviction inspection seam");
     const calls: ControlledCall[] = [];
     const events: SaveEvent[] = [];
@@ -235,6 +258,148 @@ async function main(): Promise<void> {
     await queue.whenIdle("project-old");
     assert.equal(queue.laneCount(), 0);
   }
+
+  const bootstrapPath = "../src/lib/editor-project-bootstrap";
+  const bootstrapModule = await import(bootstrapPath).catch(() => null) as {
+    resolveEditorProjectBootstrap?: ResolveBootstrap;
+    isEditorProjectRecoveryDraft?: (value: unknown) => boolean;
+  } | null;
+  assert.ok(bootstrapModule, "bootstrap resolver module exists");
+  assert.equal(
+    typeof bootstrapModule.resolveEditorProjectBootstrap,
+    "function",
+    "bootstrap resolver is exported",
+  );
+  const resolveBootstrap = bootstrapModule.resolveEditorProjectBootstrap!;
+  const isRecoveryDraft = bootstrapModule.isEditorProjectRecoveryDraft!;
+  assert.equal(isRecoveryDraft({ script: "local" }), true);
+  for (const invalid of [null, undefined, {}, [], "corrupt", 7]) {
+    assert.equal(isRecoveryDraft(invalid), false, "missing/corrupt/empty recovery is rejected");
+  }
+
+  for (const lateAFirst of [true, false]) {
+    const projectId = lateAFirst ? "project-late-a-first" : "project-late-a-last";
+    const clock = fakeTimeouts();
+    const queue = createQueue({
+      requestTimeoutMs: 10_000,
+      scheduleTimeout: clock.scheduleTimeout,
+      cancelTimeout: clock.cancelTimeout,
+    });
+    let server = { revision: 0, script: "server-old" };
+    const persist = (revision: number, script: string) => {
+      if (server.revision >= revision) return false;
+      server = { revision, script };
+      return true;
+    };
+    let completeLateA: (() => void) | undefined;
+    const revisionA = queue.enqueue({
+      projectId,
+      save: ({ revision }) => new Promise<boolean>((resolve) => {
+        completeLateA = () => resolve(persist(revision, "timed-out-A"));
+      }),
+    });
+    assert.equal(revisionA, 1);
+    clock.runNext();
+    await queue.whenIdle(projectId);
+    assert.equal(queue.revisionWatermark(projectId), 1, "timed-out revision remains unconfirmed locally");
+
+    const outcome = await resolveBootstrap({
+      projectId,
+      localDraft: { script: "user-new" },
+      localDirty: false,
+      revisionWatermark: queue.revisionWatermark(projectId),
+      loadProject: async () => ({
+        status: 200,
+        project: { id: projectId, draftRevision: server.revision, draft: { script: server.script } },
+      }),
+    });
+    assert.equal(outcome.kind, "local", "server revision zero cannot replace unconfirmed local revision one");
+
+    if (lateAFirst) {
+      completeLateA!();
+      await nextTurn();
+      assert.deepEqual(server, { revision: 1, script: "timed-out-A" });
+    }
+    const revisionB = queue.enqueue({
+      projectId,
+      save: async ({ revision }) => persist(
+        revision,
+        (outcome.kind === "local" ? outcome.draft.script : "wrong") as string,
+      ),
+    });
+    assert.equal(revisionB, 2, "recovered local draft uses the next monotonic revision");
+    await queue.whenIdle(projectId);
+    if (!lateAFirst) {
+      completeLateA!();
+      await nextTurn();
+    }
+    assert.deepEqual(
+      server,
+      { revision: 2, script: "user-new" },
+      `recovered local draft wins when late A finishes ${lateAFirst ? "before" : "after"} revision two`,
+    );
+    assert.equal(queue.revisionWatermark(projectId), 2);
+  }
+
+  for (const invalidLocal of [null, {}, [], "corrupt"]) {
+    const outcome = await resolveBootstrap({
+      projectId: "project-no-recovery",
+      localDraft: invalidLocal,
+      localDirty: false,
+      revisionWatermark: 2,
+      loadProject: async () => ({
+        status: 200,
+        project: { id: "project-no-recovery", draftRevision: 1, draft: { script: "old" } },
+      }),
+    });
+    assert.deepEqual(outcome, { kind: "error", recoveryDraft: null });
+  }
+
+  for (const loadProject of [
+    async () => { throw new Error("network"); },
+    async () => ({ status: 503 }),
+  ]) {
+    const outcome = await resolveBootstrap({
+      projectId: "project-load-error",
+      localDraft: { script: "keep-local" },
+      localDirty: false,
+      revisionWatermark: 0,
+      loadProject,
+    });
+    assert.deepEqual(outcome, { kind: "error", recoveryDraft: { script: "keep-local" } });
+  }
+  assert.deepEqual(
+    await resolveBootstrap({
+      projectId: "project-missing",
+      localDraft: { script: "local" },
+      localDirty: false,
+      revisionWatermark: 0,
+      loadProject: async () => ({ status: 404 }),
+    }),
+    { kind: "missing" },
+  );
+  const dirtyOutcome = await resolveBootstrap({
+    projectId: "project-dirty",
+    localDraft: { script: "edited-during-error" },
+    localDirty: true,
+    revisionWatermark: 1,
+    loadProject: async () => ({
+      status: 200,
+      project: { id: "project-dirty", draftRevision: 5, draft: { script: "server" } },
+    }),
+  });
+  assert.equal(dirtyOutcome.kind, "local", "edits made during bootstrap failure win on retry");
+  const serverOutcome = await resolveBootstrap({
+    projectId: "project-server-current",
+    localDraft: { script: "old-local" },
+    localDirty: false,
+    revisionWatermark: 2,
+    loadProject: async () => ({
+      status: 200,
+      project: { id: "project-server-current", draftRevision: 2, draft: { script: "server-current" } },
+    }),
+  });
+  assert.equal(serverOutcome.kind, "server", "current server state is applied when no local edit is pending");
 
   const projectSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/useV2Project.ts",

@@ -75,6 +75,10 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     return revision;
   }
 
+  function revisionWatermark(projectId: string): number {
+    return revisionWatermarks.get(normalizedProjectId(projectId)) ?? 0;
+  }
+
   function laneFor(projectId: string): SaveLane {
     const existing = lanes.get(projectId);
     if (existing) return existing;
@@ -181,7 +185,7 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     return lanes.size;
   }
 
-  return { seedRevision, enqueue, whenIdle, laneCount };
+  return { seedRevision, revisionWatermark, enqueue, whenIdle, laneCount };
 }
 
 export const editorProjectSaveQueue = createEditorProjectSaveQueue();
