@@ -117,30 +117,30 @@ function assertCallCount(value: string, callee: string, expected: number, label:
 }
 
 const stateContracts = [
-  ["projectTitle", "setProjectTitle", "setProjectTitleRaw"],
-  ["mode", "setMode", "setModeRaw"],
-  ["script", "setScript", "setScriptRaw"],
-  ["clipUrlState", "setClipUrlStateFromUser", "setClipUrlStateRaw"],
-  ["clipDurationSecState", "setClipDurationSecStateFromUser", "setClipDurationSecStateRaw"],
-  ["brollSource", "setBrollSource", "setBrollSourceRaw"],
-  ["voiceEngine", "setVoiceEngine", "setVoiceEngineRaw"],
-  ["geminiVoiceName", "setGeminiVoiceName", "setGeminiVoiceNameRaw"],
-  ["voiceId", "setVoiceId", "setVoiceIdRaw"],
-  ["musicTrack", "setMusicTrack", "setMusicTrackRaw"],
-  ["musicTrackKind", "setMusicTrackKind", "setMusicTrackKindRaw"],
-  ["bgmVolume", "setBgmVolume", "setBgmVolumeRaw"],
-  ["useAvatar", "setUseAvatar", "setUseAvatarRaw"],
-  ["avatarId", "setAvatarId", "setAvatarIdRaw"],
-  ["targetClipCount", "setTargetClipCount", "setTargetClipCountRaw"],
-  ["avatarMode", "setAvatarMode", "setAvatarModeRaw"],
-  ["avatarIntroSecs", "setAvatarIntroSecs", "setAvatarIntroSecsRaw"],
-  ["avatarTailSecs", "setAvatarTailSecs", "setAvatarTailSecsRaw"],
-  ["kieModel", "setKieModel", "setKieModelRaw"],
-  ["autoMixProviders", "setAutoMixProviders", "setAutoMixProvidersRaw"],
-  ["brollRegionPreference", "setBrollRegionPreference", "setBrollRegionPreferenceRaw"],
-  ["brollVisualStyle", "setBrollVisualStyle", "setBrollVisualStyleRaw"],
-  ["logoOverlay", "setLogoOverlay", "setLogoOverlayRaw"],
-  ["mixPreset", "setMixPresetFromUser", "setMixPresetRaw"],
+  ["projectTitle", "setProjectTitle", "setProjectTitleRaw", "projectTitle"],
+  ["mode", "setMode", "setModeRaw", "mode"],
+  ["script", "setScript", "setScriptRaw", "script"],
+  ["clipUrlState", "setClipUrlStateFromUser", "setClipUrlStateRaw", "clipUrl"],
+  ["clipDurationSecState", "setClipDurationSecStateFromUser", "setClipDurationSecStateRaw", "clipDurationSec"],
+  ["brollSource", "setBrollSource", "setBrollSourceRaw", "brollSource"],
+  ["voiceEngine", "setVoiceEngine", "setVoiceEngineRaw", "voiceEngine"],
+  ["geminiVoiceName", "setGeminiVoiceName", "setGeminiVoiceNameRaw", "geminiVoiceName"],
+  ["voiceId", "setVoiceId", "setVoiceIdRaw", "voiceId"],
+  ["musicTrack", "setMusicTrack", "setMusicTrackRaw", "musicTrack"],
+  ["musicTrackKind", "setMusicTrackKind", "setMusicTrackKindRaw", "musicTrackKind"],
+  ["bgmVolume", "setBgmVolume", "setBgmVolumeRaw", "bgmVolume"],
+  ["useAvatar", "setUseAvatar", "setUseAvatarRaw", "useAvatar"],
+  ["avatarId", "setAvatarId", "setAvatarIdRaw", "avatarId"],
+  ["targetClipCount", "setTargetClipCount", "setTargetClipCountRaw", "targetClipCount"],
+  ["avatarMode", "setAvatarMode", "setAvatarModeRaw", "avatarMode"],
+  ["avatarIntroSecs", "setAvatarIntroSecs", "setAvatarIntroSecsRaw", "avatarIntroSecs"],
+  ["avatarTailSecs", "setAvatarTailSecs", "setAvatarTailSecsRaw", "avatarTailSecs"],
+  ["kieModel", "setKieModel", "setKieModelRaw", "kieModel"],
+  ["autoMixProviders", "setAutoMixProviders", "setAutoMixProvidersRaw", "autoMixProviders"],
+  ["brollRegionPreference", "setBrollRegionPreference", "setBrollRegionPreferenceRaw", "brollRegionPreference"],
+  ["brollVisualStyle", "setBrollVisualStyle", "setBrollVisualStyleRaw", "brollVisualStyle"],
+  ["logoOverlay", "setLogoOverlay", "setLogoOverlayRaw", "logoOverlay"],
+  ["mixPreset", "setMixPresetFromUser", "setMixPresetRaw", "mixPreset"],
 ] as const;
 
 function verifyHookSource(value: string): void {
@@ -151,19 +151,28 @@ function verifyHookSource(value: string): void {
     "the temporary async bootstrap adapter is absent");
 
   const userState = namedFunction(root, "useUserDraftState").getText(root);
-  assert.match(userState, /markUserMutation\(\);[\s\S]*setRaw\(next\)/,
-    "the public setter marks once before applying state");
+  assert.match(userState, /setSynchronized\(next\);[\s\S]*markUserMutation\(\)/,
+    "the public setter synchronizes the effective draft before marking provenance");
+  assert.match(userState, /valueRef\.current[\s\S]*effectiveDraftRef\.current[\s\S]*setRaw\(resolved\)/,
+    "functional and direct setters synchronously update the effective draft mirror");
   assertCallCount(userState, "markUserMutation", 1,
     "useUserDraftState has exactly one user-provenance boundary");
+  const userMarker = variableInitializer(root, "markUserDraftMutation").getText(root);
+  assert.match(userMarker, /userDraftMutationTokenRef\.current\s*\+=\s*1[\s\S]*stageExplicitUserDraftMutationRef\.current\(\)/,
+    "the setter boundary stages the explicit user draft synchronously after advancing its token");
 
-  for (const [field, userSetter, rawSetter] of stateContracts) {
+  for (const [field, userSetter, rawSetter, draftField] of stateContracts) {
     const declaration = userStateDeclaration(root, [field, userSetter, rawSetter]);
     assert.ok(
       declaration
-        && declaration.arguments.length === 2
-        && ts.isIdentifier(declaration.arguments[1])
-        && declaration.arguments[1].text === "markUserDraftMutation",
-      `${field} exposes a user setter and a separate raw setter through markUserDraftMutation`,
+        && declaration.arguments.length === 4
+        && ts.isStringLiteral(declaration.arguments[1])
+        && declaration.arguments[1].text === draftField
+        && ts.isIdentifier(declaration.arguments[2])
+        && declaration.arguments[2].text === "effectiveDraftRef"
+        && ts.isIdentifier(declaration.arguments[3])
+        && declaration.arguments[3].text === "markUserDraftMutation",
+      `${field} synchronizes ${draftField} and keeps separate user/raw provenance`,
     );
   }
 
@@ -195,6 +204,31 @@ function verifyHookSource(value: string): void {
   assert.match(settings, /setVoiceEngineRaw/);
   assert.match(settings, /setGeminiVoiceNameRaw/);
   assert.match(settings, /setMixPresetRaw/);
+
+  const stageExplicit = variableInitializer(root, "stageExplicitUserDraftMutation").getText(root);
+  assert.match(stageExplicit, /canonicalizeDraftLogoOverlay\(effectiveDraftRef\.current\)/,
+    "explicit staging materializes the synchronized effective draft");
+  assert.match(stageExplicit, /tracker\.latestLocal\s*=\s*latestLocal[\s\S]*latestDraftRef\.current\s*=\s*latestLocal/,
+    "explicit staging publishes one immutable candidate to conflict and autosave paths");
+  assert.match(stageExplicit, /writeEditorProjectRecoveryJournal[\s\S]*draft:\s*latestLocal\.draft/,
+    "the synchronous explicit candidate is journaled before passive effects");
+  assert.match(stageExplicit, /tracker\.blocked\s*=\s*true[\s\S]*status:\s*"load-error"/,
+    "failed explicit materialization fails closed visibly");
+
+  const acknowledge = variableInitializer(root, "acknowledgeAutosaveCandidate").getText(root);
+  assert.match(acknowledge, /pruneIssuedAutosaveSnapshotsThrough\(tracker,\s*candidate\.revision\)/,
+    "an exact acknowledgement retires proven issued snapshots");
+  const prune = namedFunction(root, "pruneIssuedAutosaveSnapshotsThrough").getText(root);
+  assert.match(prune, /revision\s*<=\s*confirmedRevision[\s\S]*tracker\.issued\.delete\(revision\)/,
+    "issued pruning removes only revisions proven by the confirmed acknowledgement");
+
+  const autosaveStaging = sourceBetween(value, "// Persist draft (debounce 1s)", "// ข้อมูลอวตาร");
+  assert.match(autosaveStaging, /stagedUserDraftMutationTokenRef\.current\s*===\s*userDraftMutationTokenRef\.current[\s\S]*const draft = stagedLocal\?\.draft/,
+    "passive autosave consumes the exact synchronous user snapshot for its token");
+  assert.match(autosaveStaging, /result\.kind\s*===\s*"error"[\s\S]*tracker\.issued\.delete\(snapshot\.revision\)/,
+    "a definite write error retires its impossible-to-commit snapshot");
+  assert.match(autosaveStaging, /isLatestSavedProjectRevision\(event,\s*latestQueuedSaveRef\.current\)[\s\S]*userDraftMutationTokenRef\.current\s*===\s*lastPersistedUserMutationTokenRef\.current[\s\S]*clearProjectRecoveryData/,
+    "an older acknowledgement cannot clear a newer synchronously staged journal");
 
   const existing = sourceBetween(value, "if (existingProjectId) {", "const localDraft =");
   assert.match(existing, /setRecoveryState\(\{\s*status:\s*"loading"\s*\}\)/);
@@ -404,13 +438,13 @@ async function main(): Promise<void> {
   await verifyRuntimeHookMutationSensitivity();
 
   const missingBoundary = source.replace(
-    /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([^;]+?,\s*)markUserDraftMutation(\s*\))/,
+    /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([\s\S]*?effectiveDraftRef,\s*)markUserDraftMutation(,\s*\);)/,
     "$1(() => {})$2",
   );
   assert.notEqual(missingBoundary, source, "public-setter mutation applied");
   assert.throws(
     () => verifyHookSource(missingBoundary),
-    /projectTitle exposes a user setter/,
+    /projectTitle synchronizes projectTitle/,
     "removing markUserDraftMutation from a public setter makes verification fail",
   );
 

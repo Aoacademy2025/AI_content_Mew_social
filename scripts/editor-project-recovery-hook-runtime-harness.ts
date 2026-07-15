@@ -390,6 +390,13 @@ type ProjectHook = {
   voiceEngine: string;
   geminiVoiceName: string;
   setBgmVolume(value: number): void;
+  setLogoOverlay(value: {
+    enabled: boolean;
+    assetId: string;
+    position: "top-left" | "top-center" | "top-right" | "middle-left" | "center" | "middle-right" | "bottom-left" | "bottom-center" | "bottom-right";
+    sizePct: number;
+    opacity: number;
+  } | undefined): void;
   saveStatus: "idle" | "saving" | "saved" | "error";
   retryProjectSave(): void;
   resetProject(): Promise<void>;
@@ -404,6 +411,13 @@ type ProjectHook = {
   chooseLocalProjectDraft(): Promise<void>;
   chooseServerProjectDraft(): void;
   retryConflictServerRefresh(): Promise<void>;
+  __debugAutosaveLineage(): {
+    blocked: boolean;
+    confirmedRevision: number | null;
+    issuedSize: number;
+    issuedDraftBytes: number;
+    latestLocalDraft: JsonRecord | null;
+  };
 };
 
 type HarnessOptions = {
@@ -415,7 +429,26 @@ type HarnessOptions = {
 
 const hookSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV2Project.ts", "utf8");
 function compileHook(source: string): string {
-  return ts.transpileModule(source, {
+  const instrumented = source.replace(
+    `  return {
+    projectTitle, setProjectTitle,`,
+    `  return {
+    __debugAutosaveLineage: () => ({
+      blocked: autosaveLineageRef.current?.blocked ?? false,
+      confirmedRevision: autosaveLineageRef.current?.confirmed.revision ?? null,
+      issuedSize: autosaveLineageRef.current?.issued.size ?? 0,
+      issuedDraftBytes: autosaveLineageRef.current
+        ? [...autosaveLineageRef.current.issued.values()].reduce(
+            (total, snapshot) => total + JSON.stringify(snapshot.draft).length,
+            0,
+          )
+        : 0,
+      latestLocalDraft: autosaveLineageRef.current?.latestLocal?.draft ?? null,
+    }),
+    projectTitle, setProjectTitle,`,
+  );
+  assert.notEqual(instrumented, source, "runtime harness instruments the actual autosave tracker");
+  return ts.transpileModule(instrumented, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
@@ -524,6 +557,19 @@ function assertCasAutosaves(fetchMock: FetchMock, projectId: string): void {
     assert.ok((body.draftRevision as number) > (body.expectedDraftRevision as number),
       "every Editor v2 autosave advances above its observed base");
   }
+}
+
+function recoveryJournalDraft(storage: MemoryStorage, projectId: string): JsonRecord | null {
+  const raw = storage.getItem(journalModule.editorProjectRecoveryKey(projectId));
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as { draft?: unknown };
+  return parsed.draft && typeof parsed.draft === "object" && !Array.isArray(parsed.draft)
+    ? parsed.draft as JsonRecord
+    : null;
+}
+
+async function drainMicrotasksWithoutRender(turns = 24): Promise<void> {
+  for (let index = 0; index < turns; index += 1) await Promise.resolve();
 }
 
 async function twoIndependentClientsCannotOverwrite(): Promise<void> {
@@ -708,6 +754,200 @@ async function pendingDraftWaitsForReconciliationAndBecomesLatestConflict(): Pro
     patches: autosavePatchCalls(harness.fetchMock, "pending-reconcile").length,
   }, { local: "latest pending B", server: "another tab", patches: 1 },
   "an older reconciliation surfaces the newest explicit local snapshot and drops pending B");
+}
+
+async function explicitSetterStagesBeforePassiveEffects(): Promise<void> {
+  const logo = {
+    enabled: true,
+    assetId: "asset-async-logo",
+    position: "bottom-left" as const,
+    sizePct: 24,
+    opacity: 0.75,
+  };
+  const variants: Array<{
+    name: string;
+    base: JsonRecord;
+    stage: (harness: ReturnType<typeof createHarness>) => void | Promise<void>;
+    assertDraft: (draft: JsonRecord) => void;
+  }> = [
+    {
+      name: "functional",
+      base: { script: "base" },
+      stage: (harness) => harness.runner.current.setScript(
+        (value) => `${value} / functional B`,
+      ),
+      assertDraft: (draft) => assert.equal(draft.script, "in-flight A / functional B"),
+    },
+    {
+      name: "async-logo",
+      base: { script: "base" },
+      stage: async (harness) => {
+        await Promise.resolve();
+        harness.runner.current.setLogoOverlay(logo);
+      },
+      assertDraft: (draft) => assert.deepEqual(draft.logoOverlay, logo),
+    },
+    {
+      name: "clip-composite",
+      base: { script: "base", clipUrl: "https://cdn.example/clip.mp4", clipDurationSec: 12 },
+      stage: (harness) => harness.runner.current.setClipUrl(""),
+      assertDraft: (draft) => assert.deepEqual(
+        { clipUrl: draft.clipUrl, clipDurationSec: draft.clipDurationSec },
+        { clipUrl: "", clipDurationSec: 0 },
+      ),
+    },
+    {
+      name: "preset-composite",
+      base: {
+        script: "base",
+        mixPreset: "free",
+        brollSource: "stock",
+        autoMixProviders: ["video", "pexels-photo", "pixabay-photo"],
+      },
+      stage: (harness) => harness.runner.current.setMixPreset("recommended"),
+      assertDraft: (draft) => assert.deepEqual({
+        mixPreset: draft.mixPreset,
+        brollSource: draft.brollSource,
+        autoMixProviders: draft.autoMixProviders,
+      }, {
+        mixPreset: "recommended",
+        brollSource: "automix",
+        autoMixProviders: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
+      }),
+    },
+  ];
+
+  const failures: string[] = [];
+  for (const variant of variants) {
+    const projectId = `setter-boundary-${variant.name}`;
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, variant.base);
+    const patchA = deferred<ResponseLike>();
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    try {
+      harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchA.promise);
+      harness.runner.mount();
+      await settle(harness.runner);
+      harness.runner.current.setScript("in-flight A");
+      harness.runner.flush();
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assert.equal(autosavePatchCalls(harness.fetchMock, projectId).length, 1,
+        `${variant.name} starts autosave A`);
+
+      await variant.stage(harness);
+      variant.assertDraft(harness.runner.current.__debugAutosaveLineage().latestLocalDraft!);
+      variant.assertDraft(recoveryJournalDraft(harness.storage, projectId)!);
+
+      patchA.resolve(response(409, {
+        project: project(projectId, 1, { script: "other tab" }),
+      }));
+      await drainMicrotasksWithoutRender();
+      const beforeRender = harness.runner.current.__debugAutosaveLineage();
+      assert.equal(beforeRender.blocked, true,
+        `${variant.name} synchronously blocks before render/passive effects`);
+      variant.assertDraft(beforeRender.latestLocalDraft!);
+      variant.assertDraft(recoveryJournalDraft(harness.storage, projectId)!);
+
+      harness.runner.flush();
+      variant.assertDraft(harness.runner.current.recovery.local!.draft);
+      assert.equal(harness.runner.current.recovery.server?.draft.script, "other tab");
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assert.equal(autosavePatchCalls(harness.fetchMock, projectId).length, 1,
+        `${variant.name} cannot send an advancing PATCH after the conflict`);
+    } catch (error) {
+      failures.push(`${variant.name}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      harness.runner.unmount();
+    }
+  }
+  assert.deepEqual(failures, [], `synchronous setter staging failures:\n${failures.join("\n")}`);
+}
+
+async function rawHydrationDoesNotStageExplicitLocal(): Promise<void> {
+  const server = new SharedEditorServer();
+  const settings = deferred<ResponseLike>();
+  const patchA = deferred<ResponseLike>();
+  const harness = createHarness({ server });
+  harness.fetchMock.enqueue("GET", "/api/user/video-settings", settings.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  const projectId = harness.runner.current.projectId!;
+
+  settings.resolve(response(200, { heygenAvatarId: "programmatic-avatar" }));
+  await drainMicrotasksWithoutRender();
+  assert.deepEqual({
+    latestLocal: harness.runner.current.__debugAutosaveLineage().latestLocalDraft,
+    journal: recoveryJournalDraft(harness.storage, projectId),
+    patches: autosavePatchCalls(harness.fetchMock, projectId).length,
+  }, {
+    latestLocal: null,
+    journal: null,
+    patches: 0,
+  }, "raw hydration alone cannot manufacture explicit recovery provenance");
+
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchA.promise);
+  harness.runner.current.setScript("explicit A");
+  assert.deepEqual({
+    script: harness.runner.current.__debugAutosaveLineage().latestLocalDraft?.script,
+    avatarId: harness.runner.current.__debugAutosaveLineage().latestLocalDraft?.avatarId,
+    journalAvatarId: recoveryJournalDraft(harness.storage, projectId)?.avatarId,
+  }, {
+    script: "explicit A",
+    avatarId: "programmatic-avatar",
+    journalAvatarId: "programmatic-avatar",
+  }, "the next explicit action stages the exact effective draft including prior raw hydration");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+
+  patchA.resolve(response(409, {
+    project: project(projectId, 1, { script: "other tab" }),
+  }));
+  await drainMicrotasksWithoutRender();
+  harness.runner.flush();
+  assert.equal(harness.runner.current.recovery.local?.draft.avatarId, "programmatic-avatar",
+    "the later explicit edit, not raw hydration alone, owns the effective recovery candidate");
+  assert.equal(autosavePatchCalls(harness.fetchMock, projectId).length, 1);
+}
+
+async function olderAcknowledgementCannotClearNewerStagedJournal(): Promise<void> {
+  const projectId = "setter-boundary-older-ack";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 0, { script: "base" });
+  const patchA = deferred<ResponseLike>();
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchA.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("in-flight A");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const bodyA = patchBodies(harness.fetchMock)[0];
+
+  harness.runner.current.setScript((value) => `${value} / newer B`);
+  assert.equal(recoveryJournalDraft(harness.storage, projectId)?.script,
+    "in-flight A / newer B");
+  server.setProject(projectId, bodyA.draftRevision as number, bodyA.draft as JsonRecord);
+  patchA.resolve(response(200, {
+    project: project(projectId, bodyA.draftRevision as number, bodyA.draft as JsonRecord),
+  }));
+  await drainMicrotasksWithoutRender();
+  assert.equal(recoveryJournalDraft(harness.storage, projectId)?.script,
+    "in-flight A / newer B",
+    "an older exact acknowledgement cannot clear a newer synchronous journal");
+  assert.equal(harness.runner.current.__debugAutosaveLineage().latestLocalDraft?.script,
+    "in-flight A / newer B");
+
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const bodies = patchBodies(harness.fetchMock);
+  assert.equal(bodies.length, 2, "newer B still follows the older acknowledgement normally");
+  assert.equal(bodies[1].expectedDraftRevision, 1);
+  assert.equal((bodies[1].draft as JsonRecord).script, "in-flight A / newer B");
 }
 
 async function resetAndUnmountIgnoreLateAutosaveObservation(): Promise<void> {
@@ -1574,6 +1814,10 @@ async function invalidLatestLocalShowsRecoveryState(): Promise<void> {
   harness.runner.mount();
   await settle(harness.runner);
   harness.runner.current.setBgmVolume(Number.NaN);
+  assert.equal(harness.runner.current.__debugAutosaveLineage().blocked, true,
+    "invalid explicit materialization blocks synchronously at the setter boundary");
+  assert.equal(autosavePatchCalls(harness.fetchMock, projectId).length, 0,
+    "invalid explicit materialization cannot issue a PATCH before render");
   harness.runner.flush();
   harness.clock.advance(1_000);
   await settle(harness.runner);
@@ -1586,6 +1830,159 @@ async function invalidLatestLocalShowsRecoveryState(): Promise<void> {
     recovery: "load-error",
     patches: 0,
   }, "an unmaterializable explicit local draft locks into a visible recovery state");
+}
+
+async function invalidStagingIgnoresLateAutosaveSuccess(): Promise<void> {
+  const projectId = "invalid-latest-local-in-flight";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 0, { script: "base" });
+  const patchA = deferred<ResponseLike>();
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchA.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("valid A");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const bodyA = patchBodies(harness.fetchMock)[0];
+
+  harness.runner.current.setBgmVolume(Number.NaN);
+  assert.equal(harness.runner.current.__debugAutosaveLineage().blocked, true);
+  server.setProject(projectId, bodyA.draftRevision as number, bodyA.draft as JsonRecord);
+  patchA.resolve(response(200, {
+    project: project(projectId, bodyA.draftRevision as number, bodyA.draft as JsonRecord),
+  }));
+  await drainMicrotasksWithoutRender();
+  harness.runner.flush();
+  assert.deepEqual({
+    projectReady: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+    saveStatus: harness.runner.current.saveStatus,
+    confirmedRevision: harness.runner.current.__debugAutosaveLineage().confirmedRevision,
+    patches: autosavePatchCalls(harness.fetchMock, projectId).length,
+  }, {
+    projectReady: false,
+    recovery: "load-error",
+    saveStatus: "error",
+    confirmedRevision: 0,
+    patches: 1,
+  }, "a late success cannot acknowledge or publish saved after explicit staging failed closed");
+}
+
+function assertBoundedIssuedTracker(
+  harness: ReturnType<typeof createHarness>,
+  expectedMaximum: number,
+  maximumBytes: number,
+  label: string,
+): void {
+  const debug = harness.runner.current.__debugAutosaveLineage();
+  assert.ok(debug.issuedSize <= expectedMaximum,
+    `${label}: issued snapshots stay bounded (received ${debug.issuedSize})`);
+  assert.ok(debug.issuedDraftBytes <= maximumBytes,
+    `${label}: retained full-draft bytes stay bounded (received ${debug.issuedDraftBytes})`);
+}
+
+async function issuedSnapshotsStayBounded(): Promise<void> {
+  const large = "x".repeat(32_768);
+
+  {
+    const projectId = "bounded-success";
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.runner.mount();
+    await settle(harness.runner);
+    for (let index = 0; index < 16; index += 1) {
+      harness.runner.current.setScript(`${large}-success-${index}`);
+      harness.runner.flush();
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assertBoundedIssuedTracker(harness, 0, 0, `successful save ${index}`);
+    }
+  }
+
+  {
+    const projectId = "bounded-error";
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.runner.mount();
+    await settle(harness.runner);
+    for (let index = 0; index < 16; index += 1) {
+      harness.fetchMock.enqueue("PATCH", editorUrl(projectId), response(500, { error: "definite" }));
+      harness.runner.current.setScript(`${large}-error-${index}`);
+      harness.runner.flush();
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assertBoundedIssuedTracker(harness, 0, 0, `definite error ${index}`);
+    }
+  }
+
+  {
+    const projectId = "bounded-coalesced";
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const firstResponse = deferred<ResponseLike>();
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.fetchMock.enqueue("PATCH", editorUrl(projectId), firstResponse.promise);
+    harness.runner.mount();
+    await settle(harness.runner);
+    harness.runner.current.setScript(`${large}-coalesced-0`);
+    harness.runner.flush();
+    harness.clock.advance(1_000);
+    await settle(harness.runner);
+    for (let index = 1; index < 8; index += 1) {
+      harness.runner.current.setScript(`${large}-coalesced-${index}`);
+      harness.runner.flush();
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assertBoundedIssuedTracker(harness, 1, large.length + 4_096, `coalesced pending ${index}`);
+    }
+    const firstBody = patchBodies(harness.fetchMock)[0];
+    server.setProject(projectId, firstBody.draftRevision as number, firstBody.draft as JsonRecord);
+    firstResponse.resolve(response(200, {
+      project: project(projectId, firstBody.draftRevision as number, firstBody.draft as JsonRecord),
+    }));
+    await settle(harness.runner, 64);
+    assertBoundedIssuedTracker(harness, 0, 0, "coalesced completion");
+    const durableCoalescedScript = String((server.read(projectId)?.draft as JsonRecord).script);
+    assert.equal(
+      durableCoalescedScript.endsWith("-coalesced-7"),
+      true,
+      "the last large coalesced draft remains the durable save",
+    );
+  }
+
+  {
+    const projectId = "bounded-timeout";
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.runner.mount();
+    await settle(harness.runner);
+    for (let index = 0; index < 10; index += 1) {
+      const lostResponse = deferred<ResponseLike>();
+      harness.fetchMock.enqueue("PATCH", editorUrl(projectId), lostResponse.promise);
+      harness.runner.current.setScript(`${large}-timeout-${index}`);
+      harness.runner.flush();
+      harness.clock.advance(1_000);
+      await settle(harness.runner);
+      assertBoundedIssuedTracker(harness, 1, large.length + 4_096, `timeout in flight ${index}`);
+      const body = patchBodies(harness.fetchMock).at(-1)!;
+      if (index % 2 === 0) {
+        server.setProject(projectId, body.draftRevision as number, body.draft as JsonRecord);
+      }
+      harness.clock.advance(10_000);
+      await settle(harness.runner, 64);
+      assertBoundedIssuedTracker(harness, 0, 0, `timeout reconciled ${index}`);
+      assert.equal(
+        String((server.read(projectId)?.draft as JsonRecord).script).endsWith(`-timeout-${index}`),
+        true,
+        `timeout ${index} preserves the exact large draft`,
+      );
+    }
+  }
 }
 
 async function revisionExhaustionRestoresConflict(): Promise<void> {
@@ -1622,6 +2019,9 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["same-revision-different-draft", sameNumericRevisionWithDifferentDraftConflicts],
     ["coalesced-confirmed-base", suppressedIntermediateAcknowledgementAdvancesBase],
     ["pending-waits-for-reconcile", pendingDraftWaitsForReconciliationAndBecomesLatestConflict],
+    ["setter-boundary-staging", explicitSetterStagesBeforePassiveEffects],
+    ["raw-hydration-provenance", rawHydrationDoesNotStageExplicitLocal],
+    ["newer-journal-survives-older-ack", olderAcknowledgementCannotClearNewerStagedJournal],
     ["late-lifecycle-callbacks", resetAndUnmountIgnoreLateAutosaveObservation],
     ["late-patch-callbacks", resetAndUnmountIgnoreLatePatchResponse],
     ["second-ambiguity-refresh", secondAmbiguityLocksUntilGetOnlyRefresh],
@@ -1642,6 +2042,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["local-choice-exact-ack", exactLocalChoiceAcknowledgement],
     ["local-choice-mismatch", mismatchedLocalChoiceAcknowledgementsRefresh],
     ["invalid-latest-local", invalidLatestLocalShowsRecoveryState],
+    ["invalid-staging-late-success", invalidStagingIgnoresLateAutosaveSuccess],
+    ["bounded-issued-snapshots", issuedSnapshotsStayBounded],
     ["revision-exhaustion", revisionExhaustionRestoresConflict],
   ];
   const failures: string[] = [];
@@ -1669,8 +2071,8 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
   );
 
   const rebuiltResume = hookSource.replace(
-    "const draft = trustedResumeDraftRef.current\n      ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;",
-    "const draft = canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;",
+    "      ?? trustedResumeDraftRef.current\n",
+    "",
   );
   assert.notEqual(rebuiltResume, hookSource, "trusted-resume runtime mutation applied");
   activeCompiledHook = compileHook(rebuiltResume);
@@ -1682,9 +2084,11 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
 
   const missingUnmountOwnership = hookSource.replace(
     `mountedRef.current = false;
+      autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
       latestDraftRef.current = null;
+      stagedUserDraftMutationTokenRef.current = 0;
       localChoiceGenerationRef.current += 1;
       localChoiceAbortControllerRef.current?.abort();
       localChoiceAbortControllerRef.current = null;
@@ -1895,6 +2299,33 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     invalidLatestLocalShowsRecoveryState,
     /visible recovery state/,
     "runtime harness rejects an invalid local draft that leaves recovery hidden",
+  );
+
+  const passiveOnlyLatestLocal = hookSource.replace(
+    "    stageExplicitUserDraftMutationRef.current();\n",
+    "",
+  );
+  assert.notEqual(passiveOnlyLatestLocal, hookSource, "passive-only latest-local mutation applied");
+  activeCompiledHook = compileHook(passiveOnlyLatestLocal);
+  await assert.rejects(
+    explicitSetterStagesBeforePassiveEffects,
+    /functional|synchronous|latestLocalDraft|in-flight A/,
+    "runtime harness rejects latest-local capture that waits for passive effects",
+  );
+
+  const noAcknowledgementPruning = hookSource.replace(
+    `  for (const revision of tracker.issued.keys()) {
+    if (revision <= confirmedRevision) tracker.issued.delete(revision);
+  }`,
+    `  void tracker;
+  void confirmedRevision;`,
+  );
+  assert.notEqual(noAcknowledgementPruning, hookSource, "issued pruning mutation applied");
+  activeCompiledHook = compileHook(noAcknowledgementPruning);
+  await assert.rejects(
+    issuedSnapshotsStayBounded,
+    /issued snapshots stay bounded/,
+    "runtime harness rejects an issued tracker that retains acknowledged full drafts",
   );
   activeCompiledHook = compileHook(hookSource);
 }

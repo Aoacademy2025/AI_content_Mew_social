@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
@@ -76,6 +76,15 @@ type AutosaveLineageTracker = {
   generation: number;
 };
 
+function pruneIssuedAutosaveSnapshotsThrough(
+  tracker: AutosaveLineageTracker,
+  confirmedRevision: number,
+): void {
+  for (const revision of tracker.issued.keys()) {
+    if (revision <= confirmedRevision) tracker.issued.delete(revision);
+  }
+}
+
 type EditorProjectDraftAttemptResult =
   | {
       kind: "saved";
@@ -91,13 +100,32 @@ type EditorProjectDraftAttemptResult =
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
-function useUserDraftState<T>(initial: T, markUserMutation: () => void): [T, SetState<T>, SetState<T>] {
+function useUserDraftState<T>(
+  initial: T,
+  field: keyof V2Draft,
+  effectiveDraftRef: MutableRefObject<V2Draft>,
+  markUserMutation: () => void,
+): [T, SetState<T>, SetState<T>] {
   const [value, setRaw] = useState(initial);
+  const valueRef = useRef(value);
+  const initializedFieldRef = useRef(false);
+  if (!initializedFieldRef.current) {
+    initializedFieldRef.current = true;
+    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: value };
+  }
+  const setSynchronized = useCallback<SetState<T>>((next) => {
+    const resolved = typeof next === "function"
+      ? (next as (current: T) => T)(valueRef.current)
+      : next;
+    valueRef.current = resolved;
+    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: resolved };
+    setRaw(resolved);
+  }, [effectiveDraftRef, field]);
   const setFromUser = useCallback<SetState<T>>((next) => {
+    setSynchronized(next);
     markUserMutation();
-    setRaw(next);
-  }, [markUserMutation]);
-  return [value, setFromUser, setRaw];
+  }, [markUserMutation, setSynchronized]);
+  return [value, setFromUser, setSynchronized];
 }
 
 function freezeRecoveryValue<T>(value: T): T {
@@ -336,16 +364,20 @@ export function useV2Project() {
   // applied after mount in ensureServerProject(); reading localStorage here causes
   // hydration text mismatches when a previous draft exists.
   const draftRef = useRef<V2Draft>({});
+  const effectiveDraftRef = useRef<V2Draft>({});
   const d = draftRef.current;
   const accountDraftDefaultsAllowedRef = useRef(true);
   const trustedResumeDraftRef = useRef<V2Draft | null>(null);
   const bootstrapGenerationRef = useRef(0);
   const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
   const userDraftMutationTokenRef = useRef(0);
+  const stagedUserDraftMutationTokenRef = useRef(0);
+  const stageExplicitUserDraftMutationRef = useRef<() => void>(() => {});
   const markUserDraftMutation = useCallback(() => {
     accountDraftDefaultsAllowedRef.current = false;
     trustedResumeDraftRef.current = null;
     userDraftMutationTokenRef.current += 1;
+    stageExplicitUserDraftMutationRef.current();
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectReady, setProjectReady] = useState(false);
@@ -356,30 +388,42 @@ export function useV2Project() {
   const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
 
   // ── Step 1 ──
-  const [projectTitle, setProjectTitle, setProjectTitleRaw] = useUserDraftState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle, markUserDraftMutation);
-  const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(d.mode ?? "script", markUserDraftMutation);
-  const [script, setScript, setScriptRaw] = useUserDraftState(d.script ?? "", markUserDraftMutation);
+  const [projectTitle, setProjectTitle, setProjectTitleRaw] = useUserDraftState(
+    d.projectTitle ?? DEFAULT_PROJECT.projectTitle, "projectTitle", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(
+    d.mode ?? "script", "mode", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [script, setScript, setScriptRaw] = useUserDraftState(
+    d.script ?? "", "script", effectiveDraftRef, markUserDraftMutation,
+  );
   /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
-  const [clipUrlState, setClipUrlStateFromUser, setClipUrlStateRaw] = useUserDraftState(d.clipUrl ?? "", markUserDraftMutation);
+  const [clipUrlState, setClipUrlStateFromUser, setClipUrlStateRaw] = useUserDraftState(
+    d.clipUrl ?? "", "clipUrl", effectiveDraftRef, markUserDraftMutation,
+  );
   const [clipDurationSecState, setClipDurationSecStateFromUser, setClipDurationSecStateRaw] = useUserDraftState(
     typeof d.clipDurationSec === "number" && Number.isFinite(d.clipDurationSec) && d.clipDurationSec > 0
       ? d.clipDurationSec
       : 0,
+    "clipDurationSec",
+    effectiveDraftRef,
     markUserDraftMutation,
   );
   const setClipDurationSec = useCallback((sec: number) => {
     setClipDurationSecStateFromUser(Number.isFinite(sec) && sec > 0 ? sec : 0);
   }, [setClipDurationSecStateFromUser]);
   const setClipUrl = useCallback((url: string) => {
-    setClipUrlStateFromUser(url);
     if (!url) setClipDurationSecStateRaw(0);
+    setClipUrlStateFromUser(url);
   }, [setClipDurationSecStateFromUser, setClipUrlStateFromUser]);
   const clipUrl = clipUrlState;
   const clipDurationSec = clipDurationSecState;
 
   // ── Step 2 ──
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
-  const [brollSource, setBrollSource, setBrollSourceRaw] = useUserDraftState<V2BrollSource>(d.brollSource ?? "stock", markUserDraftMutation);
+  const [brollSource, setBrollSource, setBrollSourceRaw] = useUserDraftState<V2BrollSource>(
+    d.brollSource ?? "stock", "brollSource", effectiveDraftRef, markUserDraftMutation,
+  );
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
@@ -387,40 +431,76 @@ export function useV2Project() {
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
   const [managedKieOn, setManagedKieOn] = useState(false);
-  const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(d.voiceEngine ?? "gemini", markUserDraftMutation);
-  const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(d.geminiVoiceName ?? "Aoede", markUserDraftMutation);
-  const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(d.voiceId ?? "", markUserDraftMutation);
+  const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(
+    d.voiceEngine ?? "gemini", "voiceEngine", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(
+    d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(
+    d.voiceId ?? "", "voiceId", effectiveDraftRef, markUserDraftMutation,
+  );
   /** filename ของ system track ที่เลือก · "" = ยังไม่เลือก · null = ไม่ใส่เพลง */
-  const [musicTrack, setMusicTrack, setMusicTrackRaw] = useUserDraftState<string | null>(d.musicTrack === undefined ? "" : d.musicTrack, markUserDraftMutation);
+  const [musicTrack, setMusicTrack, setMusicTrackRaw] = useUserDraftState<string | null>(
+    d.musicTrack === undefined ? "" : d.musicTrack, "musicTrack", effectiveDraftRef, markUserDraftMutation,
+  );
   /** เพลงที่เลือกเป็นของระบบหรือของผู้ใช้ — ใช้เลือก path bgmFile ตอน submit */
-  const [musicTrackKind, setMusicTrackKind, setMusicTrackKindRaw] = useUserDraftState<"system" | "user">(d.musicTrackKind ?? "system", markUserDraftMutation);
+  const [musicTrackKind, setMusicTrackKind, setMusicTrackKindRaw] = useUserDraftState<"system" | "user">(
+    d.musicTrackKind ?? "system", "musicTrackKind", effectiveDraftRef, markUserDraftMutation,
+  );
   /** ระดับเสียงเพลง 0–1 · default 0.12 (ตรงกับ pipeline + editor v1) — ใต้เสียงพูด */
-  const [bgmVolume, setBgmVolume, setBgmVolumeRaw] = useUserDraftState(d.bgmVolume ?? 0.12, markUserDraftMutation);
-  const [useAvatar, setUseAvatar, setUseAvatarRaw] = useUserDraftState(d.useAvatar ?? false, markUserDraftMutation);
-  const [avatarId, setAvatarId, setAvatarIdRaw] = useUserDraftState(d.avatarId ?? "", markUserDraftMutation);
+  const [bgmVolume, setBgmVolume, setBgmVolumeRaw] = useUserDraftState(
+    d.bgmVolume ?? 0.12, "bgmVolume", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [useAvatar, setUseAvatar, setUseAvatarRaw] = useUserDraftState(
+    d.useAvatar ?? false, "useAvatar", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [avatarId, setAvatarId, setAvatarIdRaw] = useUserDraftState(
+    d.avatarId ?? "", "avatarId", effectiveDraftRef, markUserDraftMutation,
+  );
 
   // ── ขั้นสูง (P6c) ──
-  const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(d.targetClipCount ?? 0, markUserDraftMutation); // 0 = auto
-  const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(d.avatarMode ?? "bookend", markUserDraftMutation);
-  const [avatarIntroSecs, setAvatarIntroSecs, setAvatarIntroSecsRaw] = useUserDraftState(d.avatarIntroSecs ?? 5, markUserDraftMutation);
-  const [avatarTailSecs, setAvatarTailSecs, setAvatarTailSecsRaw] = useUserDraftState(d.avatarTailSecs ?? 5, markUserDraftMutation);
-  const [kieModel, setKieModel, setKieModelRaw] = useUserDraftState<KieImageModel | "">((d.kieModel as KieImageModel | undefined) ?? "", markUserDraftMutation);
-  const [autoMixProviders, setAutoMixProviders, setAutoMixProvidersRaw] = useUserDraftState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS, markUserDraftMutation);
-  const [brollRegionPreference, setBrollRegionPreference, setBrollRegionPreferenceRaw] = useUserDraftState<BrollRegionPreference>(d.brollRegionPreference ?? "auto", markUserDraftMutation);
-  const [brollVisualStyle, setBrollVisualStyle, setBrollVisualStyleRaw] = useUserDraftState<BrollVisualStyle>(d.brollVisualStyle ?? "auto", markUserDraftMutation);
-  const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(d.logoOverlay, markUserDraftMutation);
+  const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
+    d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, markUserDraftMutation,
+  ); // 0 = auto
+  const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(
+    d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [avatarIntroSecs, setAvatarIntroSecs, setAvatarIntroSecsRaw] = useUserDraftState(
+    d.avatarIntroSecs ?? 5, "avatarIntroSecs", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [avatarTailSecs, setAvatarTailSecs, setAvatarTailSecsRaw] = useUserDraftState(
+    d.avatarTailSecs ?? 5, "avatarTailSecs", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [kieModel, setKieModel, setKieModelRaw] = useUserDraftState<KieImageModel | "">(
+    (d.kieModel as KieImageModel | undefined) ?? "", "kieModel", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [autoMixProviders, setAutoMixProviders, setAutoMixProvidersRaw] = useUserDraftState<AutoMixImageProvider[]>(
+    d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS, "autoMixProviders", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [brollRegionPreference, setBrollRegionPreference, setBrollRegionPreferenceRaw] = useUserDraftState<BrollRegionPreference>(
+    d.brollRegionPreference ?? "auto", "brollRegionPreference", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [brollVisualStyle, setBrollVisualStyle, setBrollVisualStyleRaw] = useUserDraftState<BrollVisualStyle>(
+    d.brollVisualStyle ?? "auto", "brollVisualStyle", effectiveDraftRef, markUserDraftMutation,
+  );
+  const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(
+    d.logoOverlay, "logoOverlay", effectiveDraftRef, markUserDraftMutation,
+  );
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
-  const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(d.mixPreset ?? "free", markUserDraftMutation);
+  const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(
+    d.mixPreset ?? "free", "mixPreset", effectiveDraftRef, markUserDraftMutation,
+  );
   /** เลือก preset → ขับ mixPreset + brollSource + autoMixProviders ให้สอดคล้องกัน
    *  (preset ≠ ฟรีล้วน ⇒ automix + provider set รวม kie-ai). weights ที่ส่งไป server
    *  มาจาก PRESET_WEIGHTS ใน useV2Job. */
   const setMixPreset = useCallback((preset: MixPreset) => {
-    setMixPresetFromUser(preset);
     setBrollSourceRaw(presetBrollSource(preset));
     const provs = PRESET_PROVIDERS[preset];
     if (provs) setAutoMixProvidersRaw(provs);
+    setMixPresetFromUser(preset);
   }, [setAutoMixProvidersRaw, setBrollSourceRaw, setMixPresetFromUser]);
 
   function buildDraft(): V2Draft {
@@ -505,9 +585,11 @@ export function useV2Project() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
       latestDraftRef.current = null;
+      stagedUserDraftMutationTokenRef.current = 0;
       localChoiceGenerationRef.current += 1;
       localChoiceAbortControllerRef.current?.abort();
       localChoiceAbortControllerRef.current = null;
@@ -563,9 +645,11 @@ export function useV2Project() {
   }
 
   const invalidateAutosaveLineage = useCallback(() => {
+    autosaveLineageRef.current?.issued.clear();
     autosaveGenerationRef.current += 1;
     autosaveLineageRef.current = null;
     latestDraftRef.current = null;
+    stagedUserDraftMutationTokenRef.current = 0;
   }, []);
 
   const invalidateLocalChoiceRequest = useCallback(() => {
@@ -586,6 +670,7 @@ export function useV2Project() {
     });
     if (!confirmed) return null;
     const generation = autosaveGenerationRef.current + 1;
+    autosaveLineageRef.current?.issued.clear();
     autosaveGenerationRef.current = generation;
     const tracker: AutosaveLineageTracker = {
       projectId: nextProjectId,
@@ -597,6 +682,7 @@ export function useV2Project() {
     };
     autosaveLineageRef.current = tracker;
     latestDraftRef.current = null;
+    stagedUserDraftMutationTokenRef.current = 0;
     editorProjectSaveQueue.seedRevision(nextProjectId, confirmed.revision);
     return tracker;
   }, []);
@@ -615,6 +701,7 @@ export function useV2Project() {
     candidate: EditorProjectAutosaveCandidate,
   ): void => {
     tracker.confirmed = candidate;
+    pruneIssuedAutosaveSnapshotsThrough(tracker, candidate.revision);
     editorProjectSaveQueue.seedRevision(tracker.projectId, candidate.revision);
   }, []);
 
@@ -627,6 +714,7 @@ export function useV2Project() {
     const { tracker, generation, server, requiresServerRefresh } = input;
     if (!ownsAutosaveLineage(tracker, generation)) return false;
     tracker.blocked = true;
+    tracker.issued.clear();
     const latestLocal = tracker.latestLocal;
     const localCandidate = latestLocal
       ? createRecoveryCandidate({
@@ -665,6 +753,55 @@ export function useV2Project() {
     });
     return true;
   }, [ownsAutosaveLineage, setRecoveryState]);
+
+  const stageExplicitUserDraftMutation = useCallback((): void => {
+    const projectId = currentProjectIdRef.current;
+    const tracker = autosaveLineageRef.current;
+    if (
+      !mountedRef.current
+      || !projectReadyRef.current
+      || !projectId
+      || !tracker
+      || tracker.projectId !== projectId
+      || tracker.blocked
+    ) return;
+    let latestLocal: EditorProjectAutosaveCandidate | null = null;
+    try {
+      latestLocal = createEditorProjectAutosaveCandidate({
+        projectId,
+        revision: tracker.confirmed.revision,
+        draft: canonicalizeDraftLogoOverlay(effectiveDraftRef.current),
+      });
+    } catch {
+      latestLocal = null;
+    }
+    if (!latestLocal) {
+      tracker.blocked = true;
+      tracker.issued.clear();
+      tracker.latestLocal = null;
+      latestDraftRef.current = null;
+      stagedUserDraftMutationTokenRef.current = userDraftMutationTokenRef.current;
+      setProjectReady(false);
+      setSaveStatus("error");
+      setRecoveryState({
+        status: "load-error",
+        message: "ข้อมูลฉบับแก้ไขไม่สมบูรณ์ กรุณาลองโหลดโปรเจกต์อีกครั้ง",
+      });
+      return;
+    }
+    tracker.latestLocal = latestLocal;
+    latestDraftRef.current = latestLocal;
+    stagedUserDraftMutationTokenRef.current = userDraftMutationTokenRef.current;
+    const journalWritten = writeEditorProjectRecoveryJournal(browserStorage(), {
+      version: 1,
+      projectId,
+      baseRevision: tracker.confirmed.revision,
+      editedAt: new Date().toISOString(),
+      draft: latestLocal.draft,
+    });
+    if (!journalWritten) clearEditorProjectRecoveryJournal(browserStorage(), projectId);
+  }, [setRecoveryState]);
+  stageExplicitUserDraftMutationRef.current = stageExplicitUserDraftMutation;
 
   const createServerProject = useCallback(async (
     draft: V2Draft,
@@ -1298,7 +1435,13 @@ export function useV2Project() {
     if (!hasUserMutation && !hasSaveRetry) return;
     const tracker = autosaveLineageRef.current;
     if (!tracker || tracker.projectId !== projectId || tracker.blocked) return;
-    const draft = trustedResumeDraftRef.current
+    const stagedLocal = hasUserMutation
+      && stagedUserDraftMutationTokenRef.current === userDraftMutationTokenRef.current
+      && latestDraftRef.current?.projectId === projectId
+      ? latestDraftRef.current
+      : null;
+    const draft = stagedLocal?.draft
+      ?? trustedResumeDraftRef.current
       ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;
     const latestLocal = createEditorProjectAutosaveCandidate({
       projectId,
@@ -1307,6 +1450,7 @@ export function useV2Project() {
     });
     if (!latestLocal) {
       tracker.blocked = true;
+      tracker.issued.clear();
       setProjectReady(false);
       setSaveStatus("error");
       setRecoveryState({
@@ -1364,7 +1508,11 @@ export function useV2Project() {
           attempt = snapshot;
           tracker.issued.set(snapshot.revision, snapshot);
           const result = await saveEditorProjectDraft(snapshot, signal);
-          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+          if (
+            signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
+          ) {
             return { kind: "blocked" };
           }
           if (result.kind === "saved") {
@@ -1381,6 +1529,7 @@ export function useV2Project() {
             });
             return { kind: "blocked" };
           }
+          if (result.kind === "error") tracker.issued.delete(snapshot.revision);
           return result.kind === "ambiguous"
             ? { kind: "ambiguous" }
             : { kind: "error" };
@@ -1394,7 +1543,11 @@ export function useV2Project() {
             || tracker.blocked
           ) return { kind: "blocked" };
           const observation = await loadAuthoritativeEditorProjectDraft(saveProjectId, signal);
-          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+          if (
+            signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
+          ) {
             return { kind: "blocked" };
           }
           const observedProject = observation?.project;
@@ -1402,6 +1555,7 @@ export function useV2Project() {
           if (
             signal.aborted
             || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
           ) return { kind: "blocked" };
           if (!observed || !observedProject) {
             materializeAutosaveConflict({
@@ -1451,7 +1605,11 @@ export function useV2Project() {
           attempt = retrySnapshot;
           tracker.issued.set(retrySnapshot.revision, retrySnapshot);
           const retryResult = await saveEditorProjectDraft(retrySnapshot, signal);
-          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+          if (
+            signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
+          ) {
             return { kind: "blocked" };
           }
           if (retryResult.kind === "saved") {
@@ -1481,7 +1639,10 @@ export function useV2Project() {
         onStatus: (event) => {
           const { status } = event;
           setSaveStatus(status);
-          if (isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)) {
+          if (
+            isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)
+            && userDraftMutationTokenRef.current === lastPersistedUserMutationTokenRef.current
+          ) {
             trustedResumeDraftRef.current = null;
             clearProjectRecoveryData(event.projectId);
           }
