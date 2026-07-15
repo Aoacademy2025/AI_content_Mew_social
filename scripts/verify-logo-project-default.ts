@@ -182,27 +182,34 @@ const autosaveSource = sourceBetween(
 );
 assert.match(
   projectSource,
-  /async function saveEditorProjectDraft[\s\S]{0,900}draftRevision:\s*revision[\s\S]{0,500}signal,[\s\S]{0,500}return res\.ok;/,
-  "the queued save sends its revision and abort signal while reporting non-OK responses as failures",
+  /async function saveEditorProjectDraft[\s\S]{0,1200}draftRevision:\s*snapshot\.revision[\s\S]{0,240}expectedDraftRevision:\s*snapshot\.expectedDraftRevision[\s\S]{0,500}signal,/,
+  "the queued save sends an immutable conditional revision snapshot and abort signal",
 );
 assert.match(
   autosaveSource,
   /onStatus:[\s\S]{0,160}setSaveStatus\(status\)/,
   "the queue's latest terminal result drives visible save status",
 );
+assert.match(
+  projectSource,
+  /async function loadAuthoritativeEditorProjectDraft[\s\S]{0,700}cache:\s*"no-store"/,
+  "ambiguous autosaves use one authoritative no-store reconciliation GET",
+);
 assert.doesNotMatch(
   autosaveSource,
   /!projectReady[\s\S]{0,320}(?:writeEditorProjectRecoveryJournal|editorProjectSaveQueue\.enqueue)/,
   "unready existing projects neither journal nor autosave default state",
 );
-assert.doesNotMatch(
-  autosaveSource,
-  /\bfetch\(/,
-  "autosave never launches an unordered PATCH directly",
+const enqueueIndex = autosaveSource.indexOf("editorProjectSaveQueue.enqueue");
+const reconcileIndex = autosaveSource.indexOf("reconcile:", enqueueIndex);
+const reconciliationLoadIndex = autosaveSource.indexOf("loadAuthoritativeEditorProjectDraft", reconcileIndex);
+assert.ok(
+  enqueueIndex >= 0 && reconcileIndex > enqueueIndex && reconciliationLoadIndex > reconcileIndex,
+  "the queue-owned reconciliation calls the authoritative GET helper",
 );
 assert.match(
   autosaveSource,
-  /mountedRef\.current[\s\S]{0,100}currentProjectIdRef\.current\s*===\s*saveProjectId/,
+  /isActive:\s*\(\)\s*=>\s*ownsAutosaveLineage\(tracker,\s*generation\)/,
   "unmounted and previous-project saves cannot update visible status",
 );
 const retrySource = sourceBetween(
@@ -216,12 +223,12 @@ assert.doesNotMatch(retrySource, /setSaveRevision|setItem|writeEditorProjectReco
   "bootstrap Retry cannot turn defaults into recovery data");
 assert.match(
   autosaveSource,
-  /logoOverlay, projectId, projectReady, saveRevision\]\);/,
+  /logoOverlay, projectId, projectReady,[\s\S]{0,180}ownsAutosaveLineage, saveRevision\]\);/,
   "save revision participates in the autosave effect dependencies",
 );
 assert.match(
   projectSource,
-  /\}, \[createServerProject, bootstrapRetryRevision\]\);/,
+  /\}, \[createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage\]\);/,
   "bootstrap Retry reruns the existing-project load without creating an alternate path",
 );
 assert.match(

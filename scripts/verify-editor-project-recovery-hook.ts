@@ -213,6 +213,7 @@ function verifyHookSource(value: string): void {
   const conflictBranch = sourceBetween(existing, 'if (decision.kind === "conflict")', 'if (decision.kind === "locked-error")');
   assert.match(conflictBranch, /status:\s*"conflict"/);
   assert.match(conflictBranch, /setProjectReady\(false\)/);
+  assert.match(conflictBranch, /requiresServerRefresh:\s*false/);
 
   const chooseLocal = variableInitializer(root, "chooseLocalProjectDraft").getText(root);
   assert.match(chooseLocal, /const conflict = recoveryRef\.current/);
@@ -235,15 +236,31 @@ function verifyHookSource(value: string): void {
     "a user-authored journal is written before enqueueing autosave");
   assert.match(autosave, /if \(!journalWritten\) clearEditorProjectRecoveryJournal/,
     "a failed newer journal write removes an older cached candidate");
-  assert.match(autosave, /isLatestSavedProjectRevision[\s\S]*confirmedServerRevisionRef\.current[\s\S]*clearProjectRecoveryData/,
-    "only the matching latest saved revision confirms and clears recovery");
+  assert.match(autosave, /createEditorProjectAutosaveCandidate[\s\S]*latestLocal/,
+    "the latest explicit local candidate is materialized before debounce dispatch");
+  assert.match(autosave, /createEditorProjectAutosaveSnapshot[\s\S]*expectedDraftRevision/,
+    "each dispatched autosave owns an immutable conditional snapshot");
+  assert.match(autosave, /save:[\s\S]*acknowledgeAutosaveCandidate[\s\S]*reconcile:/,
+    "definite acknowledgements update lineage inside the save path before visible status");
+  assert.match(autosave, /reconcile:[\s\S]*decideEditorProjectAutosaveObservation/,
+    "ambiguous outcomes reconcile through the pure fingerprint decision");
+  assert.match(autosave, /onBlocked:/, "blocked queue outcomes drop the pending autosave lane");
   assert.match(autosave, /userDraftMutationTokenRef\.current/);
   assert.doesNotMatch(autosave, /!projectReady[\s\S]{0,300}writeEditorProjectRecoveryJournal/,
     "unready renders do not write or allocate recovery");
 
   const returned = sourceBetween(value, "return {", "};\n}\n\nexport type V2Project");
-  assert.match(returned, /recovery,\s*retryProjectBootstrap,\s*chooseLocalProjectDraft,\s*chooseServerProjectDraft/,
+  assert.match(returned, /recovery,\s*retryProjectBootstrap,\s*chooseLocalProjectDraft,\s*chooseServerProjectDraft,\s*retryConflictServerRefresh/,
     "hook exposes the deterministic recovery contract");
+
+  const saveDraft = namedFunction(root, "saveEditorProjectDraft").getText(root);
+  assert.match(saveDraft, /expectedDraftRevision:\s*snapshot\.expectedDraftRevision/,
+    "ordinary autosave PATCH binds its draft revision to the observed base");
+  assert.doesNotMatch(saveDraft, /seedRevision/,
+    "a 409 payload never seeds or advances the queue watermark");
+  const authoritativeLoad = namedFunction(root, "loadAuthoritativeEditorProjectDraft").getText(root);
+  assert.match(authoritativeLoad, /cache:\s*"no-store"/,
+    "ambiguous outcomes use a fresh authoritative observation");
 
   const newProject = sourceBetween(value, "await Promise.resolve();", "storage?.setItem(PROJECT_ID_KEY, id)");
   assert.match(newProject, /if \(!isCurrentBootstrap\(\)\) return;[\s\S]*createServerProject\(canonicalSeedDraft,\s*\{/,

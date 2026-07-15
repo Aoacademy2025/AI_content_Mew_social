@@ -8,6 +8,13 @@ import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-prefer
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
+  createEditorProjectAutosaveCandidate,
+  createEditorProjectAutosaveSnapshot,
+  decideEditorProjectAutosaveObservation,
+  type EditorProjectAutosaveCandidate,
+  type EditorProjectAutosaveSnapshot,
+} from "@/lib/editor-project-autosave-lineage";
+import {
   decideEditorProjectBootstrap,
   isEditorProjectRecoveryDraft,
 } from "@/lib/editor-project-bootstrap";
@@ -55,9 +62,32 @@ export type EditorProjectRecoveryState =
       status: "conflict";
       local: RecoveryCandidate;
       server: RecoveryCandidate;
-      resolving: false | "local" | "server";
+      resolving: false | "local" | "server" | "refresh";
+      requiresServerRefresh: boolean;
       error: string | null;
     };
+
+type AutosaveLineageTracker = {
+  projectId: string;
+  confirmed: EditorProjectAutosaveCandidate;
+  issued: Map<number, EditorProjectAutosaveSnapshot>;
+  latestLocal: EditorProjectAutosaveCandidate | null;
+  blocked: boolean;
+  generation: number;
+};
+
+type EditorProjectDraftAttemptResult =
+  | {
+      kind: "saved";
+      candidate: EditorProjectAutosaveCandidate;
+      project: Record<string, unknown>;
+    }
+  | {
+      kind: "conflict";
+      server: EditorProjectAutosaveCandidate;
+    }
+  | { kind: "ambiguous" }
+  | { kind: "error" };
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
@@ -157,28 +187,93 @@ async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
   }
 }
 
-async function saveEditorProjectDraft(
+function autosaveCandidateFromProject(
   projectId: string,
-  draft: V2Draft,
-  revision: number,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      title: draft.projectTitle,
-      draft,
-      draftRevision: revision,
-      touchLastOpened: true,
-    }),
-    signal,
+  project: Record<string, unknown>,
+): EditorProjectAutosaveCandidate | null {
+  if (project.id !== projectId) return null;
+  const revision = typeof project.draftRevision === "number" ? project.draftRevision : null;
+  if (revision === null) return null;
+  const rawDraft = project.draft === undefined || project.draft === null
+    ? typeof project.title === "string" ? { projectTitle: project.title } : {}
+    : project.draft;
+  const recoveryCandidate = createRecoveryCandidate({
+    projectId,
+    draft: rawDraft,
+    revision,
+    updatedAt: typeof project.updatedAt === "string" ? project.updatedAt : null,
+    trusted: true,
   });
-  if (res.status === 409) {
+  if (!recoveryCandidate) return null;
+  return createEditorProjectAutosaveCandidate({
+    projectId,
+    revision,
+    draft: recoveryCandidate.draft,
+  });
+}
+
+async function saveEditorProjectDraft(
+  snapshot: EditorProjectAutosaveSnapshot,
+  signal: AbortSignal,
+): Promise<EditorProjectDraftAttemptResult> {
+  try {
+    const res = await fetch(`/api/editor-projects/${encodeURIComponent(snapshot.projectId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: (snapshot.draft as V2Draft).projectTitle,
+        draft: snapshot.draft,
+        draftRevision: snapshot.revision,
+        expectedDraftRevision: snapshot.expectedDraftRevision,
+        touchLastOpened: true,
+      }),
+      signal,
+    });
+    if (signal.aborted) return { kind: "ambiguous" };
     const payload = await res.json().catch(() => null);
-    editorProjectSaveQueue.seedRevision(projectId, payload?.project?.draftRevision);
+    if (signal.aborted) return { kind: "ambiguous" };
+    const project = payload?.project as Record<string, unknown> | null | undefined;
+    const candidate = project
+      ? autosaveCandidateFromProject(snapshot.projectId, project)
+      : null;
+    if (res.status === 409) {
+      return candidate
+        ? { kind: "conflict", server: candidate }
+        : { kind: "ambiguous" };
+    }
+    if (!res.ok) return { kind: "error" };
+    if (
+      !candidate
+      || candidate.revision !== snapshot.revision
+      || candidate.fingerprint !== snapshot.fingerprint
+    ) return { kind: "ambiguous" };
+    return { kind: "saved", candidate, project: project! };
+  } catch {
+    return { kind: "ambiguous" };
   }
-  return res.ok;
+}
+
+async function loadAuthoritativeEditorProjectDraft(
+  projectId: string,
+  signal: AbortSignal,
+): Promise<{
+  candidate: EditorProjectAutosaveCandidate;
+  project: Record<string, unknown>;
+} | null> {
+  try {
+    const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok || signal.aborted) return null;
+    const payload = await response.json().catch(() => null);
+    if (signal.aborted) return null;
+    const project = payload?.project as Record<string, unknown> | null | undefined;
+    const candidate = project ? autosaveCandidateFromProject(projectId, project) : null;
+    return candidate && project ? { candidate, project } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -383,7 +478,9 @@ export function useV2Project() {
   }, []);
   const projectReadyRef = useRef(projectReady);
   projectReadyRef.current = projectReady;
-  const confirmedServerRevisionRef = useRef(0);
+  const autosaveGenerationRef = useRef(0);
+  const autosaveLineageRef = useRef<AutosaveLineageTracker | null>(null);
+  const latestDraftRef = useRef<EditorProjectAutosaveCandidate | null>(null);
   const lastPersistedUserMutationTokenRef = useRef(0);
   const lastHandledSaveRevisionRef = useRef(0);
   const latestQueuedSaveRef = useRef<{ projectId: string | null; revision: number | null }>({
@@ -406,6 +503,9 @@ export function useV2Project() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      autosaveGenerationRef.current += 1;
+      autosaveLineageRef.current = null;
+      latestDraftRef.current = null;
       bootstrapGenerationRef.current += 1;
       bootstrapAbortControllerRef.current?.abort();
       bootstrapAbortControllerRef.current = null;
@@ -457,6 +557,104 @@ export function useV2Project() {
     });
   }
 
+  const invalidateAutosaveLineage = useCallback(() => {
+    autosaveGenerationRef.current += 1;
+    autosaveLineageRef.current = null;
+    latestDraftRef.current = null;
+  }, []);
+
+  const initializeAutosaveLineage = useCallback((
+    nextProjectId: string,
+    server: RecoveryCandidate,
+  ): AutosaveLineageTracker | null => {
+    if (server.revision === null) return null;
+    const confirmed = createEditorProjectAutosaveCandidate({
+      projectId: nextProjectId,
+      revision: server.revision,
+      draft: server.draft,
+    });
+    if (!confirmed) return null;
+    const generation = autosaveGenerationRef.current + 1;
+    autosaveGenerationRef.current = generation;
+    const tracker: AutosaveLineageTracker = {
+      projectId: nextProjectId,
+      confirmed,
+      issued: new Map(),
+      latestLocal: null,
+      blocked: false,
+      generation,
+    };
+    autosaveLineageRef.current = tracker;
+    latestDraftRef.current = null;
+    editorProjectSaveQueue.seedRevision(nextProjectId, confirmed.revision);
+    return tracker;
+  }, []);
+
+  const ownsAutosaveLineage = useCallback((
+    tracker: AutosaveLineageTracker,
+    generation: number,
+  ): boolean => mountedRef.current
+    && currentProjectIdRef.current === tracker.projectId
+    && autosaveLineageRef.current === tracker
+    && tracker.generation === generation
+    && autosaveGenerationRef.current === generation, []);
+
+  const acknowledgeAutosaveCandidate = useCallback((
+    tracker: AutosaveLineageTracker,
+    candidate: EditorProjectAutosaveCandidate,
+  ): void => {
+    tracker.confirmed = candidate;
+    editorProjectSaveQueue.seedRevision(tracker.projectId, candidate.revision);
+  }, []);
+
+  const materializeAutosaveConflict = useCallback((input: {
+    tracker: AutosaveLineageTracker;
+    generation: number;
+    server: EditorProjectAutosaveCandidate;
+    requiresServerRefresh: boolean;
+  }): boolean => {
+    const { tracker, generation, server, requiresServerRefresh } = input;
+    if (!ownsAutosaveLineage(tracker, generation)) return false;
+    tracker.blocked = true;
+    const latestLocal = tracker.latestLocal;
+    const localCandidate = latestLocal
+      ? createRecoveryCandidate({
+          projectId: tracker.projectId,
+          draft: latestLocal.draft,
+          revision: latestLocal.revision,
+          updatedAt: null,
+          trusted: true,
+        })
+      : null;
+    const serverCandidate = createRecoveryCandidate({
+      projectId: tracker.projectId,
+      draft: server.draft,
+      revision: server.revision,
+      updatedAt: null,
+      trusted: true,
+    });
+    setProjectReady(false);
+    setSaveStatus("error");
+    if (!localCandidate || !serverCandidate) {
+      setRecoveryState({
+        status: "load-error",
+        message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่",
+      });
+      return false;
+    }
+    setRecoveryState({
+      status: "conflict",
+      local: localCandidate,
+      server: serverCandidate,
+      resolving: false,
+      requiresServerRefresh,
+      error: requiresServerRefresh
+        ? "ยังยืนยันเวอร์ชันล่าสุดไม่ได้ กรุณาตรวจสอบอีกครั้ง"
+        : null,
+    });
+    return true;
+  }, [ownsAutosaveLineage, setRecoveryState]);
+
   const createServerProject = useCallback(async (
     draft: V2Draft,
     options: { isCurrent?: () => boolean; signal?: AbortSignal } = {},
@@ -475,10 +673,9 @@ export function useV2Project() {
       if (!isCurrent()) return null;
       const id = typeof data?.project?.id === "string" ? data.project.id : null;
       if (id) {
-        editorProjectSaveQueue.seedRevision(id, data.project.draftRevision);
-        confirmedServerRevisionRef.current = typeof data.project.draftRevision === "number"
-          ? data.project.draftRevision
-          : 0;
+        const createdProject = data.project as Record<string, unknown>;
+        const serverCandidate = serverCandidateForProject(id, createdProject);
+        if (!serverCandidate || !initializeAutosaveLineage(id, serverCandidate)) return null;
         setProjectId(id);
         setProjectReady(true);
         setRecoveryState({ status: "none" });
@@ -497,9 +694,10 @@ export function useV2Project() {
     } catch {
       return null;
     }
-  }, [setRecoveryState]);
+  }, [initializeAutosaveLineage, setRecoveryState]);
 
   const resetProject = useCallback(async () => {
+    invalidateAutosaveLineage();
     const resetGeneration = bootstrapGenerationRef.current + 1;
     bootstrapGenerationRef.current = resetGeneration;
     bootstrapAbortControllerRef.current?.abort();
@@ -528,7 +726,6 @@ export function useV2Project() {
     lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
     lastHandledSaveRevisionRef.current = saveRevision;
     latestQueuedSaveRef.current = { projectId: null, revision: null };
-    confirmedServerRevisionRef.current = 0;
     if (projectId) clearProjectRecoveryData(projectId);
     setProjectId(null);
     setProjectReady(false);
@@ -574,10 +771,11 @@ export function useV2Project() {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
+    invalidateAutosaveLineage();
     const generation = bootstrapGenerationRef.current + 1;
     bootstrapGenerationRef.current = generation;
     bootstrapAbortControllerRef.current?.abort();
@@ -659,7 +857,13 @@ export function useV2Project() {
           return;
         }
         editorProjectSaveQueue.seedRevision(project.id as string, project.draftRevision);
-        confirmedServerRevisionRef.current = project.draftRevision;
+        const tracker = initializeAutosaveLineage(existingProjectId, serverCandidate);
+        if (!tracker) {
+          setProjectReady(false);
+          setSaveStatus("error");
+          setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
+          return;
+        }
         setProjectId(project.id as string);
         applyServerProjectMetadata(project);
         try { storage?.setItem(PROJECT_ID_KEY, project.id as string); } catch {}
@@ -689,6 +893,11 @@ export function useV2Project() {
             return;
           }
           trustedResumeDraftRef.current = localCandidate.draft as V2Draft;
+          tracker.latestLocal = createEditorProjectAutosaveCandidate({
+            projectId: existingProjectId,
+            revision: tracker.confirmed.revision,
+            draft: localCandidate.draft,
+          });
           applyDraft(localCandidate.draft as V2Draft);
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
           setRecoveryState({ status: "none" });
@@ -707,6 +916,7 @@ export function useV2Project() {
             trusted: decision.local.trusted,
           });
           setProjectReady(false);
+          tracker.blocked = true;
           if (!localCandidate) {
             setSaveStatus("error");
             setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
@@ -717,6 +927,7 @@ export function useV2Project() {
             local: localCandidate,
             server: serverCandidate,
             resolving: false,
+            requiresServerRefresh: false,
             error: null,
           });
           return;
@@ -765,13 +976,14 @@ export function useV2Project() {
     };
     // Server project bootstrap should run once. Subsequent field autosaves are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createServerProject, bootstrapRetryRevision]);
+  }, [createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage]);
 
   const refreshConflictAfterAmbiguousWrite = useCallback(async (
     projectId: string,
     conflict: Extract<EditorProjectRecoveryState, { status: "conflict" }>,
   ) => {
-    const stillResolvingThisConflict = () => currentProjectIdRef.current === projectId
+    const stillResolvingThisConflict = () => mountedRef.current
+      && currentProjectIdRef.current === projectId
       && recoveryRef.current.status === "conflict"
       && recoveryRef.current.local === conflict.local;
     try {
@@ -789,18 +1001,19 @@ export function useV2Project() {
           status: "conflict",
           local: conflict.local,
           server: conflict.server,
-          resolving: "local",
-          error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนเลือกอีกครั้ง",
+          resolving: false,
+          requiresServerRefresh: true,
+          error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาตรวจสอบอีกครั้ง",
         });
         return;
       }
-      editorProjectSaveQueue.seedRevision(projectId, server.revision);
       applyServerProjectMetadata(currentProject!);
       setRecoveryState({
         status: "conflict",
         local: conflict.local,
         server,
         resolving: false,
+        requiresServerRefresh: false,
         error: "ตรวจสอบข้อมูลล่าสุดแล้ว กรุณาเลือกเวอร์ชันที่ต้องการอีกครั้ง",
       });
     } catch {
@@ -809,8 +1022,9 @@ export function useV2Project() {
         status: "conflict",
         local: conflict.local,
         server: conflict.server,
-        resolving: "local",
-        error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนเลือกอีกครั้ง",
+        resolving: false,
+        requiresServerRefresh: true,
+        error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาตรวจสอบอีกครั้ง",
       });
     }
   }, [setRecoveryState]);
@@ -818,7 +1032,12 @@ export function useV2Project() {
   const chooseLocalProjectDraft = useCallback(async () => {
     const conflict = recoveryRef.current;
     const projectId = currentProjectIdRef.current;
-    if (conflict.status !== "conflict" || conflict.resolving || !projectId) return;
+    if (
+      conflict.status !== "conflict"
+      || conflict.resolving
+      || conflict.requiresServerRefresh
+      || !projectId
+    ) return;
     const expected = conflict.server.revision;
     if (expected === null) {
       setRecoveryState({ ...conflict, error: "ไม่พบเลขเวอร์ชันบนระบบ กรุณาลองใหม่" });
@@ -849,13 +1068,13 @@ export function useV2Project() {
           ? serverCandidateForProject(projectId, currentProject)
           : null;
         if (server && server.revision !== null) {
-          editorProjectSaveQueue.seedRevision(projectId, server.revision);
           applyServerProjectMetadata(currentProject!);
           setRecoveryState({
             status: "conflict",
             local: conflict.local,
             server: server,
             resolving: false,
+            requiresServerRefresh: false,
             error: "ข้อมูลบนระบบมีการเปลี่ยนแปลง กรุณาเลือกอีกครั้ง",
           });
         } else {
@@ -874,8 +1093,10 @@ export function useV2Project() {
       applyDraft(savedCandidate.draft as V2Draft);
       trustedResumeDraftRef.current = null;
       applyServerProjectMetadata(savedProject!);
-      editorProjectSaveQueue.seedRevision(projectId, savedCandidate.revision);
-      confirmedServerRevisionRef.current = savedCandidate.revision;
+      if (!initializeAutosaveLineage(projectId, savedCandidate)) {
+        setRecoveryState({ ...conflict, resolving: false, error: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
+        return;
+      }
       lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
       latestQueuedSaveRef.current = { projectId: null, revision: null };
       clearProjectRecoveryData(projectId);
@@ -885,26 +1106,41 @@ export function useV2Project() {
     } catch {
       await refreshConflictAfterAmbiguousWrite(projectId, conflict);
     }
-  }, [refreshConflictAfterAmbiguousWrite, setRecoveryState]);
+  }, [initializeAutosaveLineage, refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   const chooseServerProjectDraft = useCallback(() => {
     const conflict = recoveryRef.current;
     const projectId = currentProjectIdRef.current;
-    if (conflict.status !== "conflict" || conflict.resolving || !projectId) return;
+    if (
+      conflict.status !== "conflict"
+      || conflict.resolving
+      || conflict.requiresServerRefresh
+      || !projectId
+    ) return;
     setRecoveryState({ ...conflict, resolving: "server", error: null });
     applyDraft(conflict.server.draft as V2Draft);
     trustedResumeDraftRef.current = null;
-    if (conflict.server.revision !== null) {
-      editorProjectSaveQueue.seedRevision(projectId, conflict.server.revision);
-      confirmedServerRevisionRef.current = conflict.server.revision;
-    }
+    if (!initializeAutosaveLineage(projectId, conflict.server)) return;
     lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
     latestQueuedSaveRef.current = { projectId: null, revision: null };
     clearProjectRecoveryData(projectId);
     setProjectReady(true);
     setSaveStatus("idle");
     setRecoveryState({ status: "none" });
-  }, [setRecoveryState]);
+  }, [initializeAutosaveLineage, setRecoveryState]);
+
+  const retryConflictServerRefresh = useCallback(async () => {
+    const conflict = recoveryRef.current;
+    const projectId = currentProjectIdRef.current;
+    if (
+      conflict.status !== "conflict"
+      || conflict.resolving
+      || !conflict.requiresServerRefresh
+      || !projectId
+    ) return;
+    setRecoveryState({ ...conflict, resolving: "refresh", error: null });
+    await refreshConflictAfterAmbiguousWrite(projectId, conflict);
+  }, [refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -960,38 +1196,188 @@ export function useV2Project() {
       > lastPersistedUserMutationTokenRef.current;
     const hasSaveRetry = saveRevision > lastHandledSaveRevisionRef.current;
     if (!hasUserMutation && !hasSaveRetry) return;
+    const tracker = autosaveLineageRef.current;
+    if (!tracker || tracker.projectId !== projectId || tracker.blocked) return;
+    const draft = trustedResumeDraftRef.current
+      ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;
+    const latestLocal = createEditorProjectAutosaveCandidate({
+      projectId,
+      revision: tracker.confirmed.revision,
+      draft,
+    });
+    if (!latestLocal) {
+      tracker.blocked = true;
+      setProjectReady(false);
+      setSaveStatus("error");
+      return;
+    }
+    tracker.latestLocal = latestLocal;
+    latestDraftRef.current = latestLocal;
+    const generation = tracker.generation;
     setSaveStatus("saving");
     const t = setTimeout(() => {
-      const draft = trustedResumeDraftRef.current
-        ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;
       const saveProjectId = projectId;
+      if (!ownsAutosaveLineage(tracker, generation) || tracker.blocked) return;
+      const capturedLatestLocal = latestDraftRef.current;
+      if (!capturedLatestLocal || capturedLatestLocal !== latestLocal) return;
       if (userDraftMutationTokenRef.current > lastPersistedUserMutationTokenRef.current) {
         const journalWritten = writeEditorProjectRecoveryJournal(browserStorage(), {
           version: 1,
           projectId: saveProjectId,
-          baseRevision: confirmedServerRevisionRef.current,
+          baseRevision: tracker.confirmed.revision,
           editedAt: new Date().toISOString(),
-          draft: { ...draft },
+          draft: capturedLatestLocal.draft,
         });
         if (!journalWritten) clearEditorProjectRecoveryJournal(browserStorage(), saveProjectId);
         lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
       }
       lastHandledSaveRevisionRef.current = saveRevision;
+      let attempt: EditorProjectAutosaveSnapshot | null = null;
       const revision = editorProjectSaveQueue.enqueue({
         projectId: saveProjectId,
-        save: ({ revision: queuedRevision, signal }) => saveEditorProjectDraft(
-          saveProjectId,
-          draft,
-          queuedRevision,
-          signal,
-        ),
-        isActive: () => mountedRef.current
-          && currentProjectIdRef.current === saveProjectId,
+        save: async ({ revision: queuedRevision, signal }) => {
+          if (
+            signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
+          ) return { kind: "blocked" };
+          const expectedDraftRevision = tracker.confirmed.revision;
+          const snapshot = createEditorProjectAutosaveSnapshot({
+            projectId: saveProjectId,
+            expectedDraftRevision,
+            revision: queuedRevision,
+            draft: capturedLatestLocal.draft,
+          });
+          if (!snapshot) {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: tracker.confirmed,
+              requiresServerRefresh: true,
+            });
+            return { kind: "blocked" };
+          }
+          attempt = snapshot;
+          tracker.issued.set(snapshot.revision, snapshot);
+          const result = await saveEditorProjectDraft(snapshot, signal);
+          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+            return { kind: "blocked" };
+          }
+          if (result.kind === "saved") {
+            acknowledgeAutosaveCandidate(tracker, result.candidate);
+            applyServerProjectMetadata(result.project);
+            return { kind: "saved" };
+          }
+          if (result.kind === "conflict") {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: result.server,
+              requiresServerRefresh: false,
+            });
+            return { kind: "blocked" };
+          }
+          return result.kind === "ambiguous"
+            ? { kind: "ambiguous" }
+            : { kind: "error" };
+        },
+        reconcile: async ({ signal }) => {
+          const currentAttempt = attempt;
+          if (
+            !currentAttempt
+            || signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+            || tracker.blocked
+          ) return { kind: "blocked" };
+          const observation = await loadAuthoritativeEditorProjectDraft(saveProjectId, signal);
+          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+            return { kind: "blocked" };
+          }
+          const observedProject = observation?.project;
+          const observed = observation?.candidate;
+          if (
+            signal.aborted
+            || !ownsAutosaveLineage(tracker, generation)
+          ) return { kind: "blocked" };
+          if (!observed || !observedProject) {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: tracker.confirmed,
+              requiresServerRefresh: true,
+            });
+            return { kind: "blocked" };
+          }
+          const decision = decideEditorProjectAutosaveObservation({
+            attempt: currentAttempt,
+            confirmed: tracker.confirmed,
+            issued: tracker.issued,
+            observed,
+          });
+          if (decision.kind === "saved") {
+            acknowledgeAutosaveCandidate(tracker, decision.confirmed);
+            applyServerProjectMetadata(observedProject);
+            return { kind: "saved" };
+          }
+          if (decision.kind === "conflict") {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: decision.server,
+              requiresServerRefresh: false,
+            });
+            return { kind: "blocked" };
+          }
+          acknowledgeAutosaveCandidate(tracker, decision.confirmed);
+          const retrySnapshot = createEditorProjectAutosaveSnapshot({
+            projectId: saveProjectId,
+            expectedDraftRevision: decision.confirmed.revision,
+            revision: currentAttempt.revision,
+            draft: currentAttempt.draft,
+          });
+          if (!retrySnapshot) {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: observed,
+              requiresServerRefresh: true,
+            });
+            return { kind: "blocked" };
+          }
+          attempt = retrySnapshot;
+          tracker.issued.set(retrySnapshot.revision, retrySnapshot);
+          const retryResult = await saveEditorProjectDraft(retrySnapshot, signal);
+          if (signal.aborted || !ownsAutosaveLineage(tracker, generation)) {
+            return { kind: "blocked" };
+          }
+          if (retryResult.kind === "saved") {
+            acknowledgeAutosaveCandidate(tracker, retryResult.candidate);
+            applyServerProjectMetadata(retryResult.project);
+            return { kind: "saved" };
+          }
+          materializeAutosaveConflict({
+            tracker,
+            generation,
+            server: retryResult.kind === "conflict" ? retryResult.server : observed,
+            requiresServerRefresh: retryResult.kind !== "conflict",
+          });
+          return { kind: "blocked" };
+        },
+        onBlocked: () => {
+          if (!tracker.blocked) {
+            materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: tracker.confirmed,
+              requiresServerRefresh: true,
+            });
+          }
+        },
+        isActive: () => ownsAutosaveLineage(tracker, generation),
         onStatus: (event) => {
           const { status } = event;
           setSaveStatus(status);
           if (isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)) {
-            confirmedServerRevisionRef.current = event.revision;
             trustedResumeDraftRef.current = null;
             clearProjectRecoveryData(event.projectId);
           }
@@ -1001,7 +1387,8 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady, saveRevision]);
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady,
+      acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {
@@ -1054,7 +1441,7 @@ export function useV2Project() {
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
     saveStatus, retryProjectSave,
-    recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft,
+    recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
   };
 }
 

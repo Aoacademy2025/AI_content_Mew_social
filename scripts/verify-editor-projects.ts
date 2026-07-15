@@ -27,6 +27,7 @@ async function main() {
     projectId: string,
     input: Record<string, unknown>,
   ) => Promise<Record<string, unknown> | null>;
+  const hasCode = (code: string) => (error: unknown) => (error as { code?: string })?.code === code;
   const patchEditorProjectForUser = (
     projectPatch as typeof projectPatch & {
       patchEditorProjectForUser?: (
@@ -246,14 +247,31 @@ async function main() {
       ).length === 1,
     "concurrent equal revisions have exactly one winner",
   );
+  const equalRevisionWinner = await projects.getEditorProject(alice.id, equalRevisionProject.id);
+  const losingDraft = {
+    script: equalRevisionWinner?.draft.script === "same revision first"
+      ? "same revision second"
+      : "same revision first",
+  };
+  await assert.rejects(
+    updateWithRevision(alice.id, equalRevisionProject.id, {
+      draft: losingDraft,
+      draftRevision: 2,
+      expectedDraftRevision: 0,
+    }),
+    hasCode("stale_revision"),
+  );
+  const observedWinner = await projects.getEditorProject(alice.id, equalRevisionProject.id);
+  assert.equal(observedWinner?.draftRevision, 1);
   const retryAfterConflict = await updateWithRevision(alice.id, equalRevisionProject.id, {
-    draft: { script: "retry latest" },
+    draft: { script: "retry after explicit observation" },
     draftRevision: 2,
+    expectedDraftRevision: observedWinner.draftRevision,
   });
   ok(
     retryAfterConflict?.draftRevision === 2
-      && (retryAfterConflict.draft as { script?: string } | undefined)?.script === "retry latest",
-    "retry with a newer revision succeeds",
+      && (retryAfterConflict.draft as { script?: string } | undefined)?.script === "retry after explicit observation",
+    "a losing draft cannot advance until the winner is explicitly observed",
   );
 
   const legacyDraftUpdate = await projects.updateEditorProject(alice.id, equalRevisionProject.id, {
@@ -263,7 +281,7 @@ async function main() {
     (legacyDraftUpdate as unknown as { draftRevision?: number } | null)?.draftRevision === 3
       && legacyDraftUpdate?.draft?.script === "legacy no-logo caller"
       && legacyDraftUpdate?.draft?.logoOverlay === undefined,
-    "revision-less draft caller succeeds and atomically advances the revision",
+    "legacy revision-only compatibility: revision-less draft caller succeeds and atomically advances the revision",
   );
   let lateIssuedRevisionThreeError: unknown;
   try {

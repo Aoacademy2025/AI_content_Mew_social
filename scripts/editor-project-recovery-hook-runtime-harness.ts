@@ -4,6 +4,11 @@ import ts from "typescript";
 import * as bootstrapModule from "../src/lib/editor-project-bootstrap";
 import * as journalModule from "../src/lib/editor-project-recovery-journal";
 import * as logoOverlayModule from "../src/lib/logo-overlay";
+import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
+import {
+  createEditorProjectSaveQueue,
+  type EditorProjectSaveInput,
+} from "../src/lib/editor-project-save-queue";
 
 type JsonRecord = Record<string, unknown>;
 type FetchInit = { method?: string; body?: string; signal?: AbortSignal; [key: string]: unknown };
@@ -66,10 +71,57 @@ class FakeClock {
   }
 }
 
+class SharedEditorServer {
+  private readonly projects = new Map<string, JsonRecord>();
+
+  setProject(projectId: string, draftRevision: number, draft: JsonRecord): void {
+    this.projects.set(projectId, {
+      id: projectId,
+      draftRevision,
+      draft: structuredClone(draft),
+      status: "draft",
+      updatedAt: "2026-07-15T10:00:00.000Z",
+    });
+  }
+
+  read(projectId: string): JsonRecord | null {
+    const value = this.projects.get(projectId);
+    return value ? structuredClone(value) : null;
+  }
+
+  patch(projectId: string, body: JsonRecord): ResponseLike {
+    const current = this.projects.get(projectId);
+    if (!current) return response(404, { error: "not_found" });
+    const currentRevision = current.draftRevision as number;
+    const revision = body.draftRevision;
+    const hasExpected = Object.hasOwn(body, "expectedDraftRevision");
+    const expected = body.expectedDraftRevision;
+    const validRevision = typeof revision === "number"
+      && Number.isSafeInteger(revision)
+      && revision > currentRevision;
+    const validCas = !hasExpected || (
+      typeof expected === "number"
+      && Number.isSafeInteger(expected)
+      && expected === currentRevision
+      && typeof revision === "number"
+      && revision > expected
+    );
+    if (!validRevision || !validCas) {
+      return response(409, { error: "stale_revision", project: structuredClone(current) });
+    }
+    this.setProject(projectId, revision, body.draft as JsonRecord);
+    const saved = this.projects.get(projectId)!;
+    if (typeof body.title === "string") saved.title = body.title;
+    return response(200, { project: structuredClone(saved) });
+  }
+}
+
 class FetchMock {
   readonly calls: FetchCall[] = [];
   private readonly routes = new Map<string, Array<() => Promise<ResponseLike>>>();
   private nextProject = 1;
+
+  constructor(private readonly server?: SharedEditorServer) {}
 
   enqueue(method: string, url: string, result: ResponseLike | Promise<ResponseLike>): void {
     const key = `${method.toUpperCase()} ${url}`;
@@ -136,13 +188,24 @@ class FetchMock {
     if (url === "/api/editor-projects" && method === "POST") {
       const body = JSON.parse(init.body ?? "{}") as JsonRecord;
       const id = `new-${this.nextProject++}`;
+      this.server?.setProject(id, 0, body.draft as JsonRecord);
       return this.honorAbort(Promise.resolve(response(200, {
         project: { id, draftRevision: 0, draft: body.draft, status: "draft" },
       })), init.signal);
     }
+    if (url.startsWith("/api/editor-projects/") && method === "GET" && this.server) {
+      const id = decodeURIComponent(url.slice("/api/editor-projects/".length));
+      const stored = this.server.read(id);
+      return this.honorAbort(Promise.resolve(
+        stored ? response(200, { project: stored }) : response(404, { error: "not_found" }),
+      ), init.signal);
+    }
     if (url.startsWith("/api/editor-projects/") && method === "PATCH") {
       const body = JSON.parse(init.body ?? "{}") as JsonRecord;
       const id = decodeURIComponent(url.slice("/api/editor-projects/".length));
+      if (this.server) {
+        return this.honorAbort(Promise.resolve(this.server.patch(id, body)), init.signal);
+      }
       return this.honorAbort(Promise.resolve(response(200, {
         project: { id, draftRevision: body.draftRevision, draft: body.draft, status: "draft" },
       })), init.signal);
@@ -157,45 +220,37 @@ class FetchMock {
   };
 }
 
-type SaveEvent = { projectId: string; revision: number; status: "saving" | "saved" | "error" };
-type SaveInput = {
-  projectId: string;
-  save(context: { revision: number; signal: AbortSignal }): Promise<boolean>;
-  isActive?(): boolean;
-  onStatus?(event: SaveEvent): void;
-};
-
 class QueueMock {
   readonly enqueued: Array<{ projectId: string; revision: number }> = [];
   readonly seeded: Array<{ projectId: string; revision: number }> = [];
-  readonly watermarks = new Map<string, number>();
   reserveError: Error | null = null;
+
+  private readonly queue: ReturnType<typeof createEditorProjectSaveQueue>;
+
+  constructor(clock: FakeClock) {
+    this.queue = createEditorProjectSaveQueue({
+      scheduleTimeout: clock.setTimeout,
+      cancelTimeout: clock.clearTimeout,
+    });
+  }
 
   seedRevision(projectId: string, revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 0) return;
     this.seeded.push({ projectId, revision });
-    this.watermarks.set(projectId, Math.max(this.watermarks.get(projectId) ?? 0, revision));
+    this.queue.seedRevision(projectId, revision);
   }
-  revisionWatermark(projectId: string): number { return this.watermarks.get(projectId) ?? 0; }
+  revisionWatermark(projectId: string): number { return this.queue.revisionWatermark(projectId); }
   reserveRevisionAbove(projectId: string, observed: number): number {
     if (this.reserveError) throw this.reserveError;
-    this.seedRevision(projectId, observed);
-    const next = this.revisionWatermark(projectId) + 1;
-    if (next > 2_147_483_647) throw new Error("draft revision exhausted");
-    this.watermarks.set(projectId, next);
-    return next;
+    this.seeded.push({ projectId, revision: observed });
+    return this.queue.reserveRevisionAbove(projectId, observed);
   }
-  enqueue(input: SaveInput): number {
-    const revision = this.reserveRevisionAbove(input.projectId, this.revisionWatermark(input.projectId));
+  enqueue(input: EditorProjectSaveInput): number {
+    const revision = this.queue.enqueue(input);
     this.enqueued.push({ projectId: input.projectId, revision });
-    input.onStatus?.({ projectId: input.projectId, revision, status: "saving" });
-    void input.save({ revision, signal: new AbortController().signal }).then(
-      (ok) => input.onStatus?.({ projectId: input.projectId, revision, status: ok ? "saved" : "error" }),
-      () => input.onStatus?.({ projectId: input.projectId, revision, status: "error" }),
-    );
     return revision;
   }
-  whenIdle(): Promise<void> { return Promise.resolve(); }
+  whenIdle(projectId: string): Promise<void> { return this.queue.whenIdle(projectId); }
 }
 
 type StateSlot = { kind: "state"; value: unknown; setter: (next: unknown) => void };
@@ -330,22 +385,27 @@ type ProjectHook = {
   voiceId: string;
   voiceEngine: string;
   geminiVoiceName: string;
+  saveStatus: "idle" | "saving" | "saved" | "error";
+  retryProjectSave(): void;
   resetProject(): Promise<void>;
   recovery: {
     status: string;
     local?: { draft: JsonRecord; revision: number | null };
     server?: { draft: JsonRecord; revision: number | null };
-    resolving?: false | "local" | "server";
+    resolving?: false | "local" | "server" | "refresh";
+    requiresServerRefresh?: boolean;
     error?: string | null;
   };
   chooseLocalProjectDraft(): Promise<void>;
   chooseServerProjectDraft(): void;
+  retryConflictServerRefresh(): Promise<void>;
 };
 
 type HarnessOptions = {
   search?: string;
   storage?: MemoryStorage;
   fetchMe?: Promise<JsonRecord | null>;
+  server?: SharedEditorServer;
 };
 
 const hookSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV2Project.ts", "utf8");
@@ -363,9 +423,9 @@ let activeCompiledHook = compileHook(hookSource);
 
 function createHarness(options: HarnessOptions = {}) {
   const storage = options.storage ?? new MemoryStorage();
-  const fetchMock = new FetchMock();
-  const queue = new QueueMock();
   const clock = new FakeClock();
+  const fetchMock = new FetchMock(options.server);
+  const queue = new QueueMock(clock);
   const windowMock = { localStorage: storage, location: { search: options.search ?? "" } };
   let runner!: HookRunner<ProjectHook>;
   const module = { exports: {} as Record<string, unknown> };
@@ -389,6 +449,7 @@ function createHarness(options: HarnessOptions = {}) {
     if (specifier === "@/lib/editor-project-save-queue") return { editorProjectSaveQueue: queue };
     if (specifier === "@/lib/editor-project-bootstrap") return bootstrapModule;
     if (specifier === "@/lib/editor-project-recovery-journal") return journalModule;
+    if (specifier === "@/lib/editor-project-autosave-lineage") return lineageModule;
     if (specifier === "@/lib/logo-overlay") return logoOverlayModule;
     throw new Error(`unhandled hook import: ${specifier}`);
   };
@@ -438,6 +499,332 @@ function patchBodies(fetchMock: FetchMock): JsonRecord[] {
   return fetchMock.calls
     .filter((call) => call.method === "PATCH")
     .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+}
+
+function autosavePatchCalls(fetchMock: FetchMock, projectId: string): FetchCall[] {
+  return fetchMock.calls.filter(
+    (call) => call.method === "PATCH" && call.url === editorUrl(projectId),
+  );
+}
+
+function assertCasAutosaves(fetchMock: FetchMock, projectId: string): void {
+  const bodies = autosavePatchCalls(fetchMock, projectId)
+    .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+  assert.ok(bodies.length > 0, `${projectId} sends at least one autosave PATCH`);
+  for (const body of bodies) {
+    assert.equal(Number.isSafeInteger(body.expectedDraftRevision), true,
+      "every Editor v2 autosave carries an integer expectedDraftRevision");
+    assert.equal(Number.isSafeInteger(body.draftRevision), true,
+      "every Editor v2 autosave carries an integer draftRevision");
+    assert.ok((body.draftRevision as number) > (body.expectedDraftRevision as number),
+      "every Editor v2 autosave advances above its observed base");
+  }
+}
+
+async function twoIndependentClientsCannotOverwrite(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("shared-cas", 0, { script: "base" });
+  const clientA = createHarness({ search: "?projectId=shared-cas", server });
+  const clientB = createHarness({ search: "?projectId=shared-cas", server });
+  clientA.runner.mount();
+  clientB.runner.mount();
+  await settle(clientA.runner);
+  await settle(clientB.runner);
+
+  clientA.runner.current.setScript("client A wins");
+  clientA.runner.flush();
+  clientA.clock.advance(1_000);
+  await settle(clientA.runner);
+  assert.equal((server.read("shared-cas")?.draft as JsonRecord).script, "client A wins");
+
+  clientB.runner.current.setScript("client B loses");
+  clientB.runner.flush();
+  clientB.clock.advance(1_000);
+  await settle(clientB.runner);
+  const localAtConflict = clientB.runner.current.recovery.local;
+  assert.deepEqual({
+    status: clientB.runner.current.recovery.status,
+    projectReady: clientB.runner.current.projectReady,
+    local: localAtConflict?.draft.script,
+    server: clientB.runner.current.recovery.server?.draft.script,
+  }, {
+    status: "conflict",
+    projectReady: false,
+    local: "client B loses",
+    server: "client A wins",
+  }, "the stale tab blocks with immutable latest-local B and observed server A");
+  assert.equal(Object.isFrozen(localAtConflict), true);
+  assert.equal(Object.isFrozen(localAtConflict?.draft), true);
+
+  clientB.runner.current.setScript("client B must remain blocked");
+  clientB.runner.flush();
+  clientB.clock.advance(1_000);
+  await settle(clientB.runner);
+  assert.equal(autosavePatchCalls(clientB.fetchMock, "shared-cas").length, 1,
+    "Retry/next edit cannot send an advancing PATCH while the lineage is blocked");
+  assert.equal((server.read("shared-cas")?.draft as JsonRecord).script, "client A wins");
+  assertCasAutosaves(clientA.fetchMock, "shared-cas");
+  assertCasAutosaves(clientB.fetchMock, "shared-cas");
+}
+
+async function timeoutCommittedIsAcknowledgedByFingerprint(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("timeout-committed", 0, { script: "base" });
+  const harness = createHarness({ search: "?projectId=timeout-committed", server });
+  const lostResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("PATCH", editorUrl("timeout-committed"), lostResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("committed despite timeout");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const attempt = patchBodies(harness.fetchMock)[0];
+  server.setProject("timeout-committed", attempt.draftRevision as number, attempt.draft as JsonRecord);
+  harness.clock.advance(10_000);
+  await settle(harness.runner, 64);
+  assert.deepEqual({
+    status: harness.runner.current.saveStatus,
+    recovery: harness.runner.current.recovery.status,
+    patchCount: autosavePatchCalls(harness.fetchMock, "timeout-committed").length,
+  }, { status: "saved", recovery: "none", patchCount: 1 },
+  "authoritative GET recognizes a committed timeout only by revision and fingerprint");
+  assertCasAutosaves(harness.fetchMock, "timeout-committed");
+}
+
+async function timeoutNotCommittedRetriesSameImmutableAttempt(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("timeout-retry", 0, { script: "base" });
+  const harness = createHarness({ search: "?projectId=timeout-retry", server });
+  const lostResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("PATCH", editorUrl("timeout-retry"), lostResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("retry immutable");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  harness.clock.advance(10_000);
+  await settle(harness.runner, 64);
+  const bodies = patchBodies(harness.fetchMock);
+  assert.equal(bodies.length, 2, "unchanged confirmed base permits exactly one CAS retry");
+  assert.deepEqual(bodies[1], bodies[0], "the retry reuses the exact immutable attempt body");
+  assert.equal((server.read("timeout-retry")?.draft as JsonRecord).script, "retry immutable");
+  assert.equal(harness.runner.current.saveStatus, "saved");
+  assertCasAutosaves(harness.fetchMock, "timeout-retry");
+}
+
+async function sameNumericRevisionWithDifferentDraftConflicts(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("numeric-collision", 0, { script: "base" });
+  const harness = createHarness({ search: "?projectId=numeric-collision", server });
+  const lostResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("PATCH", editorUrl("numeric-collision"), lostResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("our revision one");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  server.setProject("numeric-collision", 1, { script: "other tab revision one" });
+  harness.clock.advance(10_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    status: harness.runner.current.recovery.status,
+    local: harness.runner.current.recovery.local?.draft.script,
+    server: harness.runner.current.recovery.server?.draft.script,
+    patches: autosavePatchCalls(harness.fetchMock, "numeric-collision").length,
+  }, {
+    status: "conflict",
+    local: "our revision one",
+    server: "other tab revision one",
+    patches: 1,
+  }, "equal revision without equal fingerprint blocks instead of rebasing");
+}
+
+async function suppressedIntermediateAcknowledgementAdvancesBase(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("coalesced-base", 0, { script: "base" });
+  const firstResponse = deferred<ResponseLike>();
+  const harness = createHarness({ search: "?projectId=coalesced-base", server });
+  harness.fetchMock.enqueue("PATCH", editorUrl("coalesced-base"), firstResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("intermediate A");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  harness.runner.current.setScript("coalesced B");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const firstBody = patchBodies(harness.fetchMock)[0];
+  server.setProject("coalesced-base", 1, firstBody.draft as JsonRecord);
+  firstResponse.resolve(response(200, {
+    project: project("coalesced-base", 1, firstBody.draft as JsonRecord),
+  }));
+  await settle(harness.runner, 64);
+  const bodies = patchBodies(harness.fetchMock);
+  assert.equal(bodies.length, 2, "coalesced B starts after A acknowledgement");
+  assert.equal(bodies[1].expectedDraftRevision, 1,
+    "A acknowledgement updates confirmed base even when A's visible saved status is suppressed");
+  assert.equal((bodies[1].draft as JsonRecord).script, "coalesced B");
+}
+
+async function pendingDraftWaitsForReconciliationAndBecomesLatestConflict(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("pending-reconcile", 0, { script: "base" });
+  const lostResponse = deferred<ResponseLike>();
+  const authoritativeGet = deferred<ResponseLike>();
+  const harness = createHarness({ search: "?projectId=pending-reconcile", server });
+  harness.fetchMock.enqueue("PATCH", editorUrl("pending-reconcile"), lostResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.fetchMock.enqueue("GET", editorUrl("pending-reconcile"), authoritativeGet.promise);
+  harness.runner.current.setScript("older in flight A");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  harness.runner.current.setScript("latest pending B");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  harness.clock.advance(10_000);
+  await settle(harness.runner);
+  assert.equal(autosavePatchCalls(harness.fetchMock, "pending-reconcile").length, 1,
+    "pending B sends zero PATCH calls while A reconciliation is unresolved");
+  authoritativeGet.resolve(response(200, {
+    project: project("pending-reconcile", 1, { script: "another tab" }),
+  }));
+  await settle(harness.runner);
+  assert.deepEqual({
+    local: harness.runner.current.recovery.local?.draft.script,
+    server: harness.runner.current.recovery.server?.draft.script,
+    patches: autosavePatchCalls(harness.fetchMock, "pending-reconcile").length,
+  }, { local: "latest pending B", server: "another tab", patches: 1 },
+  "an older reconciliation surfaces the newest explicit local snapshot and drops pending B");
+}
+
+async function resetAndUnmountIgnoreLateAutosaveObservation(): Promise<void> {
+  for (const boundary of ["reset", "unmount"] as const) {
+    const projectId = `late-${boundary}`;
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const lostResponse = deferred<ResponseLike>();
+    const authoritativeGet = deferred<ResponseLike>();
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.fetchMock.enqueue("PATCH", editorUrl(projectId), lostResponse.promise);
+    harness.runner.mount();
+    await settle(harness.runner);
+    harness.fetchMock.enqueue("GET", editorUrl(projectId), authoritativeGet.promise);
+    harness.runner.current.setScript("old project edit");
+    harness.runner.flush();
+    harness.clock.advance(1_000);
+    await settle(harness.runner);
+    harness.clock.advance(10_000);
+    await settle(harness.runner);
+    assert.equal(
+      harness.fetchMock.calls.filter((call) => call.method === "GET" && call.url === editorUrl(projectId)).length,
+      2,
+      `${boundary} case reaches authoritative reconciliation GET`,
+    );
+    if (boundary === "reset") {
+      await harness.runner.current.resetProject();
+      await settle(harness.runner);
+    } else {
+      harness.runner.unmount();
+    }
+    const snapshot = {
+      projectId: harness.runner.current.projectId,
+      recovery: harness.runner.current.recovery.status,
+      patchCount: autosavePatchCalls(harness.fetchMock, projectId).length,
+    };
+    authoritativeGet.resolve(response(200, {
+      project: project(projectId, 1, { script: "late server" }),
+    }));
+    await settle(harness.runner);
+    assert.deepEqual({
+      projectId: harness.runner.current.projectId,
+      recovery: harness.runner.current.recovery.status,
+      patchCount: autosavePatchCalls(harness.fetchMock, projectId).length,
+    }, snapshot, `${boundary} invalidates late PATCH/GET callbacks and prevents a retry`);
+  }
+}
+
+async function resetAndUnmountIgnoreLatePatchResponse(): Promise<void> {
+  for (const boundary of ["reset", "unmount"] as const) {
+    const projectId = `late-patch-${boundary}`;
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 0, { script: "base" });
+    const patchResponse = deferred<ResponseLike>();
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchResponse.promise);
+    harness.runner.mount();
+    await settle(harness.runner);
+    harness.runner.current.setScript("old project in flight");
+    harness.runner.flush();
+    harness.clock.advance(1_000);
+    await settle(harness.runner);
+    const body = patchBodies(harness.fetchMock)[0];
+    if (boundary === "reset") {
+      await harness.runner.current.resetProject();
+      await settle(harness.runner);
+    } else {
+      harness.runner.unmount();
+    }
+    const snapshot = {
+      projectId: harness.runner.current.projectId,
+      projectReady: harness.runner.current.projectReady,
+      recovery: harness.runner.current.recovery.status,
+      saveStatus: harness.runner.current.saveStatus,
+    };
+    patchResponse.resolve(response(200, {
+      project: project(projectId, body.draftRevision as number, body.draft as JsonRecord),
+    }));
+    await settle(harness.runner, 64);
+    assert.deepEqual({
+      projectId: harness.runner.current.projectId,
+      projectReady: harness.runner.current.projectReady,
+      recovery: harness.runner.current.recovery.status,
+      saveStatus: harness.runner.current.saveStatus,
+    }, snapshot, `${boundary} ignores an old project's late PATCH acknowledgement`);
+  }
+}
+
+async function secondAmbiguityLocksUntilGetOnlyRefresh(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("second-ambiguity", 0, { script: "base" });
+  const firstResponse = deferred<ResponseLike>();
+  const harness = createHarness({ search: "?projectId=second-ambiguity", server });
+  harness.fetchMock.enqueue("PATCH", editorUrl("second-ambiguity"), firstResponse.promise);
+  harness.fetchMock.enqueueFailure("PATCH", editorUrl("second-ambiguity"), new Error("retry response lost"));
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setScript("local uncertain");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  harness.clock.advance(10_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    status: harness.runner.current.recovery.status,
+    resolving: harness.runner.current.recovery.resolving,
+    requiresServerRefresh: harness.runner.current.recovery.requiresServerRefresh,
+    local: harness.runner.current.recovery.local?.draft.script,
+  }, {
+    status: "conflict",
+    resolving: false,
+    requiresServerRefresh: true,
+    local: "local uncertain",
+  }, "a second ambiguity becomes a retryable GET-only locked conflict");
+  const patchCount = patchBodies(harness.fetchMock).length;
+  server.setProject("second-ambiguity", 2, { script: "latest server" });
+  await harness.runner.current.retryConflictServerRefresh();
+  await settle(harness.runner);
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount,
+    "conflict refresh performs GET only");
+  assert.equal(harness.runner.current.recovery.server?.draft.script, "latest server");
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, false);
 }
 
 async function settingsAfterServerHydration(): Promise<void> {
@@ -815,14 +1202,15 @@ async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
   await harness.runner.current.chooseLocalProjectDraft();
   await settle(harness.runner);
   assert.equal(harness.runner.current.recovery.local, immutableLocal);
-  assert.equal(harness.runner.current.recovery.resolving, "local",
-    "failed refresh stays resolving so neither stale candidate can be chosen");
+  assert.equal(harness.runner.current.recovery.resolving, false,
+    "failed refresh returns control to a retryable locked conflict");
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, true);
   assert.ok(harness.runner.current.recovery.error);
   const patchCount = patchBodies(harness.fetchMock).length;
   harness.runner.current.chooseServerProjectDraft();
   harness.runner.flush();
   assert.equal(harness.runner.current.recovery.status, "conflict");
-  assert.equal(harness.runner.current.recovery.resolving, "local");
+  assert.equal(harness.runner.current.recovery.resolving, false);
   assert.equal(patchBodies(harness.fetchMock).length, patchCount,
     "locked refresh failure cannot choose or write the stale server candidate");
 }
@@ -855,6 +1243,15 @@ async function revisionExhaustionRestoresConflict(): Promise<void> {
 export async function verifyRuntimeHookContract(): Promise<void> {
   activeCompiledHook = compileHook(hookSource);
   const cases: Array<[string, () => Promise<void>]> = [
+    ["two-independent-clients", twoIndependentClientsCannotOverwrite],
+    ["timeout-committed", timeoutCommittedIsAcknowledgedByFingerprint],
+    ["timeout-not-committed", timeoutNotCommittedRetriesSameImmutableAttempt],
+    ["same-revision-different-draft", sameNumericRevisionWithDifferentDraftConflicts],
+    ["coalesced-confirmed-base", suppressedIntermediateAcknowledgementAdvancesBase],
+    ["pending-waits-for-reconcile", pendingDraftWaitsForReconciliationAndBecomesLatestConflict],
+    ["late-lifecycle-callbacks", resetAndUnmountIgnoreLateAutosaveObservation],
+    ["late-patch-callbacks", resetAndUnmountIgnoreLatePatchResponse],
+    ["second-ambiguity-refresh", secondAmbiguityLocksUntilGetOnlyRefresh],
     ["settings-after-GET", settingsAfterServerHydration],
     ["equal-revision-resume", exactEqualRevisionResume],
     ["reset-during-GET", resetDuringProjectGet],
@@ -894,7 +1291,7 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
   );
 
   const rebuiltResume = hookSource.replace(
-    "const draft = trustedResumeDraftRef.current\n        ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;",
+    "const draft = trustedResumeDraftRef.current\n      ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;",
     "const draft = canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;",
   );
   assert.notEqual(rebuiltResume, hookSource, "trusted-resume runtime mutation applied");
@@ -907,6 +1304,9 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
 
   const missingUnmountOwnership = hookSource.replace(
     `mountedRef.current = false;
+      autosaveGenerationRef.current += 1;
+      autosaveLineageRef.current = null;
+      latestDraftRef.current = null;
       bootstrapGenerationRef.current += 1;
       bootstrapAbortControllerRef.current?.abort();
       bootstrapAbortControllerRef.current = null;`,
@@ -930,6 +1330,90 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     malformedConflictResponsesRefreshAuthoritatively,
     /missing draftRevision/,
     "runtime harness rejects direct 409 candidates without a concrete revision",
+  );
+
+  const missingExpectedRevision = hookSource.replace(
+    "        expectedDraftRevision: snapshot.expectedDraftRevision,\n",
+    "",
+  );
+  assert.notEqual(missingExpectedRevision, hookSource, "autosave CAS body mutation applied");
+  activeCompiledHook = compileHook(missingExpectedRevision);
+  await assert.rejects(
+    twoIndependentClientsCannotOverwrite,
+    /expectedDraftRevision|stale tab blocks/,
+    "runtime harness rejects autosaves that omit expectedDraftRevision",
+  );
+
+  const numericOnlyObservation = hookSource.replace(
+    "const decision = decideEditorProjectAutosaveObservation({",
+    `const decision = observed.revision === currentAttempt.revision
+            ? { kind: "saved" as const, confirmed: observed }
+            : decideEditorProjectAutosaveObservation({`,
+  );
+  assert.notEqual(numericOnlyObservation, hookSource, "numeric-only lineage mutation applied");
+  activeCompiledHook = compileHook(numericOnlyObservation);
+  await assert.rejects(
+    sameNumericRevisionWithDifferentDraftConflicts,
+    /equal revision without equal fingerprint/,
+    "runtime harness rejects numeric-only authoritative matches",
+  );
+
+  const confirmationOnlyInStatus = hookSource.replace(
+    "            acknowledgeAutosaveCandidate(tracker, result.candidate);\n",
+    "",
+  );
+  assert.notEqual(confirmationOnlyInStatus, hookSource, "deferred confirmation mutation applied");
+  activeCompiledHook = compileHook(confirmationOnlyInStatus);
+  await assert.rejects(
+    suppressedIntermediateAcknowledgementAdvancesBase,
+    /updates confirmed base/,
+    "runtime harness rejects confirmation that waits for visible onStatus",
+  );
+
+  const conflictBlock = `materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: result.server,
+              requiresServerRefresh: false,
+            });
+            return { kind: "blocked" };`;
+  const seededConflictContinuation = hookSource.replace(
+    conflictBlock,
+    `editorProjectSaveQueue.seedRevision(saveProjectId, result.server.revision);
+            return { kind: "error" };`,
+  );
+  assert.notEqual(seededConflictContinuation, hookSource, "409 watermark continuation mutation applied");
+  activeCompiledHook = compileHook(seededConflictContinuation);
+  await assert.rejects(
+    twoIndependentClientsCannotOverwrite,
+    /stale tab blocks/,
+    "runtime harness rejects seeding the watermark and continuing after 409",
+  );
+
+  const reconciliationConflictBlock = `materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: decision.server,
+              requiresServerRefresh: false,
+            });
+            return { kind: "blocked" };`;
+  const pendingFetchWhileBlocked = hookSource.replace(
+    reconciliationConflictBlock,
+    `materializeAutosaveConflict({
+              tracker,
+              generation,
+              server: decision.server,
+              requiresServerRefresh: false,
+            });
+            tracker.blocked = false;
+            return { kind: "error" };`,
+  );
+  assert.notEqual(pendingFetchWhileBlocked, hookSource, "blocked pending-fetch mutation applied");
+  activeCompiledHook = compileHook(pendingFetchWhileBlocked);
+  await assert.rejects(
+    pendingDraftWaitsForReconciliationAndBecomesLatestConflict,
+    /pending B|drops pending B/,
+    "runtime harness rejects a pending network write after conflict blocking",
   );
   activeCompiledHook = compileHook(hookSource);
 }
