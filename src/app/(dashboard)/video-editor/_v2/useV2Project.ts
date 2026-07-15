@@ -1218,8 +1218,28 @@ export function useV2Project() {
       || !projectId
     ) return;
     invalidateLocalChoiceRequest();
+    const requestGeneration = localChoiceGenerationRef.current + 1;
+    localChoiceGenerationRef.current = requestGeneration;
+    const controller = new AbortController();
+    localChoiceAbortControllerRef.current = controller;
+    const stillCurrentRefresh = () => mountedRef.current
+      && currentProjectIdRef.current === projectId
+      && localChoiceGenerationRef.current === requestGeneration
+      && localChoiceAbortControllerRef.current === controller
+      && !controller.signal.aborted
+      && recoveryRef.current.status === "conflict"
+      && recoveryRef.current.local === conflict.local
+      && recoveryRef.current.server === conflict.server
+      && recoveryRef.current.resolving === "refresh"
+      && recoveryRef.current.requiresServerRefresh;
     setRecoveryState({ ...conflict, resolving: "refresh", error: null });
-    await refreshConflictAfterAmbiguousWrite(projectId, conflict);
+    await refreshConflictAfterAmbiguousWrite(projectId, conflict, {
+      signal: controller.signal,
+      isCurrent: stillCurrentRefresh,
+    });
+    if (localChoiceAbortControllerRef.current === controller) {
+      localChoiceAbortControllerRef.current = null;
+    }
   }, [invalidateLocalChoiceRequest, refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้

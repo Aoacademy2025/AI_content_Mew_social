@@ -507,6 +507,7 @@ export function EditorV2Shell() {
       <EditorProjectRecoveryDialog
         recovery={p.recovery}
         onRetryLoad={p.retryProjectBootstrap}
+        onRetryConflictRefresh={p.retryConflictServerRefresh}
         onChooseLocal={p.chooseLocalProjectDraft}
         onChooseServer={p.chooseServerProjectDraft}
       />

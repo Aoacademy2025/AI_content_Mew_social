@@ -88,6 +88,9 @@ function verifyShell(source: string): void {
   assert.equal(dialogs.length, 1, "EditorV2Shell renders exactly one recovery dialog");
   assert.equal(attributeText(dialogs[0], "recovery", root), "{p.recovery}");
   assert.equal(attributeText(dialogs[0], "onRetryLoad", root), "{p.retryProjectBootstrap}");
+  assert.equal(attributeText(dialogs[0], "onRetryConflictRefresh", root), "{p.retryConflictServerRefresh}");
+  assert.equal(source.match(/onRetryConflictRefresh=/g)?.length, 1,
+    "the shell passes the conflict refresh handler exactly once");
   assert.equal(attributeText(dialogs[0], "onChooseLocal", root), "{p.chooseLocalProjectDraft}");
   assert.equal(attributeText(dialogs[0], "onChooseServer", root), "{p.chooseServerProjectDraft}");
 
@@ -142,6 +145,7 @@ function verifyDialog(source: string): void {
     "ฉบับบนระบบ",
     "ใช้ฉบับในเครื่อง",
     "ใช้ฉบับบนระบบ",
+    "ตรวจสอบเวอร์ชันล่าสุดอีกครั้ง",
   ];
   for (const copy of exactCopy) assert.ok(source.includes(copy), `exact conflict copy exists: ${copy}`);
   assert.ok(source.includes("โหลดโปรเจกต์ไม่สำเร็จ"), "load-error has the required title");
@@ -224,17 +228,36 @@ function verifyDialog(source: string): void {
   assert.equal(attributeText(titles[0], "tabIndex", root), "{-1}");
 
   const actions = collect(root, (node): node is JsxNode => isJsxNode(node) && tagName(node) === "AlertDialogAction");
-  assert.equal(actions.length, 3, "conflict has two choices and load-error has one Retry action");
-  const [retry, local, server] = actions;
-  assert.match(retry.getText(root), /ลองใหม่/);
+  assert.equal(actions.length, 4, "conflict has two choices, one refresh Retry, and load-error has one Retry action");
+  const [loadRetry, conflictRetry, local, server] = actions;
+  assert.match(loadRetry.getText(root), /ลองใหม่/);
+  assert.match(conflictRetry.getText(root), /ตรวจสอบเวอร์ชันล่าสุดอีกครั้ง/);
   assert.match(local.getText(root), /ใช้ฉบับในเครื่อง/);
   assert.match(server.getText(root), /ใช้ฉบับบนระบบ/);
+  assert.ok(conflictRetry.pos < local.pos, "GET-only Retry precedes the locked choices in DOM order");
   assert.ok(local.pos < server.pos, "local choice precedes server choice in DOM order");
-  assert.equal(attributeText(local, "disabled", root), "{isResolving}");
-  assert.equal(attributeText(server, "disabled", root), "{isResolving}");
+  assert.equal(attributeText(conflictRetry, "disabled", root), '{recovery.resolving === "refresh"}');
+  assert.equal(attributeText(local, "disabled", root), "{areChoicesDisabled}");
+  assert.equal(attributeText(server, "disabled", root), "{areChoicesDisabled}");
+  assert.match(source, /const areChoicesDisabled\s*=\s*isResolving\s*\|\|\s*\(isConflict\s*&&\s*recovery\.requiresServerRefresh\)/,
+    "a required server refresh locks both choices even when no request is spinning");
+  const conflictRetryHandler = attributeText(conflictRetry, "onClick", root) ?? "";
+  assert.match(conflictRetryHandler, /event\.preventDefault\(\)/);
+  assert.match(conflictRetryHandler, /onRetryConflictRefresh\(\)/,
+    "the locked action delegates only to the GET-only refresh handler");
+  assert.doesNotMatch(conflictRetryHandler, /onChooseLocal|onChooseServer|PATCH|fetch/,
+    "the Retry UI cannot invoke a conflict choice or network write directly");
+  assert.match(conflictRetry.getText(root), /recovery\.resolving\s*===\s*["']refresh["']/,
+    "only the GET-only Retry action shows the refresh spinner");
+  assert.match(attributeText(conflictRetry, "className", root) ?? "", /w-full/,
+    "the conflict Retry fills the mobile action row");
+  assert.match(attributeText(conflictRetry, "className", root) ?? "", /sm:col-span-2/,
+    "the conflict Retry spans both desktop choice columns");
   assert.match(local.getText(root), /recovery\.resolving\s*===\s*["']local["']/, "only selected local action spins");
   assert.match(server.getText(root), /recovery\.resolving\s*===\s*["']server["']/, "only selected server action spins");
-  for (const action of [retry, local, server]) {
+  assert.doesNotMatch(local.getText(root), /["']refresh["']/, "the local choice never shows the refresh spinner");
+  assert.doesNotMatch(server.getText(root), /["']refresh["']/, "the server choice never shows the refresh spinner");
+  for (const action of [loadRetry, conflictRetry, local, server]) {
     assert.match(attributeText(action, "className", root) ?? "", /min-h-11/, "all actions meet the 44px touch target");
   }
 
@@ -850,6 +873,20 @@ async function main(): Promise<void> {
       "",
     )),
     "controlled fixture proves the recovery overlay keeps its reduced-motion override",
+  );
+  assertFixtureRejected(
+    () => verifyDialog(dialogSource.replace(
+      "void onRetryConflictRefresh();",
+      "void onChooseLocal();",
+    )),
+    "controlled fixture proves the conflict Retry cannot call a PATCH choice",
+  );
+  assertFixtureRejected(
+    () => verifyDialog(dialogSource.replace(
+      "disabled={areChoicesDisabled}",
+      "disabled={isResolving}",
+    )),
+    "controlled fixture proves a non-spinning refresh requirement still disables both choices",
   );
 
   const historyModule = await import(pathToFileURL(resolve(historyPath)).href) as {

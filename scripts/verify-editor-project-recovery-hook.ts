@@ -241,6 +241,19 @@ function verifyHookSource(value: string): void {
   assert.doesNotMatch(chooseServer, /fetch|PATCH|enqueue|saveEditorProjectDraft/,
     "server choice performs no server write");
 
+  const retryConflictRefresh = variableInitializer(root, "retryConflictServerRefresh").getText(root);
+  assert.match(retryConflictRefresh, /requiresServerRefresh/);
+  assert.match(retryConflictRefresh, /resolving:\s*"refresh"/,
+    "conflict Retry owns a dedicated refresh spinner state");
+  assert.match(retryConflictRefresh, /signal:\s*controller\.signal/,
+    "conflict Retry GET is abortable at lifecycle boundaries");
+  assert.match(retryConflictRefresh, /const stillCurrentRefresh[\s\S]*localChoiceGenerationRef\.current[\s\S]*recoveryRef\.current\.resolving\s*===\s*"refresh"/,
+    "conflict Retry callbacks are bound to the active conflict and request generation");
+  assert.match(retryConflictRefresh, /refreshConflictAfterAmbiguousWrite\(projectId,\s*conflict/,
+    "conflict Retry reuses the authoritative GET seam");
+  assert.doesNotMatch(retryConflictRefresh, /method:\s*"PATCH"|chooseLocalProjectDraft|chooseServerProjectDraft|applyDraft|clearProjectRecoveryData|writeEditorProjectRecoveryJournal/,
+    "conflict Retry cannot choose, PATCH, mutate local draft, or clear recovery provenance");
+
   const autosave = sourceBetween(value, "// Persist draft (debounce 1s)", "// ข้อมูลอวตาร");
   assert.match(autosave, /writeEditorProjectRecoveryJournal[\s\S]*editorProjectSaveQueue\.enqueue/,
     "a user-authored journal is written before enqueueing autosave");

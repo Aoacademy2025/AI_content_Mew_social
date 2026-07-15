@@ -32,15 +32,17 @@ function formatCandidateTimestamp(value: string | null): string {
 export function EditorProjectRecoveryDialog(props: {
   recovery: EditorProjectRecoveryState;
   onRetryLoad: () => void;
+  onRetryConflictRefresh: () => Promise<void>;
   onChooseLocal: () => Promise<void>;
   onChooseServer: () => void;
 }): React.ReactNode {
-  const { recovery, onRetryLoad, onChooseLocal, onChooseServer } = props;
+  const { recovery, onRetryLoad, onRetryConflictRefresh, onChooseLocal, onChooseServer } = props;
   const headingRef = useRef<HTMLHeadingElement>(null);
   const focusLifecycleRef = useRef<ReturnType<typeof createEditorRecoveryFocusLifecycle> | null>(null);
   const blocking = recovery.status !== "none";
   const isConflict = recovery.status === "conflict";
   const isResolving = isConflict && recovery.resolving !== false;
+  const areChoicesDisabled = isResolving || (isConflict && recovery.requiresServerRefresh);
 
   useEffect(() => {
     if (!blocking || typeof window === "undefined") return;
@@ -217,9 +219,30 @@ export function EditorProjectRecoveryDialog(props: {
               ) : null}
 
               <AlertDialogFooter className="mt-6 flex flex-col gap-4 sm:grid sm:grid-cols-2 sm:space-x-0">
+                {recovery.requiresServerRefresh ? (
+                  <AlertDialogAction
+                    disabled={recovery.resolving === "refresh"}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      void onRetryConflictRefresh();
+                    }}
+                    className="min-h-11 w-full border bg-white/[.055] px-4 text-sm hover:bg-white/[.09] focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45 sm:col-span-2"
+                    style={{
+                      borderColor: color.cardBorder,
+                      color: color.text,
+                      fontFamily: font.heading,
+                      boxShadow: "none",
+                    }}
+                  >
+                    {recovery.resolving === "refresh" ? (
+                      <Loader2 size={16} className="mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : null}
+                    ตรวจสอบเวอร์ชันล่าสุดอีกครั้ง
+                  </AlertDialogAction>
+                ) : null}
                 <div className="flex flex-col gap-2">
                   <AlertDialogAction
-                    disabled={isResolving}
+                    disabled={areChoicesDisabled}
                     onClick={(event) => {
                       event.preventDefault();
                       void onChooseLocal();
@@ -243,7 +266,7 @@ export function EditorProjectRecoveryDialog(props: {
                 </div>
                 <div className="flex flex-col gap-2">
                   <AlertDialogAction
-                    disabled={isResolving}
+                    disabled={areChoicesDisabled}
                     onClick={(event) => {
                       event.preventDefault();
                       onChooseServer();

@@ -1187,7 +1187,7 @@ async function malformedConflictResponsesRefreshAuthoritatively(): Promise<void>
   assert.deepEqual(failures, [], `malformed 409 validation failures:\n${failures.join("\n")}`);
 }
 
-async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
+async function failedAmbiguousRefreshRetriesGetOnly(): Promise<void> {
   const harness = createHarness({ search: "?projectId=conflict-locked" });
   journalModule.writeEditorProjectRecoveryJournal(harness.storage, {
     version: 1,
@@ -1204,6 +1204,9 @@ async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
   harness.runner.mount();
   await settle(harness.runner);
   const immutableLocal = harness.runner.current.recovery.local;
+  const initialServer = harness.runner.current.recovery.server;
+  const journalKey = journalModule.editorProjectRecoveryKey("conflict-locked");
+  const journalBeforeRetry = harness.storage.getItem(journalKey);
   await harness.runner.current.chooseLocalProjectDraft();
   await settle(harness.runner);
   assert.equal(harness.runner.current.recovery.local, immutableLocal);
@@ -1212,12 +1215,150 @@ async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
   assert.equal(harness.runner.current.recovery.requiresServerRefresh, true);
   assert.ok(harness.runner.current.recovery.error);
   const patchCount = patchBodies(harness.fetchMock).length;
+  const lockedState = harness.runner.current.recovery;
+  await harness.runner.current.chooseLocalProjectDraft();
   harness.runner.current.chooseServerProjectDraft();
   harness.runner.flush();
-  assert.equal(harness.runner.current.recovery.status, "conflict");
-  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery, lockedState,
+    "both conflict choices remain inert until a server refresh succeeds");
   assert.equal(patchBodies(harness.fetchMock).length, patchCount,
-    "locked refresh failure cannot choose or write the stale server candidate");
+    "locked conflict choices cannot send PATCH");
+  const getCountAfterAmbiguousWrite = harness.fetchMock.calls.filter(
+    (call) => call.method === "GET" && call.url === editorUrl("conflict-locked"),
+  ).length;
+  harness.fetchMock.enqueueFailure("GET", editorUrl("conflict-locked"), new Error("retry one unavailable"));
+  await harness.runner.current.retryConflictServerRefresh();
+  await settle(harness.runner);
+  assert.equal(harness.fetchMock.calls.filter(
+    (call) => call.method === "GET" && call.url === editorUrl("conflict-locked"),
+  ).length, getCountAfterAmbiguousWrite + 1, "first in-dialog retry sends exactly one GET");
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount, "first in-dialog retry never sends PATCH");
+  assert.equal(harness.runner.current.recovery.local, immutableLocal,
+    "failed in-dialog retry preserves the exact immutable local candidate");
+  assert.equal(harness.runner.current.recovery.server, initialServer,
+    "failed in-dialog retry preserves the last validated server candidate");
+  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, true);
+  assert.equal(harness.storage.getItem(journalKey), journalBeforeRetry,
+    "failed in-dialog retry does not clear or rewrite recovery provenance");
+
+  const retryTwo = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("GET", editorUrl("conflict-locked"), retryTwo.promise);
+  const retryTwoPromise = harness.runner.current.retryConflictServerRefresh();
+  const duplicateRetryPromise = harness.runner.current.retryConflictServerRefresh();
+  harness.runner.flush();
+  assert.equal(harness.runner.current.recovery.local, immutableLocal);
+  assert.equal(harness.runner.current.recovery.resolving, "refresh",
+    "only the GET-only action owns the refresh spinner while pending");
+  assert.equal(harness.fetchMock.calls.filter(
+    (call) => call.method === "GET" && call.url === editorUrl("conflict-locked"),
+  ).length, getCountAfterAmbiguousWrite + 2, "rapid double Retry starts one GET");
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount, "rapid double Retry remains PATCH-free");
+  await duplicateRetryPromise;
+  retryTwo.resolve(response(500, { error: "still unavailable" }));
+  await retryTwoPromise;
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.recovery.local, immutableLocal);
+  assert.equal(harness.runner.current.recovery.server, initialServer);
+  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, true,
+    "a repeated failed Retry returns to the same retryable locked state");
+
+  harness.fetchMock.enqueue("GET", editorUrl("conflict-locked"), response(200, {
+    project: project("conflict-locked", 3, { script: "latest server" }),
+  }));
+  await harness.runner.current.retryConflictServerRefresh();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.recovery.local, immutableLocal,
+    "successful in-dialog retry still preserves the exact immutable local candidate");
+  assert.notEqual(harness.runner.current.recovery.server, initialServer,
+    "successful in-dialog retry replaces only the server candidate");
+  assert.equal(harness.runner.current.recovery.server?.draft.script, "latest server");
+  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, false,
+    "successful in-dialog retry enables the two choices");
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount,
+    "all in-dialog refresh attempts are GET-only");
+  assert.equal(harness.storage.getItem(journalKey), journalBeforeRetry,
+    "successful refresh still preserves recovery provenance until an explicit choice");
+
+  harness.runner.current.chooseServerProjectDraft();
+  harness.runner.flush();
+  assert.equal(harness.runner.current.recovery.status, "none",
+    "a successful refresh re-enables the explicit server choice");
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount,
+    "the re-enabled server choice remains PATCH-free");
+}
+
+async function conflictRefreshLifecycleOwnership(): Promise<void> {
+  for (const boundary of ["reset", "project-switch", "unmount"] as const) {
+    const projectId = `refresh-${boundary}`;
+    const server = new SharedEditorServer();
+    server.setProject(projectId, 2, { script: "server" });
+    const harness = createHarness({ search: `?projectId=${projectId}`, server });
+    seedConflictJournal(harness, projectId, { script: "local" }, 1);
+    harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+      project: project(projectId, 2, { script: "server" }),
+    }));
+    harness.fetchMock.enqueueFailure("PATCH", editorUrl(projectId), new Error("ambiguous"));
+    harness.fetchMock.enqueueFailure("GET", editorUrl(projectId), new Error("initial refresh unavailable"));
+    harness.runner.mount();
+    await settle(harness.runner);
+    await harness.runner.current.chooseLocalProjectDraft();
+    await settle(harness.runner);
+    assert.equal(harness.runner.current.recovery.requiresServerRefresh, true);
+
+    const pendingRefresh = deferred<ResponseLike>();
+    harness.fetchMock.enqueue("GET", editorUrl(projectId), pendingRefresh.promise);
+    const retryPromise = harness.runner.current.retryConflictServerRefresh();
+    await settle(harness.runner);
+    const retryCalls = harness.fetchMock.calls.filter(
+      (call) => call.method === "GET" && call.url === editorUrl(projectId),
+    );
+    const retrySignal = retryCalls.at(-1)?.init.signal;
+    assert.ok(retrySignal, "conflict Retry owns an AbortSignal");
+    assert.equal(retrySignal.aborted, false);
+
+    let replacement: ReturnType<typeof createHarness> | null = null;
+    if (boundary === "reset") {
+      await harness.runner.current.resetProject();
+      await settle(harness.runner);
+    } else {
+      harness.runner.unmount();
+      if (boundary === "project-switch") {
+        server.setProject("refresh-project-b", 0, { script: "server B" });
+        replacement = createHarness({ search: "?projectId=refresh-project-b", server });
+        replacement.runner.mount();
+        await settle(replacement.runner);
+      }
+    }
+    assert.equal(retrySignal.aborted, true, `${boundary} aborts its stale conflict refresh`);
+    const staleSnapshot = {
+      projectId: harness.runner.current.projectId,
+      projectReady: harness.runner.current.projectReady,
+      recovery: harness.runner.current.recovery.status,
+      script: harness.runner.current.script,
+    };
+    pendingRefresh.resolve(response(200, {
+      project: project(projectId, 9, { script: "late stale server" }),
+    }));
+    await retryPromise;
+    await settle(harness.runner, 64);
+    assert.deepEqual({
+      projectId: harness.runner.current.projectId,
+      projectReady: harness.runner.current.projectReady,
+      recovery: harness.runner.current.recovery.status,
+      script: harness.runner.current.script,
+    }, staleSnapshot, `${boundary} ignores late conflict refresh callbacks`);
+    assert.equal(patchBodies(harness.fetchMock).length, 1,
+      `${boundary} stale refresh never starts another PATCH`);
+    if (replacement) {
+      assert.equal(replacement.runner.current.projectId, "refresh-project-b");
+      assert.equal(replacement.runner.current.projectReady, true);
+      assert.equal(replacement.runner.current.recovery.status, "none");
+      replacement.runner.unmount();
+    }
+  }
 }
 
 function seedConflictJournal(
@@ -1495,7 +1636,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["StrictMode-setup-cleanup", strictModeDoesNotDuplicateWrites],
     ["ambiguous-local-choice", ambiguousLocalChoiceRefreshesServer],
     ["malformed-409-refresh", malformedConflictResponsesRefreshAuthoritatively],
-    ["ambiguous-refresh-failure", failedAmbiguousRefreshStaysLocked],
+    ["ambiguous-refresh-retry", failedAmbiguousRefreshRetriesGetOnly],
+    ["conflict-refresh-lifecycle", conflictRefreshLifecycleOwnership],
     ["local-choice-lifecycle-ownership", localChoiceLifecycleOwnership],
     ["local-choice-exact-ack", exactLocalChoiceAcknowledgement],
     ["local-choice-mismatch", mismatchedLocalChoiceAcknowledgementsRefresh],
@@ -1694,6 +1836,50 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     localChoiceLifecycleOwnership,
     /reset aborts its stale local-choice PATCH/,
     "runtime harness rejects Reset that leaves a local choice request alive",
+  );
+
+  const retryCallingLocalChoice = hookSource.replace(
+    `    setRecoveryState({ ...conflict, resolving: "refresh", error: null });
+    await refreshConflictAfterAmbiguousWrite(projectId, conflict, {
+      signal: controller.signal,
+      isCurrent: stillCurrentRefresh,
+    });`,
+    `    setRecoveryState({ ...conflict, resolving: false, requiresServerRefresh: false, error: null });
+    await chooseLocalProjectDraft();`,
+  );
+  assert.notEqual(retryCallingLocalChoice, hookSource, "GET-only Retry choice mutation applied");
+  activeCompiledHook = compileHook(retryCallingLocalChoice);
+  await assert.rejects(
+    failedAmbiguousRefreshRetriesGetOnly,
+    /GET|PATCH|refresh|server candidate/,
+    "runtime harness rejects a Retry action that invokes the local PATCH choice",
+  );
+
+  const failedRefreshRestoringLocalSpinner = hookSource.replace(
+    `    } catch {
+      if (!stillResolvingThisConflict()) return;
+      setRecoveryState({
+        status: "conflict",
+        local: conflict.local,
+        server: conflict.server,
+        resolving: false,
+        requiresServerRefresh: true,`,
+    `    } catch {
+      if (!stillResolvingThisConflict()) return;
+      setRecoveryState({
+        status: "conflict",
+        local: conflict.local,
+        server: conflict.server,
+        resolving: "local",
+        requiresServerRefresh: true,`,
+  );
+  assert.notEqual(failedRefreshRestoringLocalSpinner, hookSource,
+    "failed-refresh choice-spinner mutation applied");
+  activeCompiledHook = compileHook(failedRefreshRestoringLocalSpinner);
+  await assert.rejects(
+    failedAmbiguousRefreshRetriesGetOnly,
+    /failed refresh|resolving|retryable locked conflict/,
+    "runtime harness rejects a failed refresh that restores the local-choice spinner",
   );
 
   const invalidLocalWithoutRecovery = hookSource.replace(
