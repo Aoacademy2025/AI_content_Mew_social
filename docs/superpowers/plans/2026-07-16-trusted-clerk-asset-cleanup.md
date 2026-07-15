@@ -56,7 +56,9 @@ export type ClerkAssetCleanupStore = {
     clerkId: string;
     userId: string;
   }): Promise<"moved" | "already-quarantined" | "absent">;
+  quarantineState(clerkId: string): Promise<"absent" | "active" | "cleaned">;
   quarantineExists(clerkId: string): Promise<boolean>;
+  ensureQuarantineFence(clerkId: string): Promise<"active" | "cleaned">;
   removeQuarantine(clerkId: string): Promise<void>;
 };
 
@@ -132,14 +134,14 @@ directories use `0700`. Scavenge at most 32 stale temporary entries per call and
 names matching:
 
 ```ts
-new RegExp(`^\\.${receiptId}\\.[0-9a-f-]{36}\\.tmp$`, "u")
+new RegExp(`^\\.${receiptId}\\.([1-9][0-9]*)\\.[0-9a-f-]{36}\\.tmp$`, "u")
 ```
 
-New temporary names also carry their writer PID. Preserve live and
-permission-ambiguous owners, fail closed on unexpected liveness-probe errors, and
-scavenge only confirmed-dead same-receipt owners within the existing per-call bound.
-Preserve legacy ownerless names because their liveness is unknowable. Do not follow
-symlinks and do not remove a non-matching file.
+The captured decimal field is the writer PID. Preserve live and permission-ambiguous
+owners, fail closed on unexpected liveness-probe errors, and scavenge only confirmed-dead
+same-receipt owners within the existing per-call bound. Preserve legacy ownerless names
+because their liveness is unknowable. Do not follow symlinks and do not remove a
+non-matching file.
 
 - [ ] **Step 5: Implement receipt-specific quarantine primitives**
 
@@ -147,8 +149,9 @@ Reserve `.account-delete-quarantine-v1` in `isSafeBrandAssetUserId`. The quarant
 path is exactly `<root>/.account-delete-quarantine-v1/<receiptHash>`. Rename only the
 validated direct child `<root>/<userId>` to that path. Treat `ENOENT` as `"absent"`
 and an existing quarantine as `"already-quarantined"`; any other collision fails
-closed. `removeQuarantine` recursively removes only that hash path after the caller's
-database recheck.
+closed. After the caller's database recheck, `removeQuarantine` recursively removes
+only the payload children, normalizes the hash directory to `0700`, and retains that
+directory with one canonical fsynced marker as the permanent terminal fence.
 
 - [ ] **Step 6: Prove mutation sensitivity and GREEN**
 
@@ -267,6 +270,12 @@ with no live Clerk row is terminal. Every terminal/fence path, including stale
 `prepared`, `quarantined`, and `directory-cleaned` receipts, checks for a live row with
 the same Clerk id before repair or receipt removal. If one exists, fail closed for
 manual resolution; deleted Clerk ids are not assumed to be non-reusable.
+
+If terminal-fence creation gets `EEXIST` with a canonical marker, reopen the marker
+without following symlinks, validate stable canonical contents and inode/path identity,
+fsync the marker, normalize and fsync the target directory, and fsync the quarantine
+parent before returning `"cleaned"`. A concurrent replacement fails closed. Never
+delete, convert, or otherwise modify a noncanonical active `EEXIST` payload.
 
 At every failure, log exactly:
 

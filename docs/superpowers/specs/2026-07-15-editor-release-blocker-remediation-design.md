@@ -311,6 +311,14 @@ requires the post-rename database checks before payload removal. This applies to
 between an outer read and the finalizer lock, ensuring continuous destination occupancy
 before terminal state or receipt removal.
 
+A page-cache-visible canonical marker alone is not a durable `EEXIST` fence. Before
+returning terminal state, the existing marker is reopened without following symlinks,
+its canonical contents and inode/path identity are validated as stable, the marker is
+fsynced, the target directory is normalized to `0700` and fsynced, and the quarantine
+parent is fsynced. Any concurrent identity replacement fails closed. A noncanonical
+active `EEXIST` destination remains unchanged and is never deleted or converted by the
+fence-creation primitive.
+
 Every terminal/fence path checks for a live row with the same Clerk id. With the receipt
 absent, a no-live-row duplicate is terminal; a live same-Clerk row fails closed and
 requires manual fence resolution rather than assuming deleted Clerk ids are never
@@ -364,7 +372,8 @@ names are bound to the same receipt hash and pass the same private-root checks.
   returning the existing missing-user result.
 - Separator/traversal user ids are rejected and cannot remove sibling/root data.
 - The first Clerk cleanup failure returns non-success while retaining a durable receipt;
-  a missing-row redelivery removes the quarantined directory and receipt.
+  a missing-row redelivery removes the quarantined payload, retains the canonical
+  terminal fence directory, and removes the receipt.
 - First-directory creation is parent-fsynced before database deletion, and an
   in-place-growing or replaced receipt is rejected through a capped read.
 - A live-id race before or during quarantine never removes the live user's original

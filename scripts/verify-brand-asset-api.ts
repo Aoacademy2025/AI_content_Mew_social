@@ -17,6 +17,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -898,6 +899,7 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       "user-controlled-payload",
       { mode: 0o600 },
     );
+    await chmod(sourceDirectory, 0o755);
     assert.equal(
       await quarantineStore.quarantineUserDirectory({
         clerkId: quarantineClerkId,
@@ -925,6 +927,11 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     await expectPresent(
       path.join(exactQuarantinePath, "nested", "private.webp"),
       "an EEXIST fence race preserves the active quarantined payload",
+    );
+    assert.equal(
+      (await stat(exactQuarantinePath)).mode & 0o777,
+      0o755,
+      "active EEXIST classification does not convert a noncanonical payload directory",
     );
     await expectMissing(
       path.join(quarantineRoot, QUARANTINE_DIRECTORY_NAME, quarantineUserId),
@@ -1034,6 +1041,94 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       parentSyncedAt < markerSyncedAt && markerSyncedAt < markerDirectorySyncedAt,
       "destination occupancy is durable before its canonical marker becomes terminal",
     );
+
+    const eexistRaceClerkId = "clerk-eexist-marker-sync-race";
+    const eexistRacePath = quarantinePath(quarantineRoot, eexistRaceClerkId);
+    const eexistRaceMarker = path.join(eexistRacePath, ".directory-cleaned-v1");
+    const eexistRaceSteps: string[] = [];
+    const eexistRaceStoreA = createClerkAssetCleanupStore({ assetRoot: quarantineRoot });
+    const eexistRaceStoreB = createClerkAssetCleanupStore({
+      assetRoot: quarantineRoot,
+      observeDurabilityStep: (step) => eexistRaceSteps.push(step),
+    });
+    const eexistProbeHandle = await open(quarantineRoot, "r");
+    const eexistFileHandlePrototype = Object.getPrototypeOf(eexistProbeHandle) as {
+      stat: (...args: any[]) => Promise<Awaited<ReturnType<typeof eexistProbeHandle.stat>>>;
+      sync: (...args: any[]) => Promise<any>;
+    };
+    await eexistProbeHandle.close();
+    const originalEexistSync = eexistFileHandlePrototype.sync;
+    const firstMarkerWritten = deferred();
+    const allowFirstMarkerSync = deferred();
+    let firstFileSyncPaused = false;
+    eexistFileHandlePrototype.sync = async function (...args: any[]) {
+      const metadata = await this.stat();
+      if (metadata.isFile() && !firstFileSyncPaused) {
+        firstFileSyncPaused = true;
+        firstMarkerWritten.resolve();
+        await allowFirstMarkerSync.promise;
+      }
+      return originalEexistSync.apply(this, args);
+    };
+    let firstFence: Promise<"active" | "cleaned"> | null = null;
+    try {
+      firstFence = eexistRaceStoreA.ensureQuarantineFence(eexistRaceClerkId);
+      await firstMarkerWritten.promise;
+      assert.equal(
+        await eexistRaceStoreB.ensureQuarantineFence(eexistRaceClerkId),
+        "cleaned",
+        "an EEXIST follower can make a page-cache-visible canonical marker durable",
+      );
+      assert.deepEqual(
+        eexistRaceSteps.filter((step) => step.startsWith("quarantine-terminal-")),
+        [
+          "quarantine-terminal-file-synced",
+          "quarantine-terminal-directory-synced",
+          "quarantine-terminal-parent-synced",
+        ],
+        "an EEXIST canonical follower fsyncs marker, target, and quarantine parent before returning",
+      );
+    } finally {
+      allowFirstMarkerSync.resolve();
+      await firstFence?.catch(() => undefined);
+      eexistFileHandlePrototype.sync = originalEexistSync;
+    }
+
+    await chmod(eexistRacePath, 0o755);
+    assert.equal(
+      await eexistRaceStoreB.ensureQuarantineFence(eexistRaceClerkId),
+      "cleaned",
+    );
+    assert.equal(
+      (await stat(eexistRacePath)).mode & 0o777,
+      0o700,
+      "a durable canonical EEXIST fence is normalized to private 0700",
+    );
+
+    const replacementPath = path.join(eexistRacePath, ".replacement-marker");
+    await writeFile(
+      replacementPath,
+      eexistRaceStoreA.identifier(eexistRaceClerkId),
+      { mode: 0o600 },
+    );
+    let replacedDuringSync = false;
+    eexistFileHandlePrototype.sync = async function (...args: any[]) {
+      const metadata = await this.stat();
+      if (metadata.isFile() && !replacedDuringSync) {
+        replacedDuringSync = true;
+        await rename(replacementPath, eexistRaceMarker);
+      }
+      return originalEexistSync.apply(this, args);
+    };
+    try {
+      await assert.rejects(
+        eexistRaceStoreB.ensureQuarantineFence(eexistRaceClerkId),
+        /invalid_clerk_cleanup_trust_boundary/u,
+        "a canonical marker replaced during EEXIST durability validation fails closed",
+      );
+    } finally {
+      eexistFileHandlePrototype.sync = originalEexistSync;
+    }
 
     const collisionClerkId = "clerk-quarantine-collision";
     const collisionUserId = "quarantine-collision-user";

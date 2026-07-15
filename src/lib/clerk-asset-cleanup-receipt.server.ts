@@ -154,6 +154,18 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
     && left.size === right.size;
 }
 
+function sameDirectoryIdentity(left: Stats, right: Stats): boolean {
+  return sameDirectoryObject(left, right)
+    && (left.mode & 0o777) === (right.mode & 0o777);
+}
+
+function sameDirectoryObject(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.isDirectory() === right.isDirectory()
+    && left.uid === right.uid;
+}
+
 export function createClerkAssetCleanupStore(
   options: StoreOptions = {},
 ): ClerkAssetCleanupStore {
@@ -186,6 +198,41 @@ export function createClerkAssetCleanupStore(
     try {
       await handle.sync();
       if (step) observe?.(step);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async function normalizeAndSyncQuarantineDirectory(
+    directory: string,
+    expectedMetadata: Stats,
+    step: string,
+  ): Promise<Stats> {
+    const handle = await open(
+      directory,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+    );
+    try {
+      const before = await handle.stat();
+      assertTrustedQuarantineTarget(before);
+      if (!sameDirectoryObject(expectedMetadata, before)) {
+        throw invalidTrustBoundary();
+      }
+      await handle.chmod(0o700);
+      await handle.sync();
+      observe?.(step);
+      const after = await handle.stat();
+      const pathnameMetadata = await lstat(directory);
+      assertTrustedQuarantineTarget(after);
+      assertTrustedQuarantineTarget(pathnameMetadata);
+      if (
+        (after.mode & 0o777) !== 0o700
+        || !sameDirectoryObject(before, after)
+        || !sameDirectoryIdentity(after, pathnameMetadata)
+      ) {
+        throw invalidTrustBoundary();
+      }
+      return after;
     } finally {
       await handle.close();
     }
@@ -339,19 +386,29 @@ export function createClerkAssetCleanupStore(
     return target;
   }
 
-  async function hasCanonicalQuarantineTerminalMarker(
+  async function openCanonicalQuarantineTerminalMarker(
     receiptId: string,
-  ): Promise<boolean> {
+  ): Promise<{
+    handle: Awaited<ReturnType<typeof open>>;
+    markerMetadata: Stats;
+    markerPath: string;
+    quarantineMetadata: Stats;
+    quarantinePath: string;
+  } | null> {
+    const targetDirectory = quarantinePath(receiptId);
+    const quarantineMetadata = await metadataOrNull(targetDirectory);
+    if (!quarantineMetadata) return null;
+    assertTrustedQuarantineTarget(quarantineMetadata);
     const target = quarantineTerminalMarker(receiptId);
     const pathnameMetadata = await metadataOrNull(target);
-    if (!pathnameMetadata) return false;
+    if (!pathnameMetadata) return null;
     try {
       assertTrustedReceiptFile(pathnameMetadata);
     } catch {
-      return false;
+      return null;
     }
     if (pathnameMetadata.size !== Buffer.byteLength(receiptId, "utf8")) {
-      return false;
+      return null;
     }
 
     let handle: Awaited<ReturnType<typeof open>>;
@@ -362,35 +419,106 @@ export function createClerkAssetCleanupStore(
       );
     } catch (error) {
       if (isMissingFileError(error) || (error as NodeJS.ErrnoException).code === "ELOOP") {
-        return false;
+        return null;
       }
       throw error;
     }
+    let keepHandle = false;
     try {
       const before = await handle.stat();
       try {
         assertTrustedReceiptFile(before);
       } catch {
-        return false;
+        return null;
       }
-      if (!sameFileIdentity(pathnameMetadata, before)) return false;
+      if (!sameFileIdentity(pathnameMetadata, before)) return null;
       const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       const after = await handle.stat();
       const currentPathnameMetadata = await metadataOrNull(target);
-      if (!currentPathnameMetadata) return false;
+      if (!currentPathnameMetadata) return null;
       try {
         assertTrustedReceiptFile(after);
         assertTrustedReceiptFile(currentPathnameMetadata);
       } catch {
-        return false;
+        return null;
       }
-      return bytesRead === Buffer.byteLength(receiptId, "utf8")
+      const canonical = bytesRead === Buffer.byteLength(receiptId, "utf8")
         && sameFileIdentity(before, after)
         && sameFileIdentity(before, currentPathnameMetadata)
         && buffer.subarray(0, bytesRead).toString("utf8") === receiptId;
+      if (!canonical) return null;
+      keepHandle = true;
+      return {
+        handle,
+        markerMetadata: after,
+        markerPath: target,
+        quarantineMetadata,
+        quarantinePath: targetDirectory,
+      };
     } finally {
-      await handle.close();
+      if (!keepHandle) await handle.close();
+    }
+  }
+
+  async function hasCanonicalQuarantineTerminalMarker(
+    receiptId: string,
+  ): Promise<boolean> {
+    const opened = await openCanonicalQuarantineTerminalMarker(receiptId);
+    if (!opened) return false;
+    await opened.handle.close();
+    return true;
+  }
+
+  async function assertCanonicalQuarantineTerminalMarkerStable(
+    receiptId: string,
+    opened: NonNullable<Awaited<ReturnType<typeof openCanonicalQuarantineTerminalMarker>>>,
+  ): Promise<void> {
+    const handleMetadata = await opened.handle.stat();
+    const markerPathMetadata = await metadataOrNull(opened.markerPath);
+    const quarantinePathMetadata = await metadataOrNull(opened.quarantinePath);
+    if (!markerPathMetadata || !quarantinePathMetadata) {
+      throw invalidTrustBoundary();
+    }
+    assertTrustedReceiptFile(handleMetadata);
+    assertTrustedReceiptFile(markerPathMetadata);
+    assertTrustedQuarantineTarget(quarantinePathMetadata);
+    const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
+    const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, 0);
+    if (
+      bytesRead !== Buffer.byteLength(receiptId, "utf8")
+      || buffer.subarray(0, bytesRead).toString("utf8") !== receiptId
+      || !sameFileIdentity(opened.markerMetadata, handleMetadata)
+      || !sameFileIdentity(opened.markerMetadata, markerPathMetadata)
+      || !sameDirectoryIdentity(opened.quarantineMetadata, quarantinePathMetadata)
+    ) {
+      throw invalidTrustBoundary();
+    }
+  }
+
+  async function syncCanonicalQuarantineTerminalFence(
+    receiptId: string,
+  ): Promise<boolean> {
+    const opened = await openCanonicalQuarantineTerminalMarker(receiptId);
+    if (!opened) return false;
+    try {
+      await opened.handle.sync();
+      observe?.("quarantine-terminal-file-synced");
+      await assertCanonicalQuarantineTerminalMarkerStable(receiptId, opened);
+      opened.quarantineMetadata = await normalizeAndSyncQuarantineDirectory(
+        opened.quarantinePath,
+        opened.quarantineMetadata,
+        "quarantine-terminal-directory-synced",
+      );
+      await assertCanonicalQuarantineTerminalMarkerStable(receiptId, opened);
+      await syncDirectory(
+        quarantineDirectory,
+        "quarantine-terminal-parent-synced",
+      );
+      await assertCanonicalQuarantineTerminalMarkerStable(receiptId, opened);
+      return true;
+    } finally {
+      await opened.handle.close();
     }
   }
 
@@ -674,7 +802,7 @@ export function createClerkAssetCleanupStore(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       assertTrustedQuarantineTarget(await lstat(target));
-      return await hasCanonicalQuarantineTerminalMarker(receiptId)
+      return await syncCanonicalQuarantineTerminalFence(receiptId)
         ? "cleaned"
         : "active";
     }
@@ -741,8 +869,12 @@ export function createClerkAssetCleanupStore(
     } finally {
       await markerHandle?.close().catch(() => undefined);
     }
-    await syncDirectory(target, "quarantine-terminal-directory-synced");
-    await syncDirectory(directory);
+    await normalizeAndSyncQuarantineDirectory(
+      target,
+      metadata,
+      "quarantine-terminal-directory-synced",
+    );
+    await syncDirectory(directory, "quarantine-terminal-parent-synced");
   }
 
   return {
