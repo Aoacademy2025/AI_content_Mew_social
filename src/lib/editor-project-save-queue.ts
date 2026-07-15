@@ -62,13 +62,21 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
   const cancelTimeout = options.cancelTimeout
     ?? ((token: unknown) => clearTimeout(token as ReturnType<typeof setTimeout>));
 
-  function normalizeOutcome(value: unknown): EditorProjectSaveOutcome {
-    if (value === true) return { kind: "saved" };
-    if (value === false) return { kind: "error" };
+  function normalizeOutcome(
+    value: unknown,
+    allowLegacyBoolean: boolean,
+  ): EditorProjectSaveOutcome {
+    if (allowLegacyBoolean && value === true) return { kind: "saved" };
+    if (allowLegacyBoolean && value === false) return { kind: "error" };
     if (value === null || typeof value !== "object") return { kind: "error" };
     try {
+      if (Array.isArray(value)) return { kind: "error" };
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) return { kind: "error" };
       const descriptor = Object.getOwnPropertyDescriptor(value, "kind");
-      if (!descriptor || !("value" in descriptor)) return { kind: "error" };
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+        return { kind: "error" };
+      }
       switch (descriptor.value) {
         case "saved":
         case "error":
@@ -145,6 +153,7 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
   async function runBoundedPhase(
     revision: number,
     phase: (context: EditorProjectSaveContext) => Promise<boolean | EditorProjectSaveOutcome>,
+    allowLegacyBoolean: boolean,
   ): Promise<{ outcome: EditorProjectSaveOutcome; timedOut: boolean }> {
     const controller = new AbortController();
     let timeoutToken: unknown;
@@ -156,7 +165,7 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
       rawResult = Promise.resolve(false);
     }
     const phaseResult = rawResult.then(
-      (value) => ({ outcome: normalizeOutcome(value), timedOut: false }),
+      (value) => ({ outcome: normalizeOutcome(value, allowLegacyBoolean), timedOut: false }),
       () => ({ outcome: { kind: "error" } as EditorProjectSaveOutcome, timedOut: false }),
     );
     const timeoutResult = new Promise<{
@@ -175,12 +184,12 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
   }
 
   async function runRequest(request: SaveRequest): Promise<EditorProjectSaveOutcome> {
-    const primary = await runBoundedPhase(request.revision, request.save);
+    const primary = await runBoundedPhase(request.revision, request.save, true);
     const needsReconciliation = primary.timedOut || primary.outcome.kind === "ambiguous";
     if (!needsReconciliation) return primary.outcome;
     if (!request.reconcile) return { kind: "error" };
 
-    const reconciled = await runBoundedPhase(request.revision, request.reconcile);
+    const reconciled = await runBoundedPhase(request.revision, request.reconcile, false);
     if (!reconciled.timedOut && reconciled.outcome.kind === "saved") {
       return { kind: "saved" };
     }

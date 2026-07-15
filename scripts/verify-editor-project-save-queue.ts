@@ -79,6 +79,39 @@ async function nextTurn(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+async function assertInvalidReconciliationBlocks(
+  label: string,
+  value: unknown,
+): Promise<void> {
+  const queue = createQueue();
+  const projectId = `project-invalid-reconcile-${label}`;
+  const phases: string[] = [];
+  let blockedCount = 0;
+  queue.enqueue({
+    projectId,
+    save: async () => {
+      phases.push("save:A");
+      return { kind: "ambiguous" };
+    },
+    reconcile: async () => {
+      phases.push("reconcile:A");
+      return value as SaveOutcome;
+    },
+    onBlocked: () => { blockedCount += 1; },
+  });
+  queue.enqueue({
+    projectId,
+    save: async () => {
+      phases.push("save:B");
+      return true;
+    },
+  });
+  await queue.whenIdle(projectId);
+  assert.deepEqual(phases, ["save:A", "reconcile:A"], `${label} reconciliation drops B`);
+  assert.equal(blockedCount, 1, `${label} reconciliation calls onBlocked exactly once`);
+  assert.equal(queue.laneCount(), 0, `${label} reconciliation releases whenIdle and its lane`);
+}
+
 async function main(): Promise<void> {
   {
     const queue = createQueue();
@@ -397,6 +430,80 @@ async function main(): Promise<void> {
     assert.deepEqual(events.at(-1), blockedEvents[0]);
   }
 
+  {
+    let accessorReads = 0;
+    const accessorOutcome = Object.defineProperty({}, "kind", {
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return "saved";
+      },
+    });
+    const inheritedOutcome = Object.create({ kind: "saved" });
+    const nonEnumerableOutcome = Object.defineProperty({}, "kind", {
+      enumerable: false,
+      value: "saved",
+    });
+    const hostileProxy = new Proxy({}, {
+      getOwnPropertyDescriptor() {
+        throw new Error("hostile descriptor trap");
+      },
+    });
+    const revoked = Proxy.revocable({ kind: "saved" }, {});
+    revoked.revoke();
+    class StructuredOutcomeImpostor {
+      kind = "saved";
+    }
+
+    for (const [label, value] of [
+      ["boolean-true", true],
+      ["boolean-false", false],
+      ["array", Object.assign([], { kind: "saved" })],
+      ["non-enumerable", nonEnumerableOutcome],
+      ["accessor", accessorOutcome],
+      ["inherited", inheritedOutcome],
+      ["class-instance", new StructuredOutcomeImpostor()],
+      ["hostile-proxy", hostileProxy],
+      ["revoked-proxy", revoked.proxy],
+    ] as const) {
+      await assertInvalidReconciliationBlocks(label, value);
+    }
+    assert.equal(accessorReads, 0, "structured outcome validation never invokes a kind accessor");
+  }
+
+  {
+    const queue = createQueue();
+    const phases: string[] = [];
+    let blockedCount = 0;
+    const validNullPrototypeOutcome = Object.assign(Object.create(null) as Record<string, unknown>, {
+      kind: "saved",
+      observedRevision: 8,
+    });
+    queue.enqueue({
+      projectId: "project-null-prototype-outcome",
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "ambiguous" };
+      },
+      reconcile: async () => {
+        phases.push("reconcile:A");
+        return validNullPrototypeOutcome as SaveOutcome;
+      },
+      onBlocked: () => { blockedCount += 1; },
+    });
+    queue.enqueue({
+      projectId: "project-null-prototype-outcome",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+    });
+    await queue.whenIdle("project-null-prototype-outcome");
+    assert.deepEqual(phases, ["save:A", "reconcile:A", "save:B"],
+      "a valid null-prototype outcome with extra structural fields is accepted");
+    assert.equal(blockedCount, 0);
+  }
+
   for (const reconcileFailure of ["error", "ambiguous", "blocked", "throw"] as const) {
     const queue = createQueue();
     const phases: string[] = [];
@@ -449,6 +556,71 @@ async function main(): Promise<void> {
       revision,
       status: "error",
     }, "malformed structured outcomes fail closed as an ordinary save error");
+  }
+
+  for (const lateSettlement of ["resolve", "reject"] as const) {
+    const clock = fakeTimeouts();
+    const queue = createQueue({
+      requestTimeoutMs: 777,
+      scheduleTimeout: clock.scheduleTimeout,
+      cancelTimeout: clock.cancelTimeout,
+    });
+    const projectId = `project-late-reconcile-${lateSettlement}`;
+    const events: SaveEvent[] = [];
+    let blockedCount = 0;
+    let lateResolve!: (outcome: SaveOutcome) => void;
+    let lateReject!: (error: Error) => void;
+    queue.enqueue({
+      projectId,
+      save: async () => ({ kind: "ambiguous" }),
+      reconcile: () => new Promise<SaveOutcome>((resolve, reject) => {
+        lateResolve = resolve;
+        lateReject = reject;
+      }),
+      onBlocked: () => { blockedCount += 1; },
+      onStatus: (event) => events.push(event),
+    });
+    await nextTurn();
+    assert.equal(clock.runNext(), 777);
+    await queue.whenIdle(projectId);
+    const eventsAfterTimeout = structuredClone(events);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    if (lateSettlement === "resolve") lateResolve({ kind: "saved" });
+    else lateReject(new Error("late reconciliation rejection"));
+    await nextTurn();
+    process.off("unhandledRejection", onUnhandled);
+    assert.deepEqual(unhandled, [], `late reconciliation ${lateSettlement} is consumed`);
+    assert.deepEqual(events, eventsAfterTimeout,
+      `late reconciliation ${lateSettlement} cannot publish status`);
+    assert.equal(blockedCount, 1, `late reconciliation ${lateSettlement} cannot notify twice`);
+  }
+
+  {
+    const queue = createQueue();
+    let blockedCount = 0;
+    let pendingSaveCount = 0;
+    queue.enqueue({
+      projectId: "project-inactive-blocked",
+      save: async () => ({ kind: "ambiguous" }),
+      reconcile: async () => ({ kind: "error" }),
+      isActive: () => false,
+      onBlocked: () => { blockedCount += 1; },
+    });
+    queue.enqueue({
+      projectId: "project-inactive-blocked",
+      save: async () => {
+        pendingSaveCount += 1;
+        return true;
+      },
+      isActive: () => false,
+      onBlocked: () => { blockedCount += 1; },
+    });
+    await queue.whenIdle("project-inactive-blocked");
+    assert.equal(blockedCount, 0, "inactive blocked requests suppress onBlocked");
+    assert.equal(pendingSaveCount, 0, "inactive status does not allow dropped work to run");
+    assert.equal(queue.laneCount(), 0, "inactive blocked lane still releases whenIdle");
   }
 
   {
