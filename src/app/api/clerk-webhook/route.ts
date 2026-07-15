@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
-import { hardDeleteUserWithBrandAssets } from "@/lib/account-hard-delete.server";
+import { hardDeleteClerkUserWithBrandAssets } from "@/lib/account-hard-delete.server";
 
 type ClerkUserEvent = {
   type: string;
@@ -110,13 +110,17 @@ export async function POST(req: NextRequest) {
   }
 
   if (type === "user.deleted") {
-    const user = await prisma.user.findUnique({ where: { clerkId: data.id } });
-    if (user) {
+    try {
       // Hard-delete is safe re: trial farming (MON-5): the one-trial-per-email guard lives
       // in the User-independent UsedTrialEmail table (src/lib/trial.ts), not solely on this
       // row's trialStartedAt, so re-registering with the same email after this delete still
       // gets blocked from a second trial by grantTrial().
-      await hardDeleteUserWithBrandAssets(user.id);
+      await hardDeleteClerkUserWithBrandAssets(data.id);
+    } catch {
+      return NextResponse.json(
+        { error: "account_cleanup_retry_required" },
+        { status: 500 },
+      );
     }
   }
 

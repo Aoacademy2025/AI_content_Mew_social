@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import sharp from "sharp";
@@ -42,6 +43,11 @@ const ADMIN_DELETE_USER_ID = "brand-api-admin-delete";
 const ORDERING_DELETE_USER_ID = "brand-api-ordering-delete";
 const DEFERRED_UPLOAD_USER_ID = "brand-api-deferred-upload";
 const ORPHAN_DELETE_USER_ID = "brand-api-orphan-delete";
+const CLERK_RM_RETRY_USER_ID = "brand-api-clerk-rm-retry";
+const CLERK_WRITE_FAIL_USER_ID = "brand-api-clerk-write-fail";
+const CLERK_CONCURRENT_USER_ID = "brand-api-clerk-concurrent";
+const RECEIPTS_DIRECTORY_NAME = ".account-delete-receipts-v1";
+const RECEIPT_BINDING_DOMAIN = "heroai-clerk-brand-cleanup-v1";
 const CLERK_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 
 const errorCases = [
@@ -73,6 +79,43 @@ function deferred<T = void>(): {
   return { promise, resolve };
 }
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function clerkReceiptIdentifier(clerkId: string): string {
+  return sha256(clerkId);
+}
+
+function clerkReceiptPath(clerkId: string): string {
+  return path.join(root, RECEIPTS_DIRECTORY_NAME, `${clerkReceiptIdentifier(clerkId)}.json`);
+}
+
+function clerkReceiptDocument(clerkId: string, userId: string): string {
+  return JSON.stringify({
+    version: 1,
+    clerkIdHash: clerkReceiptIdentifier(clerkId),
+    userId,
+    bindingHash: sha256(`${RECEIPT_BINDING_DOMAIN}\u0000${clerkId}\u0000${userId}`),
+  });
+}
+
+async function captureConsoleErrors<T>(task: () => Promise<T>): Promise<{
+  result: T;
+  logs: string[];
+}> {
+  const original = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((value) => String(value)).join(" "));
+  };
+  try {
+    return { result: await task(), logs };
+  } finally {
+    console.error = original;
+  }
+}
+
 function assertNoStorageData(value: unknown): void {
   const serialized = JSON.stringify(value);
   assert.doesNotMatch(serialized, /storageKey/);
@@ -92,6 +135,9 @@ async function seed(): Promise<void> {
           ORDERING_DELETE_USER_ID,
           DEFERRED_UPLOAD_USER_ID,
           ORPHAN_DELETE_USER_ID,
+          CLERK_RM_RETRY_USER_ID,
+          CLERK_WRITE_FAIL_USER_ID,
+          CLERK_CONCURRENT_USER_ID,
         ],
       },
     },
@@ -240,8 +286,14 @@ async function verifyAdminHardDeleteRegression(): Promise<void> {
   );
   assert.match(
     clerkSource,
-    /hardDeleteUserWithBrandAssets\(user\.id\)/,
-    "Clerk deletion delegates to the same hard-delete helper",
+    /hardDeleteClerkUserWithBrandAssets\(data\.id\)/,
+    "Clerk deletion delegates lookup and retry recovery to its strict shared helper",
+  );
+  const userDeletedBlock = clerkSource.slice(clerkSource.indexOf('if (type === "user.deleted")'));
+  assert.doesNotMatch(
+    userDeletedBlock,
+    /prisma\.user\.findUnique\(\{ where: \{ clerkId: data\.id \} \}\)/,
+    "the Clerk route does not discard missing-row receipt recovery before calling the helper",
   );
 
   const filePath = await createDeletionFixture({
@@ -430,6 +482,231 @@ async function verifyDeferredUploadCannotOrphanFile(): Promise<void> {
     assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
   }
   assert.deepEqual(entries, [], "the failed late insert leaves no temporary or final private file");
+}
+
+async function verifyClerkReceiptRecovery(): Promise<void> {
+  process.env.CLERK_WEBHOOK_SECRET = CLERK_SECRET;
+  const receiptsDirectory = path.join(root, RECEIPTS_DIRECTORY_NAME);
+  const ensurePrivateReceiptsDirectory = async () => {
+    await mkdir(receiptsDirectory, { recursive: true, mode: 0o700 });
+    await chmod(receiptsDirectory, 0o700);
+  };
+  const expectMissing = async (targetPath: string, message: string) => {
+    await assert.rejects(
+      access(targetPath),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+      message,
+    );
+  };
+
+  await ensurePrivateReceiptsDirectory();
+  const retryClerkId = "clerk-brand-api-rm-retry";
+  const retryFile = await createDeletionFixture({
+    userId: CLERK_RM_RETRY_USER_ID,
+    clerkId: retryClerkId,
+    filename: "retry-private.webp",
+  });
+  let firstFailure: Awaited<ReturnType<typeof captureConsoleErrors<Response>>>;
+  await chmod(root, 0o500);
+  try {
+    firstFailure = await captureConsoleErrors(() => clerkWebhookPost(
+      clerkDeleteRequest(retryClerkId, "brand-delete-rm-retry-1"),
+    ));
+  } finally {
+    await chmod(root, 0o700);
+  }
+  assert.equal(firstFailure.result.status, 500, "directory cleanup failure asks Clerk to retry");
+  assert.equal(
+    await prisma.user.findUnique({ where: { id: CLERK_RM_RETRY_USER_ID } }),
+    null,
+    "the real database row can already be gone when directory cleanup fails",
+  );
+  await access(retryFile);
+  const retryReceipt = clerkReceiptPath(retryClerkId);
+  await access(retryReceipt);
+  assert.equal(
+    (await stat(receiptsDirectory)).mode & 0o777,
+    0o700,
+    "the reserved receipts directory is private",
+  );
+  assert.equal((await stat(retryReceipt)).mode & 0o777, 0o600, "receipt files are private");
+  const persistedReceipt = await readFile(retryReceipt, "utf8");
+  assert.equal(persistedReceipt.includes(retryClerkId), false, "receipt never persists the raw Clerk id");
+  const retryIdentifier = clerkReceiptIdentifier(retryClerkId);
+  assert.ok(
+    firstFailure.logs.some((entry) => entry.includes(retryIdentifier)),
+    "cleanup failure logs the stable receipt hash",
+  );
+  const serializedFailureLogs = firstFailure.logs.join("\n");
+  assert.equal(serializedFailureLogs.includes(retryClerkId), false, "failure log omits raw Clerk id");
+  assert.equal(serializedFailureLogs.includes(CLERK_RM_RETRY_USER_ID), false, "failure log omits internal user id");
+  assert.equal(serializedFailureLogs.includes(root), false, "failure log omits private filesystem paths");
+
+  await chmod(receiptsDirectory, 0o500);
+  let receiptRemovalFailure: Response;
+  try {
+    ({ result: receiptRemovalFailure } = await captureConsoleErrors(() => clerkWebhookPost(
+      clerkDeleteRequest(retryClerkId, "brand-delete-rm-retry-2"),
+    )));
+  } finally {
+    await chmod(receiptsDirectory, 0o700);
+  }
+  assert.equal(receiptRemovalFailure.status, 500, "receipt removal failure remains retryable");
+  await expectMissing(
+    path.dirname(retryFile),
+    "missing-row redelivery still removes the exact private user directory",
+  );
+  await access(retryReceipt);
+
+  const repairedResponse = await clerkWebhookPost(
+    clerkDeleteRequest(retryClerkId, "brand-delete-rm-retry-3"),
+  );
+  assert.equal(repairedResponse.status, 200, "a later redelivery completes receipt cleanup");
+  await expectMissing(retryReceipt, "successful repair removes its receipt");
+
+  await ensurePrivateReceiptsDirectory();
+  const writeFailClerkId = "clerk-brand-api-write-fail";
+  const writeFailFile = await createDeletionFixture({
+    userId: CLERK_WRITE_FAIL_USER_ID,
+    clerkId: writeFailClerkId,
+    filename: "write-fail-private.webp",
+  });
+  await chmod(receiptsDirectory, 0o500);
+  let writeFailure: Response;
+  try {
+    ({ result: writeFailure } = await captureConsoleErrors(() => clerkWebhookPost(
+      clerkDeleteRequest(writeFailClerkId, "brand-delete-write-fail-1"),
+    )));
+  } finally {
+    await chmod(receiptsDirectory, 0o700);
+  }
+  assert.equal(writeFailure.status, 500, "a receipt write failure asks Clerk to retry");
+  assert.notEqual(
+    await prisma.user.findUnique({ where: { id: CLERK_WRITE_FAIL_USER_ID } }),
+    null,
+    "receipt durability failure occurs before database deletion",
+  );
+  await access(writeFailFile);
+  await expectMissing(
+    clerkReceiptPath(writeFailClerkId),
+    "a failed atomic write exposes no final receipt",
+  );
+  assert.equal(
+    (await clerkWebhookPost(clerkDeleteRequest(writeFailClerkId, "brand-delete-write-fail-2"))).status,
+    200,
+    "the event succeeds after receipt storage becomes writable",
+  );
+
+  await ensurePrivateReceiptsDirectory();
+  const concurrentClerkId = "clerk-brand-api-concurrent";
+  const concurrentFile = await createDeletionFixture({
+    userId: CLERK_CONCURRENT_USER_ID,
+    clerkId: concurrentClerkId,
+    filename: "concurrent-private.webp",
+  });
+  await chmod(root, 0o500);
+  try {
+    const { result } = await captureConsoleErrors(() => clerkWebhookPost(
+      clerkDeleteRequest(concurrentClerkId, "brand-delete-concurrent-1"),
+    ));
+    assert.equal(result.status, 500);
+  } finally {
+    await chmod(root, 0o700);
+  }
+  const concurrentReceipt = clerkReceiptPath(concurrentClerkId);
+  await access(concurrentReceipt);
+  const concurrentResponses = await Promise.all([
+    clerkWebhookPost(clerkDeleteRequest(concurrentClerkId, "brand-delete-concurrent-2")),
+    clerkWebhookPost(clerkDeleteRequest(concurrentClerkId, "brand-delete-concurrent-3")),
+  ]);
+  assert.deepEqual(
+    concurrentResponses.map((response) => response.status),
+    [200, 200],
+    "duplicate missing-row redeliveries are idempotent",
+  );
+  await expectMissing(path.dirname(concurrentFile), "concurrent repair removes the exact user directory");
+  await expectMissing(concurrentReceipt, "concurrent receipt removal is idempotent");
+
+  await ensurePrivateReceiptsDirectory();
+  const corruptClerkId = "clerk-brand-api-corrupt-receipt";
+  const corruptReceipt = clerkReceiptPath(corruptClerkId);
+  const rootSentinel = path.join(root, "receipt-root-sentinel.txt");
+  const siblingDirectory = `${root}-receipt-sibling`;
+  const siblingSentinel = path.join(siblingDirectory, "receipt-sibling-sentinel.txt");
+  const otherUserDirectory = path.join(root, OTHER_ID);
+  const otherUserSentinel = path.join(otherUserDirectory, "other-user-private.webp");
+  const mismatchedTargetId = "brand-api-receipt-mismatched-target";
+  const mismatchedTargetDirectory = path.join(root, mismatchedTargetId);
+  const mismatchedTargetSentinel = path.join(mismatchedTargetDirectory, "keep-private.webp");
+  await writeFile(rootSentinel, "keep-root");
+  await mkdir(siblingDirectory, { recursive: true });
+  await writeFile(siblingSentinel, "keep-sibling");
+  await mkdir(otherUserDirectory, { recursive: true });
+  await writeFile(otherUserSentinel, "keep-other-user");
+  await mkdir(mismatchedTargetDirectory, { recursive: true });
+  await writeFile(mismatchedTargetSentinel, "keep-mismatched-target");
+
+  const assertReceiptRejected = async (contents: string, label: string) => {
+    await writeFile(corruptReceipt, contents, { mode: 0o600 });
+    await chmod(corruptReceipt, 0o600);
+    const { result, logs } = await captureConsoleErrors(() => clerkWebhookPost(
+      clerkDeleteRequest(corruptClerkId, `brand-delete-corrupt-${label}`),
+    ));
+    assert.equal(result.status, 500, `${label} receipt fails closed`);
+    assert.ok(
+      logs.some((entry) => entry.includes(clerkReceiptIdentifier(corruptClerkId))),
+      `${label} failure uses the stable privacy-safe identifier`,
+    );
+    await access(rootSentinel);
+    await access(siblingSentinel);
+    await access(otherUserSentinel);
+    await access(mismatchedTargetSentinel);
+    assert.notEqual(
+      await prisma.user.findUnique({ where: { id: OTHER_ID } }),
+      null,
+      `${label} receipt cannot delete another live user`,
+    );
+  };
+
+  await assertReceiptRejected("{malformed", "malformed");
+  await assertReceiptRejected(
+    JSON.stringify({
+      version: 1,
+      clerkIdHash: "0".repeat(64),
+      userId: mismatchedTargetId,
+      bindingHash: sha256(`${RECEIPT_BINDING_DOMAIN}\u0000${corruptClerkId}\u0000${mismatchedTargetId}`),
+    }),
+    "mismatched-hash",
+  );
+  await assertReceiptRejected(
+    JSON.stringify({
+      version: 1,
+      clerkIdHash: clerkReceiptIdentifier(corruptClerkId),
+      userId: mismatchedTargetId,
+      bindingHash: "0".repeat(64),
+    }),
+    "mismatched-binding",
+  );
+  const siblingEscape = `../${path.basename(siblingDirectory)}`;
+  await assertReceiptRejected(
+    clerkReceiptDocument(corruptClerkId, siblingEscape),
+    "sibling-escape",
+  );
+  await assertReceiptRejected(
+    clerkReceiptDocument(corruptClerkId, "."),
+    "root-target",
+  );
+  await assertReceiptRejected(
+    clerkReceiptDocument(corruptClerkId, RECEIPTS_DIRECTORY_NAME),
+    "reserved-receipts-directory",
+  );
+  await assertReceiptRejected(
+    clerkReceiptDocument(corruptClerkId, OTHER_ID),
+    "other-live-user",
+  );
+
+  await rm(corruptReceipt, { force: true });
+  await rm(siblingDirectory, { recursive: true, force: true });
 }
 
 async function main(): Promise<void> {
@@ -662,6 +939,11 @@ async function main(): Promise<void> {
     (error: NodeJS.ErrnoException) => error.code === "ENOENT",
     "Clerk hard delete removes captured brand files after the DB delete",
   );
+  await assert.rejects(
+    access(clerkReceiptPath("clerk-brand-api-delete")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "successful Clerk cleanup removes its durable receipt",
+  );
   const retryResponse = await clerkWebhookPost(
     clerkDeleteRequest("clerk-brand-api-delete", "brand-delete-2"),
   );
@@ -681,12 +963,17 @@ async function main(): Promise<void> {
     END
   `);
   try {
-    await assert.rejects(
+    const { result: failedDeleteResponse } = await captureConsoleErrors(() =>
       clerkWebhookPost(
         clerkDeleteRequest("clerk-brand-api-delete-fail", "brand-delete-fail"),
       ),
-      "a forced Prisma delete failure reaches the caller",
     );
+    assert.equal(
+      failedDeleteResponse.status,
+      500,
+      "a forced Prisma delete failure asks Clerk to retry",
+    );
+    await access(clerkReceiptPath("clerk-brand-api-delete-fail"));
     await access(failedDeletionPath);
     assert.notEqual(
       await prisma.user.findUnique({ where: { id: DELETE_FAIL_USER_ID } }),
@@ -696,7 +983,27 @@ async function main(): Promise<void> {
   } finally {
     await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS block_brand_api_user_delete");
   }
+  assert.equal(
+    (await clerkWebhookPost(
+      clerkDeleteRequest("clerk-brand-api-delete-fail", "brand-delete-fail-retry"),
+    )).status,
+    200,
+    "a database-failure receipt repairs on redelivery",
+  );
+  assert.equal(
+    await prisma.user.findUnique({ where: { id: DELETE_FAIL_USER_ID } }),
+    null,
+  );
+  await assert.rejects(
+    access(clerkReceiptPath("clerk-brand-api-delete-fail")),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
+  await assert.rejects(
+    access(failedDeletionPath),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
 
+  await verifyClerkReceiptRecovery();
   await verifyAdminHardDeleteRegression();
   await verifyDeleteThenCleanupOrdering();
   await verifyDeferredUploadCannotOrphanFile();

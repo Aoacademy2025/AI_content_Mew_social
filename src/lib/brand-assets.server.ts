@@ -39,6 +39,7 @@ const MAX_INPUT_DIMENSION = 4096;
 const MAX_UPLOADS_PER_HOUR = 20;
 const UPLOAD_WINDOW_MS = 60 * 60 * 1000;
 const uploadWindows = new Map<string, number[]>();
+export const BRAND_ASSET_ACCOUNT_DELETE_RECEIPTS_DIRECTORY = ".account-delete-receipts-v1";
 
 const acceptedFileTypes: Record<string, { mimeType: string; decodedFormat: "jpeg" | "png" | "webp" }> = {
   ".jpg": { mimeType: "image/jpeg", decodedFormat: "jpeg" },
@@ -323,14 +324,15 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
   return true;
 }
 
-export async function removeBrandAssetDirectoryForUser(userId: string): Promise<void> {
-  const root = brandRoot();
-  if (
+export function isSafeBrandAssetUserId(userId: unknown): userId is string {
+  return !(
     typeof userId !== "string"
     || userId.length === 0
+    || userId.length > 256
     || userId.trim() !== userId
     || userId === "."
     || userId === ".."
+    || userId === BRAND_ASSET_ACCOUNT_DELETE_RECEIPTS_DIRECTORY
     || userId.normalize("NFC") !== userId
     || /[\/\\\u0000-\u001f\u007f]/u.test(userId)
     || path.isAbsolute(userId)
@@ -339,7 +341,12 @@ export async function removeBrandAssetDirectoryForUser(userId: string): Promise<
     || path.win32.basename(userId) !== userId
     || path.posix.normalize(userId) !== userId
     || path.win32.normalize(userId) !== userId
-  ) {
+  );
+}
+
+export async function removeBrandAssetDirectoryForUser(userId: string): Promise<void> {
+  const root = brandRoot();
+  if (!isSafeBrandAssetUserId(userId)) {
     throw new BrandAssetError("invalid_config", 400);
   }
 
