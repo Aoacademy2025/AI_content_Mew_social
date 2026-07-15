@@ -42,6 +42,7 @@ import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
 import { ExpiredPreviewView, prepareExpiredPreviewRerender, shouldShowUnavailablePreview } from "./ExpiredPreviewView";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
+import { EditorProjectRecoveryDialog } from "./EditorProjectRecoveryDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import {
@@ -206,6 +207,11 @@ export function EditorV2Shell() {
       className={`${v2FontClass} flex h-screen flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
+      <div
+        inert={p.recovery.status !== "none" ? true : undefined}
+        aria-hidden={p.recovery.status !== "none" ? "true" : undefined}
+        className="contents"
+      >
       {/* Topbar 58px — single unified bar (full-screen editor: no dashboard chrome) */}
       <header
         className="flex h-[58px] shrink-0 items-center justify-between gap-2 px-4"
@@ -496,6 +502,13 @@ export function EditorV2Shell() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </div>
+      <EditorProjectRecoveryDialog
+        recovery={p.recovery}
+        onRetryLoad={p.retryProjectBootstrap}
+        onChooseLocal={p.chooseLocalProjectDraft}
+        onChooseServer={p.chooseServerProjectDraft}
+      />
     </div>
   );
 }
