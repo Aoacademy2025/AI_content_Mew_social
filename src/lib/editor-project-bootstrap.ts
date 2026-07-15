@@ -1,3 +1,47 @@
+import {
+  parseEditorProjectRecoveryJournal,
+  type EditorProjectDraft,
+  type EditorProjectRecoveryJournalV1,
+} from "./editor-project-recovery-journal";
+
+export type EditorProjectBootstrapDecision =
+  | { kind: "server" }
+  | { kind: "resume-local"; journal: EditorProjectRecoveryJournalV1 }
+  | {
+      kind: "conflict";
+      local: { draft: EditorProjectDraft; editedAt: string | null; trusted: boolean };
+    }
+  | { kind: "locked-error"; code: "server_behind" | "missing_recovery" };
+
+export function decideEditorProjectBootstrap(input: {
+  projectId: string;
+  serverRevision: number;
+  revisionWatermark: number;
+  journal: EditorProjectRecoveryJournalV1 | null;
+  legacyLocalDraft?: unknown;
+}): EditorProjectBootstrapDecision {
+  const journal = parseEditorProjectRecoveryJournal(input.journal, input.projectId);
+  if (input.serverRevision < input.revisionWatermark) {
+    return { kind: "locked-error", code: journal ? "server_behind" : "missing_recovery" };
+  }
+  if (journal && input.serverRevision === journal.baseRevision) {
+    return { kind: "resume-local", journal };
+  }
+  if (journal && input.serverRevision > journal.baseRevision) {
+    return {
+      kind: "conflict",
+      local: { draft: journal.draft, editedAt: journal.editedAt, trusted: true },
+    };
+  }
+  if (isEditorProjectRecoveryDraft(input.legacyLocalDraft)) {
+    return {
+      kind: "conflict",
+      local: { draft: input.legacyLocalDraft, editedAt: null, trusted: false },
+    };
+  }
+  return { kind: "server" };
+}
+
 export type EditorProjectBootstrapProject = {
   id: string;
   draftRevision: number;

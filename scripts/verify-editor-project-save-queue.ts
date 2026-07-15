@@ -264,6 +264,7 @@ async function main(): Promise<void> {
   const bootstrapPath = "../src/lib/editor-project-bootstrap";
   const bootstrapModule = await import(bootstrapPath).catch(() => null) as {
     resolveEditorProjectBootstrap?: ResolveBootstrap;
+    decideEditorProjectBootstrap?: unknown;
     isEditorProjectRecoveryDraft?: (value: unknown) => boolean;
   } | null;
   assert.ok(bootstrapModule, "bootstrap resolver module exists");
@@ -271,6 +272,11 @@ async function main(): Promise<void> {
     typeof bootstrapModule.resolveEditorProjectBootstrap,
     "function",
     "bootstrap resolver is exported",
+  );
+  assert.equal(
+    typeof bootstrapModule.decideEditorProjectBootstrap,
+    "function",
+    "pure bootstrap decision and temporary async adapter coexist during migration",
   );
   const resolveBootstrap = bootstrapModule.resolveEditorProjectBootstrap!;
   const isRecoveryDraft = bootstrapModule.isEditorProjectRecoveryDraft!;
