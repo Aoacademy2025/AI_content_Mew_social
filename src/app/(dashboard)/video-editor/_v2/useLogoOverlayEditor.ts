@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { trackEvent } from "@/lib/client-telemetry";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
@@ -283,25 +290,25 @@ export function useLogoOverlayEditor(input: {
   const uploadGenerationRef = useRef(0);
   const activeUploadControllerRef = useRef<AbortController | null>(null);
 
-  if (currentProjectIdRef.current !== projectId) {
+  useLayoutEffect(() => {
+    const projectChanged = currentProjectIdRef.current !== projectId;
     currentProjectIdRef.current = projectId;
     currentLogoAssetIdRef.current = normalizedValue?.assetId ?? null;
-    uploadGenerationRef.current += 1;
-    activeUploadControllerRef.current?.abort();
-    activeUploadControllerRef.current = null;
-  } else {
-    currentLogoAssetIdRef.current = normalizedValue?.assetId ?? null;
-  }
+    if (!projectChanged) return;
 
-  useEffect(() => {
+    uploadGenerationRef.current += 1;
+    const activeController = activeUploadControllerRef.current;
+    activeUploadControllerRef.current = null;
+    activeController?.abort();
     setSaving(false);
     setMutationError(null);
-  }, [projectId]);
+  }, [normalizedValue?.assetId, projectId]);
 
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
     uploadGenerationRef.current += 1;
-    activeUploadControllerRef.current?.abort();
+    const activeController = activeUploadControllerRef.current;
     activeUploadControllerRef.current = null;
+    activeController?.abort();
   }, []);
 
   useEffect(() => {

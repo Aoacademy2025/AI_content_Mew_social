@@ -57,6 +57,7 @@ type MemoSlot = {
 };
 type EffectSlot = {
   kind: "effect";
+  phase: "layout" | "passive";
   create: () => void | (() => void);
   deps: readonly unknown[] | undefined;
   cleanup?: () => void;
@@ -85,6 +86,7 @@ function depsEqual(
 
 class HookRunner<T> {
   private readonly slots: HookSlot[] = [];
+  private readonly pendingLayoutEffects = new Set<number>();
   private readonly pendingEffects = new Set<number>();
   private cursor = 0;
   private dirty = false;
@@ -93,6 +95,26 @@ class HookRunner<T> {
   postUnmountStateWrites = 0;
 
   constructor(private readonly hook: () => T) {}
+
+  private registerEffect(
+    phase: "layout" | "passive",
+    create: () => void | (() => void),
+    deps?: readonly unknown[],
+  ): void {
+    const index = this.cursor++;
+    let slot = this.slots[index] as EffectSlot | undefined;
+    if (!slot) {
+      slot = { kind: "effect", phase, create, deps: undefined };
+      this.slots[index] = slot;
+    }
+    assert.equal(slot.kind, "effect");
+    assert.equal(slot.phase, phase, "hook effect phase changed between renders");
+    slot.create = create;
+    if (!depsEqual(slot.deps, deps)) {
+      slot.deps = deps ? [...deps] : undefined;
+      (phase === "layout" ? this.pendingLayoutEffects : this.pendingEffects).add(index);
+    }
+  }
 
   readonly react = {
     useState: <V,>(initial: V | (() => V)): [V, (next: V | ((value: V) => V)) => void] => {
@@ -142,22 +164,14 @@ class HookRunner<T> {
       }
       return slot.value as V;
     },
+    useLayoutEffect: (
+      create: () => void | (() => void),
+      deps?: readonly unknown[],
+    ): void => this.registerEffect("layout", create, deps),
     useEffect: (
       create: () => void | (() => void),
       deps?: readonly unknown[],
-    ): void => {
-      const index = this.cursor++;
-      let slot = this.slots[index] as EffectSlot | undefined;
-      if (!slot) {
-        slot = { kind: "effect", create, deps: undefined };
-        this.slots[index] = slot;
-      }
-      slot.create = create;
-      if (!depsEqual(slot.deps, deps)) {
-        slot.deps = deps ? [...deps] : undefined;
-        this.pendingEffects.add(index);
-      }
-    },
+    ): void => this.registerEffect("passive", create, deps),
   };
 
   mount(): void {
@@ -172,21 +186,93 @@ class HookRunner<T> {
     this.flush();
   }
 
+  renderWithoutCommit(): T {
+    assert.equal(this.mounted, true, "cannot render an unmounted hook");
+    const previousCurrent = this.current;
+    const previousDirty = this.dirty;
+    const previousCursor = this.cursor;
+    const previousLength = this.slots.length;
+    const pendingLayouts = [...this.pendingLayoutEffects];
+    const pendingPassives = [...this.pendingEffects];
+    const snapshots = this.slots.map((slot) => {
+      if (slot.kind === "state") return { kind: slot.kind, value: slot.value } as const;
+      if (slot.kind === "memo") {
+        return {
+          kind: slot.kind,
+          value: slot.value,
+          deps: slot.deps ? [...slot.deps] : undefined,
+        } as const;
+      }
+      if (slot.kind === "effect") {
+        return {
+          kind: slot.kind,
+          phase: slot.phase,
+          create: slot.create,
+          deps: slot.deps ? [...slot.deps] : undefined,
+          cleanup: slot.cleanup,
+        } as const;
+      }
+      return { kind: slot.kind } as const;
+    });
+
+    this.dirty = false;
+    this.cursor = 0;
+    const rendered = this.hook();
+
+    this.slots.splice(previousLength);
+    snapshots.forEach((snapshot, index) => {
+      const slot = this.slots[index];
+      if (snapshot.kind === "ref") return;
+      if (snapshot.kind === "state" && slot.kind === "state") {
+        slot.value = snapshot.value;
+        return;
+      }
+      if (snapshot.kind === "memo" && slot.kind === "memo") {
+        slot.value = snapshot.value;
+        slot.deps = snapshot.deps;
+        return;
+      }
+      if (snapshot.kind === "effect" && slot.kind === "effect") {
+        slot.phase = snapshot.phase;
+        slot.create = snapshot.create;
+        slot.deps = snapshot.deps;
+        slot.cleanup = snapshot.cleanup;
+      }
+    });
+    this.pendingLayoutEffects.clear();
+    pendingLayouts.forEach((index) => this.pendingLayoutEffects.add(index));
+    this.pendingEffects.clear();
+    pendingPassives.forEach((index) => this.pendingEffects.add(index));
+    this.current = previousCurrent;
+    this.dirty = previousDirty;
+    this.cursor = previousCursor;
+    return rendered;
+  }
+
+  private commitEffects(pending: Set<number>): void {
+    const effects = [...pending];
+    pending.clear();
+    for (const index of effects) {
+      const slot = this.slots[index] as EffectSlot;
+      slot.cleanup?.();
+      slot.cleanup = slot.create() || undefined;
+    }
+  }
+
   flush(): void {
     let guard = 0;
-    while ((this.dirty || this.pendingEffects.size > 0) && guard++ < 100) {
+    while (
+      (this.dirty || this.pendingLayoutEffects.size > 0 || this.pendingEffects.size > 0)
+      && guard++ < 100
+    ) {
       if (this.dirty) {
         this.dirty = false;
         this.cursor = 0;
         this.current = this.hook();
       }
-      const effects = [...this.pendingEffects];
-      this.pendingEffects.clear();
-      for (const index of effects) {
-        const slot = this.slots[index] as EffectSlot;
-        slot.cleanup?.();
-        slot.cleanup = slot.create() || undefined;
-      }
+      this.commitEffects(this.pendingLayoutEffects);
+      if (this.dirty) continue;
+      this.commitEffects(this.pendingEffects);
     }
     assert.ok(guard < 100, "logo hook reached a stable render");
   }
@@ -194,8 +280,10 @@ class HookRunner<T> {
   unmount(): void {
     if (!this.mounted) return;
     this.mounted = false;
-    for (const slot of this.slots) {
-      if (slot?.kind === "effect") slot.cleanup?.();
+    for (const phase of ["layout", "passive"] as const) {
+      for (const slot of this.slots) {
+        if (slot?.kind === "effect" && slot.phase === phase) slot.cleanup?.();
+      }
     }
   }
 }
@@ -426,6 +514,10 @@ function createHarness(
       args[0] as () => unknown,
       args[1] as readonly unknown[],
     ),
+    useLayoutEffect: (...args: unknown[]) => runner.react.useLayoutEffect(
+      args[0] as () => void | (() => void),
+      args[1] as readonly unknown[] | undefined,
+    ),
     useEffect: (...args: unknown[]) => runner.react.useEffect(
       args[0] as () => void | (() => void),
       args[1] as readonly unknown[] | undefined,
@@ -454,6 +546,15 @@ function createHarness(
       setProject(projectId, assetId);
       runner.rerender();
     },
+    renderProjectWithoutCommit(projectId: string, assetId: string) {
+      const committedProps = props;
+      setProject(projectId, assetId);
+      try {
+        return runner.renderWithoutCommit();
+      } finally {
+        props = committedProps;
+      }
+    },
   };
 }
 
@@ -474,6 +575,36 @@ function eventCount(telemetry: TelemetryCall[], name: string): number {
   return telemetry.filter((call) => call.name === name).length;
 }
 
+async function speculativeProjectRenderLeavesCommittedUploadAlone(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-A", assetId: "old-A" });
+  const pendingResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueueUpload(pendingResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  const completion = harness.runner.current.upload(uploadFile("speculative-B.png"));
+  harness.runner.flush();
+  const request = uploadCalls(harness.fetchMock)[0];
+
+  harness.renderProjectWithoutCommit("project-B", "old-B");
+  assert.equal(request.init.signal?.aborted, false,
+    "an abandoned project B render cannot abort committed project A");
+  assert.equal(harness.runner.current.saving, true,
+    "an abandoned render cannot reset committed project A UI state");
+
+  pendingResponse.resolve(response(201, { asset: asset("new-A") }));
+  assert.equal(await completion, true, "committed project A upload may still complete normally");
+  await settle(harness.runner);
+  await harness.scheduler.runAll();
+  assert.deepEqual(
+    harness.onChanges.map((change) => [change.projectId, change.value?.assetId]),
+    [["project-A", "new-A"]],
+  );
+  assert.equal(harness.runner.current.asset?.id, "new-A");
+  assert.equal(harness.runner.current.saving, false);
+  assert.deepEqual(harness.fetchMock.deletedAssetIds, ["old-A"]);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_done"), 1);
+}
+
 async function projectChangeBeforeResponseIsInert(source: string): Promise<void> {
   const harness = createHarness(source, { projectId: "project-A", assetId: "old-A" });
   const pendingResponse = deferred<ResponseLike>();
@@ -484,6 +615,10 @@ async function projectChangeBeforeResponseIsInert(source: string): Promise<void>
   harness.runner.flush();
   const request = uploadCalls(harness.fetchMock)[0];
   harness.setProject("project-B", "old-B");
+  assert.equal(request.init.signal?.aborted, true,
+    "committed project B synchronously aborts A during layout commit");
+  assert.equal(harness.runner.current.saving, false,
+    "committed project B resets project-scoped saving before paint");
   await settle(harness.runner);
   pendingResponse.resolve(response(201, { asset: asset("new-A") }));
   await completion;
@@ -612,15 +747,83 @@ async function staleKnownCreatedAssetCleansOnlyItsOrphan(source: string): Promis
   assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_error"), 0);
 }
 
+async function staleParsedResponseHasNoEffects(
+  source: string,
+  input: {
+    name: string;
+    status: number;
+    settlePayload: (pending: ReturnType<typeof deferred<unknown>>) => void;
+  },
+): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-A", assetId: "old-A" });
+  const pendingJson = deferred<unknown>();
+  harness.fetchMock.enqueueUpload(deferredJsonResponse(input.status, pendingJson.promise));
+  harness.runner.mount();
+  await settle(harness.runner);
+  const completion = harness.runner.current.upload(uploadFile(`${input.name}.png`));
+  harness.runner.flush();
+  await settle(harness.runner);
+  harness.setProject("project-B", "old-B");
+  input.settlePayload(pendingJson);
+  assert.equal(await completion, false);
+  await settle(harness.runner);
+  await harness.scheduler.runAll();
+
+  assert.deepEqual(harness.onChanges, [], `${input.name}: stale response cannot call B onChange`);
+  assert.equal(harness.runner.current.asset?.id, "old-B", `${input.name}: B asset remains selected`);
+  assert.equal(harness.runner.current.saving, false, `${input.name}: B saving remains clear`);
+  assert.equal(harness.runner.current.error, null, `${input.name}: B error remains clear`);
+  assert.deepEqual(harness.fetchMock.deletedAssetIds, [],
+    `${input.name}: stale response has no authorized cleanup target`);
+  assert.deepEqual(harness.idleProjectIds, []);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_done"), 0);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_error"), 0);
+}
+
+async function staleExistingAndUnprovenAssetsNeverCleanup(source: string): Promise<void> {
+  await staleParsedResponseHasNoEffects(source, {
+    name: "starting-asset-old-A",
+    status: 201,
+    settlePayload: (pending) => pending.resolve({ asset: asset("old-A") }),
+  });
+  await staleParsedResponseHasNoEffects(source, {
+    name: "current-asset-old-B",
+    status: 201,
+    settlePayload: (pending) => pending.resolve({ asset: asset("old-B") }),
+  });
+  await staleParsedResponseHasNoEffects(source, {
+    name: "malformed-201",
+    status: 201,
+    settlePayload: (pending) => pending.resolve({ asset: { id: "incomplete" } }),
+  });
+  await staleParsedResponseHasNoEffects(source, {
+    name: "non-201",
+    status: 503,
+    settlePayload: (pending) => pending.resolve({ error: "unknown", message: "retry" }),
+  });
+  await staleParsedResponseHasNoEffects(source, {
+    name: "null-201",
+    status: 201,
+    settlePayload: (pending) => pending.resolve(null),
+  });
+  await staleParsedResponseHasNoEffects(source, {
+    name: "ambiguous-json-read",
+    status: 201,
+    settlePayload: (pending) => pending.reject(new Error("response body lost")),
+  });
+}
+
 export async function verifyLogoOverlayEditorRuntime(
   source = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor.ts",
     "utf8",
   ),
 ): Promise<void> {
+  await speculativeProjectRenderLeavesCommittedUploadAlone(source);
   await projectChangeBeforeResponseIsInert(source);
   await unmountAbortsAndMakesLateResponseInert(source);
   await newerSameProjectUploadOwnsSaving(source);
   await normalSuccessAppliesOnceAndCleansReplacement(source);
   await staleKnownCreatedAssetCleansOnlyItsOrphan(source);
+  await staleExistingAndUnprovenAssetsNeverCleanup(source);
 }

@@ -902,7 +902,7 @@ async function main() {
   await check("actual logo hook scopes upload completion to project and request ownership", async () => {
     await verifyLogoOverlayEditorRuntime(hookSource);
   });
-  await check("actual logo hook runtime rejects ownership and project-abort mutants", async () => {
+  await check("actual logo hook runtime rejects ownership, cleanup, and abort mutants", async () => {
     const postResponseBoundary = `      // Runtime mutation tests depend on this post-response ownership boundary.
       if (!ownsUpload()) {
         cleanupStaleCreatedAsset(parsed);
@@ -921,13 +921,13 @@ async function main() {
       "runtime harness must kill a missing post-response ownership guard",
     );
 
-    const projectChangeAbort = `    activeUploadControllerRef.current?.abort();
-    activeUploadControllerRef.current = null;
-  } else {`;
+    const projectChangeAbort = `    activeUploadControllerRef.current = null;
+    activeController?.abort();
+    setSaving(false);`;
     const missingProjectChangeAbort = hookSource.replace(
       projectChangeAbort,
       `    activeUploadControllerRef.current = null;
-  } else {`,
+    setSaving(false);`,
     );
     assert.notEqual(
       missingProjectChangeAbort,
@@ -936,8 +936,35 @@ async function main() {
     );
     await assert.rejects(
       () => verifyLogoOverlayEditorRuntime(missingProjectChangeAbort),
-      /project change aborts project A upload/,
+      /committed project B synchronously aborts A/,
       "runtime harness must kill a missing project-change abort",
+    );
+
+    const startingAssetExclusion = "        || parsed.asset.id === startingAssetId\n";
+    const missingStartingAssetExclusion = hookSource.replace(startingAssetExclusion, "");
+    assert.notEqual(
+      missingStartingAssetExclusion,
+      hookSource,
+      "starting-asset cleanup exclusion mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(missingStartingAssetExclusion),
+      /starting-asset-old-A: stale response has no authorized cleanup target/,
+      "runtime harness must prevent cleanup of the starting selected asset",
+    );
+
+    const currentAssetExclusion =
+      "        || parsed.asset.id === currentLogoAssetIdRef.current\n";
+    const missingCurrentAssetExclusion = hookSource.replace(currentAssetExclusion, "");
+    assert.notEqual(
+      missingCurrentAssetExclusion,
+      hookSource,
+      "current-asset cleanup exclusion mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(missingCurrentAssetExclusion),
+      /current-asset-old-B: stale response has no authorized cleanup target/,
+      "runtime harness must prevent cleanup of the current selected asset",
     );
   });
   const postPhaseEditorSource = readFileSync(
