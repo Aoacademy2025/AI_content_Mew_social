@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ComponentPropsWithoutRef, type ComponentType } from "react";
+import { useEffect, useRef } from "react";
 import { Cloud, HardDrive, Loader2 } from "lucide-react";
 import {
   AlertDialog,
@@ -12,20 +12,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { createBlockingDialogHistory } from "@/lib/editor-project-conflict-history";
+import {
+  createEditorRecoveryFocusLifecycle,
+  type EditorRecoveryFocusTarget,
+} from "@/lib/editor-project-conflict-focus";
 import { color, font } from "./tokens";
 import type { EditorProjectRecoveryState } from "./useV2Project";
-
-type DismissGuardEvent = { preventDefault(): void };
-
-// Radix AlertDialog already prevents outside interactions at runtime. Its public type
-// intentionally omits these two props, so widen only this local instance to keep all
-// three blocking guards explicit and auditable without changing the shared primitive.
-const BlockingAlertDialogContent = AlertDialogContent as ComponentType<
-  ComponentPropsWithoutRef<typeof AlertDialogContent> & {
-    onPointerDownOutside?: (event: DismissGuardEvent) => void;
-    onInteractOutside?: (event: DismissGuardEvent) => void;
-  }
->;
 
 function formatCandidateTimestamp(value: string | null): string {
   if (!value) return "ไม่ทราบเวลา";
@@ -45,6 +37,7 @@ export function EditorProjectRecoveryDialog(props: {
 }): React.ReactNode {
   const { recovery, onRetryLoad, onChooseLocal, onChooseServer } = props;
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const focusLifecycleRef = useRef<ReturnType<typeof createEditorRecoveryFocusLifecycle> | null>(null);
   const blocking = recovery.status !== "none";
   const isConflict = recovery.status === "conflict";
   const isResolving = isConflict && recovery.resolving !== false;
@@ -60,6 +53,23 @@ export function EditorProjectRecoveryDialog(props: {
     }).activate();
   }, [blocking]);
 
+  useEffect(() => () => focusLifecycleRef.current?.dispose(), []);
+
+  const focusLifecycle = () => {
+    if (!focusLifecycleRef.current) {
+      focusLifecycleRef.current = createEditorRecoveryFocusLifecycle({
+        getActiveElement: () => document.activeElement instanceof HTMLElement
+          && document.activeElement !== document.body
+          && document.activeElement !== document.documentElement
+          ? document.activeElement as EditorRecoveryFocusTarget
+          : null,
+        getHeading: () => headingRef.current,
+        getFallback: () => document.querySelector<HTMLElement>('[data-editor-recovery-focus-fallback="true"]'),
+      });
+    }
+    return focusLifecycleRef.current;
+  };
+
   const title = recovery.status === "loading"
     ? "กำลังโหลดโปรเจกต์"
     : recovery.status === "load-error"
@@ -73,20 +83,25 @@ export function EditorProjectRecoveryDialog(props: {
 
   return (
     <AlertDialog open={blocking}>
-      <BlockingAlertDialogContent
+      <AlertDialogContent
         onEscapeKeyDown={(event) => event.preventDefault()}
-        onPointerDownOutside={(event) => event.preventDefault()}
-        onInteractOutside={(event) => event.preventDefault()}
+        overlayClassName="motion-reduce:!animate-none motion-reduce:!transition-none"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
-          headingRef.current?.focus();
+          focusLifecycle().open();
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          focusLifecycle().close();
         }}
         aria-busy={isResolving || undefined}
-        className="max-h-[calc(100dvh-32px-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-[calc(100vw-32px)] max-w-[560px] gap-0 overflow-y-auto rounded-[16px] border p-0 sm:rounded-[16px]"
+        className="max-h-[calc(100dvh-32px-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-[calc(100vw-32px-env(safe-area-inset-left)-env(safe-area-inset-right))] max-w-[560px] gap-0 overflow-x-hidden overflow-y-auto rounded-[16px] border p-0 motion-reduce:!animate-none motion-reduce:!transition-none sm:rounded-[16px]"
         style={{
           background: color.bg1,
           borderColor: color.cardBorder,
           color: color.text,
+          left: "calc(env(safe-area-inset-left) + (100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) / 2)",
+          top: "calc(env(safe-area-inset-top) + (100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) / 2)",
           paddingBottom: "calc(20px + env(safe-area-inset-bottom))",
         }}
       >
@@ -250,7 +265,7 @@ export function EditorProjectRecoveryDialog(props: {
             </>
           ) : null}
         </div>
-      </BlockingAlertDialogContent>
+      </AlertDialogContent>
     </AlertDialog>
   );
 }

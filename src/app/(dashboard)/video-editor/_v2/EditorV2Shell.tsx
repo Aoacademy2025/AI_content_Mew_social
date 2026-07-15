@@ -221,6 +221,7 @@ export function EditorV2Shell() {
         <div className="flex min-w-0 items-center gap-2.5">
           <button
             type="button"
+            data-editor-recovery-focus-fallback="true"
             onClick={() => router.push("/dashboard")}
             aria-label="กลับแดชบอร์ด"
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[9px] transition-colors hover:brightness-125 lg:h-[34px] lg:w-[34px]"
