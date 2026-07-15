@@ -16,9 +16,10 @@ async function main(): Promise<void> {
   const [userId, assetId] = process.argv.slice(2);
   if (!userId || !assetId) throw new Error("worker_arguments_required");
   send({ event: "ready" });
-  send({ event: "invoking" });
   try {
-    const value = await deleteBrandAssetIfUnreferenced(userId, assetId);
+    const retirement = deleteBrandAssetIfUnreferenced(userId, assetId);
+    send({ event: "invoking" });
+    const value = await retirement;
     send({ event: "result", kind: "returned", value });
   } catch (error) {
     if (error instanceof BrandAssetError) {

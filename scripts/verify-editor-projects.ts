@@ -2,7 +2,7 @@
 // Spins a throwaway SQLite DB and verifies EditorProject ownership/persistence contracts.
 import assert from "node:assert/strict";
 import { execSync, fork } from "node:child_process";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -129,6 +129,45 @@ function startRetirementWorker(userId: string, assetId: string) {
 }
 
 async function main() {
+  const retirementWorkerSource = readFileSync(
+    join(process.cwd(), "scripts/editor-project-brand-asset-retirement-worker.ts"),
+    "utf8",
+  );
+  const retirementCallIndex = retirementWorkerSource.indexOf(
+    "const retirement = deleteBrandAssetIfUnreferenced(userId, assetId);",
+  );
+  const invokingAcknowledgementIndex = retirementWorkerSource.indexOf(
+    'send({ event: "invoking" });',
+  );
+  assert.ok(
+    retirementCallIndex >= 0 && retirementCallIndex < invokingAcknowledgementIndex,
+    "retirement worker acknowledges invoking only after starting the real service call",
+  );
+  assert.match(
+    retirementWorkerSource.slice(invokingAcknowledgementIndex),
+    /const value = await retirement;/,
+    "retirement worker awaits the exact service promise started before its acknowledgment",
+  );
+  const projectVerifierSource = readFileSync(
+    join(process.cwd(), "scripts/verify-editor-projects.ts"),
+    "utf8",
+  );
+  assert.match(
+    projectVerifierSource,
+    /let retirementWinnerWorker: ReturnType<typeof startRetirementWorker> \| null = null;\s*try \{\s*retirementWinnerWorker = startRetirementWorker[\s\S]*?finally \{\s*allowRetirementWinnerProject\.resolve\(\);\s*if \(retirementWinnerWorker\) await retirementWinnerWorker\.cleanup\(\);\s*await Promise\.allSettled\(\[\s*withTimeout\(retirementWinsPatch,/,
+    "retirement-winner worker start, cleanup, and project settlement stay inside try/finally",
+  );
+  assert.match(
+    projectVerifierSource,
+    /let recoveryLoserWorker: ReturnType<typeof startRetirementWorker> \| null = null;[\s\S]*?try \{\s*recoveryLoserWorker = startRetirementWorker[\s\S]*?finally \{\s*allowRecoveryWinner\.resolve\(\);\s*if \(recoveryLoserWorker\) await recoveryLoserWorker\.cleanup\(\);\s*await Promise\.allSettled\(\[\s*withTimeout\(recoveryWinsPatch,/,
+    "recovery-winner worker start, cleanup, and project settlement stay inside try/finally",
+  );
+  assert.match(
+    projectVerifierSource,
+    /let cleanupProbeWorker: ReturnType<typeof startRetirementWorker> \| null = null;[\s\S]*?try \{\s*cleanupProbeWorker = startRetirementWorker[\s\S]*?finally \{\s*allowCleanupProbeProject\.resolve\(\);\s*if \(cleanupProbeWorker\) await cleanupProbeWorker\.cleanup\(\);/,
+    "failure-probe worker start and cleanup stay inside its barrier-releasing try/finally",
+  );
+
   const { prisma } = await import("../src/lib/prisma");
   const projects = await import("../src/lib/editor-projects");
   const brandAssets = await import("../src/lib/brand-assets.server");
@@ -836,41 +875,41 @@ async function main() {
         }),
       );
     await withTimeout(retirementPrepareReached.promise, "retirement-winner prepare barrier");
-    const retirementWinnerWorker = startRetirementWorker(alice.id, retirementWinsAsset.id);
-    let retirementWinnerOutcome: RetirementWorkerOutcome | undefined;
-    let retirementWinnerError: unknown;
+    let retirementWinnerWorker: ReturnType<typeof startRetirementWorker> | null = null;
     try {
+      retirementWinnerWorker = startRetirementWorker(alice.id, retirementWinsAsset.id);
       await retirementWinnerWorker.ready;
       await retirementWinnerWorker.invoking;
-      retirementWinnerOutcome = await retirementWinnerWorker.result;
-    } catch (error) {
-      retirementWinnerError = error;
+      const retirementWinnerOutcome = await retirementWinnerWorker.result;
+      assert.deepEqual(
+        retirementWinnerOutcome,
+        { kind: "returned", value: true },
+        "independent real retirement commits while project recovery is paused after preparation",
+      );
+      allowRetirementWinnerProject.resolve();
+      const retirementWinsResponse = await retirementWinsPatch;
+      const retirementWinsPayload = await retirementWinsResponse.json() as Record<string, unknown>;
+      assert.equal(retirementWinsResponse.status, 409);
+      assert.equal(retirementWinsPayload.error, "brand_asset_lifecycle_conflict");
+      assert.equal(Object.prototype.hasOwnProperty.call(retirementWinsPayload, "project"), false);
+      assert.deepEqual(
+        await projects.getEditorProject(alice.id, retirementWinsProject.id),
+        retirementWinsProject,
+        "retirement winner prevents the prepared project write from committing",
+      );
+      const retirementWinnerAsset = await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: retirementWinsAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      });
+      assert.ok(retirementWinnerAsset.retiredAt);
+      assert.equal(retirementWinnerAsset.lifecycleRevision, 1);
     } finally {
       allowRetirementWinnerProject.resolve();
+      if (retirementWinnerWorker) await retirementWinnerWorker.cleanup();
+      await Promise.allSettled([
+        withTimeout(retirementWinsPatch, "retirement-winner project cleanup"),
+      ]);
     }
-    const retirementWinsResponse = await retirementWinsPatch;
-    await retirementWinnerWorker.cleanup();
-    if (retirementWinnerError) throw retirementWinnerError;
-    assert.deepEqual(
-      retirementWinnerOutcome,
-      { kind: "returned", value: true },
-      "independent real retirement commits while project recovery is paused after preparation",
-    );
-    const retirementWinsPayload = await retirementWinsResponse.json() as Record<string, unknown>;
-    assert.equal(retirementWinsResponse.status, 409);
-    assert.equal(retirementWinsPayload.error, "brand_asset_lifecycle_conflict");
-    assert.equal(Object.prototype.hasOwnProperty.call(retirementWinsPayload, "project"), false);
-    assert.deepEqual(
-      await projects.getEditorProject(alice.id, retirementWinsProject.id),
-      retirementWinsProject,
-      "retirement winner prevents the prepared project write from committing",
-    );
-    const retirementWinnerAsset = await prisma.brandAsset.findUniqueOrThrow({
-      where: { id: retirementWinsAsset.id },
-      select: { retiredAt: true, lifecycleRevision: true },
-    });
-    assert.ok(retirementWinnerAsset.retiredAt);
-    assert.equal(retirementWinnerAsset.lifecycleRevision, 1);
 
     const recoveryWinsProject = await projects.createEditorProject(alice.id, {
       title: "Real recovery wins",
@@ -897,15 +936,14 @@ async function main() {
         }),
       );
     await withTimeout(recoveryCasReached.promise, "recovery-winner CAS barrier");
-    const recoveryLoserWorker = startRetirementWorker(alice.id, recoveryWinsAsset.id);
-    let recoveryLoserOutcome: RetirementWorkerOutcome | undefined;
-    let recoveryRaceError: unknown;
+    let recoveryLoserWorker: ReturnType<typeof startRetirementWorker> | null = null;
     let recoveryWorkerSettled = false;
-    void recoveryLoserWorker.result.then(
-      () => { recoveryWorkerSettled = true; },
-      () => { recoveryWorkerSettled = true; },
-    );
     try {
+      recoveryLoserWorker = startRetirementWorker(alice.id, recoveryWinsAsset.id);
+      void recoveryLoserWorker.result.then(
+        () => { recoveryWorkerSettled = true; },
+        () => { recoveryWorkerSettled = true; },
+      );
       await recoveryLoserWorker.ready;
       await recoveryLoserWorker.invoking;
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -914,35 +952,106 @@ async function main() {
         false,
         "independent real retirement remains pending while project CAS owns the write transaction",
       );
-    } catch (error) {
-      recoveryRaceError = error;
+      allowRecoveryWinner.resolve();
+      const recoveryWinsResponse = await recoveryWinsPatch;
+      const recoveryLoserOutcome = await recoveryLoserWorker.result;
+      assert.equal(recoveryWinsResponse.status, 200);
+      assert.deepEqual(
+        recoveryLoserOutcome,
+        { kind: "brand-error", code: "asset_in_use", status: 409 },
+        "independent real retirement observes the committed project reference and loses explicitly",
+      );
+      const recoveryWinnerProject = await projects.getEditorProject(alice.id, recoveryWinsProject.id);
+      assert.equal(recoveryWinnerProject?.draft.logoOverlay.assetId, recoveryWinsAsset.id);
+      assert.deepEqual(
+        await prisma.brandAsset.findUniqueOrThrow({
+          where: { id: recoveryWinsAsset.id },
+          select: { retiredAt: true, lifecycleRevision: true },
+        }),
+        { retiredAt: null, lifecycleRevision: 1 },
+        "recovery winner leaves an active lifecycle-claimed Logo referenced by the committed project",
+      );
     } finally {
       allowRecoveryWinner.resolve();
+      if (recoveryLoserWorker) await recoveryLoserWorker.cleanup();
+      await Promise.allSettled([
+        withTimeout(recoveryWinsPatch, "recovery-winner project cleanup"),
+      ]);
     }
-    const recoveryWinsResponse = await recoveryWinsPatch;
+
+    const cleanupProbeProject = await projects.createEditorProject(alice.id, {
+      title: "Race cleanup failure probe",
+      draft: { script: "cleanup probe base" },
+    });
+    const cleanupProbeAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: cleanupProbeProject.id,
+      label: "race-cleanup-probe",
+    });
+    const cleanupProbeCasReached = deferred<void>();
+    const allowCleanupProbeProject = deferred<void>();
+    const cleanupProbePatch = lifecycleVerification
+      .runWithEditorProjectBrandAssetVerificationBarrier(
+        async (step) => {
+          if (step !== "after-project-cas") return;
+          cleanupProbeCasReached.resolve();
+          await allowCleanupProbeProject.promise;
+        },
+        () => patchEditorProjectForUser(alice.id, cleanupProbeProject.id, {
+          draft: logoDraft(cleanupProbeAsset.id, "cleanup probe commits after release"),
+          draftRevision: 1,
+          expectedDraftRevision: 0,
+        }),
+      );
+    await withTimeout(cleanupProbeCasReached.promise, "cleanup-probe CAS barrier");
+    const expectedCleanupProbeFailure = new Error("intentional_race_cleanup_probe_failure");
+    let observedCleanupProbeFailure: unknown;
+    let cleanupProbeProjectSettlement: PromiseSettledResult<Response>[] = [];
+    let cleanupProbeWorkerSettled = false;
+    let cleanupProbeWorker: ReturnType<typeof startRetirementWorker> | null = null;
     try {
-      recoveryLoserOutcome = await recoveryLoserWorker.result;
+      cleanupProbeWorker = startRetirementWorker(alice.id, cleanupProbeAsset.id);
+      void cleanupProbeWorker.result.then(
+        () => { cleanupProbeWorkerSettled = true; },
+        () => { cleanupProbeWorkerSettled = true; },
+      );
+      await cleanupProbeWorker.ready;
+      await cleanupProbeWorker.invoking;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        cleanupProbeWorkerSettled,
+        false,
+        "cleanup probe reaches its intentional failure while real retirement is pending",
+      );
+      throw expectedCleanupProbeFailure;
     } catch (error) {
-      recoveryRaceError ??= error;
+      observedCleanupProbeFailure = error;
+    } finally {
+      allowCleanupProbeProject.resolve();
+      if (cleanupProbeWorker) await cleanupProbeWorker.cleanup();
+      cleanupProbeProjectSettlement = await Promise.allSettled([
+        withTimeout(cleanupProbePatch, "cleanup-probe project settlement"),
+      ]);
     }
-    await recoveryLoserWorker.cleanup();
-    if (recoveryRaceError) throw recoveryRaceError;
-    assert.equal(recoveryWinsResponse.status, 200);
-    assert.deepEqual(
-      recoveryLoserOutcome,
-      { kind: "brand-error", code: "asset_in_use", status: 409 },
-      "independent real retirement observes the committed project reference and loses explicitly",
+    assert.equal(
+      observedCleanupProbeFailure,
+      expectedCleanupProbeFailure,
+      "cleanup probe exercises the assertion-failure path",
     );
-    const recoveryWinnerProject = await projects.getEditorProject(alice.id, recoveryWinsProject.id);
-    assert.equal(recoveryWinnerProject?.draft.logoOverlay.assetId, recoveryWinsAsset.id);
-    assert.deepEqual(
-      await prisma.brandAsset.findUniqueOrThrow({
-        where: { id: recoveryWinsAsset.id },
-        select: { retiredAt: true, lifecycleRevision: true },
-      }),
-      { retiredAt: null, lifecycleRevision: 1 },
-      "recovery winner leaves an active lifecycle-claimed Logo referenced by the committed project",
+    assert.equal(
+      cleanupProbeProjectSettlement[0]?.status,
+      "fulfilled",
+      "cleanup failure path releases and settles the stranded project promise",
     );
+    assert.equal(
+      cleanupProbeProjectSettlement[0]?.status === "fulfilled"
+        ? cleanupProbeProjectSettlement[0].value.status
+        : null,
+      200,
+      "cleanup failure path preserves the released project transaction",
+    );
+    assert.ok(cleanupProbeWorker, "cleanup failure path starts its real retirement worker");
+    await withTimeout(cleanupProbeWorker.closed, "cleanup-probe child close");
 
     const recoveryProject = await projects.createEditorProject(alice.id, {
       title: "Recover retired logo",
