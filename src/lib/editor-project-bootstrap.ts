@@ -4,6 +4,9 @@ import {
   type EditorProjectRecoveryJournalV1,
 } from "./editor-project-recovery-journal";
 
+const MAX_DRAFT_REVISION = 2_147_483_647;
+const LEGACY_DRAFT_TIMESTAMP = "1970-01-01T00:00:00.000Z";
+
 export type EditorProjectBootstrapDecision =
   | { kind: "server" }
   | { kind: "resume-local"; journal: EditorProjectRecoveryJournalV1 }
@@ -13,6 +16,23 @@ export type EditorProjectBootstrapDecision =
     }
   | { kind: "locked-error"; code: "server_behind" | "missing_recovery" };
 
+function assertDraftRevision(value: number, field: "serverRevision" | "revisionWatermark"): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_DRAFT_REVISION) {
+    throw new RangeError(`${field} must be a non-negative draft revision`);
+  }
+}
+
+function materializeLegacyDraft(value: unknown, projectId: string): EditorProjectDraft | null {
+  const journal = parseEditorProjectRecoveryJournal({
+    version: 1,
+    projectId,
+    baseRevision: 0,
+    editedAt: LEGACY_DRAFT_TIMESTAMP,
+    draft: value,
+  }, projectId);
+  return journal && Object.keys(journal.draft).length > 0 ? journal.draft : null;
+}
+
 export function decideEditorProjectBootstrap(input: {
   projectId: string;
   serverRevision: number;
@@ -20,7 +40,12 @@ export function decideEditorProjectBootstrap(input: {
   journal: EditorProjectRecoveryJournalV1 | null;
   legacyLocalDraft?: unknown;
 }): EditorProjectBootstrapDecision {
+  assertDraftRevision(input.serverRevision, "serverRevision");
+  assertDraftRevision(input.revisionWatermark, "revisionWatermark");
   const journal = parseEditorProjectRecoveryJournal(input.journal, input.projectId);
+  if (input.journal !== null && !journal) {
+    throw new TypeError("journal must be a trusted project recovery journal");
+  }
   if (input.serverRevision < input.revisionWatermark) {
     return { kind: "locked-error", code: journal ? "server_behind" : "missing_recovery" };
   }
@@ -33,14 +58,23 @@ export function decideEditorProjectBootstrap(input: {
       local: { draft: journal.draft, editedAt: journal.editedAt, trusted: true },
     };
   }
-  if (isEditorProjectRecoveryDraft(input.legacyLocalDraft)) {
+  const legacyDraft = materializeLegacyDraft(input.legacyLocalDraft, input.projectId);
+  if (legacyDraft) {
     return {
       kind: "conflict",
-      local: { draft: input.legacyLocalDraft, editedAt: null, trusted: false },
+      local: { draft: legacyDraft, editedAt: null, trusted: false },
     };
   }
   return { kind: "server" };
 }
+
+type GenericDecisionStateKey<Key> = Key extends string
+  ? Lowercase<Key> extends `${string}${"dirty" | "retry" | "default"}${string}` ? Key : never
+  : never;
+type AssertNoGenericDecisionState<Key extends never> = Key;
+type EditorProjectBootstrapInputHasNoGenericState = AssertNoGenericDecisionState<
+  GenericDecisionStateKey<keyof Parameters<typeof decideEditorProjectBootstrap>[0]>
+>;
 
 export type EditorProjectBootstrapProject = {
   id: string;
