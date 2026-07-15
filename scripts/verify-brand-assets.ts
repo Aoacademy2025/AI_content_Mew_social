@@ -116,6 +116,37 @@ async function main() {
     );
   }
 
+  async function verifyAtomicDefaultClaimContract(): Promise<void> {
+    const source = await readFile(
+      path.join(process.cwd(), "src/lib/brand-assets.server.ts"),
+      "utf8",
+    );
+    const defaultSelection = source.slice(
+      source.indexOf("export async function setDefaultBrandPreference"),
+      source.indexOf("export async function deleteBrandAssetIfUnreferenced"),
+    );
+    assert.match(
+      defaultSelection,
+      /prisma\.\$transaction\(async \(tx\) =>/,
+      "default selection validates, claims, and upserts in one transaction",
+    );
+    assert.match(
+      defaultSelection,
+      /lifecycleRevision:\s*asset\.lifecycleRevision/,
+      "default selection claims the lifecycle revision it observed",
+    );
+    assert.match(
+      defaultSelection,
+      /lifecycleRevision:\s*\{ increment: 1 \}/,
+      "default selection advances the lifecycle revision before committing the preference",
+    );
+    assert.match(
+      defaultSelection,
+      /tx\.brandPreference\.upsert/,
+      "default preference upsert shares the lifecycle-claim transaction",
+    );
+  }
+
   try {
     await verifyExactUserDirectoryRemoval();
 
@@ -392,6 +423,150 @@ async function main() {
     await prisma.brandPreference.delete({ where: { userId: USER_B } });
     await prisma.editorProject.update({ where: { id: PROJECT_B }, data: { draftJson: null } });
 
+    const retirementWinsAsset = await service.saveBrandAsset({
+      userId: USER_A,
+      plan: "PRO",
+      projectId: PROJECT_A,
+      file: imageFile(transparentPng, "retirement-wins.png", "image/png"),
+    });
+    const retirementWinsConfig = {
+      enabled: true,
+      assetId: retirementWinsAsset.id,
+      position: "top-right" as const,
+      sizePct: 19,
+      opacity: 0.8,
+    };
+    assert.equal(
+      await service.deleteBrandAssetIfUnreferenced(USER_A, retirementWinsAsset.id),
+      true,
+      "the deterministic retirement-first fixture retires before default selection",
+    );
+    await expectBrandError(
+      () => service.setDefaultBrandPreference({
+        userId: USER_A,
+        plan: "PRO",
+        assetId: retirementWinsAsset.id,
+        config: retirementWinsConfig,
+      }),
+      "asset_not_found",
+      404,
+    );
+    assert.equal(
+      await prisma.brandPreference.findUnique({ where: { userId: USER_A } }),
+      null,
+      "retirement-first selection never creates a default preference",
+    );
+
+    const defaultWinsAsset = await service.saveBrandAsset({
+      userId: USER_A,
+      plan: "PRO",
+      projectId: PROJECT_A,
+      file: imageFile(transparentPng, "default-wins.png", "image/png"),
+    });
+    const defaultWinsConfig = {
+      enabled: true,
+      assetId: defaultWinsAsset.id,
+      position: "bottom-left" as const,
+      sizePct: 21,
+      opacity: 0.7,
+    };
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER task2_stale_retirement_after_default_validation
+      BEFORE INSERT ON BrandPreference
+      WHEN NEW.userId = '${USER_A}' AND NEW.defaultAssetId = '${defaultWinsAsset.id}'
+      BEGIN
+        UPDATE BrandAsset
+        SET retiredAt = CURRENT_TIMESTAMP,
+            lifecycleRevision = lifecycleRevision + 1
+        WHERE id = NEW.defaultAssetId
+          AND retiredAt IS NULL
+          AND lifecycleRevision = 0;
+      END
+    `);
+    try {
+      await service.setDefaultBrandPreference({
+        userId: USER_A,
+        plan: "PRO",
+        assetId: defaultWinsAsset.id,
+        config: defaultWinsConfig,
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS task2_stale_retirement_after_default_validation",
+      );
+    }
+    const defaultWinsRow = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: defaultWinsAsset.id },
+    });
+    assert.equal(
+      defaultWinsRow.retiredAt,
+      null,
+      "a stale retirement cannot retire an asset after default selection claims its revision",
+    );
+    assert.equal(
+      defaultWinsRow.lifecycleRevision,
+      1,
+      "default selection owns the one committed lifecycle revision advance",
+    );
+    assert.equal(
+      (await prisma.brandPreference.findUnique({ where: { userId: USER_A } }))?.defaultAssetId,
+      defaultWinsAsset.id,
+      "the committed default points to the active claimed asset",
+    );
+    await expectBrandError(
+      () => service.deleteBrandAssetIfUnreferenced(USER_A, defaultWinsAsset.id),
+      "asset_in_use",
+      409,
+    );
+    await prisma.brandPreference.delete({ where: { userId: USER_A } });
+
+    const rolledBackClaimAsset = await service.saveBrandAsset({
+      userId: USER_A,
+      plan: "PRO",
+      projectId: PROJECT_A,
+      file: imageFile(transparentPng, "rolled-back-default-claim.png", "image/png"),
+    });
+    const rolledBackClaimConfig = {
+      enabled: true,
+      assetId: rolledBackClaimAsset.id,
+      position: "top-left" as const,
+      sizePct: 20,
+      opacity: 0.9,
+    };
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER task2_reject_default_preference_upsert
+      BEFORE INSERT ON BrandPreference
+      WHEN NEW.userId = '${USER_A}' AND NEW.defaultAssetId = '${rolledBackClaimAsset.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced default preference failure');
+      END
+    `);
+    try {
+      await assert.rejects(() => service.setDefaultBrandPreference({
+        userId: USER_A,
+        plan: "PRO",
+        assetId: rolledBackClaimAsset.id,
+        config: rolledBackClaimConfig,
+      }));
+    } finally {
+      await prisma.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS task2_reject_default_preference_upsert",
+      );
+    }
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: rolledBackClaimAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      { retiredAt: null, lifecycleRevision: 0 },
+      "a failed preference upsert rolls back its lifecycle claim",
+    );
+    assert.equal(
+      await prisma.brandPreference.findUnique({ where: { userId: USER_A } }),
+      null,
+      "a failed atomic default selection leaves no preference",
+    );
+
     const defaultConfig = {
       enabled: true,
       assetId: alphaAsset.id,
@@ -614,6 +789,7 @@ async function main() {
     assert.equal(existsSync(path.join(brandRoot, USER_B)), false, "post-user-delete cleanup removes user B's exact directory");
     assert.equal(existsSync(pathBeforeRetire!), false, "hard account cleanup removes retired files");
     await verifyRetirementRevisionFenceContract();
+    await verifyAtomicDefaultClaimContract();
 
     console.log("brand-assets: all checks passed");
   } finally {

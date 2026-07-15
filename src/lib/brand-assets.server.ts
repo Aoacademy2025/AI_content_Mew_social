@@ -311,29 +311,42 @@ export async function setDefaultBrandPreference(input: {
   if (!config || config.assetId !== input.assetId) {
     throw new BrandAssetError("invalid_config", 400);
   }
-  const asset = await prisma.brandAsset.findFirst({
-    where: { id: input.assetId, userId: input.userId, ...ACTIVE_ASSET_WHERE },
-    select: { id: true },
-  });
-  if (!asset) throw new BrandAssetError("asset_not_found", 404);
+  await prisma.$transaction(async (tx) => {
+    const asset = await tx.brandAsset.findFirst({
+      where: { id: input.assetId, userId: input.userId, ...ACTIVE_ASSET_WHERE },
+      select: { id: true, lifecycleRevision: true },
+    });
+    if (!asset) throw new BrandAssetError("asset_not_found", 404);
 
-  await prisma.brandPreference.upsert({
-    where: { userId: input.userId },
-    create: {
-      userId: input.userId,
-      defaultAssetId: asset.id,
-      enabled: config.enabled,
-      position: config.position,
-      sizePct: config.sizePct,
-      opacity: config.opacity,
-    },
-    update: {
-      defaultAssetId: asset.id,
-      enabled: config.enabled,
-      position: config.position,
-      sizePct: config.sizePct,
-      opacity: config.opacity,
-    },
+    const claimed = await tx.brandAsset.updateMany({
+      where: {
+        id: asset.id,
+        userId: input.userId,
+        ...ACTIVE_ASSET_WHERE,
+        lifecycleRevision: asset.lifecycleRevision,
+      },
+      data: { lifecycleRevision: { increment: 1 } },
+    });
+    if (claimed.count !== 1) throw new BrandAssetError("asset_not_found", 404);
+
+    await tx.brandPreference.upsert({
+      where: { userId: input.userId },
+      create: {
+        userId: input.userId,
+        defaultAssetId: asset.id,
+        enabled: config.enabled,
+        position: config.position,
+        sizePct: config.sizePct,
+        opacity: config.opacity,
+      },
+      update: {
+        defaultAssetId: asset.id,
+        enabled: config.enabled,
+        position: config.position,
+        sizePct: config.sizePct,
+        opacity: config.opacity,
+      },
+    });
   });
 }
 
