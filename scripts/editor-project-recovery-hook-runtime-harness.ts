@@ -6,7 +6,7 @@ import * as journalModule from "../src/lib/editor-project-recovery-journal";
 import * as logoOverlayModule from "../src/lib/logo-overlay";
 
 type JsonRecord = Record<string, unknown>;
-type FetchInit = { method?: string; body?: string; [key: string]: unknown };
+type FetchInit = { method?: string; body?: string; signal?: AbortSignal; [key: string]: unknown };
 type FetchCall = { method: string; url: string; init: FetchInit };
 type ResponseLike = { ok: boolean; status: number; json(): Promise<unknown> };
 
@@ -23,14 +23,19 @@ function deferred<T>() {
 
 class MemoryStorage implements journalModule.RecoveryStorage {
   readonly values = new Map<string, string>();
+  readonly operations: Array<{ operation: "set" | "remove"; key: string }> = [];
   failRecoveryWrites = false;
 
   getItem(key: string): string | null { return this.values.get(key) ?? null; }
   setItem(key: string, value: string): void {
     if (this.failRecoveryWrites && key.startsWith("editor-v2-recovery:")) throw new Error("quota");
+    this.operations.push({ operation: "set", key });
     this.values.set(key, value);
   }
-  removeItem(key: string): void { this.values.delete(key); }
+  removeItem(key: string): void {
+    this.operations.push({ operation: "remove", key });
+    this.values.delete(key);
+  }
 }
 
 class FakeClock {
@@ -80,6 +85,40 @@ class FetchMock {
     this.routes.set(key, items);
   }
 
+  private honorAbort(result: Promise<ResponseLike>, signal?: AbortSignal): Promise<ResponseLike> {
+    if (!signal) return result;
+    if (signal.aborted) {
+      const error = new Error("The operation was aborted");
+      error.name = "AbortError";
+      return Promise.reject(error);
+    }
+    return new Promise<ResponseLike>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const error = new Error("The operation was aborted");
+        error.name = "AbortError";
+        reject(error);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      void result.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
   fetch = async (urlValue: unknown, initValue: unknown = {}): Promise<ResponseLike> => {
     const url = String(urlValue);
     const init = initValue as FetchInit;
@@ -88,26 +127,32 @@ class FetchMock {
     const key = `${method} ${url}`;
     const queued = this.routes.get(key);
     const handler = queued?.shift();
-    if (handler) return handler();
-    if (url === "/api/user/video-settings") return response(200, {});
-    if (url === "/api/videos/usage") return response(200, null);
-    if (url === "/api/user/brand-assets") return response(200, { defaultLogo: null });
+    if (handler) return this.honorAbort(handler(), init.signal);
+    if (url === "/api/user/video-settings") return this.honorAbort(Promise.resolve(response(200, {})), init.signal);
+    if (url === "/api/videos/usage") return this.honorAbort(Promise.resolve(response(200, null)), init.signal);
+    if (url === "/api/user/brand-assets") {
+      return this.honorAbort(Promise.resolve(response(200, { defaultLogo: null })), init.signal);
+    }
     if (url === "/api/editor-projects" && method === "POST") {
       const body = JSON.parse(init.body ?? "{}") as JsonRecord;
       const id = `new-${this.nextProject++}`;
-      return response(200, {
+      return this.honorAbort(Promise.resolve(response(200, {
         project: { id, draftRevision: 0, draft: body.draft, status: "draft" },
-      });
+      })), init.signal);
     }
     if (url.startsWith("/api/editor-projects/") && method === "PATCH") {
       const body = JSON.parse(init.body ?? "{}") as JsonRecord;
       const id = decodeURIComponent(url.slice("/api/editor-projects/".length));
-      return response(200, {
+      return this.honorAbort(Promise.resolve(response(200, {
         project: { id, draftRevision: body.draftRevision, draft: body.draft, status: "draft" },
-      });
+      })), init.signal);
     }
-    if (url.startsWith("/api/heygen/avatar-info")) return response(404, null);
-    if (url === "/api/elevenlabs/voices") return response(200, { voices: [] });
+    if (url.startsWith("/api/heygen/avatar-info")) {
+      return this.honorAbort(Promise.resolve(response(404, null)), init.signal);
+    }
+    if (url === "/api/elevenlabs/voices") {
+      return this.honorAbort(Promise.resolve(response(200, { voices: [] })), init.signal);
+    }
     throw new Error(`unhandled fetch: ${key}`);
   };
 }
@@ -122,11 +167,13 @@ type SaveInput = {
 
 class QueueMock {
   readonly enqueued: Array<{ projectId: string; revision: number }> = [];
+  readonly seeded: Array<{ projectId: string; revision: number }> = [];
   readonly watermarks = new Map<string, number>();
   reserveError: Error | null = null;
 
   seedRevision(projectId: string, revision: number): void {
     if (!Number.isSafeInteger(revision) || revision < 0) return;
+    this.seeded.push({ projectId, revision });
     this.watermarks.set(projectId, Math.max(this.watermarks.get(projectId) ?? 0, revision));
   }
   revisionWatermark(projectId: string): number { return this.watermarks.get(projectId) ?? 0; }
@@ -487,6 +534,87 @@ async function resetDuringProjectGet(): Promise<void> {
   assert.equal(harness.runner.current.projectId, "project-b");
 }
 
+async function unmountWhileResetAwaitsBrandAssets(): Promise<void> {
+  const brand = deferred<ResponseLike>();
+  const harness = createHarness({ search: "?projectId=reset-brand-a" });
+  harness.fetchMock.enqueue("GET", editorUrl("reset-brand-a"), response(200, {
+    project: project("reset-brand-a", 3, { script: "server A" }),
+  }));
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", brand.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.storage.operations.length = 0;
+  const reset = harness.runner.current.resetProject();
+  harness.runner.unmount();
+  brand.resolve(response(200, { defaultLogo: null }));
+  await reset;
+  await settle(harness.runner);
+  assert.equal(
+    harness.fetchMock.calls.filter((call) => call.method === "POST").length,
+    0,
+    "unmount while reset awaits brand assets prevents a late project POST",
+  );
+  assert.deepEqual(
+    harness.storage.operations,
+    [],
+    "unmount while reset awaits brand assets prevents late storage mutation",
+  );
+}
+
+async function unmountWhileResetPostIsPending(): Promise<void> {
+  const post = deferred<ResponseLike>();
+  const harness = createHarness({ search: "?projectId=reset-post-a" });
+  harness.fetchMock.enqueue("GET", editorUrl("reset-post-a"), response(200, {
+    project: project("reset-post-a", 6, { script: "server A" }),
+  }));
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", response(200, { defaultLogo: null }));
+  harness.fetchMock.enqueue("POST", "/api/editor-projects", post.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  const reset = harness.runner.current.resetProject();
+  await settle(harness.runner);
+  const postCall = harness.fetchMock.calls.find((call) => call.method === "POST");
+  assert.ok(postCall, "reset reaches its project POST before unmount");
+  const signal = postCall.init.signal;
+  assert.ok(signal, "reset POST carries an AbortSignal");
+  const stateAfterUnmount = {
+    projectId: harness.runner.current.projectId,
+    projectReady: harness.runner.current.projectReady,
+    script: harness.runner.current.script,
+    projectStatus: harness.runner.current.projectStatus,
+  };
+  const seededBeforeLateResponse = harness.queue.seeded.length;
+  const storageOperationsBeforeLateResponse = harness.storage.operations.length;
+  harness.runner.unmount();
+  const abortedOnUnmount = signal.aborted;
+  let resetSettledBeforeLateResponse = false;
+  void reset.then(() => { resetSettledBeforeLateResponse = true; });
+  await settle(harness.runner);
+  post.resolve(response(200, {
+    project: project("reset-post-b", 0, { script: "late POST response" }),
+  }));
+  await reset;
+  await settle(harness.runner);
+  assert.deepEqual({
+    abortedOnUnmount,
+    resetSettledBeforeLateResponse,
+    queueSeedDelta: harness.queue.seeded.length - seededBeforeLateResponse,
+    storageOperationDelta: harness.storage.operations.length - storageOperationsBeforeLateResponse,
+    state: {
+      projectId: harness.runner.current.projectId,
+      projectReady: harness.runner.current.projectReady,
+      script: harness.runner.current.script,
+      projectStatus: harness.runner.current.projectStatus,
+    },
+  }, {
+    abortedOnUnmount: true,
+    resetSettledBeforeLateResponse: true,
+    queueSeedDelta: 0,
+    storageOperationDelta: 0,
+    state: stateAfterUnmount,
+  }, "unmount aborts a pending reset POST and ignores its late response");
+}
+
 async function publicSetterRuntimeContract(): Promise<void> {
   const harness = createHarness({ search: "?projectId=setters-a" });
   harness.fetchMock.enqueue("GET", editorUrl("setters-a"), response(200, {
@@ -604,6 +732,69 @@ async function ambiguousLocalChoiceRefreshesServer(): Promise<void> {
   assert.equal(patchBodies(harness.fetchMock).length, patchCount, "server choice remains PATCH-free after refresh");
 }
 
+async function malformedConflictResponsesRefreshAuthoritatively(): Promise<void> {
+  const variants: Array<{ name: string; project: JsonRecord }> = [
+    {
+      name: "missing draftRevision",
+      project: { id: "conflict-malformed", draft: { script: "ambiguous missing revision" } },
+    },
+    {
+      name: "wrong project ID",
+      project: project("wrong-project", 3, { script: "wrong project" }),
+    },
+    {
+      name: "invalid draftRevision",
+      project: { id: "conflict-malformed", draftRevision: "3", draft: { script: "ambiguous invalid revision" } },
+    },
+    {
+      name: "negative draftRevision",
+      project: project("conflict-malformed", -1, { script: "ambiguous negative revision" }),
+    },
+  ];
+  const failures: string[] = [];
+  for (const variant of variants) {
+    const harness = createHarness({ search: "?projectId=conflict-malformed" });
+    try {
+      journalModule.writeEditorProjectRecoveryJournal(harness.storage, {
+        version: 1,
+        projectId: "conflict-malformed",
+        baseRevision: 1,
+        editedAt: "2026-07-15T09:00:00.000Z",
+        draft: { script: "local" },
+      });
+      harness.fetchMock.enqueue("GET", editorUrl("conflict-malformed"), response(200, {
+        project: project("conflict-malformed", 2, { script: "server two" }),
+      }));
+      harness.fetchMock.enqueue("PATCH", editorUrl("conflict-malformed"), response(409, {
+        project: variant.project,
+      }));
+      harness.fetchMock.enqueue("GET", editorUrl("conflict-malformed"), response(200, {
+        project: project("conflict-malformed", 3, { script: "authoritative three" }),
+      }));
+      harness.runner.mount();
+      await settle(harness.runner);
+      const immutableLocal = harness.runner.current.recovery.local;
+      await harness.runner.current.chooseLocalProjectDraft();
+      await settle(harness.runner);
+      assert.equal(
+        harness.fetchMock.calls.filter(
+          (call) => call.method === "GET" && call.url === editorUrl("conflict-malformed"),
+        ).length,
+        2,
+        "malformed 409 triggers an authoritative GET",
+      );
+      assert.equal(harness.runner.current.recovery.local, immutableLocal);
+      assert.equal(harness.runner.current.recovery.server?.revision, 3);
+      assert.equal(harness.runner.current.recovery.resolving, false);
+    } catch (error) {
+      failures.push(`${variant.name}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      harness.runner.unmount();
+    }
+  }
+  assert.deepEqual(failures, [], `malformed 409 validation failures:\n${failures.join("\n")}`);
+}
+
 async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
   const harness = createHarness({ search: "?projectId=conflict-locked" });
   journalModule.writeEditorProjectRecoveryJournal(harness.storage, {
@@ -667,11 +858,14 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["settings-after-GET", settingsAfterServerHydration],
     ["equal-revision-resume", exactEqualRevisionResume],
     ["reset-during-GET", resetDuringProjectGet],
+    ["reset-unmount-during-brand", unmountWhileResetAwaitsBrandAssets],
+    ["reset-unmount-during-POST", unmountWhileResetPostIsPending],
     ["functional-public-setters", publicSetterRuntimeContract],
     ["journal-write-failure", failedJournalWriteStillAutosaves],
     ["project-switching", projectScopedSwitching],
     ["StrictMode-setup-cleanup", strictModeDoesNotDuplicateWrites],
     ["ambiguous-local-choice", ambiguousLocalChoiceRefreshesServer],
+    ["malformed-409-refresh", malformedConflictResponsesRefreshAuthoritatively],
     ["ambiguous-refresh-failure", failedAmbiguousRefreshStaysLocked],
     ["revision-exhaustion", revisionExhaustionRestoresConflict],
   ];
@@ -709,6 +903,33 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     exactEqualRevisionResume,
     /exact immutable local candidate/,
     "runtime harness rejects rebuilding an equal-revision resume from live state",
+  );
+
+  const missingUnmountOwnership = hookSource.replace(
+    `mountedRef.current = false;
+      bootstrapGenerationRef.current += 1;
+      bootstrapAbortControllerRef.current?.abort();
+      bootstrapAbortControllerRef.current = null;`,
+    "mountedRef.current = false;",
+  );
+  assert.notEqual(missingUnmountOwnership, hookSource, "unmount ownership runtime mutation applied");
+  activeCompiledHook = compileHook(missingUnmountOwnership);
+  await assert.rejects(
+    unmountWhileResetPostIsPending,
+    /unmount aborts a pending reset POST/,
+    "runtime harness rejects cleanup that leaves reset ownership alive after unmount",
+  );
+
+  const nullableDirectConflictRevision = hookSource.replace(
+    "if (server && server.revision !== null) {",
+    "if (server) {",
+  );
+  assert.notEqual(nullableDirectConflictRevision, hookSource, "direct 409 revision runtime mutation applied");
+  activeCompiledHook = compileHook(nullableDirectConflictRevision);
+  await assert.rejects(
+    malformedConflictResponsesRefreshAuthoritatively,
+    /missing draftRevision/,
+    "runtime harness rejects direct 409 candidates without a concrete revision",
   );
   activeCompiledHook = compileHook(hookSource);
 }

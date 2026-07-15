@@ -404,7 +404,12 @@ export function useV2Project() {
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      bootstrapGenerationRef.current += 1;
+      bootstrapAbortControllerRef.current?.abort();
+      bootstrapAbortControllerRef.current = null;
+    };
   }, []);
 
   // ── Read-only wiring ──
@@ -500,7 +505,8 @@ export function useV2Project() {
     bootstrapAbortControllerRef.current?.abort();
     const resetController = new AbortController();
     bootstrapAbortControllerRef.current = resetController;
-    const isCurrentReset = () => bootstrapGenerationRef.current === resetGeneration
+    const isCurrentReset = () => mountedRef.current
+      && bootstrapGenerationRef.current === resetGeneration
       && bootstrapAbortControllerRef.current === resetController
       && !resetController.signal.aborted;
     accountDraftDefaultsAllowedRef.current = false;
@@ -578,6 +584,7 @@ export function useV2Project() {
     const controller = new AbortController();
     bootstrapAbortControllerRef.current = controller;
     const isCurrentBootstrap = () => alive
+      && mountedRef.current
       && bootstrapGenerationRef.current === generation
       && bootstrapAbortControllerRef.current === controller
       && !controller.signal.aborted;
@@ -841,8 +848,8 @@ export function useV2Project() {
         const server = currentProject
           ? serverCandidateForProject(projectId, currentProject)
           : null;
-        if (server) {
-          editorProjectSaveQueue.seedRevision(projectId, server.revision ?? expected);
+        if (server && server.revision !== null) {
+          editorProjectSaveQueue.seedRevision(projectId, server.revision);
           applyServerProjectMetadata(currentProject!);
           setRecoveryState({
             status: "conflict",

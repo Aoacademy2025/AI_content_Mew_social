@@ -279,3 +279,114 @@ exit 0
 
 As before, page collection logged non-fatal Prisma warnings because `DATABASE_URL` is
 not configured in this worktree; the build continued and exited successfully.
+
+## Final re-review: unmount ownership and malformed 409 validation
+
+The final re-review identified one remaining lifecycle owner outside the bootstrap
+effect's captured cleanup. `resetProject` replaces the bootstrap controller and
+generation, so unmounting only the captured bootstrap controller did not invalidate
+the newer reset owner. The direct 409 path also treated a structurally valid candidate
+with a `null` revision as authoritative, while the refresh path correctly required a
+concrete revision.
+
+The runtime harness now records storage operations and queue seed operations. Its
+fetch double records each request's real `AbortSignal` and races every queued or
+default response against that signal, rejecting with `AbortError` when cancelled.
+The pending-POST regression proves cancellation settles the reset promise before the
+deferred response is released; it then releases the late response and verifies it has
+no effect.
+
+### RED evidence
+
+The production source was unchanged when these cases were added. The focused hook
+verifier failed with the intended behavior differences:
+
+```text
+$ npx tsx scripts/verify-editor-project-recovery-hook.ts
+exit=1
+
+reset-unmount-during-brand:
+late project POST count actual 1, expected 0
+
+reset-unmount-during-POST:
+abortedOnUnmount actual false, expected true
+queueSeedDelta actual 1, expected 0
+storageOperationDelta actual 2, expected 0
+state changed from projectId=null/projectReady=false
+to projectId=reset-post-b/projectReady=true
+
+malformed-409-refresh:
+missing draftRevision: authoritative GET count actual 1, expected 2
+invalid string draftRevision: authoritative GET count actual 1, expected 2
+```
+
+The wrong-project-ID and negative-revision matrix entries already refreshed
+authoritatively. The RED failures isolated the remaining null-revision acceptance and
+confirmed that the reset controller, queue seed, state, and storage all survived
+component unmount.
+
+### GREEN implementation
+
+The mounted-owner cleanup now synchronously performs all lifecycle invalidation:
+
+- marks the hook unmounted;
+- increments the shared bootstrap/reset generation;
+- aborts the current controller, including a controller installed by reset; and
+- clears the controller reference.
+
+Both reset and bootstrap ownership predicates also require `mountedRef.current`, so
+every post-await mutation remains owned by the mounted hook. The direct 409 path now
+accepts a candidate only when `server.revision !== null`; missing, wrong-ID, string,
+and negative revisions all use an authoritative GET before choices reopen.
+
+The executable hook contract now has thirteen top-level cases, including both unmount
+timings and a four-entry malformed-409 matrix. Runtime mutation checks additionally:
+
+1. remove the unmount generation/abort cleanup and require the pending-reset test to
+   fail; and
+2. restore nullable direct-409 acceptance and require the malformed matrix to fail.
+
+These run with the existing late-default, exact-resume, public-setter, and
+programmatic-apply mutations.
+
+### Final verification
+
+```text
+$ npx tsx scripts/verify-editor-project-recovery.ts
+editor-project-recovery: all checks passed
+
+$ npx tsx scripts/verify-editor-project-recovery-hook.ts
+editor-project-recovery-hook: all checks passed
+
+$ npx tsx scripts/verify-editor-project-save-queue.ts
+editor-project-save-queue: all checks passed
+
+$ npx tsx scripts/verify-logo-project-default.ts
+logo-project-default: all checks passed
+
+$ npx tsx scripts/verify-editor-projects.ts
+ALL 59 EDITOR-PROJECT CHECKS PASSED
+
+$ npx tsx scripts/verify-logo-overlay.ts
+logo-overlay: all checks passed
+
+$ npx tsx scripts/verify-logo-render.ts
+logo-render: all checks passed
+
+$ npx tsx scripts/verify-logo-client-contract.ts
+logo-client-contract: all checks passed
+
+$ npx tsc --noEmit --pretty false
+exit=2
+src/app/api/payments/checkout/route.ts(129,9): error TS2322: ...
+Property 'ref_code' is incompatible with index signature.
+Type 'undefined' is not assignable to type 'string | number | null'.
+
+$ npm run build
+✓ Compiled successfully in 10.0s
+✓ Generating static pages (139/139)
+exit 0
+```
+
+No Task 3 file reports a TypeScript error. The build again logs only the non-fatal
+missing-`DATABASE_URL` Prisma warning during page collection.
