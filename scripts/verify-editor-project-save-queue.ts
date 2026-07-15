@@ -8,9 +8,16 @@ import { parseEditorProjectRecoveryJournal } from "../src/lib/editor-project-rec
 type SaveStatus = "saving" | "saved" | "error";
 type SaveEvent = { projectId: string; revision: number; status: SaveStatus };
 type SaveContext = { revision: number; signal: AbortSignal };
+type SaveOutcome =
+  | { kind: "saved" }
+  | { kind: "error" }
+  | { kind: "ambiguous" }
+  | { kind: "blocked" };
 type SaveInput = {
   projectId: string;
-  save: (context: SaveContext) => Promise<boolean>;
+  save: (context: SaveContext) => Promise<boolean | SaveOutcome>;
+  reconcile?: (context: SaveContext) => Promise<SaveOutcome>;
+  onBlocked?: (event: SaveEvent) => void;
   isActive?: () => boolean;
   onStatus?: (event: SaveEvent) => void;
 };
@@ -35,12 +42,12 @@ type ControlledCall = {
   draft: string;
   revision: number;
   signal: AbortSignal;
-  complete(ok: boolean): void;
+  complete(outcome: boolean | SaveOutcome): void;
   fail(error: Error): void;
 };
 
 function controlledSave(calls: ControlledCall[], projectId: string, draft: string) {
-  return ({ revision, signal }: SaveContext) => new Promise<boolean>((resolve, reject) => {
+  return ({ revision, signal }: SaveContext) => new Promise<boolean | SaveOutcome>((resolve, reject) => {
     calls.push({ projectId, draft, revision, signal, complete: resolve, fail: reject });
   });
 }
@@ -180,6 +187,268 @@ async function main(): Promise<void> {
     await nextTurn();
     process.off("unhandledRejection", onUnhandled);
     assert.deepEqual(unhandled, [], "late timed-out promise rejection is consumed");
+  }
+
+  {
+    const queue = createQueue();
+    const phases: string[] = [];
+    const events: SaveEvent[] = [];
+    let finishReconcile!: (outcome: SaveOutcome) => void;
+    const revisionA = queue.enqueue({
+      projectId: "project-ambiguous",
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "ambiguous" };
+      },
+      reconcile: () => new Promise<SaveOutcome>((resolve) => {
+        phases.push("reconcile:A");
+        finishReconcile = resolve;
+      }),
+      onStatus: (event) => events.push(event),
+    });
+    const revisionB = queue.enqueue({
+      projectId: "project-ambiguous",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+      onStatus: (event) => events.push(event),
+    });
+    await nextTurn();
+    assert.deepEqual(
+      phases,
+      ["save:A", "reconcile:A"],
+      "an ambiguous primary enters reconciliation before pending B starts",
+    );
+    finishReconcile({ kind: "saved" });
+    await queue.whenIdle("project-ambiguous");
+    assert.deepEqual(phases, ["save:A", "reconcile:A", "save:B"]);
+    assert.deepEqual(
+      events.map(({ revision, status }) => ({ revision, status })),
+      [
+        { revision: revisionA, status: "saving" },
+        { revision: revisionB, status: "saving" },
+        { revision: revisionB, status: "saved" },
+      ],
+      "reconciliation completes but only the latest UI status publishes",
+    );
+  }
+
+  {
+    const clock = fakeTimeouts();
+    const queue = createQueue({
+      requestTimeoutMs: 321,
+      scheduleTimeout: clock.scheduleTimeout,
+      cancelTimeout: clock.cancelTimeout,
+    });
+    const phases: string[] = [];
+    const events: SaveEvent[] = [];
+    let primarySignal: AbortSignal | undefined;
+    let reconcileSignal: AbortSignal | undefined;
+    let lateResolve!: (outcome: boolean | SaveOutcome) => void;
+    let finishReconcile!: (outcome: SaveOutcome) => void;
+    queue.enqueue({
+      projectId: "project-timeout-reconcile",
+      save: ({ signal }) => new Promise<boolean | SaveOutcome>((resolve) => {
+        phases.push("save:A");
+        primarySignal = signal;
+        lateResolve = resolve;
+      }),
+      reconcile: ({ signal }) => new Promise<SaveOutcome>((resolve) => {
+        phases.push("reconcile:A");
+        reconcileSignal = signal;
+        finishReconcile = resolve;
+      }),
+      onStatus: (event) => events.push(event),
+    });
+    queue.enqueue({
+      projectId: "project-timeout-reconcile",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+      onStatus: (event) => events.push(event),
+    });
+    assert.equal(clock.runNext(), 321);
+    await nextTurn();
+    assert.equal(primarySignal?.aborted, true, "primary timeout aborts the PATCH signal");
+    assert.ok(reconcileSignal, "primary timeout invokes reconciliation");
+    assert.notEqual(reconcileSignal, primarySignal, "reconciliation owns a fresh signal");
+    assert.equal(reconcileSignal?.aborted, false, "fresh reconciliation signal starts un-aborted");
+    assert.deepEqual(phases, ["save:A", "reconcile:A"], "B cannot start during reconciliation");
+    finishReconcile({ kind: "saved" });
+    await queue.whenIdle("project-timeout-reconcile");
+    assert.deepEqual(phases, ["save:A", "reconcile:A", "save:B"]);
+    const eventsBeforeLatePrimary = structuredClone(events);
+    lateResolve({ kind: "saved" });
+    await nextTurn();
+    assert.deepEqual(events, eventsBeforeLatePrimary,
+      "a late primary resolution cannot publish after reconciliation wins");
+    assert.equal(clock.size(), 0, "both bounded phases clear their timer ownership");
+  }
+
+  {
+    const queue = createQueue();
+    const phases: string[] = [];
+    queue.enqueue({
+      projectId: "project-legacy-ambiguous",
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "ambiguous" };
+      },
+    });
+    queue.enqueue({
+      projectId: "project-legacy-ambiguous",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+    });
+    await queue.whenIdle("project-legacy-ambiguous");
+    assert.deepEqual(
+      phases,
+      ["save:A", "save:B"],
+      "ambiguous without reconciliation preserves legacy error-and-continue behavior",
+    );
+  }
+
+  {
+    const clock = fakeTimeouts();
+    const queue = createQueue({
+      requestTimeoutMs: 456,
+      scheduleTimeout: clock.scheduleTimeout,
+      cancelTimeout: clock.cancelTimeout,
+    });
+    const phases: string[] = [];
+    const events: SaveEvent[] = [];
+    const blockedEvents: SaveEvent[] = [];
+    let reconcileSignal: AbortSignal | undefined;
+    const onBlocked = (event: SaveEvent) => blockedEvents.push(event);
+    queue.enqueue({
+      projectId: "project-reconcile-timeout",
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "ambiguous" };
+      },
+      reconcile: ({ signal }) => new Promise<SaveOutcome>(() => {
+        phases.push("reconcile:A");
+        reconcileSignal = signal;
+      }),
+      onBlocked,
+      onStatus: (event) => events.push(event),
+    });
+    const revisionB = queue.enqueue({
+      projectId: "project-reconcile-timeout",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+      onBlocked,
+      onStatus: (event) => events.push(event),
+    });
+    await nextTurn();
+    assert.deepEqual(phases, ["save:A", "reconcile:A"]);
+    assert.equal(clock.runNext(), 456, "reconciliation has its own bounded timeout");
+    await queue.whenIdle("project-reconcile-timeout");
+    assert.equal(reconcileSignal?.aborted, true, "reconciliation timeout aborts its signal");
+    assert.deepEqual(phases, ["save:A", "reconcile:A"], "blocked reconciliation drops B");
+    assert.deepEqual(blockedEvents, [{
+      projectId: "project-reconcile-timeout",
+      revision: revisionB,
+      status: "error",
+    }], "blocked reconciliation notifies active UI exactly once for the latest revision");
+    assert.deepEqual(events.at(-1), blockedEvents[0], "blocked reconciliation publishes latest error");
+    assert.equal(queue.revisionWatermark("project-reconcile-timeout"), revisionB,
+      "blocking never lowers the allocated revision watermark");
+    assert.equal(queue.laneCount(), 0, "blocked reconciliation releases idle waiters and evicts lane");
+  }
+
+  {
+    const queue = createQueue();
+    const phases: string[] = [];
+    const events: SaveEvent[] = [];
+    const blockedEvents: SaveEvent[] = [];
+    const onBlocked = (event: SaveEvent) => blockedEvents.push(event);
+    queue.enqueue({
+      projectId: "project-direct-blocked",
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "blocked" };
+      },
+      onBlocked,
+      onStatus: (event) => events.push(event),
+    });
+    const revisionB = queue.enqueue({
+      projectId: "project-direct-blocked",
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+      onBlocked,
+      onStatus: (event) => events.push(event),
+    });
+    await queue.whenIdle("project-direct-blocked");
+    assert.deepEqual(phases, ["save:A"], "a primary blocked outcome immediately drops pending work");
+    assert.deepEqual(blockedEvents, [{
+      projectId: "project-direct-blocked",
+      revision: revisionB,
+      status: "error",
+    }]);
+    assert.deepEqual(events.at(-1), blockedEvents[0]);
+  }
+
+  for (const reconcileFailure of ["error", "ambiguous", "blocked", "throw"] as const) {
+    const queue = createQueue();
+    const phases: string[] = [];
+    let blockedCount = 0;
+    queue.enqueue({
+      projectId: `project-reconcile-${reconcileFailure}`,
+      save: async () => {
+        phases.push("save:A");
+        return { kind: "ambiguous" };
+      },
+      reconcile: async () => {
+        phases.push("reconcile:A");
+        if (reconcileFailure === "throw") throw new Error("authoritative observation failed");
+        return { kind: reconcileFailure };
+      },
+      onBlocked: () => { blockedCount += 1; },
+    });
+    queue.enqueue({
+      projectId: `project-reconcile-${reconcileFailure}`,
+      save: async () => {
+        phases.push("save:B");
+        return true;
+      },
+    });
+    await queue.whenIdle(`project-reconcile-${reconcileFailure}`);
+    assert.deepEqual(phases, ["save:A", "reconcile:A"],
+      `reconciliation ${reconcileFailure} blocks and drops pending work`);
+    assert.equal(blockedCount, 1, `reconciliation ${reconcileFailure} notifies exactly once`);
+  }
+
+  {
+    const queue = createQueue();
+    const events: SaveEvent[] = [];
+    let getterReads = 0;
+    const malformed = Object.defineProperty({}, "kind", {
+      get() {
+        getterReads += 1;
+        return "saved";
+      },
+    });
+    const revision = queue.enqueue({
+      projectId: "project-malformed-outcome",
+      save: async () => malformed as SaveOutcome,
+      onStatus: (event) => events.push(event),
+    });
+    await queue.whenIdle("project-malformed-outcome");
+    assert.equal(getterReads, 0, "normalization rejects an accessor outcome without invoking it");
+    assert.deepEqual(events.at(-1), {
+      projectId: "project-malformed-outcome",
+      revision,
+      status: "error",
+    }, "malformed structured outcomes fail closed as an ordinary save error");
   }
 
   {

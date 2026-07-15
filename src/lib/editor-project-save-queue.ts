@@ -14,9 +14,17 @@ export type EditorProjectSaveContext = {
   signal: AbortSignal;
 };
 
+export type EditorProjectSaveOutcome =
+  | { kind: "saved" }
+  | { kind: "error" }
+  | { kind: "ambiguous" }
+  | { kind: "blocked" };
+
 type SaveRequest = {
   projectId: string;
-  save: (context: EditorProjectSaveContext) => Promise<boolean>;
+  save: (context: EditorProjectSaveContext) => Promise<boolean | EditorProjectSaveOutcome>;
+  reconcile?: (context: EditorProjectSaveContext) => Promise<EditorProjectSaveOutcome>;
+  onBlocked?: (event: EditorProjectSaveEvent) => void;
   isActive: () => boolean;
   onStatus?: (event: EditorProjectSaveEvent) => void;
   revision: number;
@@ -32,7 +40,9 @@ type SaveLane = {
 
 export type EditorProjectSaveInput = {
   projectId: string;
-  save: (context: EditorProjectSaveContext) => Promise<boolean>;
+  save: (context: EditorProjectSaveContext) => Promise<boolean | EditorProjectSaveOutcome>;
+  reconcile?: (context: EditorProjectSaveContext) => Promise<EditorProjectSaveOutcome>;
+  onBlocked?: (event: EditorProjectSaveEvent) => void;
   isActive?: () => boolean;
   onStatus?: (event: EditorProjectSaveEvent) => void;
 };
@@ -51,6 +61,27 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     ?? ((task: () => void, delayMs: number) => setTimeout(task, delayMs));
   const cancelTimeout = options.cancelTimeout
     ?? ((token: unknown) => clearTimeout(token as ReturnType<typeof setTimeout>));
+
+  function normalizeOutcome(value: unknown): EditorProjectSaveOutcome {
+    if (value === true) return { kind: "saved" };
+    if (value === false) return { kind: "error" };
+    if (value === null || typeof value !== "object") return { kind: "error" };
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(value, "kind");
+      if (!descriptor || !("value" in descriptor)) return { kind: "error" };
+      switch (descriptor.value) {
+        case "saved":
+        case "error":
+        case "ambiguous":
+        case "blocked":
+          return { kind: descriptor.value };
+        default:
+          return { kind: "error" };
+      }
+    } catch {
+      return { kind: "error" };
+    }
+  }
 
   function normalizedProjectId(projectId: string): string {
     const normalized = projectId.trim();
@@ -111,25 +142,49 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     }
   }
 
-  async function runWithTimeout(request: SaveRequest): Promise<boolean> {
+  async function runBoundedPhase(
+    revision: number,
+    phase: (context: EditorProjectSaveContext) => Promise<boolean | EditorProjectSaveOutcome>,
+  ): Promise<{ outcome: EditorProjectSaveOutcome; timedOut: boolean }> {
     const controller = new AbortController();
     let timeoutToken: unknown;
-    let rawSaveResult: Promise<boolean>;
+    let hasTimeoutToken = false;
+    let rawResult: Promise<boolean | EditorProjectSaveOutcome>;
     try {
-      rawSaveResult = request.save({ revision: request.revision, signal: controller.signal });
+      rawResult = Promise.resolve(phase({ revision, signal: controller.signal }));
     } catch {
-      rawSaveResult = Promise.resolve(false);
+      rawResult = Promise.resolve(false);
     }
-    const saveResult = rawSaveResult.then((ok) => ok === true, () => false);
-    const timeoutResult = new Promise<boolean>((resolve) => {
+    const phaseResult = rawResult.then(
+      (value) => ({ outcome: normalizeOutcome(value), timedOut: false }),
+      () => ({ outcome: { kind: "error" } as EditorProjectSaveOutcome, timedOut: false }),
+    );
+    const timeoutResult = new Promise<{
+      outcome: EditorProjectSaveOutcome;
+      timedOut: boolean;
+    }>((resolve) => {
       timeoutToken = scheduleTimeout(() => {
         controller.abort();
-        resolve(false);
+        resolve({ outcome: { kind: "error" }, timedOut: true });
       }, requestTimeoutMs);
+      hasTimeoutToken = true;
     });
-    const ok = await Promise.race([saveResult, timeoutResult]);
-    if (timeoutToken !== undefined) cancelTimeout(timeoutToken);
-    return ok;
+    const result = await Promise.race([phaseResult, timeoutResult]);
+    if (hasTimeoutToken) cancelTimeout(timeoutToken);
+    return result;
+  }
+
+  async function runRequest(request: SaveRequest): Promise<EditorProjectSaveOutcome> {
+    const primary = await runBoundedPhase(request.revision, request.save);
+    const needsReconciliation = primary.timedOut || primary.outcome.kind === "ambiguous";
+    if (!needsReconciliation) return primary.outcome;
+    if (!request.reconcile) return { kind: "error" };
+
+    const reconciled = await runBoundedPhase(request.revision, request.reconcile);
+    if (!reconciled.timedOut && reconciled.outcome.kind === "saved") {
+      return { kind: "saved" };
+    }
+    return { kind: "blocked" };
   }
 
   function releaseIdleLane(lane: SaveLane): void {
@@ -146,14 +201,35 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
       while (lane.pending) {
         const request = lane.pending;
         lane.pending = null;
-        let ok = false;
+        let outcome: EditorProjectSaveOutcome = { kind: "error" };
         try {
-          ok = await runWithTimeout(request);
+          outcome = await runRequest(request);
         } catch {
-          ok = false;
+          outcome = { kind: "error" };
+        }
+        if (outcome.kind === "blocked") {
+          const latestRequest = lane.pending ?? request;
+          lane.pending = null;
+          const event: EditorProjectSaveEvent = {
+            projectId: latestRequest.projectId,
+            revision: latestRequest.revision,
+            status: "error",
+          };
+          publish(latestRequest, "error");
+          if (request.onBlocked && request.isActive()) {
+            try {
+              request.onBlocked(event);
+            } catch {
+              // Recovery callbacks cannot affect lane release.
+            }
+          }
+          // Presentation callbacks may enqueue synchronously; a blocked lane cannot
+          // allow those writes to escape before explicit conflict resolution.
+          lane.pending = null;
+          break;
         }
         if (lane.latestRevision === request.revision && !lane.pending) {
-          publish(request, ok ? "saved" : "error");
+          publish(request, outcome.kind === "saved" ? "saved" : "error");
         }
       }
     } finally {
@@ -169,6 +245,8 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     const request: SaveRequest = {
       projectId,
       save: input.save,
+      reconcile: input.reconcile,
+      onBlocked: input.onBlocked,
       isActive: input.isActive ?? (() => true),
       onStatus: input.onStatus,
       revision,
