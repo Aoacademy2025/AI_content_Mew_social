@@ -132,6 +132,46 @@ async function main() {
     "late A cannot overwrite B in the database",
   );
 
+  const concurrentExplicitProject = await projects.createEditorProject(alice.id, {
+    title: "Concurrent explicit choices",
+    draft: { script: "initial" },
+  });
+  await updateWithRevision(alice.id, concurrentExplicitProject.id, {
+    draft: { script: "server-four" },
+    draftRevision: 4,
+  });
+  let releaseConcurrentExplicitWrites!: () => void;
+  const concurrentExplicitStart = new Promise<void>((resolve) => {
+    releaseConcurrentExplicitWrites = resolve;
+  });
+  const concurrentExplicitInputs = [
+    { draft: { script: "explicit-five" }, draftRevision: 5, expectedDraftRevision: 4 },
+    { draft: { script: "explicit-six" }, draftRevision: 6, expectedDraftRevision: 4 },
+  ] as const;
+  const concurrentExplicitWrites = concurrentExplicitInputs.map(async (input) => {
+    await concurrentExplicitStart;
+    return updateWithRevision(alice.id, concurrentExplicitProject.id, input);
+  });
+  releaseConcurrentExplicitWrites();
+  const concurrentExplicitResults = await Promise.allSettled(concurrentExplicitWrites);
+  const concurrentExplicitSuccesses = concurrentExplicitResults.filter(
+    (result): result is PromiseFulfilledResult<Record<string, unknown> | null> => result.status === "fulfilled",
+  );
+  const concurrentExplicitStaleResults = concurrentExplicitResults.filter(
+    (result) => result.status === "rejected"
+      && (result.reason as { code?: string })?.code === "stale_revision",
+  );
+  const concurrentExplicitWinner = concurrentExplicitSuccesses[0]?.value;
+  const afterConcurrentExplicit = await projects.getEditorProject(alice.id, concurrentExplicitProject.id);
+  ok(
+    concurrentExplicitSuccesses.length === 1
+      && concurrentExplicitStaleResults.length === 1
+      && afterConcurrentExplicit?.draftRevision === concurrentExplicitWinner?.draftRevision
+      && afterConcurrentExplicit?.draft.script
+        === (concurrentExplicitWinner?.draft as { script?: string } | undefined)?.script,
+    "concurrent explicit choices have one winner and persist exactly that result",
+  );
+
   const conflictChoiceProject = await projects.createEditorProject(alice.id, {
     title: "Observed revision conflict choice",
     draft: { script: "initial" },
@@ -307,9 +347,85 @@ async function main() {
     const apiFinal = await projects.getEditorProject(alice.id, apiProject.id);
     ok(apiFinal?.draft?.script === "API legacy newer", "PATCH-level late request leaves the legacy write durable");
 
-    for (const invalidExpectedRevision of [-1, 1.5]) {
+    const bundledStaleProject = await projects.createEditorProject(alice.id, {
+      title: "Bundled current title",
+      status: "draft",
+      draft: { script: "initial" },
+    });
+    await updateWithRevision(alice.id, bundledStaleProject.id, {
+      draft: { script: "bundled current draft" },
+      draftRevision: 3,
+    });
+    const bundledStaleResponse = await patchEditorProjectForUser(alice.id, bundledStaleProject.id, {
+      title: "stale title must not write",
+      status: "rendering",
+      draft: { script: "stale draft must not write" },
+      draftRevision: 4,
+      expectedDraftRevision: 2,
+    });
+    const bundledStalePayload = await bundledStaleResponse.json() as Record<string, unknown>;
+    const bundledStaleCurrent = bundledStalePayload.project as Record<string, unknown> | undefined;
+    const afterBundledStale = await projects.getEditorProject(alice.id, bundledStaleProject.id);
+    ok(
+      bundledStaleResponse.status === 409
+        && bundledStalePayload.error === "stale_revision"
+        && bundledStaleCurrent?.draftRevision === 3
+        && (bundledStaleCurrent?.draft as { script?: string } | undefined)?.script === "bundled current draft"
+        && bundledStaleCurrent?.title === "Bundled current title"
+        && bundledStaleCurrent?.status === "draft"
+        && afterBundledStale?.draftRevision === 3
+        && afterBundledStale.draft.script === "bundled current draft"
+        && afterBundledStale.title === "Bundled current title"
+        && afterBundledStale.status === "draft",
+      "stale explicit PATCH rejects its bundled draft and metadata atomically",
+    );
+
+    const missingExplicitResponse = await patchEditorProjectForUser(alice.id, "missing-explicit-project", {
+      draft: { script: "missing" },
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    const missingExplicitPayload = await missingExplicitResponse.json() as Record<string, unknown>;
+    ok(
+      missingExplicitResponse.status === 404 && missingExplicitPayload.error === "not_found",
+      "explicit PATCH returns 404 for a nonexistent project",
+    );
+
+    const crossUserExplicitResponse = await patchEditorProjectForUser(bob.id, bundledStaleProject.id, {
+      draft: { script: "cross-user" },
+      draftRevision: 4,
+      expectedDraftRevision: 3,
+    });
+    const crossUserExplicitPayload = await crossUserExplicitResponse.json() as Record<string, unknown>;
+    ok(
+      crossUserExplicitResponse.status === 404 && crossUserExplicitPayload.error === "not_found",
+      "explicit PATCH returns 404 for a cross-user project",
+    );
+
+    const invalidExpectedRevisionCases: Array<{
+      label: string;
+      expectedDraftRevision: unknown;
+      draftRevision: number;
+    }> = [
+      { label: "string", expectedDraftRevision: "2", draftRevision: 3 },
+      { label: "null", expectedDraftRevision: null, draftRevision: 3 },
+      { label: "NaN", expectedDraftRevision: Number.NaN, draftRevision: 3 },
+      { label: "infinity", expectedDraftRevision: Number.POSITIVE_INFINITY, draftRevision: 3 },
+      { label: "fraction", expectedDraftRevision: 1.5, draftRevision: 3 },
+      { label: "negative", expectedDraftRevision: -1, draftRevision: 3 },
+      {
+        label: "maximum plus one",
+        expectedDraftRevision: projects.MAX_EDITOR_PROJECT_DRAFT_REVISION + 1,
+        draftRevision: 3,
+      },
+      { label: "unsafe integer", expectedDraftRevision: Number.MAX_SAFE_INTEGER + 1, draftRevision: 3 },
+      { label: "draft revision equal to expected", expectedDraftRevision: 2, draftRevision: 2 },
+      { label: "draft revision lower than expected", expectedDraftRevision: 2, draftRevision: 1 },
+    ];
+    for (const invalidCase of invalidExpectedRevisionCases) {
       const invalidExpectedProject = await projects.createEditorProject(alice.id, {
-        title: `Invalid expected revision ${invalidExpectedRevision}`,
+        title: `Invalid expected revision: ${invalidCase.label}`,
+        status: "draft",
         draft: { script: "initial" },
       });
       await updateWithRevision(alice.id, invalidExpectedProject.id, {
@@ -320,9 +436,11 @@ async function main() {
         alice.id,
         invalidExpectedProject.id,
         {
+          title: "must-not-write title",
+          status: "rendering",
           draft: { script: "must-not-write" },
-          draftRevision: 3,
-          expectedDraftRevision: invalidExpectedRevision,
+          draftRevision: invalidCase.draftRevision,
+          expectedDraftRevision: invalidCase.expectedDraftRevision,
         },
       );
       const invalidExpectedPayload = await invalidExpectedResponse.json() as Record<string, unknown>;
@@ -331,8 +449,10 @@ async function main() {
         invalidExpectedResponse.status === 400
           && invalidExpectedPayload.error === "invalid_draft_revision"
           && afterInvalidExpected?.draftRevision === 2
-          && afterInvalidExpected.draft.script === "server-two",
-        `PATCH rejects expected revision ${invalidExpectedRevision} without a write`,
+          && afterInvalidExpected.draft.script === "server-two"
+          && afterInvalidExpected.title === `Invalid expected revision: ${invalidCase.label}`
+          && afterInvalidExpected.status === "draft",
+        `PATCH rejects invalid expected revision (${invalidCase.label}) without a write`,
       );
     }
 
