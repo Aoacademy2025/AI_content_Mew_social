@@ -40,6 +40,7 @@ const MAX_UPLOADS_PER_HOUR = 20;
 const UPLOAD_WINDOW_MS = 60 * 60 * 1000;
 const uploadWindows = new Map<string, number[]>();
 export const BRAND_ASSET_ACCOUNT_DELETE_RECEIPTS_DIRECTORY = ".account-delete-receipts-v1";
+export const BRAND_ASSET_ACCOUNT_DELETE_QUARANTINE_DIRECTORY = ".account-delete-quarantine-v1";
 
 const acceptedFileTypes: Record<string, { mimeType: string; decodedFormat: "jpeg" | "png" | "webp" }> = {
   ".jpg": { mimeType: "image/jpeg", decodedFormat: "jpeg" },
@@ -333,6 +334,7 @@ export function isSafeBrandAssetUserId(userId: unknown): userId is string {
     || userId === "."
     || userId === ".."
     || userId === BRAND_ASSET_ACCOUNT_DELETE_RECEIPTS_DIRECTORY
+    || userId === BRAND_ASSET_ACCOUNT_DELETE_QUARANTINE_DIRECTORY
     || userId.normalize("NFC") !== userId
     || /[\/\\\u0000-\u001f\u007f]/u.test(userId)
     || path.isAbsolute(userId)

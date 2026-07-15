@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFileSync,
+  chmodSync,
+  renameSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import sharp from "sharp";
@@ -15,6 +35,10 @@ import {
   deleteUserAndBrandAssetDirectory,
   hardDeleteUserWithBrandAssets,
 } from "@/lib/account-hard-delete.server";
+import {
+  createClerkAssetCleanupStore,
+  type ClerkAssetCleanupPhase,
+} from "@/lib/clerk-asset-cleanup-receipt.server";
 import {
   deleteBrandAssetItem,
   getBrandAssetCollection,
@@ -47,7 +71,9 @@ const CLERK_RM_RETRY_USER_ID = "brand-api-clerk-rm-retry";
 const CLERK_WRITE_FAIL_USER_ID = "brand-api-clerk-write-fail";
 const CLERK_CONCURRENT_USER_ID = "brand-api-clerk-concurrent";
 const RECEIPTS_DIRECTORY_NAME = ".account-delete-receipts-v1";
-const RECEIPT_BINDING_DOMAIN = "heroai-clerk-brand-cleanup-v1";
+const QUARANTINE_DIRECTORY_NAME = ".account-delete-quarantine-v1";
+const RECEIPT_BINDING_DOMAIN = "heroai-clerk-brand-cleanup-v2";
+const MAX_RECEIPT_BYTES = 1024;
 const CLERK_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 
 const errorCases = [
@@ -91,12 +117,17 @@ function clerkReceiptPath(clerkId: string): string {
   return path.join(root, RECEIPTS_DIRECTORY_NAME, `${clerkReceiptIdentifier(clerkId)}.json`);
 }
 
-function clerkReceiptDocument(clerkId: string, userId: string): string {
+function clerkReceiptDocument(
+  clerkId: string,
+  userId: string,
+  phase: ClerkAssetCleanupPhase = "prepared",
+): string {
   return JSON.stringify({
-    version: 1,
+    version: 2,
     clerkIdHash: clerkReceiptIdentifier(clerkId),
     userId,
     bindingHash: sha256(`${RECEIPT_BINDING_DOMAIN}\u0000${clerkId}\u0000${userId}`),
+    phase,
   });
 }
 
@@ -484,6 +515,502 @@ async function verifyDeferredUploadCannotOrphanFile(): Promise<void> {
   assert.deepEqual(entries, [], "the failed late insert leaves no temporary or final private file");
 }
 
+async function verifyClerkCleanupStorePrimitives(): Promise<void> {
+  const testBase = path.resolve(`${root}-trusted-cleanup-primitives`);
+  const receiptsPath = (assetRoot: string, clerkId: string) => path.join(
+    assetRoot,
+    RECEIPTS_DIRECTORY_NAME,
+    `${clerkReceiptIdentifier(clerkId)}.json`,
+  );
+  const quarantinePath = (assetRoot: string, clerkId: string) => path.join(
+    assetRoot,
+    QUARANTINE_DIRECTORY_NAME,
+    clerkReceiptIdentifier(clerkId),
+  );
+  const expectPresent = async (target: string, message: string) => {
+    await access(target).catch(() => assert.fail(message));
+  };
+  const expectMissing = async (target: string, message: string) => {
+    await assert.rejects(
+      access(target),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+      message,
+    );
+  };
+
+  await rm(testBase, { recursive: true, force: true });
+  try {
+    const durabilityParent = path.join(testBase, "durability-parent");
+    const durabilityRoot = path.join(durabilityParent, "asset-root");
+    await mkdir(durabilityParent, { recursive: true, mode: 0o700 });
+    await chmod(durabilityParent, 0o700);
+    const durabilitySteps: string[] = [];
+    const durabilityStore = createClerkAssetCleanupStore({
+      assetRoot: durabilityRoot,
+      observeDurabilityStep: (step) => durabilitySteps.push(step),
+    });
+    const durabilityClerkId = "clerk-trusted-cleanup-durability";
+    const durabilityUserId = "trusted-cleanup-durability-user";
+    await durabilityStore.write(durabilityClerkId, durabilityUserId, "prepared");
+    durabilitySteps.push("database-delete");
+    assert.deepEqual(
+      durabilitySteps.slice(0, 6),
+      [
+        "asset-root-created",
+        "asset-root-parent-synced",
+        "receipt-directory-created",
+        "asset-root-synced",
+        "receipt-file-synced",
+        "receipt-directory-synced",
+      ],
+      "new root and receipt entries are parent-fsynced before database deletion",
+    );
+    assert.ok(
+      durabilitySteps.indexOf("quarantine-directory-created")
+        < durabilitySteps.indexOf("database-delete"),
+      "the quarantine directory is created before database deletion",
+    );
+    assert.ok(
+      durabilitySteps.lastIndexOf("asset-root-synced")
+        < durabilitySteps.indexOf("database-delete"),
+      "the quarantine parent entry is synced before database deletion",
+    );
+    assert.deepEqual(
+      await durabilityStore.read(durabilityClerkId),
+      {
+        version: 2,
+        clerkIdHash: clerkReceiptIdentifier(durabilityClerkId),
+        userId: durabilityUserId,
+        bindingHash: sha256(
+          `${RECEIPT_BINDING_DOMAIN}\u0000${durabilityClerkId}\u0000${durabilityUserId}`,
+        ),
+        phase: "prepared",
+      },
+      "the store round-trips one canonical version-2 receipt",
+    );
+    assert.equal((await stat(durabilityRoot)).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(path.join(durabilityRoot, RECEIPTS_DIRECTORY_NAME))).mode & 0o777,
+      0o700,
+    );
+    assert.equal(
+      (await stat(path.join(durabilityRoot, QUARANTINE_DIRECTORY_NAME))).mode & 0o777,
+      0o700,
+    );
+    assert.equal(
+      (await stat(receiptsPath(durabilityRoot, durabilityClerkId))).mode & 0o777,
+      0o600,
+    );
+
+    const trustBase = path.join(testBase, "trust-boundary");
+    await mkdir(trustBase, { recursive: true, mode: 0o700 });
+    await chmod(trustBase, 0o700);
+
+    const symlinkOutside = path.join(trustBase, "root-symlink-outside");
+    const symlinkRoot = path.join(trustBase, "root-symlink");
+    const symlinkSibling = path.join(trustBase, "root-symlink-sibling");
+    await mkdir(symlinkOutside, { mode: 0o700 });
+    await mkdir(symlinkSibling, { mode: 0o700 });
+    await writeFile(path.join(symlinkOutside, "outside-sentinel"), "outside");
+    await writeFile(path.join(symlinkOutside, "root-sentinel"), "root");
+    await writeFile(path.join(symlinkSibling, "sibling-sentinel"), "sibling");
+    await symlink(symlinkOutside, symlinkRoot);
+    await assert.rejects(
+      createClerkAssetCleanupStore({ assetRoot: symlinkRoot }).write(
+        "clerk-root-symlink",
+        "root-symlink-user",
+        "prepared",
+      ),
+      "a configured root symlink fails closed",
+    );
+    await expectPresent(path.join(symlinkOutside, "outside-sentinel"), "root symlink preserves outside data");
+    await expectPresent(path.join(symlinkOutside, "root-sentinel"), "root symlink preserves root data");
+    await expectPresent(path.join(symlinkSibling, "sibling-sentinel"), "root symlink preserves sibling data");
+
+    const writableRoot = path.join(trustBase, "writable-root");
+    const writableOutside = path.join(trustBase, "writable-root-outside");
+    const writableSibling = path.join(trustBase, "writable-root-sibling");
+    await mkdir(writableRoot, { mode: 0o700 });
+    await mkdir(writableOutside, { mode: 0o700 });
+    await mkdir(writableSibling, { mode: 0o700 });
+    await writeFile(path.join(writableRoot, "root-sentinel"), "root");
+    await writeFile(path.join(writableOutside, "outside-sentinel"), "outside");
+    await writeFile(path.join(writableSibling, "sibling-sentinel"), "sibling");
+    await chmod(writableRoot, 0o722);
+    await assert.rejects(
+      createClerkAssetCleanupStore({ assetRoot: writableRoot }).write(
+        "clerk-writable-root",
+        "writable-root-user",
+        "prepared",
+      ),
+      "a group/world-writable configured root fails closed",
+    );
+    await expectPresent(path.join(writableRoot, "root-sentinel"), "writable root preserves root data");
+    await expectPresent(path.join(writableOutside, "outside-sentinel"), "writable root preserves outside data");
+    await expectPresent(path.join(writableSibling, "sibling-sentinel"), "writable root preserves sibling data");
+    await chmod(writableRoot, 0o700);
+
+    for (const reservedDirectory of [RECEIPTS_DIRECTORY_NAME, QUARANTINE_DIRECTORY_NAME]) {
+      const label = reservedDirectory === RECEIPTS_DIRECTORY_NAME ? "receipt" : "quarantine";
+      const reservedRoot = path.join(trustBase, `${label}-symlink-root`);
+      const reservedOutside = path.join(trustBase, `${label}-symlink-outside`);
+      const reservedSibling = path.join(trustBase, `${label}-symlink-sibling`);
+      await mkdir(reservedRoot, { mode: 0o700 });
+      await mkdir(reservedOutside, { mode: 0o700 });
+      await mkdir(reservedSibling, { mode: 0o700 });
+      await writeFile(path.join(reservedRoot, "root-sentinel"), "root");
+      await writeFile(path.join(reservedOutside, "outside-sentinel"), "outside");
+      await writeFile(path.join(reservedSibling, "sibling-sentinel"), "sibling");
+      await symlink(reservedOutside, path.join(reservedRoot, reservedDirectory));
+      await assert.rejects(
+        createClerkAssetCleanupStore({ assetRoot: reservedRoot }).write(
+          `clerk-${label}-symlink`,
+          `${label}-symlink-user`,
+          "prepared",
+        ),
+        `${label} directory symlink fails closed`,
+      );
+      await expectPresent(path.join(reservedRoot, "root-sentinel"), `${label} symlink preserves root data`);
+      await expectPresent(path.join(reservedOutside, "outside-sentinel"), `${label} symlink preserves outside data`);
+      await expectPresent(path.join(reservedSibling, "sibling-sentinel"), `${label} symlink preserves sibling data`);
+    }
+
+    for (const reservedDirectory of [RECEIPTS_DIRECTORY_NAME, QUARANTINE_DIRECTORY_NAME]) {
+      const label = reservedDirectory === RECEIPTS_DIRECTORY_NAME ? "receipt" : "quarantine";
+      const reservedRoot = path.join(trustBase, `${label}-writable-root`);
+      const reservedOutside = path.join(trustBase, `${label}-writable-outside`);
+      const reservedSibling = path.join(trustBase, `${label}-writable-sibling`);
+      await mkdir(reservedRoot, { mode: 0o700 });
+      await mkdir(path.join(reservedRoot, reservedDirectory), { mode: 0o700 });
+      await mkdir(reservedOutside, { mode: 0o700 });
+      await mkdir(reservedSibling, { mode: 0o700 });
+      await writeFile(path.join(reservedRoot, "root-sentinel"), "root");
+      await writeFile(path.join(reservedOutside, "outside-sentinel"), "outside");
+      await writeFile(path.join(reservedSibling, "sibling-sentinel"), "sibling");
+      await chmod(path.join(reservedRoot, reservedDirectory), 0o722);
+      await assert.rejects(
+        createClerkAssetCleanupStore({ assetRoot: reservedRoot }).write(
+          `clerk-${label}-writable`,
+          `${label}-writable-user`,
+          "prepared",
+        ),
+        `a group/world-writable ${label} directory fails closed`,
+      );
+      await expectPresent(path.join(reservedRoot, "root-sentinel"), `${label} mode rejection preserves root data`);
+      await expectPresent(path.join(reservedOutside, "outside-sentinel"), `${label} mode rejection preserves outside data`);
+      await expectPresent(path.join(reservedSibling, "sibling-sentinel"), `${label} mode rejection preserves sibling data`);
+      await chmod(path.join(reservedRoot, reservedDirectory), 0o700);
+    }
+
+    if (typeof process.getuid === "function") {
+      let foreignRoot: string | null = null;
+      for (const candidate of ["/private/tmp", "/tmp"]) {
+        try {
+          const metadata = await lstat(candidate);
+          if (
+            metadata.isDirectory()
+            && !metadata.isSymbolicLink()
+            && metadata.uid !== process.getuid()
+          ) {
+            foreignRoot = candidate;
+            break;
+          }
+        } catch {
+          // The alternate platform path is absent.
+        }
+      }
+      if (foreignRoot) {
+        const foreignRootSentinel = path.join(foreignRoot, `.trusted-cleanup-root-${process.pid}`);
+        const foreignSiblingSentinel = path.join(foreignRoot, `.trusted-cleanup-sibling-${process.pid}`);
+        const foreignOutsideSentinel = path.join(testBase, "foreign-owner-outside-sentinel");
+        await writeFile(foreignRootSentinel, "root");
+        await writeFile(foreignSiblingSentinel, "sibling");
+        await writeFile(foreignOutsideSentinel, "outside");
+        try {
+          await assert.rejects(
+            createClerkAssetCleanupStore({ assetRoot: foreignRoot }).read("clerk-foreign-root"),
+            "a configured root owned by another uid fails closed",
+          );
+          await expectPresent(foreignRootSentinel, "foreign-owner rejection preserves root data");
+          await expectPresent(foreignSiblingSentinel, "foreign-owner rejection preserves sibling data");
+          await expectPresent(foreignOutsideSentinel, "foreign-owner rejection preserves outside data");
+        } finally {
+          await rm(foreignRootSentinel, { force: true });
+          await rm(foreignSiblingSentinel, { force: true });
+        }
+      }
+    }
+
+    const readRoot = path.join(testBase, "stable-read-root");
+    let readBarrier: (() => void) | null = null;
+    const readStore = createClerkAssetCleanupStore({
+      assetRoot: readRoot,
+      observeDurabilityStep: (step) => {
+        if (step === "receipt-read-metadata" && readBarrier) {
+          const barrier = readBarrier;
+          readBarrier = null;
+          barrier();
+        }
+      },
+    });
+    const readClerkId = "clerk-stable-receipt-read";
+    const readUserId = "stable-receipt-read-user";
+    const readReceiptPath = receiptsPath(readRoot, readClerkId);
+    await readStore.write(readClerkId, readUserId, "prepared");
+    const canonicalReceipt = await readFile(readReceiptPath, "utf8");
+    const readSentinel = path.join(readRoot, "read-root-sentinel");
+    const readSibling = `${readRoot}-sibling`;
+    const readSiblingSentinel = path.join(readSibling, "sibling-sentinel");
+    await writeFile(readSentinel, "root");
+    await mkdir(readSibling, { mode: 0o700 });
+    await writeFile(readSiblingSentinel, "sibling");
+
+    const probeHandle = await open(readReceiptPath, "r");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      read: (...args: any[]) => Promise<any>;
+      readFile: (...args: any[]) => Promise<any>;
+    };
+    await probeHandle.close();
+    const originalHandleRead = fileHandlePrototype.read;
+    const originalHandleReadFile = fileHandlePrototype.readFile;
+    const readCalls: Array<{ bufferLength: number; offset: number; length: number; position: number }> = [];
+    fileHandlePrototype.read = async function (...args: any[]) {
+      const [buffer, offset, length, position] = args as [Buffer, number, number, number];
+      readCalls.push({ bufferLength: buffer.length, offset, length, position });
+      return originalHandleRead.apply(this, args);
+    };
+    fileHandlePrototype.readFile = async () => {
+      throw new Error("uncapped receipt read attempted");
+    };
+    try {
+      assert.equal((await readStore.read(readClerkId))?.userId, readUserId);
+    } finally {
+      fileHandlePrototype.read = originalHandleRead;
+      fileHandlePrototype.readFile = originalHandleReadFile;
+    }
+    assert.deepEqual(
+      readCalls,
+      [{ bufferLength: MAX_RECEIPT_BYTES + 1, offset: 0, length: MAX_RECEIPT_BYTES + 1, position: 0 }],
+      "receipt reads use exactly one capped preallocated buffer and never FileHandle.readFile",
+    );
+
+    const assertUnstableReadRejected = async (
+      mutate: () => void,
+      label: string,
+    ) => {
+      await readStore.write(readClerkId, readUserId, "prepared");
+      readBarrier = mutate;
+      await assert.rejects(readStore.read(readClerkId), `${label} receipt fails closed`);
+      readBarrier = null;
+      await expectPresent(readSentinel, `${label} preserves root sentinel`);
+      await expectPresent(readSiblingSentinel, `${label} preserves sibling sentinel`);
+    };
+    await assertUnstableReadRejected(
+      () => appendFileSync(readReceiptPath, "x"),
+      "concurrent append",
+    );
+    await assertUnstableReadRejected(
+      () => truncateSync(readReceiptPath, Math.max(1, Buffer.byteLength(canonicalReceipt) - 1)),
+      "concurrent truncate",
+    );
+    const replacedReceiptPath = `${readReceiptPath}.replaced`;
+    await assertUnstableReadRejected(
+      () => {
+        renameSync(readReceiptPath, replacedReceiptPath);
+        writeFileSync(readReceiptPath, canonicalReceipt, { mode: 0o600 });
+        chmodSync(readReceiptPath, 0o600);
+      },
+      "concurrent pathname replacement",
+    );
+    await rm(replacedReceiptPath, { force: true });
+
+    const directSymlinkTarget = path.join(readSibling, "direct-symlink-target");
+    await writeFile(directSymlinkTarget, canonicalReceipt, { mode: 0o600 });
+    await rm(readReceiptPath, { force: true });
+    symlinkSync(directSymlinkTarget, readReceiptPath);
+    await assert.rejects(readStore.read(readClerkId), "a direct receipt symlink fails closed");
+    await expectPresent(directSymlinkTarget, "direct symlink rejection preserves its target");
+    await expectPresent(readSentinel, "direct symlink rejection preserves root sentinel");
+    await expectPresent(readSiblingSentinel, "direct symlink rejection preserves sibling sentinel");
+
+    await rm(readReceiptPath, { force: true });
+    await writeFile(readReceiptPath, Buffer.alloc(MAX_RECEIPT_BYTES + 1), { mode: 0o600 });
+    await chmod(readReceiptPath, 0o600);
+    await assert.rejects(readStore.read(readClerkId), "an oversized-at-open receipt fails closed");
+    await expectPresent(readSentinel, "oversized receipt rejection preserves root sentinel");
+    await expectPresent(readSiblingSentinel, "oversized receipt rejection preserves sibling sentinel");
+
+    const assertReceiptContentsRejected = async (contents: string, label: string) => {
+      await writeFile(readReceiptPath, contents, { mode: 0o600 });
+      await chmod(readReceiptPath, 0o600);
+      await assert.rejects(readStore.read(readClerkId), `${label} receipt fails closed`);
+      await expectPresent(readSentinel, `${label} preserves root sentinel`);
+      await expectPresent(readSiblingSentinel, `${label} preserves sibling sentinel`);
+    };
+    await assertReceiptContentsRejected("{malformed", "malformed");
+    await assertReceiptContentsRejected(`${canonicalReceipt}\n`, "non-canonical whitespace");
+    await assertReceiptContentsRejected(
+      JSON.stringify({ ...JSON.parse(canonicalReceipt), bindingHash: "0".repeat(64) }),
+      "binding mismatch",
+    );
+    await assertReceiptContentsRejected(
+      JSON.stringify({ ...JSON.parse(canonicalReceipt), phase: "unknown" }),
+      "unknown phase",
+    );
+    await writeFile(readReceiptPath, canonicalReceipt, { mode: 0o600 });
+    await chmod(readReceiptPath, 0o620);
+    await assert.rejects(readStore.read(readClerkId), "a group-writable receipt fails closed");
+    await chmod(readReceiptPath, 0o600);
+
+    const quarantineRoot = path.join(testBase, "quarantine-root");
+    const quarantineStore = createClerkAssetCleanupStore({ assetRoot: quarantineRoot });
+    const quarantineClerkId = "clerk-quarantine-exact-hash";
+    const quarantineUserId = "quarantine-exact-user";
+    await quarantineStore.write(quarantineClerkId, quarantineUserId, "prepared");
+    const sourceDirectory = path.join(quarantineRoot, quarantineUserId);
+    const sourceSentinel = path.join(sourceDirectory, "nested", "private.webp");
+    await mkdir(path.dirname(sourceSentinel), { recursive: true, mode: 0o700 });
+    await writeFile(sourceSentinel, "private");
+    assert.equal(
+      await quarantineStore.quarantineUserDirectory({
+        clerkId: quarantineClerkId,
+        userId: quarantineUserId,
+      }),
+      "moved",
+      "the exact direct user child moves into quarantine",
+    );
+    const exactQuarantinePath = quarantinePath(quarantineRoot, quarantineClerkId);
+    await expectMissing(sourceDirectory, "quarantine rename removes the original path");
+    await expectPresent(
+      path.join(exactQuarantinePath, "nested", "private.webp"),
+      "quarantine retains the moved private file",
+    );
+    await expectMissing(
+      path.join(quarantineRoot, QUARANTINE_DIRECTORY_NAME, quarantineUserId),
+      "quarantine never derives its destination from the internal user id",
+    );
+    await mkdir(sourceDirectory, { mode: 0o700 });
+    await writeFile(path.join(sourceDirectory, "live-sentinel"), "live");
+    assert.equal(
+      await quarantineStore.quarantineUserDirectory({
+        clerkId: quarantineClerkId,
+        userId: quarantineUserId,
+      }),
+      "already-quarantined",
+      "an existing valid quarantine is idempotent",
+    );
+    await expectPresent(path.join(sourceDirectory, "live-sentinel"), "existing quarantine preserves a new original path");
+    assert.equal(await quarantineStore.quarantineExists(quarantineClerkId), true);
+    const quarantineSibling = path.join(
+      quarantineRoot,
+      QUARANTINE_DIRECTORY_NAME,
+      "non-hash-sibling",
+    );
+    await mkdir(quarantineSibling, { mode: 0o700 });
+    await writeFile(path.join(quarantineSibling, "sibling-sentinel"), "sibling");
+    await quarantineStore.removeQuarantine(quarantineClerkId);
+    assert.equal(await quarantineStore.quarantineExists(quarantineClerkId), false);
+    await expectPresent(path.join(sourceDirectory, "live-sentinel"), "quarantine removal never touches the original path");
+    await expectPresent(path.join(quarantineSibling, "sibling-sentinel"), "quarantine removal never touches a non-hash sibling");
+    await rm(sourceDirectory, { recursive: true, force: true });
+    assert.equal(
+      await quarantineStore.quarantineUserDirectory({
+        clerkId: quarantineClerkId,
+        userId: quarantineUserId,
+      }),
+      "absent",
+      "a missing source and quarantine is an idempotent absence",
+    );
+
+    const collisionClerkId = "clerk-quarantine-collision";
+    const collisionUserId = "quarantine-collision-user";
+    await quarantineStore.write(collisionClerkId, collisionUserId, "prepared");
+    const collisionSource = path.join(quarantineRoot, collisionUserId);
+    const collisionTarget = quarantinePath(quarantineRoot, collisionClerkId);
+    await mkdir(collisionSource, { mode: 0o700 });
+    await writeFile(path.join(collisionSource, "source-sentinel"), "source");
+    await writeFile(collisionTarget, "collision", { mode: 0o600 });
+    await assert.rejects(
+      quarantineStore.quarantineUserDirectory({
+        clerkId: collisionClerkId,
+        userId: collisionUserId,
+      }),
+      "a non-directory quarantine collision fails closed",
+    );
+    await expectPresent(path.join(collisionSource, "source-sentinel"), "collision preserves the source directory");
+
+    const sourceSymlinkClerkId = "clerk-quarantine-source-symlink";
+    const sourceSymlinkUserId = "quarantine-source-symlink-user";
+    const sourceSymlinkOutside = path.join(testBase, "quarantine-source-outside");
+    await quarantineStore.write(sourceSymlinkClerkId, sourceSymlinkUserId, "prepared");
+    await mkdir(sourceSymlinkOutside, { mode: 0o700 });
+    await writeFile(path.join(sourceSymlinkOutside, "outside-sentinel"), "outside");
+    await symlink(sourceSymlinkOutside, path.join(quarantineRoot, sourceSymlinkUserId));
+    await assert.rejects(
+      quarantineStore.quarantineUserDirectory({
+        clerkId: sourceSymlinkClerkId,
+        userId: sourceSymlinkUserId,
+      }),
+      "a direct-child source symlink fails closed",
+    );
+    await expectPresent(path.join(sourceSymlinkOutside, "outside-sentinel"), "source symlink rejection preserves outside data");
+
+    const scavengerRoot = path.join(testBase, "scavenger-root");
+    const scavengerStore = createClerkAssetCleanupStore({ assetRoot: scavengerRoot });
+    const scavengerClerkId = "clerk-scavenge-own-temporaries";
+    const scavengerUserId = "scavenge-own-temporaries-user";
+    const scavengerIdentifier = scavengerStore.identifier(scavengerClerkId);
+    const scavengerDirectory = path.join(scavengerRoot, RECEIPTS_DIRECTORY_NAME);
+    await scavengerStore.write(scavengerClerkId, scavengerUserId, "prepared");
+    for (let index = 0; index < 33; index += 1) {
+      const uuid = `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+      await writeFile(
+        path.join(scavengerDirectory, `.${scavengerIdentifier}.${uuid}.tmp`),
+        "stale",
+        { mode: 0o600 },
+      );
+    }
+    await scavengerStore.write(scavengerClerkId, scavengerUserId, "quarantined");
+    const ownTemporaryPattern = new RegExp(
+      `^\\.${scavengerIdentifier}\\.[0-9a-f-]{36}\\.tmp$`,
+      "u",
+    );
+    const remainingOwnTemporaries = (await readdir(scavengerDirectory)).filter((entry) => (
+      ownTemporaryPattern.test(entry)
+    ));
+    assert.equal(
+      remainingOwnTemporaries.length,
+      1,
+      "one call scavenges at most 32 matching stale temporary entries",
+    );
+    await rm(path.join(scavengerDirectory, remainingOwnTemporaries[0]), { force: true });
+
+    const otherClerkId = "clerk-scavenge-other-receipt";
+    const otherIdentifier = scavengerStore.identifier(otherClerkId);
+    const otherTemporary = path.join(
+      scavengerDirectory,
+      `.${otherIdentifier}.11111111-1111-4111-8111-111111111111.tmp`,
+    );
+    const matchingSymlink = path.join(
+      scavengerDirectory,
+      `.${scavengerIdentifier}.ffffffff-ffff-4fff-8fff-ffffffffffff.tmp`,
+    );
+    const scavengerOutside = path.join(scavengerRoot, "scavenger-outside-sentinel");
+    const nonMatchingTemporary = path.join(scavengerDirectory, ".unbound.tmp");
+    await writeFile(otherTemporary, "other", { mode: 0o600 });
+    await writeFile(scavengerOutside, "outside");
+    await symlink(scavengerOutside, matchingSymlink);
+    await writeFile(nonMatchingTemporary, "unbound", { mode: 0o600 });
+    await scavengerStore.write(scavengerClerkId, scavengerUserId, "directory-cleaned");
+    await expectPresent(otherTemporary, "scavenging preserves another receipt's temporary file");
+    await expectPresent(matchingSymlink, "scavenging does not follow or unlink a temporary symlink");
+    await expectPresent(scavengerOutside, "scavenging preserves a symlink target");
+    await expectPresent(nonMatchingTemporary, "scavenging preserves a non-matching file");
+  } finally {
+    await rm(testBase, { recursive: true, force: true });
+  }
+}
+
 async function verifyClerkReceiptRecovery(): Promise<void> {
   process.env.CLERK_WEBHOOK_SECRET = CLERK_SECRET;
   const receiptsDirectory = path.join(root, RECEIPTS_DIRECTORY_NAME);
@@ -671,19 +1198,21 @@ async function verifyClerkReceiptRecovery(): Promise<void> {
   await assertReceiptRejected("{malformed", "malformed");
   await assertReceiptRejected(
     JSON.stringify({
-      version: 1,
+      version: 2,
       clerkIdHash: "0".repeat(64),
       userId: mismatchedTargetId,
       bindingHash: sha256(`${RECEIPT_BINDING_DOMAIN}\u0000${corruptClerkId}\u0000${mismatchedTargetId}`),
+      phase: "prepared",
     }),
     "mismatched-hash",
   );
   await assertReceiptRejected(
     JSON.stringify({
-      version: 1,
+      version: 2,
       clerkIdHash: clerkReceiptIdentifier(corruptClerkId),
       userId: mismatchedTargetId,
       bindingHash: "0".repeat(64),
+      phase: "prepared",
     }),
     "mismatched-binding",
   );
@@ -727,6 +1256,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  await verifyClerkCleanupStorePrimitives();
   verifyRouteExportContract();
 
   for (const [code, status, message] of errorCases) {

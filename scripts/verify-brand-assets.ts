@@ -84,6 +84,7 @@ async function main() {
       "e\u0301",
       "nul\u0000user",
       ".account-delete-receipts-v1",
+      ".account-delete-quarantine-v1",
       "x".repeat(257),
     ];
     for (const invalidUserId of invalidUserIds) {
