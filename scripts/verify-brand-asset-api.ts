@@ -1016,32 +1016,74 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
   const testBase = path.resolve(`${root}-cleanup-preparation-retry`);
   const scenarios = [
     {
+      label: "asset-root parent fsync",
+      id: "root-parent",
+      failurePoint: "first-created-parent",
+      intermediateMissingComponent: false,
+      precreateAssetRoot: false,
+      expectVisibleReceipt: false,
+      requireAssetRootParentRepair: true,
+      requireAncestorChainRepair: false,
+      requireQuarantineParentRepair: false,
+    },
+    {
+      label: "intermediate asset-root parent fsync",
+      id: "intermediate-parent",
+      failurePoint: "first-created-parent",
+      intermediateMissingComponent: true,
+      precreateAssetRoot: false,
+      expectVisibleReceipt: false,
+      requireAssetRootParentRepair: true,
+      requireAncestorChainRepair: true,
+      requireQuarantineParentRepair: false,
+    },
+    {
       label: "post-rename receipt-directory fsync",
-      failSyncCall: 3,
+      id: "receipt-directory",
+      failurePoint: "receipt-directory",
+      intermediateMissingComponent: false,
+      precreateAssetRoot: true,
+      expectVisibleReceipt: true,
+      requireAssetRootParentRepair: false,
+      requireAncestorChainRepair: false,
       requireQuarantineParentRepair: false,
     },
     {
       label: "quarantine-parent fsync",
-      failSyncCall: 4,
+      id: "quarantine-parent",
+      failurePoint: "quarantine-parent",
+      intermediateMissingComponent: false,
+      precreateAssetRoot: true,
+      expectVisibleReceipt: true,
+      requireAssetRootParentRepair: false,
+      requireAncestorChainRepair: false,
       requireQuarantineParentRepair: true,
     },
   ] as const;
 
   await rm(testBase, { recursive: true, force: true });
   try {
+    await mkdir(testBase, { recursive: true, mode: 0o700 });
+    await chmod(testBase, 0o700);
     for (const scenario of scenarios) {
-      const assetRoot = path.join(testBase, scenario.failSyncCall.toString());
-      await mkdir(assetRoot, { recursive: true, mode: 0o700 });
-      await chmod(assetRoot, 0o700);
+      const assetRoot = scenario.intermediateMissingComponent
+        ? path.join(testBase, scenario.id, "asset-root")
+        : path.join(testBase, scenario.id);
+      if (scenario.precreateAssetRoot) {
+        await mkdir(assetRoot, { mode: 0o700 });
+        await chmod(assetRoot, 0o700);
+      }
       const steps: string[] = [];
       const store = createClerkAssetCleanupStore({
         assetRoot,
         observeDurabilityStep: (step) => steps.push(step),
       });
-      const clerkId = `clerk-preparation-retry-${scenario.failSyncCall}`;
-      const userId = `preparation-retry-user-${scenario.failSyncCall}`;
+      const clerkId = `clerk-preparation-retry-${scenario.id}`;
+      const userId = `preparation-retry-user-${scenario.id}`;
       let target: { id: string; clerkId: string | null } | null = { id: userId, clerkId };
       let databaseDeletes = 0;
+      let retrySyncCalls = 0;
+      let retrySyncCallsAtDatabaseDelete = -1;
       const dependencies = {
         findUserByClerkId: async () => target,
         findUserById: async () => target,
@@ -1049,6 +1091,7 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         readReceipt: async (id: string) => (await store.read(id))?.userId ?? null,
         deleteUser: async () => {
           steps.push("database-delete");
+          retrySyncCallsAtDatabaseDelete = retrySyncCalls;
           databaseDeletes += 1;
           target = null;
           return true;
@@ -1057,7 +1100,18 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         removeReceipt: (id: string) => store.remove(id),
       };
 
-      const probeHandle = await open(assetRoot, "r");
+      let parentChainLength = 0;
+      for (let current = path.dirname(assetRoot);;) {
+        parentChainLength += 1;
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+      const failureSyncCall = scenario.failurePoint === "first-created-parent"
+        ? 1
+        : parentChainLength + (scenario.failurePoint === "receipt-directory" ? 3 : 4);
+
+      const probeHandle = await open(testBase, "r");
       const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
         sync: (...args: any[]) => Promise<any>;
       };
@@ -1066,7 +1120,7 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
       let syncCalls = 0;
       fileHandlePrototype.sync = async function (...args: any[]) {
         syncCalls += 1;
-        if (syncCalls === scenario.failSyncCall) {
+        if (syncCalls === failureSyncCall) {
           throw new Error(`injected ${scenario.label} failure`);
         }
         return originalSync.apply(this, args);
@@ -1082,11 +1136,17 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
       }
 
       assert.equal(databaseDeletes, 0, `${scenario.label} failure blocks database deletion`);
-      assert.equal(
-        (await store.read(clerkId))?.phase,
-        "prepared",
-        `${scenario.label} failure can leave a visible prepared receipt`,
-      );
+      const receiptAfterFailure = await store.read(clerkId);
+      if (scenario.expectVisibleReceipt) {
+        assert.equal(
+          receiptAfterFailure?.phase,
+          "prepared",
+          `${scenario.label} failure can leave a visible prepared receipt`,
+        );
+      } else {
+        assert.equal(receiptAfterFailure, null, `${scenario.label} failure precedes receipt creation`);
+        await access(scenario.intermediateMissingComponent ? path.dirname(assetRoot) : assetRoot);
+      }
       if (scenario.requireQuarantineParentRepair) {
         assert.equal(
           await store.quarantineExists(clerkId),
@@ -1096,17 +1156,38 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
       }
 
       steps.length = 0;
-      assert.equal(
-        await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
-        true,
-        `${scenario.label} retry completes after repairing preparation durability`,
-      );
+      fileHandlePrototype.sync = async function (...args: any[]) {
+        retrySyncCalls += 1;
+        return originalSync.apply(this, args);
+      };
+      try {
+        assert.equal(
+          await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+          true,
+          `${scenario.label} retry completes after repairing preparation durability`,
+        );
+      } finally {
+        fileHandlePrototype.sync = originalSync;
+      }
       const databaseDeleteIndex = steps.indexOf("database-delete");
       const receiptFileSyncIndex = steps.indexOf("receipt-file-synced");
       assert.ok(
         receiptFileSyncIndex >= 0 && receiptFileSyncIndex < databaseDeleteIndex,
         `${scenario.label} retry rewrites and fsyncs the receipt before database deletion`,
       );
+      if (scenario.requireAssetRootParentRepair) {
+        const assetRootParentSyncIndex = steps.indexOf("asset-root-parent-synced");
+        assert.ok(
+          assetRootParentSyncIndex >= 0 && assetRootParentSyncIndex < databaseDeleteIndex,
+          "asset-root parent fsync retry repairs the visible root entry before database deletion",
+        );
+      }
+      if (scenario.requireAncestorChainRepair) {
+        assert.ok(
+          retrySyncCallsAtDatabaseDelete >= parentChainLength + 5,
+          "intermediate retry fsyncs the complete created-component parent chain before database deletion",
+        );
+      }
       if (scenario.requireQuarantineParentRepair) {
         const quarantineParentSyncIndex = steps.lastIndexOf("asset-root-synced");
         assert.ok(

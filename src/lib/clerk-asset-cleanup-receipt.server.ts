@@ -212,10 +212,24 @@ export function createClerkAssetCleanupStore(
     await ensureDirectory(
       assetRoot,
       "asset-root-created",
-      "asset-root-parent-synced",
     );
     const metadata = await lstat(assetRoot);
     assertTrustedDirectory(metadata);
+
+    if (await metadataOrNull(receiptsDirectory)) {
+      await syncDirectory(path.dirname(assetRoot), "asset-root-parent-synced");
+      return;
+    }
+
+    // Receipt-directory creation happens only after this initial chain is durable.
+    // Its absence may mean any visible configured-root component needs repair.
+    for (let current = path.dirname(assetRoot);;) {
+      await syncDirectory(current);
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    observe?.("asset-root-parent-synced");
   }
 
   async function trustedRootOrNull(): Promise<string | null> {
