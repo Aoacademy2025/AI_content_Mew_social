@@ -18,6 +18,7 @@ import {
 } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 import type { BrandAssetView, LogoOverlayConfig } from "../src/lib/logo-overlay";
 import { createEditorProjectSaveQueue } from "../src/lib/editor-project-save-queue";
+import { verifyLogoOverlayEditorRuntime } from "./logo-overlay-editor-runtime-harness";
 
 const failures: string[] = [];
 
@@ -898,6 +899,47 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/useLogoOverlayEditor.ts",
     "utf8",
   );
+  await check("actual logo hook scopes upload completion to project and request ownership", async () => {
+    await verifyLogoOverlayEditorRuntime(hookSource);
+  });
+  await check("actual logo hook runtime rejects ownership and project-abort mutants", async () => {
+    const postResponseBoundary = `      // Runtime mutation tests depend on this post-response ownership boundary.
+      if (!ownsUpload()) {
+        cleanupStaleCreatedAsset(parsed);
+        return false;
+      }
+`;
+    const missingPostResponseGuard = hookSource.replace(postResponseBoundary, "");
+    assert.notEqual(
+      missingPostResponseGuard,
+      hookSource,
+      "post-response ownership mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(missingPostResponseGuard),
+      /late project A response|stale first upload|stale success/,
+      "runtime harness must kill a missing post-response ownership guard",
+    );
+
+    const projectChangeAbort = `    activeUploadControllerRef.current?.abort();
+    activeUploadControllerRef.current = null;
+  } else {`;
+    const missingProjectChangeAbort = hookSource.replace(
+      projectChangeAbort,
+      `    activeUploadControllerRef.current = null;
+  } else {`,
+    );
+    assert.notEqual(
+      missingProjectChangeAbort,
+      hookSource,
+      "project-change abort mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(missingProjectChangeAbort),
+      /project change aborts project A upload/,
+      "runtime harness must kill a missing project-change abort",
+    );
+  });
   const postPhaseEditorSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
     "utf8",
@@ -1137,7 +1179,7 @@ async function main() {
     );
     assert.match(
       hookSource,
-      /previous\.assetId\s*!==\s*parsed\.asset\.id[\s\S]{0,220}scheduleLogoAssetCleanup\(previous\.assetId,\s*\{\s*projectId\s*\}\)/,
+      /previous\.assetId\s*!==\s*parsed\.asset\.id[\s\S]{0,280}scheduleLogoAssetCleanup\(previous\.assetId,\s*\{\s*projectId:\s*startingProjectId\s*\}\)/,
     );
     assert.match(
       hookSource,

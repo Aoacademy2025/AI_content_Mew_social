@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trackEvent } from "@/lib/client-telemetry";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
@@ -276,6 +276,33 @@ export function useLogoOverlayEditor(input: {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const currentProjectIdRef = useRef<string | null>(projectId);
+  const currentLogoAssetIdRef = useRef<string | null>(
+    normalizedValue?.assetId ?? null,
+  );
+  const uploadGenerationRef = useRef(0);
+  const activeUploadControllerRef = useRef<AbortController | null>(null);
+
+  if (currentProjectIdRef.current !== projectId) {
+    currentProjectIdRef.current = projectId;
+    currentLogoAssetIdRef.current = normalizedValue?.assetId ?? null;
+    uploadGenerationRef.current += 1;
+    activeUploadControllerRef.current?.abort();
+    activeUploadControllerRef.current = null;
+  } else {
+    currentLogoAssetIdRef.current = normalizedValue?.assetId ?? null;
+  }
+
+  useEffect(() => {
+    setSaving(false);
+    setMutationError(null);
+  }, [projectId]);
+
+  useEffect(() => () => {
+    uploadGenerationRef.current += 1;
+    activeUploadControllerRef.current?.abort();
+    activeUploadControllerRef.current = null;
+  }, []);
 
   useEffect(() => {
     const assetId = normalizedValue?.assetId;
@@ -377,17 +404,49 @@ export function useLogoOverlayEditor(input: {
       return false;
     }
 
+    activeUploadControllerRef.current?.abort();
+    const controller = new AbortController();
+    const uploadGeneration = uploadGenerationRef.current + 1;
+    uploadGenerationRef.current = uploadGeneration;
+    activeUploadControllerRef.current = controller;
+    const startingProjectId = projectId;
+    const startingAssetId = normalizedValue?.assetId ?? null;
+    const ownsUpload = () =>
+      !controller.signal.aborted
+      && currentProjectIdRef.current === startingProjectId
+      && uploadGenerationRef.current === uploadGeneration
+      && activeUploadControllerRef.current === controller;
+    const cleanupStaleCreatedAsset = (parsed: ParsedLogoUploadResponse) => {
+      if (
+        !parsed.ok
+        || parsed.asset.id === startingAssetId
+        || parsed.asset.id === currentLogoAssetIdRef.current
+      ) {
+        return;
+      }
+      scheduleLogoAssetCleanup(parsed.asset.id, { projectId: startingProjectId });
+    };
+
     setSaving(true);
     setMutationError(null);
     try {
       const response = await fetch("/api/user/brand-assets", {
         method: "POST",
         body: buildLogoUploadFormData(file, projectId),
+        signal: controller.signal,
       });
+      if (!ownsUpload()) return false;
       const payload: unknown = await response.json().catch(() => null);
       const parsed = parseLogoUploadResponse(response.status, payload);
+      // Runtime mutation tests depend on this post-response ownership boundary.
+      if (!ownsUpload()) {
+        cleanupStaleCreatedAsset(parsed);
+        return false;
+      }
       if (!parsed.ok) {
+        if (!ownsUpload()) return false;
         setMutationError(parsed.message);
+        if (!ownsUpload()) return false;
         trackLogoEvent("logo_overlay_upload_error", {
           planEligible: true,
           errorCode: parsed.errorCode,
@@ -408,15 +467,20 @@ export function useLogoOverlayEditor(input: {
             opacity: DEFAULT_LOGO_OPACITY,
           });
       if (!next) {
+        if (!ownsUpload()) return false;
         setMutationError("อัปโหลดโลโก้ไม่สำเร็จ");
         return false;
       }
 
+      if (!ownsUpload()) return false;
       setAsset(parsed.asset);
+      if (!ownsUpload()) return false;
       onChange(next);
       if (previous && previous.assetId !== parsed.asset.id) {
-        scheduleLogoAssetCleanup(previous.assetId, { projectId });
+        if (!ownsUpload()) return false;
+        scheduleLogoAssetCleanup(previous.assetId, { projectId: startingProjectId });
       }
+      if (!ownsUpload()) return false;
       trackLogoEvent("logo_overlay_upload_done", {
         planEligible: true,
         sizeBucket,
@@ -425,7 +489,9 @@ export function useLogoOverlayEditor(input: {
       });
       return true;
     } catch {
+      if (!ownsUpload()) return false;
       setMutationError("เชื่อมต่อไม่สำเร็จ กรุณาลองอัปโหลดอีกครั้ง");
+      if (!ownsUpload()) return false;
       trackLogoEvent("logo_overlay_upload_error", {
         planEligible: true,
         errorCode: "network",
@@ -434,7 +500,10 @@ export function useLogoOverlayEditor(input: {
       });
       return false;
     } finally {
-      setSaving(false);
+      if (ownsUpload()) {
+        setSaving(false);
+        activeUploadControllerRef.current = null;
+      }
     }
   }, [eligible, normalizedValue, onChange, projectId, surface]);
 
