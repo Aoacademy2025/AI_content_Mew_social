@@ -19,6 +19,10 @@ function response(status: number, payload: unknown): ResponseLike {
   return { ok: status >= 200 && status < 300, status, async json() { return payload; } };
 }
 
+function deferredJsonResponse(status: number, payload: Promise<unknown>): ResponseLike {
+  return { ok: status >= 200 && status < 300, status, async json() { return payload; } };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -385,6 +389,7 @@ type ProjectHook = {
   voiceId: string;
   voiceEngine: string;
   geminiVoiceName: string;
+  setBgmVolume(value: number): void;
   saveStatus: "idle" | "saving" | "saved" | "error";
   retryProjectSave(): void;
   resetProject(): Promise<void>;
@@ -1215,6 +1220,233 @@ async function failedAmbiguousRefreshStaysLocked(): Promise<void> {
     "locked refresh failure cannot choose or write the stale server candidate");
 }
 
+function seedConflictJournal(
+  harness: { storage: MemoryStorage },
+  projectId: string,
+  localDraft: JsonRecord,
+  baseRevision = 4,
+): void {
+  journalModule.writeEditorProjectRecoveryJournal(harness.storage, {
+    version: 1,
+    projectId,
+    baseRevision,
+    editedAt: "2026-07-15T09:00:00.000Z",
+    draft: localDraft,
+  });
+}
+
+async function localChoiceLifecycleOwnership(): Promise<void> {
+  const boundaries = ["reset", "project-switch", "unmount"] as const;
+  const outcomes = ["200", "409", "reject"] as const;
+  for (const boundary of boundaries) {
+    for (const outcome of outcomes) {
+      const projectId = `choice-${boundary}-${outcome}`;
+      const server = new SharedEditorServer();
+      server.setProject(projectId, 5, { script: "server old" });
+      const harness = createHarness({ search: `?projectId=${projectId}`, server });
+      seedConflictJournal(harness, projectId, { script: "local old" });
+      const choiceResponse = deferred<ResponseLike>();
+      const choiceJson = deferred<unknown>();
+      harness.fetchMock.enqueue(
+        "PATCH",
+        editorUrl(projectId),
+        outcome === "reject"
+          ? choiceResponse.promise
+          : deferredJsonResponse(outcome === "200" ? 200 : 409, choiceJson.promise),
+      );
+      harness.runner.mount();
+      await settle(harness.runner);
+      assert.equal(harness.runner.current.recovery.status, "conflict");
+      const choice = harness.runner.current.chooseLocalProjectDraft();
+      await settle(harness.runner);
+      const choiceBody = patchBodies(harness.fetchMock)[0];
+      assert.equal(choiceBody.expectedDraftRevision, 5);
+      assert.equal(choiceBody.draftRevision, 6);
+      const choiceSignal = autosavePatchCalls(harness.fetchMock, projectId)[0]?.init.signal;
+      assert.ok(choiceSignal, "explicit local choice PATCH owns an AbortSignal");
+
+      let replacement: ReturnType<typeof createHarness> | null = null;
+      if (boundary === "reset") {
+        await harness.runner.current.resetProject();
+        await settle(harness.runner);
+      } else if (boundary === "project-switch") {
+        harness.runner.unmount();
+        server.setProject("choice-project-b", 0, { script: "server B" });
+        replacement = createHarness({ search: "?projectId=choice-project-b", server });
+        replacement.runner.mount();
+        await settle(replacement.runner);
+      } else {
+        harness.runner.unmount();
+      }
+      assert.equal(choiceSignal.aborted, true, `${boundary} aborts its stale local-choice PATCH`);
+      const oldSnapshot = {
+        projectId: harness.runner.current.projectId,
+        projectReady: harness.runner.current.projectReady,
+        script: harness.runner.current.script,
+        recovery: harness.runner.current.recovery.status,
+        saveStatus: harness.runner.current.saveStatus,
+      };
+      const oldGetCount = harness.fetchMock.calls.filter(
+        (call) => call.method === "GET" && call.url === editorUrl(projectId),
+      ).length;
+      if (outcome === "200") {
+        choiceJson.resolve({
+          project: project(projectId, 6, choiceBody.draft as JsonRecord),
+        });
+      } else if (outcome === "409") {
+        choiceJson.resolve({
+          project: project(projectId, 7, { script: "late remote old" }),
+        });
+      } else {
+        choiceResponse.reject(new Error("late local-choice rejection"));
+      }
+      await choice;
+      await settle(harness.runner, 64);
+      assert.deepEqual({
+        projectId: harness.runner.current.projectId,
+        projectReady: harness.runner.current.projectReady,
+        script: harness.runner.current.script,
+        recovery: harness.runner.current.recovery.status,
+        saveStatus: harness.runner.current.saveStatus,
+      }, oldSnapshot, `${boundary} ignores stale local-choice ${outcome} state callbacks`);
+      assert.equal(
+        harness.fetchMock.calls.filter(
+          (call) => call.method === "GET" && call.url === editorUrl(projectId),
+        ).length,
+        oldGetCount,
+        `${boundary} does not refresh after stale local-choice ${outcome}`,
+      );
+
+      const activeHarness = replacement ?? (boundary === "reset" ? harness : null);
+      if (activeHarness) {
+        const activeProjectId = activeHarness.runner.current.projectId;
+        assert.ok(activeProjectId && activeProjectId !== projectId);
+        assert.equal(activeHarness.runner.current.projectReady, true);
+        activeHarness.runner.current.setScript(`new project survives ${boundary}-${outcome}`);
+        activeHarness.runner.flush();
+        activeHarness.clock.advance(1_000);
+        await settle(activeHarness.runner, 64);
+        const activeBodies = autosavePatchCalls(activeHarness.fetchMock, activeProjectId)
+          .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+        assert.equal(activeBodies.length, 1, "the replacement project still autosaves exactly once");
+        assert.equal(activeBodies[0].expectedDraftRevision, boundary === "reset" ? 0 : 0);
+        assert.equal((activeBodies[0].draft as JsonRecord).script, `new project survives ${boundary}-${outcome}`);
+        assert.equal(activeHarness.runner.current.saveStatus, "saved");
+      }
+    }
+  }
+}
+
+async function exactLocalChoiceAcknowledgement(): Promise<void> {
+  const projectId = "choice-exact-ack";
+  const harness = createHarness({ search: `?projectId=${projectId}` });
+  seedConflictJournal(harness, projectId, { script: "local exact" });
+  harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+    project: project(projectId, 5, { script: "server five" }),
+  }));
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), response(200, {
+    project: project(projectId, 6, { script: "local exact" }),
+  }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  await harness.runner.current.chooseLocalProjectDraft();
+  await settle(harness.runner);
+  assert.deepEqual({
+    recovery: harness.runner.current.recovery.status,
+    projectReady: harness.runner.current.projectReady,
+    script: harness.runner.current.script,
+    saveStatus: harness.runner.current.saveStatus,
+    journal: journalModule.readEditorProjectRecoveryJournal(harness.storage, projectId),
+  }, {
+    recovery: "none",
+    projectReady: true,
+    script: "local exact",
+    saveStatus: "saved",
+    journal: null,
+  }, "an exact local-choice revision and fingerprint is acknowledged");
+}
+
+async function mismatchedLocalChoiceAcknowledgementsRefresh(): Promise<void> {
+  const variants: Array<{
+    label: string;
+    responseProject: JsonRecord;
+  }> = [
+    {
+      label: "foreign project",
+      responseProject: project("choice-foreign", 6, { script: "local mismatch" }),
+    },
+    {
+      label: "wrong revision",
+      responseProject: project("choice-mismatch", 7, { script: "local mismatch" }),
+    },
+    {
+      label: "wrong fingerprint",
+      responseProject: project("choice-mismatch", 6, { script: "forged response" }),
+    },
+  ];
+  for (const variant of variants) {
+    const projectId = "choice-mismatch";
+    const harness = createHarness({ search: `?projectId=${projectId}` });
+    seedConflictJournal(harness, projectId, { script: "local mismatch" });
+    harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+      project: project(projectId, 5, { script: "server five" }),
+    }));
+    harness.fetchMock.enqueue("PATCH", editorUrl(projectId), response(200, {
+      project: variant.responseProject,
+    }));
+    harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+      project: project(projectId, 5, { script: "server five" }),
+    }));
+    harness.runner.mount();
+    await settle(harness.runner);
+    const immutableLocal = harness.runner.current.recovery.local;
+    const journalBefore = harness.storage.getItem(journalModule.editorProjectRecoveryKey(projectId));
+    await harness.runner.current.chooseLocalProjectDraft();
+    await settle(harness.runner);
+    assert.deepEqual({
+      recovery: harness.runner.current.recovery.status,
+      projectReady: harness.runner.current.projectReady,
+      localIdentity: harness.runner.current.recovery.local === immutableLocal,
+      serverRevision: harness.runner.current.recovery.server?.revision,
+      journal: harness.storage.getItem(journalModule.editorProjectRecoveryKey(projectId)),
+      getCount: harness.fetchMock.calls.filter(
+        (call) => call.method === "GET" && call.url === editorUrl(projectId),
+      ).length,
+      saveStatus: harness.runner.current.saveStatus,
+    }, {
+      recovery: "conflict",
+      projectReady: false,
+      localIdentity: true,
+      serverRevision: 5,
+      journal: journalBefore,
+      getCount: 2,
+      saveStatus: "idle",
+    }, `${variant.label} 200 is ambiguous and refreshes without acknowledging`);
+  }
+}
+
+async function invalidLatestLocalShowsRecoveryState(): Promise<void> {
+  const projectId = "invalid-latest-local";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 0, { script: "base" });
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.runner.mount();
+  await settle(harness.runner);
+  harness.runner.current.setBgmVolume(Number.NaN);
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    projectReady: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+    patches: autosavePatchCalls(harness.fetchMock, projectId).length,
+  }, {
+    projectReady: false,
+    recovery: "load-error",
+    patches: 0,
+  }, "an unmaterializable explicit local draft locks into a visible recovery state");
+}
+
 async function revisionExhaustionRestoresConflict(): Promise<void> {
   const harness = createHarness({ search: "?projectId=conflict-revision" });
   journalModule.writeEditorProjectRecoveryJournal(harness.storage, {
@@ -1264,6 +1496,10 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["ambiguous-local-choice", ambiguousLocalChoiceRefreshesServer],
     ["malformed-409-refresh", malformedConflictResponsesRefreshAuthoritatively],
     ["ambiguous-refresh-failure", failedAmbiguousRefreshStaysLocked],
+    ["local-choice-lifecycle-ownership", localChoiceLifecycleOwnership],
+    ["local-choice-exact-ack", exactLocalChoiceAcknowledgement],
+    ["local-choice-mismatch", mismatchedLocalChoiceAcknowledgementsRefresh],
+    ["invalid-latest-local", invalidLatestLocalShowsRecoveryState],
     ["revision-exhaustion", revisionExhaustionRestoresConflict],
   ];
   const failures: string[] = [];
@@ -1307,6 +1543,9 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
       latestDraftRef.current = null;
+      localChoiceGenerationRef.current += 1;
+      localChoiceAbortControllerRef.current?.abort();
+      localChoiceAbortControllerRef.current = null;
       bootstrapGenerationRef.current += 1;
       bootstrapAbortControllerRef.current?.abort();
       bootstrapAbortControllerRef.current = null;`,
@@ -1414,6 +1653,62 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     pendingDraftWaitsForReconciliationAndBecomesLatestConflict,
     /pending B|drops pending B/,
     "runtime harness rejects a pending network write after conflict blocking",
+  );
+
+  const localChoiceWithoutSignal = hookSource.replace(
+    `        }),
+        signal: controller.signal,
+      });
+      if (!stillCurrentChoice()) return;`,
+    `        }),
+      });
+      if (!stillCurrentChoice()) return;`,
+  );
+  assert.notEqual(localChoiceWithoutSignal, hookSource, "local-choice signal mutation applied");
+  activeCompiledHook = compileHook(localChoiceWithoutSignal);
+  await assert.rejects(
+    localChoiceLifecycleOwnership,
+    /owns an AbortSignal/,
+    "runtime harness rejects a local-choice PATCH without request cancellation",
+  );
+
+  const localChoiceWithoutFingerprint = hookSource.replace(
+    "        && savedAutosaveCandidate.fingerprint === choiceSnapshot.fingerprint;",
+    ";",
+  );
+  assert.notEqual(localChoiceWithoutFingerprint, hookSource, "local-choice fingerprint mutation applied");
+  activeCompiledHook = compileHook(localChoiceWithoutFingerprint);
+  await assert.rejects(
+    mismatchedLocalChoiceAcknowledgementsRefresh,
+    /wrong fingerprint/,
+    "runtime harness rejects a 200 accepted by revision without matching fingerprint",
+  );
+
+  const resetWithoutChoiceInvalidation = hookSource.replace(
+    "const resetProject = useCallback(async () => {\n    invalidateLocalChoiceRequest();",
+    "const resetProject = useCallback(async () => {",
+  );
+  assert.notEqual(resetWithoutChoiceInvalidation, hookSource, "reset choice invalidation mutation applied");
+  activeCompiledHook = compileHook(resetWithoutChoiceInvalidation);
+  await assert.rejects(
+    localChoiceLifecycleOwnership,
+    /reset aborts its stale local-choice PATCH/,
+    "runtime harness rejects Reset that leaves a local choice request alive",
+  );
+
+  const invalidLocalWithoutRecovery = hookSource.replace(
+    `      setRecoveryState({
+        status: "load-error",
+        message: "ข้อมูลฉบับแก้ไขไม่สมบูรณ์ กรุณาลองโหลดโปรเจกต์อีกครั้ง",
+      });`,
+    "",
+  );
+  assert.notEqual(invalidLocalWithoutRecovery, hookSource, "invalid-local recovery mutation applied");
+  activeCompiledHook = compileHook(invalidLocalWithoutRecovery);
+  await assert.rejects(
+    invalidLatestLocalShowsRecoveryState,
+    /visible recovery state/,
+    "runtime harness rejects an invalid local draft that leaves recovery hidden",
   );
   activeCompiledHook = compileHook(hookSource);
 }

@@ -481,6 +481,8 @@ export function useV2Project() {
   const autosaveGenerationRef = useRef(0);
   const autosaveLineageRef = useRef<AutosaveLineageTracker | null>(null);
   const latestDraftRef = useRef<EditorProjectAutosaveCandidate | null>(null);
+  const localChoiceGenerationRef = useRef(0);
+  const localChoiceAbortControllerRef = useRef<AbortController | null>(null);
   const lastPersistedUserMutationTokenRef = useRef(0);
   const lastHandledSaveRevisionRef = useRef(0);
   const latestQueuedSaveRef = useRef<{ projectId: string | null; revision: number | null }>({
@@ -506,6 +508,9 @@ export function useV2Project() {
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
       latestDraftRef.current = null;
+      localChoiceGenerationRef.current += 1;
+      localChoiceAbortControllerRef.current?.abort();
+      localChoiceAbortControllerRef.current = null;
       bootstrapGenerationRef.current += 1;
       bootstrapAbortControllerRef.current?.abort();
       bootstrapAbortControllerRef.current = null;
@@ -561,6 +566,12 @@ export function useV2Project() {
     autosaveGenerationRef.current += 1;
     autosaveLineageRef.current = null;
     latestDraftRef.current = null;
+  }, []);
+
+  const invalidateLocalChoiceRequest = useCallback(() => {
+    localChoiceGenerationRef.current += 1;
+    localChoiceAbortControllerRef.current?.abort();
+    localChoiceAbortControllerRef.current = null;
   }, []);
 
   const initializeAutosaveLineage = useCallback((
@@ -697,6 +708,7 @@ export function useV2Project() {
   }, [initializeAutosaveLineage, setRecoveryState]);
 
   const resetProject = useCallback(async () => {
+    invalidateLocalChoiceRequest();
     invalidateAutosaveLineage();
     const resetGeneration = bootstrapGenerationRef.current + 1;
     bootstrapGenerationRef.current = resetGeneration;
@@ -771,10 +783,11 @@ export function useV2Project() {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, invalidateAutosaveLineage, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
+    invalidateLocalChoiceRequest();
     invalidateAutosaveLineage();
     const generation = bootstrapGenerationRef.current + 1;
     bootstrapGenerationRef.current = generation;
@@ -976,21 +989,25 @@ export function useV2Project() {
     };
     // Server project bootstrap should run once. Subsequent field autosaves are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage]);
+  }, [createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage, invalidateLocalChoiceRequest]);
 
   const refreshConflictAfterAmbiguousWrite = useCallback(async (
     projectId: string,
     conflict: Extract<EditorProjectRecoveryState, { status: "conflict" }>,
+    ownership: { signal?: AbortSignal; isCurrent?: () => boolean } = {},
   ) => {
-    const stillResolvingThisConflict = () => mountedRef.current
+    const stillResolvingThisConflict = ownership.isCurrent ?? (() => mountedRef.current
       && currentProjectIdRef.current === projectId
       && recoveryRef.current.status === "conflict"
-      && recoveryRef.current.local === conflict.local;
+      && recoveryRef.current.local === conflict.local);
     try {
       const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         cache: "no-store",
+        signal: ownership.signal,
       });
+      if (!stillResolvingThisConflict()) return;
       const payload = response.ok ? await response.json().catch(() => null) : null;
+      if (!stillResolvingThisConflict()) return;
       const currentProject = payload?.project as Record<string, unknown> | null | undefined;
       const server = currentProject
         ? serverCandidateForProject(projectId, currentProject)
@@ -1043,6 +1060,7 @@ export function useV2Project() {
       setRecoveryState({ ...conflict, error: "ไม่พบเลขเวอร์ชันบนระบบ กรุณาลองใหม่" });
       return;
     }
+    invalidateLocalChoiceRequest();
     setRecoveryState({ ...conflict, resolving: "local", error: null });
     let revision: number;
     try {
@@ -1055,18 +1073,55 @@ export function useV2Project() {
       });
       return;
     }
+    const patchBody = buildLocalConflictPatchBody(conflict, revision);
+    const choiceSnapshot = createEditorProjectAutosaveSnapshot({
+      projectId,
+      expectedDraftRevision: expected,
+      revision,
+      draft: patchBody.draft,
+    });
+    if (!choiceSnapshot) {
+      setRecoveryState({
+        ...conflict,
+        resolving: false,
+        error: "ข้อมูลฉบับที่เลือกไม่สมบูรณ์ กรุณาลองใหม่",
+      });
+      return;
+    }
+    const requestGeneration = localChoiceGenerationRef.current + 1;
+    localChoiceGenerationRef.current = requestGeneration;
+    const controller = new AbortController();
+    localChoiceAbortControllerRef.current = controller;
+    const stillCurrentChoice = () => mountedRef.current
+      && currentProjectIdRef.current === projectId
+      && localChoiceGenerationRef.current === requestGeneration
+      && localChoiceAbortControllerRef.current === controller
+      && !controller.signal.aborted
+      && recoveryRef.current.status === "conflict"
+      && recoveryRef.current.local === conflict.local
+      && recoveryRef.current.server === conflict.server
+      && recoveryRef.current.resolving === "local";
     try {
       const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildLocalConflictPatchBody(conflict, revision)),
+        body: JSON.stringify({
+          ...patchBody,
+          draft: choiceSnapshot.draft,
+          draftRevision: choiceSnapshot.revision,
+          expectedDraftRevision: choiceSnapshot.expectedDraftRevision,
+        }),
+        signal: controller.signal,
       });
+      if (!stillCurrentChoice()) return;
       const payload = await res.json().catch(() => null);
+      if (!stillCurrentChoice()) return;
       if (res.status === 409) {
         const currentProject = payload?.project as Record<string, unknown> | null | undefined;
         const server = currentProject
           ? serverCandidateForProject(projectId, currentProject)
           : null;
+        if (!stillCurrentChoice()) return;
         if (server && server.revision !== null) {
           applyServerProjectMetadata(currentProject!);
           setRecoveryState({
@@ -1078,7 +1133,11 @@ export function useV2Project() {
             error: "ข้อมูลบนระบบมีการเปลี่ยนแปลง กรุณาเลือกอีกครั้ง",
           });
         } else {
-          await refreshConflictAfterAmbiguousWrite(projectId, conflict);
+          if (!stillCurrentChoice()) return;
+          await refreshConflictAfterAmbiguousWrite(projectId, conflict, {
+            signal: controller.signal,
+            isCurrent: stillCurrentChoice,
+          });
         }
         return;
       }
@@ -1086,10 +1145,22 @@ export function useV2Project() {
       const savedCandidate = res.ok && savedProject
         ? serverCandidateForProject(projectId, savedProject)
         : null;
-      if (!savedCandidate || savedCandidate.revision === null) {
-        await refreshConflictAfterAmbiguousWrite(projectId, conflict);
+      const savedAutosaveCandidate = res.ok && savedProject
+        ? autosaveCandidateFromProject(projectId, savedProject)
+        : null;
+      const isExactAcknowledgement = savedCandidate
+        && savedAutosaveCandidate
+        && savedAutosaveCandidate.revision === choiceSnapshot.revision
+        && savedAutosaveCandidate.fingerprint === choiceSnapshot.fingerprint;
+      if (!isExactAcknowledgement) {
+        if (!stillCurrentChoice()) return;
+        await refreshConflictAfterAmbiguousWrite(projectId, conflict, {
+          signal: controller.signal,
+          isCurrent: stillCurrentChoice,
+        });
         return;
       }
+      if (!stillCurrentChoice()) return;
       applyDraft(savedCandidate.draft as V2Draft);
       trustedResumeDraftRef.current = null;
       applyServerProjectMetadata(savedProject!);
@@ -1103,10 +1174,17 @@ export function useV2Project() {
       setProjectReady(true);
       setSaveStatus("saved");
       setRecoveryState({ status: "none" });
+      if (localChoiceAbortControllerRef.current === controller) {
+        localChoiceAbortControllerRef.current = null;
+      }
     } catch {
-      await refreshConflictAfterAmbiguousWrite(projectId, conflict);
+      if (!stillCurrentChoice()) return;
+      await refreshConflictAfterAmbiguousWrite(projectId, conflict, {
+        signal: controller.signal,
+        isCurrent: stillCurrentChoice,
+      });
     }
-  }, [initializeAutosaveLineage, refreshConflictAfterAmbiguousWrite, setRecoveryState]);
+  }, [initializeAutosaveLineage, invalidateLocalChoiceRequest, refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   const chooseServerProjectDraft = useCallback(() => {
     const conflict = recoveryRef.current;
@@ -1117,6 +1195,7 @@ export function useV2Project() {
       || conflict.requiresServerRefresh
       || !projectId
     ) return;
+    invalidateLocalChoiceRequest();
     setRecoveryState({ ...conflict, resolving: "server", error: null });
     applyDraft(conflict.server.draft as V2Draft);
     trustedResumeDraftRef.current = null;
@@ -1127,7 +1206,7 @@ export function useV2Project() {
     setProjectReady(true);
     setSaveStatus("idle");
     setRecoveryState({ status: "none" });
-  }, [initializeAutosaveLineage, setRecoveryState]);
+  }, [initializeAutosaveLineage, invalidateLocalChoiceRequest, setRecoveryState]);
 
   const retryConflictServerRefresh = useCallback(async () => {
     const conflict = recoveryRef.current;
@@ -1138,9 +1217,10 @@ export function useV2Project() {
       || !conflict.requiresServerRefresh
       || !projectId
     ) return;
+    invalidateLocalChoiceRequest();
     setRecoveryState({ ...conflict, resolving: "refresh", error: null });
     await refreshConflictAfterAmbiguousWrite(projectId, conflict);
-  }, [refreshConflictAfterAmbiguousWrite, setRecoveryState]);
+  }, [invalidateLocalChoiceRequest, refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -1209,6 +1289,10 @@ export function useV2Project() {
       tracker.blocked = true;
       setProjectReady(false);
       setSaveStatus("error");
+      setRecoveryState({
+        status: "load-error",
+        message: "ข้อมูลฉบับแก้ไขไม่สมบูรณ์ กรุณาลองโหลดโปรเจกต์อีกครั้ง",
+      });
       return;
     }
     tracker.latestLocal = latestLocal;
@@ -1388,7 +1472,7 @@ export function useV2Project() {
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady,
-      acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, saveRevision]);
+      acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
   useEffect(() => {

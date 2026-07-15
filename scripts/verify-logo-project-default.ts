@@ -223,12 +223,12 @@ assert.doesNotMatch(retrySource, /setSaveRevision|setItem|writeEditorProjectReco
   "bootstrap Retry cannot turn defaults into recovery data");
 assert.match(
   autosaveSource,
-  /logoOverlay, projectId, projectReady,[\s\S]{0,180}ownsAutosaveLineage, saveRevision\]\);/,
+  /logoOverlay, projectId, projectReady,[\s\S]{0,220}setRecoveryState, saveRevision\]\);/,
   "save revision participates in the autosave effect dependencies",
 );
 assert.match(
   projectSource,
-  /\}, \[createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage\]\);/,
+  /\}, \[createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage, invalidateLocalChoiceRequest\]\);/,
   "bootstrap Retry reruns the existing-project load without creating an alternate path",
 );
 assert.match(

@@ -220,7 +220,17 @@ function verifyHookSource(value: string): void {
   assert.match(chooseLocal, /reserveRevisionAbove\(projectId,\s*expected\)/);
   assert.match(chooseLocal, /buildLocalConflictPatchBody\(conflict,\s*revision\)/,
     "local choice sends the displayed immutable conflict snapshot");
+  assert.match(chooseLocal, /createEditorProjectAutosaveSnapshot[\s\S]*expectedDraftRevision:\s*expected/,
+    "local choice owns an immutable conditional snapshot");
   assert.match(chooseLocal, /method:\s*"PATCH"/);
+  assert.match(chooseLocal, /signal:\s*controller\.signal/,
+    "local choice PATCH is abortable at lifecycle boundaries");
+  assert.match(chooseLocal, /const stillCurrentChoice[\s\S]*recoveryRef\.current\.resolving\s*===\s*"local"/,
+    "local choice callbacks are bound to the active conflict and request generation");
+  assert.match(chooseLocal, /savedAutosaveCandidate\.revision\s*===\s*choiceSnapshot\.revision[\s\S]*savedAutosaveCandidate\.fingerprint\s*===\s*choiceSnapshot\.fingerprint/,
+    "a 200 acknowledgement must match both the dispatched revision and fingerprint");
+  assert.ok(chooseLocal.split("if (!stillCurrentChoice()) return;").length - 1 >= 5,
+    "local choice re-checks ownership after awaits and before side effects");
   assert.match(chooseLocal, /res\.status\s*===\s*409[\s\S]*local:\s*conflict\.local[\s\S]*server:/,
     "409 keeps the same local candidate and refreshes the server candidate");
   assert.match(chooseLocal, /clearProjectRecoveryData/);
@@ -246,6 +256,8 @@ function verifyHookSource(value: string): void {
     "ambiguous outcomes reconcile through the pure fingerprint decision");
   assert.match(autosave, /onBlocked:/, "blocked queue outcomes drop the pending autosave lane");
   assert.match(autosave, /userDraftMutationTokenRef\.current/);
+  assert.match(autosave, /if \(!latestLocal\)[\s\S]{0,260}status:\s*"load-error"/,
+    "an invalid latest local draft enters visible recovery instead of recovery none");
   assert.doesNotMatch(autosave, /!projectReady[\s\S]{0,300}writeEditorProjectRecoveryJournal/,
     "unready renders do not write or allocate recovery");
 
