@@ -1,7 +1,7 @@
 # Editor Final-Review Remediation Design
 
 **Date:** 2026-07-16  
-**Status:** Approved direction; written-spec review pending  
+**Status:** Approved
 **Branch:** `mew/responsive-logo-overlay`
 
 ## 1. Context and decision
@@ -185,8 +185,10 @@ If a Logo id is present:
 5. restore only when the project write succeeds. A failed/stale CAS must not restore an
    asset as a side effect.
 
-An active owned asset needs no row change. An owned retired asset is restored with the
-same id and file; **Use local** can therefore preserve the candidate exactly. A missing,
+An active owned asset needs no status change, but its lifecycle revision still advances
+inside the successful project transaction to fence a concurrent retirement. An owned
+retired asset is restored with the same id and file; **Use local** can therefore preserve
+the candidate exactly. A missing,
 cross-owner, or physically unavailable asset fails with a stable
 `brand_asset_unavailable` project error and does not mutate the project or close the
 conflict. The client keeps the recovery journal/candidate visible and explains that the
