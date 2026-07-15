@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { omnivoiceBaseUrl, type OmniVoiceInfo } from "@/lib/omnivoice";
+import { omnivoiceBaseUrl, omnivoiceAuthHeaders, type OmniVoiceInfo } from "@/lib/omnivoice";
 
 export const runtime = "nodejs";
 
@@ -12,6 +12,7 @@ export async function GET() {
 
   try {
     const res = await fetch(`${omnivoiceBaseUrl()}/voices`, {
+      headers: omnivoiceAuthHeaders(),
       signal: AbortSignal.timeout(10_000),
       cache: "no-store",
     });

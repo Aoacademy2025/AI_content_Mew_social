@@ -1,0 +1,701 @@
+<title>Video Editor — Studio Desk concept</title>
+<style>
+  :root{
+    /* —— Studio Desk palette: warm-putty light room, one dark monitor —— */
+    --desk:      #E7E4DE;   /* warm putty desk surface          */
+    --panel:     #FBFAF8;   /* paper card                       */
+    --sunken:    #F1EEE9;   /* recessed wells                   */
+    --ink:       #1C1B18;   /* warm near-black text             */
+    --muted:     #6B6760;   /* secondary text                   */
+    --faint:     #9C978D;   /* tertiary / hints                 */
+    --hair:      #DCD8D0;   /* hairline rules                   */
+    --hair-soft: #E8E4DC;
+    --accent:    #7C5CFF;   /* brand violet                     */
+    --accent-ink:#5A3EE0;
+    --accent-bg: rgba(124,92,255,.12);
+    --accent-bd: rgba(124,92,255,.32);
+    --screen:    #100F0D;   /* the dark monitor                 */
+    --bezel:     #1B1916;
+    --amber:     #A9701A;
+    --amber-bg:  rgba(169,112,26,.14);
+    --emerald:   #1E8F61;
+
+    --f-disp:"Bai Jamjuree","Leelawadee UI","Segoe UI",system-ui,sans-serif;
+    --f-body:"IBM Plex Sans Thai","Leelawadee UI","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+    --f-mono:"JetBrains Mono","Cascadia Code",ui-monospace,"Consolas",monospace;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--desk);
+    color:var(--ink);
+    font-family:var(--f-body);
+    font-size:13px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    /* faint vellum texture on the desk */
+    background-image:
+      radial-gradient(120% 80% at 50% -10%, rgba(255,255,255,.55), transparent 60%),
+      radial-gradient(90% 60% at 110% 110%, rgba(124,92,255,.05), transparent 55%);
+    background-attachment:fixed;
+    overflow:hidden;
+  }
+  button{font-family:inherit;color:inherit;cursor:pointer;}
+  ::selection{background:var(--accent-bg);}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px;}
+
+  .app{
+    height:100vh;
+    display:flex;
+    flex-direction:column;
+    min-width:980px;
+    overflow:auto;
+  }
+
+  /* ───────────────── TOPBAR ───────────────── */
+  .topbar{
+    flex:0 0 auto;
+    height:54px;
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:0 16px;
+    background:linear-gradient(180deg, #FCFBF9, #F6F3EE);
+    border-bottom:1px solid var(--hair);
+  }
+  .brand{display:flex;align-items:center;gap:9px;}
+  .mark{
+    width:26px;height:26px;border-radius:8px;
+    background:linear-gradient(150deg,var(--accent),#9d83ff);
+    display:grid;place-items:center;color:#fff;font-weight:800;
+    font-family:var(--f-disp);font-size:14px;
+    box-shadow:0 2px 8px rgba(124,92,255,.35), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+  .brand b{font-family:var(--f-disp);font-weight:700;letter-spacing:-.01em;}
+  .brand span{color:var(--faint);font-size:11px;}
+
+  .divider{width:1px;height:24px;background:var(--hair);}
+
+  .proj{display:flex;align-items:center;gap:6px;}
+  .proj input{
+    border:none;background:transparent;font-family:var(--f-disp);
+    font-weight:600;font-size:15px;color:var(--ink);
+    padding:4px 6px;border-radius:7px;max-width:240px;
+    border:1px solid transparent;
+  }
+  .proj input:hover{background:var(--sunken);}
+  .proj input:focus{outline:none;border-color:var(--accent-bd);background:#fff;}
+  .saved{font-size:11px;color:var(--emerald);display:flex;align-items:center;gap:5px;}
+  .saved::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--emerald);box-shadow:0 0 0 3px rgba(30,143,97,.15);}
+
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;
+    height:30px;padding:0 11px;border-radius:9px;
+    background:var(--panel);border:1px solid var(--hair);
+    font-size:11.5px;font-weight:600;color:var(--muted);
+    transition:.15s;
+  }
+  .pill:hover{border-color:#C9C3B8;color:var(--ink);}
+  .pill .kbd{color:var(--faint);font-family:var(--f-mono);font-size:10px;}
+  .icobtn{
+    width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+    background:var(--panel);border:1px solid var(--hair);color:var(--muted);transition:.15s;
+  }
+  .icobtn:hover{border-color:#C9C3B8;color:var(--ink);}
+  .topbar .spacer{flex:1;}
+
+  .btn-ghost{
+    height:32px;padding:0 13px;border-radius:9px;
+    background:var(--panel);border:1px solid var(--hair);
+    font-size:12px;font-weight:600;color:var(--muted);transition:.15s;
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .btn-ghost:hover{border-color:#C9C3B8;color:var(--ink);}
+  .btn-burn{
+    height:32px;padding:0 15px;border-radius:9px;border:1px solid transparent;
+    background:linear-gradient(180deg,#B5801F,#9A6A14);color:#fff;
+    font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:7px;
+    box-shadow:0 2px 10px rgba(169,112,26,.35), inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  .btn-burn:hover{filter:brightness(1.06);}
+  .ico{width:15px;height:15px;display:inline-block;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
+  /* ───────────────── BODY GRID ───────────────── */
+  .body{
+    flex:1 1 auto;min-height:0;
+    display:grid;
+    grid-template-columns:320px 1fr 312px;
+    gap:0;
+  }
+
+  /* ── LEFT: TRANSCRIPT ── */
+  .col{display:flex;flex-direction:column;min-height:0;background:var(--panel);}
+  .transcript{border-right:1px solid var(--hair);}
+  .inspector{border-left:1px solid var(--hair);background:#FCFBF9;}
+
+  .colhead{
+    flex:0 0 auto;padding:14px 16px 12px;border-bottom:1px solid var(--hair);
+    display:flex;align-items:flex-end;justify-content:space-between;gap:8px;
+  }
+  .colhead h2{
+    margin:0;font-family:var(--f-disp);font-size:14px;font-weight:700;letter-spacing:-.01em;
+  }
+  .colhead .meta{font-family:var(--f-mono);font-size:10.5px;color:var(--faint);margin-top:3px;}
+  .colhead .search{width:28px;height:28px;border-radius:8px;background:var(--sunken);border:1px solid var(--hair);display:grid;place-items:center;color:var(--muted);}
+
+  .scroll{overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;}
+  .scroll::-webkit-scrollbar{width:9px;}
+  .scroll::-webkit-scrollbar-thumb{background:#D4CFC5;border-radius:8px;border:3px solid var(--panel);}
+
+  /* segment cards */
+  .seg{
+    display:grid;grid-template-columns:auto 1fr;gap:10px;
+    padding:11px 12px;border-radius:12px;background:var(--panel);
+    border:1px solid var(--hair-soft);transition:.15s;position:relative;
+  }
+  .seg:hover{border-color:#CFC9BE;box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .seg.active{
+    border-color:var(--accent-bd);background:linear-gradient(180deg,#fff,#FBF9FF);
+    box-shadow:0 0 0 1px var(--accent-bd), 0 6px 18px -8px rgba(124,92,255,.4);
+  }
+  .seg .num{
+    font-family:var(--f-mono);font-size:10px;font-weight:600;color:var(--faint);
+    padding-top:2px;min-width:18px;
+  }
+  .seg.active .num{color:var(--accent-ink);}
+  .seg .txt{font-size:13.5px;line-height:1.55;color:var(--ink);}
+  .seg .tc{
+    margin-top:7px;display:flex;align-items:center;gap:8px;
+    font-family:var(--f-mono);font-size:10px;color:var(--faint);
+  }
+  .seg .tc .dur{background:var(--sunken);border-radius:5px;padding:1px 6px;}
+  .seg.active .tc .dur{background:var(--accent-bg);color:var(--accent-ink);}
+  .kw{color:var(--accent-ink);font-weight:700;background:var(--accent-bg);border-radius:4px;padding:0 3px;}
+
+  /* split control pinned bottom of transcript */
+  .splitbar{
+    flex:0 0 auto;border-top:1px solid var(--hair);padding:12px 14px 14px;
+    background:linear-gradient(180deg,#FBFAF8,#F4F1EB);
+  }
+  .splitbar .lbl{
+    display:flex;align-items:center;gap:7px;font-size:10px;font-weight:700;
+    text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin-bottom:9px;
+  }
+  .splitbar .lbl .badge{margin-left:auto;font-family:var(--f-mono);font-size:9.5px;background:var(--sunken);border:1px solid var(--hair);border-radius:20px;padding:2px 8px;color:var(--faint);text-transform:none;letter-spacing:0;}
+  .chips{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+  .chip{
+    height:30px;border-radius:9px;border:1px solid var(--hair);background:var(--panel);
+    font-size:11.5px;font-weight:600;color:var(--muted);transition:.15s;
+  }
+  .chip:hover{border-color:#CBC5BA;color:var(--ink);}
+  .chip.on{
+    background:linear-gradient(180deg,var(--accent),#6b4af0);border-color:transparent;color:#fff;
+    box-shadow:0 3px 10px -2px rgba(124,92,255,.5), inset 0 1px 0 rgba(255,255,255,.3);
+  }
+
+  /* ── CENTER: STAGE ── */
+  .stage{
+    display:flex;flex-direction:column;min-height:0;
+    background:
+      radial-gradient(110% 70% at 50% 0%, #EFECE6, var(--desk));
+  }
+  .monitor-wrap{
+    flex:1 1 auto;min-height:0;display:grid;place-items:center;padding:26px 24px 14px;
+  }
+  /* dark recessed monitor sitting in the light desk */
+  .monitor{
+    position:relative;height:100%;aspect-ratio:9/16;max-height:100%;
+    border-radius:20px;padding:11px;
+    background:linear-gradient(160deg,#26231e,var(--bezel));
+    box-shadow:
+      0 30px 60px -24px rgba(40,30,10,.55),
+      0 2px 0 rgba(255,255,255,.5),
+      inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .screen{
+    position:relative;height:100%;width:100%;border-radius:11px;overflow:hidden;
+    background:var(--screen);
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.6), inset 0 2px 20px rgba(0,0,0,.7);
+  }
+  /* simulated b-roll frame */
+  .broll-frame{position:absolute;inset:0;
+    background:
+      radial-gradient(70% 50% at 30% 25%, rgba(124,92,255,.45), transparent 60%),
+      radial-gradient(80% 60% at 80% 90%, rgba(255,150,80,.42), transparent 55%),
+      linear-gradient(200deg,#2a2440,#141119 70%);
+  }
+  .broll-frame::after{content:"";position:absolute;inset:0;background:
+    repeating-linear-gradient(115deg, rgba(255,255,255,.04) 0 2px, transparent 2px 9px);}
+  .vignette{position:absolute;inset:0;box-shadow:inset 0 -90px 120px -40px rgba(0,0,0,.7);}
+  /* live subtitle overlay — viral keyword style */
+  .caption{
+    position:absolute;left:0;right:0;bottom:21%;text-align:center;padding:0 14px;
+  }
+  .caption .line{
+    font-family:var(--f-disp);font-weight:800;font-size:clamp(20px,4.6vh,34px);
+    color:#fff;line-height:1.15;letter-spacing:-.01em;
+    text-shadow:0 2px 0 rgba(0,0,0,.55), 0 0 22px rgba(0,0,0,.5);
+  }
+  .caption .hot{
+    color:#fff;background:var(--accent);border-radius:8px;padding:0 8px;
+    box-shadow:0 4px 16px rgba(124,92,255,.6);display:inline-block;
+    transform:rotate(-1.5deg);
+  }
+  .live-tag{
+    position:absolute;top:11px;left:11px;display:flex;align-items:center;gap:6px;
+    background:rgba(0,0,0,.4);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.14);
+    border-radius:20px;padding:4px 9px 4px 7px;color:#fff;font-size:10px;font-weight:600;
+  }
+  .live-tag .dot{width:6px;height:6px;border-radius:50%;background:#ff5a5a;animation:blink 1.6s infinite;}
+  @keyframes blink{50%{opacity:.25;}}
+  .ratio-tag{position:absolute;top:11px;right:11px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.14);border-radius:7px;padding:3px 8px;color:rgba(255,255,255,.8);font-family:var(--f-mono);font-size:10px;}
+  /* avatar bookend chip floating */
+  .avatar-chip{
+    position:absolute;left:11px;bottom:11px;width:54px;height:54px;border-radius:12px;
+    background:linear-gradient(160deg,#3a3550,#221d30);border:2px solid rgba(255,255,255,.18);
+    display:grid;place-items:center;color:rgba(255,255,255,.55);
+    box-shadow:0 8px 20px -6px rgba(0,0,0,.6);
+  }
+
+  /* transport controls */
+  .transport{
+    flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:16px;
+    padding:6px 0 12px;
+  }
+  .tbtn{width:34px;height:34px;border-radius:10px;background:var(--panel);border:1px solid var(--hair);display:grid;place-items:center;color:var(--muted);transition:.15s;}
+  .tbtn:hover{border-color:#C9C3B8;color:var(--ink);}
+  .play{
+    width:46px;height:46px;border-radius:50%;
+    background:linear-gradient(180deg,var(--ink),#000);color:#fff;border:none;
+    display:grid;place-items:center;box-shadow:0 6px 16px -4px rgba(0,0,0,.4);
+  }
+  .tc-read{font-family:var(--f-mono);font-size:12px;color:var(--muted);min-width:96px;text-align:center;}
+  .tc-read b{color:var(--ink);}
+
+  /* ── TIMELINE RIBBON (the signature) ── */
+  .timeline{
+    flex:0 0 auto;background:linear-gradient(180deg,#F4F1EB,#ECE8E0);
+    border-top:1px solid var(--hair);padding:9px 16px 14px;
+  }
+  .ruler{position:relative;height:16px;margin:0 0 6px;}
+  .ruler .tick{position:absolute;top:0;font-family:var(--f-mono);font-size:9.5px;color:var(--faint);transform:translateX(-50%);}
+  .ruler .tick::before{content:"";position:absolute;left:50%;top:13px;width:1px;height:5px;background:var(--hair);}
+  .track{position:relative;height:var(--h);border-radius:9px;background:var(--sunken);border:1px solid var(--hair);overflow:hidden;margin-bottom:6px;}
+  .track .tname{position:absolute;left:8px;top:6px;z-index:3;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);pointer-events:none;}
+  /* broll thumbnails */
+  .filmstrip{--h:46px;display:flex;gap:3px;padding:3px;}
+  .filmstrip .cell{flex:1;border-radius:6px;position:relative;overflow:hidden;min-width:0;}
+  .filmstrip .cell span{position:absolute;left:4px;bottom:3px;font-family:var(--f-mono);font-size:8.5px;color:rgba(255,255,255,.85);text-shadow:0 1px 2px rgba(0,0,0,.6);}
+  /* caption blocks */
+  .captrack{--h:30px;}
+  .capblk{position:absolute;top:5px;bottom:5px;border-radius:6px;background:var(--accent-bg);border:1px solid var(--accent-bd);display:flex;align-items:center;padding:0 8px;font-size:10.5px;font-weight:600;color:var(--accent-ink);white-space:nowrap;overflow:hidden;}
+  /* waveform */
+  .wavetrack{--h:38px;}
+  .wavetrack canvas{position:absolute;inset:0;width:100%;height:100%;}
+  /* playhead spans all tracks */
+  .timeline-tracks{position:relative;}
+  .playhead{position:absolute;top:-2px;bottom:6px;width:2px;background:var(--accent);left:24%;z-index:5;box-shadow:0 0 10px rgba(124,92,255,.7);}
+  .playhead::before{content:"";position:absolute;top:-6px;left:-5px;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid var(--accent);}
+
+  /* ── RIGHT: INSPECTOR ── */
+  .tabs{flex:0 0 auto;display:flex;gap:2px;padding:10px 12px 0;border-bottom:1px solid var(--hair);}
+  .tab{flex:1;height:36px;border:none;background:transparent;font-size:11.5px;font-weight:600;color:var(--muted);border-radius:9px 9px 0 0;position:relative;transition:.15s;}
+  .tab:hover{color:var(--ink);}
+  .tab.on{color:var(--accent-ink);background:#FCFBF9;}
+  .tab.on::after{content:"";position:absolute;left:14px;right:14px;bottom:-1px;height:2px;background:var(--accent);border-radius:2px;}
+
+  .insp-scroll{overflow-y:auto;padding:16px 14px 22px;display:flex;flex-direction:column;gap:18px;}
+  .insp-scroll::-webkit-scrollbar{width:9px;}
+  .insp-scroll::-webkit-scrollbar-thumb{background:#D4CFC5;border-radius:8px;border:3px solid #FCFBF9;}
+
+  .field{display:flex;flex-direction:column;gap:8px;}
+  .field > .flbl{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+
+  /* preset grid */
+  .presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;}
+  .preset{
+    border:1px solid var(--hair);border-radius:11px;background:var(--panel);padding:11px 10px;text-align:left;transition:.15s;position:relative;
+  }
+  .preset:hover{border-color:#CBC5BA;}
+  .preset.on{border-color:var(--accent-bd);box-shadow:0 0 0 1px var(--accent-bd);}
+  .preset .pv{height:34px;border-radius:7px;display:grid;place-items:center;font-family:var(--f-disp);font-weight:800;font-size:14px;margin-bottom:7px;}
+  .preset .pn{font-size:11px;font-weight:600;color:var(--ink);}
+  .preset.on .pn{color:var(--accent-ink);}
+
+  /* select */
+  .select{height:38px;border:1px solid var(--hair);border-radius:10px;background:var(--panel);display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-size:12.5px;font-weight:600;color:var(--ink);}
+  .select .chev{color:var(--faint);}
+
+  /* slider */
+  .slider{height:6px;border-radius:6px;background:var(--sunken);position:relative;border:1px solid var(--hair);}
+  .slider .fill{position:absolute;left:0;top:-1px;bottom:-1px;width:58%;background:linear-gradient(90deg,var(--accent),#9d83ff);border-radius:6px;}
+  .slider .knob{position:absolute;top:50%;left:58%;width:16px;height:16px;border-radius:50%;background:#fff;border:1px solid var(--hair);transform:translate(-50%,-50%);box-shadow:0 2px 5px rgba(0,0,0,.18);}
+  .slider-row{display:flex;align-items:center;gap:12px;}
+  .slider-row .val{font-family:var(--f-mono);font-size:11px;color:var(--muted);min-width:34px;text-align:right;}
+  .slider-row .slider{flex:1;}
+
+  /* swatches */
+  .swatches{display:flex;gap:8px;flex-wrap:wrap;}
+  .sw{width:30px;height:30px;border-radius:9px;border:1px solid rgba(0,0,0,.12);position:relative;}
+  .sw.on{box-shadow:0 0 0 2px #FCFBF9, 0 0 0 4px var(--accent);}
+
+  /* position dots */
+  .posgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:96px;}
+  .pos{aspect-ratio:9/12;border:1px solid var(--hair);border-radius:7px;background:var(--sunken);position:relative;}
+  .pos.on{border-color:var(--accent-bd);background:var(--accent-bg);}
+  .pos.on::after{content:"";position:absolute;left:50%;bottom:18%;transform:translateX(-50%);width:50%;height:3px;border-radius:3px;background:var(--accent);}
+
+  .hint{font-size:11px;color:var(--faint);line-height:1.5;}
+
+  /* toggle */
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;border:1px solid var(--hair);border-radius:11px;background:var(--panel);}
+  .toggle-row .tt{font-size:12.5px;font-weight:600;}
+  .toggle-row .ts{font-size:10.5px;color:var(--faint);margin-top:1px;}
+  .switch{width:38px;height:22px;border-radius:20px;background:var(--accent);position:relative;flex:0 0 auto;box-shadow:inset 0 1px 3px rgba(0,0,0,.2);}
+  .switch::after{content:"";position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);}
+  .switch.off{background:#D2CCC1;}
+  .switch.off::after{left:2px;}
+
+  .note{font-size:10.5px;color:var(--faint);text-align:center;padding-top:6px;}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;}}
+</style>
+
+<div class="app">
+
+  <!-- ───────── TOPBAR ───────── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">H</div>
+      <b>HERO Studio</b><span>Editor</span>
+    </div>
+    <div class="divider"></div>
+    <div class="proj">
+      <input value="3 นิสัยที่ทำให้คุณรวยขึ้น" aria-label="ชื่อโปรเจกต์" />
+      <svg class="ico" viewBox="0 0 24 24" style="width:13px;height:13px;color:var(--faint)"><path d="M15.2 5.2l3.6 3.6M9 13l-4 1 1-4L14.8 1.8a2 2 0 012.8 0l1.6 1.6a2 2 0 010 2.8L9 13z"/></svg>
+    </div>
+    <span class="saved">บันทึกแล้ว 14:22</span>
+
+    <div class="spacer"></div>
+
+    <button class="pill" title="แบบร่างที่บันทึกไว้">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg> แบบร่าง · 4
+    </button>
+    <div class="divider"></div>
+    <button class="pill" title="อัตราส่วน 9:16 เท่านั้น">9:16 · เต็มจอ</button>
+    <button class="icobtn" title="ย้อนกลับ (Ctrl+Z)"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 109-9"/></svg></button>
+    <button class="icobtn" title="ทำซ้ำ (Ctrl+Y)"><svg class="ico" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M21 13a9 9 0 10-9 9"/></svg></button>
+    <div class="divider"></div>
+    <button class="btn-ghost"><svg class="ico" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg> บันทึกลงคลัง</button>
+    <button class="btn-burn" title="ฝังซับใหม่แล้วดาวน์โหลด">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+      ฝังซับ &amp; ดาวน์โหลด
+    </button>
+  </header>
+
+  <!-- ───────── BODY ───────── -->
+  <div class="body">
+
+    <!-- LEFT — TRANSCRIPT -->
+    <section class="col transcript">
+      <div class="colhead">
+        <div>
+          <h2>สคริปต์</h2>
+          <div class="meta">12 ช่วง · 0:48</div>
+        </div>
+        <button class="search" aria-label="ค้นหาในซับ"><svg class="ico" viewBox="0 0 24 24" style="width:13px;height:13px"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button>
+      </div>
+
+      <div class="scroll">
+        <div class="seg">
+          <div class="num">01</div>
+          <div>
+            <div class="txt">รู้มั้ย คน<span class="kw">รวย</span> 90% มีนิสัยนี้เหมือนกันหมด</div>
+            <div class="tc"><span>0:00</span>→<span>0:04</span><span class="dur">4.0s</span></div>
+          </div>
+        </div>
+
+        <div class="seg active">
+          <div class="num">02</div>
+          <div>
+            <div class="txt">ข้อแรก พวกเขา<span class="kw">จ่ายให้ตัวเองก่อน</span> ทุกครั้งที่เงินเข้า</div>
+            <div class="tc"><span>0:04</span>→<span>0:09</span><span class="dur">4.6s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">03</div>
+          <div>
+            <div class="txt">หักเงินออม <span class="kw">10%</span> อัตโนมัติ ก่อนใช้แม้แต่บาทเดียว</div>
+            <div class="tc"><span>0:09</span>→<span>0:13</span><span class="dur">4.2s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">04</div>
+          <div>
+            <div class="txt">ข้อสอง เขาไม่ซื้อของเพื่อ<span class="kw">อวด</span> แต่ซื้อเพื่อใช้</div>
+            <div class="tc"><span>0:13</span>→<span>0:18</span><span class="dur">4.5s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">05</div>
+          <div>
+            <div class="txt">รถคันเดิม โทรศัพท์เครื่องเดิม แต่<span class="kw">พอร์ตโต</span>ทุกปี</div>
+            <div class="tc"><span>0:18</span>→<span>0:23</span><span class="dur">4.4s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">06</div>
+          <div>
+            <div class="txt">ข้อสาม เขาลงทุนกับ<span class="kw">ความรู้</span>ก่อนลงทุนกับหุ้น</div>
+            <div class="tc"><span>0:23</span>→<span>0:28</span><span class="dur">4.7s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">07</div>
+          <div>
+            <div class="txt">อ่านหนังสือ ฟังพอดแคสต์ เรียนทักษะใหม่ทุกเดือน</div>
+            <div class="tc"><span>0:28</span>→<span>0:33</span><span class="dur">4.3s</span></div>
+          </div>
+        </div>
+
+        <div class="seg">
+          <div class="num">08</div>
+          <div>
+            <div class="txt">ลองทำ <span class="kw">3 ข้อนี้</span> 90 วัน แล้วชีวิตจะเปลี่ยน</div>
+            <div class="tc"><span>0:33</span>→<span>0:38</span><span class="dur">4.5s</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- split control -->
+      <div class="splitbar">
+        <div class="lbl">
+          <svg class="ico" viewBox="0 0 24 24" style="width:13px;height:13px;color:var(--accent)"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.1 15.9M14.5 14.5L20 20"/></svg>
+          แบ่งซับ
+          <span class="badge">12 ช่วง</span>
+        </div>
+        <div class="chips">
+          <button class="chip">ประโยค</button>
+          <button class="chip">1 คำ</button>
+          <button class="chip on">≤2 คำ</button>
+          <button class="chip">≤3 คำ</button>
+          <button class="chip">≤4 คำ</button>
+          <button class="chip">กำหนด</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- CENTER — STAGE -->
+    <section class="stage">
+      <div class="monitor-wrap">
+        <div class="monitor">
+          <div class="screen">
+            <div class="broll-frame"></div>
+            <div class="vignette"></div>
+            <div class="live-tag"><span class="dot"></span> พรีวิว</div>
+            <div class="ratio-tag">9:16</div>
+            <div class="avatar-chip" title="Avatar ปิดท้าย (bookend)">
+              <svg class="ico" viewBox="0 0 24 24" style="width:22px;height:22px"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></svg>
+            </div>
+            <div class="caption">
+              <div class="line">ข้อแรก <span class="hot">จ่ายให้ตัวเองก่อน</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="transport">
+        <button class="tbtn" aria-label="ย้อน"><svg class="ico" viewBox="0 0 24 24"><path d="M19 20L9 12l10-8z"/><path d="M5 19V5"/></svg></button>
+        <button class="play" aria-label="เล่น"><svg class="ico" viewBox="0 0 24 24" style="width:18px;height:18px;fill:#fff;stroke:none"><path d="M8 5v14l11-7z"/></svg></button>
+        <span class="tc-read"><b>0:11</b> / 0:48</span>
+        <button class="tbtn" aria-label="ถัดไป"><svg class="ico" viewBox="0 0 24 24"><path d="M5 4l10 8-10 8z"/><path d="M19 5v14"/></svg></button>
+      </div>
+
+      <!-- TIMELINE RIBBON -->
+      <div class="timeline">
+        <div class="timeline-tracks">
+          <div class="ruler">
+            <span class="tick" style="left:0%">0:00</span>
+            <span class="tick" style="left:20%">0:10</span>
+            <span class="tick" style="left:40%">0:20</span>
+            <span class="tick" style="left:60%">0:30</span>
+            <span class="tick" style="left:80%">0:40</span>
+            <span class="tick" style="left:99%">0:48</span>
+          </div>
+
+          <!-- B-roll filmstrip -->
+          <div class="track filmstrip" aria-label="B-roll">
+            <div class="cell" style="background:linear-gradient(150deg,#5b4ea0,#2b2540)"><span>4.0s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#a0623e,#3a261c)"><span>4.6s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#3e7aa0,#1c2e3a)"><span>4.2s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#7a9b4e,#2e3a1c)"><span>4.5s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#9b4e8a,#3a1c33)"><span>4.4s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#4e9b8a,#1c3a33)"><span>4.7s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#9b864e,#3a311c)"><span>4.3s</span></div>
+            <div class="cell" style="background:linear-gradient(150deg,#6a4e9b,#281c3a)"><span>4.5s</span></div>
+          </div>
+
+          <!-- caption blocks -->
+          <div class="track captrack" aria-label="ซับไตเติล">
+            <div class="tname" style="color:var(--accent-ink);opacity:.6">ซับ</div>
+            <div class="capblk" style="left:0%;width:8%">รู้มั้ย</div>
+            <div class="capblk" style="left:8.5%;width:9.5%">คนรวย 90%</div>
+            <div class="capblk" style="left:18.5%;width:8%">ข้อแรก</div>
+            <div class="capblk" style="left:27%;width:13%">จ่ายให้ตัวเองก่อน</div>
+            <div class="capblk" style="left:40.5%;width:8%">หักออม 10%</div>
+            <div class="capblk" style="left:49%;width:10%">ไม่ซื้อเพื่ออวด</div>
+            <div class="capblk" style="left:59.5%;width:9%">พอร์ตโต</div>
+            <div class="capblk" style="left:69%;width:11%">ลงทุนความรู้</div>
+            <div class="capblk" style="left:80.5%;width:9%">ทุกเดือน</div>
+            <div class="capblk" style="left:90%;width:9.5%">ลอง 3 ข้อ</div>
+          </div>
+
+          <!-- waveform -->
+          <div class="track wavetrack" aria-label="เสียงพากย์">
+            <div class="tname">เสียง · Gemini</div>
+            <canvas id="wave"></canvas>
+          </div>
+
+          <div class="playhead"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT — INSPECTOR -->
+    <aside class="col inspector">
+      <div class="tabs">
+        <button class="tab on">ซับ</button>
+        <button class="tab">Avatar</button>
+        <button class="tab">เสียง</button>
+        <button class="tab">เพลง</button>
+        <button class="tab">B-roll</button>
+      </div>
+
+      <div class="insp-scroll">
+
+        <div class="field">
+          <div class="flbl">สไตล์ซับ</div>
+          <div class="presets">
+            <button class="preset on">
+              <div class="pv" style="background:#141119"><span style="color:#fff">ไวรัล <span style="color:var(--accent)">คำ</span></span></div>
+              <div class="pn">Viral Keyword</div>
+            </button>
+            <button class="preset">
+              <div class="pv" style="background:#141119"><span style="color:#fff">ประโยคยาว</span></div>
+              <div class="pn">Clean Long</div>
+            </button>
+            <button class="preset">
+              <div class="pv" style="background:#141119"><span style="color:#ffe24a">คำเดี่ยว</span></div>
+              <div class="pn">Pop Bounce</div>
+            </button>
+            <button class="preset">
+              <div class="pv" style="background:#141119"><span style="color:#fff;-webkit-text-stroke:1px #ff5a5a">ขอบหนา</span></div>
+              <div class="pn">Bold Outline</div>
+            </button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">ฟอนต์</div>
+          <div class="select">Bai Jamjuree <span class="chev">▾</span></div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">ขนาดตัวอักษร</div>
+          <div class="slider-row">
+            <div class="slider"><div class="fill"></div><div class="knob"></div></div>
+            <span class="val">68px</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">สีตัวอักษร</div>
+          <div class="swatches">
+            <div class="sw on" style="background:#ffffff"></div>
+            <div class="sw" style="background:#ffe24a"></div>
+            <div class="sw" style="background:#7C5CFF"></div>
+            <div class="sw" style="background:#ff5a5a"></div>
+            <div class="sw" style="background:#22d3a6"></div>
+            <div class="sw" style="background:#1C1B18"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">สีไฮไลต์คำสำคัญ</div>
+          <div class="swatches">
+            <div class="sw" style="background:#ffe24a"></div>
+            <div class="sw on" style="background:#7C5CFF"></div>
+            <div class="sw" style="background:#ff5a5a"></div>
+            <div class="sw" style="background:#22d3a6"></div>
+            <div class="sw" style="background:#ff8a3d"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">ตำแหน่ง</div>
+          <div class="posgrid">
+            <div class="pos"></div><div class="pos"></div><div class="pos"></div>
+            <div class="pos"></div><div class="pos"></div><div class="pos"></div>
+            <div class="pos on"></div><div class="pos"></div><div class="pos"></div>
+          </div>
+          <div class="hint">วางซับไว้กลางล่าง — ปลอดภัยจาก UI ของแพลตฟอร์ม</div>
+        </div>
+
+        <div class="field">
+          <div class="flbl">เอฟเฟกต์</div>
+          <div class="toggle-row">
+            <div>
+              <div class="tt">เด้งทีละคำ (Karaoke)</div>
+              <div class="ts">ไฮไลต์คำตามจังหวะเสียง</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="tt">เงาตัวอักษร</div>
+              <div class="ts">อ่านง่ายขึ้นบนพื้นสว่าง</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+        </div>
+
+        <div class="note">สไตล์จะถูกฝังตอนกด “ฝังซับ &amp; ดาวน์โหลด”</div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+  // waveform — drawn, not hand-authored SVG
+  (function(){
+    var c = document.getElementById('wave');
+    if(!c) return;
+    function draw(){
+      var dpr = Math.min(window.devicePixelRatio||1, 2);
+      var w = c.clientWidth, h = c.clientHeight;
+      c.width = w*dpr; c.height = h*dpr;
+      var x = c.getContext('2d'); x.scale(dpr,dpr);
+      x.clearRect(0,0,w,h);
+      var mid = h/2, bars = Math.floor(w/3.2);
+      for(var i=0;i<bars;i++){
+        var t = i/bars;
+        // pseudo-random but deterministic envelope (no Math.random per design rules)
+        var env = 0.35 + 0.5*Math.abs(Math.sin(t*22 + Math.sin(t*7)*3)) * (0.6+0.4*Math.sin(t*3.1));
+        var amp = env * (mid-3);
+        var px = i*3.2 + 1.2;
+        var played = (px/w) < 0.24;
+        x.fillStyle = played ? 'rgba(124,92,255,.85)' : 'rgba(124,92,255,.28)';
+        x.fillRect(px, mid-amp, 1.7, amp*2);
+      }
+    }
+    draw();
+    window.addEventListener('resize', draw);
+  })();
+</script>

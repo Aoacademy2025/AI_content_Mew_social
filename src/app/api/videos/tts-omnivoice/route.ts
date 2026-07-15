@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
-import { omnivoiceBaseUrl, isValidOmniVoiceId, pcmFromWav, type OmniTtsResponse } from "@/lib/omnivoice";
+import { omnivoiceBaseUrl, omnivoiceAuthHeaders, isValidOmniVoiceId, pcmFromWav, normalizeNumbersForTts, type OmniTtsResponse } from "@/lib/omnivoice";
 import {
   splitScriptForTts,
   mergeSegmentTiming,
@@ -48,7 +48,7 @@ async function callOmniVoice(
     try {
       const res = await fetch(`${omnivoiceBaseUrl()}/tts`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders() },
         body: JSON.stringify({ voice_id: voiceId, text, speed }),
         // GPU ~1s/ประโยค แต่ CPU ~30s/ประโยค + คิวภายใน — เผื่อ 180s
         signal: AbortSignal.timeout(180_000),
@@ -170,7 +170,7 @@ export async function POST(req: Request) {
       });
       const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
       if (cached) return NextResponse.json({ ...cached, preview: true });
-      const r = await callOmniVoice(voiceId, previewText, spd);
+      const r = await callOmniVoice(voiceId, normalizeNumbersForTts(previewText), spd);
       if (!r.ok) return omniErrorResponse(r.status, r.errBody);
       fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
@@ -182,8 +182,12 @@ export async function POST(req: Request) {
     }
 
     // IRON RULE เดียวกับ tts-gemini: fullText คือ string เดียวที่ทั้ง TTS และซับเห็น
+    // (เลขอารบิกเดิม — ผู้ใช้ต้องเห็นสคริปต์/ซับตรงกับที่พิมพ์ ไม่ใช่คำอ่าน)
     const fullText: string = (text as string).trim();
     const chunks = splitScriptForTts(fullText);
+    // normalize แยกไว้ใช้แค่ตอนส่งเข้า OmniVoice เท่านั้น (เลขอารบิกเดี่ยว → คำไทยทีละหลัก
+    // กัน server อ่านผิด) — ซับ/config ยัง merge จาก chunks[i].text (เลขเดิม) เสมอ
+    const ttsTextFor = (i: number) => normalizeNumbersForTts(chunks[i].text);
     const deadline = Date.now() + SEGMENTED_BUDGET_MS;
     console.log(`[tts-omnivoice] script ${fullText.length} chars → ${chunks.length} segment(s)`);
 
@@ -194,7 +198,7 @@ export async function POST(req: Request) {
     let failOpen = "";
 
     for (let i = 0; i < chunks.length; i++) {
-      const r = await callOmniVoice(voiceId, chunks[i].text, spd, chunks.length > 1 ? deadline : undefined);
+      const r = await callOmniVoice(voiceId, ttsTextFor(i), spd, chunks.length > 1 ? deadline : undefined);
       if (!r.ok) {
         if (chunks.length === 1) return omniErrorResponse(r.status, r.errBody);
         failOpen = `segment ${i + 1}/${chunks.length} failed (${r.status})`;
@@ -224,7 +228,7 @@ export async function POST(req: Request) {
         }
         console.warn(`[tts-omnivoice] guard round ${round}: outlier segments [${outliers.join(", ")}] — retrying`);
         for (const idx of outliers) {
-          const r = await callOmniVoice(voiceId, chunks[idx].text, spd, deadline);
+          const r = await callOmniVoice(voiceId, ttsTextFor(idx), spd, deadline);
           if (r.ok && r.sampleRate === sampleRate) {
             pcms[idx] = r.pcm;
             durations[idx] = Math.round(pcmDurationMs(r.pcm.length, sampleRate));
@@ -236,7 +240,7 @@ export async function POST(req: Request) {
     // ---- Fail-open: segmented พัง → single call ไม่มี timing (editor จะใช้ transcribe fallback) ----
     if (!pcms) {
       console.warn(`[tts-omnivoice] fail-open → single call (${failOpen})`);
-      const r = await callOmniVoice(voiceId, fullText, spd);
+      const r = await callOmniVoice(voiceId, normalizeNumbersForTts(fullText), spd);
       if (!r.ok) return omniErrorResponse(r.status, r.errBody);
       const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({

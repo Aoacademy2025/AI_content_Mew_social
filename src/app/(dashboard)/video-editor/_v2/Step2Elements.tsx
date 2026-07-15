@@ -58,6 +58,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const elevenVoice = p.voiceEngine === "elevenlabs"
     ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
     : undefined;
+  // เสียง OmniVoice ที่ตรงกับ omniVoiceId ปัจจุบัน (โชว์คำอธิบายแทน id ดิบ)
+  const omniVoice = p.voiceEngine === "omnivoice"
+    ? p.omniVoices?.find(v => v.voice_id === p.omniVoiceId)
+    : undefined;
   const [submitting, setSubmitting] = useState(false);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
@@ -224,7 +228,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <Segmented
             value={p.voiceEngine}
             onChange={p.setVoiceEngine}
-            options={[{ value: "gemini", label: "Gemini" }, { value: "elevenlabs", label: "ElevenLabs" }]}
+            options={[{ value: "gemini", label: "Gemini" }, { value: "elevenlabs", label: "ElevenLabs" }, { value: "omnivoice", label: "OmniVoice" }]}
           />
           <Card selected className="flex items-center gap-3" style={{ display: "flex" }}>
             <span
@@ -235,17 +239,21 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
               <span style={{ font: `500 13px ${font.heading}` }}>
-                {p.voiceEngine === "gemini" ? geminiVoice.label : (elevenVoice?.name || "เสียงโคลนของฉัน")}
+                {p.voiceEngine === "gemini" ? geminiVoice.label
+                  : p.voiceEngine === "omnivoice" ? (omniVoice?.desc || "เสียง OmniVoice")
+                  : (elevenVoice?.name || "เสียงโคลนของฉัน")}
               </span>
               <span style={{ fontSize: 10.5, color: color.textFaint }}>
                 {p.voiceEngine === "gemini"
                   ? `${geminiVoice.gender} · ${geminiVoice.style}`
+                  : p.voiceEngine === "omnivoice"
+                  ? (omniVoice?.instruct || "เสียงจาก server ระบบ — ไม่ใช้ API key")
                   : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
             {/* ปุ่มมี w-full+mt-2 ภายใน — คุมความกว้างเองกัน layout ระเบิด */}
             <span className="w-[132px] shrink-0" style={{ marginTop: -8 }}>
-              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
+              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} />
             </span>
           </Card>
           <Advanced note="ปรับความเร็ว/อารมณ์เสียง">
@@ -269,6 +277,36 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   ))}
                 </select>
               </label>
+            ) : p.voiceEngine === "omnivoice" ? (
+              <div className="flex flex-col gap-2">
+                <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง OmniVoice — เสียงจาก server ระบบ ไม่ใช้ API key</span>
+                {!p.omniVoices && (
+                  <span style={{ fontSize: 11.5, color: color.textFaint }}>กำลังโหลดรายการเสียง…</span>
+                )}
+                {p.omniVoices?.length === 0 && (
+                  <span style={{ fontSize: 11.5, color: color.textFaint }}>เชื่อมต่อ OmniVoice server ไม่ได้ — ลองใหม่อีกครั้ง</span>
+                )}
+                {p.omniVoices?.map(v => (
+                  <button
+                    key={v.voice_id}
+                    type="button"
+                    onClick={() => p.setOmniVoiceId(v.voice_id)}
+                    className="flex items-center gap-2 text-left"
+                    style={{
+                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                      background: p.omniVoiceId === v.voice_id ? "rgba(139,92,246,.14)" : "rgba(255,255,255,.05)",
+                      border: `1px solid ${p.omniVoiceId === v.voice_id ? "rgba(139,92,246,.4)" : "rgba(255,255,255,.10)"}`,
+                      color: color.text, fontFamily: font.body, cursor: "pointer", width: "100%", maxWidth: 280,
+                    }}
+                  >
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span style={{ fontSize: 12.5 }}>{v.desc}</span>
+                      <span style={{ fontSize: 10.5, color: color.textFaint }}>{v.instruct}</span>
+                    </span>
+                    {p.omniVoiceId === v.voice_id && <span style={{ width: 6, height: 6, borderRadius: 999, background: color.primary500, flexShrink: 0 }} />}
+                  </button>
+                ))}
+              </div>
             ) : (
               <div className="flex flex-col gap-3">
                 {p.elevenVoices && p.elevenVoices.length > 0 && (
@@ -517,7 +555,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
               <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
-              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
+              <SummaryRow label="เสียง" value={
+                p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}`
+                : p.voiceEngine === "omnivoice" ? `OmniVoice${omniVoice ? ` · ${omniVoice.desc}` : ""}`
+                : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`
+              } />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
             </>

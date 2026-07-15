@@ -23,7 +23,9 @@ export interface OrchestratorDeps {
 }
 
 interface CreateInput {
-  script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
+  script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
+  /** OmniVoice voice_id (Editor v2) — falls back to "voice_01" when omitted */
+  omniVoiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
@@ -132,7 +134,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
-    const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+    const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" || user.ttsProvider === "omnivoice" ? user.ttsProvider : "gemini");
 
     // Resolve BGM (path | track title | mood word like "ชิล"/"chill"/"ดราม่า") → a
     // real /music path. In chat the client usually sends a title or mood, not a path,
@@ -256,6 +258,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await step("tts", 10);
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
+      : provider === "omnivoice"
+      ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-omnivoice", { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" })
       : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
     const audioDurationMs = tts.audioDurationMs ?? 0;
 
@@ -423,7 +427,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
       videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
+      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : provider === "omnivoice" ? (input.omniVoiceId ?? "omnivoice") : (user.geminiVoiceName ?? "gemini"),
       sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 

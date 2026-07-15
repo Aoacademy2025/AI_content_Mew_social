@@ -5,7 +5,7 @@ import { Loader2, Pause, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-type VoiceProvider = "gemini" | "elevenlabs";
+type VoiceProvider = "gemini" | "elevenlabs" | "omnivoice";
 const VOICE_PREVIEW_TEXT = "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ";
 
 type PreviewResponse = {
@@ -19,11 +19,13 @@ export function VoicePreviewButton({
   provider,
   geminiVoiceName,
   voiceId,
+  omniVoiceId,
   onPlanError,
 }: {
   provider: VoiceProvider;
   geminiVoiceName: string;
   voiceId: string;
+  omniVoiceId?: string;
   onPlanError?: (msg: string) => void;
 }) {
   const [loading, setLoading] = React.useState(false);
@@ -31,7 +33,7 @@ export function VoicePreviewButton({
   const [previewUrl, setPreviewUrl] = React.useState("");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-  const voiceKey = provider === "gemini" ? geminiVoiceName : voiceId.trim();
+  const voiceKey = provider === "gemini" ? geminiVoiceName : provider === "omnivoice" ? (omniVoiceId ?? "voice_01") : voiceId.trim();
 
   React.useEffect(() => {
     audioRef.current?.pause();
@@ -77,12 +79,13 @@ export function VoicePreviewButton({
 
     setLoading(true);
     try {
-      const endpoint = provider === "gemini" ? "/api/videos/tts-gemini" : "/api/videos/tts";
+      const endpoint = provider === "gemini" ? "/api/videos/tts-gemini" : provider === "omnivoice" ? "/api/videos/tts-omnivoice" : "/api/videos/tts";
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(provider === "gemini"
-          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName }
+        body: JSON.stringify(
+          provider === "gemini" ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName }
+          : provider === "omnivoice" ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey }
           : { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey, languageCode: "th" }),
       });
       const data = await res.json().catch(() => ({} as PreviewResponse)) as PreviewResponse;

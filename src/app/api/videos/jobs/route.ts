@@ -23,7 +23,7 @@ import { parseAutoMixWeights } from "@/lib/automix-weights";
 
 type Body = {
   mode?: unknown; clipUrl?: unknown;
-  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
+  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; omniVoiceId?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
@@ -71,9 +71,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
 
-    const voiceProvider = body.voiceProvider === "elevenlabs" ? "elevenlabs" : body.voiceProvider === "gemini" ? "gemini" : undefined;
+    const voiceProvider = body.voiceProvider === "elevenlabs" ? "elevenlabs" : body.voiceProvider === "omnivoice" ? "omnivoice" : body.voiceProvider === "gemini" ? "gemini" : undefined;
     const voiceId = str(body.voiceId, 120);
     const geminiVoiceName = str(body.geminiVoiceName, 60);
+    const omniVoiceId = str(body.omniVoiceId, 60);
 
     // Key guards — same checks as MCP create_video_job, same wording surface (web shows toasts)
     // upload mode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียง (Gemini ยังจำเป็น: transcribe/keywords)
@@ -161,6 +162,7 @@ export async function POST(req: Request) {
           ...(voiceProvider ? { voiceProvider } : {}),
           ...(voiceId ? { voiceId } : {}),
           ...(geminiVoiceName ? { geminiVoiceName } : {}),
+          ...(omniVoiceId ? { omniVoiceId } : {}),
           ...(avatar.kind === "ok" && avatarLayout
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }

@@ -9,7 +9,7 @@ const DRAFT_KEY = "editor-v2-project";
 
 interface V2Draft {
   mode?: V2Mode; script?: string; clipUrl?: string; brollSource?: V2BrollSource;
-  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
+  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
@@ -33,7 +33,7 @@ function loadDraft(): V2Draft {
 
 export type V2Mode = "script" | "upload";
 export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
-export type V2VoiceEngine = "gemini" | "elevenlabs";
+export type V2VoiceEngine = "gemini" | "elevenlabs" | "omnivoice";
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
 
 export interface V2Usage {
@@ -50,6 +50,13 @@ export interface V2ElevenVoice {
   voice_id: string;
   name: string;
   category?: string;
+}
+
+export interface V2OmniVoice {
+  voice_id: string;
+  desc: string;
+  instruct: string;
+  preview_url: string;
 }
 
 export function useV2Project() {
@@ -76,6 +83,7 @@ export function useV2Project() {
   const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>(d.voiceEngine ?? "gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState(d.geminiVoiceName ?? "Aoede");
   const [voiceId, setVoiceId] = useState(d.voiceId ?? "");
+  const [omniVoiceId, setOmniVoiceId] = useState(d.omniVoiceId ?? "voice_01");
   /** filename ของ system track ที่เลือก · "" = ยังไม่เลือก · null = ไม่ใส่เพลง */
   const [musicTrack, setMusicTrack] = useState<string | null>(d.musicTrack === undefined ? "" : d.musicTrack);
   /** เพลงที่เลือกเป็นของระบบหรือของผู้ใช้ — ใช้เลือก path bgmFile ตอน submit */
@@ -116,6 +124,8 @@ export function useV2Project() {
   const [avatarInfo, setAvatarInfo] = useState<V2AvatarInfo | null>(null);
   /** รายชื่อเสียง ElevenLabs ของผู้ใช้ (แสดงชื่อแทน Voice ID) · null = ยังไม่โหลด/โหลดไม่ได้ */
   const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
+  /** รายชื่อเสียง OmniVoice (self-hosted, ไม่ใช้ key) · null = ยังไม่โหลด/โหลดไม่ได้ */
+  const [omniVoices, setOmniVoices] = useState<V2OmniVoice[] | null>(null);
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
@@ -124,7 +134,7 @@ export function useV2Project() {
       if (!hadDraft) {
         if (s.heygenAvatarId) setAvatarId(s.heygenAvatarId);
         if (s.elevenlabsVoiceId) setVoiceId(s.elevenlabsVoiceId);
-        if (s.ttsProvider === "gemini" || s.ttsProvider === "elevenlabs") setVoiceEngine(s.ttsProvider);
+        if (s.ttsProvider === "gemini" || s.ttsProvider === "elevenlabs" || s.ttsProvider === "omnivoice") setVoiceEngine(s.ttsProvider);
         if (s.geminiVoiceName) setGeminiVoiceName(s.geminiVoiceName);
       } else {
         // เติมเฉพาะช่องที่ draft ไม่มีค่า
@@ -166,7 +176,7 @@ export function useV2Project() {
     const t = setTimeout(() => {
       try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({
-          mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId,
+          mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
           musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
           targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
           kieModel, autoMixProviders, mixPreset,
@@ -175,7 +185,7 @@ export function useV2Project() {
       } catch { /* quota/private mode */ }
     }, 1000);
     return () => clearTimeout(t);
-  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+  }, [mode, script, clipUrl, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -202,6 +212,17 @@ export function useV2Project() {
     return () => { alive = false; };
   }, [voiceEngine, elevenVoices]);
 
+  // รายชื่อเสียง OmniVoice — server ของระบบเอง ไม่ใช้ key; โหลดครั้งเดียวเมื่อเลือก engine นี้
+  useEffect(() => {
+    if (voiceEngine !== "omnivoice" || omniVoices !== null) return;
+    let alive = true;
+    fetch("/api/omnivoice/voices")
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && Array.isArray(d)) setOmniVoices(d); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [voiceEngine, omniVoices]);
+
   return {
     mode, setMode,
     script, setScript,
@@ -210,6 +231,7 @@ export function useV2Project() {
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,
     voiceId, setVoiceId,
+    omniVoiceId, setOmniVoiceId,
     musicTrack, setMusicTrack,
     musicTrackKind, setMusicTrackKind,
     bgmVolume, setBgmVolume,
@@ -222,7 +244,7 @@ export function useV2Project() {
     kieModel, setKieModel,
     autoMixProviders, setAutoMixProviders,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, isAdmin, isPaidManagedKie, managedKieOn,
     saveStatus,
   };
 }
