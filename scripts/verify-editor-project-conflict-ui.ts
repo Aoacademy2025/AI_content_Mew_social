@@ -425,42 +425,250 @@ async function verifyActualHistoryHelperInChromium(browser: Browser): Promise<vo
     import { createBlockingDialogHistory } from "./src/lib/editor-project-conflict-history";
 
     const wait = (milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+    const hasConflictTag = () => Object.prototype.hasOwnProperty.call(
+      history.state ?? {},
+      "__heroEditorConflict",
+    );
     const listenerAdapter = (listener) => {
       window.addEventListener("popstate", listener);
       return () => window.removeEventListener("popstate", listener);
     };
+    const nextPopState = (timeout = 500) => new Promise((resolveWait) => {
+      let settled = false;
+      const finish = (popped) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("popstate", handlePopState);
+        clearTimeout(timer);
+        resolveWait(popped);
+      };
+      const handlePopState = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeout);
+      window.addEventListener("popstate", handlePopState);
+    });
 
     window.runHistoryScenario = async (kind) => {
-      history.replaceState({ page: "PREV" }, "", "/prev");
-      history.pushState({ page: "EDITOR" }, "", "/editor");
+      history.replaceState({ route: "before-editor" }, "", "/dashboard");
+      history.pushState({ route: "editor" }, "", "/video-editor?ui=v2");
       let popstateCount = 0;
       const countPopstate = () => { popstateCount += 1; };
       window.addEventListener("popstate", countPopstate);
+      const historyGuard = createBlockingDialogHistory({
+        history,
+        addPopStateListener: listenerAdapter,
+      });
+      const initialLength = history.length;
+
+      if (kind === "normal") {
+        const cleanup = historyGuard.activate();
+        const activatedLength = history.length;
+        const cleanupPop = nextPopState();
+        cleanup();
+        const cleanupPopped = await cleanupPop;
+        const afterCleanup = {
+          pathname: location.pathname,
+          search: location.search,
+          state: history.state,
+          tagged: hasConflictTag(),
+        };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          initialLength,
+          activatedLength,
+          cleanupPopped,
+          afterCleanup,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
       if (kind === "pending-back") {
-        const cleanup = createBlockingDialogHistory({
+        const cleanup = historyGuard.activate();
+        const pendingPop = nextPopState();
+        history.back();
+        cleanup();
+        const pendingPopped = await pendingPop;
+        await wait(180);
+        const afterPending = {
+          pathname: location.pathname,
+          search: location.search,
+          state: history.state,
+          tagged: hasConflictTag(),
+        };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          pendingPopped,
+          afterPending,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
+      if (kind === "double-cleanup") {
+        const cleanup = historyGuard.activate();
+        const cleanupPop = nextPopState();
+        cleanup();
+        cleanup();
+        const cleanupPopped = await cleanupPop;
+        await wait(60);
+        const afterCleanup = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          cleanupPopped,
+          afterCleanup,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
+      if (kind === "nested-owner") {
+        const cleanupOuter = historyGuard.activate();
+        const cleanupInner = historyGuard.activate();
+        cleanupOuter();
+        await wait(180);
+        const afterOuter = {
+          pathname: location.pathname,
+          route: history.state?.route ?? null,
+          tagged: hasConflictTag(),
+          popstateCount,
+        };
+        const cleanupPop = nextPopState();
+        cleanupInner();
+        const cleanupPopped = await cleanupPop;
+        const afterInner = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          afterOuter,
+          cleanupPopped,
+          afterInner,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
+      if (kind === "foreign") {
+        const cleanup = historyGuard.activate();
+        history.pushState({ ...history.state, route: "foreign", source: "external" }, "", "/foreign?source=external");
+        cleanup();
+        await wait(180);
+        const afterCleanup = {
+          pathname: location.pathname,
+          search: location.search,
+          route: history.state?.route ?? null,
+          source: history.state?.source ?? null,
+          tagged: hasConflictTag(),
+          popstateCount,
+        };
+        if (afterCleanup.pathname !== "/foreign") {
+          window.removeEventListener("popstate", countPopstate);
+          return { afterCleanup, escapedForeignEntry: true };
+        }
+        const ownedPop = nextPopState();
+        history.back();
+        const ownedPopped = await ownedPop;
+        const afterOwned = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const editorPop = nextPopState();
+        history.back();
+        const editorPopped = await editorPop;
+        const afterEditor = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const dashboardPop = nextPopState();
+        history.back();
+        const dashboardPopped = await dashboardPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          afterCleanup,
+          ownedPopped,
+          afterOwned,
+          editorPopped,
+          afterEditor,
+          dashboardPopped,
+          afterDashboard: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
+      if (kind === "unmount") {
+        const cleanup = historyGuard.activate();
+        const blockedPop = nextPopState();
+        history.back();
+        const blockedPopped = await blockedPop;
+        const beforeUnmount = {
+          pathname: location.pathname,
+          route: history.state?.route ?? null,
+          tagged: hasConflictTag(),
+        };
+        const cleanupPop = nextPopState();
+        cleanup();
+        const cleanupPopped = await cleanupPop;
+        await wait(60);
+        const afterUnmount = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          blockedPopped,
+          beforeUnmount,
+          cleanupPopped,
+          afterUnmount,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
+      }
+
+      if (kind === "fresh-factory-remount") {
+        const cleanupFirst = createBlockingDialogHistory({
           history,
           addPopStateListener: listenerAdapter,
         }).activate();
-        history.back();
-        cleanup();
+        cleanupFirst();
+        const cleanupSecond = createBlockingDialogHistory({
+          history,
+          addPopStateListener: listenerAdapter,
+        }).activate();
         await wait(180);
-      } else {
-        for (let index = 0; index < 2; index += 1) {
-          const cleanup = createBlockingDialogHistory({
-            history,
-            addPopStateListener: listenerAdapter,
-          }).activate();
-          cleanup();
-        }
-        await wait(40);
+        const afterRemount = {
+          pathname: location.pathname,
+          route: history.state?.route ?? null,
+          tagged: hasConflictTag(),
+          popstateCount,
+        };
+        const cleanupPop = nextPopState();
+        cleanupSecond();
+        const cleanupPopped = await cleanupPop;
+        const afterCleanup = { pathname: location.pathname, state: history.state, tagged: hasConflictTag() };
+        const userPop = nextPopState();
+        history.back();
+        const userPopped = await userPop;
+        window.removeEventListener("popstate", countPopstate);
+        return {
+          afterRemount,
+          cleanupPopped,
+          afterCleanup,
+          userPopped,
+          afterUserBack: { pathname: location.pathname, state: history.state },
+          popstateCount,
+        };
       }
-      window.removeEventListener("popstate", countPopstate);
-      return {
-        pathname: location.pathname,
-        page: history.state?.page ?? null,
-        tagged: Object.prototype.hasOwnProperty.call(history.state ?? {}, "__heroEditorConflict"),
-        popstateCount,
-      };
+
+      throw new Error("Unknown history scenario: " + kind);
     };
   `;
   const bundled = await build({
@@ -486,40 +694,112 @@ async function verifyActualHistoryHelperInChromium(browser: Browser): Promise<vo
   });
   const address = server.address() as AddressInfo;
   const origin = `http://127.0.0.1:${address.port}`;
+  const runScenario = async (kind: string): Promise<Record<string, any>> => {
+    const page = await browser.newPage();
+    try {
+      await page.goto(`${origin}/fixture`);
+      await page.addScriptTag({ content: bundled.outputFiles[0].text });
+      return await page.evaluate((scenario) => (
+        window as unknown as { runHistoryScenario(kind: string): Promise<Record<string, any>> }
+      ).runHistoryScenario(scenario), kind);
+    } finally {
+      await page.close();
+    }
+  };
   try {
-    const pendingPage = await browser.newPage();
-    try {
-      await pendingPage.goto(`${origin}/fixture`);
-      await pendingPage.addScriptTag({ content: bundled.outputFiles[0].text });
-      const result = await pendingPage.evaluate(() => (
-        window as unknown as { runHistoryScenario(kind: string): Promise<Record<string, unknown>> }
-      ).runHistoryScenario("pending-back"));
-      assert.deepEqual(result, {
-        pathname: "/editor",
-        page: "EDITOR",
+    const normal = await runScenario("normal");
+    assert.equal(normal.activatedLength, normal.initialLength + 1, "activation pushes exactly one same-URL guard");
+    assert.deepEqual(normal, {
+      initialLength: normal.initialLength,
+      activatedLength: normal.initialLength + 1,
+      cleanupPopped: true,
+      afterCleanup: {
+        pathname: "/video-editor",
+        search: "?ui=v2",
+        state: { route: "editor" },
         tagged: false,
-        popstateCount: 1,
-      }, "actual helper never turns pending Back plus cleanup into an escape to PREV");
-    } finally {
-      await pendingPage.close();
-    }
+      },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 2,
+    }, "resolution consumes only the owned guard so the next Back leaves the editor");
 
-    const strictPage = await browser.newPage();
-    try {
-      await strictPage.goto(`${origin}/fixture`);
-      await strictPage.addScriptTag({ content: bundled.outputFiles[0].text });
-      const result = await strictPage.evaluate(() => (
-        window as unknown as { runHistoryScenario(kind: string): Promise<Record<string, unknown>> }
-      ).runHistoryScenario("rapid-factory"));
-      assert.deepEqual(result, {
-        pathname: "/editor",
-        page: "EDITOR",
+    assert.deepEqual(await runScenario("pending-back"), {
+      pendingPopped: true,
+      afterPending: {
+        pathname: "/video-editor",
+        search: "?ui=v2",
+        state: { route: "editor" },
         tagged: false,
+      },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 2,
+    }, "a pending user Back cancels cleanup traversal and the following Back leaves normally");
+
+    assert.deepEqual(await runScenario("double-cleanup"), {
+      cleanupPopped: true,
+      afterCleanup: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 2,
+    }, "double cleanup consumes the owned guard once");
+
+    assert.deepEqual(await runScenario("nested-owner"), {
+      afterOuter: {
+        pathname: "/video-editor",
+        route: "editor",
+        tagged: true,
         popstateCount: 0,
-      }, "fresh-factory StrictMode cleanup stays on EDITOR without synthetic traversal");
-    } finally {
-      await strictPage.close();
-    }
+      },
+      cleanupPopped: true,
+      afterInner: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 2,
+    }, "only the final nested owner consumes the guard");
+
+    assert.deepEqual(await runScenario("foreign"), {
+      afterCleanup: {
+        pathname: "/foreign",
+        search: "?source=external",
+        route: "foreign",
+        source: "external",
+        tagged: true,
+        popstateCount: 0,
+      },
+      ownedPopped: true,
+      afterOwned: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      editorPopped: true,
+      afterEditor: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      dashboardPopped: true,
+      afterDashboard: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 3,
+    }, "cleanup preserves foreign state on a different URL even when it copied the owned marker");
+
+    assert.deepEqual(await runScenario("unmount"), {
+      blockedPopped: true,
+      beforeUnmount: { pathname: "/video-editor", route: "editor", tagged: true },
+      cleanupPopped: true,
+      afterUnmount: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 3,
+    }, "unmount after a blocked Back removes the re-established guard and does not re-arm it");
+
+    assert.deepEqual(await runScenario("fresh-factory-remount"), {
+      afterRemount: {
+        pathname: "/video-editor",
+        route: "editor",
+        tagged: true,
+        popstateCount: 0,
+      },
+      cleanupPopped: true,
+      afterCleanup: { pathname: "/video-editor", state: { route: "editor" }, tagged: false },
+      userPopped: true,
+      afterUserBack: { pathname: "/dashboard", state: { route: "before-editor" } },
+      popstateCount: 2,
+    }, "a fresh-factory remount invalidates stale cleanup before it can traverse");
   } finally {
     await new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
   }
@@ -531,9 +811,18 @@ function verifyHistorySource(source: string): void {
   assert.match(source, /pushState\([\s\S]*?,\s*["']["']\s*\)/,
     "the blocker pushes a same-URL entry without a URL argument");
   assert.match(source, /replaceState\([\s\S]*?,\s*["']["']\s*\)/,
-    "cleanup removes its owned token in place without traversing history");
-  assert.doesNotMatch(source, /scheduleMacrotask|setTimeout|input\.history\.back\(/,
-    "normal cleanup has no timing guess or synthetic Back traversal");
+    "a late stranded owned tag can still be repaired without traversing foreign history");
+  assert.match(source, /const CLEANUP_POP_GRACE_MS\s*=\s*120/,
+    "cleanup uses one named bounded grace for a pending user traversal to win");
+  assert.match(source, /setTimeout\([\s\S]*?CLEANUP_POP_GRACE_MS\)/,
+    "the cleanup traversal is deferred by the bounded grace");
+  assert.match(source, /input\.history\.back\(\)/,
+    "normal cleanup traverses only the current owned same-URL guard");
+  assert.match(source, /pendingPop/, "double cleanup is fenced while its pop is pending");
+  assert.match(source, /cleanupGeneration[\s\S]*?generation\s*!==\s*cleanupGeneration/,
+    "stale cleanup callbacks are generation-gated");
+  assert.doesNotMatch(source, /scheduleMacrotask\?:/,
+    "cleanup timing remains internal and does not widen the public input interface");
   assert.doesNotMatch(source, /location\.(?:assign|replace)\(|window\.location|\.close\(|\.dismiss\(/,
     "history containment never navigates or closes the conflict");
   assert.ok(collect(root, (node): node is ts.CatchClause => ts.isCatchClause(node)).length >= 3,
@@ -739,7 +1028,8 @@ class FakeHistory {
   };
 }
 
-function verifyHistoryRuntime(createHistory: HistoryFactory): void {
+async function verifyHistoryRuntime(createHistory: HistoryFactory): Promise<void> {
+  const waitForCleanupGrace = () => new Promise((resolveWait) => setTimeout(resolveWait, 180));
   const hasConflictTag = (value: unknown) => !!value
     && typeof value === "object"
     && Object.prototype.hasOwnProperty.call(value, "__heroEditorConflict");
@@ -759,8 +1049,11 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
   cleanupFirst();
   assert.equal(repeated.replaceCalls.length, 0, "one active owner cannot clean up another");
   cleanupSecond();
-  assert.equal(repeated.backCalls, 0, "normal cleanup never traverses history");
-  assert.equal(repeated.replaceCalls.length, 1, "final cleanup removes its owned token in place");
+  cleanupSecond();
+  assert.equal(repeated.backCalls, 0, "cleanup waits for a pending user traversal before consuming the guard");
+  await waitForCleanupGrace();
+  assert.equal(repeated.backCalls, 1, "final cleanup consumes its owned guard once");
+  assert.equal(repeated.replaceCalls.length, 0, "normal cleanup leaves the prior editor entry untouched");
   assert.deepEqual(repeated.state, { route: "editor", mobileSheetKey: "logo" });
 
   const backProtected = new FakeHistory();
@@ -772,7 +1065,8 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
   assert.equal(backProtected.pushCalls.length, 2, "Back while active re-establishes the tag");
   assert.equal(hasConflictTag(backProtected.state), true);
   cleanupProtected();
-  assert.equal(backProtected.backCalls, 1, "cleanup after completed Back adds no second traversal");
+  await waitForCleanupGrace();
+  assert.equal(backProtected.backCalls, 2, "unmount consumes the guard re-established after a completed Back");
   assert.equal(hasConflictTag(backProtected.state), false);
 
   const foreignTop = new FakeHistory();
@@ -803,12 +1097,13 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
   pendingBack.back();
   cleanupPending();
   assert.equal(pendingBack.backCalls, 1, "the user has one pending Back traversal");
-  assert.equal(pendingBack.replaceCalls.length, 1, "pending cleanup only removes the current token in place");
+  assert.equal(pendingBack.replaceCalls.length, 0, "pending cleanup does not rewrite the current guard");
   pendingTasks.flush();
+  await waitForCleanupGrace();
   assert.equal(pendingBack.backCalls, 1, "pending Back plus cleanup remains exactly one traversal");
   assert.deepEqual(pendingBack.state, { route: "editor" }, "pending Back lands on the real same-URL entry without escaping");
 
-  for (const primitiveState of [null, "editor", 7]) {
+  const primitives = [null, "editor", 7].map((primitiveState) => {
     const primitive = new FakeHistory(primitiveState);
     const cleanupPrimitive = createHistory({
       history: primitive as unknown as HistoryInput["history"],
@@ -816,6 +1111,10 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
     }).activate();
     assert.equal(hasConflictTag(primitive.state), true, "primitive history state receives an owned marker");
     cleanupPrimitive();
+    return { primitive, primitiveState };
+  });
+  await waitForCleanupGrace();
+  for (const { primitive, primitiveState } of primitives) {
     assert.equal(primitive.state, primitiveState);
   }
 
@@ -838,6 +1137,10 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
 
 function assertFixtureRejected(run: () => void, label: string): void {
   assert.throws(run, assert.AssertionError, label);
+}
+
+async function assertAsyncFixtureRejected(run: () => Promise<void>, label: string): Promise<void> {
+  await assert.rejects(run, assert.AssertionError, label);
 }
 
 async function main(): Promise<void> {
@@ -899,7 +1202,7 @@ async function main(): Promise<void> {
   const historyModule = await import(pathToFileURL(resolve(historyPath)).href) as {
     createBlockingDialogHistory: HistoryFactory;
   };
-  verifyHistoryRuntime(historyModule.createBlockingDialogHistory);
+  await verifyHistoryRuntime(historyModule.createBlockingDialogHistory);
   const focusModule = await import(pathToFileURL(resolve(focusPath)).href) as {
     createEditorRecoveryFocusLifecycle: FocusFactory;
   };
@@ -922,7 +1225,7 @@ async function main(): Promise<void> {
       return () => {};
     },
   });
-  assertFixtureRejected(
+  await assertAsyncFixtureRejected(
     () => verifyHistoryRuntime(duplicatePushFactory),
     "controlled fixture proves duplicate history pushes are detected",
   );
