@@ -35,6 +35,14 @@ function snapshot(
   return value;
 }
 
+function assertReturnsNullWithoutThrow(label: string, operation: () => unknown): void {
+  let result: unknown = Symbol("operation did not complete");
+  assert.doesNotThrow(() => {
+    result = operation();
+  }, `${label} does not throw`);
+  assert.equal(result, null, `${label} fails closed with null`);
+}
+
 function main(): void {
   const projectId = "project-a";
   const reorderedA = candidate(projectId, 1, {
@@ -71,6 +79,56 @@ function main(): void {
       timeline: [{ settings: { voice: "before", speed: 1 } }],
     }).fingerprint,
     "input mutation cannot change the candidate fingerprint",
+  );
+
+  const hostileDraftProxy = new Proxy<Record<string, unknown>>({}, {
+    getPrototypeOf() {
+      throw new Error("hostile draft proxy");
+    },
+  });
+  assertReturnsNullWithoutThrow(
+    "hostile proxy draft materialization",
+    () => materializeEditorProjectDraft(hostileDraftProxy),
+  );
+  assertReturnsNullWithoutThrow(
+    "hostile proxy candidate draft",
+    () => createEditorProjectAutosaveCandidate({
+      projectId,
+      revision: 1,
+      draft: hostileDraftProxy,
+    }),
+  );
+  assertReturnsNullWithoutThrow(
+    "hostile proxy snapshot draft",
+    () => createEditorProjectAutosaveSnapshot({
+      projectId,
+      expectedDraftRevision: 0,
+      revision: 1,
+      draft: hostileDraftProxy,
+    }),
+  );
+  const revokedDraft = Proxy.revocable<Record<string, unknown>>({}, {});
+  revokedDraft.revoke();
+  assertReturnsNullWithoutThrow(
+    "revoked proxy draft materialization",
+    () => materializeEditorProjectDraft(revokedDraft.proxy),
+  );
+  assertReturnsNullWithoutThrow(
+    "revoked proxy candidate draft",
+    () => createEditorProjectAutosaveCandidate({
+      projectId,
+      revision: 1,
+      draft: revokedDraft.proxy,
+    }),
+  );
+  assertReturnsNullWithoutThrow(
+    "revoked proxy snapshot draft",
+    () => createEditorProjectAutosaveSnapshot({
+      projectId,
+      expectedDraftRevision: 0,
+      revision: 1,
+      draft: revokedDraft.proxy,
+    }),
   );
 
   const nullPrototypeDraft = Object.assign(Object.create(null) as Record<string, unknown>, {
@@ -128,6 +186,115 @@ function main(): void {
   }
   assert.equal(accessorReads, 0, "accessors are rejected without invocation");
 
+  const candidateEnvelope = { projectId, revision: 1, draft: { script: "candidate" } };
+  for (const key of ["projectId", "revision", "draft"] as const) {
+    let getterReads = 0;
+    const accessorEnvelope = { ...candidateEnvelope };
+    const fieldValue = accessorEnvelope[key];
+    Object.defineProperty(accessorEnvelope, key, {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return fieldValue;
+      },
+    });
+    assertReturnsNullWithoutThrow(
+      `candidate envelope ${key} accessor`,
+      () => createEditorProjectAutosaveCandidate(accessorEnvelope),
+    );
+    assert.equal(getterReads, 0, `candidate envelope ${key} getter is never invoked`);
+  }
+  const inheritedCandidateEnvelope = Object.assign(Object.create({ projectId }), {
+    revision: 1,
+    draft: {},
+  }) as Parameters<typeof createEditorProjectAutosaveCandidate>[0];
+  assertReturnsNullWithoutThrow(
+    "inherited candidate envelope field",
+    () => createEditorProjectAutosaveCandidate(inheritedCandidateEnvelope),
+  );
+  const nonEnumerableCandidateEnvelope = { ...candidateEnvelope };
+  Object.defineProperty(nonEnumerableCandidateEnvelope, "projectId", {
+    enumerable: false,
+    value: projectId,
+  });
+  assertReturnsNullWithoutThrow(
+    "non-enumerable candidate envelope field",
+    () => createEditorProjectAutosaveCandidate(nonEnumerableCandidateEnvelope),
+  );
+  const hostileCandidateEnvelope = new Proxy(candidateEnvelope, {
+    getOwnPropertyDescriptor() {
+      throw new Error("hostile candidate envelope proxy");
+    },
+  });
+  assertReturnsNullWithoutThrow(
+    "hostile candidate envelope proxy",
+    () => createEditorProjectAutosaveCandidate(hostileCandidateEnvelope),
+  );
+  const revokedCandidateEnvelope = Proxy.revocable(candidateEnvelope, {});
+  revokedCandidateEnvelope.revoke();
+  assertReturnsNullWithoutThrow(
+    "revoked candidate envelope proxy",
+    () => createEditorProjectAutosaveCandidate(revokedCandidateEnvelope.proxy),
+  );
+
+  const snapshotEnvelope = {
+    projectId,
+    expectedDraftRevision: 0,
+    revision: 1,
+    draft: { script: "snapshot" },
+  };
+  for (
+    const key of ["projectId", "expectedDraftRevision", "revision", "draft"] as const
+  ) {
+    let getterReads = 0;
+    const accessorEnvelope = { ...snapshotEnvelope };
+    const fieldValue = accessorEnvelope[key];
+    Object.defineProperty(accessorEnvelope, key, {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return fieldValue;
+      },
+    });
+    assertReturnsNullWithoutThrow(
+      `snapshot envelope ${key} accessor`,
+      () => createEditorProjectAutosaveSnapshot(accessorEnvelope),
+    );
+    assert.equal(getterReads, 0, `snapshot envelope ${key} getter is never invoked`);
+  }
+  const inheritedSnapshotEnvelope = Object.assign(
+    Object.create({ expectedDraftRevision: 0 }),
+    { projectId, revision: 1, draft: {} },
+  ) as Parameters<typeof createEditorProjectAutosaveSnapshot>[0];
+  assertReturnsNullWithoutThrow(
+    "inherited snapshot envelope field",
+    () => createEditorProjectAutosaveSnapshot(inheritedSnapshotEnvelope),
+  );
+  const nonEnumerableSnapshotEnvelope = { ...snapshotEnvelope };
+  Object.defineProperty(nonEnumerableSnapshotEnvelope, "expectedDraftRevision", {
+    enumerable: false,
+    value: 0,
+  });
+  assertReturnsNullWithoutThrow(
+    "non-enumerable snapshot envelope field",
+    () => createEditorProjectAutosaveSnapshot(nonEnumerableSnapshotEnvelope),
+  );
+  const hostileSnapshotEnvelope = new Proxy(snapshotEnvelope, {
+    ownKeys() {
+      throw new Error("hostile snapshot envelope proxy");
+    },
+  });
+  assertReturnsNullWithoutThrow(
+    "hostile snapshot envelope proxy",
+    () => createEditorProjectAutosaveSnapshot(hostileSnapshotEnvelope),
+  );
+  const revokedSnapshotEnvelope = Proxy.revocable(snapshotEnvelope, {});
+  revokedSnapshotEnvelope.revoke();
+  assertReturnsNullWithoutThrow(
+    "revoked snapshot envelope proxy",
+    () => createEditorProjectAutosaveSnapshot(revokedSnapshotEnvelope.proxy),
+  );
+
   const invalidRevisions = [
     -1,
     1.5,
@@ -177,6 +344,20 @@ function main(): void {
   const attemptRev1B = snapshot(projectId, 0, 1, { script: "B" });
   const attemptRev2B = snapshot(projectId, 1, 2, { script: "B" });
 
+  const frozenCandidate = candidate(projectId, 3, {
+    nested: { clips: [{ name: "frozen" }] },
+  });
+  assert.equal(Object.isFrozen(frozenCandidate), true, "candidate DTO is frozen");
+  assert.equal(Object.isFrozen(frozenCandidate.draft), true, "candidate draft is frozen");
+  const frozenNested = frozenCandidate.draft.nested as { clips: Array<{ name: string }> };
+  assert.equal(Object.isFrozen(frozenNested), true, "nested candidate object is frozen");
+  assert.equal(Object.isFrozen(frozenNested.clips), true, "nested candidate array is frozen");
+  assert.equal(Object.isFrozen(frozenNested.clips[0]), true, "object inside candidate array is frozen");
+  const frozenSnapshot = snapshot(projectId, 2, 3, {
+    nested: { clips: [{ name: "frozen" }] },
+  });
+  assert.equal(Object.isFrozen(frozenSnapshot), true, "snapshot DTO is frozen");
+
   assert.deepEqual(
     decideEditorProjectAutosaveObservation({
       attempt: attemptRev1A,
@@ -224,6 +405,202 @@ function main(): void {
     }),
     { kind: "conflict", server: rev1A },
     "a revision match without a fingerprint match never proves issued lineage",
+  );
+
+  const otherProjectRev1A = candidate("project-b", 1, { script: "A" });
+  class SplitIssuedMap extends Map<number, EditorProjectAutosaveCandidate> {
+    getCalls = 0;
+
+    override get(key: number): EditorProjectAutosaveCandidate | undefined {
+      this.getCalls += 1;
+      return key === 1 ? otherProjectRev1A : undefined;
+    }
+  }
+  const splitIssued = new SplitIssuedMap([[1, rev1A]]);
+  let splitDecision: ReturnType<typeof decideEditorProjectAutosaveObservation> | null = null;
+  assert.doesNotThrow(() => {
+    splitDecision = decideEditorProjectAutosaveObservation({
+      attempt: attemptRev2B,
+      confirmed: rev0,
+      issued: splitIssued,
+      observed: rev1A,
+    });
+  }, "caller-controlled issued get cannot replace an iterated candidate");
+  assert.equal(splitIssued.getCalls, 0, "decision never calls the caller-controlled issued get");
+  assert.deepEqual(splitDecision, { kind: "retry", confirmed: rev1A });
+
+  class ThrowingGetIssuedMap extends Map<number, EditorProjectAutosaveCandidate> {
+    getCalls = 0;
+
+    override get(): EditorProjectAutosaveCandidate | undefined {
+      this.getCalls += 1;
+      throw new Error("hostile issued get");
+    }
+  }
+  const throwingGetIssued = new ThrowingGetIssuedMap([[1, rev1A]]);
+  assert.doesNotThrow(() => decideEditorProjectAutosaveObservation({
+    attempt: attemptRev2B,
+    confirmed: rev0,
+    issued: throwingGetIssued,
+    observed: rev1A,
+  }), "a hostile unused issued get cannot affect the decision");
+  assert.equal(throwingGetIssued.getCalls, 0, "hostile issued get is never invoked");
+
+  class DuplicateIssuedMap extends Map<number, EditorProjectAutosaveCandidate> {
+    override *[Symbol.iterator](): MapIterator<[number, EditorProjectAutosaveCandidate]> {
+      yield [1, rev1A];
+      yield [1, rev1B];
+    }
+  }
+  assert.throws(
+    () => decideEditorProjectAutosaveObservation({
+      attempt: attemptRev2B,
+      confirmed: rev0,
+      issued: new DuplicateIssuedMap(),
+      observed: rev1A,
+    }),
+    /duplicate.*issued/i,
+    "duplicate keys from a hostile issued iterator are rejected",
+  );
+
+  class ThrowingIteratorIssuedMap extends Map<number, EditorProjectAutosaveCandidate> {
+    override [Symbol.iterator](): MapIterator<[number, EditorProjectAutosaveCandidate]> {
+      throw new Error("hostile issued iterator");
+    }
+  }
+  assert.throws(
+    () => decideEditorProjectAutosaveObservation({
+      attempt: attemptRev2B,
+      confirmed: rev0,
+      issued: new ThrowingIteratorIssuedMap(),
+      observed: rev1A,
+    }),
+    /hostile issued iterator/,
+    "hostile issued iteration fails closed through the decision API",
+  );
+  assert.throws(
+    () => decideEditorProjectAutosaveObservation({
+      attempt: attemptRev2B,
+      confirmed: rev0,
+      issued: new Map([[1, otherProjectRev1A]]),
+      observed: rev1A,
+    }),
+    /project/i,
+    "an iterated issued candidate from another project is rejected",
+  );
+
+  const callerOwnedDraft = {
+    timeline: [{ settings: { voice: "before" } }],
+  };
+  const callerOwnedFingerprint = candidate(projectId, 1, callerOwnedDraft).fingerprint;
+  const callerOwnedObserved: EditorProjectAutosaveCandidate = {
+    projectId,
+    revision: 1,
+    draft: callerOwnedDraft,
+    fingerprint: callerOwnedFingerprint,
+  };
+  const normalizedSavedDecision = decideEditorProjectAutosaveObservation({
+    attempt: snapshot(projectId, 0, 1, {
+      timeline: [{ settings: { voice: "before" } }],
+    }),
+    confirmed: rev0,
+    issued: new Map([[1, callerOwnedObserved]]),
+    observed: callerOwnedObserved,
+  });
+  assert.equal(normalizedSavedDecision.kind, "saved");
+  if (normalizedSavedDecision.kind !== "saved") throw new Error("expected saved decision");
+  assert.notEqual(
+    normalizedSavedDecision.confirmed,
+    callerOwnedObserved,
+    "decision output never aliases the caller-owned observed candidate",
+  );
+  assert.notEqual(
+    normalizedSavedDecision.confirmed.draft,
+    callerOwnedDraft,
+    "decision output never aliases the caller-owned observed draft",
+  );
+  callerOwnedDraft.timeline[0].settings.voice = "after";
+  callerOwnedDraft.timeline.push({ settings: { voice: "added" } });
+  assert.deepEqual(normalizedSavedDecision.confirmed.draft, {
+    timeline: [{ settings: { voice: "before" } }],
+  }, "caller mutation after the decision cannot change its output");
+  assert.equal(Object.isFrozen(normalizedSavedDecision.confirmed), true);
+  assert.equal(Object.isFrozen(normalizedSavedDecision.confirmed.draft), true);
+  const normalizedTimeline = normalizedSavedDecision.confirmed.draft.timeline as Array<{
+    settings: { voice: string };
+  }>;
+  assert.equal(Object.isFrozen(normalizedTimeline), true);
+  assert.equal(Object.isFrozen(normalizedTimeline[0]), true);
+  assert.equal(Object.isFrozen(normalizedTimeline[0].settings), true);
+  assert.equal(
+    candidate(projectId, 1, normalizedSavedDecision.confirmed.draft).fingerprint,
+    normalizedSavedDecision.confirmed.fingerprint,
+    "normalized output fingerprint remains consistent with its frozen draft",
+  );
+
+  const mutableConfirmedDraft = { nested: { script: "base" } };
+  const mutableConfirmed: EditorProjectAutosaveCandidate = {
+    projectId,
+    revision: 0,
+    draft: mutableConfirmedDraft,
+    fingerprint: candidate(projectId, 0, mutableConfirmedDraft).fingerprint,
+  };
+  const normalizedConfirmedDecision = decideEditorProjectAutosaveObservation({
+    attempt: attemptRev1A,
+    confirmed: mutableConfirmed,
+    issued: new Map([[1, rev1A]]),
+    observed: { ...mutableConfirmed, draft: { nested: { script: "base" } } },
+  });
+  assert.equal(normalizedConfirmedDecision.kind, "retry");
+  if (normalizedConfirmedDecision.kind !== "retry") throw new Error("expected retry decision");
+  assert.notEqual(
+    normalizedConfirmedDecision.confirmed,
+    mutableConfirmed,
+    "confirmed retry output is a normalized DTO",
+  );
+
+  const mutableIssuedDraft = { nested: { script: "issued" } };
+  const mutableIssued: EditorProjectAutosaveCandidate = {
+    projectId,
+    revision: 1,
+    draft: mutableIssuedDraft,
+    fingerprint: candidate(projectId, 1, mutableIssuedDraft).fingerprint,
+  };
+  const normalizedIssuedDecision = decideEditorProjectAutosaveObservation({
+    attempt: snapshot(projectId, 1, 2, { nested: { script: "attempt" } }),
+    confirmed: rev0,
+    issued: new Map([[1, mutableIssued]]),
+    observed: { ...mutableIssued, draft: { nested: { script: "issued" } } },
+  });
+  assert.equal(normalizedIssuedDecision.kind, "retry");
+  if (normalizedIssuedDecision.kind !== "retry") throw new Error("expected retry decision");
+  assert.notEqual(
+    normalizedIssuedDecision.confirmed,
+    mutableIssued,
+    "issued retry output is a normalized DTO",
+  );
+
+  const mutableConflictDraft = { nested: { script: "server" } };
+  const mutableConflict: EditorProjectAutosaveCandidate = {
+    projectId,
+    revision: 3,
+    draft: mutableConflictDraft,
+    fingerprint: candidate(projectId, 3, mutableConflictDraft).fingerprint,
+  };
+  const normalizedConflictDecision = decideEditorProjectAutosaveObservation({
+    attempt: attemptRev1A,
+    confirmed: rev0,
+    issued: new Map([[1, rev1A]]),
+    observed: mutableConflict,
+  });
+  assert.equal(normalizedConflictDecision.kind, "conflict");
+  if (normalizedConflictDecision.kind !== "conflict") {
+    throw new Error("expected conflict decision");
+  }
+  assert.notEqual(
+    normalizedConflictDecision.server,
+    mutableConflict,
+    "conflict server output is a normalized DTO",
   );
 
   const otherProject = candidate("project-b", 0, { script: "base" });

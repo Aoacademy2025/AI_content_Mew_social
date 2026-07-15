@@ -34,6 +34,28 @@ function isDraftRevision(value: unknown): value is number {
     && value <= MAX_DRAFT_REVISION;
 }
 
+function readStrictEnvelope(
+  value: unknown,
+  requiredKeys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+
+    const envelope = Object.create(null) as Record<string, unknown>;
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== "string") return null;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) return null;
+      envelope[key] = descriptor.value;
+    }
+    return requiredKeys.every((key) => Object.hasOwn(envelope, key)) ? envelope : null;
+  } catch {
+    return null;
+  }
+}
+
 function serializeCanonicalJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -87,8 +109,9 @@ export function createEditorProjectAutosaveCandidate(input: {
   revision: number;
   draft: unknown;
 }): EditorProjectAutosaveCandidate | null {
-  if (!input || typeof input !== "object") return null;
-  return createCandidate(input.projectId, input.revision, input.draft);
+  const envelope = readStrictEnvelope(input, ["projectId", "revision", "draft"]);
+  if (!envelope) return null;
+  return createCandidate(envelope.projectId, envelope.revision, envelope.draft);
 }
 
 export function createEditorProjectAutosaveSnapshot(input: {
@@ -97,38 +120,90 @@ export function createEditorProjectAutosaveSnapshot(input: {
   revision: number;
   draft: unknown;
 }): EditorProjectAutosaveSnapshot | null {
-  if (!input || typeof input !== "object") return null;
+  const envelope = readStrictEnvelope(input, [
+    "projectId",
+    "expectedDraftRevision",
+    "revision",
+    "draft",
+  ]);
+  if (!envelope) return null;
   if (
-    !isDraftRevision(input.expectedDraftRevision)
-    || !isDraftRevision(input.revision)
-    || input.revision <= input.expectedDraftRevision
+    !isDraftRevision(envelope.expectedDraftRevision)
+    || !isDraftRevision(envelope.revision)
+    || envelope.revision <= envelope.expectedDraftRevision
   ) return null;
 
-  const candidate = createCandidate(input.projectId, input.revision, input.draft);
+  const candidate = createCandidate(envelope.projectId, envelope.revision, envelope.draft);
   if (!candidate) return null;
   return Object.freeze({
     ...candidate,
-    expectedDraftRevision: input.expectedDraftRevision,
+    expectedDraftRevision: envelope.expectedDraftRevision,
   });
 }
 
-function assertCandidate(
+function normalizeCandidateEnvelope(
+  envelope: Record<string, unknown>,
+  label: string,
+): EditorProjectAutosaveCandidate {
+  const candidate = createCandidate(envelope.projectId, envelope.revision, envelope.draft);
+  if (!candidate || candidate.projectId !== envelope.projectId) {
+    if (!isDraftRevision(envelope.revision)) {
+      throw new Error(`${label} has an invalid revision`);
+    }
+    throw new Error(`${label} has an invalid project id or draft`);
+  }
+  if (candidate.fingerprint !== envelope.fingerprint) {
+    throw new Error(`${label} has an invalid draft fingerprint`);
+  }
+  return candidate;
+}
+
+function normalizeCandidate(
   value: EditorProjectAutosaveCandidate,
   label: string,
+): EditorProjectAutosaveCandidate {
+  const envelope = readStrictEnvelope(value, ["projectId", "revision", "draft", "fingerprint"]);
+  if (!envelope) throw new Error(`${label} must be an autosave candidate`);
+  return normalizeCandidateEnvelope(envelope, label);
+}
+
+function normalizeSnapshot(
+  value: EditorProjectAutosaveSnapshot,
+  label: string,
+): EditorProjectAutosaveSnapshot {
+  const envelope = readStrictEnvelope(value, [
+    "projectId",
+    "expectedDraftRevision",
+    "revision",
+    "draft",
+    "fingerprint",
+  ]);
+  if (!envelope) throw new Error(`${label} must be an autosave snapshot`);
+  const candidate = normalizeCandidateEnvelope(envelope, label);
+  if (
+    !isDraftRevision(envelope.expectedDraftRevision)
+    || candidate.revision <= envelope.expectedDraftRevision
+  ) {
+    throw new Error(`${label} has an invalid expected revision`);
+  }
+  return Object.freeze({
+    ...candidate,
+    expectedDraftRevision: envelope.expectedDraftRevision,
+  });
+}
+
+function assertSameProject(
+  candidate: EditorProjectAutosaveCandidate,
+  projectId: string,
 ): void {
-  if (!value || typeof value !== "object") {
-    throw new Error(`${label} must be an autosave candidate`);
+  if (candidate.projectId !== projectId) {
+    throw new Error("autosave observation project mismatch");
   }
-  const projectId = normalizeProjectId(value.projectId);
-  if (!projectId || projectId !== value.projectId) {
-    throw new Error(`${label} has an invalid project id`);
-  }
-  if (!isDraftRevision(value.revision)) {
-    throw new Error(`${label} has an invalid revision`);
-  }
-  const draft = materializeEditorProjectDraft(value.draft);
-  if (!draft || serializeCanonicalJson(draft) !== value.fingerprint) {
-    throw new Error(`${label} has an invalid draft fingerprint`);
+}
+
+function assertIssuedRevision(issuedRevision: unknown, candidateRevision: number): void {
+  if (!isDraftRevision(issuedRevision) || issuedRevision !== candidateRevision) {
+    throw new Error("issued map key disagrees with candidate revision");
   }
 }
 
@@ -145,43 +220,46 @@ export function decideEditorProjectAutosaveObservation(input: {
   issued: ReadonlyMap<number, EditorProjectAutosaveCandidate>;
   observed: EditorProjectAutosaveCandidate;
 }): EditorProjectAutosaveObservationDecision {
-  if (!input || typeof input !== "object") {
-    throw new Error("autosave observation input is required");
-  }
-  assertCandidate(input.attempt, "attempt");
-  assertCandidate(input.confirmed, "confirmed");
-  assertCandidate(input.observed, "observed");
-  if (
-    !isDraftRevision(input.attempt.expectedDraftRevision)
-    || input.attempt.revision <= input.attempt.expectedDraftRevision
-  ) {
-    throw new Error("attempt has an invalid expected revision");
-  }
+  const envelope = readStrictEnvelope(input, ["attempt", "confirmed", "issued", "observed"]);
+  if (!envelope) throw new Error("autosave observation input is required");
+  const attempt = normalizeSnapshot(
+    envelope.attempt as EditorProjectAutosaveSnapshot,
+    "attempt",
+  );
+  const confirmed = normalizeCandidate(
+    envelope.confirmed as EditorProjectAutosaveCandidate,
+    "confirmed",
+  );
+  const observed = normalizeCandidate(
+    envelope.observed as EditorProjectAutosaveCandidate,
+    "observed",
+  );
+  const issued = envelope.issued as ReadonlyMap<number, EditorProjectAutosaveCandidate>;
 
-  const projectId = input.attempt.projectId;
-  if (input.confirmed.projectId !== projectId || input.observed.projectId !== projectId) {
-    throw new Error("autosave observation project mismatch");
-  }
+  const projectId = attempt.projectId;
+  assertSameProject(confirmed, projectId);
+  assertSameProject(observed, projectId);
 
-  for (const [issuedRevision, issuedCandidate] of input.issued) {
-    assertCandidate(issuedCandidate, "issued candidate");
-    if (issuedRevision !== issuedCandidate.revision) {
-      throw new Error("issued map key disagrees with candidate revision");
+  const issuedSnapshot = new Map<number, EditorProjectAutosaveCandidate>();
+  for (const [issuedRevision, issuedCandidateValue] of issued) {
+    if (issuedSnapshot.has(issuedRevision)) {
+      throw new Error("duplicate issued revision");
     }
-    if (issuedCandidate.projectId !== projectId) {
-      throw new Error("autosave observation project mismatch");
-    }
+    const issuedCandidate = normalizeCandidate(issuedCandidateValue, "issued candidate");
+    assertIssuedRevision(issuedRevision, issuedCandidate.revision);
+    assertSameProject(issuedCandidate, projectId);
+    issuedSnapshot.set(issuedRevision, issuedCandidate);
   }
 
-  if (sameCandidate(input.observed, input.attempt)) {
-    return { kind: "saved", confirmed: input.observed };
+  if (sameCandidate(observed, attempt)) {
+    return { kind: "saved", confirmed: observed };
   }
-  if (sameCandidate(input.observed, input.confirmed)) {
-    return { kind: "retry", confirmed: input.confirmed };
+  if (sameCandidate(observed, confirmed)) {
+    return { kind: "retry", confirmed };
   }
-  const knownIssued = input.issued.get(input.observed.revision);
-  if (knownIssued && sameCandidate(input.observed, knownIssued)) {
+  const knownIssued = issuedSnapshot.get(observed.revision);
+  if (knownIssued && sameCandidate(observed, knownIssued)) {
     return { kind: "retry", confirmed: knownIssued };
   }
-  return { kind: "conflict", server: input.observed };
+  return { kind: "conflict", server: observed };
 }

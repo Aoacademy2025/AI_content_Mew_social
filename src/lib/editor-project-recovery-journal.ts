@@ -80,9 +80,13 @@ function materializeJsonValue(
 }
 
 export function materializeEditorProjectDraft(value: unknown): EditorProjectDraft | null {
-  if (!isPlainObject(value)) return null;
-  const materialized = materializeJsonValue(value, new Set());
-  return materialized === INVALID_JSON_VALUE ? null : materialized as EditorProjectDraft;
+  try {
+    if (!isPlainObject(value)) return null;
+    const materialized = materializeJsonValue(value, new Set());
+    return materialized === INVALID_JSON_VALUE ? null : materialized as EditorProjectDraft;
+  } catch {
+    return null;
+  }
 }
 
 function isDraftRevision(value: unknown): value is number {
