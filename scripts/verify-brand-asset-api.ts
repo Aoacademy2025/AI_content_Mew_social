@@ -917,6 +917,15 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       "active",
       "a user payload with the reserved marker name is not a canonical terminal fence",
     );
+    assert.equal(
+      await quarantineStore.ensureQuarantineFence(quarantineClerkId),
+      "active",
+      "fence creation reports an existing nonterminal destination without deleting it",
+    );
+    await expectPresent(
+      path.join(exactQuarantinePath, "nested", "private.webp"),
+      "an EEXIST fence race preserves the active quarantined payload",
+    );
     await expectMissing(
       path.join(quarantineRoot, QUARANTINE_DIRECTORY_NAME, quarantineUserId),
       "quarantine never derives its destination from the internal user id",
@@ -1004,6 +1013,28 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       "a stale cross-store rename cannot move a reused live directory",
     );
 
+    const absentFenceClerkId = "clerk-absent-terminal-fence";
+    const absentFenceSteps: string[] = [];
+    const absentFenceStore = createClerkAssetCleanupStore({
+      assetRoot: quarantineRoot,
+      observeDurabilityStep: (step) => absentFenceSteps.push(step),
+    });
+    assert.equal(
+      await absentFenceStore.ensureQuarantineFence(absentFenceClerkId),
+      "cleaned",
+      "an absent destination is atomically occupied and sealed",
+    );
+    const parentSyncedAt = absentFenceSteps.indexOf("quarantine-fence-parent-synced");
+    const markerSyncedAt = absentFenceSteps.indexOf("quarantine-terminal-file-synced");
+    const markerDirectorySyncedAt = absentFenceSteps.indexOf(
+      "quarantine-terminal-directory-synced",
+    );
+    assert.ok(parentSyncedAt >= 0, "the new destination entry is fsynced");
+    assert.ok(
+      parentSyncedAt < markerSyncedAt && markerSyncedAt < markerDirectorySyncedAt,
+      "destination occupancy is durable before its canonical marker becomes terminal",
+    );
+
     const collisionClerkId = "clerk-quarantine-collision";
     const collisionUserId = "quarantine-collision-user";
     await quarantineStore.write(collisionClerkId, collisionUserId, "prepared");
@@ -1018,6 +1049,10 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
         userId: collisionUserId,
       }),
       "a non-directory quarantine collision fails closed",
+    );
+    await assert.rejects(
+      quarantineStore.ensureQuarantineFence(collisionClerkId),
+      "fence creation fails closed on a non-directory destination collision",
     );
     await expectPresent(path.join(collisionSource, "source-sentinel"), "collision preserves the source directory");
 
@@ -1274,6 +1309,13 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         (await portableStore.read("clerk-preparation-traverse-only-parent"))?.userId,
         "preparation-traverse-only-user",
         "preparation succeeds below a pre-existing traverse-only non-writable ancestor",
+      );
+      assert.equal(
+        await portableStore.ensureQuarantineFence(
+          "clerk-preparation-traverse-only-parent",
+        ),
+        "cleaned",
+        "terminal fence creation remains portable below a traverse-only ancestor",
       );
       await access(portableSentinel);
     } finally {
@@ -1725,11 +1767,9 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         assetRoot,
         clerkId,
         store: baseStore,
-        findUserByClerkId: async () => {
-          throw new Error("a quarantined retry without quarantine must not inspect the live row");
-        },
+        findUserByClerkId: async () => null,
         findUserById: async () => {
-          throw new Error("a quarantined retry without quarantine must not inspect the live target");
+          throw new Error("a canonical fence must not inspect a reused internal id");
         },
         deleteUser: async () => {
           throw new Error("a quarantined retry without quarantine must not mutate the database");
@@ -1744,6 +1784,335 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
     }
 
     {
+      const assetRoot = path.join(testBase, "stale-quarantined-same-clerk-fence");
+      const clerkId = "clerk-stale-quarantined-same-clerk-fence";
+      const userId = "cleanup-stale-quarantined-same-clerk-fence-user";
+      const store = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await store.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old.webp"), "old");
+      await store.quarantineUserDirectory({ clerkId, userId });
+      await store.removeQuarantine(clerkId);
+      await store.write(clerkId, userId, "quarantined");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+
+      const liveSameClerkId = makeDependencies({
+        assetRoot,
+        clerkId,
+        store,
+        findUserByClerkId: async () => ({ id: userId, clerkId }),
+        findUserById: async () => {
+          throw new Error("canonical fence must check same Clerk before internal id");
+        },
+        deleteUser: async () => {
+          throw new Error("canonical fence cannot mutate a reappeared Clerk row");
+        },
+      });
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, liveSameClerkId),
+      );
+      assert.equal((await store.read(clerkId))?.phase, "quarantined");
+      await expectCleanedFence(
+        store,
+        clerkId,
+        "same-Clerk terminal collision retains the canonical fence",
+      );
+      await access(liveSentinel);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "stale-prepared-active-same-clerk");
+      const clerkId = "clerk-stale-prepared-active-same-clerk";
+      const userId = "cleanup-stale-prepared-active-same-clerk-user";
+      const store = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await store.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old.webp"), "old");
+      await store.quarantineUserDirectory({ clerkId, userId });
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store,
+        findUserByClerkId: async () => ({ id: userId, clerkId }),
+        findUserById: async () => {
+          throw new Error("active prepared quarantine checks same Clerk first");
+        },
+        deleteUser: async () => {
+          throw new Error("active prepared quarantine cannot delete a reappeared row");
+        },
+      });
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+      );
+      assert.equal((await store.read(clerkId))?.phase, "prepared");
+      assert.equal(await store.quarantineState(clerkId), "active");
+      await access(path.join(clerkQuarantinePath(assetRoot, clerkId), "old.webp"));
+      await access(liveSentinel);
+
+      const recoveryEvents: string[] = [];
+      const recoveryStore = wrapStore(store, {
+        write: async (id, internalId, phase) => {
+          recoveryEvents.push(phase);
+          await store.write(id, internalId, phase);
+        },
+        removeQuarantine: async (id) => {
+          recoveryEvents.push("remove-quarantine");
+          await store.removeQuarantine(id);
+        },
+      });
+      const noLiveTargets = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: recoveryStore,
+        findUserByClerkId: async () => null,
+        findUserById: async () => null,
+        deleteUser: async () => {
+          throw new Error("active prepared recovery cannot repeat database deletion");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, noLiveTargets),
+        false,
+      );
+      assert.deepEqual(
+        recoveryEvents,
+        ["quarantined", "remove-quarantine", "directory-cleaned"],
+        "active prepared recovery persists quarantined before recursive removal",
+      );
+      await access(liveSentinel);
+      await expectCleanedFence(
+        store,
+        clerkId,
+        "active prepared recovery finishes behind its durable fence",
+      );
+      assert.equal(await store.read(clerkId), null);
+    }
+
+    for (const legacyPhase of [
+      "prepared",
+      "quarantined",
+      "directory-cleaned",
+    ] as const) {
+      const assetRoot = path.join(testBase, `legacy-absent-${legacyPhase}-fence`);
+      const clerkId = `clerk-legacy-absent-${legacyPhase}-fence`;
+      const userId = `cleanup-legacy-absent-${legacyPhase}-fence-user`;
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const staleProcessStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await baseStore.write(clerkId, userId, legacyPhase);
+
+      const staleWorkerReady = deferred();
+      const allowStaleWorkerRename = deferred();
+      const stalePreparedWorker = (async () => {
+        staleWorkerReady.resolve();
+        await allowStaleWorkerRename.promise;
+        return staleProcessStore.quarantineUserDirectory({ clerkId, userId });
+      })();
+      await staleWorkerReady.promise;
+
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: baseStore,
+        findUserByClerkId: async () => null,
+        findUserById: async () => null,
+        deleteUser: async () => {
+          throw new Error("legacy terminal repair cannot mutate the database");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+        false,
+        `legacy ${legacyPhase} repair reaches terminal without a live row`,
+      );
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      allowStaleWorkerRename.resolve();
+      assert.equal(
+        await stalePreparedWorker,
+        "already-quarantined",
+        `legacy ${legacyPhase} repair occupies the terminal destination before removing its receipt`,
+      );
+      await access(liveSentinel);
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        `legacy ${legacyPhase} repair leaves a durable canonical fence`,
+      );
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "receipt-disappears-before-finalizer");
+      const clerkId = "clerk-receipt-disappears-before-finalizer";
+      const userId = "cleanup-receipt-disappears-before-finalizer-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const staleProcessStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await baseStore.write(clerkId, userId, "quarantined");
+      let reads = 0;
+      const disappearingReceiptStore = wrapStore(baseStore, {
+        read: async (id) => {
+          reads += 1;
+          if (reads === 2) {
+            await baseStore.remove(id);
+            return null;
+          }
+          return baseStore.read(id);
+        },
+      });
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: disappearingReceiptStore,
+        findUserByClerkId: async () => null,
+        findUserById: async () => null,
+        deleteUser: async () => {
+          throw new Error("a vanished terminal receipt cannot mutate the database");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+        false,
+      );
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      assert.equal(
+        await staleProcessStore.quarantineUserDirectory({ clerkId, userId }),
+        "already-quarantined",
+        "a follower seals from its trusted outer receipt when the receipt vanishes before finalization",
+      );
+      await access(liveSentinel);
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "a vanished receipt still leaves continuous terminal destination occupancy",
+      );
+    }
+
+    {
+      const assetRoot = path.join(testBase, "receipt-disappears-same-clerk");
+      const clerkId = "clerk-receipt-disappears-same-clerk";
+      const userId = "cleanup-receipt-disappears-same-clerk-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await baseStore.write(clerkId, userId, "quarantined");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      let reads = 0;
+      const disappearingReceiptStore = wrapStore(baseStore, {
+        read: async (id) => {
+          reads += 1;
+          if (reads === 2) {
+            await baseStore.remove(id);
+            return null;
+          }
+          return baseStore.read(id);
+        },
+      });
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: disappearingReceiptStore,
+        findUserByClerkId: async () => ({ id: userId, clerkId }),
+        findUserById: async () => {
+          throw new Error("vanished receipt same-Clerk check happens before internal id");
+        },
+        deleteUser: async () => {
+          throw new Error("vanished receipt same-Clerk collision cannot mutate the row");
+        },
+      });
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+      );
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "a vanished receipt is fenced before same-Clerk manual resolution",
+      );
+      await access(liveSentinel);
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "legacy-absent-quarantine-rename-wins");
+      const clerkId = "clerk-legacy-absent-quarantine-rename-wins";
+      const userId = "cleanup-legacy-absent-quarantine-rename-wins-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const staleProcessStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await baseStore.write(clerkId, userId, "quarantined");
+
+      const absentStateObserved = deferred();
+      const allowFenceAttempt = deferred();
+      let pauseAbsentState = true;
+      const pausedStore = wrapStore(baseStore, {
+        quarantineState: async (id) => {
+          const state = await baseStore.quarantineState(id);
+          if (pauseAbsentState && state === "absent") {
+            pauseAbsentState = false;
+            absentStateObserved.resolve();
+            await allowFenceAttempt.promise;
+          }
+          return state;
+        },
+      });
+      let liveInternalTarget: Target | null = null;
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: pausedStore,
+        findUserByClerkId: async () => null,
+        findUserById: async () => liveInternalTarget,
+        deleteUser: async () => {
+          throw new Error("rename-winner recovery cannot mutate the database");
+        },
+      });
+      const cleanup = deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies);
+      await absentStateObserved.promise;
+      liveInternalTarget = { id: userId, clerkId: "clerk-reused-different-owner" };
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      assert.equal(
+        await staleProcessStore.quarantineUserDirectory({ clerkId, userId }),
+        "moved",
+        "the simulated cross-process stale rename wins before fence creation",
+      );
+      const retryAssertion = captureRetry(clerkId, "live-target", () => cleanup);
+      allowFenceAttempt.resolve();
+      await retryAssertion;
+      assert.equal(
+        (await baseStore.read(clerkId))?.phase,
+        "quarantined",
+        "a stale-rename winner retains the durable receipt for manual resolution",
+      );
+      assert.equal(
+        await baseStore.quarantineState(clerkId),
+        "active",
+        "a stale-rename winner's live payload is retained instead of deleted",
+      );
+      await access(path.join(clerkQuarantinePath(assetRoot, clerkId), "live.webp"));
+    }
+
+    {
       const assetRoot = path.join(testBase, "receipt-remove-retry");
       const clerkId = "clerk-receipt-remove-retry";
       const userId = "cleanup-receipt-remove-retry-user";
@@ -1753,8 +2122,10 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
       await baseStore.write(clerkId, userId, "directory-cleaned");
 
       let removeAttempts = 0;
-      let liveTarget: Target | null = null;
-      let lookupCalls = 0;
+      let sameClerkTarget: Target | null = null;
+      let liveInternalTarget: Target | null = null;
+      let clerkLookupCalls = 0;
+      let internalLookupCalls = 0;
       const failingStore = wrapStore(baseStore, {
         write: async () => {
           throw new Error("directory-cleaned must not rewrite its receipt");
@@ -1765,12 +2136,6 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         quarantineExists: async () => {
           throw new Error("directory-cleaned must not inspect quarantine");
         },
-        quarantineState: async () => {
-          throw new Error("directory-cleaned must not inspect quarantine state");
-        },
-        removeQuarantine: async () => {
-          throw new Error("directory-cleaned must not remove quarantine");
-        },
         remove: async (id) => {
           removeAttempts += 1;
           if (removeAttempts === 1) throw new Error("injected receipt unlink failure");
@@ -1778,12 +2143,12 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         },
       });
       const findUserByClerkId = async () => {
-        lookupCalls += 1;
-        return null;
+        clerkLookupCalls += 1;
+        return sameClerkTarget;
       };
       const findUserById = async () => {
-        lookupCalls += 1;
-        return liveTarget;
+        internalLookupCalls += 1;
+        return liveInternalTarget;
       };
       const firstDependencies = makeDependencies({
         assetRoot,
@@ -1797,17 +2162,49 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         "receipt-remove",
         () => deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
       );
-      assert.equal(lookupCalls, 0, "directory-cleaned skips every database lookup");
+      assert.equal(clerkLookupCalls, 1, "directory-cleaned checks same-Clerk reuse");
+      assert.equal(
+        internalLookupCalls,
+        1,
+        "an absent fence gets one post-creation internal-id race check",
+      );
       assert.equal((await baseStore.read(clerkId))?.phase, "directory-cleaned");
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "directory-cleaned repair establishes its fence before receipt removal",
+      );
 
-      liveTarget = { id: userId, clerkId: "clerk-reused-after-cleanup" };
+      sameClerkTarget = { id: userId, clerkId };
+      liveInternalTarget = { id: userId, clerkId: "clerk-reused-after-cleanup" };
       await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
       await writeFile(liveSentinel, "live");
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
+      );
+      assert.equal(clerkLookupCalls, 2);
+      assert.equal(
+        internalLookupCalls,
+        1,
+        "same-Clerk failure happens before any reused internal-id lookup",
+      );
+      assert.equal(removeAttempts, 1, "same-Clerk failure retains the receipt");
+      assert.equal((await baseStore.read(clerkId))?.phase, "directory-cleaned");
+      await access(liveSentinel);
+
+      sameClerkTarget = null;
       assert.equal(
         await deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
         false,
       );
-      assert.equal(lookupCalls, 0, "receipt removal retry still skips live-target inspection");
+      assert.equal(clerkLookupCalls, 3);
+      assert.equal(
+        internalLookupCalls,
+        1,
+        "a canonical fence does not inspect a safely reused internal id",
+      );
       await access(liveSentinel);
       assert.equal(await baseStore.read(clerkId), null);
     }
@@ -1912,7 +2309,6 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
 
       await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
       await writeFile(liveSentinel, "live");
-      await staleStore.write(clerkId, userId, "quarantined");
       let terminalFenceRefreshes = 0;
       const staleFenceStore = wrapStore(staleStore, {
         removeQuarantine: async (id) => {
@@ -1920,13 +2316,49 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
           await staleStore.removeQuarantine(id);
         },
       });
+      for (const stalePhase of [
+        "prepared",
+        "quarantined",
+        "directory-cleaned",
+      ] as const) {
+        await staleStore.write(clerkId, userId, stalePhase);
+        const liveSameClerkId = makeDependencies({
+          assetRoot,
+          clerkId,
+          store: staleFenceStore,
+          findUserByClerkId: async () => ({ id: userId, clerkId }),
+          findUserById: async () => {
+            throw new Error("terminal same-Clerk collision fails before internal-id lookup");
+          },
+          deleteUser: async () => {
+            throw new Error("terminal same-Clerk collision cannot mutate the database");
+          },
+        });
+        await captureRetry(
+          clerkId,
+          "live-target",
+          () => deleteClerkUserAndBrandAssetDirectory(clerkId, liveSameClerkId),
+        );
+        assert.equal(
+          (await staleStore.read(clerkId))?.phase,
+          stalePhase,
+          `a stale ${stalePhase} receipt is retained for manual same-Clerk resolution`,
+        );
+        await expectCleanedFence(
+          staleStore,
+          clerkId,
+          `a stale ${stalePhase} receipt cannot remove its canonical fence`,
+        );
+        await access(liveSentinel);
+        await staleStore.remove(clerkId);
+      }
+
+      await staleStore.write(clerkId, userId, "quarantined");
       const noDatabaseAfterFence = makeDependencies({
         assetRoot,
         clerkId,
         store: staleFenceStore,
-        findUserByClerkId: async () => {
-          throw new Error("terminal fence must dominate stale Clerk lookup");
-        },
+        findUserByClerkId: async () => null,
         findUserById: async () => {
           throw new Error("terminal fence must dominate stale live-target lookup");
         },

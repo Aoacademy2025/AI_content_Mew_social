@@ -248,10 +248,14 @@ to quarantine. Persist `quarantined` before recursive removal. Recheck the datab
 after rename; any live target retains quarantine+receipt and returns retryable failure.
 
 With `quarantined`, an existing quarantine may be removed only while the target remains
-absent. If quarantine is already absent after a retry/crash, persist
-`directory-cleaned` without touching the original path. Once `directory-cleaned`,
-never inspect, rename, or remove `<root>/<userId>` again; only remove the receipt. This
-allows a safely reused id to own the original directory after old cleanup completed.
+absent. If quarantine is already absent after a retry/crash, atomically create and
+fsync the receipt-hash destination and its canonical marker before persisting
+`directory-cleaned` or removing the receipt. If a stale rename wins `mkdir`'s race,
+the primitive returns active without deleting payload; post-rename database checks run
+before cleanup. Apply the same repair to legacy `prepared` and `directory-cleaned`
+receipts and to a receipt that disappears between the outer read and finalizer lock.
+Once `directory-cleaned`, never inspect, rename, or remove `<root>/<userId>` itself.
+This allows a safely reused id to own the original directory after old cleanup completed.
 
 Payload cleanup retains the receipt-hash quarantine directory as a durable private
 terminal fence containing exactly one fsynced canonical hash-only marker; a user payload
@@ -259,8 +263,10 @@ with the reserved filename but different contents is not terminal state. The des
 path is never freed, so a stale prepared worker's atomic rename collides instead of
 moving a reused live directory. The fence outranks stale receipt phases and is
 re-fsynced before stale-phase repair removes the receipt. A receipt-absent duplicate
-with no live Clerk row is terminal. If the same Clerk id has a live row, fail closed
-for manual resolution; deleted Clerk ids are not assumed to be non-reusable.
+with no live Clerk row is terminal. Every terminal/fence path, including stale
+`prepared`, `quarantined`, and `directory-cleaned` receipts, checks for a live row with
+the same Clerk id before repair or receipt removal. If one exists, fail closed for
+manual resolution; deleted Clerk ids are not assumed to be non-reusable.
 
 At every failure, log exactly:
 

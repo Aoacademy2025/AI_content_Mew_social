@@ -51,6 +51,7 @@ export type ClerkAssetCleanupStore = {
   }): Promise<"moved" | "already-quarantined" | "absent">;
   quarantineState(clerkId: string): Promise<"absent" | "active" | "cleaned">;
   quarantineExists(clerkId: string): Promise<boolean>;
+  ensureQuarantineFence(clerkId: string): Promise<"active" | "cleaned">;
   removeQuarantine(clerkId: string): Promise<void>;
 };
 
@@ -657,6 +658,34 @@ export function createClerkAssetCleanupStore(
     return await quarantineState(clerkId) !== "absent";
   }
 
+  async function ensureQuarantineFence(
+    clerkId: string,
+  ): Promise<"active" | "cleaned"> {
+    const receiptId = identifier(clerkId);
+    await ensureTrustedRoot();
+    await ensureTrustedReservedDirectory(
+      quarantineDirectory,
+      "quarantine-directory-created",
+      "asset-root-synced",
+    );
+    const target = quarantinePath(receiptId);
+    try {
+      await mkdir(target, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      assertTrustedQuarantineTarget(await lstat(target));
+      return await hasCanonicalQuarantineTerminalMarker(receiptId)
+        ? "cleaned"
+        : "active";
+    }
+
+    await syncDirectory(quarantineDirectory, "quarantine-fence-parent-synced");
+    await removeQuarantine(clerkId);
+    const state = await quarantineState(clerkId);
+    if (state !== "cleaned") throw invalidTrustBoundary();
+    return state;
+  }
+
   async function removeQuarantine(clerkId: string): Promise<void> {
     const receiptId = identifier(clerkId);
     const directory = await trustedReservedDirectoryOrNull(quarantineDirectory);
@@ -724,6 +753,7 @@ export function createClerkAssetCleanupStore(
     quarantineUserDirectory,
     quarantineState,
     quarantineExists,
+    ensureQuarantineFence,
     removeQuarantine,
   };
 }

@@ -302,10 +302,19 @@ Payload cleanup does not free the receipt-specific quarantine destination. It le
 one empty `0700` hash directory with one fsynced `0600` canonical hash-only terminal
 marker, so a stale cross-process rename still collides atomically. A user payload with
 the reserved filename but noncanonical contents remains payload. The marker is the
-highest monotonic state and dominates stale `prepared`/`quarantined` receipts. With the
-receipt absent, a no-live-row duplicate is terminal; a live row for the same Clerk id
-fails closed and requires manual fence resolution rather than assuming deleted Clerk
-ids are never reused. Accumulation is bounded to one tiny fence per hashed Clerk id.
+highest monotonic state and dominates stale receipt phases. A legacy receipt with an
+absent quarantine cannot advance terminally until it atomically creates and fsyncs the
+receipt-hash destination and canonical marker. `EEXIST` is inspected, never cleaned by
+the creation primitive: an active destination means a stale rename may have won and
+requires the post-rename database checks before payload removal. This applies to stale
+`prepared`, `quarantined`, and `directory-cleaned` receipts and to a receipt disappearing
+between an outer read and the finalizer lock, ensuring continuous destination occupancy
+before terminal state or receipt removal.
+
+Every terminal/fence path checks for a live row with the same Clerk id. With the receipt
+absent, a no-live-row duplicate is terminal; a live same-Clerk row fails closed and
+requires manual fence resolution rather than assuming deleted Clerk ids are never
+reused. Accumulation is bounded to one tiny fence per hashed Clerk id.
 
 Late uploads after the original cascade retain the existing contract: their database
 insert fails and their own catch path removes temporary/final files. An empty recreated

@@ -127,6 +127,16 @@ export async function deleteClerkUserAndBrandAssetDirectory(
     () => dependencies.store.read(clerkId),
   );
   let deleted = false;
+  const requireNoLiveClerkTarget = async (): Promise<void> => {
+    const liveClerkTarget = await runClerkAssetCleanupStep(
+      receiptId,
+      "db-delete",
+      () => dependencies.findUserByClerkId(clerkId),
+    );
+    if (liveClerkTarget) {
+      return requireClerkAssetCleanupRetry(receiptId, "live-target");
+    }
+  };
 
   if (!receipt) {
     const terminalState = await runClerkAssetCleanupStep(
@@ -135,17 +145,11 @@ export async function deleteClerkUserAndBrandAssetDirectory(
       () => dependencies.store.quarantineState(clerkId),
     );
     if (terminalState === "cleaned") {
-      const reusedClerkTarget = await runClerkAssetCleanupStep(
-        receiptId,
-        "db-delete",
-        () => dependencies.findUserByClerkId(clerkId),
-      );
-      if (reusedClerkTarget) {
-        return requireClerkAssetCleanupRetry(receiptId, "live-target");
-      }
+      await requireNoLiveClerkTarget();
       return false;
     }
     if (terminalState === "active") {
+      await requireNoLiveClerkTarget();
       return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
     }
     const currentUser = await runClerkAssetCleanupStep(
@@ -179,11 +183,33 @@ export async function deleteClerkUserAndBrandAssetDirectory(
       () => dependencies.store.read(clerkId),
     );
     if (!latestReceipt) {
-      const latestQuarantineState = await runClerkAssetCleanupStep(
+      if (!receipt || !isSafeBrandAssetUserId(receipt.userId)) {
+        return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
+      }
+      let latestQuarantineState = await runClerkAssetCleanupStep(
         receiptId,
         "quarantine-remove",
         () => dependencies.store.quarantineState(clerkId),
       );
+      const observedAbsent = latestQuarantineState === "absent";
+      if (observedAbsent) {
+        latestQuarantineState = await runClerkAssetCleanupStep(
+          receiptId,
+          "quarantine",
+          () => dependencies.store.ensureQuarantineFence(clerkId),
+        );
+      }
+      await requireNoLiveClerkTarget();
+      if (observedAbsent || latestQuarantineState === "active") {
+        const liveInternalTarget = await runClerkAssetCleanupStep(
+          receiptId,
+          "db-delete",
+          () => dependencies.findUserById(receipt.userId),
+        );
+        if (liveInternalTarget) {
+          return requireClerkAssetCleanupRetry(receiptId, "live-target");
+        }
+      }
       if (latestQuarantineState === "active") {
         return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
       }
@@ -195,37 +221,78 @@ export async function deleteClerkUserAndBrandAssetDirectory(
       return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
     }
 
-    if (latestReceipt.phase === "directory-cleaned") {
+    const finishTerminalReceipt = async (
+      initialQuarantineState: "absent" | "active" | "cleaned",
+    ): Promise<boolean> => {
+      let terminalState = initialQuarantineState;
+      const observedAbsent = terminalState === "absent";
+      if (observedAbsent) {
+        terminalState = await runClerkAssetCleanupStep(
+          receiptId,
+          "quarantine",
+          () => dependencies.store.ensureQuarantineFence(clerkId),
+        );
+      }
+
+      await requireNoLiveClerkTarget();
+      if (observedAbsent || terminalState === "active") {
+        const liveInternalTarget = await runClerkAssetCleanupStep(
+          receiptId,
+          "db-delete",
+          () => dependencies.findUserById(userId),
+        );
+        if (liveInternalTarget) {
+          return requireClerkAssetCleanupRetry(receiptId, "live-target");
+        }
+      }
+
+      if (latestReceipt.phase === "prepared" && terminalState === "active") {
+        await runClerkAssetCleanupStep(
+          receiptId,
+          "receipt-update",
+          () => dependencies.store.write(clerkId, userId, "quarantined"),
+        );
+      }
+      await runClerkAssetCleanupStep(
+        receiptId,
+        "quarantine-remove",
+        () => dependencies.store.removeQuarantine(clerkId),
+      );
+      terminalState = await runClerkAssetCleanupStep(
+        receiptId,
+        "quarantine-remove",
+        () => dependencies.store.quarantineState(clerkId),
+      );
+      if (terminalState !== "cleaned") {
+        return requireClerkAssetCleanupRetry(receiptId, "quarantine-remove");
+      }
+
+      if (latestReceipt.phase !== "directory-cleaned") {
+        await runClerkAssetCleanupStep(
+          receiptId,
+          "receipt-update",
+          () => dependencies.store.write(clerkId, userId, "directory-cleaned"),
+        );
+      }
       await runClerkAssetCleanupStep(
         receiptId,
         "receipt-remove",
         () => dependencies.store.remove(clerkId),
       );
       return deleted;
-    }
+    };
 
     let quarantineState = await runClerkAssetCleanupStep(
       receiptId,
       "quarantine-remove",
       () => dependencies.store.quarantineState(clerkId),
     );
-    if (quarantineState === "cleaned") {
-      await runClerkAssetCleanupStep(
-        receiptId,
-        "quarantine-remove",
-        () => dependencies.store.removeQuarantine(clerkId),
-      );
-      await runClerkAssetCleanupStep(
-        receiptId,
-        "receipt-update",
-        () => dependencies.store.write(clerkId, userId, "directory-cleaned"),
-      );
-      await runClerkAssetCleanupStep(
-        receiptId,
-        "receipt-remove",
-        () => dependencies.store.remove(clerkId),
-      );
-      return deleted;
+    if (
+      latestReceipt.phase === "directory-cleaned"
+      || quarantineState === "cleaned"
+      || (latestReceipt.phase === "prepared" && quarantineState === "active")
+    ) {
+      return finishTerminalReceipt(quarantineState);
     }
 
     if (latestReceipt.phase === "prepared") {
@@ -283,22 +350,7 @@ export async function deleteClerkUserAndBrandAssetDirectory(
         () => dependencies.store.quarantineState(clerkId),
       );
       if (quarantineState === "cleaned") {
-        await runClerkAssetCleanupStep(
-          receiptId,
-          "quarantine-remove",
-          () => dependencies.store.removeQuarantine(clerkId),
-        );
-        await runClerkAssetCleanupStep(
-          receiptId,
-          "receipt-update",
-          () => dependencies.store.write(clerkId, userId, "directory-cleaned"),
-        );
-        await runClerkAssetCleanupStep(
-          receiptId,
-          "receipt-remove",
-          () => dependencies.store.remove(clerkId),
-        );
-        return deleted;
+        return finishTerminalReceipt(quarantineState);
       }
 
       await runClerkAssetCleanupStep(
@@ -313,41 +365,7 @@ export async function deleteClerkUserAndBrandAssetDirectory(
       "quarantine-remove",
       () => dependencies.store.quarantineState(clerkId),
     );
-    if (quarantineState === "active") {
-      const liveTarget = await runClerkAssetCleanupStep(
-        receiptId,
-        "db-delete",
-        () => dependencies.findUserById(userId),
-      );
-      if (liveTarget) {
-        return requireClerkAssetCleanupRetry(receiptId, "live-target");
-      }
-      await runClerkAssetCleanupStep(
-        receiptId,
-        "quarantine-remove",
-        () => dependencies.store.removeQuarantine(clerkId),
-      );
-      quarantineState = await runClerkAssetCleanupStep(
-        receiptId,
-        "quarantine-remove",
-        () => dependencies.store.quarantineState(clerkId),
-      );
-      if (quarantineState !== "cleaned") {
-        return requireClerkAssetCleanupRetry(receiptId, "quarantine-remove");
-      }
-    }
-
-    await runClerkAssetCleanupStep(
-      receiptId,
-      "receipt-update",
-      () => dependencies.store.write(clerkId, userId, "directory-cleaned"),
-    );
-    await runClerkAssetCleanupStep(
-      receiptId,
-      "receipt-remove",
-      () => dependencies.store.remove(clerkId),
-    );
-    return deleted;
+    return finishTerminalReceipt(quarantineState);
   });
 }
 
