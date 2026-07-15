@@ -35,6 +35,7 @@ export function createEditorRecoveryFocusLifecycle(input: {
   getFallback: () => EditorRecoveryFocusTarget | null;
   scheduleMacrotask?: ScheduleMacrotask;
 }): {
+  setup(): void;
   open(): void;
   close(): void;
   dispose(): void;
@@ -45,6 +46,7 @@ export function createEditorRecoveryFocusLifecycle(input: {
   });
   let previouslyFocused: EditorRecoveryFocusTarget | null = null;
   let cancelScheduledRestore: (() => void) | null = null;
+  let cancelScheduledDispose: (() => void) | null = null;
 
   const cancelRestore = (): void => {
     try {
@@ -55,8 +57,21 @@ export function createEditorRecoveryFocusLifecycle(input: {
     cancelScheduledRestore = null;
   };
 
+  const cancelDispose = (): void => {
+    try {
+      cancelScheduledDispose?.();
+    } catch {
+      // Deferred disposal only releases an element reference.
+    }
+    cancelScheduledDispose = null;
+  };
+
   return {
+    setup() {
+      cancelDispose();
+    },
     open() {
+      cancelDispose();
       cancelRestore();
       const heading = input.getHeading();
       const activeElement = input.getActiveElement();
@@ -64,6 +79,7 @@ export function createEditorRecoveryFocusLifecycle(input: {
       focusWithoutScroll(heading);
     },
     close() {
+      cancelDispose();
       cancelRestore();
       const preferredTarget = previouslyFocused;
       try {
@@ -86,7 +102,15 @@ export function createEditorRecoveryFocusLifecycle(input: {
     },
     dispose() {
       cancelRestore();
-      previouslyFocused = null;
+      cancelDispose();
+      try {
+        cancelScheduledDispose = scheduleMacrotask(() => {
+          cancelScheduledDispose = null;
+          previouslyFocused = null;
+        });
+      } catch {
+        previouslyFocused = null;
+      }
     },
   };
 }

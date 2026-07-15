@@ -1,29 +1,41 @@
 const HISTORY_STATE_KEY = "__heroEditorConflict";
-const HISTORY_STATE_TOKEN = "hero-editor-conflict-v1";
+const HISTORY_STATE_TOKEN = "hero-editor-conflict-v2";
 
-function isBlockingDialogState(value: unknown): boolean {
-  return !!value
-    && typeof value === "object"
-    && (value as Record<string, unknown>)[HISTORY_STATE_KEY] === HISTORY_STATE_TOKEN;
+let historyOwnerSequence = 0;
+
+type BlockingHistoryMarker = {
+  token: typeof HISTORY_STATE_TOKEN;
+  owner: string;
+  kind: "object" | "value";
+  hadPreviousTag?: boolean;
+  previousTag?: unknown;
+  originalState?: unknown;
+};
+
+function blockingHistoryMarker(value: unknown): BlockingHistoryMarker | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const marker = (value as Record<string, unknown>)[HISTORY_STATE_KEY];
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+  const candidate = marker as Partial<BlockingHistoryMarker>;
+  if (
+    candidate.token !== HISTORY_STATE_TOKEN
+    || typeof candidate.owner !== "string"
+    || (candidate.kind !== "object" && candidate.kind !== "value")
+  ) return null;
+  return candidate as BlockingHistoryMarker;
 }
 
 export function createBlockingDialogHistory(input: {
-  history: Pick<History, "state" | "pushState" | "back">;
+  history: Pick<History, "state" | "pushState" | "replaceState" | "back">;
   addPopStateListener: (listener: () => void) => () => void;
-  scheduleMacrotask?: (callback: () => void) => () => void;
 }): {
   activate(): () => void;
 } {
+  let owner = `${HISTORY_STATE_TOKEN}:${++historyOwnerSequence}`;
   let activeOwners = 0;
   let active = false;
   let removePopStateListener: (() => void) | null = null;
   let removeStrandedTagListener: (() => void) | null = null;
-  let cancelScheduledTraversal: (() => void) | null = null;
-
-  const scheduleMacrotask = input.scheduleMacrotask ?? ((callback: () => void) => {
-    const timer = setTimeout(callback, 0);
-    return () => clearTimeout(timer);
-  });
 
   const readState = (): unknown => {
     try {
@@ -33,18 +45,65 @@ export function createBlockingDialogHistory(input: {
     }
   };
 
+  const isOwnedState = (value: unknown): boolean => blockingHistoryMarker(value)?.owner === owner;
+
+  const taggedState = (currentState: unknown): Record<string, unknown> => {
+    if (currentState && typeof currentState === "object" && !Array.isArray(currentState)) {
+      const currentObject = currentState as Record<string, unknown>;
+      const hadPreviousTag = Object.prototype.hasOwnProperty.call(currentObject, HISTORY_STATE_KEY);
+      return {
+        ...currentObject,
+        [HISTORY_STATE_KEY]: {
+          token: HISTORY_STATE_TOKEN,
+          owner,
+          kind: "object",
+          hadPreviousTag,
+          previousTag: hadPreviousTag ? currentObject[HISTORY_STATE_KEY] : undefined,
+        } satisfies BlockingHistoryMarker,
+      };
+    }
+    return {
+      [HISTORY_STATE_KEY]: {
+        token: HISTORY_STATE_TOKEN,
+        owner,
+        kind: "value",
+        originalState: currentState,
+      } satisfies BlockingHistoryMarker,
+    };
+  };
+
   const pushBlockingEntry = (): void => {
     const currentState = readState();
-    if (isBlockingDialogState(currentState)) return;
+    const currentMarker = blockingHistoryMarker(currentState);
+    if (currentMarker) {
+      owner = currentMarker.owner;
+      return;
+    }
     try {
-      const nextState = currentState
-        && typeof currentState === "object"
-        && !Array.isArray(currentState)
-        ? { ...currentState, [HISTORY_STATE_KEY]: HISTORY_STATE_TOKEN }
-        : { [HISTORY_STATE_KEY]: HISTORY_STATE_TOKEN };
-      input.history.pushState(nextState, "");
+      input.history.pushState(taggedState(currentState), "");
     } catch {
       // Some embedded browsers restrict History. The dialog remains controlled/open.
+    }
+  };
+
+  const restoreOwnedState = (currentState: unknown): unknown => {
+    const marker = blockingHistoryMarker(currentState);
+    if (!marker || marker.owner !== owner) return currentState;
+    if (marker.kind === "value") return marker.originalState;
+    const restored = { ...(currentState as Record<string, unknown>) };
+    if (marker.hadPreviousTag) restored[HISTORY_STATE_KEY] = marker.previousTag;
+    else delete restored[HISTORY_STATE_KEY];
+    return restored;
+  };
+
+  const replaceOwnedTagInPlace = (): boolean => {
+    const currentState = readState();
+    if (!isOwnedState(currentState)) return false;
+    try {
+      input.history.replaceState(restoreOwnedState(currentState), "");
+      return true;
+    } catch {
+      return false;
     }
   };
 
@@ -56,40 +115,17 @@ export function createBlockingDialogHistory(input: {
     try {
       removeStrandedTagListener?.();
     } catch {
-      // A stale listener is safer than changing the current navigation entry.
+      // Listener cleanup is best-effort and never changes navigation state.
     }
     removeStrandedTagListener = null;
-  };
-
-  const scheduleOwnedTagConsumption = (): void => {
-    try {
-      cancelScheduledTraversal?.();
-    } catch {
-      // A cancelled cleanup will still re-check ownership before traversing.
-    }
-    cancelScheduledTraversal = null;
-    try {
-      cancelScheduledTraversal = scheduleMacrotask(() => {
-        cancelScheduledTraversal = null;
-        if (active || activeOwners > 0 || !isBlockingDialogState(readState())) return;
-        try {
-          input.history.back();
-        } catch {
-          // Resolution must continue even when a browser refuses history traversal.
-        }
-      });
-    } catch {
-      // Scheduling failure cannot resolve or dismiss the conflict surface.
-    }
   };
 
   const watchForStrandedTag = (): void => {
     if (removeStrandedTagListener) return;
     try {
       removeStrandedTagListener = input.addPopStateListener(() => {
-        const landedOnOwnedTag = isBlockingDialogState(readState());
-        removeStrandedListener();
-        if (landedOnOwnedTag) scheduleOwnedTagConsumption();
+        if (!isOwnedState(readState())) return;
+        if (replaceOwnedTagInPlace()) removeStrandedListener();
       });
     } catch {
       removeStrandedTagListener = null;
@@ -102,12 +138,6 @@ export function createBlockingDialogHistory(input: {
       if (activeOwners === 1) {
         active = true;
         removeStrandedListener();
-        try {
-          cancelScheduledTraversal?.();
-        } catch {
-          // The scheduled callback still verifies that this blocker is inactive.
-        }
-        cancelScheduledTraversal = null;
         try {
           removePopStateListener = input.addPopStateListener(handlePopState);
         } catch {
@@ -131,8 +161,7 @@ export function createBlockingDialogHistory(input: {
         }
         removePopStateListener = null;
 
-        if (isBlockingDialogState(readState())) scheduleOwnedTagConsumption();
-        else watchForStrandedTag();
+        if (!replaceOwnedTagInPlace()) watchForStrandedTag();
       };
     },
   };

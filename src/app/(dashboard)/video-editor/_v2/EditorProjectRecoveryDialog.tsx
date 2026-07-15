@@ -53,7 +53,11 @@ export function EditorProjectRecoveryDialog(props: {
     }).activate();
   }, [blocking]);
 
-  useEffect(() => () => focusLifecycleRef.current?.dispose(), []);
+  useEffect(() => {
+    const lifecycle = focusLifecycle();
+    lifecycle.setup();
+    return () => lifecycle.dispose();
+  }, []);
 
   const focusLifecycle = () => {
     if (!focusLifecycleRef.current) {

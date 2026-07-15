@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { build } from "esbuild";
 import puppeteer, { type Browser } from "puppeteer";
 import ts from "typescript";
@@ -15,9 +17,8 @@ const alertDialogWrapperPath = "src/components/ui/alert-dialog.tsx";
 
 type JsxNode = ts.JsxElement | ts.JsxSelfClosingElement;
 type HistoryInput = {
-  history: Pick<History, "state" | "pushState" | "back">;
+  history: Pick<History, "state" | "pushState" | "replaceState" | "back">;
   addPopStateListener: (listener: () => void) => () => void;
-  scheduleMacrotask?: (callback: () => void) => () => void;
 };
 type HistoryFactory = (input: HistoryInput) => { activate(): () => void };
 type FocusTarget = {
@@ -33,6 +34,7 @@ type FocusFactory = (input: {
   getFallback: () => FocusTarget | null;
   scheduleMacrotask?: (callback: () => void) => () => void;
 }) => {
+  setup(): void;
   open(): void;
   close(): void;
   dispose(): void;
@@ -179,6 +181,8 @@ function verifyDialog(source: string): void {
   assert.match(closeFocus, /focusLifecycle\(\)\.close\(\)/,
     "close waits for the inert boundary to clear before restoring editor focus");
   assert.match(source, /createEditorRecoveryFocusLifecycle/, "the component uses the tested focus lifecycle");
+  assert.match(source, /const lifecycle = focusLifecycle\(\);[\s\S]{0,100}lifecycle\.setup\(\)/,
+    "the mounted effect cancels StrictMode's deferred synthetic disposal");
   assert.match(source, /document\.activeElement\s*!==\s*document\.body/,
     "initial page body focus is treated as absent so the stable editor fallback can win");
 
@@ -380,8 +384,114 @@ async function verifyMountedAlertDialogContract(): Promise<void> {
       assert.AssertionError,
       "a controlled mutation to the dismissible Dialog primitive is rejected",
     );
+    await verifyActualHistoryHelperInChromium(browser);
   } finally {
     await browser.close();
+  }
+}
+
+async function verifyActualHistoryHelperInChromium(browser: Browser): Promise<void> {
+  const fixture = `
+    import { createBlockingDialogHistory } from "./src/lib/editor-project-conflict-history";
+
+    const wait = (milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+    const listenerAdapter = (listener) => {
+      window.addEventListener("popstate", listener);
+      return () => window.removeEventListener("popstate", listener);
+    };
+
+    window.runHistoryScenario = async (kind) => {
+      history.replaceState({ page: "PREV" }, "", "/prev");
+      history.pushState({ page: "EDITOR" }, "", "/editor");
+      let popstateCount = 0;
+      const countPopstate = () => { popstateCount += 1; };
+      window.addEventListener("popstate", countPopstate);
+      if (kind === "pending-back") {
+        const cleanup = createBlockingDialogHistory({
+          history,
+          addPopStateListener: listenerAdapter,
+        }).activate();
+        history.back();
+        cleanup();
+        await wait(180);
+      } else {
+        for (let index = 0; index < 2; index += 1) {
+          const cleanup = createBlockingDialogHistory({
+            history,
+            addPopStateListener: listenerAdapter,
+          }).activate();
+          cleanup();
+        }
+        await wait(40);
+      }
+      window.removeEventListener("popstate", countPopstate);
+      return {
+        pathname: location.pathname,
+        page: history.state?.page ?? null,
+        tagged: Object.prototype.hasOwnProperty.call(history.state ?? {}, "__heroEditorConflict"),
+        popstateCount,
+      };
+    };
+  `;
+  const bundled = await build({
+    stdin: {
+      contents: fixture,
+      loader: "js",
+      resolveDir: process.cwd(),
+      sourcefile: "actual-history-helper-fixture.js",
+    },
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    write: false,
+    logLevel: "silent",
+  });
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><html><body>history fixture</body></html>");
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => resolveListen());
+  });
+  const address = server.address() as AddressInfo;
+  const origin = `http://127.0.0.1:${address.port}`;
+  try {
+    const pendingPage = await browser.newPage();
+    try {
+      await pendingPage.goto(`${origin}/fixture`);
+      await pendingPage.addScriptTag({ content: bundled.outputFiles[0].text });
+      const result = await pendingPage.evaluate(() => (
+        window as unknown as { runHistoryScenario(kind: string): Promise<Record<string, unknown>> }
+      ).runHistoryScenario("pending-back"));
+      assert.deepEqual(result, {
+        pathname: "/editor",
+        page: "EDITOR",
+        tagged: false,
+        popstateCount: 1,
+      }, "actual helper never turns pending Back plus cleanup into an escape to PREV");
+    } finally {
+      await pendingPage.close();
+    }
+
+    const strictPage = await browser.newPage();
+    try {
+      await strictPage.goto(`${origin}/fixture`);
+      await strictPage.addScriptTag({ content: bundled.outputFiles[0].text });
+      const result = await strictPage.evaluate(() => (
+        window as unknown as { runHistoryScenario(kind: string): Promise<Record<string, unknown>> }
+      ).runHistoryScenario("rapid-factory"));
+      assert.deepEqual(result, {
+        pathname: "/editor",
+        page: "EDITOR",
+        tagged: false,
+        popstateCount: 0,
+      }, "fresh-factory StrictMode cleanup stays on EDITOR without synthetic traversal");
+    } finally {
+      await strictPage.close();
+    }
+  } finally {
+    await new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
   }
 }
 
@@ -390,6 +500,10 @@ function verifyHistorySource(source: string): void {
   assert.match(source, /__heroEditorConflict/, "history entries use the dedicated module tag");
   assert.match(source, /pushState\([\s\S]*?,\s*["']["']\s*\)/,
     "the blocker pushes a same-URL entry without a URL argument");
+  assert.match(source, /replaceState\([\s\S]*?,\s*["']["']\s*\)/,
+    "cleanup removes its owned token in place without traversing history");
+  assert.doesNotMatch(source, /scheduleMacrotask|setTimeout|input\.history\.back\(/,
+    "normal cleanup has no timing guess or synthetic Back traversal");
   assert.doesNotMatch(source, /location\.(?:assign|replace)\(|window\.location|\.close\(|\.dismiss\(/,
     "history containment never navigates or closes the conflict");
   assert.ok(collect(root, (node): node is ts.CatchClause => ts.isCatchClause(node)).length >= 3,
@@ -519,6 +633,29 @@ function verifyFocusLifecycle(createFocusLifecycle: FocusFactory): void {
   noActiveLifecycle.close();
   noActiveTasks.flush();
   assert.equal(noActiveFallback.focusCalls, 1, "an absent initial editor target uses the stable fallback");
+
+  const strictTasks = new MacrotaskQueue();
+  const strictOriginal = new FakeFocusTarget("exact original editor target");
+  const strictHeading = new FakeFocusTarget("heading");
+  const strictFallback = new FakeFocusTarget("fallback");
+  strictOriginal.inertAncestor = true;
+  const strictLifecycle = createFocusLifecycle({
+    getActiveElement: () => strictOriginal,
+    getHeading: () => strictHeading,
+    getFallback: () => strictFallback,
+    scheduleMacrotask: strictTasks.schedule,
+  });
+  strictLifecycle.setup();
+  strictLifecycle.open();
+  strictLifecycle.dispose();
+  strictLifecycle.setup();
+  strictOriginal.inertAncestor = false;
+  strictLifecycle.close();
+  strictTasks.flush();
+  assert.equal(strictOriginal.focusCalls, 1,
+    "StrictMode cleanup/setup preserves and restores the exact pre-dialog target");
+  assert.equal(strictFallback.focusCalls, 0,
+    "StrictMode does not degrade an exact prior-target restore into fallback focus");
 }
 
 class FakeHistory {
@@ -526,6 +663,7 @@ class FakeHistory {
   private index = 0;
   private listeners = new Set<() => void>();
   pushCalls: Array<{ state: unknown; title: string; url: string | URL | null | undefined }> = [];
+  replaceCalls: Array<{ state: unknown; title: string; url: string | URL | null | undefined }> = [];
   backCalls = 0;
   listenerAdds = 0;
 
@@ -542,6 +680,11 @@ class FakeHistory {
     this.entries.push(state);
     this.index = this.entries.length - 1;
     this.pushCalls.push({ state, title, url });
+  };
+
+  replaceState = (state: unknown, title: string, url?: string | URL | null): void => {
+    this.entries[this.index] = state;
+    this.replaceCalls.push({ state, title, url });
   };
 
   back = (): void => {
@@ -567,86 +710,82 @@ class FakeHistory {
 }
 
 function verifyHistoryRuntime(createHistory: HistoryFactory): void {
+  const hasConflictTag = (value: unknown) => !!value
+    && typeof value === "object"
+    && Object.prototype.hasOwnProperty.call(value, "__heroEditorConflict");
   const repeated = new FakeHistory();
-  const repeatedTasks = new MacrotaskQueue();
   const blocker = createHistory({
     history: repeated as unknown as HistoryInput["history"],
     addPopStateListener: repeated.addPopStateListener,
-    scheduleMacrotask: repeatedTasks.schedule,
   });
   const cleanupFirst = blocker.activate();
   const cleanupSecond = blocker.activate();
   assert.equal(repeated.pushCalls.length, 1, "repeated active renders add one tagged entry");
   assert.equal(repeated.listenerAdds, 1, "repeated activation installs one pop listener");
   assert.equal(repeated.pushCalls[0].url, undefined, "the tagged entry keeps the same URL");
-  assert.equal((repeated.state as Record<string, unknown>).__heroEditorConflict, "hero-editor-conflict-v1");
+  assert.equal(hasConflictTag(repeated.state), true, "activation owns the tagged entry");
   assert.equal((repeated.state as Record<string, unknown>).route, "editor", "tagging preserves the current route state");
   assert.equal((repeated.state as Record<string, unknown>).mobileSheetKey, "logo", "tagging preserves sibling UI history state");
   cleanupFirst();
-  assert.equal(repeated.backCalls, 0, "one active owner cannot clean up another");
+  assert.equal(repeated.replaceCalls.length, 0, "one active owner cannot clean up another");
   cleanupSecond();
-  assert.equal(repeated.backCalls, 0, "owned-tag cleanup is deferred until a macrotask");
-  repeatedTasks.flush();
-  assert.equal(repeated.backCalls, 1, "final cleanup consumes its own topmost tag");
+  assert.equal(repeated.backCalls, 0, "normal cleanup never traverses history");
+  assert.equal(repeated.replaceCalls.length, 1, "final cleanup removes its owned token in place");
   assert.deepEqual(repeated.state, { route: "editor", mobileSheetKey: "logo" });
 
   const backProtected = new FakeHistory();
-  const protectedTasks = new MacrotaskQueue();
   const cleanupProtected = createHistory({
     history: backProtected as unknown as HistoryInput["history"],
     addPopStateListener: backProtected.addPopStateListener,
-    scheduleMacrotask: protectedTasks.schedule,
   }).activate();
   backProtected.back();
   assert.equal(backProtected.pushCalls.length, 2, "Back while active re-establishes the tag");
-  assert.equal((backProtected.state as Record<string, unknown>).__heroEditorConflict, "hero-editor-conflict-v1");
+  assert.equal(hasConflictTag(backProtected.state), true);
   cleanupProtected();
-  protectedTasks.flush();
-  assert.equal(backProtected.backCalls, 2, "resolution resumes normal navigation by consuming the tag");
+  assert.equal(backProtected.backCalls, 1, "cleanup after completed Back adds no second traversal");
+  assert.equal(hasConflictTag(backProtected.state), false);
 
   const foreignTop = new FakeHistory();
-  const foreignTasks = new MacrotaskQueue();
   const cleanupForeign = createHistory({
     history: foreignTop as unknown as HistoryInput["history"],
     addPopStateListener: foreignTop.addPopStateListener,
-    scheduleMacrotask: foreignTasks.schedule,
   }).activate();
-  foreignTop.pushState({ route: "other", foreign: true }, "", undefined);
+  foreignTop.pushState({ route: "foreign-one" }, "", undefined);
+  foreignTop.pushState({ route: "foreign-two" }, "", undefined);
   cleanupForeign();
-  foreignTasks.flush();
   assert.equal(foreignTop.backCalls, 0, "cleanup never consumes an untagged entry");
-  assert.deepEqual(foreignTop.state, { route: "other", foreign: true });
+  assert.deepEqual(foreignTop.state, { route: "foreign-two" });
   foreignTop.back();
-  foreignTasks.flush();
-  assert.equal(foreignTop.backCalls, 2, "a one-shot cleanup skips the stranded owned tag after the foreign entry leaves");
+  assert.deepEqual(foreignTop.state, { route: "foreign-one" },
+    "stranded-tag listener persists across unrelated popstates");
+  assert.equal(foreignTop.replaceCalls.length, 0, "unrelated popstate is never rewritten");
+  foreignTop.back();
+  assert.equal(foreignTop.backCalls, 2, "landing the owned tag causes no synthetic traversal");
   assert.deepEqual(foreignTop.state, { route: "editor", mobileSheetKey: "logo" });
+  assert.equal(foreignTop.replaceCalls.length, 1, "stranded owned token is removed in place");
 
   const pendingTasks = new MacrotaskQueue();
   const pendingBack = new FakeHistory({ route: "editor" }, pendingTasks);
   const cleanupPending = createHistory({
     history: pendingBack as unknown as HistoryInput["history"],
     addPopStateListener: pendingBack.addPopStateListener,
-    scheduleMacrotask: pendingTasks.schedule,
   }).activate();
   pendingBack.back();
   cleanupPending();
   assert.equal(pendingBack.backCalls, 1, "the user has one pending Back traversal");
+  assert.equal(pendingBack.replaceCalls.length, 1, "pending cleanup only removes the current token in place");
   pendingTasks.flush();
-  assert.equal(pendingBack.backCalls, 1, "deferred cleanup does not double-traverse a pending Back");
+  assert.equal(pendingBack.backCalls, 1, "pending Back plus cleanup remains exactly one traversal");
   assert.deepEqual(pendingBack.state, { route: "editor" }, "pending Back lands on the real same-URL entry without escaping");
 
   for (const primitiveState of [null, "editor", 7]) {
     const primitive = new FakeHistory(primitiveState);
-    const primitiveTasks = new MacrotaskQueue();
     const cleanupPrimitive = createHistory({
       history: primitive as unknown as HistoryInput["history"],
       addPopStateListener: primitive.addPopStateListener,
-      scheduleMacrotask: primitiveTasks.schedule,
     }).activate();
-    assert.deepEqual(primitive.state, { __heroEditorConflict: "hero-editor-conflict-v1" },
-      "null and primitive history states are safely replaced by a tagged object");
+    assert.equal(hasConflictTag(primitive.state), true, "primitive history state receives an owned marker");
     cleanupPrimitive();
-    primitiveTasks.flush();
     assert.equal(primitive.state, primitiveState);
   }
 
@@ -654,13 +793,13 @@ function verifyHistoryRuntime(createHistory: HistoryFactory): void {
   const throwingHistory = {
     get state(): unknown { throw new Error("state unavailable"); },
     pushState(): void { throw new Error("push unavailable"); },
+    replaceState(): void { throw new Error("replace unavailable"); },
     back(): void { throw new Error("back unavailable"); },
   } as unknown as HistoryInput["history"];
   assert.doesNotThrow(() => {
     const cleanup = createHistory({
       history: throwingHistory,
       addPopStateListener: () => () => { listenerRemoved = true; },
-      scheduleMacrotask(callback) { callback(); return () => {}; },
     }).activate();
     cleanup();
   }, "History API errors cannot dismiss or crash the conflict surface");
@@ -682,10 +821,10 @@ async function main(): Promise<void> {
 
   verifyShell(shellSource);
   verifyDialog(dialogSource);
+  await verifyMountedAlertDialogContract();
   verifyHistorySource(historySource);
   verifyScopedOverlayContract(alertDialogWrapperSource);
   verifySafeAreaLayoutFormula();
-  await verifyMountedAlertDialogContract();
 
   assertFixtureRejected(
     () => verifyShell(shellSource.replace(/\s+inert=\{p\.recovery\.status !== "none" \? true : undefined\}/, "")),
@@ -722,6 +861,7 @@ async function main(): Promise<void> {
   };
   verifyFocusLifecycle(focusModule.createEditorRecoveryFocusLifecycle);
   const brokenFocusFactory: FocusFactory = (input) => ({
+    setup() {},
     open() { input.getHeading()?.focus(); },
     close() { input.getFallback()?.focus(); },
     dispose() {},
