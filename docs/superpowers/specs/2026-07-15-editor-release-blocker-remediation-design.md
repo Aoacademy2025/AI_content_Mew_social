@@ -1,7 +1,7 @@
 # Editor Release-Blocker Remediation Design
 
-**Status:** Approved architecture, pending implementation plan  
-**Date:** 2026-07-15  
+**Status:** Approved
+**Date:** 2026-07-15
 **Branch:** `mew/responsive-logo-overlay`
 
 ## Purpose
@@ -80,6 +80,9 @@ export type EditorProjectAutosaveLineage = {
 GET that proves a known snapshot. `issued` contains every request that started, even
 when the request timed out or its UI status was suppressed by coalescing. The tracker
 is reset on project change, Reset, explicit conflict choice, and unmount.
+`latestLocal` is refreshed immediately when the autosave effect observes a new explicit
+user-mutation token, before the debounce timer is scheduled, so a conflict from an older
+in-flight request cannot omit a newer edit still inside the debounce window.
 
 ### 1.2 Dispatch semantics
 
@@ -129,9 +132,12 @@ export type EditorProjectSaveInput = {
 Legacy `true` normalizes to `saved`; legacy `false` normalizes to `error`.
 
 - A network error returns `ambiguous`.
-- A queue timeout aborts the PATCH and enters `reconcile` with a fresh signal.
+- A queue timeout aborts the PATCH and, when `reconcile` is supplied, enters it with
+  a fresh signal. A legacy caller without `reconcile` keeps the existing timeout-as-error
+  behavior and may continue to its coalesced pending request.
 - `reconcile` is itself bounded by the queue timeout.
 - The queue does not start the pending request until reconciliation settles.
+- An `ambiguous` result without `reconcile` normalizes to the same legacy error behavior.
 - A reconciliation timeout/error becomes `blocked`, calls `onBlocked`, drops the
   pending request, and releases the lane without another PATCH.
 - A hook callback whose PATCH signal is already aborted must not mutate acknowledgement
