@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import {
@@ -323,21 +323,37 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
   return true;
 }
 
-export async function listBrandAssetPathsForUser(userId: string): Promise<string[]> {
-  const assets = await prisma.brandAsset.findMany({
-    where: { userId },
-    select: { storageKey: true },
-  });
-  return assets
-    .map((asset) => resolveBrandAssetPath(asset.storageKey))
-    .filter((filePath): filePath is string => filePath !== null);
-}
-
-export async function removeBrandAssetFiles(paths: readonly string[]): Promise<void> {
+export async function removeBrandAssetDirectoryForUser(userId: string): Promise<void> {
   const root = brandRoot();
-  const resolvedPaths = paths.map((filePath) => path.resolve(filePath));
-  if (resolvedPaths.some((filePath) => !filePath.startsWith(`${root}${path.sep}`))) {
+  if (
+    typeof userId !== "string"
+    || userId.length === 0
+    || userId.trim() !== userId
+    || userId === "."
+    || userId === ".."
+    || userId.normalize("NFC") !== userId
+    || /[\/\\\u0000-\u001f\u007f]/u.test(userId)
+    || path.isAbsolute(userId)
+    || path.win32.isAbsolute(userId)
+    || path.posix.basename(userId) !== userId
+    || path.win32.basename(userId) !== userId
+    || path.posix.normalize(userId) !== userId
+    || path.win32.normalize(userId) !== userId
+  ) {
     throw new BrandAssetError("invalid_config", 400);
   }
-  await Promise.all(resolvedPaths.map(unlinkIfPresent));
+
+  const directory = path.resolve(root, userId);
+  const relative = path.relative(root, directory);
+  if (
+    directory === root
+    || path.dirname(directory) !== root
+    || relative !== userId
+    || path.isAbsolute(relative)
+    || relative.startsWith(`..${path.sep}`)
+  ) {
+    throw new BrandAssetError("invalid_config", 400);
+  }
+
+  await rm(directory, { recursive: true, force: true });
 }

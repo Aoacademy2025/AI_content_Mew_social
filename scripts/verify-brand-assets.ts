@@ -2,6 +2,7 @@
 // DATABASE_URL=file:/tmp/heroai-logo-model.db BRAND_ASSET_ROOT=/tmp/heroai-brand-assets npx tsx scripts/verify-brand-assets.ts
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -50,7 +51,55 @@ async function main() {
     }
   }
 
+  async function verifyExactUserDirectoryRemoval(): Promise<void> {
+    const validUserId = "brand-directory-removal-user";
+    const validDirectory = path.join(brandRoot, validUserId);
+    await mkdir(path.join(validDirectory, "nested"), { recursive: true });
+    await writeFile(path.join(validDirectory, "nested", "logo.webp"), "private-logo");
+
+    await service.removeBrandAssetDirectoryForUser(validUserId);
+    assert.equal(
+      existsSync(validDirectory),
+      false,
+      "exact-user directory removal is recursive",
+    );
+    await service.removeBrandAssetDirectoryForUser(validUserId);
+
+    const rootSentinel = path.join(brandRoot, "root-sentinel.txt");
+    const siblingDirectory = `${brandRoot}-sibling`;
+    const siblingSentinel = path.join(siblingDirectory, "sibling-sentinel.txt");
+    await writeFile(rootSentinel, "keep-root");
+    await mkdir(siblingDirectory, { recursive: true });
+    await writeFile(siblingSentinel, "keep-sibling");
+
+    const invalidUserIds = [
+      "",
+      ".",
+      "..",
+      "nested/user",
+      "nested\\user",
+      path.resolve(siblingDirectory),
+      `../${path.basename(siblingDirectory)}`,
+      " brand-user ",
+      "e\u0301",
+      "nul\u0000user",
+    ];
+    for (const invalidUserId of invalidUserIds) {
+      await expectBrandError(
+        () => service.removeBrandAssetDirectoryForUser(invalidUserId),
+        "invalid_config",
+        400,
+      );
+      assert.equal(existsSync(rootSentinel), true, "invalid user id never removes the asset root");
+      assert.equal(existsSync(siblingSentinel), true, "invalid user id never removes a sibling directory");
+    }
+
+    rmSync(siblingDirectory, { recursive: true, force: true });
+  }
+
   try {
+    await verifyExactUserDirectoryRemoval();
+
     await prisma.user.deleteMany({ where: { id: { in: [USER_A, USER_B] } } });
     await prisma.user.createMany({
       data: [
@@ -446,27 +495,13 @@ async function main() {
         height: 1,
       },
     });
-    const alicePaths = await service.listBrandAssetPathsForUser(USER_A);
-    const bobPaths = await service.listBrandAssetPathsForUser(USER_B);
-    assert.equal(alicePaths.length, 2, "path listing returns each remaining valid owned file and filters traversal keys");
-    assert.equal(bobPaths.length, 1, "path listing is user-scoped");
-    for (const assetPath of [...alicePaths, ...bobPaths]) {
-      assert.equal(existsSync(assetPath), true, `captured owned path exists before user deletion: ${assetPath}`);
-      assert.ok(assetPath.startsWith(`${brandRoot}${path.sep}`), "captured path is a resolved descendant of the configured root");
-    }
-    await expectBrandError(
-      () => service.removeBrandAssetFiles([path.join(tmpdir(), "outside-brand-root.webp")]),
-      "invalid_config",
-      400,
-    );
-
-    const capturedOwnedPaths = [...alicePaths, ...bobPaths];
     await prisma.user.deleteMany({ where: { id: { in: [USER_A, USER_B] } } });
     assert.equal(await prisma.brandAsset.count({ where: { userId: { in: [USER_A, USER_B] } } }), 0, "user deletion cascades brand asset rows");
     assert.equal(await prisma.brandPreference.count({ where: { userId: USER_A } }), 0, "user deletion cascades the default preference");
-    await service.removeBrandAssetFiles(capturedOwnedPaths);
-    assert.ok(capturedOwnedPaths.every((assetPath) => !existsSync(assetPath)), "post-user-delete cleanup removes every captured owned file");
-    await service.removeBrandAssetFiles(capturedOwnedPaths);
+    await service.removeBrandAssetDirectoryForUser(USER_A);
+    await service.removeBrandAssetDirectoryForUser(USER_B);
+    assert.equal(existsSync(path.join(brandRoot, USER_A)), false, "post-user-delete cleanup removes user A's exact directory");
+    assert.equal(existsSync(path.join(brandRoot, USER_B)), false, "post-user-delete cleanup removes user B's exact directory");
 
     console.log("brand-assets: all checks passed");
   } finally {

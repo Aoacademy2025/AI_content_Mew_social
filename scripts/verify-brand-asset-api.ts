@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import sharp from "sharp";
 import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
-import { BrandAssetError } from "@/lib/brand-assets.server";
+import {
+  BrandAssetError,
+  removeBrandAssetDirectoryForUser,
+  saveBrandAsset,
+} from "@/lib/brand-assets.server";
+import {
+  deleteUserAndBrandAssetDirectory,
+  hardDeleteUserWithBrandAssets,
+} from "@/lib/account-hard-delete.server";
 import {
   deleteBrandAssetItem,
   getBrandAssetCollection,
@@ -31,6 +39,9 @@ const OWNER_SPARE_ASSET_ID = "brand-api-owner-spare";
 const DELETE_USER_ID = "brand-api-delete";
 const DELETE_FAIL_USER_ID = "brand-api-delete-fail";
 const ADMIN_DELETE_USER_ID = "brand-api-admin-delete";
+const ORDERING_DELETE_USER_ID = "brand-api-ordering-delete";
+const DEFERRED_UPLOAD_USER_ID = "brand-api-deferred-upload";
+const ORPHAN_DELETE_USER_ID = "brand-api-orphan-delete";
 const CLERK_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 
 const errorCases = [
@@ -51,6 +62,17 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function assertNoStorageData(value: unknown): void {
   const serialized = JSON.stringify(value);
   assert.doesNotMatch(serialized, /storageKey/);
@@ -67,6 +89,9 @@ async function seed(): Promise<void> {
           DELETE_USER_ID,
           DELETE_FAIL_USER_ID,
           ADMIN_DELETE_USER_ID,
+          ORDERING_DELETE_USER_ID,
+          DEFERRED_UPLOAD_USER_ID,
+          ORPHAN_DELETE_USER_ID,
         ],
       },
     },
@@ -200,9 +225,6 @@ function verifyRouteExportContract(): void {
 }
 
 async function verifyAdminHardDeleteRegression(): Promise<void> {
-  const { hardDeleteUserWithBrandAssets } = await import(
-    "@/lib/account-hard-delete.server"
-  );
   const adminSource = await readFile(
     path.join(process.cwd(), "src/app/api/admin/users/[id]/route.ts"),
     "utf8",
@@ -241,16 +263,173 @@ async function verifyAdminHardDeleteRegression(): Promise<void> {
     (error: NodeJS.ErrnoException) => error.code === "ENOENT",
     "admin hard delete removes captured brand files",
   );
+  await assert.rejects(
+    access(path.dirname(filePath)),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "the production hard-delete wrapper removes the exact user directory",
+  );
   assert.equal(
     await hardDeleteUserWithBrandAssets(ADMIN_DELETE_USER_ID),
     false,
-    "admin hard-delete retry is an idempotent missing-user no-op",
+    "admin hard-delete retry preserves the missing-user boolean",
+  );
+  const orphanDirectory = path.join(root, ORPHAN_DELETE_USER_ID);
+  await mkdir(orphanDirectory, { recursive: true });
+  await writeFile(path.join(orphanDirectory, "orphan.webp"), "orphan-private-file");
+  assert.equal(
+    await hardDeleteUserWithBrandAssets(ORPHAN_DELETE_USER_ID),
+    false,
+    "a missing-user retry still reports that no database row was deleted",
+  );
+  await assert.rejects(
+    access(orphanDirectory),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "a missing-user retry removes the safe orphan directory",
   );
   assert.equal(
     await hardDeleteUserWithBrandAssets("brand-api-never-existed"),
     false,
     "hard deleting an unknown user is an idempotent no-op",
   );
+}
+
+async function verifyDeleteThenCleanupOrdering(): Promise<void> {
+  await prisma.user.create({
+    data: {
+      id: ORDERING_DELETE_USER_ID,
+      name: "Ordering delete",
+      email: "brand-api-ordering-delete@example.test",
+    },
+  });
+  const userDirectory = path.join(root, ORDERING_DELETE_USER_ID);
+  await mkdir(userDirectory, { recursive: true });
+  await writeFile(path.join(userDirectory, "before-delete.webp"), "before-delete");
+
+  const databaseDeleted = deferred();
+  const allowDeleteToReturn = deferred();
+  const events: string[] = [];
+  let cleanupFailures = 0;
+  const deletion = deleteUserAndBrandAssetDirectory(ORDERING_DELETE_USER_ID, {
+    deleteUser: async (userId) => {
+      events.push("delete:start");
+      const deleted = await prisma.user.deleteMany({ where: { id: userId } });
+      databaseDeleted.resolve();
+      await allowDeleteToReturn.promise;
+      events.push("delete:done");
+      return deleted.count === 1;
+    },
+    removeUserDirectory: async (userId) => {
+      events.push("cleanup:start");
+      await removeBrandAssetDirectoryForUser(userId);
+      events.push("cleanup:done");
+    },
+    reportCleanupFailure: () => {
+      cleanupFailures += 1;
+    },
+  });
+
+  await databaseDeleted.promise;
+  assert.equal(
+    await prisma.user.findUnique({ where: { id: ORDERING_DELETE_USER_ID } }),
+    null,
+    "the barrier opens only after the real database delete",
+  );
+  await mkdir(userDirectory, { recursive: true });
+  const latePath = path.join(userDirectory, "created-before-delete-returned.webp");
+  await writeFile(latePath, "late-private-file");
+  allowDeleteToReturn.resolve();
+
+  assert.equal(await deletion, true, "orchestration returns only the database deletion result");
+  assert.deepEqual(
+    events,
+    ["delete:start", "delete:done", "cleanup:start", "cleanup:done"],
+    "directory cleanup starts only after the delete dependency has settled",
+  );
+  assert.equal(cleanupFailures, 0);
+  await assert.rejects(
+    access(latePath),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "post-delete cleanup removes a file created immediately before delete success returned",
+  );
+
+  let reported = 0;
+  assert.equal(
+    await deleteUserAndBrandAssetDirectory("cleanup-failure-user", {
+      deleteUser: async () => false,
+      removeUserDirectory: async () => {
+        throw new Error("forced cleanup failure");
+      },
+      reportCleanupFailure: () => {
+        reported += 1;
+        throw new Error("forced reporter failure");
+      },
+    }),
+    false,
+    "cleanup failure does not change the database boolean",
+  );
+  assert.equal(reported, 1, "a cleanup failure is reported exactly once");
+}
+
+async function verifyDeferredUploadCannotOrphanFile(): Promise<void> {
+  const projectId = `${DEFERRED_UPLOAD_USER_ID}-project`;
+  await prisma.user.create({
+    data: {
+      id: DEFERRED_UPLOAD_USER_ID,
+      name: "Deferred upload",
+      email: "brand-api-deferred-upload@example.test",
+      plan: "PRO",
+    },
+  });
+  await prisma.editorProject.create({
+    data: {
+      id: projectId,
+      userId: DEFERRED_UPLOAD_USER_ID,
+      title: "Deferred upload project",
+    },
+  });
+
+  const png = await sharp({
+    create: { width: 16, height: 8, channels: 4, background: "#2468acee" },
+  }).png().toBuffer();
+  const arrayBufferStarted = deferred();
+  const allowArrayBuffer = deferred();
+  const file = new File([new Uint8Array(png)], "deferred.png", { type: "image/png" });
+  Object.defineProperty(file, "arrayBuffer", {
+    value: async () => {
+      arrayBufferStarted.resolve();
+      await allowArrayBuffer.promise;
+      return Uint8Array.from(png).buffer;
+    },
+  });
+
+  const upload = saveBrandAsset({
+    userId: DEFERRED_UPLOAD_USER_ID,
+    plan: "PRO",
+    projectId,
+    file,
+  });
+  await arrayBufferStarted.promise;
+  assert.equal(
+    await hardDeleteUserWithBrandAssets(DEFERRED_UPLOAD_USER_ID),
+    true,
+    "the user is deleted while upload bytes are deferred",
+  );
+  allowArrayBuffer.resolve();
+  await assert.rejects(upload, "the late asset insert fails after its user/project cascade");
+
+  assert.equal(
+    await prisma.brandAsset.count({ where: { userId: DEFERRED_UPLOAD_USER_ID } }),
+    0,
+    "the deferred upload cannot recreate its asset row",
+  );
+  const deferredDirectory = path.join(root, DEFERRED_UPLOAD_USER_ID);
+  let entries: string[] = [];
+  try {
+    entries = await readdir(deferredDirectory);
+  } catch (error) {
+    assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
+  }
+  assert.deepEqual(entries, [], "the failed late insert leaves no temporary or final private file");
 }
 
 async function main(): Promise<void> {
@@ -264,6 +443,8 @@ async function main(): Promise<void> {
   await seed();
 
   if (mode === "--admin-delete") {
+    await verifyDeleteThenCleanupOrdering();
+    await verifyDeferredUploadCannotOrphanFile();
     await verifyAdminHardDeleteRegression();
     console.log("brand-asset-api: admin hard delete passed");
     return;
@@ -517,6 +698,8 @@ async function main(): Promise<void> {
   }
 
   await verifyAdminHardDeleteRegression();
+  await verifyDeleteThenCleanupOrdering();
+  await verifyDeferredUploadCannotOrphanFile();
 
   console.log("brand-asset-api: all checks passed");
 }
