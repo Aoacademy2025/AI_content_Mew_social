@@ -73,9 +73,7 @@ export async function deleteClerkUserAndBrandAssetDirectory(
       throw new Error("invalid_clerk_cleanup_receipt_target");
     }
     userId = currentUser.id;
-    if (existingReceiptUserId === null) {
-      await dependencies.writeReceipt(clerkId, userId);
-    }
+    await dependencies.writeReceipt(clerkId, userId);
   } else {
     if (existingReceiptUserId === null) return false;
     userId = existingReceiptUserId;

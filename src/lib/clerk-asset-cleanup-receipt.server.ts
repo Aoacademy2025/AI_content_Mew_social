@@ -230,8 +230,11 @@ export function createClerkAssetCleanupStore(
     createdStep: string,
     parentSyncedStep: string,
   ): Promise<void> {
-    await ensureDirectory(directory, createdStep, parentSyncedStep);
+    const created = await ensureDirectory(directory, createdStep, parentSyncedStep);
     assertTrustedDirectory(await lstat(directory));
+    if (!created) {
+      await syncDirectory(path.dirname(directory), parentSyncedStep);
+    }
   }
 
   async function trustedReservedDirectoryOrNull(
@@ -301,11 +304,9 @@ export function createClerkAssetCleanupStore(
     return target;
   }
 
-  async function validateExistingQuarantineDirectory(): Promise<boolean> {
+  async function validateExistingQuarantineDirectory(): Promise<void> {
     const metadata = await metadataOrNull(quarantineDirectory);
-    if (!metadata) return false;
-    assertTrustedDirectory(metadata);
-    return true;
+    if (metadata) assertTrustedDirectory(metadata);
   }
 
   async function scavengeReceiptTemporaries(
@@ -429,7 +430,7 @@ export function createClerkAssetCleanupStore(
       "receipt-directory-created",
       "asset-root-synced",
     );
-    const quarantineAlreadyExists = await validateExistingQuarantineDirectory();
+    await validateExistingQuarantineDirectory();
     await scavengeReceiptTemporaries(receiptsDirectory, receipt.clerkIdHash);
 
     const finalPath = receiptPath(receipt.clerkIdHash);
@@ -460,13 +461,11 @@ export function createClerkAssetCleanupStore(
       });
     }
 
-    if (!quarantineAlreadyExists) {
-      await ensureTrustedReservedDirectory(
-        quarantineDirectory,
-        "quarantine-directory-created",
-        "asset-root-synced",
-      );
-    }
+    await ensureTrustedReservedDirectory(
+      quarantineDirectory,
+      "quarantine-directory-created",
+      "asset-root-synced",
+    );
   }
 
   async function remove(clerkId: string): Promise<void> {
