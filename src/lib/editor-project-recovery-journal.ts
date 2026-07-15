@@ -79,7 +79,7 @@ function materializeJsonValue(
   }
 }
 
-function materializeDraft(value: unknown): EditorProjectDraft | null {
+export function materializeEditorProjectDraft(value: unknown): EditorProjectDraft | null {
   if (!isPlainObject(value)) return null;
   const materialized = materializeJsonValue(value, new Set());
   return materialized === INVALID_JSON_VALUE ? null : materialized as EditorProjectDraft;
@@ -118,7 +118,7 @@ export function parseEditorProjectRecoveryJournal(
     if (version !== 1 || candidateProjectId !== projectId) return null;
     if (!isDraftRevision(baseRevision) || !isCanonicalEditedAt(editedAt)) return null;
     if (draftValue === INVALID_JSON_VALUE) return null;
-    const draft = materializeDraft(draftValue);
+    const draft = materializeEditorProjectDraft(draftValue);
     if (!draft) return null;
     return {
       version: 1,
