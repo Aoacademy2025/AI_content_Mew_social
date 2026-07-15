@@ -24,6 +24,15 @@ function projectError(error: unknown) {
       { status: 409 },
     );
   }
+  if (code === "brand_asset_unavailable") {
+    return NextResponse.json(
+      { error: "brand_asset_unavailable", message: "ไม่พบไฟล์โลโก้ กรุณาอัปโหลดใหม่" },
+      { status: 422 },
+    );
+  }
+  if (code === "brand_asset_lifecycle_conflict") {
+    return NextResponse.json({ error: "brand_asset_lifecycle_conflict" }, { status: 409 });
+  }
   return null;
 }
 

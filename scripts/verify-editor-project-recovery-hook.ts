@@ -280,6 +280,25 @@ function verifyHookSource(value: string): void {
     "a 200 acknowledgement must match both the dispatched revision and fingerprint");
   assert.ok(chooseLocal.split("if (!stillCurrentChoice()) return;").length - 1 >= 5,
     "local choice re-checks ownership after awaits and before side effects");
+  const unavailableLogoIndex = chooseLocal.indexOf(
+    'res.status === 422 && payload?.error === "brand_asset_unavailable"',
+  );
+  const lifecycleConflictIndex = chooseLocal.indexOf("res.status === 409");
+  assert.ok(
+    unavailableLogoIndex >= 0 && lifecycleConflictIndex > unavailableLogoIndex,
+    "definite unavailable Logo handling runs before generic 409/acknowledgement reconciliation",
+  );
+  const unavailableLogoBranch = chooseLocal.slice(unavailableLogoIndex, lifecycleConflictIndex);
+  assert.match(
+    unavailableLogoBranch,
+    /\.\.\.conflict[\s\S]*resolving:\s*false[\s\S]*ไม่พบไฟล์โลโก้เดิม กรุณาอัปโหลดโลโก้ใหม่แล้วเลือกอีกครั้ง/,
+    "Logo 422 restores the exact conflict candidates with an actionable error",
+  );
+  assert.doesNotMatch(
+    unavailableLogoBranch,
+    /clearProjectRecoveryData|setProjectReady\(true\)|status:\s*"none"|applyDraft/,
+    "Logo 422 cannot acknowledge the local choice or clear its recovery journal",
+  );
   assert.match(chooseLocal, /res\.status\s*===\s*409[\s\S]*local:\s*conflict\.local[\s\S]*server:/,
     "409 keeps the same local candidate and refreshes the server candidate");
   assert.match(chooseLocal, /clearProjectRecoveryData/);

@@ -147,6 +147,68 @@ async function main() {
     );
   }
 
+  async function verifyEditorProjectRecoveryContract(): Promise<void> {
+    const recoverySource = await readFile(
+      path.join(process.cwd(), "src/lib/editor-project-brand-asset.server.ts"),
+      "utf8",
+    );
+    assert.match(
+      recoverySource,
+      /getRecoverableBrandAssetFence\(userId,\s*assetId\)/,
+      "project recovery resolves an owner-scoped lifecycle fence",
+    );
+    assert.match(
+      recoverySource,
+      /getRecoverableBrandAssetPath\(userId,\s*assetId\)/,
+      "project recovery delegates trusted path resolution to the owner-scoped helper",
+    );
+    assert.match(
+      recoverySource,
+      /lstat\([\s\S]*\.isFile\(\)/,
+      "project recovery requires the trusted Logo path to be a regular file",
+    );
+    const lifecycleAdvance = recoverySource.slice(
+      recoverySource.indexOf("export async function advanceEditorProjectBrandAsset"),
+    );
+    assert.match(
+      lifecycleAdvance,
+      /tx\.brandAsset\.updateMany/,
+      "project recovery advances Logo lifecycle through the project transaction client",
+    );
+    assert.match(
+      lifecycleAdvance,
+      /userId[\s\S]*lifecycleRevision:\s*fence\.lifecycleRevision/,
+      "project recovery CAS requires both owner and observed lifecycle revision",
+    );
+    assert.match(
+      lifecycleAdvance,
+      /retiredAt:\s*null[\s\S]*lifecycleRevision:\s*\{ increment: 1 \}/,
+      "project recovery activates the Logo and advances its lifecycle revision",
+    );
+    assert.doesNotMatch(
+      recoverySource,
+      /console\.(?:log|warn|error|info|debug)/,
+      "project recovery never logs private ids or filesystem paths",
+    );
+
+    for (const routePath of [
+      "src/lib/editor-project-patch.ts",
+      "src/app/api/editor-projects/route.ts",
+    ]) {
+      const routeSource = await readFile(path.join(process.cwd(), routePath), "utf8");
+      assert.match(
+        routeSource,
+        /brand_asset_unavailable[\s\S]*ไม่พบไฟล์โลโก้ กรุณาอัปโหลดใหม่[\s\S]*status:\s*422/,
+        `${routePath} maps unavailable Logo recovery without a project acknowledgement`,
+      );
+      assert.match(
+        routeSource,
+        /brand_asset_lifecycle_conflict[\s\S]*status:\s*409/,
+        `${routePath} maps lifecycle CAS failure without a project acknowledgement`,
+      );
+    }
+  }
+
   try {
     await verifyExactUserDirectoryRemoval();
 
@@ -790,6 +852,7 @@ async function main() {
     assert.equal(existsSync(pathBeforeRetire!), false, "hard account cleanup removes retired files");
     await verifyRetirementRevisionFenceContract();
     await verifyAtomicDefaultClaimContract();
+    await verifyEditorProjectRecoveryContract();
 
     console.log("brand-assets: all checks passed");
   } finally {

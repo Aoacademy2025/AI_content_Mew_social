@@ -26,13 +26,22 @@ function imageFile(bytes: Buffer, name: string): File {
 }
 
 async function main(): Promise<void> {
-  const [{ prisma }, brandAssets, logoExport, { buildMediaReferenceGraph }, orchestrator, videoJobs] = await Promise.all([
+  const [
+    { prisma },
+    brandAssets,
+    logoExport,
+    { buildMediaReferenceGraph },
+    orchestrator,
+    videoJobs,
+    editorProjects,
+  ] = await Promise.all([
     import("../src/lib/prisma"),
     import("@/lib/brand-assets.server"),
     import("../src/lib/logo-export.server"),
     import("@/lib/media-reference-graph"),
     import("../src/lib/mcp/orchestrator"),
     import("../src/lib/mcp/video-job"),
+    import("../src/lib/editor-projects"),
   ]);
 
   async function expectBrandError(
@@ -105,6 +114,39 @@ async function main(): Promise<void> {
     const assetPathB = await brandAssets.getBrandAssetPath(USER_B, assetB.id);
     assert.ok(assetPathA && assetPathB);
     const normalizedSourceA = readFileSync(assetPathA);
+
+    const recoveredLogoInput = {
+      enabled: true,
+      assetId: assetA.id,
+      position: "top-right" as const,
+      sizePct: 18,
+      opacity: 0.9,
+    };
+    assert.equal(
+      await brandAssets.deleteBrandAssetIfUnreferenced(USER_A, assetA.id),
+      true,
+      "export recovery fixture starts with a retained Logo",
+    );
+    assert.equal(await brandAssets.getBrandAssetPath(USER_A, assetA.id), null);
+    const recoveredProject = await editorProjects.updateEditorProject(USER_A, PROJECT_A, {
+      draft: { script: "recovered export", logoOverlay: recoveredLogoInput },
+    });
+    assert.equal(recoveredProject?.draft.logoOverlay.assetId, assetA.id);
+    assert.equal(
+      await brandAssets.getBrandAssetPath(USER_A, assetA.id),
+      assetPathA,
+      "accepted project recovery makes the Logo active for export",
+    );
+    const recoveredExport = await logoExport.stageLogoForExport({
+      userId: USER_A,
+      plan: "PRO",
+      projectId: PROJECT_A,
+      rawLogoOverlay: recoveredProject?.draft.logoOverlay,
+      rendersRoot,
+    });
+    assert.ok(recoveredExport, "a Logo restored by project CAS can be staged for export");
+    assert.deepEqual(readFileSync(recoveredExport.snapshotPath), normalizedSourceA);
+    await logoExport.removeLogoSnapshot(recoveredExport.snapshotPath);
 
     assert.equal(await logoExport.stageLogoForExport({
       userId: USER_A,

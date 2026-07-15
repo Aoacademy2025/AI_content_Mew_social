@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import { resolveProjectMediaState } from "@/lib/media-retention";
+import {
+  advanceEditorProjectBrandAsset,
+  prepareEditorProjectBrandAsset,
+} from "@/lib/editor-project-brand-asset.server";
 
 export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
@@ -129,15 +133,20 @@ export async function createEditorProject(
   input: { title?: unknown; draft?: unknown; status?: unknown } = {},
 ) {
   const draftJson = encodeEditorProjectDraft(input.draft);
+  const assetFence = await prepareEditorProjectBrandAsset(userId, draftJson);
   const status = normalizeEditorProjectStatus(input.status) ?? "draft";
-  const project = await prisma.editorProject.create({
-    data: {
-      userId,
-      title: sanitizeEditorProjectTitle(input.title),
-      status,
-      draftJson: draftJson ?? null,
-      lastOpenedAt: new Date(),
-    },
+  const project = await prisma.$transaction(async (tx) => {
+    const created = await tx.editorProject.create({
+      data: {
+        userId,
+        title: sanitizeEditorProjectTitle(input.title),
+        status,
+        draftJson: draftJson ?? null,
+        lastOpenedAt: new Date(),
+      },
+    });
+    await advanceEditorProjectBrandAsset(tx, userId, assetFence);
+    return created;
   });
   return editorProjectResponse(project);
 }
@@ -194,9 +203,11 @@ export async function updateEditorProject(
     }
   }
 
+  let draftJsonForAsset: string | null | undefined;
   if ("title" in input) data.title = sanitizeEditorProjectTitle(input.title);
   if ("draft" in input) {
-    data.draftJson = encodeEditorProjectDraft(input.draft) ?? null;
+    draftJsonForAsset = encodeEditorProjectDraft(input.draft);
+    data.draftJson = draftJsonForAsset ?? null;
     data.draftRevision = draftRevision ?? { increment: 1 };
   }
   if ("status" in input) {
@@ -231,19 +242,31 @@ export async function updateEditorProject(
     throw err;
   }
 
-  const updated = await prisma.editorProject.updateMany({
-    where: {
-      id: projectId,
-      userId,
-      ...(expectedDraftRevision !== undefined
-        ? { draftRevision: expectedDraftRevision }
-        : draftRevision !== undefined
-          ? { draftRevision: { lt: draftRevision } }
-          : {}),
-    },
-    data,
-  });
-  if (updated.count !== 1) {
+  const assetFence = "draft" in input
+    ? await prepareEditorProjectBrandAsset(userId, draftJsonForAsset)
+    : null;
+  const projectWriteMiss = new Error("editor_project_write_miss");
+  let project: NonNullable<ProjectRow> | null = null;
+  try {
+    project = await prisma.$transaction(async (tx) => {
+      const updated = await tx.editorProject.updateMany({
+        where: {
+          id: projectId,
+          userId,
+          ...(expectedDraftRevision !== undefined
+            ? { draftRevision: expectedDraftRevision }
+            : draftRevision !== undefined
+              ? { draftRevision: { lt: draftRevision } }
+              : {}),
+        },
+        data,
+      });
+      if (updated.count !== 1) throw projectWriteMiss;
+      await advanceEditorProjectBrandAsset(tx, userId, assetFence);
+      return tx.editorProject.findFirst({ where: { id: projectId, userId } });
+    });
+  } catch (error) {
+    if (error !== projectWriteMiss) throw error;
     const current = await getEditorProject(userId, projectId);
     if (!current) return null;
     if (draftRevision !== undefined) {
@@ -254,7 +277,7 @@ export async function updateEditorProject(
     }
     return null;
   }
-  return getEditorProject(userId, projectId);
+  return project ? editorProjectResponse(project) : null;
 }
 
 export async function archiveEditorProject(userId: string, projectId: string) {

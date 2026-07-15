@@ -1322,6 +1322,14 @@ export function useV2Project() {
       if (!stillCurrentChoice()) return;
       const payload = await res.json().catch(() => null);
       if (!stillCurrentChoice()) return;
+      if (res.status === 422 && payload?.error === "brand_asset_unavailable") {
+        setRecoveryState({
+          ...conflict,
+          resolving: false,
+          error: "ไม่พบไฟล์โลโก้เดิม กรุณาอัปโหลดโลโก้ใหม่แล้วเลือกอีกครั้ง",
+        });
+        return;
+      }
       if (res.status === 409) {
         const currentProject = payload?.project as Record<string, unknown> | null | undefined;
         const server = currentProject

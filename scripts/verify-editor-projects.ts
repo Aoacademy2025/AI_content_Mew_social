@@ -2,12 +2,14 @@
 // Spins a throwaway SQLite DB and verifies EditorProject ownership/persistence contracts.
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "editorprojects-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
+const brandRoot = join(dir, "brand-assets");
+process.env.BRAND_ASSET_ROOT = brandRoot;
 execSync("npx prisma db push --skip-generate", { stdio: "inherit", env: process.env });
 
 let passed = 0;
@@ -20,6 +22,7 @@ function ok(cond: boolean, msg: string) {
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const projects = await import("../src/lib/editor-projects");
+  const brandAssets = await import("../src/lib/brand-assets.server");
   const jobs = await import("../src/lib/mcp/video-job");
   const projectPatch = await import("../src/lib/editor-project-patch");
   const updateWithRevision = projects.updateEditorProject as unknown as (
@@ -37,6 +40,49 @@ async function main() {
       ) => Promise<Response>;
     }
   ).patchEditorProjectForUser;
+
+  async function createBrandAssetFixture(input: {
+    userId: string;
+    projectId: string;
+    label: string;
+    fileKind?: "regular" | "missing" | "directory" | "symlink";
+  }) {
+    const storageKey = `${input.userId}/${input.label}.webp`;
+    const filePath = join(brandRoot, storageKey);
+    mkdirSync(join(brandRoot, input.userId), { recursive: true });
+    if (input.fileKind === "directory") {
+      mkdirSync(filePath, { recursive: true });
+    } else if (input.fileKind === "symlink") {
+      const target = join(brandRoot, input.userId, `${input.label}-target.webp`);
+      writeFileSync(target, "private-logo-target");
+      symlinkSync(target, filePath);
+    } else if (input.fileKind !== "missing") {
+      writeFileSync(filePath, "private-logo");
+    }
+    return prisma.brandAsset.create({
+      data: {
+        userId: input.userId,
+        projectId: input.projectId,
+        storageKey,
+        originalName: `${input.label}.webp`,
+        mimeType: "image/webp",
+        sizeBytes: 12,
+        width: 64,
+        height: 32,
+      },
+    });
+  }
+
+  const logoDraft = (assetId: string, script: string) => ({
+    script,
+    logoOverlay: {
+      enabled: true,
+      assetId,
+      position: "top-right",
+      sizePct: 18,
+      opacity: 0.9,
+    },
+  });
 
   const now = new Date();
   const alice = await prisma.user.create({
@@ -516,6 +562,320 @@ async function main() {
         `PATCH ${label} JSON returns 400 no_fields`,
       );
     }
+
+    async function assertUnavailableResponse(response: Response, rawAssetId: string): Promise<void> {
+      const payload = await response.json() as Record<string, unknown>;
+      assert.equal(response.status, 422);
+      assert.equal(payload.error, "brand_asset_unavailable");
+      assert.equal(payload.message, "ไม่พบไฟล์โลโก้ กรุณาอัปโหลดใหม่");
+      assert.equal(Object.prototype.hasOwnProperty.call(payload, "project"), false);
+      assert.equal(JSON.stringify(payload).includes(rawAssetId), false, "unavailable response hides raw asset ids");
+    }
+
+    const recoveryProject = await projects.createEditorProject(alice.id, {
+      title: "Recover retired logo",
+      draft: { script: "initial" },
+    });
+    await updateWithRevision(alice.id, recoveryProject.id, {
+      draft: { script: "confirmed base" },
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    const recoveryAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: recoveryProject.id,
+      label: "recover-retired",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, recoveryAsset.id), true);
+    const retiredBeforeRecovery = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: recoveryAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    assert.ok(retiredBeforeRecovery.retiredAt);
+    const recoveredResponse = await patchEditorProjectForUser(alice.id, recoveryProject.id, {
+      draft: logoDraft(recoveryAsset.id, "stale local with logo"),
+      draftRevision: 2,
+      expectedDraftRevision: 1,
+    });
+    assert.equal(recoveredResponse.status, 200);
+    const recoveredPayload = await recoveredResponse.json() as { project?: { draft?: { logoOverlay?: { assetId?: string } } } };
+    assert.equal(recoveredPayload.project?.draft?.logoOverlay?.assetId, recoveryAsset.id);
+    const restored = await prisma.brandAsset.findUniqueOrThrow({ where: { id: recoveryAsset.id } });
+    assert.equal(restored.retiredAt, null, "accepted local choice restores its retained logo");
+    assert.equal(
+      restored.lifecycleRevision,
+      retiredBeforeRecovery.lifecycleRevision + 1,
+      "accepted local choice advances the lifecycle revision exactly once",
+    );
+    assert.equal(
+      (await projects.getEditorProject(alice.id, recoveryProject.id))?.draft.logoOverlay.assetId,
+      recoveryAsset.id,
+    );
+    assert.ok(await brandAssets.getBrandAssetPath(alice.id, recoveryAsset.id));
+    await projects.updateEditorProject(alice.id, recoveryProject.id, {
+      title: "Metadata does not claim Logo",
+      touchLastOpened: true,
+    });
+    assert.equal(
+      (await prisma.brandAsset.findUniqueOrThrow({ where: { id: recoveryAsset.id } })).lifecycleRevision,
+      restored.lifecycleRevision,
+      "metadata-only PATCHes do not advance Logo lifecycle state",
+    );
+
+    const missingRowProject = await projects.createEditorProject(alice.id, {
+      title: "Missing Logo row",
+      draft: { script: "confirmed" },
+    });
+    const missingAssetId = "task3-missing-logo-row";
+    const missingRowResponse = await patchEditorProjectForUser(alice.id, missingRowProject.id, {
+      draft: logoDraft(missingAssetId, "must not persist missing row"),
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    await assertUnavailableResponse(missingRowResponse, missingAssetId);
+    assert.deepEqual(
+      await projects.getEditorProject(alice.id, missingRowProject.id),
+      missingRowProject,
+      "missing Logo row leaves the project unchanged",
+    );
+
+    for (const fileKind of ["missing", "directory", "symlink"] as const) {
+      const unavailableProject = await projects.createEditorProject(alice.id, {
+        title: `Unavailable Logo ${fileKind}`,
+        draft: { script: "confirmed" },
+      });
+      const unavailableAsset = await createBrandAssetFixture({
+        userId: alice.id,
+        projectId: unavailableProject.id,
+        label: `unavailable-${fileKind}`,
+        fileKind,
+      });
+      const beforeUnavailable = await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: unavailableAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      });
+      const unavailableResponse = await patchEditorProjectForUser(alice.id, unavailableProject.id, {
+        draft: logoDraft(unavailableAsset.id, `must not persist ${fileKind}`),
+        draftRevision: 1,
+        expectedDraftRevision: 0,
+      });
+      await assertUnavailableResponse(unavailableResponse, unavailableAsset.id);
+      assert.deepEqual(
+        await prisma.brandAsset.findUniqueOrThrow({
+          where: { id: unavailableAsset.id },
+          select: { retiredAt: true, lifecycleRevision: true },
+        }),
+        beforeUnavailable,
+        `${fileKind} Logo validation leaves lifecycle state unchanged`,
+      );
+      assert.equal(
+        (await projects.getEditorProject(alice.id, unavailableProject.id))?.draft.script,
+        "confirmed",
+        `${fileKind} Logo validation leaves the project unchanged`,
+      );
+    }
+
+    const crossOwnerProject = await projects.createEditorProject(alice.id, {
+      title: "Cross-owner Logo",
+      draft: { script: "confirmed" },
+    });
+    const bobAssetProject = await projects.createEditorProject(bob.id, {
+      title: "Bob Logo owner",
+      draft: { script: "bob confirmed" },
+    });
+    const crossOwnerAsset = await createBrandAssetFixture({
+      userId: bob.id,
+      projectId: bobAssetProject.id,
+      label: "cross-owner",
+    });
+    const crossOwnerBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: crossOwnerAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    const crossOwnerResponse = await patchEditorProjectForUser(alice.id, crossOwnerProject.id, {
+      draft: logoDraft(crossOwnerAsset.id, "must not persist cross-owner"),
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    await assertUnavailableResponse(crossOwnerResponse, crossOwnerAsset.id);
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: crossOwnerAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      crossOwnerBefore,
+      "cross-owner validation cannot mutate the other owner's asset",
+    );
+
+    const staleAssetProject = await projects.createEditorProject(alice.id, {
+      title: "Stale project must not recover Logo",
+      draft: { script: "initial" },
+    });
+    await updateWithRevision(alice.id, staleAssetProject.id, {
+      draft: { script: "server winner" },
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    const staleAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: staleAssetProject.id,
+      label: "stale-project",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, staleAsset.id), true);
+    const staleAssetBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: staleAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    const staleAssetResponse = await patchEditorProjectForUser(alice.id, staleAssetProject.id, {
+      draft: logoDraft(staleAsset.id, "stale local loser"),
+      draftRevision: 2,
+      expectedDraftRevision: 0,
+    });
+    const staleAssetPayload = await staleAssetResponse.json() as Record<string, unknown>;
+    assert.equal(staleAssetResponse.status, 409);
+    assert.equal(staleAssetPayload.error, "stale_revision");
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: staleAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      staleAssetBefore,
+      "a stale project CAS leaves retiredAt and lifecycleRevision unchanged",
+    );
+    assert.equal(
+      (await projects.getEditorProject(alice.id, staleAssetProject.id))?.draft.script,
+      "server winner",
+    );
+
+    const barrierProject = await projects.createEditorProject(alice.id, {
+      title: "Lifecycle barrier",
+      draft: { script: "confirmed" },
+    });
+    const barrierAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: barrierProject.id,
+      label: "lifecycle-barrier",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, barrierAsset.id), true);
+    const barrierProjectBefore = await projects.getEditorProject(alice.id, barrierProject.id);
+    const barrierAssetBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: barrierAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER task3_retirement_wins_after_project_cas
+      AFTER UPDATE OF draftJson ON EditorProject
+      WHEN NEW.id = '${barrierProject.id}'
+      BEGIN
+        UPDATE BrandAsset
+        SET retiredAt = CURRENT_TIMESTAMP,
+            lifecycleRevision = lifecycleRevision + 1
+        WHERE id = '${barrierAsset.id}';
+      END
+    `);
+    let barrierResponse: Response;
+    try {
+      barrierResponse = await patchEditorProjectForUser(alice.id, barrierProject.id, {
+        draft: logoDraft(barrierAsset.id, "recovery loses controlled barrier"),
+        draftRevision: 1,
+        expectedDraftRevision: 0,
+      });
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS task3_retirement_wins_after_project_cas");
+    }
+    const barrierPayload = await barrierResponse.json() as Record<string, unknown>;
+    assert.equal(barrierResponse.status, 409);
+    assert.equal(barrierPayload.error, "brand_asset_lifecycle_conflict");
+    assert.equal(Object.prototype.hasOwnProperty.call(barrierPayload, "project"), false);
+    assert.deepEqual(
+      await projects.getEditorProject(alice.id, barrierProject.id),
+      barrierProjectBefore,
+      "a failed asset CAS rolls back the project write",
+    );
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: barrierAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      barrierAssetBefore,
+      "the controlled lifecycle barrier is rolled back with the transaction",
+    );
+
+    const createRecoveryAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: recoveryProject.id,
+      label: "create-recovery",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, createRecoveryAsset.id), true);
+    const createdWithRecoveredLogo = await projects.createEditorProject(alice.id, {
+      title: "Create with retained Logo",
+      draft: logoDraft(createRecoveryAsset.id, "created with retained logo"),
+    });
+    assert.equal(createdWithRecoveredLogo.draft.logoOverlay.assetId, createRecoveryAsset.id);
+    assert.equal(
+      (await prisma.brandAsset.findUniqueOrThrow({ where: { id: createRecoveryAsset.id } })).retiredAt,
+      null,
+      "draft-bearing create restores its retained logo",
+    );
+
+    const createMissingCount = await prisma.editorProject.count({ where: { userId: alice.id } });
+    await assert.rejects(
+      projects.createEditorProject(alice.id, {
+        title: "Create missing Logo",
+        draft: logoDraft("task3-create-missing-logo", "must not create"),
+      }),
+      hasCode("brand_asset_unavailable"),
+    );
+    assert.equal(
+      await prisma.editorProject.count({ where: { userId: alice.id } }),
+      createMissingCount,
+      "unavailable Logo validation prevents project creation",
+    );
+
+    const createBarrierAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: recoveryProject.id,
+      label: "create-barrier",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, createBarrierAsset.id), true);
+    const createBarrierBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: createBarrierAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER task3_create_lifecycle_barrier
+      AFTER INSERT ON EditorProject
+      WHEN NEW.title = 'Create lifecycle barrier'
+      BEGIN
+        UPDATE BrandAsset
+        SET lifecycleRevision = lifecycleRevision + 1
+        WHERE id = '${createBarrierAsset.id}';
+      END
+    `);
+    try {
+      await assert.rejects(
+        projects.createEditorProject(alice.id, {
+          title: "Create lifecycle barrier",
+          draft: logoDraft(createBarrierAsset.id, "must roll back create"),
+        }),
+        hasCode("brand_asset_lifecycle_conflict"),
+      );
+    } finally {
+      await prisma.$executeRawUnsafe("DROP TRIGGER IF EXISTS task3_create_lifecycle_barrier");
+    }
+    assert.equal(
+      await prisma.editorProject.count({ where: { title: "Create lifecycle barrier" } }),
+      0,
+      "failed create asset CAS rolls back the project row",
+    );
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: createBarrierAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      createBarrierBefore,
+      "failed create asset CAS rolls back the controlled lifecycle change",
+    );
   }
 
   const job = await jobs.createVideoJob(alice.id, { script: "hello", previewMode: true }, undefined, { projectId: p.id });

@@ -1872,6 +1872,111 @@ async function localChoiceLifecycleOwnership(): Promise<void> {
   }
 }
 
+async function unavailableLogoLocalChoicePreservesConflict(): Promise<void> {
+  const projectId = "choice-unavailable-logo";
+  const harness = createHarness({ search: `?projectId=${projectId}` });
+  seedConflictJournal(harness, projectId, {
+    script: "local with retired logo",
+    logoOverlay: {
+      enabled: true,
+      assetId: "private-retired-logo-id",
+      position: "top-right",
+      sizePct: 18,
+      opacity: 0.9,
+    },
+  });
+  harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+    project: project(projectId, 5, { script: "server five" }),
+  }));
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), response(422, {
+    error: "brand_asset_unavailable",
+    message: "ไม่พบไฟล์โลโก้ กรุณาอัปโหลดใหม่",
+  }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  const immutableLocal = harness.runner.current.recovery.local;
+  const immutableServer = harness.runner.current.recovery.server;
+  const journalKey = journalModule.editorProjectRecoveryKey(projectId);
+  const journalBefore = harness.storage.getItem(journalKey);
+
+  await harness.runner.current.chooseLocalProjectDraft();
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.recovery.status, "conflict");
+  assert.equal(harness.runner.current.recovery.local, immutableLocal,
+    "422 preserves the exact local conflict candidate");
+  assert.equal(harness.runner.current.recovery.server, immutableServer,
+    "422 preserves the exact server conflict candidate");
+  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, false);
+  assert.equal(
+    harness.runner.current.recovery.error,
+    "ไม่พบไฟล์โลโก้เดิม กรุณาอัปโหลดโลโก้ใหม่แล้วเลือกอีกครั้ง",
+  );
+  assert.equal(harness.storage.getItem(journalKey), journalBefore,
+    "422 preserves the exact recovery journal");
+  assert.equal(
+    harness.fetchMock.calls.filter(
+      (call) => call.method === "GET" && call.url === editorUrl(projectId),
+    ).length,
+    1,
+    "a definite unavailable response does not perform ambiguous GET reconciliation",
+  );
+
+  const patchCount = patchBodies(harness.fetchMock).length;
+  harness.runner.current.chooseServerProjectDraft();
+  harness.runner.flush();
+  assert.equal(harness.runner.current.recovery.status, "none",
+    "the unchanged server choice remains available after a Logo 422");
+  assert.equal(harness.runner.current.script, "server five");
+  assert.equal(harness.storage.getItem(journalKey), null,
+    "only the later explicit server choice clears the journal");
+  assert.equal(patchBodies(harness.fetchMock).length, patchCount,
+    "server choice remains PATCH-free after a Logo 422");
+}
+
+async function lifecycleConflictRefreshesWithoutAcknowledgement(): Promise<void> {
+  const projectId = "choice-lifecycle-conflict";
+  const harness = createHarness({ search: `?projectId=${projectId}` });
+  seedConflictJournal(harness, projectId, { script: "local lifecycle choice" });
+  harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+    project: project(projectId, 5, { script: "server five" }),
+  }));
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), response(409, {
+    error: "brand_asset_lifecycle_conflict",
+  }));
+  harness.fetchMock.enqueue("GET", editorUrl(projectId), response(200, {
+    project: project(projectId, 6, { script: "authoritative six" }),
+  }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  const immutableLocal = harness.runner.current.recovery.local;
+  const journalKey = journalModule.editorProjectRecoveryKey(projectId);
+  const journalBefore = harness.storage.getItem(journalKey);
+
+  await harness.runner.current.chooseLocalProjectDraft();
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.recovery.status, "conflict");
+  assert.equal(harness.runner.current.recovery.local, immutableLocal,
+    "lifecycle 409 preserves the exact local candidate");
+  assert.equal(harness.runner.current.recovery.server?.revision, 6);
+  assert.equal(harness.runner.current.recovery.server?.draft.script, "authoritative six");
+  assert.equal(harness.runner.current.recovery.resolving, false);
+  assert.equal(harness.runner.current.recovery.requiresServerRefresh, false);
+  assert.equal(harness.runner.current.projectReady, false,
+    "lifecycle 409 cannot acknowledge the local choice");
+  assert.equal(harness.storage.getItem(journalKey), journalBefore,
+    "lifecycle 409 preserves the recovery journal");
+  assert.equal(
+    harness.fetchMock.calls.filter(
+      (call) => call.method === "GET" && call.url === editorUrl(projectId),
+    ).length,
+    2,
+    "lifecycle 409 performs authoritative GET reconciliation",
+  );
+}
+
 async function exactLocalChoiceAcknowledgement(): Promise<void> {
   const projectId = "choice-exact-ack";
   const harness = createHarness({ search: `?projectId=${projectId}` });
@@ -2199,6 +2304,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["ambiguous-refresh-retry", failedAmbiguousRefreshRetriesGetOnly],
     ["conflict-refresh-lifecycle", conflictRefreshLifecycleOwnership],
     ["local-choice-lifecycle-ownership", localChoiceLifecycleOwnership],
+    ["local-choice-unavailable-logo", unavailableLogoLocalChoicePreservesConflict],
+    ["local-choice-lifecycle-conflict", lifecycleConflictRefreshesWithoutAcknowledgement],
     ["local-choice-exact-ack", exactLocalChoiceAcknowledgement],
     ["local-choice-mismatch", mismatchedLocalChoiceAcknowledgementsRefresh],
     ["invalid-latest-local", invalidLatestLocalShowsRecoveryState],
@@ -2444,6 +2551,31 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
     mismatchedLocalChoiceAcknowledgementsRefresh,
     /wrong fingerprint/,
     "runtime harness rejects a 200 accepted by revision without matching fingerprint",
+  );
+
+  const unavailableLogoAcknowledged = hookSource.replace(
+    `      if (res.status === 422 && payload?.error === "brand_asset_unavailable") {
+        setRecoveryState({
+          ...conflict,
+          resolving: false,
+          error: "ไม่พบไฟล์โลโก้เดิม กรุณาอัปโหลดโลโก้ใหม่แล้วเลือกอีกครั้ง",
+        });
+        return;
+      }`,
+    `      if (res.status === 422 && payload?.error === "brand_asset_unavailable") {
+        clearProjectRecoveryData(projectId);
+        setProjectReady(true);
+        setRecoveryState({ status: "none" });
+        return;
+      }`,
+  );
+  assert.notEqual(unavailableLogoAcknowledged, hookSource,
+    "unavailable-Logo acknowledgement mutation applied");
+  activeCompiledHook = compileHook(unavailableLogoAcknowledged);
+  await assert.rejects(
+    unavailableLogoLocalChoicePreservesConflict,
+    /422|conflict|candidate|journal/,
+    "runtime harness rejects a Logo 422 that acknowledges the choice or clears its journal",
   );
 
   const resetWithoutChoiceInvalidation = hookSource.replace(
