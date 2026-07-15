@@ -560,7 +560,6 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       message,
     );
   };
-
   await rm(testBase, { recursive: true, force: true });
   try {
     const durabilityParent = path.join(testBase, "durability-parent");
@@ -894,6 +893,11 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     const sourceSentinel = path.join(sourceDirectory, "nested", "private.webp");
     await mkdir(path.dirname(sourceSentinel), { recursive: true, mode: 0o700 });
     await writeFile(sourceSentinel, "private");
+    await writeFile(
+      path.join(sourceDirectory, ".directory-cleaned-v1"),
+      "user-controlled-payload",
+      { mode: 0o600 },
+    );
     assert.equal(
       await quarantineStore.quarantineUserDirectory({
         clerkId: quarantineClerkId,
@@ -907,6 +911,11 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     await expectPresent(
       path.join(exactQuarantinePath, "nested", "private.webp"),
       "quarantine retains the moved private file",
+    );
+    assert.equal(
+      await quarantineStore.quarantineState(quarantineClerkId),
+      "active",
+      "a user payload with the reserved marker name is not a canonical terminal fence",
     );
     await expectMissing(
       path.join(quarantineRoot, QUARANTINE_DIRECTORY_NAME, quarantineUserId),
@@ -931,8 +940,43 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     );
     await mkdir(quarantineSibling, { mode: 0o700 });
     await writeFile(path.join(quarantineSibling, "sibling-sentinel"), "sibling");
-    await quarantineStore.removeQuarantine(quarantineClerkId);
-    assert.equal(await quarantineStore.quarantineExists(quarantineClerkId), false);
+    const terminalDurabilitySteps: string[] = [];
+    const terminalStore = createClerkAssetCleanupStore({
+      assetRoot: quarantineRoot,
+      observeDurabilityStep: (step) => terminalDurabilitySteps.push(step),
+    });
+    await terminalStore.removeQuarantine(quarantineClerkId);
+    assert.ok(
+      terminalDurabilitySteps.includes("quarantine-terminal-file-synced"),
+      "terminal fence file is fsynced before cleanup can advance",
+    );
+    assert.ok(
+      terminalDurabilitySteps.includes("quarantine-terminal-directory-synced"),
+      "terminal fence directory entry is fsynced before cleanup can advance",
+    );
+    terminalDurabilitySteps.length = 0;
+    await terminalStore.removeQuarantine(quarantineClerkId);
+    assert.ok(
+      terminalDurabilitySteps.includes("quarantine-terminal-file-synced"),
+      "a retry re-fsyncs an existing terminal fence before trusting it",
+    );
+    assert.equal(await quarantineStore.quarantineExists(quarantineClerkId), true);
+    assert.equal(await quarantineStore.quarantineState(quarantineClerkId), "cleaned");
+    assert.deepEqual(
+      await readdir(exactQuarantinePath),
+      [".directory-cleaned-v1"],
+      "quarantine cleanup leaves exactly one tiny terminal fence marker",
+    );
+    assert.equal((await stat(exactQuarantinePath)).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(path.join(exactQuarantinePath, ".directory-cleaned-v1"))).mode & 0o777,
+      0o600,
+    );
+    assert.equal(
+      await readFile(path.join(exactQuarantinePath, ".directory-cleaned-v1"), "utf8"),
+      quarantineStore.identifier(quarantineClerkId),
+      "terminal fence marker contains only the privacy-safe receipt hash",
+    );
     await expectPresent(path.join(sourceDirectory, "live-sentinel"), "quarantine removal never touches the original path");
     await expectPresent(path.join(quarantineSibling, "sibling-sentinel"), "quarantine removal never touches a non-hash sibling");
     await rm(sourceDirectory, { recursive: true, force: true });
@@ -941,8 +985,23 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
         clerkId: quarantineClerkId,
         userId: quarantineUserId,
       }),
-      "absent",
-      "a missing source and quarantine is an idempotent absence",
+      "already-quarantined",
+      "the terminal fence permanently blocks a stale rename",
+    );
+    const crossStore = createClerkAssetCleanupStore({ assetRoot: quarantineRoot });
+    await mkdir(sourceDirectory, { mode: 0o700 });
+    await writeFile(path.join(sourceDirectory, "reused-live-sentinel"), "live");
+    assert.equal(
+      await crossStore.quarantineUserDirectory({
+        clerkId: quarantineClerkId,
+        userId: quarantineUserId,
+      }),
+      "already-quarantined",
+      "a separate store instance collides with the durable terminal fence",
+    );
+    await expectPresent(
+      path.join(sourceDirectory, "reused-live-sentinel"),
+      "a stale cross-store rename cannot move a reused live directory",
     );
 
     const collisionClerkId = "clerk-quarantine-collision";
@@ -985,17 +1044,18 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     const scavengerIdentifier = scavengerStore.identifier(scavengerClerkId);
     const scavengerDirectory = path.join(scavengerRoot, RECEIPTS_DIRECTORY_NAME);
     await scavengerStore.write(scavengerClerkId, scavengerUserId, "prepared");
+    const deadOwnerPid = 2_147_483_647;
     for (let index = 0; index < 33; index += 1) {
       const uuid = `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
       await writeFile(
-        path.join(scavengerDirectory, `.${scavengerIdentifier}.${uuid}.tmp`),
+        path.join(scavengerDirectory, `.${scavengerIdentifier}.${deadOwnerPid}.${uuid}.tmp`),
         "stale",
         { mode: 0o600 },
       );
     }
     await scavengerStore.write(scavengerClerkId, scavengerUserId, "quarantined");
     const ownTemporaryPattern = new RegExp(
-      `^\\.${scavengerIdentifier}\\.[0-9a-f-]{36}\\.tmp$`,
+      `^\\.${scavengerIdentifier}\\.${deadOwnerPid}\\.[0-9a-f-]{36}\\.tmp$`,
       "u",
     );
     const remainingOwnTemporaries = (await readdir(scavengerDirectory)).filter((entry) => (
@@ -1007,6 +1067,113 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       "one call scavenges at most 32 matching stale temporary entries",
     );
     await rm(path.join(scavengerDirectory, remainingOwnTemporaries[0]), { force: true });
+    const legacyOwnershipUnknown = path.join(
+      scavengerDirectory,
+      `.${scavengerIdentifier}.44444444-4444-4444-8444-444444444444.tmp`,
+    );
+    await writeFile(legacyOwnershipUnknown, "ownership-unknown", { mode: 0o600 });
+    await scavengerStore.write(scavengerClerkId, scavengerUserId, "quarantined");
+    await expectPresent(
+      legacyOwnershipUnknown,
+      "a legacy temporary without owner identity is conservatively preserved",
+    );
+    await rm(legacyOwnershipUnknown, { force: true });
+
+    const concurrentWriterA = createClerkAssetCleanupStore({ assetRoot: scavengerRoot });
+    const concurrentWriterB = createClerkAssetCleanupStore({ assetRoot: scavengerRoot });
+    const concurrentProbeHandle = await open(scavengerDirectory, "r");
+    const concurrentFileHandlePrototype = Object.getPrototypeOf(concurrentProbeHandle) as {
+      stat: (...args: any[]) => Promise<Awaited<ReturnType<typeof concurrentProbeHandle.stat>>>;
+      sync: (...args: any[]) => Promise<any>;
+    };
+    await concurrentProbeHandle.close();
+    const originalSync = concurrentFileHandlePrototype.sync;
+    const firstTemporarySynced = deferred();
+    const allowFirstTemporaryRename = deferred();
+    let pausedFirstTemporary = false;
+    concurrentFileHandlePrototype.sync = async function (...args: any[]) {
+      const metadata = await this.stat();
+      const result = await originalSync.apply(this, args);
+      if (metadata.isFile() && !pausedFirstTemporary) {
+        pausedFirstTemporary = true;
+        firstTemporarySynced.resolve();
+        await allowFirstTemporaryRename.promise;
+      }
+      return result;
+    };
+    try {
+      const firstWrite = concurrentWriterA.write(
+        scavengerClerkId,
+        scavengerUserId,
+        "quarantined",
+      );
+      await firstTemporarySynced.promise;
+      const secondWrite = concurrentWriterB.write(
+        scavengerClerkId,
+        scavengerUserId,
+        "directory-cleaned",
+      );
+      await secondWrite;
+      allowFirstTemporaryRename.resolve();
+      await assert.doesNotReject(
+        firstWrite,
+        "a same-receipt writer cannot scavenge another live writer's temporary",
+      );
+    } finally {
+      allowFirstTemporaryRename.resolve();
+      concurrentFileHandlePrototype.sync = originalSync;
+    }
+
+    const ambiguousOwnerPid = 2_000_000_001;
+    const ambiguousTemporary = path.join(
+      scavengerDirectory,
+      `.${scavengerIdentifier}.${ambiguousOwnerPid}.22222222-2222-4222-8222-222222222222.tmp`,
+    );
+    await writeFile(ambiguousTemporary, "possibly-live", { mode: 0o600 });
+    const originalProcessKill = process.kill;
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === ambiguousOwnerPid) {
+        throw Object.assign(new Error("ambiguous process ownership"), { code: "EPERM" });
+      }
+      return originalProcessKill(pid, signal);
+    }) as typeof process.kill;
+    try {
+      await scavengerStore.write(scavengerClerkId, scavengerUserId, "quarantined");
+    } finally {
+      process.kill = originalProcessKill;
+    }
+    await expectPresent(
+      ambiguousTemporary,
+      "permission-ambiguous temporary ownership is conservatively preserved",
+    );
+    await rm(ambiguousTemporary, { force: true });
+
+    const unexpectedOwnerPid = 2_000_000_002;
+    const unexpectedTemporary = path.join(
+      scavengerDirectory,
+      `.${scavengerIdentifier}.${unexpectedOwnerPid}.33333333-3333-4333-8333-333333333333.tmp`,
+    );
+    await writeFile(unexpectedTemporary, "unknown-owner", { mode: 0o600 });
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === unexpectedOwnerPid) {
+        throw Object.assign(new Error("unexpected ownership probe failure"), { code: "EIO" });
+      }
+      return originalProcessKill(pid, signal);
+    }) as typeof process.kill;
+    try {
+      await assert.rejects(
+        scavengerStore.write(scavengerClerkId, scavengerUserId, "directory-cleaned"),
+        /unexpected ownership probe failure/u,
+        "unexpected process-liveness errors fail closed",
+      );
+    } finally {
+      process.kill = originalProcessKill;
+    }
+    await expectPresent(
+      unexpectedTemporary,
+      "fail-closed ownership probing preserves the unknown temporary",
+    );
+    await rm(unexpectedTemporary, { force: true });
 
     const otherClerkId = "clerk-scavenge-other-receipt";
     const otherIdentifier = scavengerStore.identifier(otherClerkId);
@@ -1279,6 +1446,13 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
       message,
     );
   };
+  const expectCleanedFence = async (
+    store: ClerkAssetCleanupStore,
+    clerkId: string,
+    message: string,
+  ) => {
+    assert.equal(await store.quarantineState(clerkId), "cleaned", message);
+  };
   const wrapStore = (
     store: ClerkAssetCleanupStore,
     overrides: StoreOverrides,
@@ -1469,8 +1643,9 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         false,
       );
       await access(liveSentinel);
-      await expectMissing(
-        clerkQuarantinePath(assetRoot, clerkId),
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
         "a target created after the post-check is isolated from quarantine removal",
       );
       assert.equal(await baseStore.read(clerkId), null);
@@ -1496,9 +1671,10 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
         false,
       );
-      await expectMissing(
-        clerkQuarantinePath(assetRoot, clerkId),
-        "a quarantined retry removes the isolated directory",
+      await expectCleanedFence(
+        store,
+        clerkId,
+        "a quarantined retry removes payload and leaves its terminal fence",
       );
       assert.equal(await store.read(clerkId), null);
     }
@@ -1537,9 +1713,10 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         () => deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
       );
       assert.equal((await baseStore.read(clerkId))?.phase, "quarantined");
-      await expectMissing(
-        clerkQuarantinePath(assetRoot, clerkId),
-        "the injected crash happens after quarantine removal",
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "the injected crash happens after payload cleanup and terminal fencing",
       );
 
       await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
@@ -1588,6 +1765,9 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         quarantineExists: async () => {
           throw new Error("directory-cleaned must not inspect quarantine");
         },
+        quarantineState: async () => {
+          throw new Error("directory-cleaned must not inspect quarantine state");
+        },
         removeQuarantine: async () => {
           throw new Error("directory-cleaned must not remove quarantine");
         },
@@ -1633,6 +1813,180 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
     }
 
     {
+      const assetRoot = path.join(testBase, "stale-prepared-before-rename");
+      const clerkId = "clerk-stale-prepared-before-rename";
+      const userId = "cleanup-stale-prepared-before-rename-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await baseStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old.webp"), "old");
+
+      const firstBeforeRename = deferred();
+      const allowFirstRename = deferred();
+      const staleStore = wrapStore(baseStore, {
+        quarantineUserDirectory: async (input) => {
+          firstBeforeRename.resolve();
+          await allowFirstRename.promise;
+          return baseStore.quarantineUserDirectory(input);
+        },
+      });
+      const staleDependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: staleStore,
+      });
+      const followerDependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: baseStore,
+      });
+      const staleDelivery = deleteClerkUserAndBrandAssetDirectory(
+        clerkId,
+        staleDependencies,
+      );
+      await firstBeforeRename.promise;
+      const followerDelivery = deleteClerkUserAndBrandAssetDirectory(
+        clerkId,
+        followerDependencies,
+      );
+      const followerState = await Promise.race([
+        followerDelivery.then(() => "completed" as const),
+        new Promise<"blocked">((resolve) => {
+          setTimeout(() => resolve("blocked"), 200);
+        }),
+      ]);
+      let settled: PromiseSettledResult<boolean>[];
+      try {
+        assert.equal(
+          followerState,
+          "blocked",
+          "a follower cannot reach terminal while a stale prepared worker owns the precheck-to-rename window",
+        );
+      } finally {
+        allowFirstRename.resolve();
+        settled = await Promise.allSettled([staleDelivery, followerDelivery]);
+      }
+      assert.deepEqual(
+        settled.map((result) => result.status),
+        ["fulfilled", "fulfilled"],
+        "both duplicate deliveries finish after the pre-rename owner releases",
+      );
+
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, followerDependencies),
+        false,
+      );
+      await access(liveSentinel);
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "no stale worker can quarantine a directory created after terminal cleanup",
+      );
+    }
+
+    {
+      const assetRoot = path.join(testBase, "terminal-fence-dominates-stale-phase");
+      const clerkId = "clerk-terminal-fence-dominates-stale-phase";
+      const userId = "cleanup-terminal-fence-dominates-stale-phase-user";
+      const terminalStore = createClerkAssetCleanupStore({ assetRoot });
+      const staleStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live.webp");
+      await terminalStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old.webp"), "old");
+      await terminalStore.quarantineUserDirectory({ clerkId, userId });
+      await terminalStore.write(clerkId, userId, "quarantined");
+      await terminalStore.removeQuarantine(clerkId);
+      await terminalStore.write(clerkId, userId, "directory-cleaned");
+      await terminalStore.remove(clerkId);
+      await expectCleanedFence(
+        terminalStore,
+        clerkId,
+        "the terminal writer leaves its durable fence",
+      );
+
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      await staleStore.write(clerkId, userId, "quarantined");
+      let terminalFenceRefreshes = 0;
+      const staleFenceStore = wrapStore(staleStore, {
+        removeQuarantine: async (id) => {
+          terminalFenceRefreshes += 1;
+          await staleStore.removeQuarantine(id);
+        },
+      });
+      const noDatabaseAfterFence = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: staleFenceStore,
+        findUserByClerkId: async () => {
+          throw new Error("terminal fence must dominate stale Clerk lookup");
+        },
+        findUserById: async () => {
+          throw new Error("terminal fence must dominate stale live-target lookup");
+        },
+        deleteUser: async () => {
+          throw new Error("terminal fence must dominate stale database mutation");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, noDatabaseAfterFence),
+        false,
+        "terminal fencing repairs a stale quarantined receipt without touching the live target",
+      );
+      assert.equal(
+        terminalFenceRefreshes,
+        1,
+        "stale receipt recovery re-fsyncs the terminal fence before removing its receipt",
+      );
+      assert.equal(await staleStore.read(clerkId), null);
+      await access(liveSentinel);
+      const ordinaryDuplicate = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: staleStore,
+        findUserByClerkId: async () => null,
+        findUserById: async () => {
+          throw new Error("receipt-absent terminal duplicate must not inspect an internal id");
+        },
+        deleteUser: async () => {
+          throw new Error("receipt-absent terminal duplicate must not mutate the database");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, ordinaryDuplicate),
+        false,
+        "receipt-absent redelivery with no live Clerk row recognizes the terminal fence",
+      );
+      await access(liveSentinel);
+
+      const reusedClerkId = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: staleStore,
+        findUserByClerkId: async () => ({ id: userId, clerkId }),
+        findUserById: async () => {
+          throw new Error("same-Clerk-ID fence collision fails before internal-id lookup");
+        },
+        deleteUser: async () => {
+          throw new Error("same-Clerk-ID fence collision cannot delete the new row");
+        },
+      });
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, reusedClerkId),
+      );
+      await access(liveSentinel);
+      assert.equal(await staleStore.read(clerkId), null);
+    }
+
+    {
       const assetRoot = path.join(testBase, "concurrent-redelivery");
       const clerkId = "clerk-concurrent-redelivery";
       const userId = "cleanup-concurrent-redelivery-user";
@@ -1643,12 +1997,9 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
       await writeFile(path.join(originalDirectory, "old-private.webp"), "old");
 
       let quarantineCalls = 0;
-      const bothAtQuarantine = deferred();
       const store = wrapStore(baseStore, {
         quarantineUserDirectory: async (input) => {
           quarantineCalls += 1;
-          if (quarantineCalls === 2) bothAtQuarantine.resolve();
-          await bothAtQuarantine.promise;
           return baseStore.quarantineUserDirectory(input);
         },
       });
@@ -1660,11 +2011,16 @@ async function verifyClerkQuarantineStateMachine(): Promise<void> {
         ]),
         [false, false],
       );
-      assert.equal(quarantineCalls, 2, "both missing-row redeliveries reach quarantine safely");
+      assert.equal(
+        quarantineCalls,
+        1,
+        "only the critical-section owner reaches quarantine before its follower observes terminal state",
+      );
       await expectMissing(originalDirectory, "concurrent redelivery removes the original directory");
-      await expectMissing(
-        clerkQuarantinePath(assetRoot, clerkId),
-        "concurrent redelivery leaves no quarantine",
+      await expectCleanedFence(
+        baseStore,
+        clerkId,
+        "concurrent redelivery leaves one cleaned terminal fence",
       );
       assert.equal(await baseStore.read(clerkId), null);
     }

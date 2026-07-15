@@ -281,17 +281,31 @@ and directory fsync. Reads are capped at `MAX_RECEIPT_BYTES + 1` and compare sta
 pre/post metadata before parsing, so concurrent growth or replacement fails closed
 without unbounded allocation.
 
+Receipt temporaries carry a writer PID. Same-receipt scavenging preserves a live or
+permission-ambiguous writer, fails closed on unexpected liveness errors, and removes
+at most the existing bounded number of confirmed-dead temporaries per call. Legacy
+ownerless names are conservatively preserved.
+
 After the guarded database deletion, the exact user directory is atomically renamed
 into a receipt-specific private quarantine path. The database target is checked again
 after the rename:
 
 - if any live user now owns that internal id, the quarantined data and receipt are
   retained and the webhook returns a retryable failure; no live directory is removed;
-- if the id remains absent, only the quarantined directory is recursively removed;
+- if the id remains absent, only the quarantined payload is recursively removed;
 - a user created after the rename writes to the original path and is isolated from the
   quarantine cleanup; and
 - retries and duplicate deliveries safely resume an existing receipt/quarantine and
   remove the receipt only after cleanup is durable.
+
+Payload cleanup does not free the receipt-specific quarantine destination. It leaves
+one empty `0700` hash directory with one fsynced `0600` canonical hash-only terminal
+marker, so a stale cross-process rename still collides atomically. A user payload with
+the reserved filename but noncanonical contents remains payload. The marker is the
+highest monotonic state and dominates stale `prepared`/`quarantined` receipts. With the
+receipt absent, a no-live-row duplicate is terminal; a live row for the same Clerk id
+fails closed and requires manual fence resolution rather than assuming deleted Clerk
+ids are never reused. Accumulation is bounded to one tiny fence per hashed Clerk id.
 
 Late uploads after the original cascade retain the existing contract: their database
 insert fails and their own catch path removes temporary/final files. An empty recreated

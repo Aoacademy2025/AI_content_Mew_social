@@ -135,7 +135,11 @@ names matching:
 new RegExp(`^\\.${receiptId}\\.[0-9a-f-]{36}\\.tmp$`, "u")
 ```
 
-Do not follow symlinks and do not remove a non-matching file.
+New temporary names also carry their writer PID. Preserve live and
+permission-ambiguous owners, fail closed on unexpected liveness-probe errors, and
+scavenge only confirmed-dead same-receipt owners within the existing per-call bound.
+Preserve legacy ownerless names because their liveness is unknowable. Do not follow
+symlinks and do not remove a non-matching file.
 
 - [ ] **Step 5: Implement receipt-specific quarantine primitives**
 
@@ -249,6 +253,15 @@ absent. If quarantine is already absent after a retry/crash, persist
 never inspect, rename, or remove `<root>/<userId>` again; only remove the receipt. This
 allows a safely reused id to own the original directory after old cleanup completed.
 
+Payload cleanup retains the receipt-hash quarantine directory as a durable private
+terminal fence containing exactly one fsynced canonical hash-only marker; a user payload
+with the reserved filename but different contents is not terminal state. The destination
+path is never freed, so a stale prepared worker's atomic rename collides instead of
+moving a reused live directory. The fence outranks stale receipt phases and is
+re-fsynced before stale-phase repair removes the receipt. A receipt-absent duplicate
+with no live Clerk row is terminal. If the same Clerk id has a live row, fail closed
+for manual resolution; deleted Clerk ids are not assumed to be non-reusable.
+
 At every failure, log exactly:
 
 ```ts
@@ -337,4 +350,3 @@ authenticated session.
 Use `superpowers:verification-before-completion` and
 `superpowers:finishing-a-development-branch`. Do not merge, deploy, or push without the
 user's explicit final choice.
-

@@ -5,6 +5,7 @@ import {
   lstat,
   mkdir,
   open,
+  opendir,
   readdir,
   rename,
   rm,
@@ -24,6 +25,7 @@ const RECEIPT_BINDING_DOMAIN = "heroai-clerk-brand-cleanup-v2";
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 const RECEIPT_VERSION = 2;
 const MAX_STALE_TEMPORARIES_PER_CALL = 32;
+const QUARANTINE_TERMINAL_MARKER = ".directory-cleaned-v1";
 
 export type ClerkAssetCleanupPhase =
   | "prepared"
@@ -47,6 +49,7 @@ export type ClerkAssetCleanupStore = {
     clerkId: string;
     userId: string;
   }): Promise<"moved" | "already-quarantined" | "absent">;
+  quarantineState(clerkId: string): Promise<"absent" | "active" | "cleaned">;
   quarantineExists(clerkId: string): Promise<boolean>;
   removeQuarantine(clerkId: string): Promise<void>;
 };
@@ -66,6 +69,18 @@ function invalidTrustBoundary(): Error {
 
 function isMissingFileError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+function processMayOwnTemporary(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
 }
 
 function isSafeClerkId(clerkId: unknown): clerkId is string {
@@ -315,6 +330,69 @@ export function createClerkAssetCleanupStore(
     return target;
   }
 
+  function quarantineTerminalMarker(receiptId: string): string {
+    const target = path.join(quarantinePath(receiptId), QUARANTINE_TERMINAL_MARKER);
+    if (path.dirname(target) !== quarantinePath(receiptId)) {
+      throw invalidTrustBoundary();
+    }
+    return target;
+  }
+
+  async function hasCanonicalQuarantineTerminalMarker(
+    receiptId: string,
+  ): Promise<boolean> {
+    const target = quarantineTerminalMarker(receiptId);
+    const pathnameMetadata = await metadataOrNull(target);
+    if (!pathnameMetadata) return false;
+    try {
+      assertTrustedReceiptFile(pathnameMetadata);
+    } catch {
+      return false;
+    }
+    if (pathnameMetadata.size !== Buffer.byteLength(receiptId, "utf8")) {
+      return false;
+    }
+
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(
+        target,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+      );
+    } catch (error) {
+      if (isMissingFileError(error) || (error as NodeJS.ErrnoException).code === "ELOOP") {
+        return false;
+      }
+      throw error;
+    }
+    try {
+      const before = await handle.stat();
+      try {
+        assertTrustedReceiptFile(before);
+      } catch {
+        return false;
+      }
+      if (!sameFileIdentity(pathnameMetadata, before)) return false;
+      const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const after = await handle.stat();
+      const currentPathnameMetadata = await metadataOrNull(target);
+      if (!currentPathnameMetadata) return false;
+      try {
+        assertTrustedReceiptFile(after);
+        assertTrustedReceiptFile(currentPathnameMetadata);
+      } catch {
+        return false;
+      }
+      return bytesRead === Buffer.byteLength(receiptId, "utf8")
+        && sameFileIdentity(before, after)
+        && sameFileIdentity(before, currentPathnameMetadata)
+        && buffer.subarray(0, bytesRead).toString("utf8") === receiptId;
+    } finally {
+      await handle.close();
+    }
+  }
+
   function userDirectory(userId: string): string {
     if (!isSafeBrandAssetUserId(userId)) throw invalidTrustBoundary();
     const target = path.resolve(assetRoot, userId);
@@ -340,14 +418,19 @@ export function createClerkAssetCleanupStore(
     directory: string,
     receiptId: string,
   ): Promise<void> {
-    const ownTemporaryPattern = new RegExp(
-      `^\\.${receiptId}\\.[0-9a-f-]{36}\\.tmp$`,
+    const ownedTemporaryPattern = new RegExp(
+      `^\\.${receiptId}\\.([1-9][0-9]*)\\.[0-9a-f-]{36}\\.tmp$`,
       "u",
     );
     let removed = 0;
     for (const entry of await readdir(directory)) {
       if (removed >= MAX_STALE_TEMPORARIES_PER_CALL) break;
-      if (!ownTemporaryPattern.test(entry)) continue;
+      const ownedMatch = ownedTemporaryPattern.exec(entry);
+      if (!ownedMatch) continue;
+      const ownerPid = Number(ownedMatch[1]);
+      if (!Number.isSafeInteger(ownerPid) || processMayOwnTemporary(ownerPid)) {
+        continue;
+      }
       const candidate = path.join(directory, entry);
       const metadata = await metadataOrNull(candidate);
       if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) continue;
@@ -465,7 +548,7 @@ export function createClerkAssetCleanupStore(
     if (existingReceipt) assertTrustedReceiptFile(existingReceipt);
     const temporaryPath = path.join(
       receiptsDirectory,
-      `.${receipt.clerkIdHash}.${randomUUID()}.tmp`,
+      `.${receipt.clerkIdHash}.${process.pid}.${randomUUID()}.tmp`,
     );
     let handle: Awaited<ReturnType<typeof open>> | null = null;
     try {
@@ -556,14 +639,22 @@ export function createClerkAssetCleanupStore(
     return "moved";
   }
 
-  async function quarantineExists(clerkId: string): Promise<boolean> {
+  async function quarantineState(
+    clerkId: string,
+  ): Promise<"absent" | "active" | "cleaned"> {
     const receiptId = identifier(clerkId);
     const directory = await trustedReservedDirectoryOrNull(quarantineDirectory);
-    if (!directory) return false;
+    if (!directory) return "absent";
     const metadata = await metadataOrNull(quarantinePath(receiptId));
-    if (!metadata) return false;
+    if (!metadata) return "absent";
     assertTrustedQuarantineTarget(metadata);
-    return true;
+    return await hasCanonicalQuarantineTerminalMarker(receiptId)
+      ? "cleaned"
+      : "active";
+  }
+
+  async function quarantineExists(clerkId: string): Promise<boolean> {
+    return await quarantineState(clerkId) !== "absent";
   }
 
   async function removeQuarantine(clerkId: string): Promise<void> {
@@ -574,7 +665,54 @@ export function createClerkAssetCleanupStore(
     const metadata = await metadataOrNull(target);
     if (!metadata) return;
     assertTrustedQuarantineTarget(metadata);
-    await rm(target, { recursive: true, force: true });
+    const terminalMarker = quarantineTerminalMarker(receiptId);
+    const preserveTerminalMarker = await hasCanonicalQuarantineTerminalMarker(receiptId);
+    const directoryHandle = await opendir(target);
+    for await (const entry of directoryHandle) {
+      const child = path.join(target, entry.name);
+      if (preserveTerminalMarker && child === terminalMarker) continue;
+      await rm(child, { recursive: true, force: true });
+    }
+    await syncDirectory(target);
+
+    let markerHandle: Awaited<ReturnType<typeof open>> | null = null;
+    let createdMarker = false;
+    try {
+      if (await hasCanonicalQuarantineTerminalMarker(receiptId)) {
+        markerHandle = await open(
+          terminalMarker,
+          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+        );
+      } else {
+        await rm(terminalMarker, { recursive: true, force: true });
+        try {
+          markerHandle = await open(
+            terminalMarker,
+            fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+            0o600,
+          );
+          createdMarker = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          if (!await hasCanonicalQuarantineTerminalMarker(receiptId)) {
+            throw invalidTrustBoundary();
+          }
+          markerHandle = await open(
+            terminalMarker,
+            fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+          );
+        }
+      }
+      assertTrustedReceiptFile(await markerHandle.stat());
+      if (createdMarker) {
+        await markerHandle.writeFile(receiptId, "utf8");
+      }
+      await markerHandle.sync();
+      observe?.("quarantine-terminal-file-synced");
+    } finally {
+      await markerHandle?.close().catch(() => undefined);
+    }
+    await syncDirectory(target, "quarantine-terminal-directory-synced");
     await syncDirectory(directory);
   }
 
@@ -584,6 +722,7 @@ export function createClerkAssetCleanupStore(
     write,
     remove,
     quarantineUserDirectory,
+    quarantineState,
     quarantineExists,
     removeQuarantine,
   };
