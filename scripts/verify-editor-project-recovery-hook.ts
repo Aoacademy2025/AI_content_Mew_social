@@ -151,6 +151,8 @@ function verifyHookSource(value: string): void {
     "the temporary async bootstrap adapter is absent");
 
   const userState = namedFunction(root, "useUserDraftState").getText(root);
+  assert.match(userState, /if \(!canAcceptUserMutation\(\)\) return;[\s\S]*setSynchronized\(next\)/,
+    "the public setter rejects user mutation before touching synchronized state");
   assert.match(userState, /setSynchronized\(next\);[\s\S]*markUserMutation\(\)/,
     "the public setter synchronizes the effective draft before marking provenance");
   assert.match(userState, /valueRef\.current[\s\S]*effectiveDraftRef\.current[\s\S]*setRaw\(resolved\)/,
@@ -165,13 +167,15 @@ function verifyHookSource(value: string): void {
     const declaration = userStateDeclaration(root, [field, userSetter, rawSetter]);
     assert.ok(
       declaration
-        && declaration.arguments.length === 4
+        && declaration.arguments.length === 5
         && ts.isStringLiteral(declaration.arguments[1])
         && declaration.arguments[1].text === draftField
         && ts.isIdentifier(declaration.arguments[2])
         && declaration.arguments[2].text === "effectiveDraftRef"
         && ts.isIdentifier(declaration.arguments[3])
-        && declaration.arguments[3].text === "markUserDraftMutation",
+        && declaration.arguments[3].text === "canAcceptUserMutation"
+        && ts.isIdentifier(declaration.arguments[4])
+        && declaration.arguments[4].text === "markUserDraftMutation",
       `${field} synchronizes ${draftField} and keeps separate user/raw provenance`,
     );
   }
@@ -195,6 +199,17 @@ function verifyHookSource(value: string): void {
     "reset uses programmatic setters only");
   assert.match(reset, /setLogoOverlayRaw\(inherited\)/);
   assert.match(reset, /setMixPresetRaw\(/);
+  assert.match(reset, /setProjectReady\(false\);\s*setProjectInitialization\("loading-defaults"\);[\s\S]*await loadAccountLogoDefault/,
+    "Reset blocks synchronously before awaiting account defaults");
+  assert.match(reset, /if \(!isCurrentReset\(\)\) return;[\s\S]*setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,
+    "only the owned Reset advances from defaults to project creation");
+
+  const clipUrlSetter = variableInitializer(root, "setClipUrl").getText(root);
+  assert.match(clipUrlSetter, /if \(!canAcceptUserMutation\(\)\) return;[\s\S]*setClipDurationSecStateRaw/,
+    "the clip URL composite setter guards before its coupled raw duration write");
+  const mixPresetSetter = variableInitializer(root, "setMixPreset").getText(root);
+  assert.match(mixPresetSetter, /if \(!canAcceptUserMutation\(\)\) return;[\s\S]*setBrollSourceRaw/,
+    "the mix preset composite setter guards before coupled raw writes");
 
   const settings = sourceBetween(value, "// ค่า default จริงของผู้ใช้", "// Persist draft (debounce 1s)");
   assert.doesNotMatch(settings, /markUserDraftMutation|FromUser/,
@@ -309,6 +324,8 @@ function verifyHookSource(value: string): void {
     "unready renders do not write or allocate recovery");
 
   const returned = sourceBetween(value, "return {", "};\n}\n\nexport type V2Project");
+  assert.match(returned, /projectInitialization/,
+    "hook exposes project initialization ownership");
   assert.match(returned, /recovery,\s*retryProjectBootstrap,\s*chooseLocalProjectDraft,\s*chooseServerProjectDraft,\s*retryConflictServerRefresh/,
     "hook exposes the deterministic recovery contract");
 
@@ -324,6 +341,8 @@ function verifyHookSource(value: string): void {
   const newProject = sourceBetween(value, "await Promise.resolve();", "storage?.setItem(PROJECT_ID_KEY, id)");
   assert.match(newProject, /if \(!isCurrentBootstrap\(\)\) return;[\s\S]*createServerProject\(canonicalSeedDraft,\s*\{/,
     "StrictMode cleanup wins before the only new-project POST");
+  assert.match(newProject, /setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,
+    "blank bootstrap exposes its owned creating-project phase");
   assert.match(autosave, /const t = setTimeout[\s\S]*return \(\) => \{ clearTimeout\(t\); \}/,
     "StrictMode cleanup cancels the first autosave setup before PATCH");
 }
@@ -438,7 +457,7 @@ async function main(): Promise<void> {
   await verifyRuntimeHookMutationSensitivity();
 
   const missingBoundary = source.replace(
-    /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([\s\S]*?effectiveDraftRef,\s*)markUserDraftMutation(,\s*\);)/,
+    /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([\s\S]*?effectiveDraftRef,\s*canAcceptUserMutation,\s*)markUserDraftMutation(,\s*\);)/,
     "$1(() => {})$2",
   );
   assert.notEqual(missingBoundary, source, "public-setter mutation applied");

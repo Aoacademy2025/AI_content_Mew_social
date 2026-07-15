@@ -201,15 +201,22 @@ export function EditorV2Shell() {
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
   };
+  const editorBlocked = p.projectInitialization !== "ready"
+    || p.recovery.status !== "none";
 
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
+      {p.projectInitialization !== "ready" && p.recovery.status === "none" ? (
+        <div role="status" aria-live="polite" className="sr-only">
+          กำลังเตรียมโปรเจกต์
+        </div>
+      ) : null}
       <div
-        inert={p.recovery.status !== "none" ? true : undefined}
-        aria-hidden={p.recovery.status !== "none" ? "true" : undefined}
+        inert={editorBlocked ? true : undefined}
+        aria-hidden={editorBlocked ? "true" : undefined}
         className="contents"
       >
       {/* Topbar 58px — single unified bar (full-screen editor: no dashboard chrome) */}

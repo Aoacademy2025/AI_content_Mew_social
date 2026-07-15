@@ -84,6 +84,13 @@ function directJsxChildren(node: ts.JsxElement): JsxNode[] {
 
 function verifyShell(source: string): void {
   const root = parse(source, shellPath);
+  assert.match(
+    source,
+    /const editorBlocked = p\.projectInitialization !== "ready"\s*\|\| p\.recovery\.status !== "none"/,
+    "one computed boundary blocks initialization and recovery",
+  );
+  assert.match(source, /role="status"/, "initialization exposes a polite status");
+  assert.match(source, /กำลังเตรียมโปรเจกต์/, "initialization status uses the required Thai copy");
   const dialogs = collect(root, (node): node is JsxNode => isJsxNode(node) && tagName(node) === "EditorProjectRecoveryDialog");
   assert.equal(dialogs.length, 1, "EditorV2Shell renders exactly one recovery dialog");
   assert.equal(attributeText(dialogs[0], "recovery", root), "{p.recovery}");
@@ -101,13 +108,13 @@ function verifyShell(source: string): void {
   const wrapper = wrappers[0];
   assert.equal(
     attributeText(wrapper, "inert", root),
-    '{p.recovery.status !== "none" ? true : undefined}',
-    "loading, load-error, and conflict all make editor content inert",
+    "{editorBlocked ? true : undefined}",
+    "initialization, loading, load-error, and conflict all make editor content inert",
   );
   assert.equal(
     attributeText(wrapper, "aria-hidden", root),
-    '{p.recovery.status !== "none" ? "true" : undefined}',
-    "loading, load-error, and conflict all hide editor content from assistive technology",
+    '{editorBlocked ? "true" : undefined}',
+    "initialization, loading, load-error, and conflict all hide editor content from assistive technology",
   );
 
   const inertAttributes = collect(root, (node): node is ts.JsxAttribute => ts.isJsxAttribute(node) && node.name.getText() === "inert");
@@ -850,7 +857,7 @@ async function main(): Promise<void> {
   verifySafeAreaLayoutFormula();
 
   assertFixtureRejected(
-    () => verifyShell(shellSource.replace(/\s+inert=\{p\.recovery\.status !== "none" \? true : undefined\}/, "")),
+    () => verifyShell(shellSource.replace(/\s+inert=\{editorBlocked \? true : undefined\}/, "")),
     "controlled fixture proves missing inert is detected",
   );
   assertFixtureRejected(

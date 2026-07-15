@@ -374,7 +374,10 @@ class HookRunner<T> {
 type ProjectHook = {
   projectId: string | null;
   projectReady: boolean;
+  projectInitialization: "loading-defaults" | "creating-project" | "ready" | "error";
   projectStatus: string;
+  projectTitle: string;
+  setProjectTitle(next: string | ((value: string) => string)): void;
   script: string;
   setScript(next: string | ((value: string) => string)): void;
   clipUrl: string;
@@ -536,6 +539,12 @@ function project(projectId: string, draftRevision: number, draft: JsonRecord): J
 function patchBodies(fetchMock: FetchMock): JsonRecord[] {
   return fetchMock.calls
     .filter((call) => call.method === "PATCH")
+    .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
+}
+
+function postBodies(fetchMock: FetchMock): JsonRecord[] {
+  return fetchMock.calls
+    .filter((call) => call.method === "POST" && call.url === "/api/editor-projects")
     .map((call) => JSON.parse(call.init.body ?? "{}") as JsonRecord);
 }
 
@@ -1142,6 +1151,151 @@ async function exactEqualRevisionResume(): Promise<void> {
   await settle(harness.runner);
   assert.deepEqual(patchBodies(harness.fetchMock)[0]?.draft, localDraft,
     "equal-revision resume PATCH sends the exact immutable local candidate");
+}
+
+async function blankBootstrapBlocksUserMutationDuringInitialization(): Promise<void> {
+  const defaults = deferred<ResponseLike>();
+  const post = deferred<ResponseLike>();
+  const harness = createHarness();
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", defaults.promise);
+  harness.fetchMock.enqueue("POST", "/api/editor-projects", post.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.projectInitialization, "loading-defaults");
+  assert.equal(harness.runner.current.projectReady, false);
+  harness.runner.current.setScript("must-not-survive-bootstrap");
+  harness.runner.flush();
+  assert.notEqual(harness.runner.current.script, "must-not-survive-bootstrap",
+    "blank bootstrap rejects a real user setter while defaults are pending");
+
+  defaults.resolve(response(200, { defaultLogo: null }));
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "creating-project");
+  assert.equal(harness.runner.current.projectReady, false);
+  const createBody = postBodies(harness.fetchMock)[0];
+  assert.equal((createBody.draft as JsonRecord).script, "",
+    "the attempted bootstrap value never reaches the project POST");
+
+  post.resolve(response(200, {
+    project: project("blank-bootstrap", 0, createBody.draft as JsonRecord),
+  }));
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "ready");
+  assert.equal(harness.runner.current.projectReady, true);
+  assert.notEqual(harness.runner.current.script, "must-not-survive-bootstrap");
+}
+
+async function resetBlocksUserMutationWhileDefaultsLoad(): Promise<void> {
+  const harness = createHarness();
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "ready");
+
+  harness.runner.current.setProjectTitle("Before Reset");
+  harness.runner.flush();
+  const resetDefaults = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", resetDefaults.promise);
+  const reset = harness.runner.current.resetProject();
+  harness.runner.flush();
+  assert.equal(harness.runner.current.projectInitialization, "loading-defaults");
+  assert.equal(harness.runner.current.projectReady, false,
+    "Reset blocks project readiness before awaiting account defaults");
+
+  harness.runner.current.setProjectTitle("must-not-survive-reset");
+  harness.runner.flush();
+  assert.equal(harness.runner.current.projectTitle, "Before Reset",
+    "Reset rejects a real title setter while defaults are pending");
+  resetDefaults.resolve(response(200, { defaultLogo: null }));
+  await reset;
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.projectInitialization, "ready");
+  assert.equal(harness.runner.current.projectReady, true);
+  assert.equal(harness.runner.current.projectTitle, "New Project");
+  assert.equal((postBodies(harness.fetchMock).at(-1)?.draft as JsonRecord).projectTitle, "New Project",
+    "the attempted Reset value never reaches the replacement project POST");
+}
+
+async function supersededResetCannotCompleteInitialization(): Promise<void> {
+  const harness = createHarness();
+  harness.runner.mount();
+  await settle(harness.runner);
+  const postsBeforeReset = postBodies(harness.fetchMock).length;
+  const firstDefaults = deferred<ResponseLike>();
+  const secondDefaults = deferred<ResponseLike>();
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", firstDefaults.promise);
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", secondDefaults.promise);
+
+  const firstReset = harness.runner.current.resetProject();
+  harness.runner.flush();
+  const secondReset = harness.runner.current.resetProject();
+  harness.runner.flush();
+  firstDefaults.resolve(response(200, { defaultLogo: null }));
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "loading-defaults",
+    "a superseded default completion cannot publish ready");
+  assert.equal(harness.runner.current.projectReady, false);
+  assert.equal(postBodies(harness.fetchMock).length, postsBeforeReset,
+    "a superseded default completion cannot create a project");
+
+  secondDefaults.resolve(response(200, { defaultLogo: null }));
+  await Promise.all([firstReset, secondReset]);
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "ready");
+  assert.equal(harness.runner.current.projectReady, true);
+  assert.equal(postBodies(harness.fetchMock).length, postsBeforeReset + 1,
+    "only the latest Reset creates a replacement project");
+}
+
+async function unmountWhileBlankBootstrapAwaitsDefaults(): Promise<void> {
+  const defaults = deferred<ResponseLike>();
+  const harness = createHarness();
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", defaults.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.projectInitialization, "loading-defaults");
+  harness.runner.unmount();
+  defaults.resolve(response(200, { defaultLogo: null }));
+  await settle(harness.runner);
+  assert.equal(postBodies(harness.fetchMock).length, 0,
+    "unmount while blank defaults are pending prevents project creation");
+  assert.equal(harness.runner.current.projectInitialization, "loading-defaults",
+    "unmounted default completion cannot publish initialization state");
+}
+
+async function accountDefaultFailureFailsClosed(): Promise<void> {
+  const harness = createHarness();
+  harness.fetchMock.enqueue("GET", "/api/user/brand-assets", response(500, { error: "unavailable" }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.deepEqual({
+    initialization: harness.runner.current.projectInitialization,
+    ready: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+    posts: postBodies(harness.fetchMock).length,
+  }, {
+    initialization: "error",
+    ready: false,
+    recovery: "load-error",
+    posts: 0,
+  }, "a non-abort account-default failure is visible and fail-closed");
+}
+
+async function projectCreationFailureFailsClosed(): Promise<void> {
+  const harness = createHarness();
+  harness.fetchMock.enqueue("POST", "/api/editor-projects", response(500, { error: "unavailable" }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.deepEqual({
+    initialization: harness.runner.current.projectInitialization,
+    ready: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+  }, {
+    initialization: "error",
+    ready: false,
+    recovery: "load-error",
+  }, "a non-abort server-project creation failure is visible and fail-closed");
 }
 
 async function resetDuringProjectGet(): Promise<void> {
@@ -2027,6 +2181,12 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["second-ambiguity-refresh", secondAmbiguityLocksUntilGetOnlyRefresh],
     ["settings-after-GET", settingsAfterServerHydration],
     ["equal-revision-resume", exactEqualRevisionResume],
+    ["blank-bootstrap-initialization", blankBootstrapBlocksUserMutationDuringInitialization],
+    ["reset-initialization", resetBlocksUserMutationWhileDefaultsLoad],
+    ["superseded-reset-initialization", supersededResetCannotCompleteInitialization],
+    ["blank-bootstrap-unmount", unmountWhileBlankBootstrapAwaitsDefaults],
+    ["account-default-failure", accountDefaultFailureFailsClosed],
+    ["project-creation-failure", projectCreationFailureFailsClosed],
     ["reset-during-GET", resetDuringProjectGet],
     ["reset-unmount-during-brand", unmountWhileResetAwaitsBrandAssets],
     ["reset-unmount-during-POST", unmountWhileResetPostIsPending],
@@ -2058,6 +2218,62 @@ export async function verifyRuntimeHookContract(): Promise<void> {
 }
 
 export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
+  const resetReadyAfterDefaults = hookSource
+    .replace(
+      `    setProjectReady(false);
+    setProjectInitialization("loading-defaults");`,
+      `    setProjectInitialization("loading-defaults");`,
+    )
+    .replace(
+      `    if (!isCurrentReset()) return;
+    setProjectInitialization("creating-project");
+    const nextPreset`,
+      `    if (!isCurrentReset()) return;
+    setProjectReady(false);
+    setProjectInitialization("creating-project");
+    const nextPreset`,
+    );
+  assert.notEqual(resetReadyAfterDefaults, hookSource, "deferred Reset readiness mutation applied");
+  activeCompiledHook = compileHook(resetReadyAfterDefaults);
+  await assert.rejects(
+    resetBlocksUserMutationWhileDefaultsLoad,
+    /Reset blocks project readiness/,
+    "runtime harness rejects Reset that remains ready while defaults are pending",
+  );
+
+  const missingInitializationGuard = hookSource.replace(
+    `    if (!canAcceptUserMutation()) return;
+    setSynchronized(next);`,
+    `    setSynchronized(next);`,
+  );
+  assert.notEqual(missingInitializationGuard, hookSource, "initialization setter-guard mutation applied");
+  activeCompiledHook = compileHook(missingInitializationGuard);
+  await assert.rejects(
+    blankBootstrapBlocksUserMutationDuringInitialization,
+    /rejects a real user setter|must-not-survive-bootstrap|attempted bootstrap value/,
+    "runtime harness rejects a public setter that mutates during blank bootstrap",
+  );
+
+  const supersededDefaultPublishesReady = hookSource.replace(
+    `    if (!isCurrentReset()) return;
+    setProjectInitialization("creating-project");
+    const nextPreset`,
+    `    if (!isCurrentReset()) {
+      setProjectInitialization("ready");
+      return;
+    }
+    setProjectInitialization("creating-project");
+    const nextPreset`,
+  );
+  assert.notEqual(supersededDefaultPublishesReady, hookSource,
+    "superseded default ownership mutation applied");
+  activeCompiledHook = compileHook(supersededDefaultPublishesReady);
+  await assert.rejects(
+    supersededResetCannotCompleteInitialization,
+    /superseded default completion cannot publish ready/,
+    "runtime harness rejects a superseded default completion that publishes ready",
+  );
+
   const missingExistingGuard = hookSource.replace(
     "if (existingProjectId) {\n        accountDraftDefaultsAllowedRef.current = false;",
     "if (existingProjectId) {",

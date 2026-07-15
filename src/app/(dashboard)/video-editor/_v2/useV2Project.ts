@@ -104,6 +104,7 @@ function useUserDraftState<T>(
   initial: T,
   field: keyof V2Draft,
   effectiveDraftRef: MutableRefObject<V2Draft>,
+  canAcceptUserMutation: () => boolean,
   markUserMutation: () => void,
 ): [T, SetState<T>, SetState<T>] {
   const [value, setRaw] = useState(initial);
@@ -122,9 +123,10 @@ function useUserDraftState<T>(
     setRaw(resolved);
   }, [effectiveDraftRef, field]);
   const setFromUser = useCallback<SetState<T>>((next) => {
+    if (!canAcceptUserMutation()) return;
     setSynchronized(next);
     markUserMutation();
-  }, [markUserMutation, setSynchronized]);
+  }, [canAcceptUserMutation, markUserMutation, setSynchronized]);
   return [value, setFromUser, setSynchronized];
 }
 
@@ -205,14 +207,10 @@ function loadDraft(): V2Draft | null {
 }
 
 async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
-  try {
-    const res = await fetch("/api/user/brand-assets", { cache: "no-store" });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
-  } catch {
-    return null;
-  }
+  const res = await fetch("/api/user/brand-assets", { cache: "no-store" });
+  if (!res.ok) throw new Error("account defaults unavailable");
+  const data = await res.json();
+  return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
 }
 
 function autosaveCandidateFromProject(
@@ -318,6 +316,12 @@ export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
 export type V2VoiceEngine = "gemini" | "elevenlabs";
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
 
+export type ProjectInitializationState =
+  | "loading-defaults"
+  | "creating-project"
+  | "ready"
+  | "error";
+
 export interface V2Usage {
   plan?: string;
   minutes?: { used: number; limit: number; remaining: number };
@@ -381,6 +385,19 @@ export function useV2Project() {
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectReady, setProjectReady] = useState(false);
+  const projectReadyRef = useRef(projectReady);
+  projectReadyRef.current = projectReady;
+  const [projectInitialization, setProjectInitializationRaw] =
+    useState<ProjectInitializationState>("loading-defaults");
+  const projectInitializationRef = useRef<ProjectInitializationState>("loading-defaults");
+  const setProjectInitialization = useCallback((next: ProjectInitializationState) => {
+    projectInitializationRef.current = next;
+    setProjectInitializationRaw(next);
+  }, []);
+  const canAcceptUserMutation = useCallback(
+    () => projectInitializationRef.current === "ready" && projectReadyRef.current,
+    [],
+  );
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
@@ -389,17 +406,17 @@ export function useV2Project() {
 
   // ── Step 1 ──
   const [projectTitle, setProjectTitle, setProjectTitleRaw] = useUserDraftState(
-    d.projectTitle ?? DEFAULT_PROJECT.projectTitle, "projectTitle", effectiveDraftRef, markUserDraftMutation,
+    d.projectTitle ?? DEFAULT_PROJECT.projectTitle, "projectTitle", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(
-    d.mode ?? "script", "mode", effectiveDraftRef, markUserDraftMutation,
+    d.mode ?? "script", "mode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [script, setScript, setScriptRaw] = useUserDraftState(
-    d.script ?? "", "script", effectiveDraftRef, markUserDraftMutation,
+    d.script ?? "", "script", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
   const [clipUrlState, setClipUrlStateFromUser, setClipUrlStateRaw] = useUserDraftState(
-    d.clipUrl ?? "", "clipUrl", effectiveDraftRef, markUserDraftMutation,
+    d.clipUrl ?? "", "clipUrl", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [clipDurationSecState, setClipDurationSecStateFromUser, setClipDurationSecStateRaw] = useUserDraftState(
     typeof d.clipDurationSec === "number" && Number.isFinite(d.clipDurationSec) && d.clipDurationSec > 0
@@ -407,22 +424,24 @@ export function useV2Project() {
       : 0,
     "clipDurationSec",
     effectiveDraftRef,
+    canAcceptUserMutation,
     markUserDraftMutation,
   );
   const setClipDurationSec = useCallback((sec: number) => {
     setClipDurationSecStateFromUser(Number.isFinite(sec) && sec > 0 ? sec : 0);
   }, [setClipDurationSecStateFromUser]);
   const setClipUrl = useCallback((url: string) => {
+    if (!canAcceptUserMutation()) return;
     if (!url) setClipDurationSecStateRaw(0);
     setClipUrlStateFromUser(url);
-  }, [setClipDurationSecStateFromUser, setClipUrlStateFromUser]);
+  }, [canAcceptUserMutation, setClipDurationSecStateRaw, setClipUrlStateFromUser]);
   const clipUrl = clipUrlState;
   const clipDurationSec = clipDurationSecState;
 
   // ── Step 2 ──
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
   const [brollSource, setBrollSource, setBrollSourceRaw] = useUserDraftState<V2BrollSource>(
-    d.brollSource ?? "stock", "brollSource", effectiveDraftRef, markUserDraftMutation,
+    d.brollSource ?? "stock", "brollSource", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
@@ -432,76 +451,77 @@ export function useV2Project() {
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
   const [managedKieOn, setManagedKieOn] = useState(false);
   const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(
-    d.voiceEngine ?? "gemini", "voiceEngine", effectiveDraftRef, markUserDraftMutation,
+    d.voiceEngine ?? "gemini", "voiceEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(
-    d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, markUserDraftMutation,
+    d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(
-    d.voiceId ?? "", "voiceId", effectiveDraftRef, markUserDraftMutation,
+    d.voiceId ?? "", "voiceId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** filename ของ system track ที่เลือก · "" = ยังไม่เลือก · null = ไม่ใส่เพลง */
   const [musicTrack, setMusicTrack, setMusicTrackRaw] = useUserDraftState<string | null>(
-    d.musicTrack === undefined ? "" : d.musicTrack, "musicTrack", effectiveDraftRef, markUserDraftMutation,
+    d.musicTrack === undefined ? "" : d.musicTrack, "musicTrack", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** เพลงที่เลือกเป็นของระบบหรือของผู้ใช้ — ใช้เลือก path bgmFile ตอน submit */
   const [musicTrackKind, setMusicTrackKind, setMusicTrackKindRaw] = useUserDraftState<"system" | "user">(
-    d.musicTrackKind ?? "system", "musicTrackKind", effectiveDraftRef, markUserDraftMutation,
+    d.musicTrackKind ?? "system", "musicTrackKind", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** ระดับเสียงเพลง 0–1 · default 0.12 (ตรงกับ pipeline + editor v1) — ใต้เสียงพูด */
   const [bgmVolume, setBgmVolume, setBgmVolumeRaw] = useUserDraftState(
-    d.bgmVolume ?? 0.12, "bgmVolume", effectiveDraftRef, markUserDraftMutation,
+    d.bgmVolume ?? 0.12, "bgmVolume", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [useAvatar, setUseAvatar, setUseAvatarRaw] = useUserDraftState(
-    d.useAvatar ?? false, "useAvatar", effectiveDraftRef, markUserDraftMutation,
+    d.useAvatar ?? false, "useAvatar", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [avatarId, setAvatarId, setAvatarIdRaw] = useUserDraftState(
-    d.avatarId ?? "", "avatarId", effectiveDraftRef, markUserDraftMutation,
+    d.avatarId ?? "", "avatarId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
 
   // ── ขั้นสูง (P6c) ──
   const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
-    d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, markUserDraftMutation,
+    d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   ); // 0 = auto
   const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(
-    d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, markUserDraftMutation,
+    d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [avatarIntroSecs, setAvatarIntroSecs, setAvatarIntroSecsRaw] = useUserDraftState(
-    d.avatarIntroSecs ?? 5, "avatarIntroSecs", effectiveDraftRef, markUserDraftMutation,
+    d.avatarIntroSecs ?? 5, "avatarIntroSecs", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [avatarTailSecs, setAvatarTailSecs, setAvatarTailSecsRaw] = useUserDraftState(
-    d.avatarTailSecs ?? 5, "avatarTailSecs", effectiveDraftRef, markUserDraftMutation,
+    d.avatarTailSecs ?? 5, "avatarTailSecs", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [kieModel, setKieModel, setKieModelRaw] = useUserDraftState<KieImageModel | "">(
-    (d.kieModel as KieImageModel | undefined) ?? "", "kieModel", effectiveDraftRef, markUserDraftMutation,
+    (d.kieModel as KieImageModel | undefined) ?? "", "kieModel", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [autoMixProviders, setAutoMixProviders, setAutoMixProvidersRaw] = useUserDraftState<AutoMixImageProvider[]>(
-    d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS, "autoMixProviders", effectiveDraftRef, markUserDraftMutation,
+    d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS, "autoMixProviders", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [brollRegionPreference, setBrollRegionPreference, setBrollRegionPreferenceRaw] = useUserDraftState<BrollRegionPreference>(
-    d.brollRegionPreference ?? "auto", "brollRegionPreference", effectiveDraftRef, markUserDraftMutation,
+    d.brollRegionPreference ?? "auto", "brollRegionPreference", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [brollVisualStyle, setBrollVisualStyle, setBrollVisualStyleRaw] = useUserDraftState<BrollVisualStyle>(
-    d.brollVisualStyle ?? "auto", "brollVisualStyle", effectiveDraftRef, markUserDraftMutation,
+    d.brollVisualStyle ?? "auto", "brollVisualStyle", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(
-    d.logoOverlay, "logoOverlay", effectiveDraftRef, markUserDraftMutation,
+    d.logoOverlay, "logoOverlay", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
   const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(
-    d.mixPreset ?? "free", "mixPreset", effectiveDraftRef, markUserDraftMutation,
+    d.mixPreset ?? "free", "mixPreset", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** เลือก preset → ขับ mixPreset + brollSource + autoMixProviders ให้สอดคล้องกัน
    *  (preset ≠ ฟรีล้วน ⇒ automix + provider set รวม kie-ai). weights ที่ส่งไป server
    *  มาจาก PRESET_WEIGHTS ใน useV2Job. */
   const setMixPreset = useCallback((preset: MixPreset) => {
+    if (!canAcceptUserMutation()) return;
     setBrollSourceRaw(presetBrollSource(preset));
     const provs = PRESET_PROVIDERS[preset];
     if (provs) setAutoMixProvidersRaw(provs);
     setMixPresetFromUser(preset);
-  }, [setAutoMixProvidersRaw, setBrollSourceRaw, setMixPresetFromUser]);
+  }, [canAcceptUserMutation, setAutoMixProvidersRaw, setBrollSourceRaw, setMixPresetFromUser]);
 
   function buildDraft(): V2Draft {
     return {
@@ -556,8 +576,6 @@ export function useV2Project() {
     recoveryRef.current = next;
     setRecovery(next);
   }, []);
-  const projectReadyRef = useRef(projectReady);
-  projectReadyRef.current = projectReady;
   const autosaveGenerationRef = useRef(0);
   const autosaveLineageRef = useRef<AutosaveLineageTracker | null>(null);
   const latestDraftRef = useRef<EditorProjectAutosaveCandidate | null>(null);
@@ -808,6 +826,13 @@ export function useV2Project() {
     options: { isCurrent?: () => boolean; signal?: AbortSignal } = {},
   ) => {
     const isCurrent = options.isCurrent ?? (() => true);
+    const failOwnedCreation = () => {
+      if (!isCurrent() || options.signal?.aborted) return;
+      setProjectReady(false);
+      setProjectInitialization("error");
+      setSaveStatus("error");
+      setRecoveryState({ status: "load-error", message: "สร้างโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่" });
+    };
     try {
       const res = await fetch("/api/editor-projects", {
         method: "POST",
@@ -816,33 +841,43 @@ export function useV2Project() {
         signal: options.signal,
       });
       if (!isCurrent()) return null;
-      if (!res.ok) return null;
+      if (!res.ok) {
+        failOwnedCreation();
+        return null;
+      }
       const data = await res.json();
       if (!isCurrent()) return null;
       const id = typeof data?.project?.id === "string" ? data.project.id : null;
-      if (id) {
-        const createdProject = data.project as Record<string, unknown>;
-        const serverCandidate = serverCandidateForProject(id, createdProject);
-        if (!serverCandidate || !initializeAutosaveLineage(id, serverCandidate)) return null;
-        setProjectId(id);
-        setProjectReady(true);
-        setRecoveryState({ status: "none" });
-        if (typeof data?.project?.status === "string") setProjectStatus(data.project.status as ProjectStatus);
-        setActiveJobId(typeof data?.project?.activeJobId === "string" ? data.project.activeJobId : null);
-        setActiveExportJobId(typeof data?.project?.activeExportJobId === "string" ? data.project.activeExportJobId : null);
-        setLatestVideoId(typeof data?.project?.latestVideoId === "string" ? data.project.latestVideoId : null);
-        setPreviewMediaState((data?.project?.previewMediaState as ProjectMediaState | null | undefined) ?? null);
-        try {
-          const storage = browserStorage();
-          storage?.setItem(PROJECT_ID_KEY, id);
-          storage?.removeItem(DRAFT_KEY);
-        } catch {}
+      if (!id) {
+        failOwnedCreation();
+        return null;
       }
+      const createdProject = data.project as Record<string, unknown>;
+      const serverCandidate = serverCandidateForProject(id, createdProject);
+      if (!serverCandidate || !initializeAutosaveLineage(id, serverCandidate)) {
+        failOwnedCreation();
+        return null;
+      }
+      setProjectId(id);
+      setProjectReady(true);
+      setProjectInitialization("ready");
+      setRecoveryState({ status: "none" });
+      if (typeof data?.project?.status === "string") setProjectStatus(data.project.status as ProjectStatus);
+      setActiveJobId(typeof data?.project?.activeJobId === "string" ? data.project.activeJobId : null);
+      setActiveExportJobId(typeof data?.project?.activeExportJobId === "string" ? data.project.activeExportJobId : null);
+      setLatestVideoId(typeof data?.project?.latestVideoId === "string" ? data.project.latestVideoId : null);
+      setPreviewMediaState((data?.project?.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+      try {
+        const storage = browserStorage();
+        storage?.setItem(PROJECT_ID_KEY, id);
+        storage?.removeItem(DRAFT_KEY);
+      } catch {}
       return id;
     } catch {
+      failOwnedCreation();
       return null;
     }
-  }, [initializeAutosaveLineage, setRecoveryState]);
+  }, [initializeAutosaveLineage, setProjectInitialization, setRecoveryState]);
 
   const resetProject = useCallback(async () => {
     invalidateLocalChoiceRequest();
@@ -858,8 +893,20 @@ export function useV2Project() {
       && !resetController.signal.aborted;
     accountDraftDefaultsAllowedRef.current = false;
     trustedResumeDraftRef.current = null;
-    const accountDefault = await loadAccountLogoDefault();
+    setProjectReady(false);
+    setProjectInitialization("loading-defaults");
+    let accountDefault: LogoOverlayConfig | null;
+    try {
+      accountDefault = await loadAccountLogoDefault();
+    } catch {
+      if (!isCurrentReset()) return;
+      setProjectInitialization("error");
+      setSaveStatus("error");
+      setRecoveryState({ status: "load-error", message: "โหลดค่าเริ่มต้นไม่สำเร็จ กรุณาลองใหม่" });
+      return;
+    }
     if (!isCurrentReset()) return;
+    setProjectInitialization("creating-project");
     const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
       hasExistingDraft: false,
@@ -877,7 +924,6 @@ export function useV2Project() {
     latestQueuedSaveRef.current = { projectId: null, revision: null };
     if (projectId) clearProjectRecoveryData(projectId);
     setProjectId(null);
-    setProjectReady(false);
     setRecoveryState({ status: "none" });
     setProjectStatus("draft");
     setActiveJobId(null);
@@ -920,7 +966,7 @@ export function useV2Project() {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, isPaidManagedKie, projectId, saveRevision, setProjectInitialization, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
@@ -931,6 +977,8 @@ export function useV2Project() {
     bootstrapAbortControllerRef.current?.abort();
     const controller = new AbortController();
     bootstrapAbortControllerRef.current = controller;
+    setProjectReady(false);
+    setProjectInitialization("loading-defaults");
     const isCurrentBootstrap = () => alive
       && mountedRef.current
       && bootstrapGenerationRef.current === generation
@@ -963,6 +1011,7 @@ export function useV2Project() {
         if (!isCurrentBootstrap()) return;
         if (!response || !response.ok) {
           setProjectReady(false);
+          setProjectInitialization("error");
           setSaveStatus("error");
           setRecoveryState({
             status: "load-error",
@@ -984,6 +1033,7 @@ export function useV2Project() {
           || project.draftRevision > 2_147_483_647
         ) {
           setProjectReady(false);
+          setProjectInitialization("error");
           setSaveStatus("error");
           setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
           return;
@@ -1002,6 +1052,7 @@ export function useV2Project() {
         const serverCandidate = serverCandidateForProject(existingProjectId, project);
         if (!serverCandidate) {
           setProjectReady(false);
+          setProjectInitialization("error");
           setSaveStatus("error");
           setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
           return;
@@ -1010,6 +1061,7 @@ export function useV2Project() {
         const tracker = initializeAutosaveLineage(existingProjectId, serverCandidate);
         if (!tracker) {
           setProjectReady(false);
+          setProjectInitialization("error");
           setSaveStatus("error");
           setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
           return;
@@ -1025,6 +1077,7 @@ export function useV2Project() {
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
           setRecoveryState({ status: "none" });
           setProjectReady(true);
+          setProjectInitialization("ready");
           setSaveStatus("idle");
           return;
         }
@@ -1038,6 +1091,7 @@ export function useV2Project() {
           });
           if (!localCandidate) {
             setProjectReady(false);
+            setProjectInitialization("error");
             setSaveStatus("error");
             setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
             return;
@@ -1052,6 +1106,7 @@ export function useV2Project() {
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
           setRecoveryState({ status: "none" });
           setProjectReady(true);
+          setProjectInitialization("ready");
           setSaveStatus("saving");
           setSaveRevision((value) => value + 1);
           return;
@@ -1066,8 +1121,10 @@ export function useV2Project() {
             trusted: decision.local.trusted,
           });
           setProjectReady(false);
+          setProjectInitialization("ready");
           tracker.blocked = true;
           if (!localCandidate) {
+            setProjectInitialization("error");
             setSaveStatus("error");
             setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
             return;
@@ -1084,6 +1141,7 @@ export function useV2Project() {
         }
         if (decision.kind === "locked-error") {
           setProjectReady(false);
+          setProjectInitialization("error");
           setSaveStatus("error");
           setRecoveryState({
             status: "load-error",
@@ -1101,7 +1159,17 @@ export function useV2Project() {
       const hasLocalDraft = localDraft !== null;
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
-        const accountDefault = await loadAccountLogoDefault();
+        let accountDefault: LogoOverlayConfig | null;
+        try {
+          accountDefault = await loadAccountLogoDefault();
+        } catch {
+          if (!isCurrentBootstrap()) return;
+          setProjectReady(false);
+          setProjectInitialization("error");
+          setSaveStatus("error");
+          setRecoveryState({ status: "load-error", message: "โหลดค่าเริ่มต้นไม่สำเร็จ กรุณาลองใหม่" });
+          return;
+        }
         if (!isCurrentBootstrap()) return;
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
@@ -1111,6 +1179,7 @@ export function useV2Project() {
       applyDraft(canonicalSeedDraft);
       trustedResumeDraftRef.current = null;
       lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+      setProjectInitialization("creating-project");
       const id = await createServerProject(canonicalSeedDraft, {
         isCurrent: isCurrentBootstrap,
         signal: controller.signal,
@@ -1126,7 +1195,7 @@ export function useV2Project() {
     };
     // Server project bootstrap should run once. Subsequent field autosaves are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage, invalidateLocalChoiceRequest]);
+  }, [createServerProject, bootstrapRetryRevision, invalidateAutosaveLineage, invalidateLocalChoiceRequest, setProjectInitialization]);
 
   const refreshConflictAfterAmbiguousWrite = useCallback(async (
     projectId: string,
@@ -1704,7 +1773,7 @@ export function useV2Project() {
     logoOverlay, setLogoOverlay,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
   };
