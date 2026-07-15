@@ -119,13 +119,10 @@ const projectSource = readFileSync(
 const serverLoadSource = sourceBetween(
   projectSource,
   "if (existingProjectId) {",
-  "const hasLocalDraft =",
+  "const localDraft =",
 );
-assert.match(
-  projectSource,
-  /resolveEditorProjectBootstrap/,
-  "existing-project load uses the pure bootstrap resolver",
-);
+assert.doesNotMatch(projectSource, /resolveEditorProjectBootstrap/,
+  "the temporary async bootstrap adapter is gone");
 assert.doesNotMatch(
   serverLoadSource,
   /loadAccountLogoDefault/,
@@ -133,14 +130,16 @@ assert.doesNotMatch(
 );
 assert.match(
   serverLoadSource,
-  /const associatedLocalDraft\s*=\s*storedProjectId\s*===\s*existingProjectId/,
-  "local recovery is associated with the requested project id",
+  /const legacyLocalDraft\s*=\s*storedProjectId\s*===\s*existingProjectId/,
+  "legacy recovery remains associated with the requested project id",
 );
-const earlyLocalApplyIndex = serverLoadSource.indexOf("applyDraft(associatedLocalDraft)");
 const idleWaitIndex = serverLoadSource.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
+const getIndex = serverLoadSource.indexOf("await fetch(", idleWaitIndex);
+const journalIndex = serverLoadSource.indexOf("readEditorProjectRecoveryJournal", getIndex);
+const decisionIndex = serverLoadSource.indexOf("decideEditorProjectBootstrap", journalIndex);
 assert.ok(
-  earlyLocalApplyIndex >= 0 && idleWaitIndex > earlyLocalApplyIndex,
-  "valid local recovery is applied before waiting for the lane or GET",
+  idleWaitIndex >= 0 && getIndex > idleWaitIndex && journalIndex > getIndex && decisionIndex > journalIndex,
+  "existing project recovery waits for the lane and server before choosing either candidate",
 );
 assert.match(
   serverLoadSource,
@@ -149,38 +148,16 @@ assert.match(
 );
 assert.match(
   serverLoadSource,
-  /isLocalDirty:\s*\(\)\s*=>\s*bootstrapLocalDirtyRef\.current/,
-  "bootstrap retry knows whether the user edited while unready",
+  /decision\.kind\s*===\s*"resume-local"[\s\S]{0,900}applyDraft\(localCandidate\.draft as V2Draft\)/,
+  "trusted local recovery is the only automatically resumed local draft",
 );
 assert.match(
   serverLoadSource,
-  /bootstrapLocalDirtyRef\.current\s*&&\s*!bootstrapLocalRecoveryValidRef\.current[\s\S]{0,80}return null/,
-  "a failed local write cannot reuse an older recovery draft for a newer edit",
-);
-assert.match(
-  serverLoadSource,
-  /readLocalDraft:[\s\S]{0,360}getItem\(PROJECT_ID_KEY\)[\s\S]{0,140}existingProjectId/,
-  "recovery re-checks the current local project association after pending edits",
-);
-const bootstrapErrorSource = sourceBetween(
-  serverLoadSource,
-  'if (outcome.kind === "error")',
-  'if (outcome.kind !== "missing")',
-);
-assert.match(bootstrapErrorSource, /setProjectReady\(false\)/);
-assert.match(bootstrapErrorSource, /setSaveStatus\("error"\)/);
-assert.match(bootstrapErrorSource, /return;/,
-  "network, non-404, and unsafe stale GET outcomes remain explicitly unready");
-assert.match(
-  serverLoadSource,
-  /outcome\.kind\s*===\s*"local"[\s\S]{0,240}applyDraft\(outcome\.draft as V2Draft\)/,
-  "retry/recovery applies the latest valid local draft",
-);
-assert.match(
-  serverLoadSource,
-  /outcome\.kind\s*===\s*"server"[\s\S]{0,300}project\.draft[\s\S]{0,160}applyDraft/,
+  /decision\.kind\s*===\s*"server"[\s\S]{0,360}applyDraft\(serverCandidate\.draft as V2Draft\)/,
   "safe current GET applies only the server draft",
 );
+assert.match(serverLoadSource, /decision\.kind\s*===\s*"conflict"[\s\S]{0,360}setProjectReady\(false\)/,
+  "ambiguous logo drafts remain locked behind an explicit conflict choice");
 
 const localSeedSource = sourceBetween(
   projectSource,
@@ -213,35 +190,10 @@ assert.match(
   /onStatus:[\s\S]{0,160}setSaveStatus\(status\)/,
   "the queue's latest terminal result drives visible save status",
 );
-assert.match(
-  autosaveSource,
-  /!projectReady\s*&&\s*existingBootstrapProjectIdRef\.current[\s\S]{0,420}setItem\(DRAFT_KEY,[\s\S]{0,220}bootstrapLocalDirtyRef\.current\s*=\s*true[\s\S]{0,220}return/,
-  "edits while an existing project is unready persist locally and stop before PATCH",
-);
-assert.match(
-  autosaveSource,
-  /let localWriteSucceeded\s*=\s*false[\s\S]{0,260}localWriteSucceeded\s*=\s*true[\s\S]{0,220}bootstrapLocalRecoveryValidRef\.current\s*=\s*localWriteSucceeded/,
-  "unready recovery is valid only when the latest local write succeeds",
-);
-assert.match(
-  autosaveSource,
-  /!isFirst\s*&&\s*!projectReady\s*&&\s*existingBootstrapProjectIdRef\.current[\s\S]{0,180}bootstrapLocalDirtyRef\.current\s*=\s*true[\s\S]{0,140}bootstrapLocalRecoveryValidRef\.current\s*=\s*false/,
-  "an edit is marked unconfirmed before its debounce can race a pending GET",
-);
-const unreadyPersistSource = sourceBetween(
-  autosaveSource,
-  "if (!projectReady && existingBootstrapProjectIdRef.current)",
-  "if (projectReady && projectId)",
-);
-assert.match(
-  unreadyPersistSource,
-  /setItem\(DRAFT_KEY,[\s\S]{0,180}setItem\(PROJECT_ID_KEY,\s*existingBootstrapProjectIdRef\.current\)/,
-  "a successful unready local write associates the draft with the existing project id",
-);
 assert.doesNotMatch(
-  unreadyPersistSource,
-  /setSaveStatus\("saved"\)|editorProjectSaveQueue\.enqueue/,
-  "unready local-only persistence never reports durable saved or queues PATCH",
+  autosaveSource,
+  /!projectReady[\s\S]{0,320}(?:writeEditorProjectRecoveryJournal|editorProjectSaveQueue\.enqueue)/,
+  "unready existing projects neither journal nor autosave default state",
 );
 assert.doesNotMatch(
   autosaveSource,
@@ -255,18 +207,13 @@ assert.match(
 );
 const retrySource = sourceBetween(
   projectSource,
+  "const retryProjectBootstrap = useCallback",
   "const retryProjectSave = useCallback",
-  "const firstPersistRun",
 );
-assert.match(retrySource, /!projectReadyRef\.current\s*&&\s*existingBootstrapProjectIdRef\.current/);
+assert.match(retrySource, /recoveryRef\.current\.status\s*===\s*"load-error"/);
 assert.match(retrySource, /setBootstrapRetryRevision/);
-assert.match(retrySource, /setSaveRevision/,
-  "Retry reruns bootstrap while unready and autosave while ready");
-assert.match(
-  retrySource,
-  /!projectReadyRef\.current\s*&&\s*existingBootstrapProjectIdRef\.current[\s\S]{0,420}latestDraftRef\.current[\s\S]{0,240}bootstrapLocalRecoveryValidRef\.current\s*=\s*localWriteSucceeded[\s\S]{0,260}setBootstrapRetryRevision/,
-  "Retry flushes the latest in-memory edit to recovery storage before GET",
-);
+assert.doesNotMatch(retrySource, /setSaveRevision|setItem|writeEditorProjectRecoveryJournal|markUserDraftMutation/,
+  "bootstrap Retry cannot turn defaults into recovery data");
 assert.match(
   autosaveSource,
   /logoOverlay, projectId, projectReady, saveRevision\]\);/,
@@ -279,8 +226,8 @@ assert.match(
 );
 assert.match(
   localSeedSource,
-  /const canonicalSeedDraft = canonicalizeDraftLogoOverlay\(seedDraft\);\s+applyDraft\(canonicalSeedDraft\);\s+const id = await createServerProject\(canonicalSeedDraft\);/,
+  /const canonicalSeedDraft = canonicalizeDraftLogoOverlay\(seedDraft\);[\s\S]{0,240}applyDraft\(canonicalSeedDraft\);[\s\S]{0,240}createServerProject\(canonicalSeedDraft\);/,
   "the same canonical local draft is applied and posted",
 );
 
-console.log("ALL LOGO PROJECT DEFAULT CHECKS PASSED");
+console.log("logo-project-default: all checks passed");

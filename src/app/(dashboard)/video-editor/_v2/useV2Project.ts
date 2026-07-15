@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
@@ -8,9 +8,15 @@ import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-prefer
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
+  decideEditorProjectBootstrap,
   isEditorProjectRecoveryDraft,
-  resolveEditorProjectBootstrap,
 } from "@/lib/editor-project-bootstrap";
+import {
+  clearEditorProjectRecoveryJournal,
+  parseEditorProjectRecoveryJournal,
+  readEditorProjectRecoveryJournal,
+  writeEditorProjectRecoveryJournal,
+} from "@/lib/editor-project-recovery-journal";
 import {
   canonicalizeDraftLogoOverlay,
   logoOverlayForNewProject,
@@ -34,10 +40,100 @@ interface V2Draft {
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
 
+export type RecoveryCandidate = {
+  draft: Record<string, unknown>;
+  revision: number | null;
+  updatedAt: string | null;
+  trusted: boolean;
+};
+
+export type EditorProjectRecoveryState =
+  | { status: "none" }
+  | { status: "loading" }
+  | { status: "load-error"; message: string }
+  | {
+      status: "conflict";
+      local: RecoveryCandidate;
+      server: RecoveryCandidate;
+      resolving: false | "local" | "server";
+      error: string | null;
+    };
+
+type SetState<T> = Dispatch<SetStateAction<T>>;
+
+function useUserDraftState<T>(initial: T, markUserMutation: () => void): [T, SetState<T>, SetState<T>] {
+  const [value, setRaw] = useState(initial);
+  const setFromUser = useCallback<SetState<T>>((next) => {
+    markUserMutation();
+    setRaw(next);
+  }, [markUserMutation]);
+  return [value, setFromUser, setRaw];
+}
+
+function freezeRecoveryValue<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeRecoveryValue(child);
+  return Object.freeze(value);
+}
+
+export function createRecoveryCandidate(input: {
+  projectId: string;
+  draft: unknown;
+  revision: number | null;
+  updatedAt: string | null;
+  trusted: boolean;
+}): RecoveryCandidate | null {
+  if (
+    input.revision !== null
+    && (!Number.isSafeInteger(input.revision) || input.revision < 0)
+  ) return null;
+  const materialized = parseEditorProjectRecoveryJournal({
+    version: 1,
+    projectId: input.projectId,
+    baseRevision: input.revision ?? 0,
+    editedAt: "1970-01-01T00:00:00.000Z",
+    draft: input.draft,
+  }, input.projectId);
+  if (!materialized) return null;
+  const draft = canonicalizeDraftLogoOverlay(materialized.draft);
+  return freezeRecoveryValue({
+    draft,
+    revision: input.revision,
+    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : null,
+    trusted: input.trusted,
+  });
+}
+
+export function buildLocalConflictPatchBody(
+  conflict: { local: RecoveryCandidate; server: RecoveryCandidate },
+  revision: number,
+): Record<string, unknown> {
+  if (conflict.server.revision === null) throw new Error("server revision is required");
+  return {
+    draft: conflict.local.draft,
+    draftRevision: revision,
+    expectedDraftRevision: conflict.server.revision,
+    touchLastOpened: true,
+  };
+}
+
+export function isLatestSavedProjectRevision(
+  event: { projectId: string; revision: number; status: string },
+  latest: { projectId: string | null; revision: number | null },
+): boolean {
+  return event.status === "saved"
+    && event.projectId === latest.projectId
+    && event.revision === latest.revision;
+}
+
 function browserStorage() {
-  if (typeof window === "undefined") return null;
-  const storage = window.localStorage;
-  return storage && typeof storage.getItem === "function" ? storage : null;
+  try {
+    if (typeof window === "undefined") return null;
+    const storage = window.localStorage;
+    return storage && typeof storage.getItem === "function" ? storage : null;
+  } catch {
+    return null;
+  }
 }
 
 function loadDraft(): V2Draft | null {
@@ -146,6 +242,10 @@ export function useV2Project() {
   // hydration text mismatches when a previous draft exists.
   const draftRef = useRef<V2Draft>({});
   const d = draftRef.current;
+  const userDraftMutationTokenRef = useRef(0);
+  const markUserDraftMutation = useCallback(() => {
+    userDraftMutationTokenRef.current += 1;
+  }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectReady, setProjectReady] = useState(false);
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
@@ -155,29 +255,30 @@ export function useV2Project() {
   const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
 
   // ── Step 1 ──
-  const [projectTitle, setProjectTitle] = useState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle);
-  const [mode, setMode] = useState<V2Mode>(d.mode ?? "script");
-  const [script, setScript] = useState(d.script ?? "");
+  const [projectTitle, setProjectTitle, setProjectTitleRaw] = useUserDraftState(d.projectTitle ?? DEFAULT_PROJECT.projectTitle, markUserDraftMutation);
+  const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(d.mode ?? "script", markUserDraftMutation);
+  const [script, setScript, setScriptRaw] = useUserDraftState(d.script ?? "", markUserDraftMutation);
   /** URL คลิปที่อัปโหลด (โหมดใช้คลิปที่ถ่ายเอง) */
-  const [clipUrlState, setClipUrlState] = useState(d.clipUrl ?? "");
-  const [clipDurationSecState, setClipDurationSecState] = useState(
+  const [clipUrlState, setClipUrlStateFromUser, setClipUrlStateRaw] = useUserDraftState(d.clipUrl ?? "", markUserDraftMutation);
+  const [clipDurationSecState, setClipDurationSecStateFromUser, setClipDurationSecStateRaw] = useUserDraftState(
     typeof d.clipDurationSec === "number" && Number.isFinite(d.clipDurationSec) && d.clipDurationSec > 0
       ? d.clipDurationSec
       : 0,
+    markUserDraftMutation,
   );
   const setClipDurationSec = useCallback((sec: number) => {
-    setClipDurationSecState(Number.isFinite(sec) && sec > 0 ? sec : 0);
-  }, []);
+    setClipDurationSecStateFromUser(Number.isFinite(sec) && sec > 0 ? sec : 0);
+  }, [setClipDurationSecStateFromUser]);
   const setClipUrl = useCallback((url: string) => {
-    setClipUrlState(url);
-    if (!url) setClipDurationSecState(0);
-  }, []);
+    setClipUrlStateFromUser(url);
+    if (!url) setClipDurationSecStateRaw(0);
+  }, [setClipDurationSecStateFromUser, setClipUrlStateFromUser]);
   const clipUrl = clipUrlState;
   const clipDurationSec = clipDurationSecState;
 
   // ── Step 2 ──
   // default = วิดีโอสต็อก (ฟรี) — AutoMix/ภาพ AI ยัง Beta (admin เท่านั้น), วิดีโอ AI ยังไม่เปิด
-  const [brollSource, setBrollSource] = useState<V2BrollSource>(d.brollSource ?? "stock");
+  const [brollSource, setBrollSource, setBrollSourceRaw] = useUserDraftState<V2BrollSource>(d.brollSource ?? "stock", markUserDraftMutation);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
@@ -185,41 +286,41 @@ export function useV2Project() {
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
   const [managedKieOn, setManagedKieOn] = useState(false);
-  const [voiceEngine, setVoiceEngine] = useState<V2VoiceEngine>(d.voiceEngine ?? "gemini");
-  const [geminiVoiceName, setGeminiVoiceName] = useState(d.geminiVoiceName ?? "Aoede");
-  const [voiceId, setVoiceId] = useState(d.voiceId ?? "");
+  const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(d.voiceEngine ?? "gemini", markUserDraftMutation);
+  const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(d.geminiVoiceName ?? "Aoede", markUserDraftMutation);
+  const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(d.voiceId ?? "", markUserDraftMutation);
   /** filename ของ system track ที่เลือก · "" = ยังไม่เลือก · null = ไม่ใส่เพลง */
-  const [musicTrack, setMusicTrack] = useState<string | null>(d.musicTrack === undefined ? "" : d.musicTrack);
+  const [musicTrack, setMusicTrack, setMusicTrackRaw] = useUserDraftState<string | null>(d.musicTrack === undefined ? "" : d.musicTrack, markUserDraftMutation);
   /** เพลงที่เลือกเป็นของระบบหรือของผู้ใช้ — ใช้เลือก path bgmFile ตอน submit */
-  const [musicTrackKind, setMusicTrackKind] = useState<"system" | "user">(d.musicTrackKind ?? "system");
+  const [musicTrackKind, setMusicTrackKind, setMusicTrackKindRaw] = useUserDraftState<"system" | "user">(d.musicTrackKind ?? "system", markUserDraftMutation);
   /** ระดับเสียงเพลง 0–1 · default 0.12 (ตรงกับ pipeline + editor v1) — ใต้เสียงพูด */
-  const [bgmVolume, setBgmVolume] = useState(d.bgmVolume ?? 0.12);
-  const [useAvatar, setUseAvatar] = useState(d.useAvatar ?? false);
-  const [avatarId, setAvatarId] = useState(d.avatarId ?? "");
+  const [bgmVolume, setBgmVolume, setBgmVolumeRaw] = useUserDraftState(d.bgmVolume ?? 0.12, markUserDraftMutation);
+  const [useAvatar, setUseAvatar, setUseAvatarRaw] = useUserDraftState(d.useAvatar ?? false, markUserDraftMutation);
+  const [avatarId, setAvatarId, setAvatarIdRaw] = useUserDraftState(d.avatarId ?? "", markUserDraftMutation);
 
   // ── ขั้นสูง (P6c) ──
-  const [targetClipCount, setTargetClipCount] = useState(d.targetClipCount ?? 0); // 0 = auto
-  const [avatarMode, setAvatarMode] = useState<V2AvatarMode>(d.avatarMode ?? "bookend");
-  const [avatarIntroSecs, setAvatarIntroSecs] = useState(d.avatarIntroSecs ?? 5);
-  const [avatarTailSecs, setAvatarTailSecs] = useState(d.avatarTailSecs ?? 5);
-  const [kieModel, setKieModel] = useState<KieImageModel | "">((d.kieModel as KieImageModel | undefined) ?? "");
-  const [autoMixProviders, setAutoMixProviders] = useState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS);
-  const [brollRegionPreference, setBrollRegionPreference] = useState<BrollRegionPreference>(d.brollRegionPreference ?? "auto");
-  const [brollVisualStyle, setBrollVisualStyle] = useState<BrollVisualStyle>(d.brollVisualStyle ?? "auto");
-  const [logoOverlay, setLogoOverlay] = useState<LogoOverlayConfig | undefined>(d.logoOverlay);
+  const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(d.targetClipCount ?? 0, markUserDraftMutation); // 0 = auto
+  const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(d.avatarMode ?? "bookend", markUserDraftMutation);
+  const [avatarIntroSecs, setAvatarIntroSecs, setAvatarIntroSecsRaw] = useUserDraftState(d.avatarIntroSecs ?? 5, markUserDraftMutation);
+  const [avatarTailSecs, setAvatarTailSecs, setAvatarTailSecsRaw] = useUserDraftState(d.avatarTailSecs ?? 5, markUserDraftMutation);
+  const [kieModel, setKieModel, setKieModelRaw] = useUserDraftState<KieImageModel | "">((d.kieModel as KieImageModel | undefined) ?? "", markUserDraftMutation);
+  const [autoMixProviders, setAutoMixProviders, setAutoMixProvidersRaw] = useUserDraftState<AutoMixImageProvider[]>(d.autoMixProviders ?? DEFAULT_AUTO_MIX_PROVIDERS, markUserDraftMutation);
+  const [brollRegionPreference, setBrollRegionPreference, setBrollRegionPreferenceRaw] = useUserDraftState<BrollRegionPreference>(d.brollRegionPreference ?? "auto", markUserDraftMutation);
+  const [brollVisualStyle, setBrollVisualStyle, setBrollVisualStyleRaw] = useUserDraftState<BrollVisualStyle>(d.brollVisualStyle ?? "auto", markUserDraftMutation);
+  const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(d.logoOverlay, markUserDraftMutation);
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
-  const [mixPreset, setMixPresetState] = useState<MixPreset>(d.mixPreset ?? "free");
+  const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(d.mixPreset ?? "free", markUserDraftMutation);
   /** เลือก preset → ขับ mixPreset + brollSource + autoMixProviders ให้สอดคล้องกัน
    *  (preset ≠ ฟรีล้วน ⇒ automix + provider set รวม kie-ai). weights ที่ส่งไป server
    *  มาจาก PRESET_WEIGHTS ใน useV2Job. */
   const setMixPreset = useCallback((preset: MixPreset) => {
-    setMixPresetState(preset);
-    setBrollSource(presetBrollSource(preset));
+    setMixPresetFromUser(preset);
+    setBrollSourceRaw(presetBrollSource(preset));
     const provs = PRESET_PROVIDERS[preset];
-    if (provs) setAutoMixProviders(provs);
-  }, []);
+    if (provs) setAutoMixProvidersRaw(provs);
+  }, [setAutoMixProvidersRaw, setBrollSourceRaw, setMixPresetFromUser]);
 
   function buildDraft(): V2Draft {
     return {
@@ -236,30 +337,34 @@ export function useV2Project() {
 
   function applyDraft(next: V2Draft) {
     draftRef.current = next;
-    if (next.projectTitle !== undefined) setProjectTitle(next.projectTitle || DEFAULT_PROJECT.projectTitle);
-    if (next.mode) setMode(next.mode);
-    if (next.script !== undefined) setScript(next.script);
-    if (next.clipUrl !== undefined) setClipUrl(next.clipUrl);
-    if (next.clipDurationSec !== undefined) setClipDurationSec(next.clipDurationSec);
-    if (next.brollSource) setBrollSource(next.brollSource);
-    if (next.voiceEngine) setVoiceEngine(next.voiceEngine);
-    if (next.geminiVoiceName !== undefined) setGeminiVoiceName(next.geminiVoiceName);
-    if (next.voiceId !== undefined) setVoiceId(next.voiceId);
-    if (next.musicTrack !== undefined) setMusicTrack(next.musicTrack);
-    if (next.musicTrackKind) setMusicTrackKind(next.musicTrackKind);
-    if (next.bgmVolume !== undefined) setBgmVolume(next.bgmVolume);
-    if (next.useAvatar !== undefined) setUseAvatar(next.useAvatar);
-    if (next.avatarId !== undefined) setAvatarId(next.avatarId);
-    if (next.targetClipCount !== undefined) setTargetClipCount(next.targetClipCount);
-    if (next.avatarMode) setAvatarMode(next.avatarMode);
-    if (next.avatarIntroSecs !== undefined) setAvatarIntroSecs(next.avatarIntroSecs);
-    if (next.avatarTailSecs !== undefined) setAvatarTailSecs(next.avatarTailSecs);
-    if (next.kieModel !== undefined) setKieModel(next.kieModel as KieImageModel | "");
-    if (next.autoMixProviders) setAutoMixProviders(next.autoMixProviders);
-    if (next.mixPreset) setMixPresetState(next.mixPreset);
-    if (next.brollRegionPreference) setBrollRegionPreference(next.brollRegionPreference);
-    if (next.brollVisualStyle) setBrollVisualStyle(next.brollVisualStyle);
-    setLogoOverlay(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
+    if (next.projectTitle !== undefined) setProjectTitleRaw(next.projectTitle || DEFAULT_PROJECT.projectTitle);
+    if (next.mode) setModeRaw(next.mode);
+    if (next.script !== undefined) setScriptRaw(next.script);
+    if (next.clipUrl !== undefined) setClipUrlStateRaw(next.clipUrl);
+    if (next.clipDurationSec !== undefined) {
+      setClipDurationSecStateRaw(Number.isFinite(next.clipDurationSec) && next.clipDurationSec > 0
+        ? next.clipDurationSec
+        : 0);
+    }
+    if (next.brollSource) setBrollSourceRaw(next.brollSource);
+    if (next.voiceEngine) setVoiceEngineRaw(next.voiceEngine);
+    if (next.geminiVoiceName !== undefined) setGeminiVoiceNameRaw(next.geminiVoiceName);
+    if (next.voiceId !== undefined) setVoiceIdRaw(next.voiceId);
+    if (next.musicTrack !== undefined) setMusicTrackRaw(next.musicTrack);
+    if (next.musicTrackKind) setMusicTrackKindRaw(next.musicTrackKind);
+    if (next.bgmVolume !== undefined) setBgmVolumeRaw(next.bgmVolume);
+    if (next.useAvatar !== undefined) setUseAvatarRaw(next.useAvatar);
+    if (next.avatarId !== undefined) setAvatarIdRaw(next.avatarId);
+    if (next.targetClipCount !== undefined) setTargetClipCountRaw(next.targetClipCount);
+    if (next.avatarMode) setAvatarModeRaw(next.avatarMode);
+    if (next.avatarIntroSecs !== undefined) setAvatarIntroSecsRaw(next.avatarIntroSecs);
+    if (next.avatarTailSecs !== undefined) setAvatarTailSecsRaw(next.avatarTailSecs);
+    if (next.kieModel !== undefined) setKieModelRaw(next.kieModel as KieImageModel | "");
+    if (next.autoMixProviders) setAutoMixProvidersRaw(next.autoMixProviders);
+    if (next.mixPreset) setMixPresetRaw(next.mixPreset);
+    if (next.brollRegionPreference) setBrollRegionPreferenceRaw(next.brollRegionPreference);
+    if (next.brollVisualStyle) setBrollVisualStyleRaw(next.brollVisualStyle);
+    setLogoOverlayRaw(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -267,34 +372,29 @@ export function useV2Project() {
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveRevision, setSaveRevision] = useState(0);
   const [bootstrapRetryRevision, setBootstrapRetryRevision] = useState(0);
+  const [recovery, setRecovery] = useState<EditorProjectRecoveryState>({ status: "none" });
+  const recoveryRef = useRef<EditorProjectRecoveryState>(recovery);
+  const setRecoveryState = useCallback((next: EditorProjectRecoveryState) => {
+    recoveryRef.current = next;
+    setRecovery(next);
+  }, []);
   const projectReadyRef = useRef(projectReady);
   projectReadyRef.current = projectReady;
-  const existingBootstrapProjectIdRef = useRef<string | null>(null);
-  const bootstrapLocalDirtyRef = useRef(false);
-  const bootstrapLocalRecoveryValidRef = useRef(false);
-  const bootstrapStateRef = useRef<"idle" | "loading" | "error">("idle");
-  const skipNextPersistRef = useRef(false);
-  const retryProjectSave = useCallback(() => {
-    if (!projectReadyRef.current && existingBootstrapProjectIdRef.current) {
-      let localWriteSucceeded = false;
-      try {
-        const storage = browserStorage();
-        if (storage) {
-          storage.setItem(DRAFT_KEY, JSON.stringify(latestDraftRef.current));
-          storage.setItem(PROJECT_ID_KEY, existingBootstrapProjectIdRef.current);
-          localWriteSucceeded = true;
-        }
-      } catch { /* quota/private mode */ }
-      bootstrapLocalDirtyRef.current = true;
-      bootstrapLocalRecoveryValidRef.current = localWriteSucceeded;
-      bootstrapStateRef.current = "loading";
-      setSaveStatus("saving");
-      setBootstrapRetryRevision((revision) => revision + 1);
-      return;
+  const confirmedServerRevisionRef = useRef(0);
+  const lastPersistedUserMutationTokenRef = useRef(0);
+  const lastHandledSaveRevisionRef = useRef(0);
+  const latestQueuedSaveRef = useRef<{ projectId: string | null; revision: number | null }>({
+    projectId: null,
+    revision: null,
+  });
+  const retryProjectBootstrap = useCallback(() => {
+    if (recoveryRef.current.status === "load-error") {
+      setBootstrapRetryRevision((value) => value + 1);
     }
-    setSaveRevision((revision) => revision + 1);
   }, []);
-  const firstPersistRun = useRef(true);
+  const retryProjectSave = useCallback(() => {
+    if (projectReadyRef.current) setSaveRevision((revision) => revision + 1);
+  }, []);
   const mountedRef = useRef(false);
   const currentProjectIdRef = useRef<string | null>(projectId);
   currentProjectIdRef.current = projectId;
@@ -312,6 +412,43 @@ export function useV2Project() {
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
   const logoEligible = plan === "PRO" || plan === "BUSINESS";
 
+  function clearProjectRecoveryData(clearProjectId: string): void {
+    const storage = browserStorage();
+    clearEditorProjectRecoveryJournal(storage, clearProjectId);
+    try {
+      if (storage?.getItem(PROJECT_ID_KEY) === clearProjectId) storage.removeItem(DRAFT_KEY);
+    } catch { /* legacy cleanup is best-effort */ }
+  }
+
+  function applyServerProjectMetadata(project: Record<string, unknown>): void {
+    setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
+    setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
+    setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
+    setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
+    setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+  }
+
+  function serverCandidateForProject(
+    expectedProjectId: string,
+    project: Record<string, unknown>,
+  ): RecoveryCandidate | null {
+    if (project.id !== expectedProjectId) return null;
+    const revision = typeof project.draftRevision === "number" ? project.draftRevision : null;
+    const draft = project.draft === undefined || project.draft === null
+      ? typeof project.title === "string" ? { projectTitle: project.title } : {}
+      : project.draft && typeof project.draft === "object" && !Array.isArray(project.draft)
+        ? project.draft
+        : null;
+    if (!draft) return null;
+    return createRecoveryCandidate({
+      projectId: expectedProjectId,
+      draft,
+      revision,
+      updatedAt: typeof project.updatedAt === "string" ? project.updatedAt : null,
+      trusted: true,
+    });
+  }
+
   const createServerProject = useCallback(async (draft: V2Draft) => {
     try {
       const res = await fetch("/api/editor-projects", {
@@ -324,23 +461,32 @@ export function useV2Project() {
       const id = typeof data?.project?.id === "string" ? data.project.id : null;
       if (id) {
         editorProjectSaveQueue.seedRevision(id, data.project.draftRevision);
+        confirmedServerRevisionRef.current = typeof data.project.draftRevision === "number"
+          ? data.project.draftRevision
+          : 0;
         setProjectId(id);
         setProjectReady(true);
+        setRecoveryState({ status: "none" });
         if (typeof data?.project?.status === "string") setProjectStatus(data.project.status as ProjectStatus);
         setActiveJobId(typeof data?.project?.activeJobId === "string" ? data.project.activeJobId : null);
         setActiveExportJobId(typeof data?.project?.activeExportJobId === "string" ? data.project.activeExportJobId : null);
         setLatestVideoId(typeof data?.project?.latestVideoId === "string" ? data.project.latestVideoId : null);
         setPreviewMediaState((data?.project?.previewMediaState as ProjectMediaState | null | undefined) ?? null);
-        try { browserStorage()?.setItem(PROJECT_ID_KEY, id); } catch {}
+        try {
+          const storage = browserStorage();
+          storage?.setItem(PROJECT_ID_KEY, id);
+          storage?.removeItem(DRAFT_KEY);
+        } catch {}
       }
       return id;
     } catch {
       return null;
     }
-  }, []);
+  }, [setRecoveryState]);
 
   const resetProject = useCallback(async () => {
     const accountDefault = await loadAccountLogoDefault();
+    const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
       hasExistingDraft: false,
       accountDefault,
@@ -348,17 +494,18 @@ export function useV2Project() {
     const nextDraft: V2Draft = {
       ...DEFAULT_PROJECT,
       autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
-      mixPreset: isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset,
+      mixPreset: nextPreset,
       ...(inherited ? { logoOverlay: inherited } : {}),
     };
     draftRef.current = nextDraft;
-    existingBootstrapProjectIdRef.current = null;
-    bootstrapLocalDirtyRef.current = false;
-    bootstrapLocalRecoveryValidRef.current = false;
-    bootstrapStateRef.current = "idle";
-    skipNextPersistRef.current = false;
+    lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    lastHandledSaveRevisionRef.current = saveRevision;
+    latestQueuedSaveRef.current = { projectId: null, revision: null };
+    confirmedServerRevisionRef.current = 0;
+    if (projectId) clearProjectRecoveryData(projectId);
     setProjectId(null);
     setProjectReady(false);
+    setRecoveryState({ status: "none" });
     setProjectStatus("draft");
     setActiveJobId(null);
     setActiveExportJobId(null);
@@ -370,33 +517,34 @@ export function useV2Project() {
       storage?.removeItem(PROJECT_ID_KEY);
     } catch {}
 
-    setMode(DEFAULT_PROJECT.mode);
-    setProjectTitle(DEFAULT_PROJECT.projectTitle);
-    setScript(DEFAULT_PROJECT.script);
-    setClipUrl(DEFAULT_PROJECT.clipUrl);
-    setClipDurationSec(DEFAULT_PROJECT.clipDurationSec);
-    setVoiceEngine(DEFAULT_PROJECT.voiceEngine);
-    setGeminiVoiceName(DEFAULT_PROJECT.geminiVoiceName);
-    setVoiceId(DEFAULT_PROJECT.voiceId);
-    setMusicTrack(DEFAULT_PROJECT.musicTrack);
-    setMusicTrackKind(DEFAULT_PROJECT.musicTrackKind);
-    setBgmVolume(DEFAULT_PROJECT.bgmVolume);
-    setUseAvatar(DEFAULT_PROJECT.useAvatar);
-    setAvatarId(DEFAULT_PROJECT.avatarId);
+    setModeRaw(DEFAULT_PROJECT.mode);
+    setProjectTitleRaw(DEFAULT_PROJECT.projectTitle);
+    setScriptRaw(DEFAULT_PROJECT.script);
+    setClipUrlStateRaw(DEFAULT_PROJECT.clipUrl);
+    setClipDurationSecStateRaw(DEFAULT_PROJECT.clipDurationSec);
+    setVoiceEngineRaw(DEFAULT_PROJECT.voiceEngine);
+    setGeminiVoiceNameRaw(DEFAULT_PROJECT.geminiVoiceName);
+    setVoiceIdRaw(DEFAULT_PROJECT.voiceId);
+    setMusicTrackRaw(DEFAULT_PROJECT.musicTrack);
+    setMusicTrackKindRaw(DEFAULT_PROJECT.musicTrackKind);
+    setBgmVolumeRaw(DEFAULT_PROJECT.bgmVolume);
+    setUseAvatarRaw(DEFAULT_PROJECT.useAvatar);
+    setAvatarIdRaw(DEFAULT_PROJECT.avatarId);
     setAvatarInfo(null);
-    setTargetClipCount(DEFAULT_PROJECT.targetClipCount);
-    setAvatarMode(DEFAULT_PROJECT.avatarMode);
-    setAvatarIntroSecs(DEFAULT_PROJECT.avatarIntroSecs);
-    setAvatarTailSecs(DEFAULT_PROJECT.avatarTailSecs);
-    setKieModel(DEFAULT_PROJECT.kieModel);
-    setAutoMixProviders([...DEFAULT_PROJECT.autoMixProviders]);
-    setBrollRegionPreference(DEFAULT_PROJECT.brollRegionPreference);
-    setBrollVisualStyle(DEFAULT_PROJECT.brollVisualStyle);
-    setMixPreset(isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset);
-    setLogoOverlay(inherited);
+    setTargetClipCountRaw(DEFAULT_PROJECT.targetClipCount);
+    setAvatarModeRaw(DEFAULT_PROJECT.avatarMode);
+    setAvatarIntroSecsRaw(DEFAULT_PROJECT.avatarIntroSecs);
+    setAvatarTailSecsRaw(DEFAULT_PROJECT.avatarTailSecs);
+    setKieModelRaw(DEFAULT_PROJECT.kieModel);
+    setAutoMixProvidersRaw([...(PRESET_PROVIDERS[nextPreset] ?? DEFAULT_PROJECT.autoMixProviders)]);
+    setBrollSourceRaw(presetBrollSource(nextPreset));
+    setBrollRegionPreferenceRaw(DEFAULT_PROJECT.brollRegionPreference);
+    setBrollVisualStyleRaw(DEFAULT_PROJECT.brollVisualStyle);
+    setMixPresetRaw(nextPreset);
+    setLogoOverlayRaw(inherited);
     setSaveStatus("idle");
     await createServerProject(nextDraft);
-  }, [createServerProject, isPaidManagedKie, setMixPreset]);
+  }, [createServerProject, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
@@ -404,90 +552,142 @@ export function useV2Project() {
       const storage = browserStorage();
       const storedLocalDraft = loadDraft();
       const urlProjectId = new URLSearchParams(window.location.search).get("projectId");
-      const storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null;
+      let storedProjectId: string | null = null;
+      try { storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null; } catch {}
       const existingProjectId = urlProjectId || storedProjectId;
 
       if (existingProjectId) {
-        existingBootstrapProjectIdRef.current = existingProjectId;
-        bootstrapStateRef.current = "loading";
+        setRecoveryState({ status: "loading" });
         setProjectId(existingProjectId);
         setProjectReady(false);
-        const associatedLocalDraft = storedProjectId === existingProjectId && storedLocalDraft
-          ? canonicalizeDraftLogoOverlay(storedLocalDraft) as V2Draft
-          : null;
-        bootstrapLocalRecoveryValidRef.current = associatedLocalDraft !== null;
-        if (associatedLocalDraft) {
-          skipNextPersistRef.current = true;
-          applyDraft(associatedLocalDraft);
-        }
+        setSaveStatus("idle");
         await editorProjectSaveQueue.whenIdle(existingProjectId);
         if (!alive) return;
-        const outcome = await resolveEditorProjectBootstrap({
-          projectId: existingProjectId,
-          readLocalDraft: () => {
-            if (bootstrapLocalDirtyRef.current && !bootstrapLocalRecoveryValidRef.current) {
-              return null;
-            }
-            const currentStoredProjectId = browserStorage()?.getItem(PROJECT_ID_KEY) ?? null;
-            const latest = currentStoredProjectId === existingProjectId ? loadDraft() : null;
-            return latest ? canonicalizeDraftLogoOverlay(latest) : null;
-          },
-          isLocalDirty: () => bootstrapLocalDirtyRef.current,
-          revisionWatermark: editorProjectSaveQueue.revisionWatermark(existingProjectId),
-          loadProject: async () => {
-            const res = await fetch(
-              `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
-              { cache: "no-store" },
-            );
-            const data = res.ok ? await res.json().catch(() => null) : null;
-            return { status: res.status, project: data?.project };
-          },
-        });
+        let response: Response | null = null;
+        try {
+          response = await fetch(
+            `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
+            { cache: "no-store" },
+          );
+        } catch { /* handled by the fail-closed branch */ }
         if (!alive) return;
-        if (outcome.kind === "error") {
-          setProjectId(existingProjectId);
+        if (!response || !response.ok) {
           setProjectReady(false);
-          bootstrapStateRef.current = "error";
           setSaveStatus("error");
-          if (outcome.recoveryDraft) {
-            skipNextPersistRef.current = true;
-            applyDraft(outcome.recoveryDraft as V2Draft);
-          }
+          setRecoveryState({
+            status: "load-error",
+            message: response?.status === 404
+              ? "ไม่พบโปรเจกต์นี้ กรุณาตรวจสอบลิงก์หรือลองใหม่"
+              : "โหลดโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่",
+          });
           return;
         }
-        if (outcome.kind !== "missing") {
-          const project = outcome.project;
-          editorProjectSaveQueue.seedRevision(project.id, project.draftRevision);
-          setProjectId(project.id);
-          setProjectStatus(typeof project.status === "string" ? project.status as ProjectStatus : "draft");
-          setActiveJobId(typeof project.activeJobId === "string" ? project.activeJobId : null);
-          setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
-          setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
-          setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
-          storage?.setItem(PROJECT_ID_KEY, project.id);
-          bootstrapLocalDirtyRef.current = false;
-          bootstrapStateRef.current = "idle";
-          if (outcome.kind === "local") {
-            skipNextPersistRef.current = false;
-            applyDraft(outcome.draft as V2Draft);
-            setSaveStatus("saving");
-          } else if (outcome.kind === "server") {
-            skipNextPersistRef.current = true;
-            if (project.draft && typeof project.draft === "object" && !Array.isArray(project.draft)) {
-              applyDraft(project.draft as V2Draft);
-            } else if (typeof project.title === "string") {
-              setProjectTitle(project.title);
-            }
-            setSaveStatus("idle");
-          }
+        const data = await response.json().catch(() => null);
+        const project = data?.project as Record<string, unknown> | null | undefined;
+        if (
+          !project
+          || project.id !== existingProjectId
+          || typeof project.draftRevision !== "number"
+          || !Number.isSafeInteger(project.draftRevision)
+          || project.draftRevision < 0
+          || project.draftRevision > 2_147_483_647
+        ) {
+          setProjectReady(false);
+          setSaveStatus("error");
+          setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
+          return;
+        }
+        const journal = readEditorProjectRecoveryJournal(storage, existingProjectId);
+        const legacyLocalDraft = storedProjectId === existingProjectId && storedLocalDraft
+          ? canonicalizeDraftLogoOverlay(storedLocalDraft)
+          : null;
+        const decision = decideEditorProjectBootstrap({
+          projectId: existingProjectId,
+          serverRevision: project.draftRevision,
+          revisionWatermark: editorProjectSaveQueue.revisionWatermark(existingProjectId),
+          journal,
+          legacyLocalDraft,
+        });
+        const serverCandidate = serverCandidateForProject(existingProjectId, project);
+        if (!serverCandidate) {
+          setProjectReady(false);
+          setSaveStatus("error");
+          setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
+          return;
+        }
+        editorProjectSaveQueue.seedRevision(project.id as string, project.draftRevision);
+        confirmedServerRevisionRef.current = project.draftRevision;
+        setProjectId(project.id as string);
+        applyServerProjectMetadata(project);
+        try { storage?.setItem(PROJECT_ID_KEY, project.id as string); } catch {}
+
+        if (decision.kind === "server") {
+          applyDraft(serverCandidate.draft as V2Draft);
+          clearProjectRecoveryData(existingProjectId);
+          lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+          setRecoveryState({ status: "none" });
           setProjectReady(true);
+          setSaveStatus("idle");
           return;
         }
-        existingBootstrapProjectIdRef.current = null;
-        bootstrapStateRef.current = "idle";
-        setProjectId(null);
+        if (decision.kind === "resume-local") {
+          const localCandidate = createRecoveryCandidate({
+            projectId: existingProjectId,
+            draft: decision.journal.draft,
+            revision: decision.journal.baseRevision,
+            updatedAt: decision.journal.editedAt,
+            trusted: true,
+          });
+          if (!localCandidate) {
+            setProjectReady(false);
+            setSaveStatus("error");
+            setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
+            return;
+          }
+          applyDraft(localCandidate.draft as V2Draft);
+          lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+          setRecoveryState({ status: "none" });
+          setProjectReady(true);
+          setSaveStatus("saving");
+          setSaveRevision((value) => value + 1);
+          return;
+        }
+        if (decision.kind === "conflict") {
+          const localCandidate = createRecoveryCandidate({
+            projectId: existingProjectId,
+            draft: decision.local.draft,
+            revision: journal?.baseRevision ?? null,
+            updatedAt: decision.local.editedAt,
+            trusted: decision.local.trusted,
+          });
+          setProjectReady(false);
+          if (!localCandidate) {
+            setSaveStatus("error");
+            setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
+            return;
+          }
+          setRecoveryState({
+            status: "conflict",
+            local: localCandidate,
+            server: serverCandidate,
+            resolving: false,
+            error: null,
+          });
+          return;
+        }
+        if (decision.kind === "locked-error") {
+          setProjectReady(false);
+          setSaveStatus("error");
+          setRecoveryState({
+            status: "load-error",
+            message: "ข้อมูลโปรเจกต์ยังไม่สอดคล้องกัน กรุณาลองใหม่",
+          });
+          return;
+        }
       }
 
+      await Promise.resolve();
+      if (!alive) return;
       const localDraft = urlProjectId && urlProjectId !== storedProjectId
         ? null
         : storedLocalDraft;
@@ -495,14 +695,17 @@ export function useV2Project() {
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         const accountDefault = await loadAccountLogoDefault();
+        if (!alive) return;
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }
       const canonicalSeedDraft = canonicalizeDraftLogoOverlay(seedDraft);
+      if (!alive) return;
       applyDraft(canonicalSeedDraft);
+      lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
       const id = await createServerProject(canonicalSeedDraft);
       if (!alive || !id) return;
-      storage?.setItem(PROJECT_ID_KEY, id);
+      try { storage?.setItem(PROJECT_ID_KEY, id); } catch {}
     }
     void ensureServerProject();
     return () => { alive = false; };
@@ -510,19 +713,110 @@ export function useV2Project() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createServerProject, bootstrapRetryRevision]);
 
+  const chooseLocalProjectDraft = useCallback(async () => {
+    const conflict = recoveryRef.current;
+    const projectId = currentProjectIdRef.current;
+    if (conflict.status !== "conflict" || conflict.resolving || !projectId) return;
+    const expected = conflict.server.revision;
+    if (expected === null) {
+      setRecoveryState({ ...conflict, error: "ไม่พบเลขเวอร์ชันบนระบบ กรุณาลองใหม่" });
+      return;
+    }
+    setRecoveryState({ ...conflict, resolving: "local", error: null });
+    const revision = editorProjectSaveQueue.reserveRevisionAbove(projectId, expected);
+    try {
+      const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildLocalConflictPatchBody(conflict, revision)),
+      });
+      const payload = await res.json().catch(() => null);
+      if (res.status === 409) {
+        const currentProject = payload?.project as Record<string, unknown> | null | undefined;
+        const server = currentProject
+          ? serverCandidateForProject(projectId, currentProject)
+          : null;
+        if (server) {
+          editorProjectSaveQueue.seedRevision(projectId, server.revision ?? expected);
+          applyServerProjectMetadata(currentProject!);
+          setRecoveryState({
+            status: "conflict",
+            local: conflict.local,
+            server: server,
+            resolving: false,
+            error: "ข้อมูลบนระบบมีการเปลี่ยนแปลง กรุณาเลือกอีกครั้ง",
+          });
+        } else {
+          setRecoveryState({
+            ...conflict,
+            resolving: false,
+            error: "โหลดเวอร์ชันล่าสุดไม่สำเร็จ กรุณาลองใหม่",
+          });
+        }
+        return;
+      }
+      const savedProject = payload?.project as Record<string, unknown> | null | undefined;
+      const savedCandidate = res.ok && savedProject
+        ? serverCandidateForProject(projectId, savedProject)
+        : null;
+      if (!savedCandidate || savedCandidate.revision === null) {
+        setRecoveryState({
+          ...conflict,
+          resolving: false,
+          error: "บันทึกฉบับในเครื่องไม่สำเร็จ กรุณาลองใหม่",
+        });
+        return;
+      }
+      applyDraft(savedCandidate.draft as V2Draft);
+      applyServerProjectMetadata(savedProject!);
+      editorProjectSaveQueue.seedRevision(projectId, savedCandidate.revision);
+      confirmedServerRevisionRef.current = savedCandidate.revision;
+      lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+      latestQueuedSaveRef.current = { projectId: null, revision: null };
+      clearProjectRecoveryData(projectId);
+      setProjectReady(true);
+      setSaveStatus("saved");
+      setRecoveryState({ status: "none" });
+    } catch {
+      setRecoveryState({
+        ...conflict,
+        resolving: false,
+        error: "บันทึกฉบับในเครื่องไม่สำเร็จ กรุณาลองใหม่",
+      });
+    }
+  }, [setRecoveryState]);
+
+  const chooseServerProjectDraft = useCallback(() => {
+    const conflict = recoveryRef.current;
+    const projectId = currentProjectIdRef.current;
+    if (conflict.status !== "conflict" || conflict.resolving || !projectId) return;
+    setRecoveryState({ ...conflict, resolving: "server", error: null });
+    applyDraft(conflict.server.draft as V2Draft);
+    if (conflict.server.revision !== null) {
+      editorProjectSaveQueue.seedRevision(projectId, conflict.server.revision);
+      confirmedServerRevisionRef.current = conflict.server.revision;
+    }
+    lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    latestQueuedSaveRef.current = { projectId: null, revision: null };
+    clearProjectRecoveryData(projectId);
+    setProjectReady(true);
+    setSaveStatus("idle");
+    setRecoveryState({ status: "none" });
+  }, [setRecoveryState]);
+
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
     const hadDraft = Object.keys(draftRef.current).length > 0;
     fetch("/api/user/video-settings").then(r => r.json()).then(s => {
       if (!hadDraft) {
-        if (s.heygenAvatarId) setAvatarId(s.heygenAvatarId);
-        if (s.elevenlabsVoiceId) setVoiceId(s.elevenlabsVoiceId);
-        if (s.ttsProvider === "gemini" || s.ttsProvider === "elevenlabs") setVoiceEngine(s.ttsProvider);
-        if (s.geminiVoiceName) setGeminiVoiceName(s.geminiVoiceName);
+        if (s.heygenAvatarId) setAvatarIdRaw(s.heygenAvatarId);
+        if (s.elevenlabsVoiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
+        if (s.ttsProvider === "gemini" || s.ttsProvider === "elevenlabs") setVoiceEngineRaw(s.ttsProvider);
+        if (s.geminiVoiceName) setGeminiVoiceNameRaw(s.geminiVoiceName);
       } else {
         // เติมเฉพาะช่องที่ draft ไม่มีค่า
-        if (s.heygenAvatarId && !draftRef.current.avatarId) setAvatarId(s.heygenAvatarId);
-        if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceId(s.elevenlabsVoiceId);
+        if (s.heygenAvatarId && !draftRef.current.avatarId) setAvatarIdRaw(s.heygenAvatarId);
+        if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
       }
     }).catch(() => {});
     fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(u => {
@@ -542,67 +836,63 @@ export function useV2Project() {
       //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
       // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
       if (!admin) {
-        if (!paid) setMixPreset("free");
-        else if (!draftRef.current.mixPreset) setMixPreset("recommended");
+        const defaultPreset = !paid ? "free" : !draftRef.current.mixPreset ? "recommended" : null;
+        if (defaultPreset) {
+          setMixPresetRaw(defaultPreset);
+          setBrollSourceRaw(presetBrollSource(defaultPreset));
+          const providers = PRESET_PROVIDERS[defaultPreset];
+          if (providers) setAutoMixProvidersRaw(providers);
+        }
       }
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist draft (debounce 1s) — จำการตั้งค่าโปรเจกต์ข้ามเซสชัน.
-  // saveStatus only OBSERVES this effect: the write itself is unchanged. The initial
-  // mount run (restoring the draft) is skipped for the status so the topbar shows a
-  // calm "บันทึกอัตโนมัติ" hint until the user's first real edit.
+  // Only an explicit public setter advances the user token. Programmatic hydration,
+  // defaults, conflict choices, and reset therefore cannot create recovery provenance.
   useEffect(() => {
-    const isFirst = firstPersistRun.current;
-    firstPersistRun.current = false;
-    if (!isFirst && skipNextPersistRef.current) {
-      skipNextPersistRef.current = false;
-      return;
-    }
-    if (isFirst && !projectReady && existingBootstrapProjectIdRef.current) return;
-    if (!isFirst && !projectReady && existingBootstrapProjectIdRef.current) {
-      bootstrapLocalDirtyRef.current = true;
-      bootstrapLocalRecoveryValidRef.current = false;
-    }
-    if (!isFirst) setSaveStatus("saving");
+    if (!projectReady || !projectId) return;
+    const hasUserMutation = userDraftMutationTokenRef.current
+      > lastPersistedUserMutationTokenRef.current;
+    const hasSaveRetry = saveRevision > lastHandledSaveRevisionRef.current;
+    if (!hasUserMutation && !hasSaveRetry) return;
+    setSaveStatus("saving");
     const t = setTimeout(() => {
       const draft = buildDraft();
-      if (!projectReady && existingBootstrapProjectIdRef.current) {
-        let localWriteSucceeded = false;
-        try {
-          const storage = browserStorage();
-          if (storage) {
-            storage.setItem(DRAFT_KEY, JSON.stringify(draft));
-            storage.setItem(PROJECT_ID_KEY, existingBootstrapProjectIdRef.current);
-            localWriteSucceeded = true;
-          }
-        } catch { /* quota/private mode */ }
-        bootstrapLocalDirtyRef.current = true;
-        bootstrapLocalRecoveryValidRef.current = localWriteSucceeded;
-        setSaveStatus(bootstrapStateRef.current === "error" ? "error" : "saving");
-        return;
-      }
-      try {
-        browserStorage()?.setItem(DRAFT_KEY, JSON.stringify(draft));
-      } catch { /* quota/private mode */ }
-      if (projectReady && projectId) {
-        const saveProjectId = projectId;
-        editorProjectSaveQueue.enqueue({
+      const saveProjectId = projectId;
+      if (userDraftMutationTokenRef.current > lastPersistedUserMutationTokenRef.current) {
+        const journalWritten = writeEditorProjectRecoveryJournal(browserStorage(), {
+          version: 1,
           projectId: saveProjectId,
-          save: ({ revision, signal }) => saveEditorProjectDraft(
-            saveProjectId,
-            draft,
-            revision,
-            signal,
-          ),
-          isActive: () => mountedRef.current
-            && currentProjectIdRef.current === saveProjectId,
-          ...(!isFirst
-            ? { onStatus: ({ status }: { status: "saving" | "saved" | "error" }) => setSaveStatus(status) }
-            : {}),
+          baseRevision: confirmedServerRevisionRef.current,
+          editedAt: new Date().toISOString(),
+          draft: { ...draft },
         });
+        if (!journalWritten) clearEditorProjectRecoveryJournal(browserStorage(), saveProjectId);
+        lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
       }
+      lastHandledSaveRevisionRef.current = saveRevision;
+      const revision = editorProjectSaveQueue.enqueue({
+        projectId: saveProjectId,
+        save: ({ revision: queuedRevision, signal }) => saveEditorProjectDraft(
+          saveProjectId,
+          draft,
+          queuedRevision,
+          signal,
+        ),
+        isActive: () => mountedRef.current
+          && currentProjectIdRef.current === saveProjectId,
+        onStatus: (event) => {
+          const { status } = event;
+          setSaveStatus(status);
+          if (isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)) {
+            confirmedServerRevisionRef.current = event.revision;
+            clearProjectRecoveryData(event.projectId);
+          }
+        },
+      });
+      latestQueuedSaveRef.current = { projectId: saveProjectId, revision };
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
@@ -659,6 +949,7 @@ export function useV2Project() {
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
     saveStatus, retryProjectSave,
+    recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft,
   };
 }
 

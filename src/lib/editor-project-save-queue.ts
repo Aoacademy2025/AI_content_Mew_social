@@ -75,6 +75,11 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     return revision;
   }
 
+  function reserveRevisionAbove(projectId: string, observed: number): number {
+    seedRevision(projectId, observed);
+    return nextRevision(normalizedProjectId(projectId));
+  }
+
   function revisionWatermark(projectId: string): number {
     return revisionWatermarks.get(normalizedProjectId(projectId)) ?? 0;
   }
@@ -185,7 +190,7 @@ export function createEditorProjectSaveQueue(options: SaveQueueOptions = {}) {
     return lanes.size;
   }
 
-  return { seedRevision, revisionWatermark, enqueue, whenIdle, laneCount };
+  return { seedRevision, reserveRevisionAbove, revisionWatermark, enqueue, whenIdle, laneCount };
 }
 
 export const editorProjectSaveQueue = createEditorProjectSaveQueue();
