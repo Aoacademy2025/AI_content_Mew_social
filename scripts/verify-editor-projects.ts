@@ -1,7 +1,7 @@
 // Run with: npx tsx scripts/verify-editor-projects.ts
 // Spins a throwaway SQLite DB and verifies EditorProject ownership/persistence contracts.
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execSync, fork } from "node:child_process";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +19,124 @@ function ok(cond: boolean, msg: string) {
   else { passed++; console.log("ok:", msg); }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 5_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    void promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+type RetirementWorkerOutcome =
+  | { kind: "returned"; value: boolean }
+  | { kind: "brand-error"; code: string; status: number }
+  | { kind: "unexpected-error"; message: string };
+
+function startRetirementWorker(userId: string, assetId: string) {
+  const child = fork(
+    join(process.cwd(), "scripts/editor-project-brand-asset-retirement-worker.ts"),
+    [userId, assetId],
+    {
+      env: process.env,
+      execArgv: ["--import", "tsx"],
+      silent: true,
+    },
+  );
+  const ready = deferred<void>();
+  const invoking = deferred<void>();
+  const result = deferred<RetirementWorkerOutcome>();
+  let stderr = "";
+  let receivedResult = false;
+  child.stderr?.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const timeout = setTimeout(() => {
+    child.kill("SIGKILL");
+    const error = new Error("retirement worker timed out");
+    ready.reject(error);
+    invoking.reject(error);
+    result.reject(error);
+  }, 15_000);
+  child.on("message", (message: unknown) => {
+    if (!message || typeof message !== "object") return;
+    const event = (message as { event?: unknown }).event;
+    if (event === "ready") ready.resolve();
+    if (event === "invoking") invoking.resolve();
+    if (event === "result") {
+      receivedResult = true;
+      const { event: _event, ...outcome } = message as RetirementWorkerOutcome & { event: "result" };
+      result.resolve(outcome as RetirementWorkerOutcome);
+    }
+  });
+  const closed = new Promise<void>((resolve) => {
+    child.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (!receivedResult) {
+        const error = new Error(
+          `retirement worker exited before result (${code ?? signal ?? "unknown"})${stderr ? `: ${stderr}` : ""}`,
+        );
+        ready.reject(error);
+        invoking.reject(error);
+        result.reject(error);
+      }
+      resolve();
+    });
+  });
+  child.once("error", (error) => {
+    clearTimeout(timeout);
+    ready.reject(error);
+    invoking.reject(error);
+    result.reject(error);
+  });
+  return {
+    ready: ready.promise,
+    invoking: invoking.promise,
+    result: result.promise,
+    closed,
+    async cleanup(): Promise<void> {
+      clearTimeout(timeout);
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        const forceKill = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          resolve();
+        }, 1_000);
+        void closed.then(() => {
+          clearTimeout(forceKill);
+          resolve();
+        });
+      });
+    },
+  };
+}
+
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const projects = await import("../src/lib/editor-projects");
   const brandAssets = await import("../src/lib/brand-assets.server");
   const jobs = await import("../src/lib/mcp/video-job");
   const projectPatch = await import("../src/lib/editor-project-patch");
+  const lifecycleVerification = await import(
+    "../src/lib/editor-project-brand-asset-verification.server"
+  );
   const updateWithRevision = projects.updateEditorProject as unknown as (
     userId: string,
     projectId: string,
@@ -571,6 +683,266 @@ async function main() {
       assert.equal(Object.prototype.hasOwnProperty.call(payload, "project"), false);
       assert.equal(JSON.stringify(payload).includes(rawAssetId), false, "unavailable response hides raw asset ids");
     }
+
+    const noncanonicalProject = await projects.createEditorProject(alice.id, {
+      title: "Reject noncanonical Logo id",
+      draft: { script: "canonical base" },
+    });
+    const noncanonicalAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: noncanonicalProject.id,
+      label: "noncanonical-id",
+    });
+    assert.equal(await brandAssets.deleteBrandAssetIfUnreferenced(alice.id, noncanonicalAsset.id), true);
+    const noncanonicalAssetBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: noncanonicalAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    const rawNoncanonicalAssetId = ` ${noncanonicalAsset.id} `;
+    const noncanonicalDraft = logoDraft(rawNoncanonicalAssetId, "must not persist raw id");
+    const noncanonicalUpdateResponse = await patchEditorProjectForUser(
+      alice.id,
+      noncanonicalProject.id,
+      {
+        draft: noncanonicalDraft,
+        draftRevision: 1,
+        expectedDraftRevision: 0,
+      },
+    );
+    await assertUnavailableResponse(noncanonicalUpdateResponse, noncanonicalAsset.id);
+    assert.deepEqual(
+      await projects.getEditorProject(alice.id, noncanonicalProject.id),
+      noncanonicalProject,
+      "noncanonical Logo id cannot mutate the project or its exact draft candidate",
+    );
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: noncanonicalAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      noncanonicalAssetBefore,
+      "noncanonical Logo id cannot restore or advance lifecycle state",
+    );
+    const projectCountBeforeNoncanonicalCreate = await prisma.editorProject.count({
+      where: { userId: alice.id },
+    });
+    await assert.rejects(
+      projects.createEditorProject(alice.id, {
+        title: "Reject noncanonical Logo create",
+        draft: noncanonicalDraft,
+      }),
+      hasCode("brand_asset_unavailable"),
+    );
+    assert.equal(
+      await prisma.editorProject.count({ where: { userId: alice.id } }),
+      projectCountBeforeNoncanonicalCreate,
+      "noncanonical Logo id prevents project creation",
+    );
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: noncanonicalAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      noncanonicalAssetBefore,
+      "noncanonical create cannot restore or advance lifecycle state",
+    );
+
+    const activeUpdateProject = await projects.createEditorProject(alice.id, {
+      title: "Active Logo update",
+      draft: { script: "active base" },
+    });
+    const activeUpdateAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: activeUpdateProject.id,
+      label: "active-update",
+    });
+    const activeUpdateBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: activeUpdateAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    assert.equal(activeUpdateBefore.retiredAt, null);
+    const activeUpdateResponse = await patchEditorProjectForUser(alice.id, activeUpdateProject.id, {
+      draft: logoDraft(activeUpdateAsset.id, "active update accepted"),
+      draftRevision: 1,
+      expectedDraftRevision: 0,
+    });
+    const activeUpdatePayload = await activeUpdateResponse.json() as {
+      project?: { draft?: { logoOverlay?: { assetId?: string } } };
+    };
+    assert.equal(activeUpdateResponse.status, 200);
+    assert.equal(activeUpdatePayload.project?.draft?.logoOverlay?.assetId, activeUpdateAsset.id);
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: activeUpdateAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      { retiredAt: null, lifecycleRevision: activeUpdateBefore.lifecycleRevision + 1 },
+      "draft update claims an already-active Logo lifecycle",
+    );
+
+    const activeCreateAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: activeUpdateProject.id,
+      label: "active-create",
+    });
+    const activeCreateBefore = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: activeCreateAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    assert.equal(activeCreateBefore.retiredAt, null);
+    const activeCreateProject = await projects.createEditorProject(alice.id, {
+      title: "Active Logo create",
+      draft: logoDraft(activeCreateAsset.id, "active create accepted"),
+    });
+    assert.equal(activeCreateProject.draft.logoOverlay.assetId, activeCreateAsset.id);
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: activeCreateAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      { retiredAt: null, lifecycleRevision: activeCreateBefore.lifecycleRevision + 1 },
+      "project create claims an already-active Logo lifecycle",
+    );
+
+    await lifecycleVerification.observeEditorProjectBrandAssetVerificationStep(
+      "after-asset-prepare",
+    );
+    await lifecycleVerification.observeEditorProjectBrandAssetVerificationStep(
+      "after-project-cas",
+    );
+
+    const retirementWinsProject = await projects.createEditorProject(alice.id, {
+      title: "Real retirement wins",
+      draft: { script: "retirement winner base" },
+    });
+    const retirementWinsAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: retirementWinsProject.id,
+      label: "real-retirement-wins",
+    });
+    const retirementPrepareReached = deferred<void>();
+    const allowRetirementWinnerProject = deferred<void>();
+    const retirementWinsPatch = lifecycleVerification
+      .runWithEditorProjectBrandAssetVerificationBarrier(
+        async (step) => {
+          if (step !== "after-asset-prepare") return;
+          retirementPrepareReached.resolve();
+          await allowRetirementWinnerProject.promise;
+        },
+        () => patchEditorProjectForUser(alice.id, retirementWinsProject.id, {
+          draft: logoDraft(retirementWinsAsset.id, "retirement won before project tx"),
+          draftRevision: 1,
+          expectedDraftRevision: 0,
+        }),
+      );
+    await withTimeout(retirementPrepareReached.promise, "retirement-winner prepare barrier");
+    const retirementWinnerWorker = startRetirementWorker(alice.id, retirementWinsAsset.id);
+    let retirementWinnerOutcome: RetirementWorkerOutcome | undefined;
+    let retirementWinnerError: unknown;
+    try {
+      await retirementWinnerWorker.ready;
+      await retirementWinnerWorker.invoking;
+      retirementWinnerOutcome = await retirementWinnerWorker.result;
+    } catch (error) {
+      retirementWinnerError = error;
+    } finally {
+      allowRetirementWinnerProject.resolve();
+    }
+    const retirementWinsResponse = await retirementWinsPatch;
+    await retirementWinnerWorker.cleanup();
+    if (retirementWinnerError) throw retirementWinnerError;
+    assert.deepEqual(
+      retirementWinnerOutcome,
+      { kind: "returned", value: true },
+      "independent real retirement commits while project recovery is paused after preparation",
+    );
+    const retirementWinsPayload = await retirementWinsResponse.json() as Record<string, unknown>;
+    assert.equal(retirementWinsResponse.status, 409);
+    assert.equal(retirementWinsPayload.error, "brand_asset_lifecycle_conflict");
+    assert.equal(Object.prototype.hasOwnProperty.call(retirementWinsPayload, "project"), false);
+    assert.deepEqual(
+      await projects.getEditorProject(alice.id, retirementWinsProject.id),
+      retirementWinsProject,
+      "retirement winner prevents the prepared project write from committing",
+    );
+    const retirementWinnerAsset = await prisma.brandAsset.findUniqueOrThrow({
+      where: { id: retirementWinsAsset.id },
+      select: { retiredAt: true, lifecycleRevision: true },
+    });
+    assert.ok(retirementWinnerAsset.retiredAt);
+    assert.equal(retirementWinnerAsset.lifecycleRevision, 1);
+
+    const recoveryWinsProject = await projects.createEditorProject(alice.id, {
+      title: "Real recovery wins",
+      draft: { script: "recovery winner base" },
+    });
+    const recoveryWinsAsset = await createBrandAssetFixture({
+      userId: alice.id,
+      projectId: recoveryWinsProject.id,
+      label: "real-recovery-wins",
+    });
+    const recoveryCasReached = deferred<void>();
+    const allowRecoveryWinner = deferred<void>();
+    const recoveryWinsPatch = lifecycleVerification
+      .runWithEditorProjectBrandAssetVerificationBarrier(
+        async (step) => {
+          if (step !== "after-project-cas") return;
+          recoveryCasReached.resolve();
+          await allowRecoveryWinner.promise;
+        },
+        () => patchEditorProjectForUser(alice.id, recoveryWinsProject.id, {
+          draft: logoDraft(recoveryWinsAsset.id, "recovery commits active reference"),
+          draftRevision: 1,
+          expectedDraftRevision: 0,
+        }),
+      );
+    await withTimeout(recoveryCasReached.promise, "recovery-winner CAS barrier");
+    const recoveryLoserWorker = startRetirementWorker(alice.id, recoveryWinsAsset.id);
+    let recoveryLoserOutcome: RetirementWorkerOutcome | undefined;
+    let recoveryRaceError: unknown;
+    let recoveryWorkerSettled = false;
+    void recoveryLoserWorker.result.then(
+      () => { recoveryWorkerSettled = true; },
+      () => { recoveryWorkerSettled = true; },
+    );
+    try {
+      await recoveryLoserWorker.ready;
+      await recoveryLoserWorker.invoking;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        recoveryWorkerSettled,
+        false,
+        "independent real retirement remains pending while project CAS owns the write transaction",
+      );
+    } catch (error) {
+      recoveryRaceError = error;
+    } finally {
+      allowRecoveryWinner.resolve();
+    }
+    const recoveryWinsResponse = await recoveryWinsPatch;
+    try {
+      recoveryLoserOutcome = await recoveryLoserWorker.result;
+    } catch (error) {
+      recoveryRaceError ??= error;
+    }
+    await recoveryLoserWorker.cleanup();
+    if (recoveryRaceError) throw recoveryRaceError;
+    assert.equal(recoveryWinsResponse.status, 200);
+    assert.deepEqual(
+      recoveryLoserOutcome,
+      { kind: "brand-error", code: "asset_in_use", status: 409 },
+      "independent real retirement observes the committed project reference and loses explicitly",
+    );
+    const recoveryWinnerProject = await projects.getEditorProject(alice.id, recoveryWinsProject.id);
+    assert.equal(recoveryWinnerProject?.draft.logoOverlay.assetId, recoveryWinsAsset.id);
+    assert.deepEqual(
+      await prisma.brandAsset.findUniqueOrThrow({
+        where: { id: recoveryWinsAsset.id },
+        select: { retiredAt: true, lifecycleRevision: true },
+      }),
+      { retiredAt: null, lifecycleRevision: 1 },
+      "recovery winner leaves an active lifecycle-claimed Logo referenced by the committed project",
+    );
 
     const recoveryProject = await projects.createEditorProject(alice.id, {
       title: "Recover retired logo",

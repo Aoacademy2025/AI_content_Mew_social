@@ -27,15 +27,23 @@ export class EditorProjectBrandAssetError extends Error {
 
 function draftLogoAssetId(draftJson: string | null | undefined): string | null {
   if (!draftJson) return null;
+  let draft: unknown;
   try {
-    const draft = JSON.parse(draftJson) as unknown;
-    if (!draft || typeof draft !== "object" || Array.isArray(draft)) return null;
-    return normalizeLogoOverlayConfig(
-      (draft as Record<string, unknown>).logoOverlay,
-    )?.assetId ?? null;
+    draft = JSON.parse(draftJson) as unknown;
   } catch {
     return null;
   }
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) return null;
+  const logoOverlay = (draft as Record<string, unknown>).logoOverlay;
+  const normalized = normalizeLogoOverlayConfig(logoOverlay);
+  if (!normalized) return null;
+  const rawAssetId = logoOverlay && typeof logoOverlay === "object" && !Array.isArray(logoOverlay)
+    ? (logoOverlay as Record<string, unknown>).assetId
+    : undefined;
+  if (rawAssetId !== normalized.assetId) {
+    throw new EditorProjectBrandAssetError("brand_asset_unavailable");
+  }
+  return normalized.assetId;
 }
 
 async function recoverableBrandAssetFileExists(

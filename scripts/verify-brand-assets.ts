@@ -152,6 +152,14 @@ async function main() {
       path.join(process.cwd(), "src/lib/editor-project-brand-asset.server.ts"),
       "utf8",
     );
+    const verificationSource = await readFile(
+      path.join(process.cwd(), "src/lib/editor-project-brand-asset-verification.server.ts"),
+      "utf8",
+    );
+    const projectsSource = await readFile(
+      path.join(process.cwd(), "src/lib/editor-projects.ts"),
+      "utf8",
+    );
     assert.match(
       recoverySource,
       /getRecoverableBrandAssetFence\(userId,\s*assetId\)/,
@@ -189,6 +197,43 @@ async function main() {
       recoverySource,
       /console\.(?:log|warn|error|info|debug)/,
       "project recovery never logs private ids or filesystem paths",
+    );
+    assert.match(
+      verificationSource,
+      /new AsyncLocalStorage<EditorProjectBrandAssetVerificationObserver>/,
+      "project recovery verification scope is isolated per async call chain",
+    );
+    assert.doesNotMatch(
+      verificationSource,
+      /process\.env|globalThis|console\.|assetId|userId|storageKey|filePath/,
+      "project recovery verification scope has no external switch, logging, or private identifier channel",
+    );
+    assert.deepEqual(
+      [...verificationSource.matchAll(/"(after-asset-prepare|after-project-cas)"/g)].map((match) => match[1]),
+      ["after-asset-prepare", "after-project-cas"],
+      "project recovery verification exposes exactly the two approved observation steps",
+    );
+    const observationCalls = [
+      ...projectsSource.matchAll(/observeEditorProjectBrandAssetVerificationStep\("(after-asset-prepare|after-project-cas)"\)/g),
+    ];
+    assert.deepEqual(
+      observationCalls.map((match) => match[1]),
+      ["after-asset-prepare", "after-project-cas"],
+      "project updates contain exactly the two approved recovery observations",
+    );
+    const updateSource = projectsSource.slice(
+      projectsSource.indexOf("export async function updateEditorProject"),
+      projectsSource.indexOf("export async function archiveEditorProject"),
+    );
+    assert.match(
+      updateSource,
+      /prepareEditorProjectBrandAsset[\s\S]*observeEditorProjectBrandAssetVerificationStep\("after-asset-prepare"\)[\s\S]*prisma\.\$transaction/,
+      "asset preparation observation precedes the project transaction",
+    );
+    assert.match(
+      updateSource,
+      /if \(updated\.count !== 1\)[\s\S]*observeEditorProjectBrandAssetVerificationStep\("after-project-cas"\)[\s\S]*advanceEditorProjectBrandAsset/,
+      "project CAS observation follows the project write and precedes lifecycle advance",
     );
 
     for (const routePath of [

@@ -5,6 +5,7 @@ import {
   advanceEditorProjectBrandAsset,
   prepareEditorProjectBrandAsset,
 } from "@/lib/editor-project-brand-asset.server";
+import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
 
 export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
@@ -245,6 +246,7 @@ export async function updateEditorProject(
   const assetFence = "draft" in input
     ? await prepareEditorProjectBrandAsset(userId, draftJsonForAsset)
     : null;
+  await observeEditorProjectBrandAssetVerificationStep("after-asset-prepare");
   const projectWriteMiss = new Error("editor_project_write_miss");
   let project: NonNullable<ProjectRow> | null = null;
   try {
@@ -262,6 +264,7 @@ export async function updateEditorProject(
         data,
       });
       if (updated.count !== 1) throw projectWriteMiss;
+      await observeEditorProjectBrandAssetVerificationStep("after-project-cas");
       await advanceEditorProjectBrandAsset(tx, userId, assetFence);
       return tx.editorProject.findFirst({ where: { id: projectId, userId } });
     });
