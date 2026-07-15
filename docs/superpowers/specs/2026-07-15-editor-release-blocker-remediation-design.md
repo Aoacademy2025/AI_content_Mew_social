@@ -154,8 +154,9 @@ are permitted:
 
 1. **Saved:** server revision and fingerprint equal the current attempt. The PATCH
    committed even if the response was lost.
-2. **Retry from confirmed base:** server revision still equals the current confirmed
-   revision. The current attempt did not commit and may retry once using CAS.
+2. **Retry from confirmed base:** server revision and fingerprint still equal the
+   current confirmed candidate. The current attempt did not commit and may retry once
+   using CAS. Equal revision with different content is a conflict.
 3. **Advance through known same-lane snapshot:** server revision/fingerprint equal a
    previously issued snapshot from this lane. That snapshot becomes confirmed and the
    current attempt may retry once from it.

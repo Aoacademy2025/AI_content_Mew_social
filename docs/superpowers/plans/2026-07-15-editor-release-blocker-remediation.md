@@ -131,8 +131,9 @@ journal validation.
 
 Materialize before fingerprinting. Recursively sort object keys, preserve array order,
 and serialize only the strict JSON graph. Validate project ids and revisions in every
-public constructor. The decision order is current-attempt match → confirmed revision
-unchanged → matching known issued revision/fingerprint → conflict.
+public constructor. The decision order is current-attempt revision/fingerprint match →
+confirmed revision/fingerprint unchanged → matching known issued revision/fingerprint
+→ conflict. Equal revision with different content must conflict.
 
 - [ ] **Step 6: Prove mutation sensitivity**
 
