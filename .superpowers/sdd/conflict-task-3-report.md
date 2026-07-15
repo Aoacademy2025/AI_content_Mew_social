@@ -161,3 +161,121 @@ completes successfully.
 - Logo draft canonicalization and recovery cleanup remain project-scoped.
 - Plan, usage, admin/managed flags, avatar metadata, job IDs, project status, and
   preview media remain ordinary system state and never mark user provenance.
+
+## Reviewer follow-up: executable hook regressions
+
+The review exposed race paths that the original source-only checks did not execute.
+`scripts/editor-project-recovery-hook-runtime-harness.ts` now transpiles and evaluates
+the real `useV2Project` hook with a deterministic React-hook dispatcher, mocked fetch
+and storage, the real hook-facing save-queue contract, and fake timers. It adds no
+runtime dependency to the application.
+
+Before the reviewer fixes, the harness reproduced these failures:
+
+```text
+settings-after-GET: late avatar, voice, and mix defaults replaced the selected server draft
+equal-revision-resume: PATCH contained live/default state instead of the exact journal draft
+reset-during-GET: the obsolete project GET applied after reset began
+project-switching: the B recovery journal was absent because logoOverlay: undefined was not JSON-safe
+ambiguous-local-choice: only the bootstrap GET ran; no authoritative refresh GET followed the failed PATCH
+ambiguous-refresh-failure: resolving became false, re-enabling unsafe choices
+revision-exhaustion: reserveRevisionAbove threw out of the conflict action
+```
+
+The pre-fix harness already passed functional public setters (including stable setter
+identity plus clip/mix coupling), failed journal writes continuing to autosave, and
+StrictMode setup/cleanup. Keeping these cases in the final suite prevents those
+existing guarantees from regressing while the races are fixed.
+
+The production fixes make existing-project selection fail closed:
+
+- Existing-project bootstrap synchronously disables account draft defaults; delayed
+  `/video-settings` and account-profile responses can still update system state but
+  cannot overwrite the selected server or recovery draft.
+- Equal-revision resume retains a frozen trusted recovery snapshot until its PATCH
+  succeeds. Autosave canonicalizes that exact snapshot instead of rebuilding from
+  later live/default state.
+- Reset and bootstrap use generation ownership plus abort signals, with every
+  post-await mutation and storage write guarded by the active generation.
+- An ambiguous local-choice PATCH failure always performs an authoritative GET before
+  choices can be re-enabled. If that refresh also fails, the conflict stays locked;
+  choosing server remains PATCH-free.
+- Revision reservation is inside the guarded conflict action. Exhaustion restores the
+  immutable local/server candidates with an actionable error.
+- Autosave canonicalizes the draft before recovery journaling, so optional undefined
+  logo fields cannot invalidate a project-scoped journal. The project-switch case
+  asserts B's journal has `projectId=switch-b`, `baseRevision=7`, and B's draft while
+  preserving A's journal.
+
+The final runtime suite covers ten cases:
+
+```text
+settings-after-GET
+equal-revision-resume exact immutable PATCH
+reset-during-GET
+functional setters, stable identity, clip coupling, and mix coupling
+failed journal write still autosaves
+project switching with project-scoped journal identity and revision
+StrictMode setup/cleanup: one POST and one PATCH
+ambiguous local choice performs a refresh GET
+failed ambiguous refresh stays locked and server choice cannot act
+revision exhaustion restores the immutable conflict
+```
+
+`verify-editor-project-recovery-hook.ts` also mutation-tests the runtime harness:
+
+1. Removing the existing-project account-default guard must fail the
+   settings-after-GET case.
+2. Removing trusted-resume snapshot selection must fail the exact resume-PATCH case.
+
+These run alongside the original public-setter and programmatic-apply source mutations.
+
+Fresh post-review verification:
+
+```text
+$ npx tsx scripts/verify-editor-project-recovery.ts
+editor-project-recovery: all checks passed
+
+$ npx tsx scripts/verify-editor-project-recovery-hook.ts
+editor-project-recovery-hook: all checks passed
+
+$ npx tsx scripts/verify-editor-project-save-queue.ts
+editor-project-save-queue: all checks passed
+
+$ npx tsx scripts/verify-logo-project-default.ts
+logo-project-default: all checks passed
+
+$ npx tsx scripts/verify-editor-projects.ts
+ALL 59 EDITOR-PROJECT CHECKS PASSED
+
+$ npx tsx scripts/verify-logo-overlay.ts
+logo-overlay: all checks passed
+
+$ npx tsx scripts/verify-logo-render.ts
+logo-render: all checks passed
+
+$ npx tsx scripts/verify-logo-client-contract.ts
+logo-client-contract: all checks passed
+```
+
+The fresh post-review typecheck retains only the same unrelated checkout baseline:
+
+```text
+$ npx tsc --noEmit --pretty false
+src/app/api/payments/checkout/route.ts(129,9): error TS2322: ...
+Property 'ref_code' is incompatible with index signature.
+Type 'undefined' is not assignable to type 'string | number | null'.
+```
+
+The fresh post-review production build passed:
+
+```text
+$ npm run build
+✓ Compiled successfully in 10.0s
+✓ Generating static pages (139/139)
+Finalizing page optimization ...
+exit 0
+```
+
+As before, page collection logged non-fatal Prisma warnings because `DATABASE_URL` is
+not configured in this worktree; the build continued and exited successfully.

@@ -156,7 +156,7 @@ assert.match(
   /decision\.kind\s*===\s*"server"[\s\S]{0,360}applyDraft\(serverCandidate\.draft as V2Draft\)/,
   "safe current GET applies only the server draft",
 );
-assert.match(serverLoadSource, /decision\.kind\s*===\s*"conflict"[\s\S]{0,360}setProjectReady\(false\)/,
+assert.match(serverLoadSource, /decision\.kind\s*===\s*"conflict"[\s\S]{0,520}setProjectReady\(false\)/,
   "ambiguous logo drafts remain locked behind an explicit conflict choice");
 
 const localSeedSource = sourceBetween(
@@ -226,7 +226,7 @@ assert.match(
 );
 assert.match(
   localSeedSource,
-  /const canonicalSeedDraft = canonicalizeDraftLogoOverlay\(seedDraft\);[\s\S]{0,240}applyDraft\(canonicalSeedDraft\);[\s\S]{0,240}createServerProject\(canonicalSeedDraft\);/,
+  /const canonicalSeedDraft = canonicalizeDraftLogoOverlay\(seedDraft\);[\s\S]{0,240}applyDraft\(canonicalSeedDraft\);[\s\S]{0,320}createServerProject\(canonicalSeedDraft,\s*\{/,
   "the same canonical local draft is applied and posted",
 );
 

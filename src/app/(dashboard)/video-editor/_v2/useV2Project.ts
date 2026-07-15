@@ -242,8 +242,14 @@ export function useV2Project() {
   // hydration text mismatches when a previous draft exists.
   const draftRef = useRef<V2Draft>({});
   const d = draftRef.current;
+  const accountDraftDefaultsAllowedRef = useRef(true);
+  const trustedResumeDraftRef = useRef<V2Draft | null>(null);
+  const bootstrapGenerationRef = useRef(0);
+  const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
   const userDraftMutationTokenRef = useRef(0);
   const markUserDraftMutation = useCallback(() => {
+    accountDraftDefaultsAllowedRef.current = false;
+    trustedResumeDraftRef.current = null;
     userDraftMutationTokenRef.current += 1;
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -331,9 +337,6 @@ export function useV2Project() {
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay,
     };
   }
-
-  const latestDraftRef = useRef<V2Draft>({});
-  latestDraftRef.current = buildDraft();
 
   function applyDraft(next: V2Draft) {
     draftRef.current = next;
@@ -449,15 +452,22 @@ export function useV2Project() {
     });
   }
 
-  const createServerProject = useCallback(async (draft: V2Draft) => {
+  const createServerProject = useCallback(async (
+    draft: V2Draft,
+    options: { isCurrent?: () => boolean; signal?: AbortSignal } = {},
+  ) => {
+    const isCurrent = options.isCurrent ?? (() => true);
     try {
       const res = await fetch("/api/editor-projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: draft.projectTitle ?? DEFAULT_PROJECT.projectTitle, draft }),
+        signal: options.signal,
       });
+      if (!isCurrent()) return null;
       if (!res.ok) return null;
       const data = await res.json();
+      if (!isCurrent()) return null;
       const id = typeof data?.project?.id === "string" ? data.project.id : null;
       if (id) {
         editorProjectSaveQueue.seedRevision(id, data.project.draftRevision);
@@ -485,7 +495,18 @@ export function useV2Project() {
   }, [setRecoveryState]);
 
   const resetProject = useCallback(async () => {
+    const resetGeneration = bootstrapGenerationRef.current + 1;
+    bootstrapGenerationRef.current = resetGeneration;
+    bootstrapAbortControllerRef.current?.abort();
+    const resetController = new AbortController();
+    bootstrapAbortControllerRef.current = resetController;
+    const isCurrentReset = () => bootstrapGenerationRef.current === resetGeneration
+      && bootstrapAbortControllerRef.current === resetController
+      && !resetController.signal.aborted;
+    accountDraftDefaultsAllowedRef.current = false;
+    trustedResumeDraftRef.current = null;
     const accountDefault = await loadAccountLogoDefault();
+    if (!isCurrentReset()) return;
     const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
       hasExistingDraft: false,
@@ -543,11 +564,23 @@ export function useV2Project() {
     setMixPresetRaw(nextPreset);
     setLogoOverlayRaw(inherited);
     setSaveStatus("idle");
-    await createServerProject(nextDraft);
+    await createServerProject(nextDraft, {
+      isCurrent: isCurrentReset,
+      signal: resetController.signal,
+    });
   }, [createServerProject, isPaidManagedKie, projectId, saveRevision, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
+    const generation = bootstrapGenerationRef.current + 1;
+    bootstrapGenerationRef.current = generation;
+    bootstrapAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    bootstrapAbortControllerRef.current = controller;
+    const isCurrentBootstrap = () => alive
+      && bootstrapGenerationRef.current === generation
+      && bootstrapAbortControllerRef.current === controller
+      && !controller.signal.aborted;
     async function ensureServerProject() {
       const storage = browserStorage();
       const storedLocalDraft = loadDraft();
@@ -557,20 +590,22 @@ export function useV2Project() {
       const existingProjectId = urlProjectId || storedProjectId;
 
       if (existingProjectId) {
+        accountDraftDefaultsAllowedRef.current = false;
+        trustedResumeDraftRef.current = null;
         setRecoveryState({ status: "loading" });
         setProjectId(existingProjectId);
         setProjectReady(false);
         setSaveStatus("idle");
         await editorProjectSaveQueue.whenIdle(existingProjectId);
-        if (!alive) return;
+        if (!isCurrentBootstrap()) return;
         let response: Response | null = null;
         try {
           response = await fetch(
             `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
-            { cache: "no-store" },
+            { cache: "no-store", signal: controller.signal },
           );
         } catch { /* handled by the fail-closed branch */ }
-        if (!alive) return;
+        if (!isCurrentBootstrap()) return;
         if (!response || !response.ok) {
           setProjectReady(false);
           setSaveStatus("error");
@@ -583,6 +618,7 @@ export function useV2Project() {
           return;
         }
         const data = await response.json().catch(() => null);
+        if (!isCurrentBootstrap()) return;
         const project = data?.project as Record<string, unknown> | null | undefined;
         if (
           !project
@@ -622,6 +658,7 @@ export function useV2Project() {
         try { storage?.setItem(PROJECT_ID_KEY, project.id as string); } catch {}
 
         if (decision.kind === "server") {
+          trustedResumeDraftRef.current = null;
           applyDraft(serverCandidate.draft as V2Draft);
           clearProjectRecoveryData(existingProjectId);
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
@@ -644,6 +681,7 @@ export function useV2Project() {
             setRecoveryState({ status: "load-error", message: "ข้อมูลกู้คืนไม่สมบูรณ์ กรุณาลองใหม่" });
             return;
           }
+          trustedResumeDraftRef.current = localCandidate.draft as V2Draft;
           applyDraft(localCandidate.draft as V2Draft);
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
           setRecoveryState({ status: "none" });
@@ -653,6 +691,7 @@ export function useV2Project() {
           return;
         }
         if (decision.kind === "conflict") {
+          trustedResumeDraftRef.current = null;
           const localCandidate = createRecoveryCandidate({
             projectId: existingProjectId,
             draft: decision.local.draft,
@@ -687,7 +726,7 @@ export function useV2Project() {
       }
 
       await Promise.resolve();
-      if (!alive) return;
+      if (!isCurrentBootstrap()) return;
       const localDraft = urlProjectId && urlProjectId !== storedProjectId
         ? null
         : storedLocalDraft;
@@ -695,23 +734,79 @@ export function useV2Project() {
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         const accountDefault = await loadAccountLogoDefault();
-        if (!alive) return;
+        if (!isCurrentBootstrap()) return;
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }
       const canonicalSeedDraft = canonicalizeDraftLogoOverlay(seedDraft);
-      if (!alive) return;
+      if (!isCurrentBootstrap()) return;
       applyDraft(canonicalSeedDraft);
+      trustedResumeDraftRef.current = null;
       lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
-      const id = await createServerProject(canonicalSeedDraft);
-      if (!alive || !id) return;
+      const id = await createServerProject(canonicalSeedDraft, {
+        isCurrent: isCurrentBootstrap,
+        signal: controller.signal,
+      });
+      if (!isCurrentBootstrap() || !id) return;
       try { storage?.setItem(PROJECT_ID_KEY, id); } catch {}
     }
     void ensureServerProject();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+      controller.abort();
+      if (bootstrapGenerationRef.current === generation) bootstrapGenerationRef.current += 1;
+    };
     // Server project bootstrap should run once. Subsequent field autosaves are handled below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createServerProject, bootstrapRetryRevision]);
+
+  const refreshConflictAfterAmbiguousWrite = useCallback(async (
+    projectId: string,
+    conflict: Extract<EditorProjectRecoveryState, { status: "conflict" }>,
+  ) => {
+    const stillResolvingThisConflict = () => currentProjectIdRef.current === projectId
+      && recoveryRef.current.status === "conflict"
+      && recoveryRef.current.local === conflict.local;
+    try {
+      const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+        cache: "no-store",
+      });
+      const payload = response.ok ? await response.json().catch(() => null) : null;
+      const currentProject = payload?.project as Record<string, unknown> | null | undefined;
+      const server = currentProject
+        ? serverCandidateForProject(projectId, currentProject)
+        : null;
+      if (!stillResolvingThisConflict()) return;
+      if (!response.ok || !server || server.revision === null) {
+        setRecoveryState({
+          status: "conflict",
+          local: conflict.local,
+          server: conflict.server,
+          resolving: "local",
+          error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนเลือกอีกครั้ง",
+        });
+        return;
+      }
+      editorProjectSaveQueue.seedRevision(projectId, server.revision);
+      applyServerProjectMetadata(currentProject!);
+      setRecoveryState({
+        status: "conflict",
+        local: conflict.local,
+        server,
+        resolving: false,
+        error: "ตรวจสอบข้อมูลล่าสุดแล้ว กรุณาเลือกเวอร์ชันที่ต้องการอีกครั้ง",
+      });
+    } catch {
+      if (!stillResolvingThisConflict()) return;
+      setRecoveryState({
+        status: "conflict",
+        local: conflict.local,
+        server: conflict.server,
+        resolving: "local",
+        error: "ตรวจสอบเวอร์ชันล่าสุดไม่สำเร็จ กรุณาโหลดหน้าใหม่ก่อนเลือกอีกครั้ง",
+      });
+    }
+  }, [setRecoveryState]);
 
   const chooseLocalProjectDraft = useCallback(async () => {
     const conflict = recoveryRef.current;
@@ -723,7 +818,17 @@ export function useV2Project() {
       return;
     }
     setRecoveryState({ ...conflict, resolving: "local", error: null });
-    const revision = editorProjectSaveQueue.reserveRevisionAbove(projectId, expected);
+    let revision: number;
+    try {
+      revision = editorProjectSaveQueue.reserveRevisionAbove(projectId, expected);
+    } catch {
+      setRecoveryState({
+        ...conflict,
+        resolving: false,
+        error: "ไม่สามารถสร้างเลขเวอร์ชันใหม่ได้ กรุณาลองใหม่",
+      });
+      return;
+    }
     try {
       const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         method: "PATCH",
@@ -747,11 +852,7 @@ export function useV2Project() {
             error: "ข้อมูลบนระบบมีการเปลี่ยนแปลง กรุณาเลือกอีกครั้ง",
           });
         } else {
-          setRecoveryState({
-            ...conflict,
-            resolving: false,
-            error: "โหลดเวอร์ชันล่าสุดไม่สำเร็จ กรุณาลองใหม่",
-          });
+          await refreshConflictAfterAmbiguousWrite(projectId, conflict);
         }
         return;
       }
@@ -760,14 +861,11 @@ export function useV2Project() {
         ? serverCandidateForProject(projectId, savedProject)
         : null;
       if (!savedCandidate || savedCandidate.revision === null) {
-        setRecoveryState({
-          ...conflict,
-          resolving: false,
-          error: "บันทึกฉบับในเครื่องไม่สำเร็จ กรุณาลองใหม่",
-        });
+        await refreshConflictAfterAmbiguousWrite(projectId, conflict);
         return;
       }
       applyDraft(savedCandidate.draft as V2Draft);
+      trustedResumeDraftRef.current = null;
       applyServerProjectMetadata(savedProject!);
       editorProjectSaveQueue.seedRevision(projectId, savedCandidate.revision);
       confirmedServerRevisionRef.current = savedCandidate.revision;
@@ -778,13 +876,9 @@ export function useV2Project() {
       setSaveStatus("saved");
       setRecoveryState({ status: "none" });
     } catch {
-      setRecoveryState({
-        ...conflict,
-        resolving: false,
-        error: "บันทึกฉบับในเครื่องไม่สำเร็จ กรุณาลองใหม่",
-      });
+      await refreshConflictAfterAmbiguousWrite(projectId, conflict);
     }
-  }, [setRecoveryState]);
+  }, [refreshConflictAfterAmbiguousWrite, setRecoveryState]);
 
   const chooseServerProjectDraft = useCallback(() => {
     const conflict = recoveryRef.current;
@@ -792,6 +886,7 @@ export function useV2Project() {
     if (conflict.status !== "conflict" || conflict.resolving || !projectId) return;
     setRecoveryState({ ...conflict, resolving: "server", error: null });
     applyDraft(conflict.server.draft as V2Draft);
+    trustedResumeDraftRef.current = null;
     if (conflict.server.revision !== null) {
       editorProjectSaveQueue.seedRevision(projectId, conflict.server.revision);
       confirmedServerRevisionRef.current = conflict.server.revision;
@@ -806,8 +901,9 @@ export function useV2Project() {
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
-    const hadDraft = Object.keys(draftRef.current).length > 0;
     fetch("/api/user/video-settings").then(r => r.json()).then(s => {
+      if (!accountDraftDefaultsAllowedRef.current) return;
+      const hadDraft = Object.keys(draftRef.current).length > 0;
       if (!hadDraft) {
         if (s.heygenAvatarId) setAvatarIdRaw(s.heygenAvatarId);
         if (s.elevenlabsVoiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
@@ -835,7 +931,7 @@ export function useV2Project() {
       //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
       //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
       // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
-      if (!admin) {
+      if (!admin && accountDraftDefaultsAllowedRef.current) {
         const defaultPreset = !paid ? "free" : !draftRef.current.mixPreset ? "recommended" : null;
         if (defaultPreset) {
           setMixPresetRaw(defaultPreset);
@@ -859,7 +955,8 @@ export function useV2Project() {
     if (!hasUserMutation && !hasSaveRetry) return;
     setSaveStatus("saving");
     const t = setTimeout(() => {
-      const draft = buildDraft();
+      const draft = trustedResumeDraftRef.current
+        ?? canonicalizeDraftLogoOverlay(buildDraft()) as V2Draft;
       const saveProjectId = projectId;
       if (userDraftMutationTokenRef.current > lastPersistedUserMutationTokenRef.current) {
         const journalWritten = writeEditorProjectRecoveryJournal(browserStorage(), {
@@ -888,6 +985,7 @@ export function useV2Project() {
           setSaveStatus(status);
           if (isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)) {
             confirmedServerRevisionRef.current = event.revision;
+            trustedResumeDraftRef.current = null;
             clearProjectRecoveryData(event.projectId);
           }
         },

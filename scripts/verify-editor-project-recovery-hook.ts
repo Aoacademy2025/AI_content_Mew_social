@@ -2,6 +2,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import {
+  verifyRuntimeHookContract,
+  verifyRuntimeHookMutationSensitivity,
+} from "./editor-project-recovery-hook-runtime-harness";
 import { decideEditorProjectBootstrap } from "../src/lib/editor-project-bootstrap";
 import {
   clearEditorProjectRecoveryJournal,
@@ -242,7 +246,7 @@ function verifyHookSource(value: string): void {
     "hook exposes the deterministic recovery contract");
 
   const newProject = sourceBetween(value, "await Promise.resolve();", "storage?.setItem(PROJECT_ID_KEY, id)");
-  assert.match(newProject, /if \(!alive\) return;[\s\S]*createServerProject\(canonicalSeedDraft\)/,
+  assert.match(newProject, /if \(!isCurrentBootstrap\(\)\) return;[\s\S]*createServerProject\(canonicalSeedDraft,\s*\{/,
     "StrictMode cleanup wins before the only new-project POST");
   assert.match(autosave, /const t = setTimeout[\s\S]*return \(\) => \{ clearTimeout\(t\); \}/,
     "StrictMode cleanup cancels the first autosave setup before PATCH");
@@ -354,6 +358,8 @@ async function main(): Promise<void> {
   verifyHookSource(source);
   await verifyPureSeams();
   verifyReviewerRegressions();
+  await verifyRuntimeHookContract();
+  await verifyRuntimeHookMutationSensitivity();
 
   const missingBoundary = source.replace(
     /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([^;]+?,\s*)markUserDraftMutation(\s*\))/,
