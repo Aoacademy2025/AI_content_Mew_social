@@ -164,6 +164,7 @@ async function captureConsoleErrors<T>(task: () => Promise<T>): Promise<{
 function assertNoStorageData(value: unknown): void {
   const serialized = JSON.stringify(value);
   assert.doesNotMatch(serialized, /storageKey/);
+  assert.doesNotMatch(serialized, /retiredAt|lifecycleRevision/);
   assert.equal(serialized.includes(root), false, "response must not expose the asset root");
 }
 
@@ -3079,6 +3080,82 @@ async function main(): Promise<void> {
   assert.equal(inUseDelete.status, 409);
   assert.equal((await json(inUseDelete)).error, "asset_in_use");
 
+  const retireResponse = await deleteBrandAssetItem(
+    { id: OWNER_ID, plan: "PRO" },
+    OWNER_SPARE_ASSET_ID,
+  );
+  assert.equal(retireResponse.status, 200);
+  assert.deepEqual(await json(retireResponse), { deleted: true });
+  const retiredSpare = await prisma.brandAsset.findUniqueOrThrow({
+    where: { id: OWNER_SPARE_ASSET_ID },
+  });
+  assert.ok(retiredSpare.retiredAt, "DELETE retires the unreferenced row");
+  assert.equal(retiredSpare.lifecycleRevision, 1, "DELETE advances the lifecycle revision");
+  await access(path.join(root, retiredSpare.storageKey));
+
+  const retiredMetadata = await getBrandAssetItem(freeActor, OWNER_SPARE_ASSET_ID);
+  assert.equal(retiredMetadata.status, 200, "owner direct metadata recovery includes retired assets");
+  const retiredMetadataBody = await json(retiredMetadata);
+  assert.equal((retiredMetadataBody.asset as { id: string }).id, OWNER_SPARE_ASSET_ID);
+  assertNoStorageData(retiredMetadataBody);
+
+  const retiredImage = await getBrandAssetImage(freeActor, OWNER_SPARE_ASSET_ID);
+  assert.equal(retiredImage.status, 200, "owner direct image recovery includes retired assets");
+  assert.equal(await retiredImage.text(), "spare-image");
+  assertNoStorageData(Object.fromEntries(retiredImage.headers));
+
+  const repeatedRetire = await deleteBrandAssetItem(
+    { id: OWNER_ID, plan: "PRO" },
+    OWNER_SPARE_ASSET_ID,
+  );
+  assert.equal(repeatedRetire.status, 404, "repeated DELETE hides retired assets as not found");
+  assert.equal((await json(repeatedRetire)).error, "asset_not_found");
+
+  const retiredCrossMetadata = await getBrandAssetItem(paidOther, OWNER_SPARE_ASSET_ID);
+  assert.equal(retiredCrossMetadata.status, 404, "cross-owner retired metadata stays hidden");
+  assert.equal((await json(retiredCrossMetadata)).error, "asset_not_found");
+  const retiredCrossImage = await getBrandAssetImage(paidOther, OWNER_SPARE_ASSET_ID);
+  assert.equal(retiredCrossImage.status, 404, "cross-owner retired image stays hidden");
+  assert.equal((await json(retiredCrossImage)).error, "asset_not_found");
+
+  const retiredDefaultPatch = await patchBrandAssetItem(
+    { id: OWNER_ID, plan: "PRO" },
+    OWNER_SPARE_ASSET_ID,
+    new Request(`http://local/api/user/brand-assets/${OWNER_SPARE_ASSET_ID}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        setAsDefault: true,
+        enabled: true,
+        position: "top-left",
+        sizePct: 20,
+        opacity: 0.8,
+      }),
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  assert.equal(retiredDefaultPatch.status, 404, "retired assets cannot become the default");
+  assert.equal((await json(retiredDefaultPatch)).error, "asset_not_found");
+
+  await prisma.brandAsset.update({
+    where: { id: OWNER_ASSET_ID },
+    data: { retiredAt: new Date(), lifecycleRevision: { increment: 1 } },
+  });
+  const retiredDefaultCollection = await getBrandAssetCollection(freeActor);
+  assert.equal(retiredDefaultCollection.status, 200);
+  const retiredDefaultCollectionBody = await json(retiredDefaultCollection);
+  assert.equal(retiredDefaultCollectionBody.defaultLogo, null, "collection filters a retired default");
+  assertNoStorageData(retiredDefaultCollectionBody);
+  assert.equal(
+    (await getBrandAssetItem(freeActor, OWNER_ASSET_ID)).status,
+    200,
+    "owner direct recovery can still preview a retired default",
+  );
+  assert.equal(
+    (await getBrandAssetItem(paidOther, OWNER_ASSET_ID)).status,
+    404,
+    "cross-owner direct recovery cannot preview a retired default",
+  );
+
   const png = await sharp({
     create: { width: 24, height: 12, channels: 4, background: "#336699ff" },
   }).png().toBuffer();
@@ -3104,6 +3181,22 @@ async function main(): Promise<void> {
     clerkId: "clerk-brand-api-delete",
     filename: "delete.webp",
   });
+  const retiredDeletionPath = path.join(root, DELETE_USER_ID, "retired-delete.webp");
+  await prisma.brandAsset.create({
+    data: {
+      id: `${DELETE_USER_ID}-retired-asset`,
+      userId: DELETE_USER_ID,
+      storageKey: `${DELETE_USER_ID}/retired-delete.webp`,
+      originalName: "retired-delete.webp",
+      mimeType: "image/webp",
+      sizeBytes: 20,
+      width: 10,
+      height: 10,
+      retiredAt: new Date(),
+      lifecycleRevision: 1,
+    },
+  });
+  await writeFile(retiredDeletionPath, "retired-delete-image");
   const deletionResponse = await clerkWebhookPost(
     clerkDeleteRequest("clerk-brand-api-delete", "brand-delete-1"),
   );
@@ -3113,10 +3206,20 @@ async function main(): Promise<void> {
     null,
     "Clerk hard delete removes the user row",
   );
+  assert.equal(
+    await prisma.brandAsset.count({ where: { userId: DELETE_USER_ID } }),
+    0,
+    "Clerk hard delete cascades both active and retired rows",
+  );
   await assert.rejects(
     access(deletionPath),
     (error: NodeJS.ErrnoException) => error.code === "ENOENT",
     "Clerk hard delete removes captured brand files after the DB delete",
+  );
+  await assert.rejects(
+    access(retiredDeletionPath),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    "Clerk hard delete removes retired recovery files",
   );
   await assert.rejects(
     access(clerkReceiptPath("clerk-brand-api-delete")),

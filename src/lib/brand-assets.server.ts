@@ -39,6 +39,7 @@ const MAX_INPUT_DIMENSION = 4096;
 const MAX_UPLOADS_PER_HOUR = 20;
 const UPLOAD_WINDOW_MS = 60 * 60 * 1000;
 const uploadWindows = new Map<string, number[]>();
+const ACTIVE_ASSET_WHERE = { retiredAt: null } as const;
 export const BRAND_ASSET_ACCOUNT_DELETE_RECEIPTS_DIRECTORY = ".account-delete-receipts-v1";
 export const BRAND_ASSET_ACCOUNT_DELETE_QUARANTINE_DIRECTORY = ".account-delete-quarantine-v1";
 
@@ -56,6 +57,13 @@ type BrandAssetRow = {
   sizeBytes: number;
   width: number;
   height: number;
+};
+
+export type RecoverableBrandAssetFence = {
+  id: string;
+  storageKey: string;
+  lifecycleRevision: number;
+  retiredAt: Date | null;
 };
 
 function brandRoot(): string {
@@ -221,11 +229,47 @@ export async function saveBrandAsset(input: {
 }
 
 export async function getOwnedBrandAsset(userId: string, assetId: string): Promise<BrandAssetView | null> {
+  const asset = await prisma.brandAsset.findFirst({
+    where: { id: assetId, userId, ...ACTIVE_ASSET_WHERE },
+  });
+  return asset ? toBrandAssetView(asset) : null;
+}
+
+export async function getOwnedRecoverableBrandAsset(
+  userId: string,
+  assetId: string,
+): Promise<BrandAssetView | null> {
   const asset = await prisma.brandAsset.findFirst({ where: { id: assetId, userId } });
   return asset ? toBrandAssetView(asset) : null;
 }
 
+export async function getRecoverableBrandAssetFence(
+  userId: string,
+  assetId: string,
+): Promise<RecoverableBrandAssetFence | null> {
+  return prisma.brandAsset.findFirst({
+    where: { id: assetId, userId },
+    select: {
+      id: true,
+      storageKey: true,
+      lifecycleRevision: true,
+      retiredAt: true,
+    },
+  });
+}
+
 export async function getBrandAssetPath(userId: string, assetId: string): Promise<string | null> {
+  const asset = await prisma.brandAsset.findFirst({
+    where: { id: assetId, userId, ...ACTIVE_ASSET_WHERE },
+    select: { storageKey: true },
+  });
+  return asset ? resolveBrandAssetPath(asset.storageKey) : null;
+}
+
+export async function getRecoverableBrandAssetPath(
+  userId: string,
+  assetId: string,
+): Promise<string | null> {
   const asset = await prisma.brandAsset.findFirst({
     where: { id: assetId, userId },
     select: { storageKey: true },
@@ -237,8 +281,8 @@ export async function getDefaultBrandPreference(userId: string): Promise<{
   asset: BrandAssetView;
   config: LogoOverlayConfig;
 } | null> {
-  const preference = await prisma.brandPreference.findUnique({
-    where: { userId },
+  const preference = await prisma.brandPreference.findFirst({
+    where: { userId, defaultAsset: ACTIVE_ASSET_WHERE },
     include: { defaultAsset: true },
   });
   if (!preference || preference.defaultAsset.userId !== userId) return null;
@@ -268,7 +312,7 @@ export async function setDefaultBrandPreference(input: {
     throw new BrandAssetError("invalid_config", 400);
   }
   const asset = await prisma.brandAsset.findFirst({
-    where: { id: input.assetId, userId: input.userId },
+    where: { id: input.assetId, userId: input.userId, ...ACTIVE_ASSET_WHERE },
     select: { id: true },
   });
   if (!asset) throw new BrandAssetError("asset_not_found", 404);
@@ -294,12 +338,12 @@ export async function setDefaultBrandPreference(input: {
 }
 
 export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: string): Promise<boolean> {
-  const storageKey = await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     const asset = await tx.brandAsset.findFirst({
-      where: { id: assetId, userId },
-      select: { storageKey: true },
+      where: { id: assetId, userId, ...ACTIVE_ASSET_WHERE },
+      select: { lifecycleRevision: true },
     });
-    if (!asset) return null;
+    if (!asset) return false;
 
     const defaultPreference = await tx.brandPreference.findFirst({
       where: { defaultAssetId: assetId },
@@ -314,15 +358,21 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
       throw new BrandAssetError("asset_in_use", 409);
     }
 
-    const deleted = await tx.brandAsset.deleteMany({ where: { id: assetId, userId } });
-    return deleted.count === 1 ? asset.storageKey : null;
+    const retired = await tx.brandAsset.updateMany({
+      where: {
+        id: assetId,
+        userId,
+        ...ACTIVE_ASSET_WHERE,
+        lifecycleRevision: asset.lifecycleRevision,
+      },
+      data: {
+        retiredAt: new Date(),
+        lifecycleRevision: { increment: 1 },
+      },
+    });
+    if (retired.count !== 1) throw new BrandAssetError("asset_in_use", 409);
+    return true;
   });
-
-  if (!storageKey) return false;
-  const filePath = resolveBrandAssetPath(storageKey);
-  if (!filePath) throw new BrandAssetError("invalid_config", 400);
-  await unlinkIfPresent(filePath);
-  return true;
 }
 
 export function isSafeBrandAssetUserId(userId: unknown): userId is string {

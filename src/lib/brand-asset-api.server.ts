@@ -5,9 +5,9 @@ import {
   BrandAssetError,
   canUseLogoOverlay,
   deleteBrandAssetIfUnreferenced,
-  getBrandAssetPath,
   getDefaultBrandPreference,
-  getOwnedBrandAsset,
+  getOwnedRecoverableBrandAsset,
+  getRecoverableBrandAssetPath,
   saveBrandAsset,
   setDefaultBrandPreference,
 } from "@/lib/brand-assets.server";
@@ -163,7 +163,7 @@ export async function getBrandAssetItem(
   assetId: string,
 ): Promise<NextResponse> {
   if (!assetId.trim()) return invalidConfigResponse();
-  const asset = await getOwnedBrandAsset(user.id, assetId);
+  const asset = await getOwnedRecoverableBrandAsset(user.id, assetId);
   if (!asset) return notFoundResponse();
   return NextResponse.json({ asset: publicAsset(asset) });
 }
@@ -254,7 +254,7 @@ export async function getBrandAssetImage(
 ): Promise<NextResponse> {
   if (!assetId.trim()) return invalidConfigResponse();
 
-  const filePath = await getBrandAssetPath(user.id, assetId);
+  const filePath = await getRecoverableBrandAssetPath(user.id, assetId);
   if (!filePath) return notFoundResponse();
 
   let file;

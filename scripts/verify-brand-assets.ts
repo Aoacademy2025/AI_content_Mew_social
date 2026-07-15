@@ -2,7 +2,7 @@
 // DATABASE_URL=file:/tmp/heroai-logo-model.db BRAND_ASSET_ROOT=/tmp/heroai-brand-assets npx tsx scripts/verify-brand-assets.ts
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -98,6 +98,22 @@ async function main() {
     }
 
     rmSync(siblingDirectory, { recursive: true, force: true });
+  }
+
+  async function verifyRetirementRevisionFenceContract(): Promise<void> {
+    const source = await readFile(
+      path.join(process.cwd(), "src/lib/brand-assets.server.ts"),
+      "utf8",
+    );
+    const retirementUpdate = source.slice(
+      source.indexOf("const retired = await tx.brandAsset.updateMany"),
+      source.indexOf("return true;", source.indexOf("const retired = await tx.brandAsset.updateMany")),
+    );
+    assert.match(
+      retirementUpdate,
+      /lifecycleRevision:\s*asset\.lifecycleRevision/,
+      "retirement update is fenced by the lifecycle revision observed inside the transaction",
+    );
   }
 
   try {
@@ -450,13 +466,76 @@ async function main() {
       where: { id: PROJECT_A },
       data: { draftJson: JSON.stringify({ note: `mentions ${resizedAsset.id} but is not a logo reference` }) },
     });
-    const resizedPath = await service.getBrandAssetPath(USER_A, resizedAsset.id);
+    const pathBeforeRetire = await service.getBrandAssetPath(USER_A, resizedAsset.id);
     assert.equal(
       await service.deleteBrandAssetIfUnreferenced(USER_A, resizedAsset.id),
       true,
       "a mere JSON string mention does not block deletion",
     );
-    assert.equal(existsSync(resizedPath!), false, "unreferenced deletion removes the normalized file");
+    const retired = await prisma.brandAsset.findUnique({ where: { id: resizedAsset.id } });
+    assert.ok(retired?.retiredAt, "unreferenced deletion retires the row");
+    assert.equal(retired.lifecycleRevision, 1, "retirement advances the lifecycle revision");
+    assert.equal(existsSync(pathBeforeRetire!), true, "retirement preserves the normalized file");
+    assert.equal(
+      await service.getOwnedBrandAsset(USER_A, resizedAsset.id),
+      null,
+      "active metadata lookup hides retired assets",
+    );
+    assert.equal(
+      (await service.getOwnedRecoverableBrandAsset(USER_A, resizedAsset.id))?.id,
+      resizedAsset.id,
+      "same-owner recovery can read retired metadata",
+    );
+    assert.equal(
+      await service.getOwnedRecoverableBrandAsset(USER_B, resizedAsset.id),
+      null,
+      "cross-owner recovery hides retired metadata",
+    );
+    assert.equal(
+      await service.getBrandAssetPath(USER_A, resizedAsset.id),
+      null,
+      "active path lookup hides retired assets",
+    );
+    assert.equal(
+      await service.getRecoverableBrandAssetPath(USER_A, resizedAsset.id),
+      pathBeforeRetire,
+      "same-owner recovery resolves the retained file",
+    );
+    assert.equal(
+      await service.getRecoverableBrandAssetPath(USER_B, resizedAsset.id),
+      null,
+      "cross-owner recovery hides the retained file path",
+    );
+    assert.deepEqual(
+      await service.getRecoverableBrandAssetFence(USER_A, resizedAsset.id),
+      {
+        id: resizedAsset.id,
+        storageKey: retired.storageKey,
+        lifecycleRevision: 1,
+        retiredAt: retired.retiredAt,
+      },
+      "same-owner recovery exposes the server-only lifecycle fence",
+    );
+    assert.equal(
+      await service.getRecoverableBrandAssetFence(USER_B, resizedAsset.id),
+      null,
+      "cross-owner recovery hides the lifecycle fence",
+    );
+    assert.equal(
+      await service.deleteBrandAssetIfUnreferenced(USER_A, resizedAsset.id),
+      false,
+      "repeated retirement is hidden as not found",
+    );
+    await expectBrandError(
+      () => service.setDefaultBrandPreference({
+        userId: USER_A,
+        plan: "PRO",
+        assetId: resizedAsset.id,
+        config: { ...replacementConfig, assetId: resizedAsset.id },
+      }),
+      "asset_not_found",
+      404,
+    );
 
     await prisma.editorProject.update({
       where: { id: PROJECT_A },
@@ -473,7 +552,27 @@ async function main() {
       true,
       "malformed or non-matching drafts do not invent a logo reference",
     );
-    assert.equal(existsSync(alphaPath!), false, "draft-unreferenced asset file is removed after its row");
+    assert.equal(existsSync(alphaPath!), true, "draft-unreferenced retirement retains the normalized file");
+
+    await prisma.brandAsset.update({
+      where: { id: webpAsset.id },
+      data: { retiredAt: new Date(), lifecycleRevision: { increment: 1 } },
+    });
+    assert.equal(
+      await service.getDefaultBrandPreference(USER_A),
+      null,
+      "default collection lookup excludes a retired asset",
+    );
+    await expectBrandError(
+      () => service.setDefaultBrandPreference({
+        userId: USER_A,
+        plan: "PRO",
+        assetId: webpAsset.id,
+        config: replacementConfig,
+      }),
+      "asset_not_found",
+      404,
+    );
 
     const rateNow = 1_000_000;
     for (let index = 0; index < 20; index += 1) {
@@ -498,6 +597,14 @@ async function main() {
         height: 1,
       },
     });
+    assert.ok(
+      await prisma.brandAsset.findFirst({ where: { userId: USER_A, retiredAt: null } }),
+      "account fixture retains an active asset before hard deletion",
+    );
+    assert.ok(
+      await prisma.brandAsset.findFirst({ where: { userId: USER_A, retiredAt: { not: null } } }),
+      "account fixture retains a retired asset before hard deletion",
+    );
     await prisma.user.deleteMany({ where: { id: { in: [USER_A, USER_B] } } });
     assert.equal(await prisma.brandAsset.count({ where: { userId: { in: [USER_A, USER_B] } } }), 0, "user deletion cascades brand asset rows");
     assert.equal(await prisma.brandPreference.count({ where: { userId: USER_A } }), 0, "user deletion cascades the default preference");
@@ -505,6 +612,8 @@ async function main() {
     await service.removeBrandAssetDirectoryForUser(USER_B);
     assert.equal(existsSync(path.join(brandRoot, USER_A)), false, "post-user-delete cleanup removes user A's exact directory");
     assert.equal(existsSync(path.join(brandRoot, USER_B)), false, "post-user-delete cleanup removes user B's exact directory");
+    assert.equal(existsSync(pathBeforeRetire!), false, "hard account cleanup removes retired files");
+    await verifyRetirementRevisionFenceContract();
 
     console.log("brand-assets: all checks passed");
   } finally {
