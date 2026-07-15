@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import {
+  access,
   lstat,
   mkdir,
   open,
@@ -183,6 +184,17 @@ export function createClerkAssetCleanupStore(
     }
   }
 
+  async function canCreateChildIn(directory: string): Promise<boolean> {
+    try {
+      await access(directory, fsConstants.W_OK | fsConstants.X_OK);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM" || code === "EROFS") return false;
+      throw error;
+    }
+  }
+
   async function ensureDirectory(
     directory: string,
     createdStep?: string,
@@ -227,6 +239,7 @@ export function createClerkAssetCleanupStore(
       await syncDirectory(current);
       const parent = path.dirname(current);
       if (parent === current) break;
+      if (!await canCreateChildIn(parent)) break;
       current = parent;
     }
     observe?.("asset-root-parent-synced");

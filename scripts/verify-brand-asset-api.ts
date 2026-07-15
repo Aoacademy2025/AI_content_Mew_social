@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  constants as fsConstants,
   renameSync,
   symlinkSync,
   truncateSync,
@@ -1065,6 +1066,32 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
   try {
     await mkdir(testBase, { recursive: true, mode: 0o700 });
     await chmod(testBase, 0o700);
+
+    const traverseOnlyAncestor = path.join(testBase, "traverse-only-ancestor");
+    const preexistingPrivateParent = path.join(traverseOnlyAncestor, "preexisting-private-parent");
+    const portableAssetRoot = path.join(preexistingPrivateParent, "asset-root");
+    const portableSentinel = path.join(preexistingPrivateParent, "parent-sentinel");
+    await mkdir(preexistingPrivateParent, { recursive: true, mode: 0o700 });
+    await chmod(preexistingPrivateParent, 0o700);
+    await writeFile(portableSentinel, "keep-parent");
+    await chmod(traverseOnlyAncestor, 0o111);
+    try {
+      const portableStore = createClerkAssetCleanupStore({ assetRoot: portableAssetRoot });
+      await portableStore.write(
+        "clerk-preparation-traverse-only-parent",
+        "preparation-traverse-only-user",
+        "prepared",
+      );
+      assert.equal(
+        (await portableStore.read("clerk-preparation-traverse-only-parent"))?.userId,
+        "preparation-traverse-only-user",
+        "preparation succeeds below a pre-existing traverse-only non-writable ancestor",
+      );
+      await access(portableSentinel);
+    } finally {
+      await chmod(traverseOnlyAncestor, 0o700);
+    }
+
     for (const scenario of scenarios) {
       const assetRoot = scenario.intermediateMissingComponent
         ? path.join(testBase, scenario.id, "asset-root")
@@ -1105,6 +1132,13 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         parentChainLength += 1;
         const parent = path.dirname(current);
         if (parent === current) break;
+        try {
+          await access(parent, fsConstants.W_OK | fsConstants.X_OK);
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "EACCES" || code === "EPERM" || code === "EROFS") break;
+          throw error;
+        }
         current = parent;
       }
       const failureSyncCall = scenario.failurePoint === "first-created-parent"
