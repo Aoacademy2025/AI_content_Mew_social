@@ -260,6 +260,45 @@ Admin deletion and Clerk `user.deleted` continue to delegate to the same shared
 helper. Cleanup failures remain server-logged and can be repaired by an idempotent
 deletion retry.
 
+### 4.1 Clerk retry receipts and trusted filesystem boundary
+
+`BRAND_ASSET_ROOT` is a private, server-controlled filesystem boundary. The service
+requires the configured root and its reserved receipt/quarantine directories to be
+owned by the service account, to resolve without symbolic links, and to deny
+group/world write access. A process already running as the same OS user (or root) is
+outside this threat model because it can already read, replace, or delete the private
+assets, database, and application files. The implementation does not add a native
+`openat` helper and remains portable across the supported Linux and macOS development
+environments.
+
+Before the Clerk path deletes a database user, it durably writes a private canonical
+receipt keyed by a SHA-256 identifier derived from the Clerk id. The receipt contains
+only the bounded internal target and binding hashes; raw Clerk ids, email addresses,
+client paths, and storage keys are neither stored nor logged. Creating the asset root,
+receipt directory, or quarantine directory fsyncs every changed parent directory
+before database deletion. Receipt files use an fsynced temporary file, atomic rename,
+and directory fsync. Reads are capped at `MAX_RECEIPT_BYTES + 1` and compare stable
+pre/post metadata before parsing, so concurrent growth or replacement fails closed
+without unbounded allocation.
+
+After the guarded database deletion, the exact user directory is atomically renamed
+into a receipt-specific private quarantine path. The database target is checked again
+after the rename:
+
+- if any live user now owns that internal id, the quarantined data and receipt are
+  retained and the webhook returns a retryable failure; no live directory is removed;
+- if the id remains absent, only the quarantined directory is recursively removed;
+- a user created after the rename writes to the original path and is isolated from the
+  quarantine cleanup; and
+- retries and duplicate deliveries safely resume an existing receipt/quarantine and
+  remove the receipt only after cleanup is durable.
+
+Late uploads after the original cascade retain the existing contract: their database
+insert fails and their own catch path removes temporary/final files. An empty recreated
+directory remains acceptable. Logs contain only the stable receipt hash and an
+allowlisted failure phase. Stale temporary receipt files are scavenged only when their
+names are bound to the same receipt hash and pass the same private-root checks.
+
 ## 5. Verification Design
 
 ### Autosave/CAS
@@ -301,6 +340,14 @@ deletion retry.
 - Unknown-user/idempotent retry removes a pre-existing safe user directory while still
   returning the existing missing-user result.
 - Separator/traversal user ids are rejected and cannot remove sibling/root data.
+- The first Clerk cleanup failure returns non-success while retaining a durable receipt;
+  a missing-row redelivery removes the quarantined directory and receipt.
+- First-directory creation is parent-fsynced before database deletion, and an
+  in-place-growing or replaced receipt is rejected through a capped read.
+- A live-id race before or during quarantine never removes the live user's original
+  directory or the retained quarantine.
+- Roots or reserved directories that are symlinks, owned by another account, or
+  group/world writable fail closed without touching outside sentinels.
 
 ### Final gate
 
