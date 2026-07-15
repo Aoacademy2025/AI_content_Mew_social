@@ -44,6 +44,9 @@ export async function patchEditorProjectForUser(
       ...(Object.prototype.hasOwnProperty.call(fields, "draftRevision")
         ? { draftRevision: fields.draftRevision }
         : {}),
+      ...(Object.prototype.hasOwnProperty.call(fields, "expectedDraftRevision")
+        ? { expectedDraftRevision: fields.expectedDraftRevision }
+        : {}),
       ...(Object.prototype.hasOwnProperty.call(fields, "status") ? { status: fields.status } : {}),
       ...(Object.prototype.hasOwnProperty.call(fields, "activeJobId")
         ? { activeJobId: fields.activeJobId }

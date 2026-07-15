@@ -1,5 +1,6 @@
 // Run with: npx tsx scripts/verify-editor-projects.ts
 // Spins a throwaway SQLite DB and verifies EditorProject ownership/persistence contracts.
+import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -131,6 +132,58 @@ async function main() {
     "late A cannot overwrite B in the database",
   );
 
+  const conflictChoiceProject = await projects.createEditorProject(alice.id, {
+    title: "Observed revision conflict choice",
+    draft: { script: "initial" },
+  });
+  await updateWithRevision(alice.id, conflictChoiceProject.id, {
+    draft: { script: "server-six" },
+    draftRevision: 6,
+  });
+  const observed = await updateWithRevision(alice.id, conflictChoiceProject.id, {
+    draft: { script: "local-choice" },
+    draftRevision: 7,
+    expectedDraftRevision: 6,
+  });
+  assert.equal(observed?.draftRevision, 7);
+  ok(
+    observed?.draftRevision === 7
+      && (observed.draft as { script?: string } | undefined)?.script === "local-choice",
+    "explicit local choice succeeds when the observed revision is current",
+  );
+
+  await assert.rejects(
+    updateWithRevision(alice.id, conflictChoiceProject.id, {
+      draft: { script: "stale-choice" },
+      draftRevision: 8,
+      expectedDraftRevision: 6,
+    }),
+    (error: unknown) => (error as { code?: string }).code === "stale_revision",
+  );
+  ok(true, "explicit local choice rejects a stale observed revision");
+  const afterStaleChoice = await projects.getEditorProject(alice.id, conflictChoiceProject.id);
+  assert.equal(afterStaleChoice?.draft.script, "local-choice");
+  ok(
+    afterStaleChoice?.draftRevision === 7 && afterStaleChoice.draft.script === "local-choice",
+    "stale explicit local choice cannot overwrite the current draft",
+  );
+
+  let unpairedExpectedRevisionError: unknown;
+  try {
+    await updateWithRevision(alice.id, conflictChoiceProject.id, {
+      expectedDraftRevision: 7,
+    });
+  } catch (error) {
+    unpairedExpectedRevisionError = error;
+  }
+  const afterUnpairedExpectedRevision = await projects.getEditorProject(alice.id, conflictChoiceProject.id);
+  ok(
+    (unpairedExpectedRevisionError as { code?: string })?.code === "invalid_draft_revision"
+      && afterUnpairedExpectedRevision?.draftRevision === 7
+      && afterUnpairedExpectedRevision.draft.script === "local-choice",
+    "expected revision without a revision-bearing draft is invalid and does not write",
+  );
+
   const equalRevisionProject = await projects.createEditorProject(alice.id, {
     title: "Equal revision race",
     draft: { script: "initial" },
@@ -253,6 +306,59 @@ async function main() {
     );
     const apiFinal = await projects.getEditorProject(alice.id, apiProject.id);
     ok(apiFinal?.draft?.script === "API legacy newer", "PATCH-level late request leaves the legacy write durable");
+
+    for (const invalidExpectedRevision of [-1, 1.5]) {
+      const invalidExpectedProject = await projects.createEditorProject(alice.id, {
+        title: `Invalid expected revision ${invalidExpectedRevision}`,
+        draft: { script: "initial" },
+      });
+      await updateWithRevision(alice.id, invalidExpectedProject.id, {
+        draft: { script: "server-two" },
+        draftRevision: 2,
+      });
+      const invalidExpectedResponse = await patchEditorProjectForUser(
+        alice.id,
+        invalidExpectedProject.id,
+        {
+          draft: { script: "must-not-write" },
+          draftRevision: 3,
+          expectedDraftRevision: invalidExpectedRevision,
+        },
+      );
+      const invalidExpectedPayload = await invalidExpectedResponse.json() as Record<string, unknown>;
+      const afterInvalidExpected = await projects.getEditorProject(alice.id, invalidExpectedProject.id);
+      ok(
+        invalidExpectedResponse.status === 400
+          && invalidExpectedPayload.error === "invalid_draft_revision"
+          && afterInvalidExpected?.draftRevision === 2
+          && afterInvalidExpected.draft.script === "server-two",
+        `PATCH rejects expected revision ${invalidExpectedRevision} without a write`,
+      );
+    }
+
+    const futureExpectedProject = await projects.createEditorProject(alice.id, {
+      title: "Future expected revision",
+      draft: { script: "initial" },
+    });
+    await updateWithRevision(alice.id, futureExpectedProject.id, {
+      draft: { script: "server-two" },
+      draftRevision: 2,
+    });
+    const futureExpectedResponse = await patchEditorProjectForUser(alice.id, futureExpectedProject.id, {
+      draft: { script: "must-not-write" },
+      draftRevision: 4,
+      expectedDraftRevision: 3,
+    });
+    const futureExpectedPayload = await futureExpectedResponse.json() as Record<string, unknown>;
+    const afterFutureExpected = await projects.getEditorProject(alice.id, futureExpectedProject.id);
+    ok(
+      futureExpectedResponse.status === 409
+        && futureExpectedPayload.error === "stale_revision"
+        && ((futureExpectedPayload.project as Record<string, unknown> | undefined)?.draftRevision === 2)
+        && afterFutureExpected?.draftRevision === 2
+        && afterFutureExpected.draft.script === "server-two",
+      "PATCH rejects a greater-than-current expected revision without a write",
+    );
 
     for (const [label, invalidBody] of [
       ["null", null],

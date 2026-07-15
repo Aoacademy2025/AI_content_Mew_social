@@ -49,6 +49,15 @@ function parseEditorProjectDraftRevision(value: unknown): number | null {
     : null;
 }
 
+function parseExpectedEditorProjectDraftRevision(value: unknown): number | null {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= MAX_EDITOR_PROJECT_DRAFT_REVISION
+    ? value
+    : null;
+}
+
 export function editorProjectResponse(project: NonNullable<ProjectRow>) {
   return {
     id: project.id,
@@ -145,6 +154,7 @@ export async function updateEditorProject(
     latestVideoId?: unknown;
     touchLastOpened?: unknown;
     draftRevision?: unknown;
+    expectedDraftRevision?: unknown;
   },
 ) {
   const data: {
@@ -163,6 +173,21 @@ export async function updateEditorProject(
   if (hasDraftRevision) {
     draftRevision = parseEditorProjectDraftRevision(input.draftRevision) ?? undefined;
     if (draftRevision === undefined || !("draft" in input)) {
+      const err = new Error("invalid_draft_revision");
+      (err as { code?: string }).code = "invalid_draft_revision";
+      throw err;
+    }
+  }
+
+  const hasExpectedDraftRevision = Object.prototype.hasOwnProperty.call(input, "expectedDraftRevision");
+  let expectedDraftRevision: number | undefined;
+  if (hasExpectedDraftRevision) {
+    expectedDraftRevision = parseExpectedEditorProjectDraftRevision(input.expectedDraftRevision) ?? undefined;
+    if (
+      expectedDraftRevision === undefined
+      || draftRevision === undefined
+      || draftRevision <= expectedDraftRevision
+    ) {
       const err = new Error("invalid_draft_revision");
       (err as { code?: string }).code = "invalid_draft_revision";
       throw err;
@@ -210,7 +235,11 @@ export async function updateEditorProject(
     where: {
       id: projectId,
       userId,
-      ...(draftRevision !== undefined ? { draftRevision: { lt: draftRevision } } : {}),
+      ...(expectedDraftRevision !== undefined
+        ? { draftRevision: expectedDraftRevision }
+        : draftRevision !== undefined
+          ? { draftRevision: { lt: draftRevision } }
+          : {}),
     },
     data,
   });
