@@ -2,7 +2,10 @@ import {
   isSafeBrandAssetUserId,
   removeBrandAssetDirectoryForUser,
 } from "@/lib/brand-assets.server";
-import { createClerkAssetCleanupStore } from "@/lib/clerk-asset-cleanup-receipt.server";
+import {
+  createClerkAssetCleanupStore,
+  type ClerkAssetCleanupStore,
+} from "@/lib/clerk-asset-cleanup-receipt.server";
 import { prisma } from "@/lib/prisma";
 
 type ClerkUserTarget = {
@@ -13,27 +16,83 @@ type ClerkUserTarget = {
 export type ClerkBrandAssetDeleteDependencies = {
   findUserByClerkId: (clerkId: string) => Promise<ClerkUserTarget | null>;
   findUserById: (userId: string) => Promise<ClerkUserTarget | null>;
-  writeReceipt: (clerkId: string, userId: string) => Promise<void>;
-  readReceipt: (clerkId: string) => Promise<string | null>;
+  store: ClerkAssetCleanupStore;
   deleteUser: (userId: string, clerkId: string) => Promise<boolean>;
-  removeUserDirectory: (userId: string) => Promise<void>;
-  removeReceipt: (clerkId: string) => Promise<void>;
 };
+
+type ClerkBrandAssetCleanupFailurePhase =
+  | "receipt-write"
+  | "db-delete"
+  | "quarantine"
+  | "live-target"
+  | "quarantine-remove"
+  | "receipt-update"
+  | "receipt-remove";
 
 export class ClerkBrandAssetCleanupRetryError extends Error {
   readonly receiptIdentifier: string;
+  readonly phase: ClerkBrandAssetCleanupFailurePhase;
 
-  constructor(receiptIdentifier: string) {
+  constructor(
+    receiptIdentifier: string,
+    phase: ClerkBrandAssetCleanupFailurePhase,
+  ) {
     super("clerk_brand_asset_cleanup_retry_required");
     this.name = "ClerkBrandAssetCleanupRetryError";
     this.receiptIdentifier = receiptIdentifier;
+    this.phase = phase;
   }
 }
 
 const clerkAssetCleanupStore = createClerkAssetCleanupStore();
+const clerkAssetCleanupFinalizers = new Map<string, Promise<void>>();
 
 export function getClerkBrandAssetCleanupReceiptIdentifier(clerkId: string): string {
   return clerkAssetCleanupStore.identifier(clerkId);
+}
+
+function requireClerkAssetCleanupRetry(
+  receiptId: string,
+  phase: ClerkBrandAssetCleanupFailurePhase,
+): never {
+  console.error(
+    `[account-hard-delete] clerk asset cleanup retry required receipt=${receiptId} phase=${phase}`,
+  );
+  throw new ClerkBrandAssetCleanupRetryError(receiptId, phase);
+}
+
+async function runClerkAssetCleanupStep<T>(
+  receiptId: string,
+  phase: ClerkBrandAssetCleanupFailurePhase,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof ClerkBrandAssetCleanupRetryError) throw error;
+    return requireClerkAssetCleanupRetry(receiptId, phase);
+  }
+}
+
+async function runClerkAssetCleanupFinalizer<T>(
+  receiptId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const predecessor = clerkAssetCleanupFinalizers.get(receiptId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  clerkAssetCleanupFinalizers.set(receiptId, current);
+  await predecessor;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (clerkAssetCleanupFinalizers.get(receiptId) === current) {
+      clerkAssetCleanupFinalizers.delete(receiptId);
+    }
+  }
 }
 
 export async function deleteUserAndBrandAssetDirectory(
@@ -61,38 +120,167 @@ export async function deleteClerkUserAndBrandAssetDirectory(
   clerkId: string,
   dependencies: ClerkBrandAssetDeleteDependencies,
 ): Promise<boolean> {
-  const currentUser = await dependencies.findUserByClerkId(clerkId);
-  const existingReceiptUserId = await dependencies.readReceipt(clerkId);
-  let userId: string;
+  const receiptId = dependencies.store.identifier(clerkId);
+  let receipt = await runClerkAssetCleanupStep(
+    receiptId,
+    "receipt-write",
+    () => dependencies.store.read(clerkId),
+  );
+  let deleted = false;
 
-  if (currentUser) {
+  if (!receipt) {
+    const currentUser = await runClerkAssetCleanupStep(
+      receiptId,
+      "db-delete",
+      () => dependencies.findUserByClerkId(clerkId),
+    );
+    if (!currentUser) return false;
     if (!isSafeBrandAssetUserId(currentUser.id)) {
-      throw new Error("invalid_clerk_cleanup_target");
+      return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
     }
-    if (existingReceiptUserId !== null && existingReceiptUserId !== currentUser.id) {
-      throw new Error("invalid_clerk_cleanup_receipt_target");
-    }
-    userId = currentUser.id;
-    await dependencies.writeReceipt(clerkId, userId);
-  } else {
-    if (existingReceiptUserId === null) return false;
-    userId = existingReceiptUserId;
-    const liveTarget = await dependencies.findUserById(userId);
-    if (liveTarget && liveTarget.clerkId !== clerkId) {
-      throw new Error("invalid_clerk_cleanup_live_target");
+    await runClerkAssetCleanupStep(
+      receiptId,
+      "receipt-write",
+      () => dependencies.store.write(clerkId, currentUser.id, "prepared"),
+    );
+    receipt = await runClerkAssetCleanupStep(
+      receiptId,
+      "receipt-write",
+      () => dependencies.store.read(clerkId),
+    );
+    if (!receipt || receipt.userId !== currentUser.id || receipt.phase !== "prepared") {
+      return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
     }
   }
 
-  const deleted = await dependencies.deleteUser(userId, clerkId);
-  if (!deleted) {
-    const remainingTarget = await dependencies.findUserById(userId);
-    if (remainingTarget) {
-      throw new Error("invalid_clerk_cleanup_remaining_target");
-    }
+  const { userId } = receipt;
+  if (!isSafeBrandAssetUserId(userId)) {
+    return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
   }
-  await dependencies.removeUserDirectory(userId);
-  await dependencies.removeReceipt(clerkId);
-  return deleted;
+
+  if (receipt.phase === "prepared") {
+    const currentUser = await runClerkAssetCleanupStep(
+      receiptId,
+      "db-delete",
+      () => dependencies.findUserByClerkId(clerkId),
+    );
+    if (currentUser && currentUser.id !== userId) {
+      return requireClerkAssetCleanupRetry(receiptId, "live-target");
+    }
+
+    const targetBeforeDelete = await runClerkAssetCleanupStep(
+      receiptId,
+      "db-delete",
+      () => dependencies.findUserById(userId),
+    );
+    if (targetBeforeDelete && targetBeforeDelete.clerkId !== clerkId) {
+      return requireClerkAssetCleanupRetry(receiptId, "live-target");
+    }
+
+    if (currentUser || targetBeforeDelete) {
+      await runClerkAssetCleanupStep(
+        receiptId,
+        "receipt-write",
+        () => dependencies.store.write(clerkId, userId, "prepared"),
+      );
+      deleted = await runClerkAssetCleanupStep(
+        receiptId,
+        "db-delete",
+        () => dependencies.deleteUser(userId, clerkId),
+      );
+    }
+
+    const targetBeforeQuarantine = await runClerkAssetCleanupStep(
+      receiptId,
+      "db-delete",
+      () => dependencies.findUserById(userId),
+    );
+    if (targetBeforeQuarantine) {
+      return requireClerkAssetCleanupRetry(
+        receiptId,
+        targetBeforeQuarantine.clerkId === clerkId ? "db-delete" : "live-target",
+      );
+    }
+
+    await runClerkAssetCleanupStep(
+      receiptId,
+      "quarantine",
+      () => dependencies.store.quarantineUserDirectory({ clerkId, userId }),
+    );
+  }
+
+  return runClerkAssetCleanupFinalizer(receiptId, async () => {
+    const latestReceipt = await runClerkAssetCleanupStep(
+      receiptId,
+      "receipt-write",
+      () => dependencies.store.read(clerkId),
+    );
+    if (!latestReceipt) {
+      const survivingQuarantine = await runClerkAssetCleanupStep(
+        receiptId,
+        "quarantine-remove",
+        () => dependencies.store.quarantineExists(clerkId),
+      );
+      if (survivingQuarantine) {
+        return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
+      }
+      return deleted;
+    }
+
+    if (latestReceipt.userId !== userId) {
+      return requireClerkAssetCleanupRetry(receiptId, "receipt-write");
+    }
+
+    if (latestReceipt.phase === "directory-cleaned") {
+      await runClerkAssetCleanupStep(
+        receiptId,
+        "receipt-remove",
+        () => dependencies.store.remove(clerkId),
+      );
+      return deleted;
+    }
+
+    if (latestReceipt.phase === "prepared") {
+      await runClerkAssetCleanupStep(
+        receiptId,
+        "receipt-update",
+        () => dependencies.store.write(clerkId, userId, "quarantined"),
+      );
+    }
+
+    const quarantineExists = await runClerkAssetCleanupStep(
+      receiptId,
+      "quarantine-remove",
+      () => dependencies.store.quarantineExists(clerkId),
+    );
+    if (quarantineExists) {
+      const liveTarget = await runClerkAssetCleanupStep(
+        receiptId,
+        "db-delete",
+        () => dependencies.findUserById(userId),
+      );
+      if (liveTarget) {
+        return requireClerkAssetCleanupRetry(receiptId, "live-target");
+      }
+      await runClerkAssetCleanupStep(
+        receiptId,
+        "quarantine-remove",
+        () => dependencies.store.removeQuarantine(clerkId),
+      );
+    }
+
+    await runClerkAssetCleanupStep(
+      receiptId,
+      "receipt-update",
+      () => dependencies.store.write(clerkId, userId, "directory-cleaned"),
+    );
+    await runClerkAssetCleanupStep(
+      receiptId,
+      "receipt-remove",
+      () => dependencies.store.remove(clerkId),
+    );
+    return deleted;
+  });
 }
 
 export async function hardDeleteUserWithBrandAssets(
@@ -113,32 +301,21 @@ export async function hardDeleteUserWithBrandAssets(
 export async function hardDeleteClerkUserWithBrandAssets(
   clerkId: string,
 ): Promise<boolean> {
-  const receiptIdentifier = getClerkBrandAssetCleanupReceiptIdentifier(clerkId);
-  try {
-    return await deleteClerkUserAndBrandAssetDirectory(clerkId, {
-      findUserByClerkId: (id) => prisma.user.findUnique({
-        where: { clerkId: id },
-        select: { id: true, clerkId: true },
-      }),
-      findUserById: (id) => prisma.user.findUnique({
-        where: { id },
-        select: { id: true, clerkId: true },
-      }),
-      writeReceipt: (id, userId) => clerkAssetCleanupStore.write(id, userId, "prepared"),
-      readReceipt: async (id) => (await clerkAssetCleanupStore.read(id))?.userId ?? null,
-      deleteUser: async (id, expectedClerkId) => {
-        const deleted = await prisma.user.deleteMany({
-          where: { id, clerkId: expectedClerkId },
-        });
-        return deleted.count === 1;
-      },
-      removeUserDirectory: removeBrandAssetDirectoryForUser,
-      removeReceipt: (id) => clerkAssetCleanupStore.remove(id),
-    });
-  } catch {
-    console.error(
-      `[account-hard-delete] clerk asset cleanup retry required receipt=${receiptIdentifier}`,
-    );
-    throw new ClerkBrandAssetCleanupRetryError(receiptIdentifier);
-  }
+  return deleteClerkUserAndBrandAssetDirectory(clerkId, {
+    findUserByClerkId: (id) => prisma.user.findUnique({
+      where: { clerkId: id },
+      select: { id: true, clerkId: true },
+    }),
+    findUserById: (id) => prisma.user.findUnique({
+      where: { id },
+      select: { id: true, clerkId: true },
+    }),
+    store: clerkAssetCleanupStore,
+    deleteUser: async (id, expectedClerkId) => {
+      const deleted = await prisma.user.deleteMany({
+        where: { id, clerkId: expectedClerkId },
+      });
+      return deleted.count === 1;
+    },
+  });
 }

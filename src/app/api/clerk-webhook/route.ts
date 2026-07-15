@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
 import { prisma } from "@/lib/prisma";
 import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
-import { hardDeleteClerkUserWithBrandAssets } from "@/lib/account-hard-delete.server";
+import {
+  ClerkBrandAssetCleanupRetryError,
+  hardDeleteClerkUserWithBrandAssets,
+} from "@/lib/account-hard-delete.server";
 
 type ClerkUserEvent = {
   type: string;
@@ -116,7 +119,8 @@ export async function POST(req: NextRequest) {
       // row's trialStartedAt, so re-registering with the same email after this delete still
       // gets blocked from a second trial by grantTrial().
       await hardDeleteClerkUserWithBrandAssets(data.id);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof ClerkBrandAssetCleanupRetryError)) throw error;
       return NextResponse.json(
         { error: "account_cleanup_retry_required" },
         { status: 500 },

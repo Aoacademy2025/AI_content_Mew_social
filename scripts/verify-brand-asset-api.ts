@@ -33,6 +33,7 @@ import {
   saveBrandAsset,
 } from "@/lib/brand-assets.server";
 import {
+  ClerkBrandAssetCleanupRetryError,
   deleteClerkUserAndBrandAssetDirectory,
   deleteUserAndBrandAssetDirectory,
   hardDeleteUserWithBrandAssets,
@@ -40,6 +41,7 @@ import {
 import {
   createClerkAssetCleanupStore,
   type ClerkAssetCleanupPhase,
+  type ClerkAssetCleanupStore,
 } from "@/lib/clerk-asset-cleanup-receipt.server";
 import {
   deleteBrandAssetItem,
@@ -72,6 +74,7 @@ const ORPHAN_DELETE_USER_ID = "brand-api-orphan-delete";
 const CLERK_RM_RETRY_USER_ID = "brand-api-clerk-rm-retry";
 const CLERK_WRITE_FAIL_USER_ID = "brand-api-clerk-write-fail";
 const CLERK_CONCURRENT_USER_ID = "brand-api-clerk-concurrent";
+const CLERK_LATE_UPLOAD_USER_ID = "brand-api-clerk-late-upload";
 const RECEIPTS_DIRECTORY_NAME = ".account-delete-receipts-v1";
 const QUARANTINE_DIRECTORY_NAME = ".account-delete-quarantine-v1";
 const RECEIPT_BINDING_DOMAIN = "heroai-clerk-brand-cleanup-v2";
@@ -117,6 +120,14 @@ function clerkReceiptIdentifier(clerkId: string): string {
 
 function clerkReceiptPath(clerkId: string): string {
   return path.join(root, RECEIPTS_DIRECTORY_NAME, `${clerkReceiptIdentifier(clerkId)}.json`);
+}
+
+function clerkQuarantinePath(assetRoot: string, clerkId: string): string {
+  return path.join(
+    assetRoot,
+    QUARANTINE_DIRECTORY_NAME,
+    clerkReceiptIdentifier(clerkId),
+  );
 }
 
 function clerkReceiptDocument(
@@ -171,6 +182,7 @@ async function seed(): Promise<void> {
           CLERK_RM_RETRY_USER_ID,
           CLERK_WRITE_FAIL_USER_ID,
           CLERK_CONCURRENT_USER_ID,
+          CLERK_LATE_UPLOAD_USER_ID,
         ],
       },
     },
@@ -227,9 +239,13 @@ async function seed(): Promise<void> {
   await writeFile(path.join(root, OWNER_ID, "spare.webp"), "spare-image");
 }
 
-function clerkDeleteRequest(clerkId: string, messageId: string): NextRequest {
+function clerkDeleteRequest(
+  clerkId: string,
+  messageId: string,
+  type = "user.deleted",
+): NextRequest {
   const body = JSON.stringify({
-    type: "user.deleted",
+    type,
     data: {
       id: clerkId,
       email_addresses: [],
@@ -327,6 +343,11 @@ async function verifyAdminHardDeleteRegression(): Promise<void> {
     userDeletedBlock,
     /prisma\.user\.findUnique\(\{ where: \{ clerkId: data\.id \} \}\)/,
     "the Clerk route does not discard missing-row receipt recovery before calling the helper",
+  );
+  assert.match(
+    userDeletedBlock,
+    /error instanceof ClerkBrandAssetCleanupRetryError/,
+    "the Clerk route maps the explicit retry error to its generic 500 response",
   );
 
   const filePath = await createDeletionFixture({
@@ -1114,8 +1135,7 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
       const dependencies = {
         findUserByClerkId: async () => target,
         findUserById: async () => target,
-        writeReceipt: (id: string, internalId: string) => store.write(id, internalId, "prepared"),
-        readReceipt: async (id: string) => (await store.read(id))?.userId ?? null,
+        store,
         deleteUser: async () => {
           steps.push("database-delete");
           retrySyncCallsAtDatabaseDelete = retrySyncCalls;
@@ -1123,8 +1143,6 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
           target = null;
           return true;
         },
-        removeUserDirectory: async () => undefined,
-        removeReceipt: (id: string) => store.remove(id),
       };
 
       let parentChainLength = 0;
@@ -1160,10 +1178,24 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         return originalSync.apply(this, args);
       };
       try {
-        await assert.rejects(
-          deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
-          new RegExp(`injected ${scenario.label} failure`, "u"),
-          `${scenario.label} failure escapes before database deletion`,
+        const { result: error, logs } = await captureConsoleErrors(async () => {
+          try {
+            await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies);
+            return null;
+          } catch (caught) {
+            return caught;
+          }
+        });
+        assert.ok(
+          error instanceof ClerkBrandAssetCleanupRetryError,
+          `${scenario.label} failure asks Clerk to retry before database deletion`,
+        );
+        assert.deepEqual(
+          logs,
+          [
+            `[account-hard-delete] clerk asset cleanup retry required receipt=${clerkReceiptIdentifier(clerkId)} phase=receipt-write`,
+          ],
+          `${scenario.label} failure uses the exact receipt-write log`,
         );
       } finally {
         fileHandlePrototype.sync = originalSync;
@@ -1223,12 +1255,496 @@ async function verifyClerkPreparationRetryDurability(): Promise<void> {
         );
       }
       if (scenario.requireQuarantineParentRepair) {
-        const quarantineParentSyncIndex = steps.lastIndexOf("asset-root-synced");
+        const quarantineParentSyncIndex = steps.indexOf("asset-root-synced");
         assert.ok(
           quarantineParentSyncIndex >= 0 && quarantineParentSyncIndex < databaseDeleteIndex,
           "quarantine-parent fsync retry repairs the visible directory entry before database deletion",
         );
       }
+    }
+  } finally {
+    await rm(testBase, { recursive: true, force: true });
+  }
+}
+
+async function verifyClerkQuarantineStateMachine(): Promise<void> {
+  type Target = { id: string; clerkId: string | null };
+  type StoreOverrides = Partial<ClerkAssetCleanupStore>;
+
+  const testBase = path.resolve(`${root}-cleanup-state-machine`);
+  const expectMissing = async (target: string, message: string) => {
+    await assert.rejects(
+      access(target),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+      message,
+    );
+  };
+  const wrapStore = (
+    store: ClerkAssetCleanupStore,
+    overrides: StoreOverrides,
+  ): ClerkAssetCleanupStore => ({ ...store, ...overrides });
+  const makeDependencies = (input: {
+    assetRoot: string;
+    clerkId: string;
+    store: ClerkAssetCleanupStore;
+    findUserByClerkId?: () => Promise<Target | null>;
+    findUserById?: () => Promise<Target | null>;
+    deleteUser?: () => Promise<boolean>;
+    legacyRemoveUserDirectory?: (userId: string) => Promise<void>;
+  }) => ({
+    findUserByClerkId: input.findUserByClerkId ?? (async () => null),
+    findUserById: input.findUserById ?? (async () => null),
+    store: input.store,
+    deleteUser: input.deleteUser ?? (async () => false),
+
+    // These adapters keep this RED harness runnable against the Task 1 interface.
+    // Task 2 removes them from the Clerk dependency contract.
+    writeReceipt: (clerkId: string, userId: string) => (
+      input.store.write(clerkId, userId, "prepared")
+    ),
+    readReceipt: async (clerkId: string) => (
+      (await input.store.read(clerkId))?.userId ?? null
+    ),
+    removeUserDirectory: input.legacyRemoveUserDirectory ?? (async (userId: string) => {
+      await rm(path.join(input.assetRoot, userId), { recursive: true, force: true });
+    }),
+    removeReceipt: (clerkId: string) => input.store.remove(clerkId),
+  });
+  const captureRetry = async (
+    clerkId: string,
+    phase: string,
+    task: () => Promise<boolean>,
+  ) => {
+    const { result: error, logs } = await captureConsoleErrors(async () => {
+      try {
+        await task();
+        return null;
+      } catch (caught) {
+        return caught;
+      }
+    });
+    assert.ok(
+      error instanceof ClerkBrandAssetCleanupRetryError,
+      `${phase} failure is surfaced as a retryable Clerk cleanup error`,
+    );
+    assert.deepEqual(
+      logs,
+      [
+        `[account-hard-delete] clerk asset cleanup retry required receipt=${clerkReceiptIdentifier(clerkId)} phase=${phase}`,
+      ],
+      `${phase} failure emits one exact privacy-safe phase-coded log`,
+    );
+  };
+
+  await rm(testBase, { recursive: true, force: true });
+  try {
+    await mkdir(testBase, { recursive: true, mode: 0o700 });
+    await chmod(testBase, 0o700);
+
+    {
+      const assetRoot = path.join(testBase, "live-before-rename");
+      const clerkId = "clerk-live-before-rename";
+      const userId = "cleanup-live-before-rename-user";
+      const store = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const originalSentinel = path.join(originalDirectory, "old-private.webp");
+      const liveSentinel = path.join(originalDirectory, "live-private.webp");
+      await store.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(originalSentinel, "old");
+
+      let lookups = 0;
+      let target: Target | null = null;
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store,
+        findUserById: async () => {
+          lookups += 1;
+          if (lookups === 2) {
+            target = { id: userId, clerkId: "clerk-reused-before-rename" };
+            await writeFile(liveSentinel, "live");
+          }
+          return target;
+        },
+      });
+      const { result: error } = await captureConsoleErrors(async () => {
+        try {
+          await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies);
+          return null;
+        } catch (caught) {
+          return caught;
+        }
+      });
+      assert.notEqual(error, null, "a live target before rename requires redelivery");
+      await access(originalSentinel);
+      await access(liveSentinel);
+      await expectMissing(
+        clerkQuarantinePath(assetRoot, clerkId),
+        "a live target observed before rename prevents quarantine",
+      );
+      assert.equal((await store.read(clerkId))?.phase, "prepared");
+    }
+
+    {
+      const assetRoot = path.join(testBase, "live-after-rename");
+      const clerkId = "clerk-live-after-rename";
+      const userId = "cleanup-live-after-rename-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const originalSentinel = path.join(originalDirectory, "old-private.webp");
+      const liveSentinel = path.join(originalDirectory, "live-private.webp");
+      await baseStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(originalSentinel, "old");
+
+      let target: Target | null = null;
+      const publishLiveTarget = async () => {
+        target = { id: userId, clerkId: "clerk-reused-after-rename" };
+        await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+        await writeFile(liveSentinel, "live");
+      };
+      const store = wrapStore(baseStore, {
+        quarantineUserDirectory: async (input) => {
+          const result = await baseStore.quarantineUserDirectory(input);
+          await publishLiveTarget();
+          return result;
+        },
+      });
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store,
+        findUserById: async () => target,
+        legacyRemoveUserDirectory: async () => {
+          await rm(originalDirectory, { recursive: true, force: true });
+          await publishLiveTarget();
+        },
+      });
+      await captureRetry(
+        clerkId,
+        "live-target",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+      );
+      await access(liveSentinel);
+      await access(path.join(clerkQuarantinePath(assetRoot, clerkId), "old-private.webp"));
+      assert.equal((await baseStore.read(clerkId))?.phase, "quarantined");
+    }
+
+    {
+      const assetRoot = path.join(testBase, "live-after-post-check");
+      const clerkId = "clerk-live-after-post-check";
+      const userId = "cleanup-live-after-post-check-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live-private.webp");
+      await baseStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old-private.webp"), "old");
+
+      let target: Target | null = null;
+      const publishLiveTarget = async () => {
+        target = { id: userId, clerkId: "clerk-reused-after-post-check" };
+        await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+        await writeFile(liveSentinel, "live");
+      };
+      const store = wrapStore(baseStore, {
+        removeQuarantine: async (id) => {
+          await publishLiveTarget();
+          await baseStore.removeQuarantine(id);
+        },
+      });
+      const dependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store,
+        findUserById: async () => target,
+        legacyRemoveUserDirectory: async () => {
+          await publishLiveTarget();
+          await rm(originalDirectory, { recursive: true, force: true });
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+        false,
+      );
+      await access(liveSentinel);
+      await expectMissing(
+        clerkQuarantinePath(assetRoot, clerkId),
+        "a target created after the post-check is isolated from quarantine removal",
+      );
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "quarantined-retry");
+      const clerkId = "clerk-quarantined-retry";
+      const userId = "cleanup-quarantined-retry-user";
+      const store = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      await store.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old-private.webp"), "old");
+      assert.equal(
+        await store.quarantineUserDirectory({ clerkId, userId }),
+        "moved",
+      );
+      await store.write(clerkId, userId, "quarantined");
+
+      const dependencies = makeDependencies({ assetRoot, clerkId, store });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+        false,
+      );
+      await expectMissing(
+        clerkQuarantinePath(assetRoot, clerkId),
+        "a quarantined retry removes the isolated directory",
+      );
+      assert.equal(await store.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "removed-before-phase-update");
+      const clerkId = "clerk-removed-before-phase-update";
+      const userId = "cleanup-removed-before-phase-update-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live-private.webp");
+      await baseStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old-private.webp"), "old");
+      await baseStore.quarantineUserDirectory({ clerkId, userId });
+      await baseStore.write(clerkId, userId, "quarantined");
+
+      let failedPhaseUpdate = false;
+      const failingStore = wrapStore(baseStore, {
+        write: async (id, internalId, phase) => {
+          if (phase === "directory-cleaned" && !failedPhaseUpdate) {
+            failedPhaseUpdate = true;
+            throw new Error("injected directory-cleaned phase failure");
+          }
+          await baseStore.write(id, internalId, phase);
+        },
+      });
+      const firstDependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: failingStore,
+      });
+      await captureRetry(
+        clerkId,
+        "receipt-update",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
+      );
+      assert.equal((await baseStore.read(clerkId))?.phase, "quarantined");
+      await expectMissing(
+        clerkQuarantinePath(assetRoot, clerkId),
+        "the injected crash happens after quarantine removal",
+      );
+
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      const retryDependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: baseStore,
+        findUserByClerkId: async () => {
+          throw new Error("a quarantined retry without quarantine must not inspect the live row");
+        },
+        findUserById: async () => {
+          throw new Error("a quarantined retry without quarantine must not inspect the live target");
+        },
+        deleteUser: async () => {
+          throw new Error("a quarantined retry without quarantine must not mutate the database");
+        },
+      });
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, retryDependencies),
+        false,
+      );
+      await access(liveSentinel);
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "receipt-remove-retry");
+      const clerkId = "clerk-receipt-remove-retry";
+      const userId = "cleanup-receipt-remove-retry-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      const liveSentinel = path.join(originalDirectory, "live-private.webp");
+      await baseStore.write(clerkId, userId, "directory-cleaned");
+
+      let removeAttempts = 0;
+      let liveTarget: Target | null = null;
+      let lookupCalls = 0;
+      const failingStore = wrapStore(baseStore, {
+        write: async () => {
+          throw new Error("directory-cleaned must not rewrite its receipt");
+        },
+        quarantineUserDirectory: async () => {
+          throw new Error("directory-cleaned must not inspect the original directory");
+        },
+        quarantineExists: async () => {
+          throw new Error("directory-cleaned must not inspect quarantine");
+        },
+        removeQuarantine: async () => {
+          throw new Error("directory-cleaned must not remove quarantine");
+        },
+        remove: async (id) => {
+          removeAttempts += 1;
+          if (removeAttempts === 1) throw new Error("injected receipt unlink failure");
+          await baseStore.remove(id);
+        },
+      });
+      const findUserByClerkId = async () => {
+        lookupCalls += 1;
+        return null;
+      };
+      const findUserById = async () => {
+        lookupCalls += 1;
+        return liveTarget;
+      };
+      const firstDependencies = makeDependencies({
+        assetRoot,
+        clerkId,
+        store: failingStore,
+        findUserByClerkId,
+        findUserById,
+      });
+      await captureRetry(
+        clerkId,
+        "receipt-remove",
+        () => deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
+      );
+      assert.equal(lookupCalls, 0, "directory-cleaned skips every database lookup");
+      assert.equal((await baseStore.read(clerkId))?.phase, "directory-cleaned");
+
+      liveTarget = { id: userId, clerkId: "clerk-reused-after-cleanup" };
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(liveSentinel, "live");
+      assert.equal(
+        await deleteClerkUserAndBrandAssetDirectory(clerkId, firstDependencies),
+        false,
+      );
+      assert.equal(lookupCalls, 0, "receipt removal retry still skips live-target inspection");
+      await access(liveSentinel);
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      const assetRoot = path.join(testBase, "concurrent-redelivery");
+      const clerkId = "clerk-concurrent-redelivery";
+      const userId = "cleanup-concurrent-redelivery-user";
+      const baseStore = createClerkAssetCleanupStore({ assetRoot });
+      const originalDirectory = path.join(assetRoot, userId);
+      await baseStore.write(clerkId, userId, "prepared");
+      await mkdir(originalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(originalDirectory, "old-private.webp"), "old");
+
+      let quarantineCalls = 0;
+      const bothAtQuarantine = deferred();
+      const store = wrapStore(baseStore, {
+        quarantineUserDirectory: async (input) => {
+          quarantineCalls += 1;
+          if (quarantineCalls === 2) bothAtQuarantine.resolve();
+          await bothAtQuarantine.promise;
+          return baseStore.quarantineUserDirectory(input);
+        },
+      });
+      const dependencies = makeDependencies({ assetRoot, clerkId, store });
+      assert.deepEqual(
+        await Promise.all([
+          deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+          deleteClerkUserAndBrandAssetDirectory(clerkId, dependencies),
+        ]),
+        [false, false],
+      );
+      assert.equal(quarantineCalls, 2, "both missing-row redeliveries reach quarantine safely");
+      await expectMissing(originalDirectory, "concurrent redelivery removes the original directory");
+      await expectMissing(
+        clerkQuarantinePath(assetRoot, clerkId),
+        "concurrent redelivery leaves no quarantine",
+      );
+      assert.equal(await baseStore.read(clerkId), null);
+    }
+
+    {
+      process.env.CLERK_WEBHOOK_SECRET = CLERK_SECRET;
+      const invalidSignatureResponse = await clerkWebhookPost(new NextRequest(
+        "http://local/api/clerk-webhook",
+        {
+          method: "POST",
+          body: JSON.stringify({ type: "user.deleted", data: { id: "unsigned" } }),
+          headers: { "content-type": "application/json" },
+        },
+      ));
+      assert.equal(invalidSignatureResponse.status, 400, "invalid Clerk signatures remain 400");
+      assert.equal(
+        (await clerkWebhookPost(clerkDeleteRequest(
+          "clerk-unrelated-event",
+          "brand-unrelated-event",
+          "session.created",
+        ))).status,
+        200,
+        "unrelated signed Clerk events retain their successful no-op behavior",
+      );
+
+      const clerkId = "clerk-late-failed-upload";
+      const projectId = `${CLERK_LATE_UPLOAD_USER_ID}-project`;
+      await prisma.user.deleteMany({ where: { id: CLERK_LATE_UPLOAD_USER_ID } });
+      await prisma.user.create({
+        data: {
+          id: CLERK_LATE_UPLOAD_USER_ID,
+          clerkId,
+          name: "Clerk late upload",
+          email: "brand-api-clerk-late-upload@example.test",
+          plan: "PRO",
+        },
+      });
+      await prisma.editorProject.create({
+        data: {
+          id: projectId,
+          userId: CLERK_LATE_UPLOAD_USER_ID,
+          title: "Clerk late upload project",
+        },
+      });
+
+      const png = await sharp({
+        create: { width: 16, height: 8, channels: 4, background: "#123456ee" },
+      }).png().toBuffer();
+      const arrayBufferStarted = deferred();
+      const allowArrayBuffer = deferred();
+      const file = new File([new Uint8Array(png)], "late.png", { type: "image/png" });
+      Object.defineProperty(file, "arrayBuffer", {
+        value: async () => {
+          arrayBufferStarted.resolve();
+          await allowArrayBuffer.promise;
+          return Uint8Array.from(png).buffer;
+        },
+      });
+      const upload = saveBrandAsset({
+        userId: CLERK_LATE_UPLOAD_USER_ID,
+        plan: "PRO",
+        projectId,
+        file,
+      });
+      await arrayBufferStarted.promise;
+      const response = await clerkWebhookPost(
+        clerkDeleteRequest(clerkId, "brand-delete-late-upload"),
+      );
+      assert.equal(response.status, 200, "signed Clerk cleanup reaches its durable terminal state");
+      allowArrayBuffer.resolve();
+      await assert.rejects(upload, "the upload's late database insert fails after Clerk deletion");
+
+      const userDirectory = path.join(root, CLERK_LATE_UPLOAD_USER_ID);
+      let entries: string[] = [];
+      try {
+        entries = await readdir(userDirectory);
+      } catch (error) {
+        assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
+      }
+      assert.deepEqual(entries, [], "late failed upload recreation leaves no surviving file");
     }
   } finally {
     await rm(testBase, { recursive: true, force: true });
@@ -1268,6 +1784,11 @@ async function verifyClerkReceiptRecovery(): Promise<void> {
   }
   assert.equal(firstFailure.result.status, 500, "directory cleanup failure asks Clerk to retry");
   assert.equal(
+    (await json(firstFailure.result)).error,
+    "account_cleanup_retry_required",
+    "an incomplete signed cleanup retains the generic retry body",
+  );
+  assert.equal(
     await prisma.user.findUnique({ where: { id: CLERK_RM_RETRY_USER_ID } }),
     null,
     "the real database row can already be gone when directory cleanup fails",
@@ -1284,9 +1805,12 @@ async function verifyClerkReceiptRecovery(): Promise<void> {
   const persistedReceipt = await readFile(retryReceipt, "utf8");
   assert.equal(persistedReceipt.includes(retryClerkId), false, "receipt never persists the raw Clerk id");
   const retryIdentifier = clerkReceiptIdentifier(retryClerkId);
-  assert.ok(
-    firstFailure.logs.some((entry) => entry.includes(retryIdentifier)),
-    "cleanup failure logs the stable receipt hash",
+  assert.deepEqual(
+    firstFailure.logs,
+    [
+      `[account-hard-delete] clerk asset cleanup retry required receipt=${retryIdentifier} phase=quarantine`,
+    ],
+    "cleanup failure emits one exact privacy-safe phase-coded log",
   );
   const serializedFailureLogs = firstFailure.logs.join("\n");
   assert.equal(serializedFailureLogs.includes(retryClerkId), false, "failure log omits raw Clerk id");
@@ -1303,6 +1827,11 @@ async function verifyClerkReceiptRecovery(): Promise<void> {
     await chmod(receiptsDirectory, 0o700);
   }
   assert.equal(receiptRemovalFailure.status, 500, "receipt removal failure remains retryable");
+  assert.equal(
+    (await json(receiptRemovalFailure)).error,
+    "account_cleanup_retry_required",
+    "receipt-operation failure retains the generic signed-route 500 body",
+  );
   await expectMissing(
     path.dirname(retryFile),
     "missing-row redelivery still removes the exact private user directory",
@@ -1323,15 +1852,26 @@ async function verifyClerkReceiptRecovery(): Promise<void> {
     filename: "write-fail-private.webp",
   });
   await chmod(receiptsDirectory, 0o500);
-  let writeFailure: Response;
+  let writeFailure: Awaited<ReturnType<typeof captureConsoleErrors<Response>>>;
   try {
-    ({ result: writeFailure } = await captureConsoleErrors(() => clerkWebhookPost(
+    writeFailure = await captureConsoleErrors(() => clerkWebhookPost(
       clerkDeleteRequest(writeFailClerkId, "brand-delete-write-fail-1"),
-    )));
+    ));
   } finally {
     await chmod(receiptsDirectory, 0o700);
   }
-  assert.equal(writeFailure.status, 500, "a receipt write failure asks Clerk to retry");
+  assert.equal(writeFailure.result.status, 500, "a receipt write failure asks Clerk to retry");
+  assert.equal(
+    (await json(writeFailure.result)).error,
+    "account_cleanup_retry_required",
+  );
+  assert.deepEqual(
+    writeFailure.logs,
+    [
+      `[account-hard-delete] clerk asset cleanup retry required receipt=${clerkReceiptIdentifier(writeFailClerkId)} phase=receipt-write`,
+    ],
+    "receipt write failure uses the exact phase-coded retry log",
+  );
   assert.notEqual(
     await prisma.user.findUnique({ where: { id: CLERK_WRITE_FAIL_USER_ID } }),
     null,
@@ -1482,6 +2022,7 @@ async function main(): Promise<void> {
 
   await verifyClerkCleanupStorePrimitives();
   await verifyClerkPreparationRetryDurability();
+  await verifyClerkQuarantineStateMachine();
   verifyRouteExportContract();
 
   for (const [code, status, message] of errorCases) {
