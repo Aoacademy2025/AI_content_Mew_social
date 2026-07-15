@@ -29,7 +29,7 @@
 **Files:**
 
 - Create: `src/lib/editor-project-recovery-journal.ts`
-- Rewrite: `src/lib/editor-project-bootstrap.ts`
+- Modify: `src/lib/editor-project-bootstrap.ts`
 - Create: `scripts/verify-editor-project-recovery.ts`
 - Modify: `scripts/verify-editor-project-save-queue.ts`
 
@@ -87,6 +87,11 @@ export function decideEditorProjectBootstrap(input: {
 ```
 
 - Consumes: existing `editorProjectSaveQueue.revisionWatermark(projectId)` from `src/lib/editor-project-save-queue.ts`.
+
+- Temporary compatibility: keep the current async `resolveEditorProjectBootstrap`
+  export and its old input signature through Tasks 1–2 so `useV2Project` remains
+  buildable. Task 3 removes this adapter immediately after migrating the hook to the
+  new journal and pure decision interfaces.
 
 - [ ] **Step 1: Write the failing pure verifier**
 
@@ -182,9 +187,13 @@ export function parseEditorProjectRecoveryJournal(
 
 `writeEditorProjectRecoveryJournal` must catch quota/private-mode errors and return `false`; `clearEditorProjectRecoveryJournal` is best-effort and idempotent.
 
-- [ ] **Step 4: Replace automatic-local bootstrap decisions**
+- [ ] **Step 4: Add pure decisions beside the temporary compatibility adapter**
 
-Remove `localDirty`, `readLocalDraft`, and `isLocalDirty` from `resolveEditorProjectBootstrap`. Keep network loading separate from draft selection: the loader validates the response, then calls `decideEditorProjectBootstrap` with the validated journal, optional legacy candidate, server revision, and queue watermark.
+Implement `decideEditorProjectBootstrap` as the new authoritative pure boundary.
+Leave the existing async `resolveEditorProjectBootstrap` export available without
+changing its call signature in this task; it exists only so the unmigrated hook can
+compile through Task 2. The new decision and journal modules must not import or call
+that compatibility adapter.
 
 Decision order must be exact:
 
@@ -204,7 +213,9 @@ if (usableLegacyDraft) {
 return { kind: "server" };
 ```
 
-Do not inspect a generic `dirty` boolean anywhere in this domain.
+Do not inspect a generic `dirty` boolean inside the new journal or
+`decideEditorProjectBootstrap` domain. The compatibility adapter may retain its old
+inputs until Task 3, where it is deleted after the hook migration.
 
 - [ ] **Step 5: Run focused and mutation checks**
 
@@ -491,6 +502,10 @@ const retryProjectBootstrap = useCallback(() => {
 ```
 
 It must not write storage, mark a user mutation, copy default state, or allocate a revision.
+
+After this hook no longer calls the old async `resolveEditorProjectBootstrap`, delete
+that compatibility adapter and its `localDirty`, `readLocalDraft`, and `isLocalDirty`
+input surface from `src/lib/editor-project-bootstrap.ts`.
 
 - [ ] **Step 5: Implement both conflict actions**
 
