@@ -194,17 +194,17 @@ async function main(): Promise<void> {
     assert.equal(refundCount, 1, "the route refunds its setup-time reservation");
     const rejected = telemetryEvents.find((event) => event.name === "broll_coverage_rejected");
     assert.ok(rejected);
-    assert.deepEqual(Object.keys((rejected?.properties ?? {}) as Record<string, unknown>).sort(), [
-      "availableAssetCount",
-      "coverageGapCount",
-      "coverageRatio",
-      "coverageRejected",
-      "coverageRepairCount",
-      "coverageSegmentCount",
-      "distinctAssetCount",
-      "requestedWindowCount",
-      "uncoveredTailSec",
-    ].sort());
+    assert.deepEqual(rejected?.properties, {
+      requestedWindowCount: 1,
+      availableAssetCount: 0,
+      distinctAssetCount: 0,
+      coverageSegmentCount: 0,
+      coverageGapCount: 0,
+      coverageRepairCount: 1,
+      coverageRatio: 0,
+      uncoveredTailSec: 1,
+      coverageRejected: true,
+    });
 
     console.log("All broll render route checks passed.");
   } finally {
