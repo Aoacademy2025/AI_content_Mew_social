@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
-import { createNotification } from "@/lib/notifications";
+import { createNotification, notifyAdmins } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
@@ -53,7 +53,7 @@ function invoiceSubId(inv: any): string | null {
  *  AND `checkout.session.async_payment_succeeded`: PromptPay / bank (delayed) methods fire `completed`
  *  while still unpaid and confirm later via the async event, so activation is gated on
  *  `payment_status === "paid"` and is idempotent (Payment-PAID belt + unique guards). */
-async function handleCheckoutSession(s: any) {
+async function handleCheckoutSession(s: any, eventId: string) {
   // ── Credit-pack purchase ──────────────────────────────────────────────
   if (s.metadata?.type === "credits" && s.metadata.userId) {
     if (process.env.CREDITS_LIVE !== "1") { console.log("[webhook] CREDITS_LIVE off — skipping credit grant for", s.id); return; }
@@ -100,7 +100,25 @@ async function handleCheckoutSession(s: any) {
 
   // ── Plan purchase ─────────────────────────────────────────────────────
   const { userId, plan, period, periodDays } = s.metadata ?? {};
-  if (!(userId && plan)) return;
+  if (!(userId && plan)) {
+    // A completed/paid Checkout Session with no app metadata cannot be activated — it's most
+    // likely a Dashboard/CLI-created session against the live webhook secret, not a real in-app
+    // purchase (both real call sites always set userId+plan). But if it ever IS a genuine
+    // customer payment, this is the only trace: log loudly + alert admins instead of the
+    // previous silent no-op (found a zero-Payment-row orphan on prod 2026-07-13 with nothing
+    // logged anywhere). Ack to Stripe is unchanged — we still just `return` below.
+    const email = s.customer_details?.email ?? s.customer_email ?? null;
+    console.error(
+      "[stripe-webhook] checkout.session.completed missing userId/plan metadata — cannot activate, no Payment row will be created",
+      { eventId, sessionId: s.id, email },
+    );
+    notifyAdmins({
+      type: "ERROR_SYSTEM",
+      title: "⚠️ Stripe checkout completed with no app metadata",
+      body: `Checkout session ${s.id} (event ${eventId}) completed but had no userId/plan metadata — no Payment row was created. Possible orphaned payment. Email: ${email ?? "unknown"}. Check Stripe Dashboard for this session.`,
+    }).catch(() => {});
+    return;
+  }
   // Activate ONLY when truly paid — a PromptPay/bank one-time session fires `completed` while
   // unpaid/processing; the real confirmation arrives as async_payment_succeeded (payment_status=paid).
   if (s.payment_status !== "paid") {
@@ -218,7 +236,7 @@ export async function POST(req: Request) {
   try {
     // ── Checkout finished (sync) OR delayed payment confirmed (PromptPay/bank async) ─────
     if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-      await handleCheckoutSession(event.data.object as any);
+      await handleCheckoutSession(event.data.object as any, event.id);
     }
 
     // ── Delayed payment failed → mark the pending payment failed + free any founding seat ─
