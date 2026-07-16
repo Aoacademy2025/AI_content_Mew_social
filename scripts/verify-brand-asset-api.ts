@@ -1062,23 +1062,119 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       receiptId: string,
       ownerPid: number,
       uuid: string,
-      options: { unexpected?: boolean } = {},
+      options: {
+        unexpected?: boolean;
+        markerContent?: string | null;
+        directoryMode?: number;
+        markerMode?: number;
+        markerSymlinkTarget?: string;
+      } = {},
     ) => {
       const directory = path.join(
         fenceScavengerDirectory,
         `.${receiptId}.${ownerPid}.${uuid}.fence`,
       );
-      await mkdir(directory, { mode: 0o700 });
-      await writeFile(
-        path.join(directory, ".directory-cleaned-v1"),
-        receiptId,
-        { mode: 0o600 },
-      );
+      await mkdir(directory, { mode: options.directoryMode ?? 0o700 });
+      const markerPath = path.join(directory, ".directory-cleaned-v1");
+      if (options.markerSymlinkTarget) {
+        await symlink(options.markerSymlinkTarget, markerPath);
+      } else if (options.markerContent !== null) {
+        await writeFile(
+          markerPath,
+          options.markerContent ?? receiptId,
+          { mode: options.markerMode ?? 0o600 },
+        );
+      }
       if (options.unexpected) {
         await writeFile(path.join(directory, "unexpected-live-payload"), "preserve");
       }
       return directory;
     };
+
+    const earlyCrashClerkId = "clerk-scavenge-early-crash-fences";
+    const earlyCrashReceiptId = fenceScavengerStore.identifier(earlyCrashClerkId);
+    await fenceScavengerStore.write(
+      earlyCrashClerkId,
+      "scavenge-early-crash-user",
+      "prepared",
+    );
+    const emptyFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "01000000-0000-4000-8000-000000000000",
+      { markerContent: null },
+    );
+    const emptyMarkerFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "02000000-0000-4000-8000-000000000000",
+      { markerContent: "" },
+    );
+    const partialMarkerFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "03000000-0000-4000-8000-000000000000",
+      { markerContent: earlyCrashReceiptId.slice(0, Math.max(1, Math.floor(earlyCrashReceiptId.length / 2))) },
+    );
+    const completeMarkerFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "04000000-0000-4000-8000-000000000000",
+    );
+    const malformedMarkerFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "05000000-0000-4000-8000-000000000000",
+      { markerContent: `not-a-prefix-${earlyCrashReceiptId}` },
+    );
+    const extraDataMarkerFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "06000000-0000-4000-8000-000000000000",
+      { markerContent: `${earlyCrashReceiptId}-extra` },
+    );
+    const nonPrivateFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "07000000-0000-4000-8000-000000000000",
+      { directoryMode: 0o755 },
+    );
+    await chmod(nonPrivateFenceTemporary, 0o755);
+    const markerSymlinkOutside = path.join(fenceScavengerRoot, "marker-symlink-outside");
+    await writeFile(markerSymlinkOutside, earlyCrashReceiptId);
+    const markerSymlinkFenceTemporary = await makeFenceTemporary(
+      earlyCrashReceiptId,
+      deadFenceOwnerPid,
+      "08000000-0000-4000-8000-000000000000",
+      { markerSymlinkTarget: markerSymlinkOutside },
+    );
+    assert.equal(
+      await fenceScavengerStore.ensureQuarantineFence(earlyCrashClerkId),
+      "cleaned",
+    );
+    await expectMissing(emptyFenceTemporary, "a dead-owner private empty fence directory is safely reclaimed");
+    await expectMissing(emptyMarkerFenceTemporary, "an empty canonical marker from an early crash is safely reclaimed");
+    await expectMissing(partialMarkerFenceTemporary, "a canonical-prefix partial marker is safely reclaimed");
+    await expectMissing(completeMarkerFenceTemporary, "a complete canonical marker remains safely reclaimable");
+    await expectPresent(malformedMarkerFenceTemporary, "a non-prefix partial marker is ambiguous and preserved");
+    await expectPresent(extraDataMarkerFenceTemporary, "a marker with extra bytes is ambiguous and preserved");
+    await expectPresent(nonPrivateFenceTemporary, "a non-private fence directory is preserved");
+    await expectPresent(markerSymlinkFenceTemporary, "a marker symlink is never followed or removed");
+    assert.equal(
+      await readFile(markerSymlinkOutside, "utf8"),
+      earlyCrashReceiptId,
+      "marker symlink data outside quarantine remains untouched",
+    );
+
+    const starvationPreservedFences: string[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      starvationPreservedFences.push(await makeFenceTemporary(
+        fenceScavengerReceiptId,
+        deadFenceOwnerPid,
+        `09000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+        { markerContent: `malformed-preserved-${index}` },
+      ));
+    }
     const staleFenceTemporaries: string[] = [];
     for (let index = 0; index < 33; index += 1) {
       staleFenceTemporaries.push(await makeFenceTemporary(
@@ -1124,8 +1220,11 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     assert.equal(
       remainingStaleFences.filter(Boolean).length,
       1,
-      "one call non-recursively scavenges at most 32 stale owned fence directories",
+      "preserved malformed entries cannot starve the 32-removal destructive budget",
     );
+    for (const preservedFence of starvationPreservedFences) {
+      await expectPresent(preservedFence, "starvation scanning preserves every ambiguous entry");
+    }
     await expectPresent(liveFenceTemporary, "fence scavenging preserves a current-process writer");
     await expectPresent(foreignFenceTemporary, "fence scavenging preserves another receipt identity");
     await expectPresent(unexpectedFenceTemporary, "fence scavenging preserves a directory with unexpected payload");
@@ -1150,6 +1249,9 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       retryStaleFence,
       "an idempotent fence retry scavenges stale owned temporaries before returning",
     );
+    for (const staleFence of staleFenceTemporaries) {
+      await expectMissing(staleFence, "repeated bounded scans make progress until every safe fence is removed");
+    }
     await expectPresent(liveFenceTemporary, "idempotent retries preserve a live fence writer");
     await expectPresent(foreignFenceTemporary, "idempotent retries preserve a foreign fence writer");
     await expectPresent(unexpectedFenceTemporary, "idempotent retries preserve unexpected directory contents");

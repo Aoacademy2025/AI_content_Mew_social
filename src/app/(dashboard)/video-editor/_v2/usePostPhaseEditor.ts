@@ -156,7 +156,12 @@ export function usePostPhaseEditor(
       const res = await fetch("/api/videos/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "broll-rerender", sourceJobId, windowEdits: edits }),
+        body: JSON.stringify({
+          idempotencyKey: `editor-v2-broll-rerender-${globalThis.crypto.randomUUID()}`,
+          mode: "broll-rerender",
+          sourceJobId,
+          windowEdits: edits,
+        }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);

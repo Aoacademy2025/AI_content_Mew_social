@@ -586,17 +586,16 @@ export function createClerkAssetCleanupStore(
       `^\\.${receiptId}\\.([1-9][0-9]*)\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.fence$`,
       "u",
     );
-    let inspected = 0;
     let removed = 0;
-    for (const entry of await readdir(directory)) {
-      const ownedMatch = ownedTemporaryPattern.exec(entry);
+    const entries = await opendir(directory);
+    for await (const entry of entries) {
+      if (removed >= MAX_STALE_TEMPORARIES_PER_CALL) break;
+      const ownedMatch = ownedTemporaryPattern.exec(entry.name);
       if (!ownedMatch) continue;
-      if (inspected >= MAX_STALE_TEMPORARIES_PER_CALL) break;
-      inspected += 1;
       const ownerPid = Number(ownedMatch[1]);
       if (!Number.isSafeInteger(ownerPid) || processMayOwnTemporary(ownerPid)) continue;
 
-      const candidate = path.join(directory, entry);
+      const candidate = path.join(directory, entry.name);
       if (path.dirname(candidate) !== directory) throw invalidTrustBoundary();
       const candidateMetadata = await metadataOrNull(candidate);
       if (!candidateMetadata || candidateMetadata.isSymbolicLink() || !candidateMetadata.isDirectory()) {
@@ -610,20 +609,27 @@ export function createClerkAssetCleanupStore(
       if ((candidateMetadata.mode & 0o777) !== 0o700) continue;
 
       const children = await readdir(candidate);
-      if (children.length !== 1 || children[0] !== QUARANTINE_TERMINAL_MARKER) continue;
-      const markerPath = path.join(candidate, QUARANTINE_TERMINAL_MARKER);
-      if (path.dirname(markerPath) !== candidate) throw invalidTrustBoundary();
-      const markerPathMetadata = await metadataOrNull(markerPath);
-      if (!markerPathMetadata) continue;
-      try {
-        assertTrustedReceiptFile(markerPathMetadata);
-      } catch {
-        continue;
-      }
       if (
-        (markerPathMetadata.mode & 0o777) !== 0o600
-        || markerPathMetadata.size !== Buffer.byteLength(receiptId, "utf8")
+        children.length > 1
+        || (children.length === 1 && children[0] !== QUARANTINE_TERMINAL_MARKER)
       ) continue;
+      const markerPath = children.length === 1
+        ? path.join(candidate, QUARANTINE_TERMINAL_MARKER)
+        : null;
+      if (markerPath && path.dirname(markerPath) !== candidate) throw invalidTrustBoundary();
+      const markerPathMetadata = markerPath ? await metadataOrNull(markerPath) : null;
+      if (markerPath) {
+        if (!markerPathMetadata) continue;
+        try {
+          assertTrustedReceiptFile(markerPathMetadata);
+        } catch {
+          continue;
+        }
+        if (
+          (markerPathMetadata.mode & 0o777) !== 0o600
+          || markerPathMetadata.size > Buffer.byteLength(receiptId, "utf8")
+        ) continue;
+      }
 
       let directoryHandle: Awaited<ReturnType<typeof open>> | null = null;
       let markerHandle: Awaited<ReturnType<typeof open>> | null = null;
@@ -632,37 +638,42 @@ export function createClerkAssetCleanupStore(
           candidate,
           fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
         );
-        markerHandle = await open(
-          markerPath,
-          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
-        );
+        if (markerPath) {
+          markerHandle = await open(
+            markerPath,
+            fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+          );
+        }
         const openedDirectoryMetadata = await directoryHandle.stat();
-        const openedMarkerMetadata = await markerHandle.stat();
         assertTrustedQuarantineTarget(openedDirectoryMetadata);
-        assertTrustedReceiptFile(openedMarkerMetadata);
-        if (
-          !sameDirectoryIdentity(candidateMetadata, openedDirectoryMetadata)
-          || !sameFileIdentity(markerPathMetadata, openedMarkerMetadata)
-        ) continue;
-        const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
-        const { bytesRead } = await markerHandle.read(buffer, 0, buffer.length, 0);
-        if (
-          bytesRead !== Buffer.byteLength(receiptId, "utf8")
-          || buffer.subarray(0, bytesRead).toString("utf8") !== receiptId
-        ) continue;
+        if (!sameDirectoryIdentity(candidateMetadata, openedDirectoryMetadata)) continue;
+        if (markerHandle && markerPathMetadata) {
+          const openedMarkerMetadata = await markerHandle.stat();
+          assertTrustedReceiptFile(openedMarkerMetadata);
+          if (!sameFileIdentity(markerPathMetadata, openedMarkerMetadata)) continue;
+          const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
+          const { bytesRead } = await markerHandle.read(buffer, 0, buffer.length, 0);
+          const markerValue = buffer.subarray(0, bytesRead).toString("utf8");
+          if (
+            bytesRead !== markerPathMetadata.size
+            || !receiptId.startsWith(markerValue)
+          ) continue;
+        }
         const stableChildren = await readdir(candidate);
         const stableDirectoryMetadata = await metadataOrNull(candidate);
-        const stableMarkerMetadata = await metadataOrNull(markerPath);
+        const stableMarkerMetadata = markerPath ? await metadataOrNull(markerPath) : null;
         if (
-          stableChildren.length !== 1
-          || stableChildren[0] !== QUARANTINE_TERMINAL_MARKER
+          stableChildren.length !== children.length
+          || stableChildren.some((child, index) => child !== children[index])
           || !stableDirectoryMetadata
-          || !stableMarkerMetadata
           || !sameDirectoryIdentity(candidateMetadata, stableDirectoryMetadata)
-          || !sameFileIdentity(markerPathMetadata, stableMarkerMetadata)
+          || (markerPathMetadata && (
+            !stableMarkerMetadata
+            || !sameFileIdentity(markerPathMetadata, stableMarkerMetadata)
+          ))
         ) continue;
 
-        await unlink(markerPath);
+        if (markerPath) await unlink(markerPath);
         const emptyDirectoryMetadata = await metadataOrNull(candidate);
         if (!emptyDirectoryMetadata || !sameDirectoryIdentity(candidateMetadata, emptyDirectoryMetadata)) {
           throw invalidTrustBoundary();

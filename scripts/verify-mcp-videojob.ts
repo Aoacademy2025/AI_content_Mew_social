@@ -46,6 +46,22 @@ async function main() {
   try { await createVideoJob(u.id, { script: "k" }, "key1"); } catch { dup = true; }
   assert(dup, "duplicate idempotencyKey rejected");
   assert(!!a.id, "first idempotent job created");
+  const fingerprint = "a".repeat(64);
+  const fingerprinted = await createVideoJob(
+    u.id,
+    { script: "fingerprinted" },
+    "key-with-fingerprint",
+    { idempotencyFingerprint: fingerprint },
+  );
+  const fingerprintedRow = await prisma.videoJob.findUnique({ where: { id: fingerprinted.id } });
+  assert(
+    fingerprintedRow?.idempotencyFingerprint === fingerprint,
+    "createVideoJob atomically persists an optional logical-request fingerprint",
+  );
+  assert(
+    a.idempotencyFingerprint === null,
+    "existing non-editor callers remain compatible with a nullable fingerprint",
+  );
 
   // --- worker-restart recovery: only pre-render (free) steps may requeue ---
   // Each scenario starts from a clean job table so the recovery scan sees only its own rows.

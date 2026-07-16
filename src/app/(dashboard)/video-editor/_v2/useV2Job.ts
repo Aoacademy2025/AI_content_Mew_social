@@ -6,6 +6,10 @@ import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
+import {
+  fingerprintVideoJobRequest,
+  type VideoJobOperation,
+} from "@/lib/video-job-idempotency";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -75,13 +79,50 @@ export type SubmitExportInput = {
 type SubmitResult = { ok: boolean; message?: string };
 type OwnedSubmitAttempt = {
   kind: "create" | "export";
+  projectId: string | null;
   idempotencyKey: string;
+  idempotencyFingerprint: string | null;
+  fingerprintPromise: Promise<string>;
   body: Record<string, unknown>;
+  baselineActiveJobId: string | null;
+  baselineActiveExportJobId: string | null;
+  baselineStoredJobId: string | null;
   promise: Promise<SubmitResult> | null;
 };
 
 function createSubmitIdempotencyKey(kind: OwnedSubmitAttempt["kind"]): string {
   return `editor-v2-${kind}-${globalThis.crypto.randomUUID()}`;
+}
+
+function operationForAttempt(kind: OwnedSubmitAttempt["kind"]): VideoJobOperation {
+  return kind === "export" ? "export" : "preview";
+}
+
+function responseMatchesAttempt(
+  response: {
+    idempotencyKey?: unknown;
+    idempotencyFingerprint?: unknown;
+    projectId?: unknown;
+    type?: unknown;
+  },
+  attempt: OwnedSubmitAttempt,
+  requireJobContext: boolean,
+): boolean {
+  if (
+    !attempt.idempotencyFingerprint
+    || response.idempotencyKey !== attempt.idempotencyKey
+    || response.idempotencyFingerprint !== attempt.idempotencyFingerprint
+  ) return false;
+  if (!requireJobContext) return true;
+  return (
+    response.projectId === attempt.projectId
+    && (attempt.kind === "export" ? response.type === "export" : response.type !== "export")
+  );
+}
+
+function storedJobId(projectId: string | null | undefined): string | null {
+  try { return browserStorage()?.getItem(storageKey(projectId)) ?? null; }
+  catch { return null; }
 }
 
 export function useV2Job(p: V2Project) {
@@ -107,12 +148,17 @@ export function useV2Job(p: V2Project) {
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     errorMessage: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
+    idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
     // วิดีโอ+ซับยังอยู่ (บั๊กที่ Mew เจอตอน QA 07-03). ลบเฉพาะตอนผู้ใช้สั่งเอง (reset:
     // เริ่มโปรเจกต์ใหม่ / กลับไปตั้งค่า) หรือ Burn เสร็จใน P6.
     if (d.type !== "export" && d.output?.preview) {
       lastPreviewJobIdRef.current = d.id;
+    }
+    const ownedAttempt = submitAttemptRef.current;
+    if (ownedAttempt && responseMatchesAttempt(d, ownedAttempt, true)) {
+      submitAttemptRef.current = null;
     }
     if (d.status === "done") {
       stopPolling();
@@ -188,9 +234,9 @@ export function useV2Job(p: V2Project) {
     try { stored = browserStorage()?.getItem(storageKey(p.projectId)) ?? null; } catch {}
     const nextJobId = serverJobId ?? stored;
     if (nextJobId && (nextJobId !== jobIdRef.current || pollRef.current === null)) {
-      // A server/local resume id is authoritative evidence that an ambiguous POST
-      // committed. Release its retry descriptor before adopting the durable job.
-      submitAttemptRef.current = null;
+      // Resume candidates can predate the current POST or belong to a different
+      // operation. Polling is safe, but only matching key+fingerprint evidence in
+      // applyStatus may release an ambiguous attempt descriptor.
       startPolling(nextJobId);
     } else if (!nextJobId && !submitAttemptRef.current) {
       stopPolling();
@@ -205,6 +251,9 @@ export function useV2Job(p: V2Project) {
     const existingAttempt = submitAttemptRef.current;
     if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "create") {
       return { ok: false, message: "มีคำขอส่งออกก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองส่งออกซ้ำ" };
+    }
+    if (existingAttempt && existingAttempt.projectId !== (p.projectId ?? null)) {
+      return { ok: false, message: "มีคำขอเรนเดอร์ของโปรเจกต์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณากลับไปโปรเจกต์เดิมแล้วลองซ้ำ" };
     }
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
@@ -253,8 +302,14 @@ export function useV2Job(p: V2Project) {
     });
     const attempt: OwnedSubmitAttempt = existingAttempt ?? {
       kind: "create",
+      projectId: p.projectId ?? null,
       idempotencyKey,
+      idempotencyFingerprint: null,
+      fingerprintPromise: fingerprintVideoJobRequest(operationForAttempt("create"), body),
       body,
+      baselineActiveJobId: p.activeJobId ?? null,
+      baselineActiveExportJobId: p.activeExportJobId ?? null,
+      baselineStoredJobId: storedJobId(p.projectId),
       promise: null,
     };
     let ownedPromise!: Promise<SubmitResult>;
@@ -262,6 +317,7 @@ export function useV2Job(p: V2Project) {
       setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
       let retryAmbiguous = true;
       try {
+        attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
         const res = await fetch("/api/videos/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -269,13 +325,21 @@ export function useV2Job(p: V2Project) {
         });
         const d = await res.json().catch(() => null);
         if (!res.ok || !d?.jobId) {
-          retryAmbiguous = res.status >= 500 || res.ok;
+          retryAmbiguous = res.status >= 500
+            || res.ok
+            || res.status === 429
+            || d?.error === "too_many_jobs"
+            || d?.error === "quota_exceeded";
           setJob((j) => ({ ...j, phase: "idle" }));
           return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
         }
+        if (!responseMatchesAttempt(d, attempt, false)) {
+          setJob((j) => ({ ...j, phase: "idle" }));
+          return { ok: false, message: "ยังยืนยันตัวตนของงานที่สร้างไม่ได้ กรุณาลองคำขอเดิมอีกครั้ง" };
+        }
         retryAmbiguous = false;
-        try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
         startPolling(d.jobId);
         return { ok: true };
       } catch {
@@ -299,6 +363,9 @@ export function useV2Job(p: V2Project) {
     if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "export") {
       return { ok: false, message: "มีคำขอเรนเดอร์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองเรนเดอร์ซ้ำ" };
     }
+    if (existingAttempt && existingAttempt.projectId !== (p.projectId ?? null)) {
+      return { ok: false, message: "มีคำขอส่งออกของโปรเจกต์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณากลับไปโปรเจกต์เดิมแล้วลองซ้ำ" };
+    }
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
     if (!input.sourceJobId) return { ok: false, message: "ไม่พบวิดีโอต้นฉบับ" };
@@ -313,8 +380,14 @@ export function useV2Job(p: V2Project) {
     };
     const attempt: OwnedSubmitAttempt = existingAttempt ?? {
       kind: "export",
+      projectId: p.projectId ?? null,
       idempotencyKey,
+      idempotencyFingerprint: null,
+      fingerprintPromise: fingerprintVideoJobRequest(operationForAttempt("export"), body),
       body,
+      baselineActiveJobId: p.activeJobId ?? null,
+      baselineActiveExportJobId: p.activeExportJobId ?? null,
+      baselineStoredJobId: storedJobId(p.projectId),
       promise: null,
     };
     let ownedPromise!: Promise<SubmitResult>;
@@ -322,6 +395,7 @@ export function useV2Job(p: V2Project) {
       setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
       let retryAmbiguous = true;
       try {
+        attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
         lastPreviewJobIdRef.current = typeof attempt.body.sourceJobId === "string"
           ? attempt.body.sourceJobId
           : input.sourceJobId;
@@ -332,13 +406,21 @@ export function useV2Job(p: V2Project) {
         });
         const d = await res.json().catch(() => null);
         if (!res.ok || !d?.jobId) {
-          retryAmbiguous = res.status >= 500 || res.ok;
+          retryAmbiguous = res.status >= 500
+            || res.ok
+            || res.status === 429
+            || d?.error === "too_many_jobs"
+            || d?.error === "quota_exceeded";
           setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
           return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
         }
+        if (!responseMatchesAttempt(d, attempt, false)) {
+          setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
+          return { ok: false, message: "ยังยืนยันตัวตนของงานส่งออกไม่ได้ กรุณาลองคำขอเดิมอีกครั้ง" };
+        }
         retryAmbiguous = false;
-        try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
         startPolling(d.jobId);
         return { ok: true };
       } catch {
@@ -385,7 +467,6 @@ export function useV2Job(p: V2Project) {
   /** เคลียร์ state (หลัง done/failed → กลับไปตั้งค่า) */
   const reset = useCallback(() => {
     stopPolling();
-    submitAttemptRef.current = null;
     lastPreviewJobIdRef.current = null;
     try { browserStorage()?.removeItem(storageKey(job.projectId ?? p.projectId)); } catch {}
     setJob(IDLE);

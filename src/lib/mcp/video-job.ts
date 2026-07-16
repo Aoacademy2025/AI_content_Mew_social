@@ -21,7 +21,11 @@ export async function createVideoJob(
   userId: string,
   input: unknown,
   idempotencyKey?: string,
-  opts: { projectId?: string | null; type?: string | null } = {},
+  opts: {
+    projectId?: string | null;
+    type?: string | null;
+    idempotencyFingerprint?: string | null;
+  } = {},
 ) {
   return prisma.videoJob.create({
     data: {
@@ -30,6 +34,7 @@ export async function createVideoJob(
       ...(opts.type ? { type: opts.type } : {}),
       inputJson: JSON.stringify(input),
       idempotencyKey: idempotencyKey ?? null,
+      idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
       status: "queued",
     },
   });

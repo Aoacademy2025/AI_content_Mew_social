@@ -14,6 +14,10 @@ import { validateWindowEdits } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import { BrandAssetError } from "@/lib/brand-assets.server";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
+import {
+  fingerprintVideoJobRequest,
+  videoJobOperationKind,
+} from "@/lib/video-job-idempotency";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -56,25 +60,40 @@ function num(v: unknown, min: number, max: number): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : undefined;
 }
 
-async function replayIdempotentVideoJob(userId: string, rawKey: unknown) {
-  const idempotencyKey = str(rawKey, 120);
-  if (idempotencyKey) {
-    const existing = await prisma.videoJob.findFirst({
-      where: { userId, idempotencyKey },
-      select: { id: true, status: true },
-    });
-    if (existing) {
-      return NextResponse.json({
-        jobId: existing.id,
-        status: existing.status,
-        idempotentReplay: true,
-      });
-    }
+async function replayIdempotentVideoJob(
+  userId: string,
+  idempotencyKey: string,
+  idempotencyFingerprint: string,
+) {
+  const existing = await prisma.videoJob.findFirst({
+    where: { userId, idempotencyKey },
+    select: {
+      id: true,
+      status: true,
+      idempotencyKey: true,
+      idempotencyFingerprint: true,
+    },
+  });
+  if (!existing) return null;
+  if (
+    !existing.idempotencyFingerprint
+    || existing.idempotencyFingerprint !== idempotencyFingerprint
+  ) {
+    return NextResponse.json(
+      {
+        error: "idempotency_conflict",
+        message: "idempotencyKey นี้ถูกใช้กับคำขออื่นแล้ว",
+      },
+      { status: 409 },
+    );
   }
-  return NextResponse.json(
-    { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" },
-    { status: 409 },
-  );
+  return NextResponse.json({
+    jobId: existing.id,
+    status: existing.status,
+    idempotencyKey: existing.idempotencyKey,
+    idempotencyFingerprint: existing.idempotencyFingerprint,
+    idempotentReplay: true,
+  });
 }
 
 export async function POST(req: Request) {
@@ -84,6 +103,25 @@ export async function POST(req: Request) {
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+
+    const idempotencyKey = str(body.idempotencyKey, 120);
+    if (!idempotencyKey) {
+      return NextResponse.json(
+        { error: "idempotency_key_required", message: "ไม่พบรหัสยืนยันคำขอ กรุณาลองใหม่" },
+        { status: 400 },
+      );
+    }
+    const operation = videoJobOperationKind(body as Record<string, unknown>);
+    const idempotencyFingerprint = await fingerprintVideoJobRequest(
+      operation,
+      body as Record<string, unknown>,
+    );
+    const replay = await replayIdempotentVideoJob(
+      user.id,
+      idempotencyKey,
+      idempotencyFingerprint,
+    );
+    if (replay) return replay;
 
     // ── Phase 2: free per-window b-roll re-render (mode: "broll-rerender") ─────────
     // Reuses the source job's TTS + avatar and only swaps b-roll windows → NOTHING new is
@@ -135,13 +173,22 @@ export async function POST(req: Request) {
         const job = await createVideoJob(
           user.id,
           { mode: "broll-rerender", previewMode: true, sourceJobId, windowEdits: editsRes },
-          str(body.idempotencyKey, 120),
-          { projectId: srcJob.projectId },
+          idempotencyKey,
+          { projectId: srcJob.projectId, idempotencyFingerprint },
         );
-        return NextResponse.json({ jobId: job.id, status: "queued" });
+        return NextResponse.json({
+          jobId: job.id,
+          status: "queued",
+          idempotencyKey,
+          idempotencyFingerprint,
+        });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return replayIdempotentVideoJob(user.id, body.idempotencyKey);
+          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+            ?? NextResponse.json(
+              { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+              { status: 409 },
+            );
         }
         throw e;
       }
@@ -194,8 +241,8 @@ export async function POST(req: Request) {
                 exportScript: str(body.script, 20000),
                 exportSceneCount: num(body.exportSceneCount, 1, 1000),
               },
-              str(body.idempotencyKey, 120),
-              { projectId: sourceProjectId, type: "export" },
+              idempotencyKey,
+              { projectId: sourceProjectId, type: "export", idempotencyFingerprint },
             );
           },
           afterDurableJobCreated: async (durableJob) => {
@@ -205,10 +252,19 @@ export async function POST(req: Request) {
             });
           },
         });
-        return NextResponse.json({ jobId: job.id, status: "queued" });
+        return NextResponse.json({
+          jobId: job.id,
+          status: "queued",
+          idempotencyKey,
+          idempotencyFingerprint,
+        });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return replayIdempotentVideoJob(user.id, body.idempotencyKey);
+          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+            ?? NextResponse.json(
+              { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+              { status: 409 },
+            );
         }
         throw e;
       }
@@ -343,8 +399,8 @@ export async function POST(req: Request) {
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },
-        str(body.idempotencyKey, 120),
-        { projectId },
+        idempotencyKey,
+        { projectId, idempotencyFingerprint },
       );
       if (projectId) {
         await prisma.editorProject.updateMany({
@@ -352,10 +408,19 @@ export async function POST(req: Request) {
           data: { activeJobId: job.id, status: "rendering", lastOpenedAt: new Date() },
         });
       }
-      return NextResponse.json({ jobId: job.id, status: "queued" });
+      return NextResponse.json({
+        jobId: job.id,
+        status: "queued",
+        idempotencyKey,
+        idempotencyFingerprint,
+      });
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
-        return replayIdempotentVideoJob(user.id, body.idempotencyKey);
+        return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+          ?? NextResponse.json(
+            { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+            { status: 409 },
+          );
       }
       throw e;
     }

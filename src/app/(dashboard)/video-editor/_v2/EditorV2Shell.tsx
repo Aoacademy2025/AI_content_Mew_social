@@ -84,8 +84,24 @@ export function EditorV2Shell() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
   const activeProjectIdRef = useRef(p.projectId);
-  const archiveAttemptRef = useRef<{ token: symbol; projectId: string } | null>(null);
+  const mountedRef = useRef(false);
+  const archiveGenerationRef = useRef(0);
+  const archiveAttemptRef = useRef<{
+    token: symbol;
+    generation: number;
+    projectId: string;
+  } | null>(null);
   activeProjectIdRef.current = p.projectId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    archiveGenerationRef.current += 1;
+    return () => {
+      mountedRef.current = false;
+      archiveGenerationRef.current += 1;
+      archiveAttemptRef.current = null;
+    };
+  }, []);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
@@ -189,21 +205,35 @@ export function EditorV2Shell() {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
     }
-    const attempt = { token: Symbol("archive-project"), projectId: project.id };
+    const attempt = {
+      token: Symbol("archive-project"),
+      generation: archiveGenerationRef.current,
+      projectId: project.id,
+    };
+    const ownsAttempt = () => (
+      mountedRef.current
+      && archiveGenerationRef.current === attempt.generation
+      && archiveAttemptRef.current?.token === attempt.token
+      && archiveAttemptRef.current.projectId === attempt.projectId
+    );
     archiveAttemptRef.current = attempt;
     setDeletingProjectId(project.id);
     try {
       const res = await fetch(`/api/editor-projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+      if (!ownsAttempt()) return;
       const data = await res.json().catch(() => null);
+      if (!ownsAttempt()) return;
       if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
       const fallbackProjects = projects.filter((item) => item.id !== project.id);
       const remainingProjects = (await fetchRecentProjects().catch(() => fallbackProjects))
         .filter((item) => item.id !== project.id);
-      if (archiveAttemptRef.current?.token !== attempt.token) return;
+      if (!ownsAttempt()) return;
       setProjects(remainingProjects);
       setDeleteProject(null);
       if (activeProjectIdRef.current === project.id) {
+        if (!ownsAttempt()) return;
         if (!p.completeArchivedProject(project.id)) return;
+        if (!ownsAttempt() || activeProjectIdRef.current !== project.id) return;
         const nextProject = remainingProjects[0];
         if (nextProject) {
           toast.success(`ลบโปรเจกต์แล้ว กำลังเปิด ${nextProject.title || "โปรเจกต์ถัดไป"}`);
@@ -216,9 +246,10 @@ export function EditorV2Shell() {
       }
       toast.success("ลบโปรเจกต์แล้ว");
     } catch (error) {
+      if (!ownsAttempt()) return;
       toast.error(error instanceof Error ? error.message : "ลบโปรเจกต์ไม่สำเร็จ");
     } finally {
-      if (archiveAttemptRef.current?.token === attempt.token) {
+      if (ownsAttempt()) {
         archiveAttemptRef.current = null;
         setDeletingProjectId(null);
       }
