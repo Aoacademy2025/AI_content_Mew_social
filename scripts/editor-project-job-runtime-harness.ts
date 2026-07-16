@@ -1446,6 +1446,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
           throw Object.assign(new Error("duplicate"), { code: "P2002" });
         },
         parseVideoJobOutput: () => null,
+        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
       };
     }
     if (specifier === "@/lib/usage-limits") return { checkClipQuota: async () => ({ allowed: true }) };
@@ -1518,6 +1519,7 @@ async function runExactReplayRouteScenario(input: {
     code = "brand_error";
     status = 400;
   }
+  class RenderDeployDrainError extends Error {}
   const touchMutable = (name: string) => {
     mutableTouches.push(name);
     if (input.failOnMutableGate) throw new Error(`mutable gate touched before replay: ${name}`);
@@ -1612,6 +1614,7 @@ async function runExactReplayRouteScenario(input: {
           return { id: "new-route-job", status: "queued" };
         },
         parseVideoJobOutput: () => null,
+        VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
       };
     }
     if (specifier === "@/lib/usage-limits") {
@@ -1654,6 +1657,12 @@ async function runExactReplayRouteScenario(input: {
           touchMutable("trusted-logo-staging");
           throw new Error("unused");
         },
+      };
+    }
+    if (specifier === "@/lib/render-deploy-drain") {
+      return {
+        assertRenderEnqueueOpen: async () => touchMutable("deploy-drain"),
+        RenderDeployDrainError,
       };
     }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);

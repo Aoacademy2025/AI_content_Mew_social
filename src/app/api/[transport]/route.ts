@@ -12,12 +12,17 @@ import {
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { createVideoJob } from "@/lib/mcp/video-job";
+import {
+  createVideoJob,
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 
 export const runtime = "nodejs";
 
@@ -87,7 +92,7 @@ const handler = createMcpHandler(
           const job = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId } });
           if (job) {
             const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
-            return { kind: "job" as const, jobId: job.id, status: job.status, currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
+            return { kind: "job" as const, jobId: job.id, status: toPublicVideoJobStatus(job.status), currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
           }
           const v = await getVideoStatusTool(p.userId, args.id);
           if (!v.found) return { kind: "none" as const, found: false as const, id: args.id };
@@ -140,6 +145,14 @@ const handler = createMcpHandler(
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
+          try {
+            await assertRenderEnqueueOpen();
+          } catch (error) {
+            if (error instanceof RenderDeployDrainError) {
+              return { error: "render_maintenance", retryable: true, message: "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่" };
+            }
+            throw error;
+          }
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
@@ -164,7 +177,7 @@ const handler = createMcpHandler(
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
           // queue (there is no global render queue). Adjustable.
-          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: ["queued", "processing"] } } });
+          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
           if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
           try {
             const job = await createVideoJob(

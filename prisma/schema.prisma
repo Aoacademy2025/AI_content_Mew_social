@@ -237,7 +237,7 @@ model VideoJob {
   project        EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   videoId        String?
   type           String         @default("create")
-  status         String         @default("queued") // queued|processing|done|failed|canceled
+  status         String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
   currentStep    String?
   progress       Int            @default(0)
   inputJson      String
@@ -250,6 +250,8 @@ model VideoJob {
   startedAt      DateTime?
   finishedAt     DateTime?
   mediaExpiresAt DateTime?
+  providerCheckpointJson String?
+  providerNextPollAt     DateTime?
 
   @@unique([userId, idempotencyKey])
   @@index([status])

@@ -22,6 +22,7 @@ import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -300,6 +301,7 @@ export async function POST(req: Request) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    await assertRenderEnqueueOpen();
 
     const renderTmpDir = getRenderTmpDir();
     // Windows uses TEMP / TMP — TMPDIR is a Unix-only convention and is ignored on Windows.
@@ -972,6 +974,9 @@ export async function POST(req: Request) {
     // actually charged — a free burn holds no reservation, an unpaid burn refunds on fail
     // just like a render. The worker claims the row, rebuilds the full input (adding its
     // own bundleCache), renders, and records the ChargedClip on success (RENDER only).
+    // Re-check after reservation in the same setup flow. If drain won the race, the outer
+    // catch refunds the exact funding bucket once and returns retryable maintenance.
+    await assertRenderEnqueueOpen();
     if (process.env.RENDER_VIA_QUEUE === "1") {
       const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
       // The bundleCache reference cannot cross to a separate worker process — strip it.
@@ -1291,11 +1296,19 @@ export async function POST(req: Request) {
       // Bucket-aware refund (mirrors the in-flight refundReservedClip). credit-funded →
       // refundCredits; minute-funded → refundMinutes; else clips. CREDITS_LIVE off →
       // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
-      await refundReservation(
-        reservedUserId,
+      const refund = () => refundReservation(
+        reservedUserId!,
         { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
-        "render-setup-refund"
-      ).catch(() => {});
+        "render-setup-refund",
+      );
+      if (error instanceof RenderDeployDrainError) {
+        await error.refundOnce(refund).catch(() => {});
+      } else {
+        await refund().catch(() => {});
+      }
+    }
+    if (error instanceof RenderDeployDrainError) {
+      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);
