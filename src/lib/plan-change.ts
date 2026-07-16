@@ -13,6 +13,27 @@ export type CheckoutDecision =
   | { allowed: true }
   | { allowed: false; reason: "active_sub" | "downgrade" };
 
+export type PaidPlanCardMode = "purchase" | "renew" | "current" | "manage" | "downgrade";
+
+/**
+ * Classify the CTA shown for a paid tier on the Pricing page.
+ * Checkout authorization still belongs to `checkoutAllowed`; this function keeps
+ * presentation aligned without treating a temporary/manual PRO grant as a Stripe sub.
+ */
+export function paidPlanCardMode(
+  state: { currentPlan: string; subStatus: string | null; isTrialPlan: boolean },
+  cardPlan: string,
+): PaidPlanCardMode {
+  if (state.isTrialPlan) return "purchase";
+  if (cardPlan === state.currentPlan) {
+    if (cardPlan === "PRO" && state.subStatus !== "active") return "renew";
+    return "current";
+  }
+  if (state.subStatus === "active") return "manage";
+  if ((PLAN_RANK[cardPlan] ?? 0) < (PLAN_RANK[state.currentPlan] ?? 0)) return "downgrade";
+  return "purchase";
+}
+
 /**
  * Decide whether a self-serve Checkout for `requestedPlan` is allowed.
  *  - Active subscriber → blocked (`active_sub`): any tier change must go through the Stripe
