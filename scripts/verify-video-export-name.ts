@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   resolveVideoDisplayName,
   resolveVideoDownloadFilename,
@@ -61,5 +62,23 @@ assert.equal(
   "ชื่อจากสคริปต์.mp4",
   "download naming uses the same fallback policy",
 );
+
+const videosApiSource = readFileSync(
+  new URL("../src/app/api/videos/route.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  videosApiSource,
+  /project:\s*\{\s*select:\s*\{\s*title:\s*true\s*\}\s*\}/,
+  "Gallery API selects the linked project title",
+);
+
+const gallerySource = readFileSync(
+  new URL("../src/app/(dashboard)/videos/page.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(gallerySource, /resolveVideoDisplayName\(/, "Gallery uses the shared display-name resolver");
+assert.match(gallerySource, /projectTitle:\s*video\.project\?\.title/, "Gallery passes project title to the resolver");
+assert.match(gallerySource, /download=\{downloadFilename\}/, "Gallery supplies the resolved download filename");
 
 console.log("PASS video export naming behavior");

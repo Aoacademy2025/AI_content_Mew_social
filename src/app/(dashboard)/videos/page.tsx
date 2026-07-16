@@ -21,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { resolveVideoDisplayName, resolveVideoDownloadFilename } from "@/lib/video-export-name";
 
 interface VideoItem {
   id: string;
@@ -39,6 +40,7 @@ interface VideoItem {
   createdAt: string;
   expiresAt: string | null;
   content?: { headline: string | null } | null;
+  project?: { title: string } | null;
 }
 
 type NavigatorConnection = {
@@ -523,7 +525,13 @@ function VideoCard({
   const isReady = video.status === "COMPLETED";
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
   const isFailed = video.status === "FAILED";
-  const title = video.content?.headline || (video.script ? video.script.slice(0, 40) + "..." : "Untitled");
+  const nameInput = {
+    projectTitle: video.project?.title,
+    headline: video.content?.headline,
+    script: video.script,
+  };
+  const title = resolveVideoDisplayName(nameInput);
+  const downloadFilename = resolveVideoDownloadFilename(nameInput);
   const previewSrc = video.previewVideoUrl || video.previewFallbackVideoUrl || video.videoUrl || video.avatarVideoUrl;
   const downloadSrc = video.videoUrl || video.avatarVideoUrl;
   const posterHue = posterHueFor(video.id);
@@ -636,7 +644,7 @@ function VideoCard({
               <Play className="h-4 w-4 fill-white ml-0.5" />
             </button>
             {downloadSrc && (
-              <a href={downloadSrc} download target="_blank" rel="noreferrer"
+              <a href={downloadSrc} download={downloadFilename} target="_blank" rel="noreferrer"
                 className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
                 style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}>
                 <Download className="h-4 w-4" />

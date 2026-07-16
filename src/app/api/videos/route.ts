@@ -36,6 +36,7 @@ export async function GET() {
         createdAt: true,
         expiresAt: true,
         content: { select: { headline: true } },
+        project: { select: { title: true } },
       },
       orderBy: { createdAt: "desc" },
     });
