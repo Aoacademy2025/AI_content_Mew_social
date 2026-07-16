@@ -150,20 +150,145 @@ function propertyNamed(
   });
 }
 
-function blankProjectDefaultGuard(root: ts.SourceFile): ts.IfStatement {
-  const guards = descendants(root, ts.isIfStatement).filter((statement) => {
-    const expression = statement.expression;
-    return ts.isPrefixUnaryExpression(expression)
-      && expression.operator === ts.SyntaxKind.ExclamationToken
-      && ts.isIdentifier(expression.operand)
-      && expression.operand.text === "hasLocalDraft";
-  });
-  assert.equal(
-    guards.length,
-    1,
-    "blank-project account default has exactly one !hasLocalDraft guard",
+function variableInitializer(root: ts.SourceFile, name: string): ts.Expression {
+  const declarations = descendants(root, ts.isVariableDeclaration).filter(
+    (declaration) => ts.isIdentifier(declaration.name)
+      && declaration.name.text === name
+      && declaration.initializer !== undefined,
   );
-  return guards[0];
+  assert.equal(declarations.length, 1, `variable ${name} has one initializer`);
+  return declarations[0].initializer!;
+}
+
+function containsNode(container: ts.Node, node: ts.Node): boolean {
+  return node.pos >= container.pos && node.end <= container.end;
+}
+
+function isBlankDraftGuard(statement: ts.IfStatement): boolean {
+  const expression = statement.expression;
+  return ts.isPrefixUnaryExpression(expression)
+    && expression.operator === ts.SyntaxKind.ExclamationToken
+    && ts.isIdentifier(expression.operand)
+    && expression.operand.text === "hasLocalDraft";
+}
+
+function directIdentifierCall(
+  statement: ts.Statement,
+  name: string,
+): ts.CallExpression | null {
+  if (!ts.isExpressionStatement(statement)) return null;
+  const expression = statement.expression;
+  return ts.isCallExpression(expression)
+    && ts.isIdentifier(expression.expression)
+    && expression.expression.text === name
+    ? expression
+    : null;
+}
+
+function isOwnershipReturn(statement: ts.Statement): boolean {
+  if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
+  const expression = statement.expression;
+  if (
+    !ts.isPrefixUnaryExpression(expression)
+    || expression.operator !== ts.SyntaxKind.ExclamationToken
+    || !ts.isCallExpression(expression.operand)
+    || !ts.isIdentifier(expression.operand.expression)
+    || expression.operand.expression.text !== "isCurrentBootstrap"
+    || expression.operand.arguments.length !== 0
+  ) return false;
+  const ownedStatements = ts.isBlock(statement.thenStatement)
+    ? statement.thenStatement.statements
+    : [statement.thenStatement];
+  return ownedStatements.length === 1 && ts.isReturnStatement(ownedStatements[0]);
+}
+
+function assignmentRoot(expression: ts.Expression): ts.Identifier | null {
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = current.expression;
+  }
+  return ts.isIdentifier(current) ? current : null;
+}
+
+function writesIdentifier(node: ts.Node, name: string): boolean {
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    const root = assignmentRoot(node.left);
+    return operator >= ts.SyntaxKind.FirstAssignment
+      && operator <= ts.SyntaxKind.LastAssignment
+      && root?.text === name;
+  }
+  if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
+    const isUpdate = node.operator === ts.SyntaxKind.PlusPlusToken
+      || node.operator === ts.SyntaxKind.MinusMinusToken;
+    return isUpdate && assignmentRoot(node.operand)?.text === name;
+  }
+  return ts.isVariableDeclaration(node)
+    && ts.isIdentifier(node.name)
+    && node.name.text === name
+    && node.initializer !== undefined;
+}
+
+type ProjectDefaultFlow = {
+  guard: ts.IfStatement;
+  loadCall: ts.CallExpression;
+  loadTry: ts.TryStatement;
+  catchClause: ts.CatchClause;
+};
+
+function projectDefaultFlow(root: ts.SourceFile): ProjectDefaultFlow {
+  const globalLoadCalls = identifierCalls(root, "loadAccountLogoDefault");
+  assert.equal(
+    globalLoadCalls.length,
+    2,
+    "hook has exactly the approved Reset and blank-bootstrap account-default lookups",
+  );
+
+  const resetProject = variableInitializer(root, "resetProject");
+  const resetLoadCalls = identifierCalls(resetProject, "loadAccountLogoDefault");
+  assert.equal(resetLoadCalls.length, 1, "Reset owns exactly one approved account-default lookup");
+  const resetTry = descendants(resetProject, ts.isTryStatement).filter(
+    (statement) => containsNode(statement.tryBlock, resetLoadCalls[0]),
+  );
+  assert.equal(resetTry.length, 1, "Reset lookup remains in its approved fail-closed flow");
+  assert.ok(ts.isAwaitExpression(resetLoadCalls[0].parent), "Reset awaits its account-default lookup");
+
+  const blankLoadCalls = globalLoadCalls.filter((call) => !containsNode(resetProject, call));
+  assert.equal(blankLoadCalls.length, 1, "one account-default lookup belongs to blank bootstrap");
+  const loadCall = blankLoadCalls[0];
+  const containingGuards = descendants(root, ts.isIfStatement).filter(
+    (statement) => isBlankDraftGuard(statement) && containsNode(statement.thenStatement, loadCall),
+  );
+  assert.equal(
+    containingGuards.length,
+    1,
+    "the sole non-Reset lookup is owned by the blank-project guard",
+  );
+  const guard = containingGuards[0];
+  assert.ok(ts.isBlock(guard.thenStatement), "blank-project default work stays in one guarded block");
+
+  const loadTry = descendants(guard.thenStatement, ts.isTryStatement).filter(
+    (statement) => containsNode(statement.tryBlock, loadCall),
+  );
+  assert.equal(loadTry.length, 1, "blank-project default lookup is fail-closed by try/catch");
+  const catchClause = loadTry[0].catchClause;
+  assert.ok(catchClause, "blank-project default lookup has an owned failure path");
+  return { guard, loadCall, loadTry: loadTry[0], catchClause };
+}
+
+function directTransitionIndex(
+  catchClause: ts.CatchClause,
+  name: string,
+  matches: (call: ts.CallExpression) => boolean,
+  label: string,
+): number {
+  const allCalls = identifierCalls(catchClause.block, name);
+  assert.equal(allCalls.length, 1, `${label} occurs exactly once on the failure path`);
+  const indexes = catchClause.block.statements
+    .map((statement, index) => ({ call: directIdentifierCall(statement, name), index }))
+    .filter((entry) => entry.call !== null && matches(entry.call));
+  assert.equal(indexes.length, 1, `${label} is a direct top-level catch transition`);
+  return indexes[0].index;
 }
 
 function verifyBlankProjectDefaultContract(source: string): void {
@@ -174,12 +299,10 @@ function verifyBlankProjectDefaultContract(source: string): void {
     true,
     ts.ScriptKind.TSX,
   );
-  const guard = blankProjectDefaultGuard(root);
-  assert.ok(ts.isBlock(guard.thenStatement), "blank-project default work stays in one guarded block");
+  const { guard, loadCall, loadTry, catchClause } = projectDefaultFlow(root);
+  const guardBlock = guard.thenStatement;
+  assert.ok(ts.isBlock(guardBlock), "classified blank-project guard owns a block");
 
-  const loadCalls = identifierCalls(guard.thenStatement, "loadAccountLogoDefault");
-  assert.equal(loadCalls.length, 1, "blank-project guard owns the account-default lookup");
-  const loadCall = loadCalls[0];
   const awaitedDefault = loadCall.parent;
   assert.ok(ts.isAwaitExpression(awaitedDefault), "blank-project account-default lookup is awaited");
   const defaultAssignment = awaitedDefault.parent;
@@ -191,66 +314,83 @@ function verifyBlankProjectDefaultContract(source: string): void {
   );
   const accountDefaultName = defaultAssignment.left.text;
 
-  const loadTry = descendants(guard.thenStatement, ts.isTryStatement).filter(
-    (statement) => loadCall.pos >= statement.tryBlock.pos && loadCall.end <= statement.tryBlock.end,
-  );
-  assert.equal(loadTry.length, 1, "blank-project default lookup is fail-closed by try/catch");
-  const catchClause = loadTry[0].catchClause;
-  assert.ok(catchClause, "blank-project default lookup has an owned failure path");
-
-  const ownershipReturns = descendants(catchClause.block, ts.isIfStatement).filter((statement) => {
-    const expression = statement.expression;
-    const thenStatements = ts.isBlock(statement.thenStatement)
-      ? statement.thenStatement.statements
-      : [statement.thenStatement];
-    return ts.isPrefixUnaryExpression(expression)
-      && expression.operator === ts.SyntaxKind.ExclamationToken
-      && ts.isCallExpression(expression.operand)
-      && ts.isIdentifier(expression.operand.expression)
-      && expression.operand.expression.text === "isCurrentBootstrap"
-      && thenStatements.some(ts.isReturnStatement);
-  });
-  assert.equal(ownershipReturns.length, 1, "default-load failure checks bootstrap ownership");
-
-  const readyCalls = identifierCalls(catchClause.block, "setProjectReady");
+  const catchStatements = catchClause.block.statements;
   assert.ok(
-    readyCalls.some((call) => call.arguments[0]?.kind === ts.SyntaxKind.FalseKeyword),
-    "owned default-load failure keeps the project unready",
+    catchStatements.length > 0 && isOwnershipReturn(catchStatements[0]),
+    "bootstrap ownership return is the first top-level failure statement",
   );
-  const initializationCalls = identifierCalls(catchClause.block, "setProjectInitialization");
   assert.ok(
-    initializationCalls.some((call) => stringLiteralText(call.arguments[0]) === "error"),
-    "owned default-load failure sets project initialization error",
+    catchStatements.length > 1 && ts.isReturnStatement(catchStatements[catchStatements.length - 1]),
+    "owned default-load failure ends with a top-level return",
   );
-  const saveStatusCalls = identifierCalls(catchClause.block, "setSaveStatus");
-  assert.ok(
-    saveStatusCalls.some((call) => stringLiteralText(call.arguments[0]) === "error"),
-    "owned default-load failure exposes an error save status",
+  const readyIndex = directTransitionIndex(
+    catchClause,
+    "setProjectReady",
+    (call) => call.arguments[0]?.kind === ts.SyntaxKind.FalseKeyword,
+    "project-unready transition",
   );
-  const recoveryCalls = identifierCalls(catchClause.block, "setRecoveryState");
-  assert.ok(
-    recoveryCalls.some((call) => {
+  const initializationIndex = directTransitionIndex(
+    catchClause,
+    "setProjectInitialization",
+    (call) => stringLiteralText(call.arguments[0]) === "error",
+    "project initialization error transition",
+  );
+  const saveStatusIndex = directTransitionIndex(
+    catchClause,
+    "setSaveStatus",
+    (call) => stringLiteralText(call.arguments[0]) === "error",
+    "save-status error transition",
+  );
+  const recoveryIndex = directTransitionIndex(
+    catchClause,
+    "setRecoveryState",
+    (call) => {
       const state = call.arguments[0];
       if (!state || !ts.isObjectLiteralExpression(state)) return false;
       const status = propertyNamed(state, "status");
       return status !== undefined
         && ts.isPropertyAssignment(status)
         && stringLiteralText(status.initializer) === "load-error";
-    }),
-    "owned default-load failure exposes load-error recovery",
+    },
+    "load-error recovery transition",
   );
   assert.ok(
-    catchClause.block.statements.length > 0
-      && ts.isReturnStatement(catchClause.block.statements[catchClause.block.statements.length - 1]),
-    "owned default-load failure returns before applying or creating a project",
+    readyIndex > 0
+      && initializationIndex > readyIndex
+      && saveStatusIndex > initializationIndex
+      && recoveryIndex > saveStatusIndex
+      && recoveryIndex < catchStatements.length - 1,
+    "owned failure transitions follow ownership and precede the final return",
   );
-  assert.equal(identifierCalls(catchClause.block, "applyDraft").length, 0);
-  assert.equal(identifierCalls(catchClause.block, "createServerProject").length, 0);
+  for (const dangerousCall of ["applyDraft", "createServerProject"]) {
+    assert.equal(
+      identifierCalls(catchClause.block, dangerousCall).length,
+      0,
+      `catch cannot call ${dangerousCall}`,
+    );
+    assert.equal(
+      loadTry.finallyBlock ? identifierCalls(loadTry.finallyBlock, dangerousCall).length : 0,
+      0,
+      `finally cannot call ${dangerousCall}`,
+    );
+  }
 
-  const inheritedCalls = identifierCalls(guard.thenStatement, "logoOverlayForNewProject");
+  const inheritedCalls = identifierCalls(guardBlock, "logoOverlayForNewProject");
   assert.equal(inheritedCalls.length, 1, "blank-project guard owns default inheritance");
   const inheritedCall = inheritedCalls[0];
   assert.ok(loadCall.end < inheritedCall.pos, "the resolved default feeds blank-project inheritance");
+  const writesBetween = descendants(guardBlock, (node): node is ts.Node => (
+    writesIdentifier(node, accountDefaultName)
+  )).filter(
+    (node) => node.getStart(root) >= defaultAssignment.end
+      && node.getStart(root) < inheritedCall.getStart(root),
+  );
+  assert.equal(
+    writesBetween.length,
+    0,
+    "resolved account default is not rewritten before inheritance",
+  );
+
   const inheritedInput = inheritedCall.arguments[0];
   assert.ok(
     inheritedInput !== undefined && ts.isObjectLiteralExpression(inheritedInput),
@@ -279,24 +419,62 @@ function verifyBlankProjectDefaultContract(source: string): void {
       ),
     "the resolved account default is passed to blank-project inheritance",
   );
+
   const inheritedDeclaration = inheritedCall.parent;
   assert.ok(
     ts.isVariableDeclaration(inheritedDeclaration) && ts.isIdentifier(inheritedDeclaration.name),
     "blank-project inheritance result is retained for the seed",
   );
   const inheritedName = inheritedDeclaration.name.text;
-  const seedAssignments = descendants(guard.thenStatement, ts.isBinaryExpression).filter(
-    (assignment) => assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      && ts.isPropertyAccessExpression(assignment.left)
-      && ts.isIdentifier(assignment.left.expression)
-      && assignment.left.expression.text === "seedDraft"
-      && assignment.left.name.text === "logoOverlay"
-      && ts.isIdentifier(assignment.right)
-      && assignment.right.text === inheritedName,
+  const inheritedUseGuards = guardBlock.statements.filter(
+    (statement): statement is ts.IfStatement => ts.isIfStatement(statement)
+      && ts.isIdentifier(statement.expression)
+      && statement.expression.text === inheritedName,
   );
-  assert.equal(seedAssignments.length, 1, "only the blank seed receives the inherited Logo config");
+  assert.equal(inheritedUseGuards.length, 1, "inherited Logo is guarded once before seed assignment");
+  const inheritedUseGuard = inheritedUseGuards[0];
+  const inheritedGuardReference = inheritedUseGuard.expression;
+  assert.ok(ts.isIdentifier(inheritedGuardReference), "inherited Logo guard reads the retained result");
+  assert.equal(inheritedUseGuard.elseStatement, undefined, "inherited Logo guard has no alternate use");
+  const inheritedUseStatements = ts.isBlock(inheritedUseGuard.thenStatement)
+    ? inheritedUseGuard.thenStatement.statements
+    : [inheritedUseGuard.thenStatement];
+  assert.equal(inheritedUseStatements.length, 1, "inherited Logo guard owns one seed write");
+  const inheritedAssignmentStatement = inheritedUseStatements[0];
+  assert.ok(
+    ts.isExpressionStatement(inheritedAssignmentStatement)
+      && ts.isBinaryExpression(inheritedAssignmentStatement.expression),
+    "inherited Logo use is the blank seed assignment",
+  );
+  const inheritedAssignment = inheritedAssignmentStatement.expression;
+  const inheritedAssignmentReference = inheritedAssignment.right;
+  assert.ok(
+    inheritedAssignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && ts.isPropertyAccessExpression(inheritedAssignment.left)
+      && ts.isIdentifier(inheritedAssignment.left.expression)
+      && inheritedAssignment.left.expression.text === "seedDraft"
+      && inheritedAssignment.left.name.text === "logoOverlay"
+      && ts.isIdentifier(inheritedAssignmentReference)
+      && inheritedAssignmentReference.text === inheritedName,
+    "only the blank seed receives the inherited Logo config",
+  );
+  const inheritedReferences = descendants(guardBlock, ts.isIdentifier).filter(
+    (identifier) => identifier.text === inheritedName && identifier !== inheritedDeclaration.name,
+  );
+  assert.equal(inheritedReferences.length, 2, "inherited Logo has no use beyond guard and seed write");
+  assert.ok(
+    inheritedReferences.includes(inheritedGuardReference)
+      && inheritedReferences.includes(inheritedAssignmentReference),
+    "inherited Logo references are limited to its guard and seed write",
+  );
 
   assert.ok(ts.isBlock(guard.parent), "blank-project guard remains in the bootstrap block");
+  const hasLocalDraftDeclarations = descendants(guard.parent, ts.isVariableDeclaration).filter(
+    (declaration) => ts.isIdentifier(declaration.name)
+      && declaration.name.text === "hasLocalDraft"
+      && declaration.end < guard.pos,
+  );
+  assert.equal(hasLocalDraftDeclarations.length, 1, "guard belongs to the local-or-blank seed flow");
   const guardIndex = guard.parent.statements.indexOf(guard);
   const followingStatements = guard.parent.statements.slice(guardIndex + 1);
   assert.ok(
@@ -375,31 +553,116 @@ const projectRoot = ts.createSourceFile(
   true,
   ts.ScriptKind.TSX,
 );
-const blankGuard = blankProjectDefaultGuard(projectRoot);
+const originalFlow = projectDefaultFlow(projectRoot);
+const blankGuard = originalFlow.guard;
 const unguardedMutation = projectSource.slice(0, blankGuard.expression.getStart(projectRoot))
   + "true"
   + projectSource.slice(blankGuard.expression.end);
 assert.throws(
   () => verifyBlankProjectDefaultContract(unguardedMutation),
-  /blank-project account default has exactly one !hasLocalDraft guard/,
+  /the sole non-Reset lookup is owned by the blank-project guard/,
   "verifier rejects removal of the blank-project guard",
 );
 
-const initializationErrorCall = identifierCalls(blankGuard.thenStatement, "setProjectInitialization")
-  .find((call) => stringLiteralText(call.arguments[0]) === "error");
-assert.ok(initializationErrorCall, "mutation target includes the initialization error transition");
+const initializationErrorStatement = originalFlow.catchClause.block.statements.find((statement) => {
+  const call = directIdentifierCall(statement, "setProjectInitialization");
+  return call !== null && stringLiteralText(call.arguments[0]) === "error";
+});
 assert.ok(
-  ts.isExpressionStatement(initializationErrorCall.parent),
-  "initialization error transition is a removable statement",
+  initializationErrorStatement,
+  "mutation target includes the validated catch initialization error transition",
 );
+const initializationErrorCall = directIdentifierCall(
+  initializationErrorStatement,
+  "setProjectInitialization",
+);
+assert.ok(initializationErrorCall, "mutation target includes the initialization error transition");
 const missingErrorTransitionMutation = projectSource.slice(
   0,
-  initializationErrorCall.parent.getFullStart(),
-) + projectSource.slice(initializationErrorCall.parent.end);
+  initializationErrorStatement.getFullStart(),
+) + projectSource.slice(initializationErrorStatement.end);
 assert.throws(
   () => verifyBlankProjectDefaultContract(missingErrorTransitionMutation),
-  /owned default-load failure sets project initialization error/,
+  /project initialization error transition occurs exactly once on the failure path/,
   "verifier rejects removal of the fail-closed initialization transition",
+);
+
+const blankLoadTry = originalFlow.loadTry;
+const catchStatements = originalFlow.catchClause.block.statements;
+const ownershipStatement = catchStatements[0];
+assert.ok(ownershipStatement, "mutation target includes the ownership statement");
+const inheritedCall = identifierCalls(blankGuard.thenStatement, "logoOverlayForNewProject")[0];
+assert.ok(
+  ts.isVariableDeclaration(inheritedCall.parent) && ts.isIdentifier(inheritedCall.parent.name),
+  "mutation target includes the inherited result",
+);
+const inheritedName = inheritedCall.parent.name.text;
+const inheritedSeedAssignment = descendants(blankGuard.thenStatement, ts.isBinaryExpression).find(
+  (assignment) => assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    && ts.isPropertyAccessExpression(assignment.left)
+    && ts.isIdentifier(assignment.left.expression)
+    && assignment.left.expression.text === "seedDraft"
+    && assignment.left.name.text === "logoOverlay"
+    && ts.isIdentifier(assignment.right)
+    && assignment.right.text === inheritedName,
+);
+assert.ok(
+  inheritedSeedAssignment && ts.isExpressionStatement(inheritedSeedAssignment.parent),
+  "mutation target includes the blank seed assignment",
+);
+
+const unrelatedGuardMutation = projectSource.slice(0, blankGuard.getFullStart())
+  + "\n      if (!hasLocalDraft) { void 0; }\n"
+  + projectSource.slice(blankGuard.getFullStart());
+const extraGlobalLookupMutation = projectSource.slice(0, blankGuard.getFullStart())
+  + "\n      void loadAccountLogoDefault();\n"
+  + projectSource.slice(blankGuard.getFullStart());
+const setterBeforeOwnershipMutation = projectSource.slice(0, ownershipStatement.getStart(projectRoot))
+  + initializationErrorStatement.getText(projectRoot)
+  + "\n          "
+  + ownershipStatement.getText(projectRoot)
+  + projectSource.slice(ownershipStatement.end, initializationErrorStatement.getStart(projectRoot))
+  + projectSource.slice(initializationErrorStatement.end);
+const nestedUnreachableSetterMutation = projectSource.slice(
+  0,
+  initializationErrorStatement.getStart(projectRoot),
+) + `if (false) { ${initializationErrorStatement.getText(projectRoot)} }`
+  + projectSource.slice(initializationErrorStatement.end);
+const resetDefaultBeforeInheritanceMutation = projectSource.slice(0, blankLoadTry.end)
+  + "\n        accountDefault = null;"
+  + projectSource.slice(blankLoadTry.end);
+const extraInheritedUseMutation = projectSource.slice(0, inheritedSeedAssignment.parent.end)
+  + `\n        void ${inheritedName};`
+  + projectSource.slice(inheritedSeedAssignment.parent.end);
+
+assert.doesNotThrow(
+  () => verifyBlankProjectDefaultContract(unrelatedGuardMutation),
+  "unrelated !hasLocalDraft guards do not replace the call-containing default guard",
+);
+assert.throws(
+  () => verifyBlankProjectDefaultContract(extraGlobalLookupMutation),
+  /hook has exactly the approved Reset and blank-bootstrap account-default lookups/,
+  "verifier rejects an extra unclassified account-default lookup",
+);
+assert.throws(
+  () => verifyBlankProjectDefaultContract(setterBeforeOwnershipMutation),
+  /bootstrap ownership return is the first top-level failure statement/,
+  "verifier rejects an error setter moved before the ownership check",
+);
+assert.throws(
+  () => verifyBlankProjectDefaultContract(nestedUnreachableSetterMutation),
+  /project initialization error transition is a direct top-level catch transition/,
+  "verifier rejects a nested unreachable initialization setter",
+);
+assert.throws(
+  () => verifyBlankProjectDefaultContract(resetDefaultBeforeInheritanceMutation),
+  /resolved account default is not rewritten before inheritance/,
+  "verifier rejects resetting the resolved default before inheritance",
+);
+assert.throws(
+  () => verifyBlankProjectDefaultContract(extraInheritedUseMutation),
+  /inherited Logo has no use beyond guard and seed write/,
+  "verifier rejects an extra use of the inherited Logo result",
 );
 
 const autosaveSource = sourceBetween(
