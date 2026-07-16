@@ -14,6 +14,7 @@
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
 import { validateWindowEdits, mergeWindowEdits, rerenderSkipEligible, type WindowEdit } from "../src/lib/broll-rerender";
+import { readFileSync } from "node:fs";
 
 let failures = 0;
 let passed = 0;
@@ -278,6 +279,15 @@ check("skip: zero frames ⇒ NOT eligible", rerenderSkipEligible({
 }) === false);
 check("skip: null configs ⇒ NOT eligible", rerenderSkipEligible({ sourceConfig: null, incomingConfig: null }) === false);
 check("skip: undefined incoming ⇒ NOT eligible", rerenderSkipEligible({ sourceConfig: srcCfg, incomingConfig: undefined }) === false);
+
+const postPhaseSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+  "utf8",
+);
+check(
+  "b-roll rerender client supplies an explicit operation-scoped idempotency key",
+  /idempotencyKey:\s*`editor-v2-broll-rerender-\$\{globalThis\.crypto\.randomUUID\(\)\}`/u.test(postPhaseSource),
+);
 
 if (failures) { console.error(`\n${failures} FAILED (${passed} passed)`); process.exit(1); }
 console.log(`\nALL ${passed} BROLL-RERENDER CHECKS PASSED`);

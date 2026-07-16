@@ -42,6 +42,7 @@ import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
 import { ExpiredPreviewView, prepareExpiredPreviewRerender, shouldShowUnavailablePreview } from "./ExpiredPreviewView";
 import { RenderReceiptDialog } from "./RenderReceiptDialog";
+import { EditorProjectRecoveryDialog } from "./EditorProjectRecoveryDialog";
 import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import {
@@ -74,12 +75,33 @@ export function EditorV2Shell() {
   const [projectFilter, setProjectFilter] = useState<ProjectStatusFilter>("all");
   const [deleteProject, setDeleteProject] = useState<ProjectMenuItem | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const editorBlocked = p.projectInitialization !== "ready"
+    || p.recovery.status !== "none";
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
   // is on; with it off handleRender submits directly (byte-identical to before).
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
+  const activeProjectIdRef = useRef(p.projectId);
+  const mountedRef = useRef(false);
+  const archiveGenerationRef = useRef(0);
+  const archiveAttemptRef = useRef<{
+    token: symbol;
+    generation: number;
+    projectId: string;
+  } | null>(null);
+  activeProjectIdRef.current = p.projectId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    archiveGenerationRef.current += 1;
+    return () => {
+      mountedRef.current = false;
+      archiveGenerationRef.current += 1;
+      archiveAttemptRef.current = null;
+    };
+  }, []);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
@@ -99,7 +121,15 @@ export function EditorV2Shell() {
     return () => { alive = false; };
   }, [projectMenuOpen, p.projectId]);
 
+  useEffect(() => {
+    if (!editorBlocked) return;
+    setProjectMenuOpen(false);
+    setDeleteProject(null);
+    setReceiptOpen(false);
+  }, [editorBlocked]);
+
   async function handleRender() {
+    if (!p.canRunProjectOperation()) return;
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
       if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
@@ -111,6 +141,7 @@ export function EditorV2Shell() {
   // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
   // can't fire submit twice before React re-renders the disabled button.
   async function handleConfirmRender() {
+    if (!p.canRunProjectOperation()) return;
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setConfirmSubmitting(true);
@@ -130,12 +161,14 @@ export function EditorV2Shell() {
   }
 
   function handleNewProject() {
+    if (!p.canRunProjectOperation()) return;
     reset();
-    p.resetProject();
+    void p.resetProject();
     setStep(0);
   }
 
   function openProject(projectId: string) {
+    if (!p.canRunProjectOperation()) return;
     if (!projectId || projectId === p.projectId) return;
     const url = new URL(window.location.href);
     url.pathname = "/video-editor";
@@ -144,7 +177,17 @@ export function EditorV2Shell() {
     window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
   }
 
+  function navigateAfterArchivedProject(projectId?: string) {
+    const url = new URL(window.location.href);
+    url.pathname = "/video-editor";
+    url.searchParams.set("ui", "v2");
+    if (projectId) url.searchParams.set("projectId", projectId);
+    else url.searchParams.delete("projectId");
+    window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
+  }
+
   function requestDeleteProject(project: ProjectMenuItem) {
+    if (!p.canRunProjectOperation()) return;
     if (projectDeleteBlocked(project.status)) {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
@@ -154,6 +197,7 @@ export function EditorV2Shell() {
   }
 
   async function handleDeleteProject() {
+    if (!p.canRunProjectOperation()) return;
     const project = deleteProject;
     if (!project || deletingProjectId) return;
     if (projectDeleteBlocked(project.status)) {
@@ -161,43 +205,81 @@ export function EditorV2Shell() {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
     }
+    const attempt = {
+      token: Symbol("archive-project"),
+      generation: archiveGenerationRef.current,
+      projectId: project.id,
+    };
+    const ownsAttempt = () => (
+      mountedRef.current
+      && archiveGenerationRef.current === attempt.generation
+      && archiveAttemptRef.current?.token === attempt.token
+      && archiveAttemptRef.current.projectId === attempt.projectId
+    );
+    archiveAttemptRef.current = attempt;
     setDeletingProjectId(project.id);
     try {
       const res = await fetch(`/api/editor-projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+      if (!ownsAttempt()) return;
       const data = await res.json().catch(() => null);
+      if (!ownsAttempt()) return;
       if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
-      const activeProjectDeleted = project.id === p.projectId;
       const fallbackProjects = projects.filter((item) => item.id !== project.id);
       const remainingProjects = (await fetchRecentProjects().catch(() => fallbackProjects))
         .filter((item) => item.id !== project.id);
+      if (!ownsAttempt()) return;
       setProjects(remainingProjects);
       setDeleteProject(null);
-      if (activeProjectDeleted) {
+      if (activeProjectIdRef.current === project.id) {
+        if (!ownsAttempt()) return;
+        if (!p.completeArchivedProject(project.id)) return;
+        if (!ownsAttempt() || activeProjectIdRef.current !== project.id) return;
         const nextProject = remainingProjects[0];
         if (nextProject) {
           toast.success(`ลบโปรเจกต์แล้ว กำลังเปิด ${nextProject.title || "โปรเจกต์ถัดไป"}`);
-          openProject(nextProject.id);
+          navigateAfterArchivedProject(nextProject.id);
         } else {
           toast.success("ลบโปรเจกต์แล้ว เริ่มโปรเจกต์ใหม่ให้พร้อมใช้งาน");
-          handleNewProject();
+          navigateAfterArchivedProject();
         }
         return;
       }
       toast.success("ลบโปรเจกต์แล้ว");
     } catch (error) {
+      if (!ownsAttempt()) return;
       toast.error(error instanceof Error ? error.message : "ลบโปรเจกต์ไม่สำเร็จ");
     } finally {
-      setDeletingProjectId(null);
+      if (ownsAttempt()) {
+        archiveAttemptRef.current = null;
+        setDeletingProjectId(null);
+      }
     }
   }
 
   const visibleProjects = filterProjectMenuItems(projects, projectFilter);
-
+  const postPhaseProjectProps = {
+    projectId: p.projectId,
+    logoOverlay: p.logoOverlay,
+    onLogoOverlayChange: p.setLogoOverlay,
+    logoEligible: p.canUseLogoOverlay,
+    projectSaveStatus: p.saveStatus,
+    onRetryProjectSave: p.retryProjectSave,
+  };
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
+      {p.projectInitialization !== "ready" && p.recovery.status === "none" ? (
+        <div role="status" aria-live="polite" className="sr-only">
+          กำลังเตรียมโปรเจกต์
+        </div>
+      ) : null}
+      <div
+        inert={editorBlocked ? true : undefined}
+        aria-hidden={editorBlocked ? "true" : undefined}
+        className="contents"
+      >
       {/* Topbar 58px — single unified bar (full-screen editor: no dashboard chrome) */}
       <header
         className="flex h-[58px] shrink-0 items-center justify-between gap-2 px-4"
@@ -207,7 +289,11 @@ export function EditorV2Shell() {
         <div className="flex min-w-0 items-center gap-2.5">
           <button
             type="button"
-            onClick={() => router.push("/dashboard")}
+            data-editor-recovery-focus-fallback="true"
+            onClick={() => {
+              if (!p.canRunProjectOperation()) return;
+              router.push("/dashboard");
+            }}
             aria-label="กลับแดชบอร์ด"
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[9px] transition-colors hover:brightness-125 lg:h-[34px] lg:w-[34px]"
             style={{ background: "rgba(255,255,255,.05)", color: color.textSecondary }}
@@ -222,7 +308,13 @@ export function EditorV2Shell() {
             H
           </div>
 
-          <DropdownMenu open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
+          <DropdownMenu
+            open={projectMenuOpen && !editorBlocked}
+            onOpenChange={(open) => {
+              if (open && !p.canRunProjectOperation()) return;
+              setProjectMenuOpen(open);
+            }}
+          >
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -345,7 +437,7 @@ export function EditorV2Shell() {
               style={{ font: `500 13.5px ${font.heading}`, color: color.text }}
             />
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
-              <SaveStatus status={p.saveStatus} />
+              <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />
               <span>·</span>
               <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
             </div>
@@ -414,9 +506,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           ) : (
-            <PostPhase job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
           )
         ) : (
           <ExportedView
@@ -447,14 +539,20 @@ export function EditorV2Shell() {
       {CREDITS_LIVE_CLIENT && (
         <RenderReceiptDialog
           p={p}
-          open={receiptOpen}
+          open={receiptOpen && !editorBlocked}
           submitting={confirmSubmitting}
           onConfirm={() => void handleConfirmRender()}
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}
 
-      <AlertDialog open={!!deleteProject} onOpenChange={(open) => { if (!open && !deletingProjectId) setDeleteProject(null); }}>
+      <AlertDialog
+        open={!!deleteProject && !editorBlocked}
+        onOpenChange={(open) => {
+          if (open && !p.canRunProjectOperation()) return;
+          if (!open && !deletingProjectId) setDeleteProject(null);
+        }}
+      >
         <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
           <AlertDialogHeader>
             <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>
@@ -488,12 +586,23 @@ export function EditorV2Shell() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </div>
+      <EditorProjectRecoveryDialog
+        recovery={p.recovery}
+        onRetryLoad={p.retryProjectBootstrap}
+        onRetryConflictRefresh={p.retryConflictServerRefresh}
+        onChooseLocal={p.chooseLocalProjectDraft}
+        onChooseServer={p.chooseServerProjectDraft}
+      />
     </div>
   );
 }
 
 /** Autosave hint in the topbar subline — reflects useV2Project's debounced persist. */
-function SaveStatus({ status }: { status: "idle" | "saving" | "saved" }) {
+function SaveStatus({ status, onRetry }: {
+  status: "idle" | "saving" | "saved" | "error";
+  onRetry: () => void;
+}) {
   if (status === "saving") {
     return <span>กำลังบันทึก…</span>;
   }
@@ -502,6 +611,20 @@ function SaveStatus({ status }: { status: "idle" | "saving" | "saved" }) {
       <span className="inline-flex items-center gap-1" style={{ color: color.textSecondary }}>
         <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: color.success }} />
         บันทึกแล้ว
+      </span>
+    );
+  }
+  if (status === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5" style={{ color: color.danger }}>
+        ยังไม่ได้บันทึก
+        <button
+          type="button"
+          onClick={onRetry}
+          style={{ color: color.link, background: "none", border: "none", padding: 0, cursor: "pointer" }}
+        >
+          ลองใหม่
+        </button>
       </span>
     );
   }

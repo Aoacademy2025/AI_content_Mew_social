@@ -6,6 +6,7 @@ import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { markUserPaid, type PaidPlan } from "@/lib/paid-term";
 import { grantOnPaidActivation } from "@/lib/entitlements";
+import { hardDeleteUserWithBrandAssets } from "@/lib/account-hard-delete.server";
 
 const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
 const VALID_ROLES = new Set(["ADMIN", "USER"]);
@@ -126,7 +127,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Cannot delete yourself" }, { status: 400 });
     }
 
-    await prisma.user.delete({ where: { id } });
+    await hardDeleteUserWithBrandAssets(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     return apiError({ route: "admin/users/[id]", error });

@@ -21,6 +21,7 @@ import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
+import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
@@ -335,6 +336,32 @@ export async function POST(req: Request) {
     const isSubtitleOverlay = !!subtitleOverlayConfig;
     const renderScopeId = normalizeRenderScopeId(jobScopeId);
     const renderOwnerKey = `${userId}:${renderScopeId}`;
+
+    const rawLogoOverlay =
+      subtitleOverlayConfig
+      && typeof subtitleOverlayConfig === "object"
+      && !Array.isArray(subtitleOverlayConfig)
+        ? subtitleOverlayConfig.logoOverlay
+        : undefined;
+    const normalizedLogoOverlay = normalizeTrustedLogoRenderInput(rawLogoOverlay);
+    if (rawLogoOverlay !== undefined && !normalizedLogoOverlay) {
+      return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+    }
+    if (normalizedLogoOverlay) {
+      const logoFilename = normalizedLogoOverlay.src.slice("/api/renders/".length);
+      const logoOverlayPath = path.join(process.cwd(), "public", "renders", logoFilename);
+      try {
+        if (!fs.existsSync(logoOverlayPath)) {
+          return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+        }
+        const logoStat = fs.statSync(logoOverlayPath);
+        if (!logoStat.isFile() || logoStat.size <= 0) {
+          return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+        }
+      } catch {
+        return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+      }
+    }
 
     // A burn is free IFF it references a base render this user already paid for.
     // NOT-found (external / another user's render / fabricated) → falls through and is
@@ -871,7 +898,19 @@ export async function POST(req: Request) {
       const resolvedBgm = subtitleOverlayConfig.bgmFile
         ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
-      resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl, bgmFile: resolvedBgm };
+      resolvedSubtitleConfig = {
+        ...subtitleOverlayConfig,
+        videoUrl: resolvedUrl,
+        bgmFile: resolvedBgm,
+        ...(normalizedLogoOverlay
+          ? {
+              logoOverlay: {
+                ...normalizedLogoOverlay,
+                src: `${baseUrl}${normalizedLogoOverlay.src}`,
+              },
+            }
+          : {}),
+      };
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
       // bgm: best-effort, dropped if unplayable (no throw)
       console.log(`[render] subtitle-overlay bgmFile: ${resolvedBgm ?? "(none)"}`);

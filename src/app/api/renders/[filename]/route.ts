@@ -35,6 +35,7 @@ const MIME: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   png: "image/png",
+  webp: "image/webp",
 };
 
 // No `Access-Control-Allow-Origin: *`: renders are served same-origin (the editor's

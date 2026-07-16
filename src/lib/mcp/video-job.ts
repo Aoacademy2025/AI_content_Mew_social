@@ -30,7 +30,11 @@ export async function createVideoJob(
   userId: string,
   input: unknown,
   idempotencyKey?: string,
-  opts: { projectId?: string | null; type?: string | null } = {},
+  opts: {
+    projectId?: string | null;
+    type?: string | null;
+    idempotencyFingerprint?: string | null;
+  } = {},
 ) {
   return prisma.$transaction(async (tx) => {
     await assertRenderEnqueueOpen(tx);
@@ -41,6 +45,7 @@ export async function createVideoJob(
         ...(opts.type ? { type: opts.type } : {}),
         inputJson: JSON.stringify(input),
         idempotencyKey: idempotencyKey ?? null,
+        idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
         status: "queued",
       },
     });
@@ -116,7 +121,7 @@ export async function setJobStep(id: string, currentStep: string, progress: numb
   await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
 }
 
-export async function finishJob(
+export async function finishJobWithTransition(
   id: string,
   output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
   opts: { now?: Date } = {},
@@ -128,7 +133,10 @@ export async function finishJob(
   });
   if (!owner) throw new Error("video_job_not_found");
   if (owner.status === "done") {
-    return prisma.videoJob.findUniqueOrThrow({ where: { id } });
+    return {
+      job: await prisma.videoJob.findUniqueOrThrow({ where: { id } }),
+      transitioned: false,
+    };
   }
 
   const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
@@ -152,7 +160,7 @@ export async function finishJob(
     // immutable completion, but never resurrect canceled/failed/queued jobs.
     if (transitioned.count === 0) {
       const winner = await tx.videoJob.findUniqueOrThrow({ where: { id } });
-      if (winner.status === "done") return winner;
+      if (winner.status === "done") return { job: winner, transitioned: false };
       if (winner.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
       throw new Error(VIDEO_JOB_NOT_PROCESSING_ERROR);
     }
@@ -182,8 +190,20 @@ export async function finishJob(
       }
     }
 
-    return job;
+    return { job, transitioned: true };
   });
+}
+
+/**
+ * Backward-compatible completion API. Callers that need to own a post-completion
+ * side effect should use finishJobWithTransition and require transitioned=true.
+ */
+export async function finishJob(
+  id: string,
+  output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
+  opts: { now?: Date } = {},
+) {
+  return (await finishJobWithTransition(id, output, opts)).job;
 }
 
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────

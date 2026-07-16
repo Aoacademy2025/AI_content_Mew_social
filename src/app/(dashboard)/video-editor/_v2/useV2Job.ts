@@ -6,6 +6,10 @@ import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
+import {
+  fingerprintVideoJobRequest,
+  type VideoJobOperation,
+} from "@/lib/video-job-idempotency";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -15,6 +19,7 @@ import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./Expir
 
 const STORAGE_KEY = "editor-v2-job";
 const POLL_MS = 5000;
+const PROJECT_OPERATION_BLOCKED_MESSAGE = "โปรเจกต์ยังไม่พร้อม กรุณาจัดการการกู้คืนข้อมูลก่อน";
 
 function storageKey(projectId: string | null | undefined) {
   return projectId ? `${STORAGE_KEY}:${projectId}` : STORAGE_KEY;
@@ -71,6 +76,55 @@ export type SubmitExportInput = {
   sceneCount?: number;
 };
 
+type SubmitResult = { ok: boolean; message?: string };
+type OwnedSubmitAttempt = {
+  kind: "create" | "export";
+  projectId: string | null;
+  idempotencyKey: string;
+  idempotencyFingerprint: string | null;
+  fingerprintPromise: Promise<string>;
+  body: Record<string, unknown>;
+  baselineActiveJobId: string | null;
+  baselineActiveExportJobId: string | null;
+  baselineStoredJobId: string | null;
+  promise: Promise<SubmitResult> | null;
+};
+
+function createSubmitIdempotencyKey(kind: OwnedSubmitAttempt["kind"]): string {
+  return `editor-v2-${kind}-${globalThis.crypto.randomUUID()}`;
+}
+
+function operationForAttempt(kind: OwnedSubmitAttempt["kind"]): VideoJobOperation {
+  return kind === "export" ? "export" : "preview";
+}
+
+function responseMatchesAttempt(
+  response: {
+    idempotencyKey?: unknown;
+    idempotencyFingerprint?: unknown;
+    projectId?: unknown;
+    type?: unknown;
+  },
+  attempt: OwnedSubmitAttempt,
+  requireJobContext: boolean,
+): boolean {
+  if (
+    !attempt.idempotencyFingerprint
+    || response.idempotencyKey !== attempt.idempotencyKey
+    || response.idempotencyFingerprint !== attempt.idempotencyFingerprint
+  ) return false;
+  if (!requireJobContext) return true;
+  return (
+    response.projectId === attempt.projectId
+    && (attempt.kind === "export" ? response.type === "export" : response.type !== "export")
+  );
+}
+
+function storedJobId(projectId: string | null | undefined): string | null {
+  try { return browserStorage()?.getItem(storageKey(projectId)) ?? null; }
+  catch { return null; }
+}
+
 export function useV2Job(p: V2Project) {
   const [job, setJob] = useState<V2JobState>(IDLE);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -80,6 +134,7 @@ export function useV2Job(p: V2Project) {
   const pollRequestSequenceRef = useRef(0);
   const lastAppliedPollRequestRef = useRef(0);
   const previewMediaStateRef = useRef(p.previewMediaState);
+  const submitAttemptRef = useRef<OwnedSubmitAttempt | null>(null);
 
   useEffect(() => {
     previewMediaStateRef.current = p.previewMediaState;
@@ -93,12 +148,17 @@ export function useV2Job(p: V2Project) {
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     errorMessage: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
+    idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
     // วิดีโอ+ซับยังอยู่ (บั๊กที่ Mew เจอตอน QA 07-03). ลบเฉพาะตอนผู้ใช้สั่งเอง (reset:
     // เริ่มโปรเจกต์ใหม่ / กลับไปตั้งค่า) หรือ Burn เสร็จใน P6.
     if (d.type !== "export" && d.output?.preview) {
       lastPreviewJobIdRef.current = d.id;
+    }
+    const ownedAttempt = submitAttemptRef.current;
+    if (ownedAttempt && responseMatchesAttempt(d, ownedAttempt, true)) {
+      submitAttemptRef.current = null;
     }
     if (d.status === "done") {
       stopPolling();
@@ -174,8 +234,11 @@ export function useV2Job(p: V2Project) {
     try { stored = browserStorage()?.getItem(storageKey(p.projectId)) ?? null; } catch {}
     const nextJobId = serverJobId ?? stored;
     if (nextJobId && (nextJobId !== jobIdRef.current || pollRef.current === null)) {
+      // Resume candidates can predate the current POST or belong to a different
+      // operation. Polling is safe, but only matching key+fingerprint evidence in
+      // applyStatus may release an ambiguous attempt descriptor.
       startPolling(nextJobId);
-    } else if (!nextJobId) {
+    } else if (!nextJobId && !submitAttemptRef.current) {
       stopPolling();
       jobIdRef.current = null;
       setJob(IDLE);
@@ -184,103 +247,196 @@ export function useV2Job(p: V2Project) {
   }, [p.projectReady, p.projectId, p.projectStatus, p.activeJobId, p.activeExportJobId, startPolling, stopPolling]);
 
   /** ยิงงานจริง (previewMode ฝั่ง server) จาก project state ปัจจุบัน */
-  const submit = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
-    setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
-    try {
-      // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
-      const body: Record<string, unknown> = p.mode === "upload" ? {
-        ...(p.projectId ? { projectId: p.projectId } : {}),
-        mode: "upload",
-        clipUrl: p.clipUrl,
-        stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
-        ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
-        ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-        ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
-        ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
-        ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
-        // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
-        // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
-        // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
-        ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
-        subtitleMode: "sentence",
-        subtitlePosition: "bottom",
-      } : {
-        ...(p.projectId ? { projectId: p.projectId } : {}),
-        script: p.script,
-        voiceProvider: p.voiceEngine,
-        ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
-        ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
-        // เพลง: system → /music/<f> (resolver เดิม) · ของผู้ใช้ → /api/music/<f> (แบบ v1)
-        ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}`, bgmVolume: p.bgmVolume } : {}),
-        // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
-        stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
-        // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
-        ...(p.useAvatar && p.avatarId
-          ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
-          : {}),
-        ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
-        ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-        ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
-        ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
-        ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
-        // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
-        // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
-        // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
-        ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
-        subtitleMode: "sentence",
-        subtitlePosition: "bottom",
-      };
-      const res = await fetch("/api/videos/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.jobId) {
-        setJob((j) => ({ ...j, phase: "idle" }));
-        return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
-      }
-      try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
-      startPolling(d.jobId);
-      return { ok: true };
-    } catch {
-      setJob((j) => ({ ...j, phase: "idle" }));
-      return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
+  const submit = useCallback(async (): Promise<SubmitResult> => {
+    const existingAttempt = submitAttemptRef.current;
+    if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "create") {
+      return { ok: false, message: "มีคำขอส่งออกก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองส่งออกซ้ำ" };
     }
+    if (existingAttempt && existingAttempt.projectId !== (p.projectId ?? null)) {
+      return { ok: false, message: "มีคำขอเรนเดอร์ของโปรเจกต์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณากลับไปโปรเจกต์เดิมแล้วลองซ้ำ" };
+    }
+    if (existingAttempt?.promise) return existingAttempt.promise;
+    if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
+    const idempotencyKey = existingAttempt?.idempotencyKey ?? createSubmitIdempotencyKey("create");
+    // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
+    const body: Record<string, unknown> = existingAttempt?.body ?? (p.mode === "upload" ? {
+      idempotencyKey,
+      ...(p.projectId ? { projectId: p.projectId } : {}),
+      mode: "upload",
+      clipUrl: p.clipUrl,
+      stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
+      ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+      ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
+      ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
+      ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+      ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+      // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
+      // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
+      // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
+      ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      subtitleMode: "sentence",
+      subtitlePosition: "bottom",
+    } : {
+      idempotencyKey,
+      ...(p.projectId ? { projectId: p.projectId } : {}),
+      script: p.script,
+      voiceProvider: p.voiceEngine,
+      ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
+      ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
+      // เพลง: system → /music/<f> (resolver เดิม) · ของผู้ใช้ → /api/music/<f> (แบบ v1)
+      ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}`, bgmVolume: p.bgmVolume } : {}),
+      // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
+      stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
+      // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)
+      ...(p.useAvatar && p.avatarId
+        ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
+        : {}),
+      ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+      ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
+      ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
+      ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+      ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
+      ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      subtitleMode: "sentence",
+      subtitlePosition: "bottom",
+    });
+    const attempt: OwnedSubmitAttempt = existingAttempt ?? {
+      kind: "create",
+      projectId: p.projectId ?? null,
+      idempotencyKey,
+      idempotencyFingerprint: null,
+      fingerprintPromise: fingerprintVideoJobRequest(operationForAttempt("create"), body),
+      body,
+      baselineActiveJobId: p.activeJobId ?? null,
+      baselineActiveExportJobId: p.activeExportJobId ?? null,
+      baselineStoredJobId: storedJobId(p.projectId),
+      promise: null,
+    };
+    let ownedPromise!: Promise<SubmitResult>;
+    ownedPromise = (async () => {
+      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
+      let retryAmbiguous = true;
+      try {
+        attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
+        const res = await fetch("/api/videos/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(attempt.body),
+        });
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d?.jobId) {
+          retryAmbiguous = res.status >= 500
+            || res.ok
+            || res.status === 429
+            || d?.error === "too_many_jobs"
+            || d?.error === "quota_exceeded";
+          setJob((j) => ({ ...j, phase: "idle" }));
+          return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
+        }
+        if (!responseMatchesAttempt(d, attempt, false)) {
+          setJob((j) => ({ ...j, phase: "idle" }));
+          return { ok: false, message: "ยังยืนยันตัวตนของงานที่สร้างไม่ได้ กรุณาลองคำขอเดิมอีกครั้ง" };
+        }
+        retryAmbiguous = false;
+        try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        startPolling(d.jobId);
+        return { ok: true };
+      } catch {
+        setJob((j) => ({ ...j, phase: "idle" }));
+        return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
+      } finally {
+        if (submitAttemptRef.current === attempt) {
+          if (retryAmbiguous) attempt.promise = null;
+          else submitAttemptRef.current = null;
+        }
+      }
+    })();
+    attempt.promise = ownedPromise;
+    submitAttemptRef.current = attempt;
+    return ownedPromise;
   }, [p, startPolling]);
 
   /** ส่งออกแบบ background job: worker เป็นเจ้าของ burn + save Gallery + project status */
-  const submitExport = useCallback(async (input: SubmitExportInput): Promise<{ ok: boolean; message?: string }> => {
-    if (!input.sourceJobId) return { ok: false, message: "ไม่พบวิดีโอต้นฉบับ" };
-    setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
-    try {
-      lastPreviewJobIdRef.current = input.sourceJobId;
-      const res = await fetch("/api/videos/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "export",
-          sourceJobId: input.sourceJobId,
-          subtitleOverlayConfig: input.subtitleOverlayConfig,
-          ...(input.script ? { script: input.script } : {}),
-          ...(typeof input.sceneCount === "number" ? { exportSceneCount: input.sceneCount } : {}),
-        }),
-      });
-      const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.jobId) {
-        setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
-        return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
-      }
-      try { browserStorage()?.setItem(storageKey(p.projectId), d.jobId); } catch {}
-      setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: p.projectId ?? null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
-      startPolling(d.jobId);
-      return { ok: true };
-    } catch {
-      setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
-      return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
+  const submitExport = useCallback(async (input: SubmitExportInput): Promise<SubmitResult> => {
+    const existingAttempt = submitAttemptRef.current;
+    if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "export") {
+      return { ok: false, message: "มีคำขอเรนเดอร์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองเรนเดอร์ซ้ำ" };
     }
-  }, [p.projectId, startPolling]);
+    if (existingAttempt && existingAttempt.projectId !== (p.projectId ?? null)) {
+      return { ok: false, message: "มีคำขอส่งออกของโปรเจกต์ก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณากลับไปโปรเจกต์เดิมแล้วลองซ้ำ" };
+    }
+    if (existingAttempt?.promise) return existingAttempt.promise;
+    if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
+    if (!input.sourceJobId) return { ok: false, message: "ไม่พบวิดีโอต้นฉบับ" };
+    const idempotencyKey = existingAttempt?.idempotencyKey ?? createSubmitIdempotencyKey("export");
+    const body: Record<string, unknown> = existingAttempt?.body ?? {
+      idempotencyKey,
+      mode: "export",
+      sourceJobId: input.sourceJobId,
+      subtitleOverlayConfig: input.subtitleOverlayConfig,
+      ...(input.script ? { script: input.script } : {}),
+      ...(typeof input.sceneCount === "number" ? { exportSceneCount: input.sceneCount } : {}),
+    };
+    const attempt: OwnedSubmitAttempt = existingAttempt ?? {
+      kind: "export",
+      projectId: p.projectId ?? null,
+      idempotencyKey,
+      idempotencyFingerprint: null,
+      fingerprintPromise: fingerprintVideoJobRequest(operationForAttempt("export"), body),
+      body,
+      baselineActiveJobId: p.activeJobId ?? null,
+      baselineActiveExportJobId: p.activeExportJobId ?? null,
+      baselineStoredJobId: storedJobId(p.projectId),
+      promise: null,
+    };
+    let ownedPromise!: Promise<SubmitResult>;
+    ownedPromise = (async () => {
+      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
+      let retryAmbiguous = true;
+      try {
+        attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
+        lastPreviewJobIdRef.current = typeof attempt.body.sourceJobId === "string"
+          ? attempt.body.sourceJobId
+          : input.sourceJobId;
+        const res = await fetch("/api/videos/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(attempt.body),
+        });
+        const d = await res.json().catch(() => null);
+        if (!res.ok || !d?.jobId) {
+          retryAmbiguous = res.status >= 500
+            || res.ok
+            || res.status === 429
+            || d?.error === "too_many_jobs"
+            || d?.error === "quota_exceeded";
+          setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
+          return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
+        }
+        if (!responseMatchesAttempt(d, attempt, false)) {
+          setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
+          return { ok: false, message: "ยังยืนยันตัวตนของงานส่งออกไม่ได้ กรุณาลองคำขอเดิมอีกครั้ง" };
+        }
+        retryAmbiguous = false;
+        try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        startPolling(d.jobId);
+        return { ok: true };
+      } catch {
+        setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
+        return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
+      } finally {
+        if (submitAttemptRef.current === attempt) {
+          if (retryAmbiguous) attempt.promise = null;
+          else submitAttemptRef.current = null;
+        }
+      }
+    })();
+    attempt.promise = ownedPromise;
+    submitAttemptRef.current = attempt;
+    return ownedPromise;
+  }, [p.canRunProjectOperation, p.projectId, startPolling]);
 
   /** ยกเลิก — สำเร็จเฉพาะงานที่ยังอยู่ในคิว (ยังไม่เริ่มทำ) */
   const cancel = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {

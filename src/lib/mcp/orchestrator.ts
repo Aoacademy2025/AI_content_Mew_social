@@ -5,6 +5,7 @@ import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_component
 import {
   setJobStep,
   finishJob,
+  finishJobWithTransition,
   failJob,
   parseVideoJobOutput,
   parkProviderJob,
@@ -35,15 +36,23 @@ import {
   type AvatarProviderAdvanceResult,
 } from "@/lib/mcp/avatar-provider-resume";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
-import { recordTelemetryEvent } from "@/lib/telemetry";
+import {
+  recordTelemetryEvent as recordServerTelemetryEvent,
+  type TelemetryInput,
+} from "@/lib/telemetry";
 import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
+import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
   refundOneClip?: (userId: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
+  recordTelemetryEvent?: (
+    userId: string | null,
+    input: TelemetryInput,
+  ) => Promise<unknown>;
 }
 
 interface CreateInput {
@@ -102,6 +111,45 @@ interface CreateInput {
   previewMode?: boolean;
 }
 
+export type LogoExportDurationBucket =
+  | "under-30s"
+  | "30-60s"
+  | "1-3m"
+  | "over-3m"
+  | "unknown";
+
+function logoExportDurationBucket(durationMs: unknown): LogoExportDurationBucket {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) {
+    return "unknown";
+  }
+  if (durationMs < 30_000) return "under-30s";
+  if (durationMs < 60_000) return "30-60s";
+  if (durationMs < 180_000) return "1-3m";
+  return "over-3m";
+}
+
+/** Allowlist-only server builder: trusted render identity never crosses into telemetry. */
+export function buildLogoExportCompletedTelemetryProperties(
+  subtitleOverlayConfig: unknown,
+  previewDurationMs: unknown,
+): { position: string; durationBucket: LogoExportDurationBucket } | null {
+  if (
+    !subtitleOverlayConfig
+    || typeof subtitleOverlayConfig !== "object"
+    || Array.isArray(subtitleOverlayConfig)
+  ) {
+    return null;
+  }
+  const trustedLogo = normalizeTrustedLogoRenderInput(
+    (subtitleOverlayConfig as Record<string, unknown>).logoOverlay,
+  );
+  if (!trustedLogo) return null;
+  return {
+    position: trustedLogo.position,
+    durationBucket: logoExportDurationBucket(previewDurationMs),
+  };
+}
+
 function brollWindowCaptions(windows: BrollWindow[]): OrchCaption[] {
   return windows.map((w, i) => ({
     text: w.text,
@@ -133,6 +181,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   const caller = deps.caller ?? pipelineCaller(userId);
   const refund = deps.refundOneClip ?? refundClipUsage;
   const sleep = deps.sleep;
+  const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
 
   // P3: server-side stage telemetry — emitted from the worker so stage done/fail is
   // recorded even when no browser is attached (the web editor emits client-side and
@@ -147,10 +196,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   let phaseName = "startup";
   let phaseStartedAt = jobStartedAt;
   const timings: Array<[string, number]> = [];
+  function emitTelemetry(input: TelemetryInput) {
+    void Promise.resolve()
+      .then(() => recordTelemetryEvent(userId, input))
+      .catch(() => {});
+  }
   function emitStage(phase: string, status: "started" | "done" | "error", durationMs?: number, extra?: Record<string, unknown>) {
     const step = STEP_TELEMETRY_NAME[phase];
     if (!step) return; // skip startup/captions and other non-pipeline phases
-    void recordTelemetryEvent(userId, {
+    emitTelemetry({
       name: status === "started" ? "pipeline_step_started" : status === "done" ? "pipeline_step_done" : "pipeline_step_error",
       category: status === "error" ? "error" : "pipeline",
       source: "server",
@@ -158,7 +212,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       status,
       durationMs: durationMs != null && durationMs >= 0 ? Math.round(durationMs) : null,
       properties: { pipelineRunId, jobId, via: "mcp", ...extra },
-    }).catch(() => {});
+    });
   }
   // step() logs the phase that just ended (worker log, for audits) + emits its `done`
   // telemetry, then advances and emits the new phase's `started`. Render/burn progress
@@ -494,13 +548,30 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       emitStage(phaseName, "done", exportDuration);
       console.log(`[mcp-worker] job ${jobId} EXPORT total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s source=${input.sourceJobId}`);
 
-      await finishJob(jobId, {
+      const completion = await finishJobWithTransition(jobId, {
         version: 2,
         mode: "export",
         sourceJobId: input.sourceJobId,
         videoUrl: burnedUrl,
         ...(videoId ? { videoId } : {}),
       });
+      const logoCompletionProperties = buildLogoExportCompletedTelemetryProperties(
+        input.subtitleOverlayConfig,
+        preview.audioDurationMs,
+      );
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && logoCompletionProperties
+      ) {
+        emitTelemetry({
+          name: "logo_overlay_export_completed",
+          category: "product",
+          source: "server",
+          status: "done",
+          properties: logoCompletionProperties,
+        });
+      }
       return;
     }
 

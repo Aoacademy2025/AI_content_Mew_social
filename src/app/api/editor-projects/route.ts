@@ -7,6 +7,15 @@ function projectError(error: unknown) {
   if (code === "draft_too_large") {
     return NextResponse.json({ error: "draft_too_large", message: "project draft ใหญ่เกิน 2 MB" }, { status: 413 });
   }
+  if (code === "brand_asset_unavailable") {
+    return NextResponse.json(
+      { error: "brand_asset_unavailable", message: "ไม่พบไฟล์โลโก้ กรุณาอัปโหลดใหม่" },
+      { status: 422 },
+    );
+  }
+  if (code === "brand_asset_lifecycle_conflict") {
+    return NextResponse.json({ error: "brand_asset_lifecycle_conflict" }, { status: 409 });
+  }
   return null;
 }
 

@@ -1,3 +1,5 @@
+import type { LogoPosition } from "../lib/logo-overlay";
+
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
   | "pan-left" | "pan-right" | "pan-up" | "pan-down"
@@ -114,6 +116,14 @@ export interface SubtitleOverlayConfig {
   subtitleOutlineSize?: number;
   bgmFile?: string;
   bgmVolume?: number;
+  logoOverlay?: {
+    src: string;
+    position: LogoPosition;
+    sizePct: number;
+    opacity: number;
+    intrinsicWidth: number;
+    intrinsicHeight: number;
+  };
 }
 
 export interface ShortVideoConfig {

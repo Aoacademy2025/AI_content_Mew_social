@@ -5,6 +5,10 @@
  */
 
 import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
+import {
+  normalizeLogoOverlayConfig,
+  type LogoOverlayConfig,
+} from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
 
@@ -217,6 +221,7 @@ export function buildV2BurnConfig(
   cfg: V2SubConfig,
   fps = 30,
   overrides: V2CardOverrides = {},
+  logoOverlay?: LogoOverlayConfig,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -246,6 +251,7 @@ export function buildV2BurnConfig(
     frameCursor = end;
     return [{ ...popup, start, end }];
   });
+  const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
@@ -257,5 +263,6 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),
   };
 }

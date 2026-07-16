@@ -18,8 +18,19 @@ import {
   type V2CardLen, type V2SubConfig, type V2Caption, type V2CardOverrides,
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
+import { trackEvent } from "@/lib/client-telemetry";
+import {
+  normalizeLogoOverlayConfig,
+  type LogoOverlayConfig,
+} from "@/lib/logo-overlay";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
+import {
+  buildLogoTelemetryProperties,
+  useLogoOverlayEditor,
+  type LogoEditorSurface,
+  type LogoProjectSaveStatus,
+} from "./useLogoOverlayEditor";
 
 export type ExportState =
   | { phase: "idle" }
@@ -34,16 +45,41 @@ export type ExportState =
 export type WindowEditKind = "stock" | "upload" | "ai";
 export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; label: string };
 
+const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
+  void _next;
+};
+const ignoreProjectSaveRetry = () => undefined;
+
+export type UsePostPhaseEditorOptions = {
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
+   *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  projectId?: string | null;
+  logoOverlay?: LogoOverlayConfig;
+  onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
+  logoEligible?: boolean;
+  projectSaveStatus?: LogoProjectSaveStatus;
+  onRetryProjectSave?: () => void;
+  surface?: LogoEditorSurface;
+};
+
 export function usePostPhaseEditor(
   job: V2JobState,
   script: string,
-  { onExportJob, onAdoptJob }: {
-    onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
-    /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
-     *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
-    onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
-  },
+  options: UsePostPhaseEditorOptions,
 ) {
+  const {
+    onExportJob,
+    onAdoptJob,
+    projectId = job.projectId,
+    logoOverlay,
+    onLogoOverlayChange = ignoreLogoChange,
+    logoEligible = false,
+    projectSaveStatus = "idle",
+    onRetryProjectSave = ignoreProjectSaveRetry,
+    surface = "desktop",
+  } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
@@ -51,6 +87,15 @@ export function usePostPhaseEditor(
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
+  const logo = useLogoOverlayEditor({
+    projectId,
+    eligible: logoEligible,
+    value: logoOverlay,
+    onChange: onLogoOverlayChange,
+    projectSaveStatus,
+    onRetryProjectSave,
+    surface,
+  });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
@@ -111,7 +156,12 @@ export function usePostPhaseEditor(
       const res = await fetch("/api/videos/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "broll-rerender", sourceJobId, windowEdits: edits }),
+        body: JSON.stringify({
+          idempotencyKey: `editor-v2-broll-rerender-${globalThis.crypto.randomUUID()}`,
+          mode: "broll-rerender",
+          sourceJobId,
+          windowEdits: edits,
+        }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
@@ -300,7 +350,15 @@ export function usePostPhaseEditor(
     }
     setExp({ phase: "saving" });
     try {
-      const overlay = buildV2BurnConfig(baseUrl, captions, preview?.audioDurationMs ?? 0, cfg, 30, overrides);
+      const overlay = buildV2BurnConfig(
+        baseUrl,
+        captions,
+        preview?.audioDurationMs ?? 0,
+        cfg,
+        30,
+        overrides,
+        logoOverlay,
+      );
       const result = await onExportJob({
         sourceJobId: job.jobId,
         subtitleOverlayConfig: overlay,
@@ -308,6 +366,15 @@ export function usePostPhaseEditor(
         sceneCount: captions.length,
       });
       if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
+      const submittedLogo = normalizeLogoOverlayConfig(logoOverlay);
+      if (submittedLogo?.enabled) {
+        trackEvent("logo_overlay_export_submitted", {
+          properties: buildLogoTelemetryProperties({
+            surface,
+            position: submittedLogo.position,
+          }),
+        });
+      }
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
     }
@@ -315,6 +382,7 @@ export function usePostPhaseEditor(
 
   return {
     preview,
+    logo,
     previewConfig,
     compositeBaseUrl,
     windowEdits, setWindowEdit, clearWindowEdit,
