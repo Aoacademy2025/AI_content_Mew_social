@@ -18,7 +18,11 @@
 //      client runtime (verified against node_modules/next/dist/compiled/webpack/bundle5.js)
 //      throws an Error with `.name === "ChunkLoadError"` and a message shaped like
 //      "Loading chunk <id> failed.\n(<type>: <url>)". Modern browsers throw a distinct
-//      "Failed to fetch dynamically imported module" for the equivalent ESM case.
+//      "Failed to fetch dynamically imported module: <url>" for the equivalent ESM case —
+//      the browser embeds the failed module's URL in the message, so we require that URL
+//      to be one of ours (`/_next/`) too; without that restriction this branch would also
+//      fire on ordinary transient causes unrelated to stale deploys (offline mid-session,
+//      an ad-blocker, any dynamic-import network blip against a third-party URL).
 
 export interface StaleBundleSignal {
   message?: string | null;
@@ -28,6 +32,7 @@ export interface StaleBundleSignal {
 const SERVER_ACTION_NOT_FOUND = /Failed to find Server Action\b/i;
 const CHUNK_LOAD_MESSAGE = /Loading (chunk|css chunk) .*failed/i;
 const DYNAMIC_IMPORT_FAILED = /Failed to fetch dynamically imported module/i;
+const NEXT_ASSET_PATH = /\/_next\//;
 
 export function isStaleBundleSignal(signal: StaleBundleSignal): boolean {
   const message = signal.message ?? "";
@@ -36,7 +41,7 @@ export function isStaleBundleSignal(signal: StaleBundleSignal): boolean {
   if (SERVER_ACTION_NOT_FOUND.test(message)) return true;
   if (name === "ChunkLoadError") return true;
   if (CHUNK_LOAD_MESSAGE.test(message)) return true;
-  if (DYNAMIC_IMPORT_FAILED.test(message)) return true;
+  if (DYNAMIC_IMPORT_FAILED.test(message) && NEXT_ASSET_PATH.test(message)) return true;
 
   return false;
 }

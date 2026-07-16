@@ -37,12 +37,16 @@ check(
 );
 check("CSS chunk load failed", isStaleBundleSignal({ message: "Loading css chunk 12 failed." }));
 check(
-  "dynamic import fetch failure (ESM path)",
+  "dynamic import fetch failure WITH /_next/ url → detected",
   isStaleBundleSignal({ message: "Failed to fetch dynamically imported module: https://studio.heroaiengine.com/_next/static/chunks/app/page.js" }),
 );
 
 // --- negative: must NOT fire on ordinary network flakiness ---
-check("plain 'Failed to fetch' does not match", !isStaleBundleSignal({ message: "Failed to fetch", name: "TypeError" }));
+check(
+  "dynamic import fetch failure with NON-_next url → NOT detected",
+  !isStaleBundleSignal({ message: "Failed to fetch dynamically imported module: https://example.com/widget.js" }),
+);
+check("plain offline-style 'Failed to fetch' does not match", !isStaleBundleSignal({ message: "Failed to fetch", name: "TypeError" }));
 check("generic NetworkError does not match", !isStaleBundleSignal({ message: "NetworkError when attempting to fetch resource.", name: "TypeError" }));
 check("unrelated app error does not match", !isStaleBundleSignal({ message: "Cannot read properties of undefined (reading 'id')", name: "TypeError" }));
 check("empty signal does not match", !isStaleBundleSignal({}));
