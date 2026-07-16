@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
-import { PLAN_RANK } from "@/lib/plan-change";
+import { paidPlanCardMode } from "@/lib/plan-change";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -279,29 +279,27 @@ function PricingContent() {
           // A trial user holds PRO but hasn't paid — they MUST still be able to subscribe, so the
           // PRO card is NOT treated as "current" for them (otherwise the button is disabled and
           // there is no way to convert a trial into a paid plan in-product).
-          const isTrialPlan = onTrial && key === "PRO";
-          const isCurrent = !!currentPlan && currentPlan === key && !isTrialPlan;
           const isPaid = key !== "FREE";
+          const isTrialPlan = onTrial && key === "PRO";
+          const cardMode = currentPlan && isPaid
+            ? paidPlanCardMode({ currentPlan, subStatus: me?.subStatus ?? null, isTrialPlan }, key)
+            : null;
+          const isCurrentTier = !!currentPlan && currentPlan === key && !isTrialPlan;
+          const isCurrent = cardMode === "current";
+          const isRenewCurrent = cardMode === "renew";
           const isLoading = loading === key;
           const isSignedOut = userChecked && !currentPlan;
           const pb = isPaid ? priceBlock(price) : null;
 
-          // Tier-aware gating (no more equality-only check that let BUSINESS pay for PRO).
           const hasActiveSub = me?.subStatus === "active";
-          // A trial user has no committed paid tier → treat as FREE so they can buy any plan.
-          const currentRank = (currentPlan && !isTrialPlan) ? (PLAN_RANK[currentPlan] ?? 0) : 0;
-          const cardRank = PLAN_RANK[key];
-          // Active subscriber: ALL plan changes go through the billing portal (Stripe swaps/prorates
-          // the existing sub instead of minting a duplicate). One-time/manual paid user: block paying
-          // for a strictly LOWER tier (downgrade-by-pay).
-          const isManageViaPortal = isPaid && !isCurrent && !!hasActiveSub;
-          const isDowngradeLocked = isPaid && !isCurrent && !hasActiveSub && cardRank < currentRank;
+          const isManageViaPortal = cardMode === "manage";
+          const isDowngradeLocked = cardMode === "downgrade";
 
           const card = (
             <div className={cn("ve-card relative flex h-full flex-col rounded-[18px] p-6")}
               style={{
                 ...(highlight ? { borderColor: "hsl(258 90% 66% / .4)", boxShadow: "0 0 50px -18px rgba(139,92,246,.55)" } : {}),
-                ...(isCurrent ? { boxShadow: "0 0 0 1px hsl(258 90% 66% / .5)" } : {}),
+                ...(isCurrentTier ? { boxShadow: "0 0 0 1px hsl(258 90% 66% / .5)" } : {}),
               }}>
               {badge && (
                 <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full px-3.5 py-1 text-[12px] font-bold text-white" style={{ ...HEAD, background: VIOLET_GRAD }}>{badge}</span>
@@ -310,7 +308,7 @@ function PricingContent() {
                 <div className="flex h-11 w-11 items-center justify-center rounded-[13px]" style={{ border: `1px solid ${VIOLET_TILE_BORDER}`, background: VIOLET_TILE_BG }}>
                   <Icon className="h-5 w-5" style={{ color: VIOLET }} strokeWidth={2.3} aria-hidden />
                 </div>
-                {isCurrent && <span className="rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider" style={{ border: "1px solid hsl(258 90% 66% / .25)", background: VIOLET_TILE_BG, color: VIOLET_LIGHT }}>แผนปัจจุบัน</span>}
+                {isCurrentTier && <span className="rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider" style={{ border: "1px solid hsl(258 90% 66% / .25)", background: VIOLET_TILE_BG, color: VIOLET_LIGHT }}>แผนปัจจุบัน</span>}
                 {isTrialPlan && <span className="rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider" style={{ border: "1px solid rgba(251,191,36,.25)", background: "rgba(251,191,36,.10)", color: "#FBBF24" }}>ทดลองอยู่ · {daysLeft} วัน</span>}
               </div>
 
@@ -372,10 +370,10 @@ function PricingContent() {
                       !highlight && "ve-card ve-card-hover")}
                     style={highlight ? { background: VIOLET_GRAD, color: "#fff", boxShadow: GLOW } : { color: "var(--ui-text-primary)" }}
                   >
-                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : (<>{isTrialPlan ? `สมัคร ${name} เลย` : isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : (<>{isTrialPlan ? `สมัคร ${name} เลย` : isRenewCurrent ? `ซื้อ / ต่ออายุ ${name}` : isSignedOut ? `สมัครเพื่อใช้ ${name}` : `อัปเกรดเป็น ${name}`} <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>)}
                   </button>
                 )
-              ) : isCurrent ? (
+              ) : isCurrentTier ? (
                 <div className="inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold" style={{ border: "1px solid hsl(258 90% 66% / .2)", background: VIOLET_TILE_BG, color: VIOLET_LIGHT }}><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
               ) : isSignedOut ? (
                 <Link href="/register" className="ve-card ve-card-hover inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold transition-colors" style={{ color: "var(--ui-text-primary)" }}>

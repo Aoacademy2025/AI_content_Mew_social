@@ -1,7 +1,7 @@
 // Proof of the self-serve checkout guard (server-side enforcement of plan changes).
 // Pure logic — no DB needed:
 //   npx tsx scripts/verify-plan-change.ts
-import { checkoutAllowed } from "../src/lib/plan-change";
+import { checkoutAllowed, paidPlanCardMode } from "../src/lib/plan-change";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -37,5 +37,14 @@ assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: null }, "PRO
 // Expired trial (trialEndsAt in past, plan still PRO, no sub) → treated as PRO rank, not FREE.
 // A still-PRO row with an expired trial is mid-downgrade; buying PRO again is fine (allowed).
 assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: past }, "PRO", now).allowed === true, "expired-trial PRO → PRO allowed");
+
+// Pricing-page presentation must mirror the checkout rules without mistaking every
+// PRO account for an active paid subscription.
+assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: true }, "PRO") === "purchase", "signup-trial PRO stays purchasable");
+assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: false }, "PRO") === "renew", "granted/one-time PRO can renew PRO");
+assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "PRO") === "current", "active PRO cannot duplicate PRO");
+assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "BUSINESS") === "manage", "active subscription changes via Billing");
+assert(paidPlanCardMode({ currentPlan: "BUSINESS", subStatus: null, isTrialPlan: false }, "PRO") === "downgrade", "BUSINESS cannot pay to downgrade");
+assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: false }, "BUSINESS") === "purchase", "non-subscription PRO can upgrade");
 
 console.log(`\n✅ ALL ${passed} PLAN-CHANGE GUARD CHECKS PASSED`);
