@@ -39,6 +39,7 @@ import {
   mergeCapClampReason,
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
+import { selectRepresentativeItems } from "@/lib/broll-coverage";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
@@ -96,6 +97,7 @@ type StockProvider = "pexels" | "pixabay";
 
 type FoundVideo = {
   keyword: string;
+  sourceIndex?: number;
   id: number;
   duration: number;
   link: string;
@@ -1455,6 +1457,7 @@ export async function POST(req: Request) {
 
   const results: {
     keyword: string;
+    sourceIndex?: number;
     pexelsId: number;
     duration: number;
     videoUrl: string;
@@ -1499,12 +1502,16 @@ export async function POST(req: Request) {
     if (capClampHit) trackAiSkip("cap", clipsToGenerateRaw - clipsToGenerate);
     console.log(`[fetch-stock] source=${srcLabel}, model=${effectiveKieModel}, generating ${clipsToGenerate} clips`);
 
+    const directJobs = selectRepresentativeItems(
+      keywords.map((keyword, sourceIndex) => ({ keyword, sourceIndex })),
+      clipsToGenerate,
+    );
     await withConcurrency(
-      keywords.slice(0, clipsToGenerate).map((keyword, i) => ({ keyword, i })),
+      directJobs,
       Math.min(2, DOWNLOAD_CONCURRENCY),
-      async ({ keyword, i }) => {
-        const query = subtitleTexts?.[i] || keyword;
-        const id = KIE_ID_OFFSET + i;
+      async ({ keyword, sourceIndex }) => {
+        const query = subtitleTexts?.[sourceIndex] || keyword;
+        const id = KIE_ID_OFFSET + sourceIndex;
         const imageFile = `${userPrefix}${id}.src.jpg`;
         const imagePath = path.join(rendersDir, imageFile);
         // Spend-before-generate. Skipped (credits/rate/cap) → no generation.
@@ -1535,7 +1542,7 @@ export async function POST(req: Request) {
               stockTelemetry.normalizeSkippedCount++; // Ken Burns output is already CFR/no-B-frames — no extra normalize pass needed
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
               results.push({
-                keyword, pexelsId: id, duration, videoUrl: imageUrl,
+                keyword, sourceIndex, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
@@ -1554,7 +1561,7 @@ export async function POST(req: Request) {
               style: brollPreference.brollVisualStyle,
             }))), kieToken!);
             const imageUrl = await kiePollResult(imageTaskId, kieToken!);
-            results.push({ keyword, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
+            results.push({ keyword, sourceIndex, pexelsId: id, duration: KEN_BURNS_DURATION_SEC, videoUrl: imageUrl, imageUrl, assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl } });
             success = true;
           }
         } catch (e) {
@@ -1579,7 +1586,7 @@ export async function POST(req: Request) {
           await recordAiGenerationTelemetry({
             status: success ? "done" : "error",
             mode: "kie-image",
-            keywordIndex: i,
+            keywordIndex: sourceIndex,
             assetId: id,
             durationMs: Date.now() - aiStartedAt,
             charged: gate.charged,
@@ -1610,7 +1617,12 @@ export async function POST(req: Request) {
   // eslint-disable-next-line prefer-const
   let stockProviderError = null as ProviderError | null; // จับ invalid_key ไว้รายงานตอนท้าย — เดิมถูกกลืนเงียบ
 
-  async function searchCandidatesForQuery(query: string, keyword: string, perPage = 30): Promise<CandidateVideo[]> {
+  async function searchCandidatesForQuery(
+    query: string,
+    keyword: string,
+    perPage = 30,
+    sourceIndex?: number,
+  ): Promise<CandidateVideo[]> {
     stockTelemetry.searchQueries++;
     const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
       canUsePexels
@@ -1638,6 +1650,7 @@ export async function POST(req: Request) {
       if (!file) continue;
       candidates.push({
         keyword,
+        sourceIndex,
         id: v.id,
         duration: v.duration,
         link: file.link,
@@ -1653,6 +1666,7 @@ export async function POST(req: Request) {
       const title = pv.tags ? pv.tags.split(",").slice(0, 6).map((t) => t.trim()).join(" ") : query;
       candidates.push({
         keyword,
+        sourceIndex,
         id: pv.id + 9_000_000,
         duration: pv.duration,
         link: pv.videoUrl,
@@ -1673,6 +1687,7 @@ export async function POST(req: Request) {
     usedIds.add(candidate.id);
     return {
       keyword: candidate.keyword,
+      sourceIndex: candidate.sourceIndex,
       id: candidate.id,
       duration: candidate.duration,
       link: candidate.link,
@@ -1697,7 +1712,7 @@ export async function POST(req: Request) {
 
     for (const query of queries) {
       try {
-        const fallbackCandidates = await searchCandidatesForQuery(query, keyword, 30);
+        const fallbackCandidates = await searchCandidatesForQuery(query, keyword, 30, keywordIndex);
         if (!fallbackCandidates.length) continue;
         const ordered = orderCandidateIndices(
           fallbackCandidates,
@@ -1792,12 +1807,12 @@ export async function POST(req: Request) {
             const file = pickBestFile(v);
             if (!file) continue;
             const title = slugToTitle(v.url ?? "");
-            candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title, query, provider: "pexels" });
+            candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title, query, provider: "pexels" });
           }
           for (const pv of pixabayVideos) {
             // Use Pixabay tags as title for LLM ranking — much more descriptive than query alone
             const pbTitle = pv.tags ? pv.tags.split(",").slice(0, 6).map((t: string) => t.trim()).join(" ") : query;
-            candidates.push({ keyword, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, width: pv.width, height: pv.height, title: pbTitle, query, provider: "pixabay" });
+            candidates.push({ keyword, sourceIndex: ki, id: pv.id + 9_000_000, duration: pv.duration, link: pv.videoUrl, width: pv.width, height: pv.height, title: pbTitle, query, provider: "pixabay" });
           }
 
           if (candidates.length > 0) {
@@ -1818,7 +1833,7 @@ export async function POST(req: Request) {
             for (const v of page2) {
               const file = pickBestFile(v);
               if (!file) continue;
-              candidates.push({ keyword, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
+              candidates.push({ keyword, sourceIndex: ki, id: v.id, duration: v.duration, link: file.link, width: file.width, height: file.height, title: slugToTitle(v.url ?? ""), query: queriesToTry[0], provider: "pexels" });
             }
             if (candidates.length > 0) {
               stockTelemetry.searchCandidatesTotal += candidates.length;
@@ -2055,6 +2070,19 @@ export async function POST(req: Request) {
 
   function capFoundClips(clips: FoundVideo[], limit: number): FoundVideo[] {
     if (limit <= 0 || clips.length <= limit) return clips;
+    if (isPerSubtitleMode || brollWindowMode) {
+      const keywordOrder = new Map<string, number>();
+      keywords.forEach((keyword, index) => {
+        if (!keywordOrder.has(keyword)) keywordOrder.set(keyword, index);
+      });
+      const ordered = [...clips].sort((left, right) => {
+        const leftIndex = left.sourceIndex ?? keywordOrder.get(left.keyword) ?? Number.MAX_SAFE_INTEGER;
+        const rightIndex = right.sourceIndex ?? keywordOrder.get(right.keyword) ?? Number.MAX_SAFE_INTEGER;
+        return leftIndex - rightIndex;
+      });
+      return selectRepresentativeItems(ordered, limit);
+    }
+
     const buckets = new Map<string, FoundVideo[]>();
     for (const clip of clips) {
       const bucket = buckets.get(clip.keyword) ?? [];
@@ -2152,7 +2180,7 @@ export async function POST(req: Request) {
               stockTelemetry.normalizeSkippedCount++;
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
               results.push({
-                keyword: kw, pexelsId: id, duration: fallback.duration, videoUrl: fallback.imageUrl,
+                keyword: kw, sourceIndex: ki, pexelsId: id, duration: fallback.duration, videoUrl: fallback.imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl: fallback.imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: fallback.assetMeta,
@@ -2194,7 +2222,7 @@ export async function POST(req: Request) {
               stockTelemetry.normalizeSkippedCount++;
               try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
               results.push({
-                keyword: kw, pexelsId: id, duration, videoUrl: imageUrl,
+                keyword: kw, sourceIndex: ki, pexelsId: id, duration, videoUrl: imageUrl,
                 localPath: outPath, localUrl: `/api/stocks/${outFile}`,
                 imageUrl, imageLocalUrl: `/api/stocks/${imageFile}`,
                 assetMeta: { provider: "kie-ai", assetId: String(id), downloadUrl: imageUrl },
@@ -2296,6 +2324,7 @@ export async function POST(req: Request) {
   await withConcurrency(clipsToDownload, DOWNLOAD_CONCURRENCY, async (clip) => {
     const { keyword, id, duration, link } = clip;
     const resultMeta = {
+      sourceIndex: clip.sourceIndex,
       title: clip.title,
       query: clip.query,
       provider: clip.provider,
@@ -2370,7 +2399,9 @@ export async function POST(req: Request) {
     const kwIdx = new Map<string, number>();
     keywords.forEach((kw, i) => { if (!kwIdx.has(kw)) kwIdx.set(kw, i); });
     const kwOrder = (kw: string) => kwIdx.get(kw) ?? Number.MAX_SAFE_INTEGER;
-    results.sort((a, b) => kwOrder(a.keyword) - kwOrder(b.keyword));
+    results.sort((a, b) =>
+      (a.sourceIndex ?? kwOrder(a.keyword)) - (b.sourceIndex ?? kwOrder(b.keyword)),
+    );
   }
 
   stockTelemetry.servedClipCount = results.length;

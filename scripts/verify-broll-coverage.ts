@@ -75,4 +75,11 @@ assert.ok(!configSource.includes("Math.min(brollWindows.length, pool.length)"));
 assert.ok(configSource.includes("assignBrollWindows("));
 assert.ok(configSource.includes("coverBrollTimeline("));
 
+const stockSource = fs.readFileSync(
+  "src/app/api/videos/fetch-stock/route.ts",
+  "utf8",
+);
+assert.ok(stockSource.includes("sourceIndex"));
+assert.ok(stockSource.includes("selectRepresentativeItems"));
+
 console.log("All broll-coverage checks passed.");
