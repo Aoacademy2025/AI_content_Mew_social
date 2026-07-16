@@ -1,6 +1,6 @@
 # Editor Final-Review Remediation Design
 
-**Date:** 2026-07-16  
+**Date:** 2026-07-16
 **Status:** Approved
 **Branch:** `mew/responsive-logo-overlay`
 
