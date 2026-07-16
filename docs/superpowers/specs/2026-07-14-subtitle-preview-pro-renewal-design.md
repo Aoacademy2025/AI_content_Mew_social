@@ -123,4 +123,3 @@ The current `handleUpgrade()` flow remains unchanged:
 - Keep Thitima's ticket open until a numeric/punctuation caption is checked in preview and exported output.
 - Ratchada can be told that signup trials were already purchasable; the fix specifically adds renewal for temporary/granted PRO accounts like hers.
 - Do not change or close the legacy-editor navigation ticket as part of this work.
-

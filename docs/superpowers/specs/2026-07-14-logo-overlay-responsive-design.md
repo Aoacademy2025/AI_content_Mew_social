@@ -1,8 +1,8 @@
 # Responsive Logo Overlay Design
 
-**Date:** 2026-07-14  
-**Status:** Approved in conversation  
-**Product area:** Video Editor v2, Step 3 post-render editing  
+**Date:** 2026-07-14
+**Status:** Approved in conversation
+**Product area:** Video Editor v2, Step 3 post-render editing
 **Eligible plans:** PRO and BUSINESS
 
 ## 1. Context

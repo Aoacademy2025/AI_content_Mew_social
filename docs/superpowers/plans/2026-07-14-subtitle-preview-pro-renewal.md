@@ -264,4 +264,3 @@ Expected: no whitespace errors; only scoped renderer, verification, plan decisio
 - [ ] **Step 4: Report evidence and rollout boundary**
 
 Report focused-test results, build result, commits, and confirmation that editor v1 navigation and payment backend were unchanged. Deployment and support-ticket writes remain separate unless explicitly requested.
-
