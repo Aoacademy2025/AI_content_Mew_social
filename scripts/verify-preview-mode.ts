@@ -288,6 +288,7 @@ async function main() {
       } | undefined;
       ok(LONG_SEGMENTS.length === 141, `I: fixture has 141 captions (got ${LONG_SEGMENTS.length})`);
       ok((stockBody?.keywords?.length ?? 0) === 53, `I: long preview requests all 53 semantic windows (got ${stockBody?.keywords?.length ?? 0})`);
+      ok(stockBody?.brollWindowMode === true, "I: fetch-stock receives explicit b-roll window mode");
       ok(new Set(stockBody?.keywords ?? []).size === 36, `I: missing keyword units are deterministically cycled (got ${new Set(stockBody?.keywords ?? []).size} unique)`);
       ok((configBody?.brollWindows?.length ?? 0) === 53, `I: config retains all 53 target windows (got ${configBody?.brollWindows?.length ?? 0})`);
       ok((configBody?.stockVideos?.length ?? 0) === 36, `I: config accepts the capped 36-asset pool (got ${configBody?.stockVideos?.length ?? 0})`);

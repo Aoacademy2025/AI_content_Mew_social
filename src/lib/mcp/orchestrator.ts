@@ -638,8 +638,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         "/api/videos/extract-keywords",
         {
           ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
-            brollRegionPreference: input.brollRegionPreference,
-            brollVisualStyle: input.brollVisualStyle,
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
           }),
           ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
         },
@@ -657,7 +657,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
-          }),
+          }, upAligned.windows.length > 0),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
@@ -800,7 +800,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
-        }),
+        }, aligned.windows.length > 0),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),

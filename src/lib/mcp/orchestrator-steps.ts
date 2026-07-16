@@ -49,6 +49,7 @@ export function buildStockPayload(
   keywordAlternatives?: string[][],
   relevanceSpec?: unknown,
   brollPreference?: BrollPreferenceInput,
+  brollWindowMode = false,
 ) {
   const perSubtitle = captions.length > 0 && captions.length === keywords.length;
   return {
@@ -56,6 +57,7 @@ export function buildStockPayload(
     download: true as const,
     totalDurationSec: Math.max(30, Math.round(totalDurationSec)),
     stockSource,
+    ...(brollWindowMode ? { brollWindowMode: true as const } : {}),
     preferredLLM: null as string | null,
     ...(perSubtitle ? { perSubtitleMode: true, overrideClipCount: captions.length, subtitleTexts: captions.map((c) => c.text) } : {}),
     ...(visualDirection ? { visualDirection } : {}),

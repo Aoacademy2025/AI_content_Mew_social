@@ -3,10 +3,14 @@ import fs from "node:fs";
 
 import {
   BROLL_SEQUENCE_GUARD_FRAMES,
+  MAX_BROLL_DURATION_SEC,
+  MAX_BROLL_SEGMENTS,
   BrollCoverageError,
   assignBrollWindows,
+  buildBrollRenderCoverage,
   coverBrollTimeline,
   coverProbedBrollTimeline,
+  prepareBrollRenderAssets,
   selectRepresentativeItems,
 } from "../src/lib/broll-coverage";
 
@@ -76,6 +80,25 @@ for (const invalidDuration of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
   assert.equal(invalid.metrics.coverageRatio, 0);
 }
 
+for (const unsupportedFps of [1, 25, 1000, Number.POSITIVE_INFINITY]) {
+  const invalid = coverBrollTimeline(pool, pool, durationSec, unsupportedFps);
+  assert.equal(invalid.complete, false);
+  assert.equal(invalid.segments.length, 0);
+}
+
+const overlong = coverBrollTimeline(pool, pool, MAX_BROLL_DURATION_SEC + 1, fps);
+assert.equal(overlong.complete, false);
+
+const attackerSpans = Array.from({ length: 50_000 }, (_, index) => ({
+  src: "/attacker.mp4",
+  start: index / 50_000,
+  end: (index + 1) / 50_000,
+  clipDuration: 5,
+}));
+const bounded = coverBrollTimeline(attackerSpans, attackerSpans, 1, fps);
+assert.equal(bounded.complete, false);
+assert.ok(bounded.segments.length <= Math.min(MAX_BROLL_SEGMENTS, fps));
+
 const nearGuard = coverBrollTimeline(
   [{ src: "/tiny.mp4", start: 0, end: 1, clipDuration: guardSec + 0.00002 }],
   [{ src: "/tiny.mp4", start: 0, end: 0, clipDuration: guardSec + 0.00002 }],
@@ -122,6 +145,39 @@ const tooShortProbe = coverProbedBrollTimeline(
 assert.equal(tooShortProbe.complete, false);
 assert.equal(tooShortProbe.droppedAssetCount, 1);
 
+const externalUnverified = coverProbedBrollTimeline(
+  [{ asset: { src: "https://example.invalid/clip.mp4", start: 0, end: 30 }, actualDurationSec: null, probeRequired: false }],
+  30,
+  fps,
+);
+assert.equal(externalUnverified.complete, false);
+assert.equal(externalUnverified.droppedAssetCount, 1);
+
+const renderCoverage = buildBrollRenderCoverage(
+  [
+    { asset: { src: "/missing.mp4", start: 0, end: 10, sourceIndex: 0 }, actualDurationSec: null, probeRequired: true },
+    { asset: { src: "/short.mp4", start: 10, end: 30, sourceIndex: 1 }, actualDurationSec: 5, probeRequired: true },
+  ],
+  30,
+  fps,
+  { requestedWindowCount: "user supplied text", resolutionDroppedAssetCount: 1 },
+);
+assert.equal(renderCoverage.coverage.complete, true);
+assert.deepEqual(Object.keys(renderCoverage.telemetry).sort(), [
+  "availableAssetCount",
+  "coverageGapCount",
+  "coverageRatio",
+  "coverageRejected",
+  "coverageRepairCount",
+  "coverageSegmentCount",
+  "distinctAssetCount",
+  "requestedWindowCount",
+  "uncoveredTailSec",
+].sort());
+assert.equal(renderCoverage.telemetry.requestedWindowCount, 2);
+assert.equal(typeof renderCoverage.telemetry.requestedWindowCount, "number");
+assert.equal(renderCoverage.telemetry.coverageRejected, false);
+
 const typedError = new BrollCoverageError("coverage failed", allMissing.metrics);
 assert.equal(typedError.code, "broll_coverage_incomplete");
 assert.equal(typedError.metrics.uncoveredTailSec, 30);
@@ -157,13 +213,11 @@ const renderSource = fs.readFileSync(
   "src/app/api/videos/render/route.ts",
   "utf8",
 );
-assert.ok(renderSource.includes("coverProbedBrollTimeline("));
+assert.ok(renderSource.includes("prepareBrollRenderAssets("));
 assert.ok(renderSource.includes("broll_coverage_rejected"));
-assert.ok(renderSource.includes("throw new BrollCoverageError("));
 assert.ok(renderSource.includes("error instanceof BrollCoverageError"));
 assert.ok(!renderSource.includes("Math.max(0.5, actualDur - 0.5)"));
-assert.ok(renderSource.includes("coverageSegmentCount"));
-assert.ok(renderSource.includes("coverageRejected"));
+assert.ok(renderSource.includes("coverageTelemetryProperties"));
 assert.ok(renderSource.includes("shortVideoConfig.requestedBrollWindowCount"));
 
 const compositionSource = fs.readFileSync(
@@ -176,4 +230,53 @@ assert.ok(
   ),
 );
 
-console.log("All broll-coverage checks passed.");
+async function verifyRenderPreflight(): Promise<void> {
+  const probedPaths: string[] = [];
+  const prepared = await prepareBrollRenderAssets(
+    [
+      { src: "/missing.mp4", start: 0, end: 10, sourceIndex: 0 },
+      { src: "/short.mp4", start: 10, end: 30, sourceIndex: 1 },
+    ],
+    30,
+    fps,
+    {
+      requestedWindowCount: "not numeric",
+      resolveAsset: (src) => ({ src, localPath: src }),
+      isUsableLocalFile: (localPath) => localPath !== "/missing.mp4",
+      probeDurationSec: async (localPath) => {
+        probedPaths.push(localPath);
+        return 5;
+      },
+    },
+  );
+  assert.deepEqual(probedPaths, ["/short.mp4"]);
+  assert.equal(prepared.coverage.complete, true);
+  assert.equal(prepared.coverage.droppedAssetCount, 1);
+  assert.equal(prepared.telemetry.requestedWindowCount, 2);
+
+  let enqueueCount = 0;
+  await assert.rejects(
+    async () => {
+      await prepareBrollRenderAssets(
+        [{ src: "https://example.invalid/video.mp4", start: 0, end: 30 }],
+        30,
+        fps,
+        {
+          resolveAsset: (src) => ({ src, localPath: null }),
+          isUsableLocalFile: () => false,
+          probeDurationSec: async () => null,
+        },
+      );
+      enqueueCount += 1;
+    },
+    (error: unknown) => error instanceof BrollCoverageError,
+  );
+  assert.equal(enqueueCount, 0);
+}
+
+verifyRenderPreflight()
+  .then(() => console.log("All broll-coverage checks passed."))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

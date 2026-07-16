@@ -19,8 +19,7 @@ import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   BrollCoverageError,
-  coverProbedBrollTimeline,
-  type ProbedBrollAsset,
+  prepareBrollRenderAssets,
 } from "@/lib/broll-coverage";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
@@ -830,76 +829,43 @@ export async function POST(req: Request) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       // Probe duration and clamp source metadata. Keep the desired timeline end intact;
       // the coverage pass below splits/reuses media instead of creating a black gap.
-      const probedBgVideos: ProbedBrollAsset[] = [];
-      let resolutionDroppedAssetCount = 0;
-      for (const v of shortVideoConfig.bgVideos ?? []) {
-        try {
-          const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
-          const localPath = toLocalFilePathIfInternal(resolvedSrc);
-          let actualDur: number | null = null;
-          if (localPath && fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500) {
-            actualDur = await probeVideoDurationSec(localPath);
-          }
-          probedBgVideos.push({
-            asset: { ...v, src: resolvedSrc },
-            actualDurationSec: actualDur,
-            probeRequired: localPath !== null,
-          });
-        } catch (e) {
-          resolutionDroppedAssetCount += 1;
-          console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
-        }
-      }
-      if (probedBgVideos.length === 0) {
-        throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
-      }
-
-      const coverage = coverProbedBrollTimeline(
-        probedBgVideos,
+      const renderCoverage = await prepareBrollRenderAssets(
+        shortVideoConfig.bgVideos ?? [],
         durationInFrames / fps,
         fps,
-      );
-      const sourceWindowCount = new Set(
-        probedBgVideos
-          .map((entry) => entry.asset.sourceIndex)
-          .filter(
-            (sourceIndex): sourceIndex is number =>
-              typeof sourceIndex === "number" && Number.isFinite(sourceIndex),
-          ),
-      ).size;
-      const coverageRepairCount =
-        coverage.metrics.repairedSegmentCount +
-        coverage.droppedAssetCount +
-        resolutionDroppedAssetCount;
-      const coverageTelemetryProperties = {
-        requestedWindowCount:
-          shortVideoConfig.requestedBrollWindowCount ||
-          sourceWindowCount ||
-          (shortVideoConfig.bgVideos ?? []).length,
-        availableAssetCount: coverage.metrics.availableAssetCount,
-        distinctAssetCount: new Set(coverage.segments.map((segment) => segment.src)).size,
-        coverageSegmentCount: coverage.metrics.outputSegmentCount,
-        coverageGapCount: coverage.metrics.gapCount,
-        coverageRepairCount,
-        coverageRatio: coverage.metrics.coverageRatio,
-        uncoveredTailSec: coverage.metrics.uncoveredTailSec,
-        coverageRejected: !coverage.complete,
-      };
-      if (!coverage.complete) {
-        await recordTelemetryEvent(userId, {
-          name: "broll_coverage_rejected",
-          category: "error",
-          source: "server",
-          step: "render.coverage",
-          status: "error",
-          properties: coverageTelemetryProperties,
-        }).catch(() => {});
-        throw new BrollCoverageError(
-          "B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่",
-          coverage.metrics,
-        );
-      }
-      if (coverageRepairCount > 0) {
+        {
+          requestedWindowCount: shortVideoConfig.requestedBrollWindowCount,
+          resolveAsset: (src) => {
+            const resolvedSrc = toAbsolute(resolveStockUrl(src));
+            return {
+              src: resolvedSrc,
+              localPath: toLocalFilePathIfInternal(resolvedSrc),
+            };
+          },
+          isUsableLocalFile: (localPath) =>
+            fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500,
+          probeDurationSec: probeVideoDurationSec,
+          onResolutionError: (asset, error) => {
+            console.warn(
+              `[render] skipping missing bgVideo: ${asset.src} — ${(error as Error).message}`,
+            );
+          },
+        },
+      ).catch(async (error: unknown) => {
+        if (error instanceof BrollCoverageError && error.telemetry) {
+          await recordTelemetryEvent(userId, {
+            name: "broll_coverage_rejected",
+            category: "error",
+            source: "server",
+            step: "render.coverage",
+            status: "error",
+            properties: error.telemetry,
+          }).catch(() => {});
+        }
+        throw error;
+      });
+      const { coverage, telemetry: coverageTelemetryProperties } = renderCoverage;
+      if (coverageTelemetryProperties.coverageRepairCount > 0) {
         await recordTelemetryEvent(userId, {
           name: "broll_coverage_repaired",
           category: "performance",

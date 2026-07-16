@@ -2,6 +2,9 @@ import type { BrollVideo } from "../remotion/types";
 
 export const BROLL_SEQUENCE_GUARD_FRAMES = 10;
 export const BROLL_PROBE_SAFETY_MARGIN_SEC = 0.5;
+export const BROLL_SUPPORTED_FPS = [24, 30, 50, 60] as const;
+export const MAX_BROLL_DURATION_SEC = 600;
+export const MAX_BROLL_SEGMENTS = MAX_BROLL_DURATION_SEC * 60;
 
 export type BrollCoverageAsset = BrollVideo & { sourceIndex?: number };
 export type BrollCoverageWindow = { startMs: number; endMs: number };
@@ -35,12 +38,25 @@ export type ProbedBrollCoverageResult = BrollCoverageResult & {
   probedAssetCount: number;
 };
 
+export type BrollRenderCoverageTelemetry = {
+  requestedWindowCount: number;
+  availableAssetCount: number;
+  distinctAssetCount: number;
+  coverageSegmentCount: number;
+  coverageGapCount: number;
+  coverageRepairCount: number;
+  coverageRatio: number;
+  uncoveredTailSec: number;
+  coverageRejected: boolean;
+};
+
 export class BrollCoverageError extends Error {
   readonly code = "broll_coverage_incomplete";
 
   constructor(
     message: string,
     readonly metrics: BrollCoverageMetrics,
+    readonly telemetry?: BrollRenderCoverageTelemetry,
   ) {
     super(message);
     this.name = "BrollCoverageError";
@@ -55,6 +71,22 @@ type TargetSpan = {
 
 const DEFAULT_CLIP_DURATION_SEC = 10;
 const EPSILON_SEC = 1e-6;
+
+export function isSupportedBrollFps(fps: number): boolean {
+  return BROLL_SUPPORTED_FPS.includes(fps as (typeof BROLL_SUPPORTED_FPS)[number]);
+}
+
+function timelineSegmentCapacity(durationSec: number, fps: number): number {
+  if (
+    !Number.isFinite(durationSec) ||
+    durationSec <= 0 ||
+    durationSec > MAX_BROLL_DURATION_SEC ||
+    !isSupportedBrollFps(fps)
+  ) {
+    return 0;
+  }
+  return Math.min(MAX_BROLL_SEGMENTS, Math.ceil(durationSec * fps));
+}
 
 export function selectRepresentativeItems<T>(items: T[], limit: number): T[] {
   const count = Math.max(0, Math.min(items.length, Math.floor(limit)));
@@ -126,8 +158,14 @@ function makeTargets(
     .filter((span) => span?.src && Number.isFinite(span.start) && Number.isFinite(span.end))
     .map((span) => ({
       ...span,
-      start: Math.max(0, Math.min(durationSec, span.start)),
-      end: Math.max(0, Math.min(durationSec, span.end)),
+      start: Math.max(
+        0,
+        Math.min(durationSec, Math.floor(span.start / toleranceSec + EPSILON_SEC) * toleranceSec),
+      ),
+      end: Math.max(
+        0,
+        Math.min(durationSec, Math.ceil(span.end / toleranceSec - EPSILON_SEC) * toleranceSec),
+      ),
     }))
     .filter((span) => span.end - span.start > EPSILON_SEC)
     .sort((left, right) => left.start - right.start || left.end - right.end);
@@ -246,7 +284,8 @@ export function coverBrollTimeline(
   durationSec: number,
   fps: number,
 ): BrollCoverageResult {
-  if (!Number.isFinite(durationSec) || durationSec <= 0 || !Number.isFinite(fps) || fps <= 0) {
+  const maxSegmentCount = timelineSegmentCapacity(durationSec, fps);
+  if (maxSegmentCount === 0 || desired.length > maxSegmentCount) {
     return invalidCoverageResult(desired.length, pool.filter((asset) => asset?.src).length, durationSec);
   }
 
@@ -255,13 +294,12 @@ export function coverBrollTimeline(
   const toleranceSec = 1 / safeFps;
   const guardSec = BROLL_SEQUENCE_GUARD_FRAMES / safeFps;
   const minPlayableSec = 1 / safeFps;
-  const assets = normalizePool(pool, guardSec, minPlayableSec);
+  const boundedPool = pool.length > maxSegmentCount
+    ? selectRepresentativeItems(pool, maxSegmentCount)
+    : pool;
+  const assets = normalizePool(boundedPool, guardSec, minPlayableSec);
   const targets = makeTargets(desired, safeDurationSec, toleranceSec);
   const segments: BrollCoverageAsset[] = [];
-  const maxSegmentCount = Math.max(
-    1,
-    Math.ceil(safeDurationSec * safeFps) + targets.length + assets.length,
-  );
   let poolCursor = 0;
   let segmentLimitExceeded = false;
 
@@ -356,7 +394,9 @@ export function coverProbedBrollTimeline(
       continue;
     }
     if (!entry.probeRequired) {
-      usable.push(entry.asset);
+      // Render coverage is only a real invariant when playable duration came from
+      // media we could inspect locally. External URLs must be cached/probed first.
+      droppedAssetCount += 1;
       continue;
     }
 
@@ -385,6 +425,121 @@ export function coverProbedBrollTimeline(
     droppedAssetCount,
     probedAssetCount,
   };
+}
+
+export function buildBrollRenderCoverage(
+  probedAssets: ProbedBrollAsset[],
+  durationSec: number,
+  fps: number,
+  options: {
+    requestedWindowCount?: unknown;
+    resolutionDroppedAssetCount?: number;
+  } = {},
+): {
+  coverage: ProbedBrollCoverageResult;
+  telemetry: BrollRenderCoverageTelemetry;
+} {
+  const coverage = coverProbedBrollTimeline(probedAssets, durationSec, fps);
+  const capacity = timelineSegmentCapacity(durationSec, fps) || MAX_BROLL_SEGMENTS;
+  const rawRequestedWindowCount = options.requestedWindowCount;
+  const normalizedRequestedWindowCount =
+    typeof rawRequestedWindowCount === "number" &&
+    Number.isFinite(rawRequestedWindowCount) &&
+    rawRequestedWindowCount >= 0
+      ? Math.min(capacity, Math.floor(rawRequestedWindowCount))
+      : 0;
+  const sourceWindowCount = Math.min(
+    capacity,
+    new Set(
+      probedAssets
+        .map((entry) => entry.asset.sourceIndex)
+        .filter(
+          (sourceIndex): sourceIndex is number =>
+            typeof sourceIndex === "number" &&
+            Number.isFinite(sourceIndex) &&
+            sourceIndex >= 0,
+        )
+        .map(Math.floor),
+    ).size,
+  );
+  const requestedWindowCount =
+    normalizedRequestedWindowCount || sourceWindowCount || Math.min(capacity, probedAssets.length);
+  const resolutionDroppedAssetCount =
+    typeof options.resolutionDroppedAssetCount === "number" &&
+    Number.isFinite(options.resolutionDroppedAssetCount) &&
+    options.resolutionDroppedAssetCount > 0
+      ? Math.min(capacity, Math.floor(options.resolutionDroppedAssetCount))
+      : 0;
+  const coverageRepairCount =
+    coverage.metrics.repairedSegmentCount +
+    coverage.droppedAssetCount +
+    resolutionDroppedAssetCount;
+
+  return {
+    coverage,
+    telemetry: {
+      requestedWindowCount,
+      availableAssetCount: coverage.metrics.availableAssetCount,
+      distinctAssetCount: new Set(coverage.segments.map((segment) => segment.src)).size,
+      coverageSegmentCount: coverage.metrics.outputSegmentCount,
+      coverageGapCount: coverage.metrics.gapCount,
+      coverageRepairCount,
+      coverageRatio: coverage.metrics.coverageRatio,
+      uncoveredTailSec: coverage.metrics.uncoveredTailSec,
+      coverageRejected: !coverage.complete,
+    },
+  };
+}
+
+export async function prepareBrollRenderAssets(
+  assets: BrollCoverageAsset[],
+  durationSec: number,
+  fps: number,
+  options: {
+    requestedWindowCount?: unknown;
+    resolveAsset: (src: string) => { src: string; localPath: string | null };
+    isUsableLocalFile: (localPath: string) => boolean;
+    probeDurationSec: (localPath: string) => Promise<number | null>;
+    onResolutionError?: (asset: BrollCoverageAsset, error: unknown) => void;
+  },
+): Promise<{
+  coverage: ProbedBrollCoverageResult;
+  telemetry: BrollRenderCoverageTelemetry;
+}> {
+  const probedAssets: ProbedBrollAsset[] = [];
+  let resolutionDroppedAssetCount = 0;
+
+  for (const asset of assets) {
+    try {
+      const resolved = options.resolveAsset(asset.src);
+      const probeRequired = resolved.localPath !== null;
+      const actualDurationSec =
+        probeRequired && options.isUsableLocalFile(resolved.localPath as string)
+          ? await options.probeDurationSec(resolved.localPath as string)
+          : null;
+      probedAssets.push({
+        asset: { ...asset, src: resolved.src },
+        actualDurationSec,
+        probeRequired,
+      });
+    } catch (error) {
+      resolutionDroppedAssetCount += 1;
+      options.onResolutionError?.(asset, error);
+    }
+  }
+
+  const result = buildBrollRenderCoverage(probedAssets, durationSec, fps, {
+    requestedWindowCount: options.requestedWindowCount,
+    resolutionDroppedAssetCount,
+  });
+  if (!result.coverage.complete) {
+    throw new BrollCoverageError(
+      "B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่",
+      result.coverage.metrics,
+      result.telemetry,
+    );
+  }
+  return result;
 }
 
 export function assignBrollWindows(

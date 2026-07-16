@@ -2,7 +2,12 @@
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
-import { assignBrollWindows, coverBrollTimeline } from "@/lib/broll-coverage";
+import {
+  MAX_BROLL_DURATION_SEC,
+  assignBrollWindows,
+  coverBrollTimeline,
+  isSupportedBrollFps,
+} from "@/lib/broll-coverage";
 import { buildKeywordPopups } from "@/lib/keyword-popups";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
@@ -193,13 +198,17 @@ export async function POST(req: Request) {
   console.log(`[config] start: ${stockVideos.length} clips, ${sceneCaptions.length} captions, ${audioDurationMs}ms`);
 
   if (!voiceFile) return NextResponse.json({ error: "voiceFile required" }, { status: 400 });
-  if (!Number.isFinite(audioDurationMs) || audioDurationMs <= 0) {
+  if (
+    !Number.isFinite(audioDurationMs) ||
+    audioDurationMs <= 0 ||
+    audioDurationMs > MAX_BROLL_DURATION_SEC * 1000
+  ) {
     return NextResponse.json(
       { error: "invalid_audio_duration", retryable: false },
       { status: 400 },
     );
   }
-  if (!Number.isFinite(fps) || fps <= 0) {
+  if (!Number.isFinite(fps) || !isSupportedBrollFps(fps)) {
     return NextResponse.json(
       { error: "invalid_fps", retryable: false },
       { status: 400 },
