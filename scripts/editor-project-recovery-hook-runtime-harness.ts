@@ -627,6 +627,85 @@ async function twoIndependentClientsCannotOverwrite(): Promise<void> {
   assertCasAutosaves(clientB.fetchMock, "shared-cas");
 }
 
+async function conflictBlocksSettersBeforeRecoveryRerender(): Promise<void> {
+  const projectId = "same-tick-conflict-gate";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 0, {
+    script: "base",
+    clipUrl: "clip-before-conflict",
+    clipDurationSec: 12,
+    mixPreset: "free",
+    brollSource: "stock",
+  });
+  const patchResponse = deferred<ResponseLike>();
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.fetchMock.enqueue("PATCH", editorUrl(projectId), patchResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  harness.runner.current.setScript("local candidate");
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  const journalBeforeConflict = harness.storage.getItem(
+    journalModule.editorProjectRecoveryKey(projectId),
+  );
+  const storageOperationsBeforeConflict = harness.storage.operations.length;
+
+  patchResponse.resolve(response(409, {
+    project: project(projectId, 1, { script: "other tab wins" }),
+  }));
+  await drainMicrotasksWithoutRender();
+  assert.equal(harness.runner.current.recovery.status, "none",
+    "the test invokes setters through the still-rendered pre-conflict hook value");
+  assert.equal(harness.runner.current.projectReady, true,
+    "the rendered readiness boolean is intentionally stale in the conflict tick");
+
+  harness.runner.current.setScript("must remain blocked");
+  harness.runner.current.setClipUrl("");
+  harness.runner.current.setMixPreset("recommended");
+  harness.runner.current.setLogoOverlay({
+    enabled: true,
+    assetId: "must-remain-blocked",
+    position: "bottom-right",
+    sizePct: 20,
+    opacity: 0.8,
+  });
+  assert.equal(
+    harness.storage.operations.length,
+    storageOperationsBeforeConflict,
+    "same-tick blocked setters cannot touch the recovery journal before rerender",
+  );
+  assert.equal(
+    harness.storage.getItem(journalModule.editorProjectRecoveryKey(projectId)),
+    journalBeforeConflict,
+    "same-tick blocked setters preserve the exact conflict journal",
+  );
+
+  harness.runner.flush();
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    recovery: harness.runner.current.recovery.status,
+    script: harness.runner.current.script,
+    clipUrl: harness.runner.current.clipUrl,
+    clipDurationSec: harness.runner.current.clipDurationSec,
+    mixPreset: harness.runner.current.mixPreset,
+    brollSource: harness.runner.current.brollSource,
+    patchCount: autosavePatchCalls(harness.fetchMock, projectId).length,
+    journal: harness.storage.getItem(journalModule.editorProjectRecoveryKey(projectId)),
+  }, {
+    recovery: "conflict",
+    script: "local candidate",
+    clipUrl: "clip-before-conflict",
+    clipDurationSec: 12,
+    mixPreset: "free",
+    brollSource: "stock",
+    patchCount: 1,
+    journal: journalBeforeConflict,
+  }, "recovery ownership blocks public and composite mutations before React rerenders");
+}
+
 async function timeoutCommittedIsAcknowledgedByFingerprint(): Promise<void> {
   const server = new SharedEditorServer();
   server.setProject("timeout-committed", 0, { script: "base" });
@@ -2273,6 +2352,7 @@ export async function verifyRuntimeHookContract(): Promise<void> {
   activeCompiledHook = compileHook(hookSource);
   const cases: Array<[string, () => Promise<void>]> = [
     ["two-independent-clients", twoIndependentClientsCannotOverwrite],
+    ["same-tick-conflict-mutation-gate", conflictBlocksSettersBeforeRecoveryRerender],
     ["timeout-committed", timeoutCommittedIsAcknowledgedByFingerprint],
     ["timeout-not-committed", timeoutNotCommittedRetriesSameImmutableAttempt],
     ["same-revision-different-draft", sameNumericRevisionWithDifferentDraftConflicts],

@@ -384,9 +384,12 @@ export function useV2Project() {
     stageExplicitUserDraftMutationRef.current();
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [projectReady, setProjectReady] = useState(false);
-  const projectReadyRef = useRef(projectReady);
-  projectReadyRef.current = projectReady;
+  const [projectReady, setProjectReadyRaw] = useState(false);
+  const projectReadyRef = useRef(false);
+  const setProjectReady = useCallback((next: boolean) => {
+    projectReadyRef.current = next;
+    setProjectReadyRaw(next);
+  }, []);
   const [projectInitialization, setProjectInitializationRaw] =
     useState<ProjectInitializationState>("loading-defaults");
   const projectInitializationRef = useRef<ProjectInitializationState>("loading-defaults");
@@ -394,9 +397,21 @@ export function useV2Project() {
     projectInitializationRef.current = next;
     setProjectInitializationRaw(next);
   }, []);
-  const canAcceptUserMutation = useCallback(
-    () => projectInitializationRef.current === "ready" && projectReadyRef.current,
+  const [recovery, setRecoveryRaw] = useState<EditorProjectRecoveryState>({ status: "none" });
+  const recoveryRef = useRef<EditorProjectRecoveryState>({ status: "none" });
+  const setRecoveryState = useCallback((next: EditorProjectRecoveryState) => {
+    recoveryRef.current = next;
+    setRecoveryRaw(next);
+  }, []);
+  const canRunProjectOperation = useCallback(
+    () => projectInitializationRef.current === "ready"
+      && projectReadyRef.current
+      && recoveryRef.current.status === "none",
     [],
+  );
+  const canAcceptUserMutation = useCallback(
+    () => canRunProjectOperation(),
+    [canRunProjectOperation],
   );
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -570,12 +585,6 @@ export function useV2Project() {
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveRevision, setSaveRevision] = useState(0);
   const [bootstrapRetryRevision, setBootstrapRetryRevision] = useState(0);
-  const [recovery, setRecovery] = useState<EditorProjectRecoveryState>({ status: "none" });
-  const recoveryRef = useRef<EditorProjectRecoveryState>(recovery);
-  const setRecoveryState = useCallback((next: EditorProjectRecoveryState) => {
-    recoveryRef.current = next;
-    setRecovery(next);
-  }, []);
   const autosaveGenerationRef = useRef(0);
   const autosaveLineageRef = useRef<AutosaveLineageTracker | null>(null);
   const latestDraftRef = useRef<EditorProjectAutosaveCandidate | null>(null);
@@ -593,8 +602,8 @@ export function useV2Project() {
     }
   }, []);
   const retryProjectSave = useCallback(() => {
-    if (projectReadyRef.current) setSaveRevision((revision) => revision + 1);
-  }, []);
+    if (canRunProjectOperation()) setSaveRevision((revision) => revision + 1);
+  }, [canRunProjectOperation]);
   const mountedRef = useRef(false);
   const currentProjectIdRef = useRef<string | null>(projectId);
   currentProjectIdRef.current = projectId;
@@ -778,6 +787,7 @@ export function useV2Project() {
     if (
       !mountedRef.current
       || !projectReadyRef.current
+      || recoveryRef.current.status !== "none"
       || !projectId
       || !tracker
       || tracker.projectId !== projectId
@@ -1784,6 +1794,7 @@ export function useV2Project() {
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
+    canRunProjectOperation,
   };
 }
 

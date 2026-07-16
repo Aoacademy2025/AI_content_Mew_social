@@ -75,6 +75,8 @@ export function EditorV2Shell() {
   const [projectFilter, setProjectFilter] = useState<ProjectStatusFilter>("all");
   const [deleteProject, setDeleteProject] = useState<ProjectMenuItem | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const editorBlocked = p.projectInitialization !== "ready"
+    || p.recovery.status !== "none";
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
   // is on; with it off handleRender submits directly (byte-identical to before).
@@ -100,7 +102,17 @@ export function EditorV2Shell() {
     return () => { alive = false; };
   }, [projectMenuOpen, p.projectId]);
 
+  useEffect(() => {
+    if (!editorBlocked) return;
+    setProjectMenuOpen(false);
+    setDeleteProject(null);
+    setReceiptOpen(false);
+    confirmingRef.current = false;
+    setConfirmSubmitting(false);
+  }, [editorBlocked]);
+
   async function handleRender() {
+    if (!p.canRunProjectOperation()) return;
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
       if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
@@ -112,6 +124,7 @@ export function EditorV2Shell() {
   // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
   // can't fire submit twice before React re-renders the disabled button.
   async function handleConfirmRender() {
+    if (!p.canRunProjectOperation()) return;
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setConfirmSubmitting(true);
@@ -131,12 +144,14 @@ export function EditorV2Shell() {
   }
 
   function handleNewProject() {
+    if (!p.canRunProjectOperation()) return;
     reset();
     void p.resetProject();
     setStep(0);
   }
 
   function openProject(projectId: string) {
+    if (!p.canRunProjectOperation()) return;
     if (!projectId || projectId === p.projectId) return;
     const url = new URL(window.location.href);
     url.pathname = "/video-editor";
@@ -146,6 +161,7 @@ export function EditorV2Shell() {
   }
 
   function requestDeleteProject(project: ProjectMenuItem) {
+    if (!p.canRunProjectOperation()) return;
     if (projectDeleteBlocked(project.status)) {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
@@ -155,6 +171,7 @@ export function EditorV2Shell() {
   }
 
   async function handleDeleteProject() {
+    if (!p.canRunProjectOperation()) return;
     const project = deleteProject;
     if (!project || deletingProjectId) return;
     if (projectDeleteBlocked(project.status)) {
@@ -201,9 +218,6 @@ export function EditorV2Shell() {
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
   };
-  const editorBlocked = p.projectInitialization !== "ready"
-    || p.recovery.status !== "none";
-
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -229,7 +243,10 @@ export function EditorV2Shell() {
           <button
             type="button"
             data-editor-recovery-focus-fallback="true"
-            onClick={() => router.push("/dashboard")}
+            onClick={() => {
+              if (!p.canRunProjectOperation()) return;
+              router.push("/dashboard");
+            }}
             aria-label="กลับแดชบอร์ด"
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[9px] transition-colors hover:brightness-125 lg:h-[34px] lg:w-[34px]"
             style={{ background: "rgba(255,255,255,.05)", color: color.textSecondary }}
@@ -244,7 +261,13 @@ export function EditorV2Shell() {
             H
           </div>
 
-          <DropdownMenu open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
+          <DropdownMenu
+            open={projectMenuOpen && !editorBlocked}
+            onOpenChange={(open) => {
+              if (open && !p.canRunProjectOperation()) return;
+              setProjectMenuOpen(open);
+            }}
+          >
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -469,14 +492,20 @@ export function EditorV2Shell() {
       {CREDITS_LIVE_CLIENT && (
         <RenderReceiptDialog
           p={p}
-          open={receiptOpen}
+          open={receiptOpen && !editorBlocked}
           submitting={confirmSubmitting}
           onConfirm={() => void handleConfirmRender()}
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}
 
-      <AlertDialog open={!!deleteProject} onOpenChange={(open) => { if (!open && !deletingProjectId) setDeleteProject(null); }}>
+      <AlertDialog
+        open={!!deleteProject && !editorBlocked}
+        onOpenChange={(open) => {
+          if (open && !p.canRunProjectOperation()) return;
+          if (!open && !deletingProjectId) setDeleteProject(null);
+        }}
+      >
         <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
           <AlertDialogHeader>
             <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>

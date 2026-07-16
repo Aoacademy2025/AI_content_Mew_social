@@ -1037,10 +1037,53 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
     const markerDirectorySyncedAt = absentFenceSteps.indexOf(
       "quarantine-terminal-directory-synced",
     );
+    const preparedAt = absentFenceSteps.indexOf("quarantine-fence-prepared");
     assert.ok(parentSyncedAt >= 0, "the new destination entry is fsynced");
     assert.ok(
-      parentSyncedAt < markerSyncedAt && markerSyncedAt < markerDirectorySyncedAt,
-      "destination occupancy is durable before its canonical marker becomes terminal",
+      markerSyncedAt >= 0
+        && markerSyncedAt < markerDirectorySyncedAt
+        && markerDirectorySyncedAt < preparedAt
+        && preparedAt < parentSyncedAt,
+      "the private marker and temporary directory are durable before atomic fence installation",
+    );
+
+    const preparedRaceClerkId = "clerk-prepared-fence-install-race";
+    const preparedRaceUserId = "prepared-fence-install-race-user";
+    const preparedRaceSource = path.join(quarantineRoot, preparedRaceUserId);
+    const preparedRaceTarget = quarantinePath(quarantineRoot, preparedRaceClerkId);
+    const preparedRaceSentinel = path.join(preparedRaceTarget, "reused-live-sentinel");
+    await mkdir(preparedRaceSource, { mode: 0o700 });
+    await writeFile(path.join(preparedRaceSource, "reused-live-sentinel"), "live");
+    let staleRenameWon = false;
+    const preparedRaceStore = createClerkAssetCleanupStore({
+      assetRoot: quarantineRoot,
+      observeDurabilityStep: (step) => {
+        // The legacy implementation exposes only the post-mkdir parent sync;
+        // the hardened implementation exposes its durable pre-install fence.
+        if (
+          !staleRenameWon
+          && (step === "quarantine-fence-prepared"
+            || step === "quarantine-fence-parent-synced")
+        ) {
+          staleRenameWon = true;
+          renameSync(preparedRaceSource, preparedRaceTarget);
+        }
+      },
+    });
+    assert.equal(
+      await preparedRaceStore.ensureQuarantineFence(preparedRaceClerkId),
+      "active",
+      "a stale cross-process rename that wins before fence install is classified as active payload",
+    );
+    assert.equal(staleRenameWon, true, "the deterministic stale rename ran in the install window");
+    await expectPresent(
+      preparedRaceSentinel,
+      "a lost fence install never recursively deletes the reused live account payload",
+    );
+    assert.equal(
+      await readFile(preparedRaceSentinel, "utf8"),
+      "live",
+      "the live sentinel contents survive the lost install",
     );
 
     const eexistRaceClerkId = "clerk-eexist-marker-sync-race";

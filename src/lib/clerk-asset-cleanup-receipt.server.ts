@@ -8,6 +8,7 @@ import {
   opendir,
   readdir,
   rename,
+  rmdir,
   rm,
   unlink,
 } from "node:fs/promises";
@@ -797,21 +798,128 @@ export function createClerkAssetCleanupStore(
       "asset-root-synced",
     );
     const target = quarantinePath(receiptId);
-    try {
-      await mkdir(target, { mode: 0o700 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      assertTrustedQuarantineTarget(await lstat(target));
+    const existingTarget = await metadataOrNull(target);
+    if (existingTarget) {
+      assertTrustedQuarantineTarget(existingTarget);
       return await syncCanonicalQuarantineTerminalFence(receiptId)
         ? "cleaned"
         : "active";
     }
 
-    await syncDirectory(quarantineDirectory, "quarantine-fence-parent-synced");
-    await removeQuarantine(clerkId);
-    const state = await quarantineState(clerkId);
-    if (state !== "cleaned") throw invalidTrustBoundary();
-    return state;
+    const temporaryPath = path.join(
+      quarantineDirectory,
+      `.${receiptId}.${process.pid}.${randomUUID()}.fence`,
+    );
+    if (path.dirname(temporaryPath) !== quarantineDirectory) {
+      throw invalidTrustBoundary();
+    }
+    const temporaryMarker = path.join(temporaryPath, QUARANTINE_TERMINAL_MARKER);
+    let temporaryMetadata: Stats | null = null;
+    let markerMetadata: Stats | null = null;
+    let directoryHandle: Awaited<ReturnType<typeof open>> | null = null;
+    let markerHandle: Awaited<ReturnType<typeof open>> | null = null;
+    let installed = false;
+    try {
+      await mkdir(temporaryPath, { mode: 0o700 });
+      temporaryMetadata = await lstat(temporaryPath);
+      assertTrustedQuarantineTarget(temporaryMetadata);
+      if ((temporaryMetadata.mode & 0o777) !== 0o700) throw invalidTrustBoundary();
+
+      markerHandle = await open(
+        temporaryMarker,
+        fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL,
+        0o600,
+      );
+      await markerHandle.writeFile(receiptId, "utf8");
+      await markerHandle.sync();
+      observe?.("quarantine-terminal-file-synced");
+      markerMetadata = await markerHandle.stat();
+      assertTrustedReceiptFile(markerMetadata);
+      if (markerMetadata.size !== Buffer.byteLength(receiptId, "utf8")) {
+        throw invalidTrustBoundary();
+      }
+
+      directoryHandle = await open(
+        temporaryPath,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+      );
+      const directoryBeforeSync = await directoryHandle.stat();
+      assertTrustedQuarantineTarget(directoryBeforeSync);
+      if (!sameDirectoryIdentity(temporaryMetadata, directoryBeforeSync)) {
+        throw invalidTrustBoundary();
+      }
+      await directoryHandle.sync();
+      observe?.("quarantine-terminal-directory-synced");
+      const preparedPathMetadata = await lstat(temporaryPath);
+      if (!sameDirectoryIdentity(temporaryMetadata, preparedPathMetadata)) {
+        throw invalidTrustBoundary();
+      }
+      observe?.("quarantine-fence-prepared");
+
+      const racedTargetBeforeInstall = await metadataOrNull(target);
+      if (racedTargetBeforeInstall) {
+        assertTrustedQuarantineTarget(racedTargetBeforeInstall);
+        return "active";
+      }
+      try {
+        await rename(temporaryPath, target);
+        installed = true;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+        const racedTarget = await metadataOrNull(target);
+        if (!racedTarget) throw invalidTrustBoundary();
+        assertTrustedQuarantineTarget(racedTarget);
+        return "active";
+      }
+
+      await syncDirectory(quarantineDirectory, "quarantine-fence-parent-synced");
+      observe?.("quarantine-terminal-parent-synced");
+      const installedDirectoryMetadata = await lstat(target);
+      const installedMarkerMetadata = await lstat(quarantineTerminalMarker(receiptId));
+      const handleDirectoryMetadata = await directoryHandle.stat();
+      const handleMarkerMetadata = await markerHandle.stat();
+      const markerBuffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
+      const { bytesRead } = await markerHandle.read(
+        markerBuffer,
+        0,
+        markerBuffer.length,
+        0,
+      );
+      if (
+        !sameDirectoryIdentity(temporaryMetadata, installedDirectoryMetadata)
+        || !sameDirectoryIdentity(temporaryMetadata, handleDirectoryMetadata)
+        || !sameFileIdentity(markerMetadata, installedMarkerMetadata)
+        || !sameFileIdentity(markerMetadata, handleMarkerMetadata)
+        || bytesRead !== Buffer.byteLength(receiptId, "utf8")
+        || markerBuffer.subarray(0, bytesRead).toString("utf8") !== receiptId
+      ) {
+        throw invalidTrustBoundary();
+      }
+      return "cleaned";
+    } finally {
+      await directoryHandle?.close().catch(() => undefined);
+      if (!installed && temporaryMetadata && markerMetadata) {
+        const currentTemporary = await metadataOrNull(temporaryPath);
+        const currentMarker = await metadataOrNull(temporaryMarker);
+        if (currentTemporary || currentMarker) {
+          if (
+            !currentTemporary
+            || !currentMarker
+            || !sameDirectoryIdentity(temporaryMetadata, currentTemporary)
+            || !sameFileIdentity(markerMetadata, currentMarker)
+          ) {
+            await markerHandle?.close().catch(() => undefined);
+            throw invalidTrustBoundary();
+          }
+          await markerHandle?.close().catch(() => undefined);
+          markerHandle = null;
+          await unlink(temporaryMarker);
+          await rmdir(temporaryPath);
+        }
+      }
+      await markerHandle?.close().catch(() => undefined);
+    }
   }
 
   async function removeQuarantine(clerkId: string): Promise<void> {

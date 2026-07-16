@@ -6,6 +6,10 @@ import {
   verifyRuntimeHookContract,
   verifyRuntimeHookMutationSensitivity,
 } from "./editor-project-recovery-hook-runtime-harness";
+import {
+  verifyProjectJobGateMutationSensitivity,
+  verifyProjectJobRuntimeGate,
+} from "./editor-project-job-runtime-harness";
 import { decideEditorProjectBootstrap } from "../src/lib/editor-project-bootstrap";
 import {
   clearEditorProjectRecoveryJournal,
@@ -162,6 +166,12 @@ function verifyHookSource(value: string): void {
   const userMarker = variableInitializer(root, "markUserDraftMutation").getText(root);
   assert.match(userMarker, /userDraftMutationTokenRef\.current\s*\+=\s*1[\s\S]*stageExplicitUserDraftMutationRef\.current\(\)/,
     "the setter boundary stages the explicit user draft synchronously after advancing its token");
+  const operationGate = variableInitializer(root, "canRunProjectOperation").getText(root);
+  assert.match(
+    operationGate,
+    /projectInitializationRef\.current\s*===\s*"ready"[\s\S]*projectReadyRef\.current[\s\S]*recoveryRef\.current\.status\s*===\s*"none"/,
+    "the shared synchronous operation gate requires initialization, readiness, and recovery ownership",
+  );
 
   for (const [field, userSetter, rawSetter, draftField] of stateContracts) {
     const declaration = userStateDeclaration(root, [field, userSetter, rawSetter]);
@@ -474,6 +484,8 @@ async function main(): Promise<void> {
   verifyReviewerRegressions();
   await verifyRuntimeHookContract();
   await verifyRuntimeHookMutationSensitivity();
+  await verifyProjectJobRuntimeGate();
+  await verifyProjectJobGateMutationSensitivity();
 
   const missingBoundary = source.replace(
     /(const\s*\[\s*projectTitle\s*,\s*setProjectTitle\s*,\s*setProjectTitleRaw\s*\]\s*=\s*useUserDraftState(?:<[^;]+?>)?\([\s\S]*?effectiveDraftRef,\s*canAcceptUserMutation,\s*)markUserDraftMutation(,\s*\);)/,
@@ -495,6 +507,18 @@ async function main(): Promise<void> {
     () => verifyHookSource(applyMutation),
     /applyDraft cannot manufacture user provenance/,
     "adding markUserDraftMutation to applyDraft makes verification fail",
+  );
+
+  const missingRecoveryGate = source.replace(
+    `      && projectReadyRef.current
+      && recoveryRef.current.status === "none",`,
+    `      && projectReadyRef.current,`,
+  );
+  assert.notEqual(missingRecoveryGate, source, "recovery gate mutation applied");
+  assert.throws(
+    () => verifyHookSource(missingRecoveryGate),
+    /shared synchronous operation gate requires initialization, readiness, and recovery ownership/,
+    "removing recovery ownership from the public operation gate makes verification fail",
   );
 
   console.log("editor-project-recovery-hook: all checks passed");

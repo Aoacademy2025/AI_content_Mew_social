@@ -15,6 +15,7 @@ import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./Expir
 
 const STORAGE_KEY = "editor-v2-job";
 const POLL_MS = 5000;
+const PROJECT_OPERATION_BLOCKED_MESSAGE = "โปรเจกต์ยังไม่พร้อม กรุณาจัดการการกู้คืนข้อมูลก่อน";
 
 function storageKey(projectId: string | null | undefined) {
   return projectId ? `${STORAGE_KEY}:${projectId}` : STORAGE_KEY;
@@ -185,6 +186,7 @@ export function useV2Job(p: V2Project) {
 
   /** ยิงงานจริง (previewMode ฝั่ง server) จาก project state ปัจจุบัน */
   const submit = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
+    if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
     setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
     try {
       // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
@@ -252,6 +254,7 @@ export function useV2Job(p: V2Project) {
 
   /** ส่งออกแบบ background job: worker เป็นเจ้าของ burn + save Gallery + project status */
   const submitExport = useCallback(async (input: SubmitExportInput): Promise<{ ok: boolean; message?: string }> => {
+    if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
     if (!input.sourceJobId) return { ok: false, message: "ไม่พบวิดีโอต้นฉบับ" };
     setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
     try {
@@ -280,7 +283,7 @@ export function useV2Job(p: V2Project) {
       setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
       return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
     }
-  }, [p.projectId, startPolling]);
+  }, [p.canRunProjectOperation, p.projectId, startPolling]);
 
   /** ยกเลิก — สำเร็จเฉพาะงานที่ยังอยู่ในคิว (ยังไม่เริ่มทำ) */
   const cancel = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {

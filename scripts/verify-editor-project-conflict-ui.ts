@@ -134,6 +134,55 @@ function verifyShell(source: string): void {
     && attributeText(node, "data-editor-recovery-focus-fallback", root) === '"true"');
   assert.equal(focusFallbacks.length, 1, "the editor exposes one stable focus-restoration fallback");
   assert.equal(tagName(focusFallbacks[0]), "button", "the focus fallback is a usable editor control");
+
+  const projectMenus = collect(root, (node): node is JsxNode => isJsxNode(node)
+    && tagName(node) === "DropdownMenu"
+    && attribute(node, "open") !== undefined);
+  assert.equal(projectMenus.length, 1, "the project menu has one controlled portal owner");
+  assert.equal(
+    attributeText(projectMenus[0], "open", root),
+    "{projectMenuOpen && !editorBlocked}",
+    "a blocked rerender synchronously closes an already-open project-menu portal",
+  );
+  const receiptDialogs = collect(root, (node): node is JsxNode => isJsxNode(node)
+    && tagName(node) === "RenderReceiptDialog");
+  assert.equal(receiptDialogs.length, 1, "the render receipt has one portal owner");
+  assert.equal(
+    attributeText(receiptDialogs[0], "open", root),
+    "{receiptOpen && !editorBlocked}",
+    "a blocked rerender synchronously closes an already-open receipt portal",
+  );
+  const deleteDialogs = collect(root, (node): node is JsxNode => isJsxNode(node)
+    && tagName(node) === "AlertDialog");
+  assert.equal(deleteDialogs.length, 1, "the project delete confirmation has one portal owner");
+  assert.equal(
+    attributeText(deleteDialogs[0], "open", root),
+    "{!!deleteProject && !editorBlocked}",
+    "a blocked rerender synchronously closes an already-open delete portal",
+  );
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\s*if \(!editorBlocked\) return;\s*setProjectMenuOpen\(false\);\s*setDeleteProject\(null\);\s*setReceiptOpen\(false\);\s*confirmingRef\.current = false;\s*setConfirmSubmitting\(false\);\s*\}, \[editorBlocked\]\);/,
+    "blocked lifecycle ownership clears all portal state, including an in-flight receipt confirmation",
+  );
+  for (const handler of [
+    "handleRender",
+    "handleConfirmRender",
+    "handleNewProject",
+    "openProject",
+    "requestDeleteProject",
+    "handleDeleteProject",
+  ]) {
+    const declarations = collect(root, ts.isFunctionDeclaration).filter(
+      (declaration) => declaration.name?.text === handler,
+    );
+    assert.equal(declarations.length, 1, `${handler} has one declaration`);
+    assert.match(
+      declarations[0].getText(root),
+      /if \(!p\.canRunProjectOperation\(\)\) return;/,
+      `${handler} rejects same-tick operations through the ref-backed lifecycle getter`,
+    );
+  }
 }
 
 function assertPreventedHandler(node: JsxNode, name: string, root: ts.SourceFile): void {
@@ -414,9 +463,95 @@ async function verifyMountedAlertDialogContract(): Promise<void> {
       assert.AssertionError,
       "a controlled mutation to the dismissible Dialog primitive is rejected",
     );
+    await verifyAlreadyOpenPortalsCloseWhenBlocked(browser);
     await verifyActualHistoryHelperInChromium(browser);
   } finally {
     await browser.close();
+  }
+}
+
+async function verifyAlreadyOpenPortalsCloseWhenBlocked(browser: Browser): Promise<void> {
+  const fixture = `
+    import React, { useEffect, useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import * as Menu from "@radix-ui/react-dropdown-menu";
+    import * as Alert from "@radix-ui/react-alert-dialog";
+
+    function AlertPortal({ open, marker }) {
+      return <Alert.Root open={open}>
+        <Alert.Portal>
+          <Alert.Overlay />
+          <Alert.Content data-portal-marker={marker}>
+            <Alert.Title>{marker}</Alert.Title>
+            <Alert.Description>blocking portal fixture</Alert.Description>
+            <Alert.Cancel>close</Alert.Cancel>
+          </Alert.Content>
+        </Alert.Portal>
+      </Alert.Root>;
+    }
+
+    function Fixture() {
+      const [blocked, setBlocked] = useState(false);
+      const [projectMenuOpen, setProjectMenuOpen] = useState(true);
+      const [deleteOpen, setDeleteOpen] = useState(true);
+      const [receiptOpen, setReceiptOpen] = useState(true);
+      useEffect(() => {
+        window.blockEditorPortals = () => setBlocked(true);
+      }, []);
+      useEffect(() => {
+        if (!blocked) return;
+        setProjectMenuOpen(false);
+        setDeleteOpen(false);
+        setReceiptOpen(false);
+      }, [blocked]);
+      return <>
+        <Menu.Root open={projectMenuOpen && !blocked}>
+          <Menu.Portal>
+            <Menu.Content data-portal-marker="project-menu">
+              <Menu.Item>project</Menu.Item>
+            </Menu.Content>
+          </Menu.Portal>
+        </Menu.Root>
+        <AlertPortal open={deleteOpen && !blocked} marker="delete" />
+        <AlertPortal open={receiptOpen && !blocked} marker="receipt" />
+      </>;
+    }
+
+    createRoot(document.getElementById("root")).render(<Fixture />);
+  `;
+  const bundled = await build({
+    stdin: {
+      contents: fixture,
+      loader: "tsx",
+      resolveDir: process.cwd(),
+      sourcefile: "blocked-editor-portals-fixture.tsx",
+    },
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    write: false,
+    logLevel: "silent",
+  });
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>');
+    await page.addScriptTag({ content: bundled.outputFiles[0].text });
+    await page.waitForFunction(() => (
+      document.querySelectorAll("[data-portal-marker]").length === 3
+    ));
+    const before = await page.$$eval("[data-portal-marker]", (nodes) => (
+      nodes.map((node) => node.getAttribute("data-portal-marker")).sort()
+    ));
+    await page.evaluate(() => (
+      window as unknown as { blockEditorPortals(): void }
+    ).blockEditorPortals());
+    await page.waitForFunction(() => (
+      document.querySelectorAll("[data-portal-marker]").length === 0
+    ));
+    assert.deepEqual(before, ["delete", "project-menu", "receipt"],
+      "the runtime fixture starts with all three Radix portals already open");
+  } finally {
+    await page.close();
   }
 }
 
@@ -859,6 +994,20 @@ async function main(): Promise<void> {
   assertFixtureRejected(
     () => verifyShell(shellSource.replace(/\s+inert=\{editorBlocked \? true : undefined\}/, "")),
     "controlled fixture proves missing inert is detected",
+  );
+  assertFixtureRejected(
+    () => verifyShell(shellSource.replace(
+      "open={projectMenuOpen && !editorBlocked}",
+      "open={projectMenuOpen}",
+    )),
+    "controlled fixture proves an already-open project portal cannot escape the blocked boundary",
+  );
+  assertFixtureRejected(
+    () => verifyShell(shellSource.replace(
+      "    setProjectMenuOpen(false);\n    setDeleteProject(null);\n    setReceiptOpen(false);",
+      "    setProjectMenuOpen(false);",
+    )),
+    "controlled fixture proves blocked lifecycle ownership clears delete and receipt portal state",
   );
   assertFixtureRejected(
     () => verifyDialog(dialogSource.replace(

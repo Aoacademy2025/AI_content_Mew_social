@@ -202,31 +202,96 @@ function isOwnershipReturn(statement: ts.Statement): boolean {
   return ownedStatements.length === 1 && ts.isReturnStatement(ownedStatements[0]);
 }
 
-function assignmentRoot(expression: ts.Expression): ts.Identifier | null {
+function unwrapAssignmentTarget(expression: ts.Expression): ts.Expression {
   let current = expression;
-  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isTypeAssertionExpression(current)
+    || ts.isNonNullExpression(current)
+    || ts.isSatisfiesExpression(current)
+  ) {
     current = current.expression;
   }
-  return ts.isIdentifier(current) ? current : null;
+  return current;
+}
+
+function assignmentRoots(expression: ts.Expression): ts.Identifier[] {
+  let current = unwrapAssignmentTarget(expression);
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = current.expression;
+    current = unwrapAssignmentTarget(current);
+  }
+  if (ts.isIdentifier(current)) return [current];
+  if (ts.isArrayLiteralExpression(current)) {
+    return current.elements.flatMap((element) => {
+      if (ts.isOmittedExpression(element)) return [];
+      return assignmentRoots(ts.isSpreadElement(element) ? element.expression : element);
+    });
+  }
+  if (ts.isObjectLiteralExpression(current)) {
+    return current.properties.flatMap((property) => {
+      if (ts.isPropertyAssignment(property)) return assignmentRoots(property.initializer);
+      if (ts.isShorthandPropertyAssignment(property)) return [property.name];
+      if (ts.isSpreadAssignment(property)) return assignmentRoots(property.expression);
+      return [];
+    });
+  }
+  return [];
 }
 
 function writesIdentifier(node: ts.Node, name: string): boolean {
   if (ts.isBinaryExpression(node)) {
     const operator = node.operatorToken.kind;
-    const root = assignmentRoot(node.left);
     return operator >= ts.SyntaxKind.FirstAssignment
       && operator <= ts.SyntaxKind.LastAssignment
-      && root?.text === name;
+      && assignmentRoots(node.left).some((root) => root.text === name);
   }
   if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
     const isUpdate = node.operator === ts.SyntaxKind.PlusPlusToken
       || node.operator === ts.SyntaxKind.MinusMinusToken;
-    return isUpdate && assignmentRoot(node.operand)?.text === name;
+    return isUpdate && assignmentRoots(node.operand).some((root) => root.text === name);
   }
   return ts.isVariableDeclaration(node)
     && ts.isIdentifier(node.name)
     && node.name.text === name
     && node.initializer !== undefined;
+}
+
+function parseProjectWithSymbols(source: string): {
+  root: ts.SourceFile;
+  checker: ts.TypeChecker;
+} {
+  const fileName = "src/app/(dashboard)/video-editor/_v2/useV2Project.ts";
+  const root = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const options: ts.CompilerOptions = {
+    target: ts.ScriptTarget.Latest,
+    jsx: ts.JsxEmit.Preserve,
+    noLib: true,
+    noResolve: true,
+  };
+  const host: ts.CompilerHost = {
+    getSourceFile: (requested) => requested === fileName ? root : undefined,
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => undefined,
+    getCurrentDirectory: () => "",
+    getDirectories: () => [],
+    fileExists: (requested) => requested === fileName,
+    readFile: (requested) => requested === fileName ? source : undefined,
+    getCanonicalFileName: (requested) => requested,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+  };
+  const program = ts.createProgram([fileName], options, host);
+  const boundRoot = program.getSourceFile(fileName);
+  assert.ok(boundRoot, "project hook is bound for symbol-identity checks");
+  return { root: boundRoot, checker: program.getTypeChecker() };
 }
 
 type ProjectDefaultFlow = {
@@ -292,13 +357,7 @@ function directTransitionIndex(
 }
 
 function verifyBlankProjectDefaultContract(source: string): void {
-  const root = ts.createSourceFile(
-    "src/app/(dashboard)/video-editor/_v2/useV2Project.ts",
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  );
+  const { root, checker } = parseProjectWithSymbols(source);
   const { guard, loadCall, loadTry, catchClause } = projectDefaultFlow(root);
   const guardBlock = guard.thenStatement;
   assert.ok(ts.isBlock(guardBlock), "classified blank-project guard owns a block");
@@ -458,8 +517,11 @@ function verifyBlankProjectDefaultContract(source: string): void {
       && inheritedAssignmentReference.text === inheritedName,
     "only the blank seed receives the inherited Logo config",
   );
+  const inheritedSymbol = checker.getSymbolAtLocation(inheritedDeclaration.name);
+  assert.ok(inheritedSymbol, "the inherited Logo declaration has semantic identity");
   const inheritedReferences = descendants(guardBlock, ts.isIdentifier).filter(
-    (identifier) => identifier.text === inheritedName && identifier !== inheritedDeclaration.name,
+    (identifier) => identifier !== inheritedDeclaration.name
+      && checker.getSymbolAtLocation(identifier) === inheritedSymbol,
   );
   assert.equal(inheritedReferences.length, 2, "inherited Logo has no use beyond guard and seed write");
   assert.ok(
@@ -631,8 +693,26 @@ const nestedUnreachableSetterMutation = projectSource.slice(
 const resetDefaultBeforeInheritanceMutation = projectSource.slice(0, blankLoadTry.end)
   + "\n        accountDefault = null;"
   + projectSource.slice(blankLoadTry.end);
+const parenthesizedDefaultRewriteMutation = projectSource.slice(0, blankLoadTry.end)
+  + "\n        (accountDefault) = null;"
+  + projectSource.slice(blankLoadTry.end);
+const assertedDefaultRewriteMutation = projectSource.slice(0, blankLoadTry.end)
+  + "\n        (accountDefault as LogoOverlayConfig | null) = null;"
+  + projectSource.slice(blankLoadTry.end);
+const arrayDestructuringDefaultRewriteMutation = projectSource.slice(0, blankLoadTry.end)
+  + "\n        [accountDefault] = [null];"
+  + projectSource.slice(blankLoadTry.end);
+const objectDestructuringDefaultRewriteMutation = projectSource.slice(0, blankLoadTry.end)
+  + "\n        ({ value: accountDefault } = { value: null });"
+  + projectSource.slice(blankLoadTry.end);
 const extraInheritedUseMutation = projectSource.slice(0, inheritedSeedAssignment.parent.end)
   + `\n        void ${inheritedName};`
+  + projectSource.slice(inheritedSeedAssignment.parent.end);
+const shadowedAndPropertyKeyAcceptance = projectSource.slice(
+  0,
+  inheritedSeedAssignment.parent.end,
+) + `\n        void { ${inheritedName}: true };\n`
+  + `        void ((${inheritedName}: string) => ${inheritedName})("shadow");`
   + projectSource.slice(inheritedSeedAssignment.parent.end);
 
 assert.doesNotThrow(
@@ -659,10 +739,26 @@ assert.throws(
   /resolved account default is not rewritten before inheritance/,
   "verifier rejects resetting the resolved default before inheritance",
 );
+for (const [label, mutation] of [
+  ["parenthesized", parenthesizedDefaultRewriteMutation],
+  ["type-asserted", assertedDefaultRewriteMutation],
+  ["array destructuring", arrayDestructuringDefaultRewriteMutation],
+  ["object destructuring", objectDestructuringDefaultRewriteMutation],
+] as const) {
+  assert.throws(
+    () => verifyBlankProjectDefaultContract(mutation),
+    /resolved account default is not rewritten before inheritance/,
+    `verifier rejects a ${label} resolved-default rewrite`,
+  );
+}
 assert.throws(
   () => verifyBlankProjectDefaultContract(extraInheritedUseMutation),
   /inherited Logo has no use beyond guard and seed write/,
   "verifier rejects an extra use of the inherited Logo result",
+);
+assert.doesNotThrow(
+  () => verifyBlankProjectDefaultContract(shadowedAndPropertyKeyAcceptance),
+  "shadowed bindings and same-text property keys are not uses of the inherited Logo declaration",
 );
 
 const autosaveSource = sourceBetween(
