@@ -8,6 +8,8 @@ import {
 } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { decryptKey } from "@/lib/key-crypto";
+import { preflightElevenLabs, preflightPexels } from "@/lib/key-preflight";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
@@ -317,6 +319,28 @@ export async function POST(req: Request) {
     }
     if (!user.pexelsKey && !user.pixabayKey) {
       return NextResponse.json({ error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll" }, { status: 400 });
+    }
+
+    // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit): 20/59 weekly VideoJob
+    // failures were BYOK keys that exist but don't work (ElevenLabs missing the
+    // text_to_speech scope, an invalid Pexels key) — the guards above only check
+    // presence, so these jobs were accepted and failed mid-pipeline with a raw JSON
+    // dump as the only user-facing message. Fail-open (@/lib/key-preflight): a network
+    // hiccup or slow provider never blocks a legitimate job, only a confirmed 401/403.
+    // Pexels is only checked when it's the user's SOLE video-stock source — with a
+    // Pixabay key also set, fetch-stock already degrades gracefully around a broken
+    // Pexels key (see fetch-stock's stockProviderError handling), so blocking here
+    // would reject jobs that would otherwise succeed.
+    const preflightChecks: Promise<{ key: "elevenlabs" | "pexels"; message: string } | null>[] = [];
+    if (useEleven && user.elevenlabsKey) preflightChecks.push(preflightElevenLabs(decryptKey(user.elevenlabsKey)));
+    // Upload mode (cutaway) still needs b-roll windows (transcribe → stock), same as
+    // script mode — no !uploadMode gate here, matching the presence guard above.
+    if (user.pexelsKey && !user.pixabayKey) preflightChecks.push(preflightPexels(decryptKey(user.pexelsKey)));
+    if (preflightChecks.length) {
+      const blocks = (await Promise.all(preflightChecks)).filter((b): b is { key: "elevenlabs" | "pexels"; message: string } => b !== null);
+      if (blocks[0]) {
+        return NextResponse.json({ error: "invalid_key", missingKey: blocks[0].key, message: blocks[0].message }, { status: 400 });
+      }
     }
 
     // Avatar (optional) — same resolver as MCP; layout falls back to the saved preset.

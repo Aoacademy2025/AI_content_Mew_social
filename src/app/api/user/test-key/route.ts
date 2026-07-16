@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { decryptKey } from "@/lib/key-crypto";
+import { testElevenLabsKey, testPexelsKey } from "@/lib/key-preflight";
 
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
@@ -93,40 +94,20 @@ async function testHeyGen(key: string): Promise<{ ok: boolean; message: string }
   } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ HeyGen ได้" }; }
 }
 
+// testElevenLabsKey / testPexelsKey now live in @/lib/key-preflight — shared with the
+// job-submit preflight guard (Task 7, 2026-07-16 stability audit) so the ElevenLabs
+// scoped-key logic and Pexels check exist in exactly one place. This "Test key" button
+// is a deliberate user click (not a fast-fail gate), so give it a longer budget than the
+// preflight's 3s — 12s comfortably covers ElevenLabs' occasionally slow /v1/user.
+const SETTINGS_TEST_TIMEOUT_MS = 12_000;
 async function testElevenLabs(key: string): Promise<{ ok: boolean; message: string }> {
-  // ElevenLabs now uses SCOPED api keys. A key granted only text_to_speech (which is
-  // all our TTS needs) returns 401 on /v1/user (needs user_read) and /v1/voices
-  // (needs voices_read) — so the old "/v1/user → 401 = invalid" check false-failed
-  // perfectly good keys. Validate against the capability we actually use (TTS).
-  try {
-    const res = await fetch("https://api.elevenlabs.io/v1/user", { headers: { "xi-api-key": key } });
-    if (res.ok) return { ok: true, message: "✓ ElevenLabs key ใช้งานได้" };
-    if (res.status !== 401) return { ok: false, message: `Error ${res.status}` };
-    // 401 → either a truly bad key, or a valid TTS-scoped key lacking user_read.
-    const body = (await res.text().catch(() => "")).toLowerCase();
-    if (body.includes("missing_permissions")) {
-      return { ok: true, message: "✓ ElevenLabs key ใช้งานได้ (เป็น key แบบจำกัดสิทธิ์ — สร้างเสียงได้ปกติ)" };
-    }
-    // Ambiguous 401 → confirm against the real TTS endpoint (a standard premade voice,
-    // ~1 character of quota). This is exactly what video generation calls.
-    const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM", {
-      method: "POST",
-      headers: { "xi-api-key": key, "Content-Type": "application/json" },
-      body: JSON.stringify({ text: ".", model_id: "eleven_multilingual_v2" }),
-    });
-    if (ttsRes.ok) return { ok: true, message: "✓ ElevenLabs key ใช้งานได้ (ยืนยันด้วยการสร้างเสียง)" };
-    if (ttsRes.status === 401) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ" };
-    return { ok: false, message: `Error ${ttsRes.status}` };
-  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ ElevenLabs ได้" }; }
+  const r = await testElevenLabsKey(key, SETTINGS_TEST_TIMEOUT_MS);
+  return { ok: r.ok, message: r.message };
 }
 
 async function testPexels(key: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const res = await fetch("https://api.pexels.com/videos/search?query=nature&per_page=1", { headers: { Authorization: key } });
-    if (res.ok) return { ok: true, message: "Pexels key ใช้งานได้" };
-    if (res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้อง" };
-    return { ok: false, message: `Error ${res.status}` };
-  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Pexels ได้" }; }
+  const r = await testPexelsKey(key, SETTINGS_TEST_TIMEOUT_MS);
+  return { ok: r.ok, message: r.message };
 }
 
 async function testPixabay(key: string): Promise<{ ok: boolean; message: string }> {
