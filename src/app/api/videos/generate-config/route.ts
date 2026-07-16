@@ -193,7 +193,18 @@ export async function POST(req: Request) {
   console.log(`[config] start: ${stockVideos.length} clips, ${sceneCaptions.length} captions, ${audioDurationMs}ms`);
 
   if (!voiceFile) return NextResponse.json({ error: "voiceFile required" }, { status: 400 });
-  if (!audioDurationMs) return NextResponse.json({ error: "audioDurationMs required" }, { status: 400 });
+  if (!Number.isFinite(audioDurationMs) || audioDurationMs <= 0) {
+    return NextResponse.json(
+      { error: "invalid_audio_duration", retryable: false },
+      { status: 400 },
+    );
+  }
+  if (!Number.isFinite(fps) || fps <= 0) {
+    return NextResponse.json(
+      { error: "invalid_fps", retryable: false },
+      { status: 400 },
+    );
+  }
 
   const audioDurationSec = audioDurationMs / 1000;
   const durationInFrames = Math.round(audioDurationSec * fps);
@@ -701,6 +712,7 @@ export async function POST(req: Request) {
 
   const config: ShortVideoConfig = {
     bgVideos,
+    requestedBrollWindowCount: Array.isArray(brollWindows) ? brollWindows.length : undefined,
     keywordPopups,
     voiceFile,
     voiceVolume: 1.0,

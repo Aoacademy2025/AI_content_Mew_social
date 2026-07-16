@@ -236,12 +236,13 @@ async function main() {
           if (path === "/api/videos/extract-keywords") {
             log.push({ method: "POST", path, body });
             const scenes = ((body as { scenes?: string[] }).scenes ?? []).filter(Boolean);
+            const cappedScenes = scenes.slice(0, 36);
             return {
-              keywords: scenes.map((_, index) => `window-${index}`),
-              keywordAlternatives: scenes.map((_, index) => [`window-${index}`]),
+              keywords: cappedScenes.map((_, index) => `window-${index}`),
+              keywordAlternatives: cappedScenes.map((_, index) => [`window-${index}`]),
               keywordsPerScene: 1,
-              sceneClipCounts: scenes.map(() => 1),
-              sceneDurations: scenes.map(() => LONG_DURATION_MS / 1000 / scenes.length),
+              sceneClipCounts: cappedScenes.map(() => 1),
+              sceneDurations: cappedScenes.map(() => LONG_DURATION_MS / 1000 / cappedScenes.length),
               visualDirection: "",
             } as T;
           }
@@ -287,6 +288,7 @@ async function main() {
       } | undefined;
       ok(LONG_SEGMENTS.length === 141, `I: fixture has 141 captions (got ${LONG_SEGMENTS.length})`);
       ok((stockBody?.keywords?.length ?? 0) === 53, `I: long preview requests all 53 semantic windows (got ${stockBody?.keywords?.length ?? 0})`);
+      ok(new Set(stockBody?.keywords ?? []).size === 36, `I: missing keyword units are deterministically cycled (got ${new Set(stockBody?.keywords ?? []).size} unique)`);
       ok((configBody?.brollWindows?.length ?? 0) === 53, `I: config retains all 53 target windows (got ${configBody?.brollWindows?.length ?? 0})`);
       ok((configBody?.stockVideos?.length ?? 0) === 36, `I: config accepts the capped 36-asset pool (got ${configBody?.stockVideos?.length ?? 0})`);
     } finally {

@@ -17,7 +17,11 @@ import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { coverBrollTimeline } from "@/lib/broll-coverage";
+import {
+  BrollCoverageError,
+  coverProbedBrollTimeline,
+  type ProbedBrollAsset,
+} from "@/lib/broll-coverage";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
@@ -826,49 +830,61 @@ export async function POST(req: Request) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
       // Probe duration and clamp source metadata. Keep the desired timeline end intact;
       // the coverage pass below splits/reuses media instead of creating a black gap.
-      const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
+      const probedBgVideos: ProbedBrollAsset[] = [];
+      let resolutionDroppedAssetCount = 0;
       for (const v of shortVideoConfig.bgVideos ?? []) {
         try {
           const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
-          // Probe local file for actual duration
           const localPath = toLocalFilePathIfInternal(resolvedSrc);
           let actualDur: number | null = null;
-          if (localPath) actualDur = await probeVideoDurationSec(localPath);
-
-          let safeClipDuration = v.clipDuration;
-          let safeClipOffset = v.clipOffset ?? 0;
-          if (actualDur != null) {
-            // 0.5s safety margin — compositor errors happen when the last frames
-            // are missing from the container even though the duration header claims they exist
-            const safeMax = Math.max(0.5, actualDur - 0.5);
-            if (!safeClipDuration || safeClipDuration > safeMax) safeClipDuration = safeMax;
-            const segLen = v.end - v.start;
-            if (segLen > safeMax) {
-              console.warn(
-                `[render] bgVideo span ${segLen.toFixed(2)}s exceeds ` +
-                `${safeMax.toFixed(2)}s playable media — scheduling coverage repair`,
-              );
-            }
-            // Clamp clipOffset so startFrom never exceeds safe duration
-            if (safeClipOffset >= safeMax) {
-              safeClipOffset = safeClipOffset % safeMax;
-            }
+          if (localPath && fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500) {
+            actualDur = await probeVideoDurationSec(localPath);
           }
-          resolvedBgVideos.push({ ...v, src: resolvedSrc, clipDuration: safeClipDuration, clipOffset: safeClipOffset });
+          probedBgVideos.push({
+            asset: { ...v, src: resolvedSrc },
+            actualDurationSec: actualDur,
+            probeRequired: localPath !== null,
+          });
         } catch (e) {
+          resolutionDroppedAssetCount += 1;
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }
       }
-      if (resolvedBgVideos.length === 0) {
+      if (probedBgVideos.length === 0) {
         throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
       }
 
-      const coverage = coverBrollTimeline(
-        resolvedBgVideos,
-        resolvedBgVideos,
+      const coverage = coverProbedBrollTimeline(
+        probedBgVideos,
         durationInFrames / fps,
         fps,
       );
+      const sourceWindowCount = new Set(
+        probedBgVideos
+          .map((entry) => entry.asset.sourceIndex)
+          .filter(
+            (sourceIndex): sourceIndex is number =>
+              typeof sourceIndex === "number" && Number.isFinite(sourceIndex),
+          ),
+      ).size;
+      const coverageRepairCount =
+        coverage.metrics.repairedSegmentCount +
+        coverage.droppedAssetCount +
+        resolutionDroppedAssetCount;
+      const coverageTelemetryProperties = {
+        requestedWindowCount:
+          shortVideoConfig.requestedBrollWindowCount ||
+          sourceWindowCount ||
+          (shortVideoConfig.bgVideos ?? []).length,
+        availableAssetCount: coverage.metrics.availableAssetCount,
+        distinctAssetCount: new Set(coverage.segments.map((segment) => segment.src)).size,
+        coverageSegmentCount: coverage.metrics.outputSegmentCount,
+        coverageGapCount: coverage.metrics.gapCount,
+        coverageRepairCount,
+        coverageRatio: coverage.metrics.coverageRatio,
+        uncoveredTailSec: coverage.metrics.uncoveredTailSec,
+        coverageRejected: !coverage.complete,
+      };
       if (!coverage.complete) {
         await recordTelemetryEvent(userId, {
           name: "broll_coverage_rejected",
@@ -876,18 +892,21 @@ export async function POST(req: Request) {
           source: "server",
           step: "render.coverage",
           status: "error",
-          properties: coverage.metrics,
+          properties: coverageTelemetryProperties,
         }).catch(() => {});
-        throw new Error("B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่");
+        throw new BrollCoverageError(
+          "B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่",
+          coverage.metrics,
+        );
       }
-      if (coverage.metrics.repairedSegmentCount > 0) {
+      if (coverageRepairCount > 0) {
         await recordTelemetryEvent(userId, {
           name: "broll_coverage_repaired",
           category: "performance",
           source: "server",
           step: "render.coverage",
           status: "done",
-          properties: coverage.metrics,
+          properties: coverageTelemetryProperties,
         }).catch(() => {});
       }
 
@@ -1328,6 +1347,22 @@ export async function POST(req: Request) {
     }
     if (error instanceof RenderDeployDrainError) {
       return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+    }
+    if (error instanceof BrollCoverageError) {
+      return NextResponse.json(
+        {
+          error: error.code,
+          retryable: true,
+          metrics: {
+            requestedSpanCount: error.metrics.requestedSpanCount,
+            availableAssetCount: error.metrics.availableAssetCount,
+            coverageSegmentCount: error.metrics.outputSegmentCount,
+            coverageGapCount: error.metrics.gapCount,
+            uncoveredTailSec: error.metrics.uncoveredTailSec,
+          },
+        },
+        { status: 422 },
+      );
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);

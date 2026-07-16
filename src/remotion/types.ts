@@ -129,6 +129,8 @@ export interface SubtitleOverlayConfig {
 
 export interface ShortVideoConfig {
   bgVideos: BrollVideo[];
+  /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
+  requestedBrollWindowCount?: number;
   keywordPopups: KeywordPopupItem[];
   voiceFile: string;
   voiceVolume: number;

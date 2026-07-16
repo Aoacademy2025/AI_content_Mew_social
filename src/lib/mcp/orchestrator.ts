@@ -168,12 +168,26 @@ function alignBrollWindowsToKeywords(
   if (windows.length === 0 || keywords.length === windows.length) {
     return { windows, units, keywords, alternatives };
   }
-  const count = Math.min(windows.length, keywords.length);
+
+  const alignedKeywords = windows.map((window, index) =>
+    keywords[index]
+      ?? (keywords.length > 0 ? keywords[index % keywords.length] : undefined)
+      ?? units[index]?.text
+      ?? window.text
+      ?? "general lifestyle",
+  );
+  const alignedAlternatives = alternatives
+    ? windows.map((_, index) =>
+        alternatives[index]
+          ?? (alternatives.length > 0 ? alternatives[index % alternatives.length] : undefined)
+          ?? [alignedKeywords[index]],
+      )
+    : undefined;
   return {
-    windows: windows.slice(0, count),
-    units: units.slice(0, count),
-    keywords: keywords.slice(0, count),
-    alternatives: alternatives?.slice(0, count),
+    windows,
+    units,
+    keywords: alignedKeywords,
+    alternatives: alignedAlternatives,
   };
 }
 
@@ -216,6 +230,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       step: "fetchStock",
       status: "done",
       properties: {
+        pipelineRunId,
+        jobId,
+        via: "mcp",
         requestedWindowCount,
         availableAssetCount: results.length,
         distinctAssetCount: new Set(assetKeys).size,
