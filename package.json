@@ -25,6 +25,7 @@
     "verify:llm-rank": "tsx scripts/verify-llm-rank-parse.ts",
     "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
+    "verify:broll-coverage": "tsx scripts/verify-broll-coverage.ts",
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
     "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",
