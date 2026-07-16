@@ -82,4 +82,21 @@ const stockSource = fs.readFileSync(
 assert.ok(stockSource.includes("sourceIndex"));
 assert.ok(stockSource.includes("selectRepresentativeItems"));
 
+const renderSource = fs.readFileSync(
+  "src/app/api/videos/render/route.ts",
+  "utf8",
+);
+assert.ok(renderSource.includes("coverBrollTimeline("));
+assert.ok(renderSource.includes("broll_coverage_rejected"));
+
+const compositionSource = fs.readFileSync(
+  "src/remotion/ShortVideoComposition.tsx",
+  "utf8",
+);
+assert.ok(
+  !compositionSource.includes(
+    "last.src === v.src && Math.abs(last.endFrame - startFrame) <= 1",
+  ),
+);
+
 console.log("All broll-coverage checks passed.");

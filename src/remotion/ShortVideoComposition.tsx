@@ -14,6 +14,7 @@ import {
 } from "remotion";
 import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { renderSubtitle } from "./renderSubtitle";
+import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -26,6 +27,10 @@ const FONTS_CSS =
 
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
 const CROSSFADE_FRAMES = 8;
+
+if (process.env.NODE_ENV !== "production" && BROLL_SEQUENCE_GUARD_FRAMES < CROSSFADE_FRAMES + 2) {
+  throw new Error("B-roll sequence guard must cover the crossfade and decoder end guard");
+}
 
 const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
 
@@ -576,13 +581,9 @@ export function ShortVideoComposition({
           const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
           const clipOffset   = v.clipOffset ?? 0;
-          // Merge adjacent segments with same src (tolerance 1 frame for rounding)
-          const last = segs[segs.length - 1];
-          if (last && last.src === v.src && Math.abs(last.endFrame - startFrame) <= 1) {
-            last.endFrame = endFrame;
-          } else {
-            segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
-          }
+          // Preserve deliberate same-source splits: each split may reset clipOffset to
+          // zero so its requested frames stay inside the probed source duration.
+          segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
         }
 
         // 2. Render each segment as a Sequence

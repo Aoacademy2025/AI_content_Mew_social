@@ -17,6 +17,7 @@ import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { coverBrollTimeline } from "@/lib/broll-coverage";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
@@ -823,7 +824,8 @@ export async function POST(req: Request) {
     let resolvedShortConfig = shortVideoConfig;
     if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
-      // Also probe duration and clamp clipDuration/end-start to avoid out-of-range frames
+      // Probe duration and clamp source metadata. Keep the desired timeline end intact;
+      // the coverage pass below splits/reuses media instead of creating a black gap.
       const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
       for (const v of shortVideoConfig.bgVideos ?? []) {
         try {
@@ -834,7 +836,6 @@ export async function POST(req: Request) {
           if (localPath) actualDur = await probeVideoDurationSec(localPath);
 
           let safeClipDuration = v.clipDuration;
-          let safeEnd = v.end;
           let safeClipOffset = v.clipOffset ?? 0;
           if (actualDur != null) {
             // 0.5s safety margin — compositor errors happen when the last frames
@@ -843,15 +844,17 @@ export async function POST(req: Request) {
             if (!safeClipDuration || safeClipDuration > safeMax) safeClipDuration = safeMax;
             const segLen = v.end - v.start;
             if (segLen > safeMax) {
-              safeEnd = v.start + safeMax;
-              console.warn(`[render] clamped bgVideo segment ${(v.end - v.start).toFixed(2)}s → ${(safeEnd - v.start).toFixed(2)}s (file is ${actualDur.toFixed(2)}s)`);
+              console.warn(
+                `[render] bgVideo span ${segLen.toFixed(2)}s exceeds ` +
+                `${safeMax.toFixed(2)}s playable media — scheduling coverage repair`,
+              );
             }
             // Clamp clipOffset so startFrom never exceeds safe duration
             if (safeClipOffset >= safeMax) {
               safeClipOffset = safeClipOffset % safeMax;
             }
           }
-          resolvedBgVideos.push({ ...v, src: resolvedSrc, end: safeEnd, clipDuration: safeClipDuration, clipOffset: safeClipOffset });
+          resolvedBgVideos.push({ ...v, src: resolvedSrc, clipDuration: safeClipDuration, clipOffset: safeClipOffset });
         } catch (e) {
           console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
         }
@@ -860,23 +863,39 @@ export async function POST(req: Request) {
         throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
       }
 
-      // Gap-fill pass: if a segment was clamped short, extend the NEXT segment's start
-      // back to fill the gap — prevents black screen between clips (which makes subs
-      // look out of sync even when timing is correct)
-      for (let i = 0; i < resolvedBgVideos.length - 1; i++) {
-        const cur  = resolvedBgVideos[i];
-        const next = resolvedBgVideos[i + 1];
-        if (next.start > cur.end + 0.04) {
-          console.warn(`[render] gap ${cur.end.toFixed(2)}s→${next.start.toFixed(2)}s — extending next segment back`);
-          next.start = cur.end;
-        }
+      const coverage = coverBrollTimeline(
+        resolvedBgVideos,
+        resolvedBgVideos,
+        durationInFrames / fps,
+        fps,
+      );
+      if (!coverage.complete) {
+        await recordTelemetryEvent(userId, {
+          name: "broll_coverage_rejected",
+          category: "error",
+          source: "server",
+          step: "render.coverage",
+          status: "error",
+          properties: coverage.metrics,
+        }).catch(() => {});
+        throw new Error("B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่");
+      }
+      if (coverage.metrics.repairedSegmentCount > 0) {
+        await recordTelemetryEvent(userId, {
+          name: "broll_coverage_repaired",
+          category: "performance",
+          source: "server",
+          step: "render.coverage",
+          status: "done",
+          properties: coverage.metrics,
+        }).catch(() => {});
       }
 
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
-        bgVideos: resolvedBgVideos,
+        bgVideos: coverage.segments,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       // bgm: safeBgmOrDrop already removed any unplayable value — never throws on music
