@@ -6,6 +6,7 @@ import nodeCrypto from "node:crypto";
 import ts from "typescript";
 
 import * as brollCoverage from "../src/lib/broll-coverage";
+import { resolveMediaBaseUrl } from "../src/lib/render/media-base-url";
 
 function compileRenderRoute(source: string): string {
   return ts.transpileModule(source, {
@@ -130,6 +131,7 @@ async function main(): Promise<void> {
     if (specifier === "@/lib/broll-coverage") return brollCoverage;
     if (specifier === "@/lib/render/run-render") return { runRender: async () => { throw new Error("must not render"); }, SupersededError };
     if (specifier === "@/lib/render/remotion-public-dir") return { prepareRemotionBundlePublicDir: () => "/tmp/public" };
+    if (specifier === "@/lib/render/media-base-url") return { resolveMediaBaseUrl };
     if (specifier === "@/lib/render/job-store") {
       return {
         enqueueRenderJob: async () => { enqueueCount += 1; return { id: "unexpected" }; },
