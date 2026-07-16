@@ -7,6 +7,8 @@ import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { decryptKey } from "@/lib/key-crypto";
+import { preflightElevenLabs, preflightPexels } from "@/lib/key-preflight";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -159,6 +161,16 @@ const handler = createMcpHandler(
           try { resolveGeminiKey(u); }
           catch (e) { if (e instanceof KeyRequiredError) return missingKeyError("gemini"); throw e; }
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the
+          // same guard in /api/videos/jobs (web). See @/lib/key-preflight for the
+          // fail-open rationale (only a confirmed 401/403 blocks job creation).
+          const preflightChecks: Promise<{ key: "elevenlabs" | "pexels"; message: string } | null>[] = [];
+          if (useEleven && u.elevenlabsKey) preflightChecks.push(preflightElevenLabs(decryptKey(u.elevenlabsKey)));
+          if (u.pexelsKey && !u.pixabayKey) preflightChecks.push(preflightPexels(decryptKey(u.pexelsKey)));
+          if (preflightChecks.length) {
+            const blocks = (await Promise.all(preflightChecks)).filter((b): b is { key: "elevenlabs" | "pexels"; message: string } => b !== null);
+            if (blocks[0]) return { error: "invalid_key", missingKey: blocks[0].key, message: blocks[0].message };
+          }
           const avatar = resolveAvatarRequest(
             { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,
               avatarScale: args.avatarScale, avatarOffsetX: args.avatarOffsetX, avatarOffsetY: args.avatarOffsetY },
