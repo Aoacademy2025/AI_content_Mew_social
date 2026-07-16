@@ -81,4 +81,25 @@ assert.match(gallerySource, /resolveVideoDisplayName\(/, "Gallery uses the share
 assert.match(gallerySource, /projectTitle:\s*video\.project\?\.title/, "Gallery passes project title to the resolver");
 assert.match(gallerySource, /download=\{downloadFilename\}/, "Gallery supplies the resolved download filename");
 
+const shellSource = readFileSync(
+  new URL("../src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(shellSource, /resolveVideoDownloadFilename\(/, "Editor shell resolves one shared download filename");
+assert.equal(
+  (shellSource.match(/downloadFilename=\{downloadFilename\}/g) ?? []).length,
+  3,
+  "Editor shell passes the filename to desktop Post, mobile Post, and ExportedView",
+);
+
+for (const filename of ["PostPhase.tsx", "PostPhaseMobile.tsx"]) {
+  const source = readFileSync(
+    new URL(`../src/app/(dashboard)/video-editor/_v2/${filename}`, import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /downloadFilename:\s*string/, `${filename} requires the download filename`);
+  assert.match(source, /download=\{downloadFilename\}/, `${filename} applies the download filename`);
+}
+assert.match(shellSource, /download=\{downloadFilename\}/, "resumed exported view applies the download filename");
+
 console.log("PASS video export naming behavior");

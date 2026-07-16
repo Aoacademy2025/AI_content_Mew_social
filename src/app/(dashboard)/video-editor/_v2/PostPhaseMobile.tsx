@@ -61,6 +61,7 @@ export function PostPhaseMobile({
   onRetryProjectSave,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
+  downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
@@ -73,6 +74,7 @@ export function PostPhaseMobile({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  downloadFilename: string;
 }) {
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
@@ -186,7 +188,7 @@ export function PostPhaseMobile({
         </div>
         <video src={ed.exp.url} controls playsInline style={{ maxHeight: "44vh", borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex w-full max-w-[360px] flex-col gap-2.5" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <a href={ed.exp.url} download className="block">
+          <a href={ed.exp.url} download={downloadFilename} className="block">
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" className="block"><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>

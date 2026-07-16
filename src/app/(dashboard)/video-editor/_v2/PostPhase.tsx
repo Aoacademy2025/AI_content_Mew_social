@@ -54,6 +54,7 @@ export function PostPhase({
   onRetryProjectSave,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
+  downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
@@ -66,6 +67,7 @@ export function PostPhase({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  downloadFilename: string;
 }) {
   const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
   const rightTabsId = useId();
@@ -102,7 +104,7 @@ export function PostPhase({
         </div>
         <video src={ed.exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <a href={ed.exp.url} download>
+          <a href={ed.exp.url} download={downloadFilename}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>

@@ -53,6 +53,7 @@ import {
   type ProjectMenuItem,
   type ProjectStatusFilter,
 } from "./project-menu";
+import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 
 const PROJECT_MENU_LIMIT = 8;
 
@@ -65,6 +66,10 @@ async function fetchRecentProjects(limit = PROJECT_MENU_LIMIT): Promise<ProjectM
 
 export function EditorV2Shell() {
   const p = useV2Project();
+  const downloadFilename = resolveVideoDownloadFilename({
+    projectTitle: p.projectTitle,
+    script: p.mode === "script" ? p.script : null,
+  });
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
   const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing } = useV2Job(p);
@@ -506,15 +511,16 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView
             job={job}
             onNewProject={handleNewProject}
             onEditPreview={(job.output?.sourceJobId ?? p.activeJobId) ? () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!) : undefined}
+            downloadFilename={downloadFilename}
           />
         )
       ) : job.phase === "failed" ? (
@@ -648,10 +654,11 @@ function FailedView({ job, exportMode = false, onBack }: { job: V2JobState; expo
   );
 }
 
-function ExportedView({ job, onNewProject, onEditPreview }: {
+function ExportedView({ job, onNewProject, onEditPreview, downloadFilename }: {
   job: V2JobState;
   onNewProject: () => void;
   onEditPreview?: () => void;
+  downloadFilename: string;
 }) {
   const videoUrl = job.output?.videoUrl ?? "";
 
@@ -675,7 +682,7 @@ function ExportedView({ job, onNewProject, onEditPreview }: {
         )}
         <div className="flex flex-wrap items-center justify-center gap-3">
           {videoUrl && (
-            <a href={videoUrl} download>
+            <a href={videoUrl} download={downloadFilename}>
               <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
             </a>
           )}
