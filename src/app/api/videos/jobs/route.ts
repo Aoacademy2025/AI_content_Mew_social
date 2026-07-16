@@ -8,6 +8,8 @@ import {
 } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { decryptKey } from "@/lib/key-crypto";
+import { preflightElevenLabs, preflightPexels, pexelsStockMayBeUsed } from "@/lib/key-preflight";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
@@ -319,6 +321,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll" }, { status: 400 });
     }
 
+    // ElevenLabs VALIDITY preflight (Task 7, 2026-07-16 stability audit) — see the
+    // combined preflight block below (after stockSource is resolved) for the full
+    // rationale and the Pexels half, which needs stockSource to gate correctly.
+    const preflightChecks: Promise<{ key: "elevenlabs" | "pexels"; message: string } | null>[] = [];
+    if (useEleven && user.elevenlabsKey) preflightChecks.push(preflightElevenLabs(decryptKey(user.elevenlabsKey)));
+
     // Avatar (optional) — same resolver as MCP; layout falls back to the saved preset.
     // upload mode = ไม่มีอวตารตามดีไซน์
     const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode) ? body.avatarMode : undefined;
@@ -374,6 +382,32 @@ export async function POST(req: Request) {
     const autoMixWeights = requestedSource === "auto-mix"
       ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
       : undefined;
+
+    // Pexels VALIDITY preflight (Task 7, 2026-07-16 stability audit): 20/59 weekly
+    // VideoJob failures were BYOK keys that exist but don't work (ElevenLabs missing
+    // the text_to_speech scope — pushed onto preflightChecks above — and an invalid
+    // Pexels key) — the presence guards above only check existence, so these jobs were
+    // accepted and failed mid-pipeline with a raw JSON dump as the only user-facing
+    // message. Fail-open (@/lib/key-preflight): a network hiccup or slow provider
+    // never blocks a legitimate job, only a confirmed 401/403.
+    // Gated on the RESOLVED stockSource (must run after it's parsed above):
+    //  - kie-image never touches Pexels/Pixabay at all.
+    //  - auto-mix only touches them when the "video" bucket is enabled (default on;
+    //    off only if the caller explicitly excluded it via autoMixProviders).
+    //  - Pexels itself is only checked when it's the user's SOLE video-stock source —
+    //    with a Pixabay key also set, fetch-stock already degrades gracefully around a
+    //    broken Pexels key (see fetch-stock's stockProviderError handling), so blocking
+    //    here would reject jobs that would otherwise succeed.
+    const pexelsMayBeUsed = pexelsStockMayBeUsed({ stockSource: requestedSource, autoMixProviders });
+    if (pexelsMayBeUsed && user.pexelsKey && !user.pixabayKey) {
+      preflightChecks.push(preflightPexels(decryptKey(user.pexelsKey)));
+    }
+    if (preflightChecks.length) {
+      const blocks = (await Promise.all(preflightChecks)).filter((b): b is { key: "elevenlabs" | "pexels"; message: string } => b !== null);
+      if (blocks[0]) {
+        return NextResponse.json({ error: "invalid_key", missingKey: blocks[0].key, message: blocks[0].message }, { status: 400 });
+      }
+    }
 
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
     const subtitlePosition = typeof body.subtitlePosition === "string" && SUB_POSITIONS.has(body.subtitlePosition) ? body.subtitlePosition : undefined;

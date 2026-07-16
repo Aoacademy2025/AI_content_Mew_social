@@ -18,7 +18,7 @@ import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipel
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
-  cardsByWordCount, POSITION_TOP_PERCENT,
+  cardsByWordCount, POSITION_TOP_PERCENT, buildDegradedTimingTelemetry,
 } from "@/lib/mcp/orchestrator-steps";
 import {
   compositeAvatarVideo,
@@ -43,6 +43,7 @@ import {
 import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
+import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 
 export interface OrchestratorDeps {
@@ -751,7 +752,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       } catch { /* fail-open → deterministic sentence cards */ }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    if (!capRes || capRes.captions.length === 0) {
+      // TTS produced AUDIO but no usable instrumented timing — Gemini's segmented
+      // pass fell open to a single uninstrumented call (returns no `timing`), or a
+      // rare timing/text mismatch. The web editor recovers here via its transcribe
+      // fallback, but this headless path has none, so pre-fix it turned a completed
+      // audio render into a hard failure ("ไม่มี subtitle timing") that a plain
+      // retry rarely cleared (prod: longer scripts = more segments = higher fail-open
+      // odds; 2/4 affected users never recovered by retrying). Derive a single-segment
+      // clock from the EXACT audio duration over the exact spoken text — still 100%
+      // TTS-derived, same char clock, no transcribe, no arithmetic change; only loss
+      // vs the segmented path is per-chunk re-anchoring + silence snap.
+      const degraded = buildDegradedTtsTiming(provider, input.script, audioDurationMs);
+      if (degraded) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        capRes = captionsFromTtsTiming(degraded as any, audioDurationMs, maxCardCharsFor(), null);
+        if (capRes && capRes.captions.length > 0) {
+          const scriptCharCount = input.script.trim().length;
+          console.warn(`[mcp-worker] job ${jobId}: TTS timing absent — recovered with single-segment clock over ${scriptCharCount} chars / ${audioDurationMs}ms`);
+          // Durable marker (fire-and-forget, never fails the job) so degraded videos
+          // are identifiable and a systemic timing regression spikes this event.
+          emitTelemetry(buildDegradedTimingTelemetry({ pipelineRunId, jobId, provider, scriptCharCount, audioDurationMs }));
+        }
+      }
+    }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
     const baseCaptions = capRes.captions as OrchCaption[];
     const captions = (input.subtitleMode && input.subtitleMode !== "sentence")

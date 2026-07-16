@@ -24,6 +24,7 @@ import {
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
+import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
@@ -622,6 +623,24 @@ export async function POST(req: Request) {
       ? `http://${reqUrl.host}`
       : `${reqUrl.protocol}//${reqUrl.host}`;
 
+    // STAB-1 (2026-07-17): internal media base for render-worker fetches.
+    // Every OUR-OWN media URL baked into the render payload (stock videos, music,
+    // renders, scene images, logo, voice, bgm, subtitle video) is fetched by the
+    // render-worker's headless Chromium DURING render. By default those URLs use
+    // `baseUrl` (the public domain via NEXTAUTH_URL), so the worker round-trips
+    // back through nginx — the exact hop that returned 503s mid-render in the
+    // 2026-07-16 audit (§5) and off-loads render media I/O onto nginx during
+    // traffic spikes. When RENDER_INTERNAL_BASE_URL is set (recommended
+    // "http://127.0.0.1:3000"), absolutize that media to the loopback address so
+    // the worker fetches straight from ai-content, bypassing nginx entirely.
+    // Unset (default) => mediaBaseUrl === baseUrl => byte-identical to before.
+    // Only OUR media is affected; external-URL SSRF handling below is unchanged.
+    // Instant rollback: unset the env and restart (see docs / task-1 report).
+    const mediaBaseUrl = resolveMediaBaseUrl(
+      baseUrl,
+      process.env.RENDER_INTERNAL_BASE_URL,
+      (reason) => console.warn(`[render] ignoring RENDER_INTERNAL_BASE_URL (${reason})`),
+    );
 
     const entryPoint = path.resolve(process.cwd(), "src/remotion/index.tsx");
 
@@ -632,7 +651,7 @@ export async function POST(req: Request) {
       resolvedScenes = await Promise.all(
         scenes.map(async (sc: { imageUrl?: string | null; [key: string]: unknown }) => ({
           ...sc,
-          imageUrl: sc.imageUrl ? await cacheImageLocally(sc.imageUrl, rendersDir, baseUrl) : sc.imageUrl,
+          imageUrl: sc.imageUrl ? await cacheImageLocally(sc.imageUrl, rendersDir, mediaBaseUrl) : sc.imageUrl,
         }))
       );
     }
@@ -715,7 +734,7 @@ export async function POST(req: Request) {
         }
       }
       // Always serve from /api/stocks/ — renders/ copy is just a convenience mirror, not required
-      return `${baseUrl}/api/stocks/${filename}`;
+      return `${mediaBaseUrl}/api/stocks/${filename}`;
     }
 
     // Security: resolve a user-supplied path fragment against a known base directory
@@ -758,7 +777,12 @@ export async function POST(req: Request) {
         try {
           const parsed = new URL(url);
           const baseOrigin = new URL(baseUrl).origin;
-          if (parsed.origin === `${new URL(req.url).origin}` || parsed.origin === baseOrigin) {
+          // STAB-1: also recognize the internal media base (loopback) so URLs
+          // absolutized via mediaBaseUrl are still treated as our-own assets.
+          // When RENDER_INTERNAL_BASE_URL is unset, mediaBaseUrl === baseUrl so
+          // mediaOrigin === baseOrigin and this adds nothing (unchanged behavior).
+          const mediaOrigin = new URL(mediaBaseUrl).origin;
+          if (parsed.origin === new URL(req.url).origin || parsed.origin === baseOrigin || parsed.origin === mediaOrigin) {
             return toLocalFilePath(parsed.pathname);
           }
         } catch {
@@ -797,8 +821,8 @@ export async function POST(req: Request) {
       if (!url) return url ?? "";
       if (url.startsWith("http://") || url.startsWith("https://")) return url;
       // Rewrite /music/ → /api/music/ so Next.js API route serves the file dynamically
-      if (url.startsWith("/music/")) return `${baseUrl}/api/music/${url.slice("/music/".length)}`;
-      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      if (url.startsWith("/music/")) return `${mediaBaseUrl}/api/music/${url.slice("/music/".length)}`;
+      if (url.startsWith("/")) return `${mediaBaseUrl}${url}`;
       return url;
     }
 
@@ -898,7 +922,7 @@ export async function POST(req: Request) {
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
-      const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
+      const resolvedUrl = videoUrl?.startsWith("/") ? `${mediaBaseUrl}${videoUrl}` : videoUrl;
       const resolvedBgm = subtitleOverlayConfig.bgmFile
         ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
@@ -910,7 +934,7 @@ export async function POST(req: Request) {
           ? {
               logoOverlay: {
                 ...normalizedLogoOverlay,
-                src: `${baseUrl}${normalizedLogoOverlay.src}`,
+                src: `${mediaBaseUrl}${normalizedLogoOverlay.src}`,
               },
             }
           : {}),
