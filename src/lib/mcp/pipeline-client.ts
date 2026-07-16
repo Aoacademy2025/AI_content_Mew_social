@@ -78,7 +78,10 @@ export async function pollRender(
   opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void>; checkCanceled?: () => Promise<void> } = {},
 ): Promise<string> {
   const interval = opts.intervalMs ?? 2000;
-  const timeout = opts.timeoutMs ?? 15 * 60 * 1000;
+  // The render worker allows one job up to 45 minutes, and a job may wait behind both
+  // worker slots before it starts. Keep polling beyond that wall-clock budget; genuine
+  // failures and user cancellation are still observed on every poll.
+  const timeout = opts.timeoutMs ?? 60 * 60 * 1000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const start = Date.now();
   let consecutiveErrors = 0;

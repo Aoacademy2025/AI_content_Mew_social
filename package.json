@@ -12,6 +12,7 @@
     "db:reset": "prisma migrate reset",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
     "verify:render-queue": "tsx scripts/verify-render-queue.ts",
+    "verify:render-poll-timeout": "tsx scripts/verify-render-poll-timeout.ts",
     "verify:avatar-provider-checkpoint": "tsx scripts/verify-avatar-provider-checkpoint.ts",
     "verify:avatar-provider-resume": "tsx scripts/verify-avatar-provider-resume.ts",
     "verify:render-deploy-drain": "tsx scripts/verify-render-deploy-drain.ts",
