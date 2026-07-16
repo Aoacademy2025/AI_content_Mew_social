@@ -578,6 +578,114 @@ export function createClerkAssetCleanupStore(
     }
   }
 
+  async function scavengeQuarantineFenceTemporaries(
+    directory: string,
+    receiptId: string,
+  ): Promise<void> {
+    const ownedTemporaryPattern = new RegExp(
+      `^\\.${receiptId}\\.([1-9][0-9]*)\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.fence$`,
+      "u",
+    );
+    let inspected = 0;
+    let removed = 0;
+    for (const entry of await readdir(directory)) {
+      const ownedMatch = ownedTemporaryPattern.exec(entry);
+      if (!ownedMatch) continue;
+      if (inspected >= MAX_STALE_TEMPORARIES_PER_CALL) break;
+      inspected += 1;
+      const ownerPid = Number(ownedMatch[1]);
+      if (!Number.isSafeInteger(ownerPid) || processMayOwnTemporary(ownerPid)) continue;
+
+      const candidate = path.join(directory, entry);
+      if (path.dirname(candidate) !== directory) throw invalidTrustBoundary();
+      const candidateMetadata = await metadataOrNull(candidate);
+      if (!candidateMetadata || candidateMetadata.isSymbolicLink() || !candidateMetadata.isDirectory()) {
+        continue;
+      }
+      try {
+        assertTrustedQuarantineTarget(candidateMetadata);
+      } catch {
+        continue;
+      }
+      if ((candidateMetadata.mode & 0o777) !== 0o700) continue;
+
+      const children = await readdir(candidate);
+      if (children.length !== 1 || children[0] !== QUARANTINE_TERMINAL_MARKER) continue;
+      const markerPath = path.join(candidate, QUARANTINE_TERMINAL_MARKER);
+      if (path.dirname(markerPath) !== candidate) throw invalidTrustBoundary();
+      const markerPathMetadata = await metadataOrNull(markerPath);
+      if (!markerPathMetadata) continue;
+      try {
+        assertTrustedReceiptFile(markerPathMetadata);
+      } catch {
+        continue;
+      }
+      if (
+        (markerPathMetadata.mode & 0o777) !== 0o600
+        || markerPathMetadata.size !== Buffer.byteLength(receiptId, "utf8")
+      ) continue;
+
+      let directoryHandle: Awaited<ReturnType<typeof open>> | null = null;
+      let markerHandle: Awaited<ReturnType<typeof open>> | null = null;
+      try {
+        directoryHandle = await open(
+          candidate,
+          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+        );
+        markerHandle = await open(
+          markerPath,
+          fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+        );
+        const openedDirectoryMetadata = await directoryHandle.stat();
+        const openedMarkerMetadata = await markerHandle.stat();
+        assertTrustedQuarantineTarget(openedDirectoryMetadata);
+        assertTrustedReceiptFile(openedMarkerMetadata);
+        if (
+          !sameDirectoryIdentity(candidateMetadata, openedDirectoryMetadata)
+          || !sameFileIdentity(markerPathMetadata, openedMarkerMetadata)
+        ) continue;
+        const buffer = Buffer.alloc(Buffer.byteLength(receiptId, "utf8") + 1);
+        const { bytesRead } = await markerHandle.read(buffer, 0, buffer.length, 0);
+        if (
+          bytesRead !== Buffer.byteLength(receiptId, "utf8")
+          || buffer.subarray(0, bytesRead).toString("utf8") !== receiptId
+        ) continue;
+        const stableChildren = await readdir(candidate);
+        const stableDirectoryMetadata = await metadataOrNull(candidate);
+        const stableMarkerMetadata = await metadataOrNull(markerPath);
+        if (
+          stableChildren.length !== 1
+          || stableChildren[0] !== QUARANTINE_TERMINAL_MARKER
+          || !stableDirectoryMetadata
+          || !stableMarkerMetadata
+          || !sameDirectoryIdentity(candidateMetadata, stableDirectoryMetadata)
+          || !sameFileIdentity(markerPathMetadata, stableMarkerMetadata)
+        ) continue;
+
+        await unlink(markerPath);
+        const emptyDirectoryMetadata = await metadataOrNull(candidate);
+        if (!emptyDirectoryMetadata || !sameDirectoryIdentity(candidateMetadata, emptyDirectoryMetadata)) {
+          throw invalidTrustBoundary();
+        }
+        try {
+          await rmdir(candidate);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOTEMPTY") {
+            throw invalidTrustBoundary();
+          }
+          if (!isMissingFileError(error)) throw error;
+        }
+        removed += 1;
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error;
+      } finally {
+        await markerHandle?.close().catch(() => undefined);
+        await directoryHandle?.close().catch(() => undefined);
+      }
+    }
+    if (removed > 0) await syncDirectory(directory);
+  }
+
   async function read(clerkId: string): Promise<ClerkAssetCleanupReceipt | null> {
     const receiptId = identifier(clerkId);
     const directory = await trustedReservedDirectoryOrNull(receiptsDirectory);
@@ -797,6 +905,7 @@ export function createClerkAssetCleanupStore(
       "quarantine-directory-created",
       "asset-root-synced",
     );
+    await scavengeQuarantineFenceTemporaries(quarantineDirectory, receiptId);
     const target = quarantinePath(receiptId);
     const existingTarget = await metadataOrNull(target);
     if (existingTarget) {

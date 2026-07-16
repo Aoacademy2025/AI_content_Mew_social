@@ -162,8 +162,13 @@ function verifyShell(source: string): void {
   );
   assert.match(
     source,
-    /useEffect\(\(\) => \{\s*if \(!editorBlocked\) return;\s*setProjectMenuOpen\(false\);\s*setDeleteProject\(null\);\s*setReceiptOpen\(false\);\s*confirmingRef\.current = false;\s*setConfirmSubmitting\(false\);\s*\}, \[editorBlocked\]\);/,
-    "blocked lifecycle ownership clears all portal state, including an in-flight receipt confirmation",
+    /useEffect\(\(\) => \{\s*if \(!editorBlocked\) return;\s*setProjectMenuOpen\(false\);\s*setDeleteProject\(null\);\s*setReceiptOpen\(false\);\s*\}, \[editorBlocked\]\);/,
+    "blocked lifecycle ownership closes portals without releasing an in-flight receipt attempt",
+  );
+  assert.doesNotMatch(
+    source,
+    /if \(!editorBlocked\) return;[\s\S]{0,240}(?:confirmingRef\.current = false|setConfirmSubmitting\(false\))[^}]*\}, \[editorBlocked\]\);/,
+    "recovery rerenders cannot release receipt submission ownership",
   );
   for (const handler of [
     "handleRender",

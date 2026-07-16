@@ -56,6 +56,27 @@ function num(v: unknown, min: number, max: number): number | undefined {
   return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : undefined;
 }
 
+async function replayIdempotentVideoJob(userId: string, rawKey: unknown) {
+  const idempotencyKey = str(rawKey, 120);
+  if (idempotencyKey) {
+    const existing = await prisma.videoJob.findFirst({
+      where: { userId, idempotencyKey },
+      select: { id: true, status: true },
+    });
+    if (existing) {
+      return NextResponse.json({
+        jobId: existing.id,
+        status: existing.status,
+        idempotentReplay: true,
+      });
+    }
+  }
+  return NextResponse.json(
+    { error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" },
+    { status: 409 },
+  );
+}
+
 export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
@@ -120,7 +141,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ jobId: job.id, status: "queued" });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
+          return replayIdempotentVideoJob(user.id, body.idempotencyKey);
         }
         throw e;
       }
@@ -187,7 +208,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ jobId: job.id, status: "queued" });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
+          return replayIdempotentVideoJob(user.id, body.idempotencyKey);
         }
         throw e;
       }
@@ -334,7 +355,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ jobId: job.id, status: "queued" });
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
-        return NextResponse.json({ error: "duplicate", message: "idempotencyKey นี้ถูกใช้แล้ว" }, { status: 409 });
+        return replayIdempotentVideoJob(user.id, body.idempotencyKey);
       }
       throw e;
     }

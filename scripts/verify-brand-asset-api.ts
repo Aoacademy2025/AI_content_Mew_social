@@ -1047,6 +1047,114 @@ async function verifyClerkCleanupStorePrimitives(): Promise<void> {
       "the private marker and temporary directory are durable before atomic fence installation",
     );
 
+    const fenceScavengerRoot = path.join(testBase, "fence-scavenger-root");
+    const fenceScavengerStore = createClerkAssetCleanupStore({ assetRoot: fenceScavengerRoot });
+    const fenceScavengerClerkId = "clerk-scavenge-own-fences";
+    const fenceScavengerReceiptId = fenceScavengerStore.identifier(fenceScavengerClerkId);
+    const fenceScavengerDirectory = path.join(fenceScavengerRoot, QUARANTINE_DIRECTORY_NAME);
+    const deadFenceOwnerPid = 2_147_483_647;
+    await fenceScavengerStore.write(
+      fenceScavengerClerkId,
+      "scavenge-own-fences-user",
+      "prepared",
+    );
+    const makeFenceTemporary = async (
+      receiptId: string,
+      ownerPid: number,
+      uuid: string,
+      options: { unexpected?: boolean } = {},
+    ) => {
+      const directory = path.join(
+        fenceScavengerDirectory,
+        `.${receiptId}.${ownerPid}.${uuid}.fence`,
+      );
+      await mkdir(directory, { mode: 0o700 });
+      await writeFile(
+        path.join(directory, ".directory-cleaned-v1"),
+        receiptId,
+        { mode: 0o600 },
+      );
+      if (options.unexpected) {
+        await writeFile(path.join(directory, "unexpected-live-payload"), "preserve");
+      }
+      return directory;
+    };
+    const staleFenceTemporaries: string[] = [];
+    for (let index = 0; index < 33; index += 1) {
+      staleFenceTemporaries.push(await makeFenceTemporary(
+        fenceScavengerReceiptId,
+        deadFenceOwnerPid,
+        `10000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+      ));
+    }
+    const liveFenceTemporary = await makeFenceTemporary(
+      fenceScavengerReceiptId,
+      process.pid,
+      "20000000-0000-4000-8000-000000000000",
+    );
+    const foreignFenceTemporary = await makeFenceTemporary(
+      fenceScavengerStore.identifier("clerk-other-fence-owner"),
+      deadFenceOwnerPid,
+      "30000000-0000-4000-8000-000000000000",
+    );
+    const unexpectedFenceTemporary = await makeFenceTemporary(
+      fenceScavengerReceiptId,
+      deadFenceOwnerPid,
+      "40000000-0000-4000-8000-000000000000",
+      { unexpected: true },
+    );
+    const fenceOutsideSentinel = path.join(fenceScavengerRoot, "outside-fence-sentinel");
+    const matchingFenceSymlink = path.join(
+      fenceScavengerDirectory,
+      `.${fenceScavengerReceiptId}.${deadFenceOwnerPid}.50000000-0000-4000-8000-000000000000.fence`,
+    );
+    await writeFile(fenceOutsideSentinel, "outside");
+    await symlink(fenceOutsideSentinel, matchingFenceSymlink);
+
+    assert.equal(
+      await fenceScavengerStore.ensureQuarantineFence(fenceScavengerClerkId),
+      "cleaned",
+    );
+    const remainingStaleFences = await Promise.all(staleFenceTemporaries.map(async (candidate) => (
+      await lstat(candidate).then(() => true, (error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      })
+    )));
+    assert.equal(
+      remainingStaleFences.filter(Boolean).length,
+      1,
+      "one call non-recursively scavenges at most 32 stale owned fence directories",
+    );
+    await expectPresent(liveFenceTemporary, "fence scavenging preserves a current-process writer");
+    await expectPresent(foreignFenceTemporary, "fence scavenging preserves another receipt identity");
+    await expectPresent(unexpectedFenceTemporary, "fence scavenging preserves a directory with unexpected payload");
+    await expectPresent(
+      path.join(unexpectedFenceTemporary, "unexpected-live-payload"),
+      "fence scavenging never recursively removes unexpected payload",
+    );
+    await expectPresent(matchingFenceSymlink, "fence scavenging does not follow a matching symlink");
+    await expectPresent(fenceOutsideSentinel, "fence scavenging preserves data outside the quarantine directory");
+
+    const retryStaleFence = await makeFenceTemporary(
+      fenceScavengerReceiptId,
+      deadFenceOwnerPid,
+      "60000000-0000-4000-8000-000000000000",
+    );
+    assert.equal(
+      await fenceScavengerStore.ensureQuarantineFence(fenceScavengerClerkId),
+      "cleaned",
+      "an existing canonical destination remains idempotent while scavenging stale temporaries",
+    );
+    await expectMissing(
+      retryStaleFence,
+      "an idempotent fence retry scavenges stale owned temporaries before returning",
+    );
+    await expectPresent(liveFenceTemporary, "idempotent retries preserve a live fence writer");
+    await expectPresent(foreignFenceTemporary, "idempotent retries preserve a foreign fence writer");
+    await expectPresent(unexpectedFenceTemporary, "idempotent retries preserve unexpected directory contents");
+    await expectPresent(fenceOutsideSentinel, "idempotent retries remain path-contained");
+
     const preparedRaceClerkId = "clerk-prepared-fence-install-race";
     const preparedRaceUserId = "prepared-fence-install-race-user";
     const preparedRaceSource = path.join(quarantineRoot, preparedRaceUserId);

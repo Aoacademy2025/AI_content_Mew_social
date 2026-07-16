@@ -685,6 +685,28 @@ export function useV2Project() {
     localChoiceAbortControllerRef.current = null;
   }, []);
 
+  const completeArchivedProject = useCallback((archivedProjectId: string): boolean => {
+    if (!archivedProjectId || currentProjectIdRef.current !== archivedProjectId) return false;
+    invalidateLocalChoiceRequest();
+    invalidateAutosaveLineage();
+    bootstrapGenerationRef.current += 1;
+    bootstrapAbortControllerRef.current?.abort();
+    bootstrapAbortControllerRef.current = null;
+    trustedResumeDraftRef.current = null;
+    clearProjectRecoveryData(archivedProjectId);
+    currentProjectIdRef.current = null;
+    setProjectId(null);
+    setProjectReady(false);
+    setRecoveryState({ status: "none" });
+    setProjectInitialization("loading-defaults");
+    try {
+      const storage = browserStorage();
+      storage?.removeItem(PROJECT_ID_KEY);
+      storage?.removeItem(DRAFT_KEY);
+    } catch {}
+    return true;
+  }, [invalidateAutosaveLineage, invalidateLocalChoiceRequest, setProjectInitialization, setRecoveryState]);
+
   const initializeAutosaveLineage = useCallback((
     nextProjectId: string,
     server: RecoveryCandidate,
@@ -1791,7 +1813,7 @@ export function useV2Project() {
     logoOverlay, setLogoOverlay,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
-    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
     canRunProjectOperation,
