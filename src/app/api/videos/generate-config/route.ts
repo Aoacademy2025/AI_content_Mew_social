@@ -4,6 +4,7 @@ import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePrese
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
 import { assignBrollWindows, coverBrollTimeline } from "@/lib/broll-coverage";
 import { buildKeywordPopups } from "@/lib/keyword-popups";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -260,6 +261,7 @@ export async function POST(req: Request) {
 
   const validStocks = stockVideos.filter(sv => sv.localUrl || sv.videoUrl);
   let bgVideos: BrollVideo[] = [];
+  let mappingRepairCount = 0;
   const brollMetadataBySrc = new Map<string, Partial<BrollVideo>>();
   for (const sv of validStocks) {
     const src = sv.localUrl ?? sv.videoUrl;
@@ -299,6 +301,7 @@ export async function POST(req: Request) {
       fps,
     );
     bgVideos.push(...assigned.segments);
+    mappingRepairCount = assigned.metrics.repairedSegmentCount;
     console.log(
       `[config] window-mode: ${assigned.metrics.outputSegmentCount} segments over ` +
       `${brollWindows.length} windows, gaps=${assigned.metrics.gapCount}, ` +
@@ -650,7 +653,26 @@ export async function POST(req: Request) {
   }));
 
   const coverage = coverBrollTimeline(bgVideos, bgVideos, audioDurationSec, fps);
+  const coverageTelemetryProperties = {
+    requestedWindowCount: Array.isArray(brollWindows) ? brollWindows.length : 0,
+    availableAssetCount: validStocks.length,
+    distinctAssetCount: new Set(validStocks.map((stock) => stock.localUrl ?? stock.videoUrl)).size,
+    coverageSegmentCount: coverage.metrics.outputSegmentCount,
+    coverageGapCount: coverage.metrics.gapCount,
+    coverageRepairCount: mappingRepairCount + coverage.metrics.repairedSegmentCount,
+    coverageRatio: coverage.metrics.coverageRatio,
+    uncoveredTailSec: coverage.metrics.uncoveredTailSec,
+    coverageRejected: !coverage.complete,
+  };
   if (!coverage.complete) {
+    await recordTelemetryEvent(authUser.id, {
+      name: "broll_config_coverage",
+      category: "error",
+      source: "server",
+      step: "config",
+      status: "error",
+      properties: coverageTelemetryProperties,
+    }).catch(() => {});
     console.error(
       `[config] b-roll coverage rejected: gaps=${coverage.metrics.gapCount}, ` +
       `tail=${coverage.metrics.uncoveredTailSec.toFixed(3)}s, ` +
@@ -665,6 +687,14 @@ export async function POST(req: Request) {
     );
   }
   bgVideos = coverage.segments;
+  await recordTelemetryEvent(authUser.id, {
+    name: "broll_config_coverage",
+    category: "performance",
+    source: "server",
+    step: "config",
+    status: "done",
+    properties: coverageTelemetryProperties,
+  }).catch(() => {});
 
   console.log(`[config] final bgVideos (${bgVideos.length}):`);
   bgVideos.forEach((v, i) => console.log(`  [${i}] ${v.start.toFixed(2)}s–${v.end.toFixed(2)}s dur=${( v.end-v.start).toFixed(2)}s src=${v.src.split("/").pop()}`));

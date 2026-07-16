@@ -74,6 +74,7 @@ const configSource = fs.readFileSync(
 assert.ok(!configSource.includes("Math.min(brollWindows.length, pool.length)"));
 assert.ok(configSource.includes("assignBrollWindows("));
 assert.ok(configSource.includes("coverBrollTimeline("));
+assert.ok(configSource.includes("mappingRepairCount + coverage.metrics.repairedSegmentCount"));
 
 const stockSource = fs.readFileSync(
   "src/app/api/videos/fetch-stock/route.ts",
@@ -81,6 +82,14 @@ const stockSource = fs.readFileSync(
 );
 assert.ok(stockSource.includes("sourceIndex"));
 assert.ok(stockSource.includes("selectRepresentativeItems"));
+assert.ok(stockSource.includes("requestedWindowCount"));
+assert.ok(configSource.includes("broll_config_coverage"));
+
+const orchestratorSource = fs.readFileSync(
+  "src/lib/mcp/orchestrator.ts",
+  "utf8",
+);
+assert.ok(orchestratorSource.includes("broll_stock_inventory"));
 
 const renderSource = fs.readFileSync(
   "src/app/api/videos/render/route.ts",

@@ -37,6 +37,22 @@ const TIMING = {
   ],
 };
 
+const LONG_DURATION_MS = 278_439;
+const LONG_WINDOW_GROUP_SIZES = [
+  ...Array.from({ length: 35 }, () => 3),
+  ...Array.from({ length: 18 }, () => 2),
+];
+const LONG_SEGMENTS = LONG_WINDOW_GROUP_SIZES.flatMap((groupSize, groupIndex) => {
+  const groupStart = Math.round((LONG_DURATION_MS * groupIndex) / LONG_WINDOW_GROUP_SIZES.length);
+  const groupEnd = Math.round((LONG_DURATION_MS * (groupIndex + 1)) / LONG_WINDOW_GROUP_SIZES.length);
+  return Array.from({ length: groupSize }, (_, itemIndex) => {
+    const startMs = Math.round(groupStart + ((groupEnd - groupStart) * itemIndex) / groupSize);
+    const endMs = Math.round(groupStart + ((groupEnd - groupStart) * (itemIndex + 1)) / groupSize);
+    return { text: "คำ ", startMs, durationMs: endMs - startMs };
+  });
+});
+const LONG_TIMING = { provider: "gemini", segments: LONG_SEGMENTS };
+
 interface CallLog { method: string; path: string; body?: unknown }
 
 function makeStubCaller(log: CallLog[]) {
@@ -188,6 +204,91 @@ async function main() {
       ok(stockBody?.overrideClipCount === 1 && stockBody.perSubtitleMode === true, `G: fetch-stock overrideClipCount follows windows (got ${stockBody?.overrideClipCount})`);
       ok((stockBody?.subtitleTexts?.length ?? 0) === 1, `G: subtitleTexts follows windows (got ${stockBody?.subtitleTexts?.length ?? 0})`);
       ok((cfgBody?.brollWindows?.length ?? 0) === 1, `G: generate-config keeps the same 1 b-roll window (got ${cfgBody?.brollWindows?.length ?? 0})`);
+    } finally {
+      if (prevMode === undefined) delete process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE;
+      else process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE = prevMode;
+      if (prevSec === undefined) delete process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC;
+      else process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC = prevSec;
+    }
+  }
+
+  // ── I. production-shaped long window contract: 141 captions → 53 semantic
+  // windows while fetch-stock returns the configured cap of 36 representative assets. ──
+  {
+    const prevMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE;
+    const prevSec = process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC;
+    process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE = "1";
+    process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC = "4";
+    try {
+      const log: CallLog[] = [];
+      const base = makeStubCaller(log);
+      const longCaller = {
+        ...base,
+        post: async <T,>(path: string, body: unknown): Promise<T> => {
+          if (path === "/api/videos/tts-gemini") {
+            log.push({ method: "POST", path, body });
+            return {
+              voiceUrl: "/api/voices/long-test.m4a",
+              audioDurationMs: LONG_DURATION_MS,
+              timing: LONG_TIMING,
+            } as T;
+          }
+          if (path === "/api/videos/extract-keywords") {
+            log.push({ method: "POST", path, body });
+            const scenes = ((body as { scenes?: string[] }).scenes ?? []).filter(Boolean);
+            return {
+              keywords: scenes.map((_, index) => `window-${index}`),
+              keywordAlternatives: scenes.map((_, index) => [`window-${index}`]),
+              keywordsPerScene: 1,
+              sceneClipCounts: scenes.map(() => 1),
+              sceneDurations: scenes.map(() => LONG_DURATION_MS / 1000 / scenes.length),
+              visualDirection: "",
+            } as T;
+          }
+          if (path === "/api/videos/fetch-stock") {
+            log.push({ method: "POST", path, body });
+            return {
+              results: Array.from({ length: 36 }, (_, index) => {
+                const sourceIndex = Math.floor(((index + 0.5) * 53) / 36);
+                return {
+                  keyword: `window-${sourceIndex}`,
+                  sourceIndex,
+                  duration: 4.5,
+                  videoUrl: `/asset-${index}.mp4`,
+                };
+              }),
+            } as T;
+          }
+          if (path === "/api/videos/generate-config") {
+            log.push({ method: "POST", path, body });
+            return { config: { bgVideos: [], voiceFile: "/api/voices/long-test.m4a" } } as T;
+          }
+          return base.post<T>(path, body);
+        },
+      };
+      const job = await createProcessingVideoJob("u-preview", {
+        script: SCRIPT,
+        previewMode: true,
+        voiceProvider: "gemini",
+        subtitleMode: "1",
+      });
+      await runOrchestrator(job.id, "u-preview", {
+        caller: longCaller,
+        refundOneClip: async () => {},
+        sleep: async () => {},
+      });
+
+      const stockCall = log.find((call) => call.path === "/api/videos/fetch-stock");
+      const configCall = log.find((call) => call.path === "/api/videos/generate-config");
+      const stockBody = stockCall?.body as { keywords?: string[] } | undefined;
+      const configBody = configCall?.body as {
+        brollWindows?: { startMs: number; endMs: number }[];
+        stockVideos?: unknown[];
+      } | undefined;
+      ok(LONG_SEGMENTS.length === 141, `I: fixture has 141 captions (got ${LONG_SEGMENTS.length})`);
+      ok((stockBody?.keywords?.length ?? 0) === 53, `I: long preview requests all 53 semantic windows (got ${stockBody?.keywords?.length ?? 0})`);
+      ok((configBody?.brollWindows?.length ?? 0) === 53, `I: config retains all 53 target windows (got ${configBody?.brollWindows?.length ?? 0})`);
+      ok((configBody?.stockVideos?.length ?? 0) === 36, `I: config accepts the capped 36-asset pool (got ${configBody?.stockVideos?.length ?? 0})`);
     } finally {
       if (prevMode === undefined) delete process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE;
       else process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE = prevMode;

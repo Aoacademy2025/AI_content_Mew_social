@@ -201,6 +201,27 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       .then(() => recordTelemetryEvent(userId, input))
       .catch(() => {});
   }
+  function emitBrollStockInventory(requestedWindowCount: number, results: unknown[]) {
+    const assetKeys = results.map((result, index) => {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return `item:${index}`;
+      const asset = result as Record<string, unknown>;
+      return String(
+        asset.pexelsId ?? asset.id ?? asset.localUrl ?? asset.videoUrl ?? asset.imageUrl ?? `item:${index}`,
+      );
+    });
+    emitTelemetry({
+      name: "broll_stock_inventory",
+      category: "pipeline",
+      source: "server",
+      step: "fetchStock",
+      status: "done",
+      properties: {
+        requestedWindowCount,
+        availableAssetCount: results.length,
+        distinctAssetCount: new Set(assetKeys).size,
+      },
+    });
+  }
   function emitStage(phase: string, status: "started" | "done" | "error", durationMs?: number, extra?: Record<string, unknown>) {
     const step = STEP_TELEMETRY_NAME[phase];
     if (!step) return; // skip startup/captions and other non-pipeline phases
@@ -626,6 +647,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         },
         upAiGen ? { retries: 0 } : undefined,
       );
+      emitBrollStockInventory(upAligned.windows.length, upStock.results ?? []);
 
       await step("config", 65);
       const upScc = upAligned.windows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
@@ -769,6 +791,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       },
       aiGenSource ? { retries: 0 } : undefined,
     );
+    emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
 
     // 5. Config
     await step("config", 65);

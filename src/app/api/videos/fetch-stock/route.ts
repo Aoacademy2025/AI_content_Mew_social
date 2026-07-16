@@ -1436,6 +1436,9 @@ export async function POST(req: Request) {
         totalClipsNeeded,
         downloadClipLimit,
         clipsPerKeyword,
+        requestedWindowCount: brollWindowMode ? keywords.length : 0,
+        availableAssetCount: results.length,
+        distinctAssetCount: new Set(results.map((result) => result.pexelsId)).size,
         canUsePexels,
         canUsePixabay,
         canUseKieImage,
@@ -2282,14 +2285,6 @@ export async function POST(req: Request) {
   stockTelemetry.cappedCount = clipsToDownload.length;
   stockTelemetry.selectedPexelsCount = clipsToDownload.filter((clip) => clip.id < 9_000_000).length;
   stockTelemetry.selectedPixabayCount = clipsToDownload.length - stockTelemetry.selectedPexelsCount;
-  const selectionDebugSample = clipsToDownload.slice(0, 10).map((clip) => ({
-    keyword: clip.keyword,
-    title: clip.title,
-    query: clip.query,
-    provider: clip.provider,
-    selectionReason: clip.selectionReason,
-    relevanceScore: clip.relevanceScore,
-  }));
   stockTelemetry.selectionPhaseMs = Date.now() - selectionPhaseStartedAt;
   console.log(`[fetch-stock] found ${found.length} clips total${clipsToDownload.length < found.length ? `, capped downloads to ${clipsToDownload.length}` : ""}`);
   if (!clipsToDownload.length) {
@@ -2315,7 +2310,7 @@ export async function POST(req: Request) {
     }
     // ไม่มี video clip — แต่ Auto Mix image fallback อาจ push ภาพเข้า results แล้ว
     // (เช่นข้าม video ใช้ kie.ai ล้วน) → คืน results ที่มีจริง ไม่ใช่ [] เปล่าๆ
-    await recordFetchStockTelemetry("done", { emptyResult: results.length === 0, selectionDebugSample });
+    await recordFetchStockTelemetry("done", { emptyResult: results.length === 0 });
     return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
   }
 
@@ -2405,7 +2400,7 @@ export async function POST(req: Request) {
   }
 
   stockTelemetry.servedClipCount = results.length;
-  await recordFetchStockTelemetry("done", { selectionDebugSample });
+  await recordFetchStockTelemetry("done");
   console.log(`[fetch-stock] downloaded ${results.length} clips`);
   return NextResponse.json({ results, ...(aiSkippedReason ? { aiSkippedReason } : {}) });
 }
