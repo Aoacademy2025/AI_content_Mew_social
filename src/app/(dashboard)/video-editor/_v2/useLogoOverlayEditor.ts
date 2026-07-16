@@ -46,6 +46,15 @@ type ParsedLogoUploadResponse =
   | { ok: true; asset: BrandAssetView }
   | { ok: false; errorCode: string; message: string };
 
+type LogoMutationOwner = {
+  token: symbol;
+  kind: "upload" | "default-save";
+  projectId: string;
+  assetId: string | null;
+  surface: LogoEditorSurface;
+  requestGeneration: number;
+};
+
 const KNOWN_ERROR_CODES = new Set([
   "plan_required",
   "project_not_found",
@@ -289,26 +298,56 @@ export function useLogoOverlayEditor(input: {
   );
   const uploadGenerationRef = useRef(0);
   const activeUploadControllerRef = useRef<AbortController | null>(null);
+  const defaultSaveGenerationRef = useRef(0);
+  const activeDefaultSaveControllerRef = useRef<AbortController | null>(null);
+  const activeMutationOwnerRef = useRef<LogoMutationOwner | null>(null);
+  const ownsMutation = (owner: LogoMutationOwner) =>
+    activeMutationOwnerRef.current?.token === owner.token
+    && currentProjectIdRef.current === owner.projectId
+    && (owner.kind !== "default-save"
+      || currentLogoAssetIdRef.current === owner.assetId);
 
   useLayoutEffect(() => {
     const projectChanged = currentProjectIdRef.current !== projectId;
+    const nextAssetId = normalizedValue?.assetId ?? null;
+    const assetChanged = currentLogoAssetIdRef.current !== nextAssetId;
     currentProjectIdRef.current = projectId;
-    currentLogoAssetIdRef.current = normalizedValue?.assetId ?? null;
-    if (!projectChanged) return;
+    currentLogoAssetIdRef.current = nextAssetId;
+    if (!projectChanged) {
+      if (assetChanged && activeMutationOwnerRef.current?.kind === "default-save") {
+        defaultSaveGenerationRef.current += 1;
+        const activeDefaultController = activeDefaultSaveControllerRef.current;
+        activeDefaultSaveControllerRef.current = null;
+        activeMutationOwnerRef.current = null;
+        activeDefaultController?.abort();
+        setSaving(false);
+      }
+      return;
+    }
 
     uploadGenerationRef.current += 1;
-    const activeController = activeUploadControllerRef.current;
+    defaultSaveGenerationRef.current += 1;
+    const activeUploadController = activeUploadControllerRef.current;
+    const activeDefaultController = activeDefaultSaveControllerRef.current;
     activeUploadControllerRef.current = null;
-    activeController?.abort();
+    activeDefaultSaveControllerRef.current = null;
+    activeMutationOwnerRef.current = null;
+    activeUploadController?.abort();
+    activeDefaultController?.abort();
     setSaving(false);
     setMutationError(null);
   }, [normalizedValue?.assetId, projectId]);
 
   useLayoutEffect(() => () => {
     uploadGenerationRef.current += 1;
-    const activeController = activeUploadControllerRef.current;
+    defaultSaveGenerationRef.current += 1;
+    const activeUploadController = activeUploadControllerRef.current;
+    const activeDefaultController = activeDefaultSaveControllerRef.current;
     activeUploadControllerRef.current = null;
-    activeController?.abort();
+    activeDefaultSaveControllerRef.current = null;
+    activeMutationOwnerRef.current = null;
+    activeUploadController?.abort();
+    activeDefaultController?.abort();
   }, []);
 
   useEffect(() => {
@@ -411,6 +450,10 @@ export function useLogoOverlayEditor(input: {
       return false;
     }
 
+    defaultSaveGenerationRef.current += 1;
+    const activeDefaultController = activeDefaultSaveControllerRef.current;
+    activeDefaultSaveControllerRef.current = null;
+    activeDefaultController?.abort();
     activeUploadControllerRef.current?.abort();
     const controller = new AbortController();
     const uploadGeneration = uploadGenerationRef.current + 1;
@@ -418,11 +461,21 @@ export function useLogoOverlayEditor(input: {
     activeUploadControllerRef.current = controller;
     const startingProjectId = projectId;
     const startingAssetId = normalizedValue?.assetId ?? null;
+    const owner: LogoMutationOwner = {
+      token: Symbol("logo-upload"),
+      kind: "upload",
+      projectId: startingProjectId,
+      assetId: startingAssetId,
+      surface,
+      requestGeneration: uploadGeneration,
+    };
+    activeMutationOwnerRef.current = owner;
     const ownsUpload = () =>
       !controller.signal.aborted
       && currentProjectIdRef.current === startingProjectId
       && uploadGenerationRef.current === uploadGeneration
-      && activeUploadControllerRef.current === controller;
+      && activeUploadControllerRef.current === controller
+      && ownsMutation(owner);
     const cleanupStaleCreatedAsset = (parsed: ParsedLogoUploadResponse) => {
       if (
         !parsed.ok
@@ -508,14 +561,39 @@ export function useLogoOverlayEditor(input: {
       return false;
     } finally {
       if (ownsUpload()) {
-        setSaving(false);
         activeUploadControllerRef.current = null;
+        activeMutationOwnerRef.current = null;
+        setSaving(false);
       }
     }
   }, [eligible, normalizedValue, onChange, projectId, surface]);
 
   const saveAsDefault = useCallback(async (): Promise<boolean> => {
-    if (!eligible || !normalizedValue) return false;
+    if (!eligible || !normalizedValue || !projectId) return false;
+    if (activeMutationOwnerRef.current?.kind === "upload") return false;
+
+    const defaultSaveGeneration = defaultSaveGenerationRef.current + 1;
+    defaultSaveGenerationRef.current = defaultSaveGeneration;
+    const olderController = activeDefaultSaveControllerRef.current;
+    activeDefaultSaveControllerRef.current = null;
+    olderController?.abort();
+    const controller = new AbortController();
+    const owner: LogoMutationOwner = {
+      token: Symbol("logo-default-save"),
+      kind: "default-save",
+      projectId,
+      assetId: normalizedValue.assetId,
+      surface,
+      requestGeneration: defaultSaveGeneration,
+    };
+    activeDefaultSaveControllerRef.current = controller;
+    activeMutationOwnerRef.current = owner;
+    const ownsDefaultSave = () =>
+      !controller.signal.aborted
+      && defaultSaveGenerationRef.current === owner.requestGeneration
+      && activeDefaultSaveControllerRef.current === controller
+      && ownsMutation(owner);
+
     setSaving(true);
     setMutationError(null);
     try {
@@ -531,9 +609,13 @@ export function useLogoOverlayEditor(input: {
             sizePct: normalizedValue.sizePct,
             opacity: normalizedValue.opacity,
           }),
+          signal: controller.signal,
         },
       );
+      if (!ownsDefaultSave()) return false;
       const payload: unknown = await response.json().catch(() => null);
+      // Runtime mutation tests depend on this post-default-response ownership boundary.
+      if (!ownsDefaultSave()) return false;
       if (!response.ok || !isRecord(payload) || payload.ok !== true) {
         setMutationError("ตั้งเป็นโลโก้หลักไม่สำเร็จ");
         return false;
@@ -545,12 +627,17 @@ export function useLogoOverlayEditor(input: {
       });
       return true;
     } catch {
+      if (!ownsDefaultSave()) return false;
       setMutationError("ตั้งเป็นโลโก้หลักไม่สำเร็จ");
       return false;
     } finally {
-      setSaving(false);
+      if (ownsDefaultSave()) {
+        activeDefaultSaveControllerRef.current = null;
+        activeMutationOwnerRef.current = null;
+        setSaving(false);
+      }
     }
-  }, [eligible, normalizedValue, surface]);
+  }, [eligible, normalizedValue, projectId, surface]);
 
   const removeFromProject = useCallback(() => {
     if (!eligible || !normalizedValue) return;

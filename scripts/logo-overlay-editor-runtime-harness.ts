@@ -32,6 +32,7 @@ type LogoHook = {
   saving: boolean;
   error: string | null;
   upload(file: File): Promise<boolean>;
+  saveAsDefault(): Promise<boolean>;
 };
 
 type LogoHookInput = {
@@ -320,9 +321,20 @@ class FetchMock {
     result: Promise<ResponseLike>;
     honorAbort: boolean;
   }> = [];
+  private readonly defaultSaveRoutes: Array<{
+    result: Promise<ResponseLike>;
+    honorAbort: boolean;
+  }> = [];
 
   enqueueUpload(result: ResponseLike | Promise<ResponseLike>, honorAbort = true): void {
     this.uploadRoutes.push({ result: Promise.resolve(result), honorAbort });
+  }
+
+  enqueueDefaultSave(
+    result: ResponseLike | Promise<ResponseLike>,
+    honorAbort = true,
+  ): void {
+    this.defaultSaveRoutes.push({ result: Promise.resolve(result), honorAbort });
   }
 
   private withAbort(
@@ -364,6 +376,13 @@ class FetchMock {
     if (url === "/api/user/brand-assets" && method === "POST") {
       const route = this.uploadRoutes.shift();
       if (!route) throw new Error("missing queued logo upload response");
+      return route.honorAbort
+        ? this.withAbort(route.result, init.signal)
+        : route.result;
+    }
+    if (url.startsWith("/api/user/brand-assets/") && method === "PATCH") {
+      const route = this.defaultSaveRoutes.shift();
+      if (!route) throw new Error("missing queued logo default-save response");
       return route.honorAbort
         ? this.withAbort(route.result, init.signal)
         : route.result;
@@ -571,6 +590,13 @@ function uploadCalls(fetchMock: FetchMock): FetchCall[] {
   );
 }
 
+function defaultSaveCalls(fetchMock: FetchMock): FetchCall[] {
+  return fetchMock.calls.filter(
+    (call) => call.method === "PATCH"
+      && call.url.startsWith("/api/user/brand-assets/"),
+  );
+}
+
 function eventCount(telemetry: TelemetryCall[], name: string): number {
   return telemetry.filter((call) => call.name === name).length;
 }
@@ -692,6 +718,195 @@ async function newerSameProjectUploadOwnsSaving(source: string): Promise<void> {
     [["project-same", "new-second"]],
   );
   assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_done"), 1);
+}
+
+async function uploadSupersedesDefaultSaveAndOwnsSaving(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-lane", assetId: "asset-a" });
+  const lateDefault = deferred<ResponseLike>();
+  const pendingUpload = deferred<ResponseLike>();
+  harness.fetchMock.enqueueDefaultSave(lateDefault.promise, false);
+  harness.fetchMock.enqueueUpload(pendingUpload.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const defaultCompletion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  const defaultRequest = defaultSaveCalls(harness.fetchMock)[0];
+  const uploadCompletion = harness.runner.current.upload(uploadFile("asset-b.png"));
+  harness.runner.flush();
+  await settle(harness.runner);
+
+  assert.equal(defaultRequest.init.signal?.aborted, true,
+    "a new upload aborts the active default save");
+  lateDefault.reject(new Error("late default failure"));
+  assert.equal(await defaultCompletion, false);
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.saving, true,
+    "late default finally cannot clear upload ownership");
+  assert.equal(harness.runner.current.error, null,
+    "late default failure cannot become the upload error");
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0);
+
+  pendingUpload.resolve(response(201, { asset: asset("asset-b") }));
+  assert.equal(await uploadCompletion, true);
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.saving, false);
+  assert.equal(harness.runner.current.asset?.id, "asset-b");
+}
+
+async function defaultSaveCannotStartWhileUploadOwnsLane(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-upload", assetId: "asset-a" });
+  const pendingUpload = deferred<ResponseLike>();
+  harness.fetchMock.enqueueUpload(pendingUpload.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const uploadCompletion = harness.runner.current.upload(uploadFile("asset-b.png"));
+  harness.runner.flush();
+  await settle(harness.runner);
+  assert.equal(await harness.runner.current.saveAsDefault(), false,
+    "default save cannot start while upload owns the mutation lane");
+  harness.runner.flush();
+  assert.equal(defaultSaveCalls(harness.fetchMock).length, 0,
+    "blocked default save cannot issue a PATCH request");
+  assert.equal(harness.runner.current.saving, true,
+    "blocked default save cannot clear upload saving state");
+
+  pendingUpload.resolve(response(201, { asset: asset("asset-b") }));
+  assert.equal(await uploadCompletion, true);
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.saving, false);
+}
+
+async function newerDefaultSaveOwnsCompletionAndTelemetry(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-default", assetId: "asset-a" });
+  const firstJson = deferred<unknown>();
+  const secondResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueueDefaultSave(deferredJsonResponse(200, firstJson.promise), false);
+  harness.fetchMock.enqueueDefaultSave(secondResponse.promise);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const firstCompletion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  const firstRequest = defaultSaveCalls(harness.fetchMock)[0];
+  const secondCompletion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+
+  assert.equal(firstRequest.init.signal?.aborted, true,
+    "a newer default save aborts the older default save");
+  firstJson.resolve({ ok: true });
+  assert.equal(await firstCompletion, false,
+    "late success from the older default save is stale");
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.saving, true,
+    "older default finally cannot clear newer default saving state");
+  assert.equal(harness.runner.current.error, null);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0,
+    "late default success cannot emit telemetry");
+
+  secondResponse.resolve(response(200, { ok: true }));
+  assert.equal(await secondCompletion, true);
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.saving, false);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 1,
+    "only the current default save emits success telemetry");
+}
+
+async function projectChangeMakesLateDefaultFailureInert(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-A", assetId: "asset-a" });
+  const pendingResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueueDefaultSave(pendingResponse.promise, false);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const completion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  const request = defaultSaveCalls(harness.fetchMock)[0];
+  harness.setProject("project-B", "asset-b");
+  assert.equal(request.init.signal?.aborted, true,
+    "project change aborts the active default save");
+  assert.equal(harness.runner.current.saving, false,
+    "project change clears project-A default saving state");
+  pendingResponse.reject(new Error("late project-A default failure"));
+  assert.equal(await completion, false);
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.error, null,
+    "late project-A default failure cannot mutate project B");
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0);
+}
+
+async function assetChangeMakesLateDefaultSuccessInert(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-A", assetId: "asset-a" });
+  const pendingJson = deferred<unknown>();
+  harness.fetchMock.enqueueDefaultSave(deferredJsonResponse(200, pendingJson.promise), false);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const completion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  const request = defaultSaveCalls(harness.fetchMock)[0];
+  harness.setProject("project-A", "asset-b");
+  assert.equal(request.init.signal?.aborted, true,
+    "asset change aborts the default save for the former asset");
+  pendingJson.resolve({ ok: true });
+  assert.equal(await completion, false);
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.saving, false);
+  assert.equal(harness.runner.current.error, null);
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0,
+    "late success for the former asset cannot emit telemetry");
+}
+
+async function lateInvalidDefaultJsonAfterProjectChangeIsInert(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-A", assetId: "asset-a" });
+  const pendingJson = deferred<unknown>();
+  harness.fetchMock.enqueueDefaultSave(deferredJsonResponse(200, pendingJson.promise), false);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const completion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  harness.setProject("project-B", "asset-b");
+  pendingJson.resolve(null);
+  assert.equal(await completion, false);
+  await settle(harness.runner);
+
+  assert.equal(harness.runner.current.saving, false);
+  assert.equal(harness.runner.current.error, null,
+    "late invalid default JSON cannot become project B's error");
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0);
+}
+
+async function unmountAbortsAndMakesLateDefaultInert(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-unmount", assetId: "asset-a" });
+  const pendingResponse = deferred<ResponseLike>();
+  harness.fetchMock.enqueueDefaultSave(pendingResponse.promise, false);
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const completion = harness.runner.current.saveAsDefault();
+  harness.runner.flush();
+  await settle(harness.runner);
+  const request = defaultSaveCalls(harness.fetchMock)[0];
+  harness.runner.unmount();
+  pendingResponse.resolve(response(200, { ok: true }));
+  assert.equal(await completion, false);
+  await Promise.resolve();
+
+  assert.equal(request.init.signal?.aborted, true,
+    "unmount aborts the active default save");
+  assert.equal(harness.runner.postUnmountStateWrites, 0,
+    "late default completion cannot set state after unmount");
+  assert.equal(eventCount(harness.telemetry, "logo_overlay_default_saved"), 0);
 }
 
 async function normalSuccessAppliesOnceAndCleansReplacement(source: string): Promise<void> {
@@ -823,6 +1038,13 @@ export async function verifyLogoOverlayEditorRuntime(
   await projectChangeBeforeResponseIsInert(source);
   await unmountAbortsAndMakesLateResponseInert(source);
   await newerSameProjectUploadOwnsSaving(source);
+  await uploadSupersedesDefaultSaveAndOwnsSaving(source);
+  await defaultSaveCannotStartWhileUploadOwnsLane(source);
+  await newerDefaultSaveOwnsCompletionAndTelemetry(source);
+  await projectChangeMakesLateDefaultFailureInert(source);
+  await assetChangeMakesLateDefaultSuccessInert(source);
+  await lateInvalidDefaultJsonAfterProjectChangeIsInert(source);
+  await unmountAbortsAndMakesLateDefaultInert(source);
   await normalSuccessAppliesOnceAndCleansReplacement(source);
   await staleKnownCreatedAssetCleansOnlyItsOrphan(source);
   await staleExistingAndUnprovenAssetsNeverCleanup(source);

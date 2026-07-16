@@ -921,12 +921,12 @@ async function main() {
       "runtime harness must kill a missing post-response ownership guard",
     );
 
-    const projectChangeAbort = `    activeUploadControllerRef.current = null;
-    activeController?.abort();
+    const projectChangeAbort = `    activeUploadController?.abort();
+    activeDefaultController?.abort();
     setSaving(false);`;
     const missingProjectChangeAbort = hookSource.replace(
       projectChangeAbort,
-      `    activeUploadControllerRef.current = null;
+      `    activeDefaultController?.abort();
     setSaving(false);`,
     );
     assert.notEqual(
@@ -965,6 +965,67 @@ async function main() {
       () => verifyLogoOverlayEditorRuntime(missingCurrentAssetExclusion),
       /current-asset-old-B: stale response has no authorized cleanup target/,
       "runtime harness must prevent cleanup of the current selected asset",
+    );
+
+    const postDefaultResponseBoundary = `      // Runtime mutation tests depend on this post-default-response ownership boundary.
+      if (!ownsDefaultSave()) return false;
+`;
+    const missingPostDefaultResponseGuard = hookSource.replace(
+      postDefaultResponseBoundary,
+      "",
+    );
+    assert.notEqual(
+      missingPostDefaultResponseGuard,
+      hookSource,
+      "post-default-response ownership mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(missingPostDefaultResponseGuard),
+      /late success from the older default save|late success for the former asset|late invalid default JSON/,
+      "runtime harness must kill a missing default-save post-response ownership guard",
+    );
+
+    const defaultFinallyOwnership = `      if (ownsDefaultSave()) {
+        activeDefaultSaveControllerRef.current = null;
+        activeMutationOwnerRef.current = null;
+        setSaving(false);
+      }`;
+    const unconditionalDefaultFinally = hookSource.replace(
+      defaultFinallyOwnership,
+      "      setSaving(false);",
+    );
+    assert.notEqual(
+      unconditionalDefaultFinally,
+      hookSource,
+      "default-save finally ownership mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(unconditionalDefaultFinally),
+      /late default finally cannot clear upload ownership|older default finally cannot clear newer default/,
+      "runtime harness must kill an unconditional default-save finally",
+    );
+
+    const uploadDefaultAbort = `    defaultSaveGenerationRef.current += 1;
+    const activeDefaultController = activeDefaultSaveControllerRef.current;
+    activeDefaultSaveControllerRef.current = null;
+    activeDefaultController?.abort();
+    activeUploadControllerRef.current?.abort();`;
+    const uploadWithoutDefaultAbort = hookSource.replace(
+      uploadDefaultAbort,
+      `    defaultSaveGenerationRef.current += 1;
+    const activeDefaultController = activeDefaultSaveControllerRef.current;
+    activeDefaultSaveControllerRef.current = null;
+    activeUploadControllerRef.current?.abort();`,
+    );
+    assert.notEqual(
+      uploadWithoutDefaultAbort,
+      hookSource,
+      "upload default-save abort mutation did not apply",
+    );
+    await assert.rejects(
+      () => verifyLogoOverlayEditorRuntime(uploadWithoutDefaultAbort),
+      /new upload aborts the active default save/,
+      "runtime harness must require a new upload to abort the active default save",
     );
   });
   const postPhaseEditorSource = readFileSync(
