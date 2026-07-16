@@ -235,7 +235,8 @@ async function verifyRenderPreflight(): Promise<void> {
   const prepared = await prepareBrollRenderAssets(
     [
       { src: "/missing.mp4", start: 0, end: 10, sourceIndex: 0 },
-      { src: "/short.mp4", start: 10, end: 30, sourceIndex: 1 },
+      { src: "/short.mp4", start: 10, end: 20, sourceIndex: 1 },
+      { src: "/short.mp4", start: 20, end: 30, sourceIndex: 2 },
     ],
     30,
     fps,
@@ -252,7 +253,30 @@ async function verifyRenderPreflight(): Promise<void> {
   assert.deepEqual(probedPaths, ["/short.mp4"]);
   assert.equal(prepared.coverage.complete, true);
   assert.equal(prepared.coverage.droppedAssetCount, 1);
-  assert.equal(prepared.telemetry.requestedWindowCount, 2);
+  assert.equal(prepared.telemetry.requestedWindowCount, 3);
+
+  let overCardinalityProbeCount = 0;
+  await assert.rejects(
+    prepareBrollRenderAssets(
+      Array.from({ length: 31 }, (_, index) => ({
+        src: `/too-many-${index}.mp4`,
+        start: index / 31,
+        end: (index + 1) / 31,
+      })),
+      1,
+      fps,
+      {
+        resolveAsset: (src) => ({ src, localPath: src }),
+        isUsableLocalFile: () => true,
+        probeDurationSec: async () => {
+          overCardinalityProbeCount += 1;
+          return 5;
+        },
+      },
+    ),
+    (error: unknown) => error instanceof BrollCoverageError,
+  );
+  assert.equal(overCardinalityProbeCount, 0);
 
   let enqueueCount = 0;
   await assert.rejects(

@@ -298,6 +298,10 @@ export function coverBrollTimeline(
     ? selectRepresentativeItems(pool, maxSegmentCount)
     : pool;
   const assets = normalizePool(boundedPool, guardSec, minPlayableSec);
+  const assetIndexBySrc = new Map<string, number>();
+  assets.forEach((asset, index) => {
+    if (!assetIndexBySrc.has(asset.src)) assetIndexBySrc.set(asset.src, index);
+  });
   const targets = makeTargets(desired, safeDurationSec, toleranceSec);
   const segments: BrollCoverageAsset[] = [];
   let poolCursor = 0;
@@ -349,7 +353,7 @@ export function coverBrollTimeline(
       attemptsWithoutProgress = 0;
 
       if (assets.length > 0) {
-        const matchedIndex = assets.findIndex((candidate) => candidate.src === asset.src);
+        const matchedIndex = assetIndexBySrc.get(asset.src) ?? -1;
         poolCursor = ((matchedIndex >= 0 ? matchedIndex : poolCursor) + 1) % assets.length;
       }
     }
@@ -506,17 +510,37 @@ export async function prepareBrollRenderAssets(
   coverage: ProbedBrollCoverageResult;
   telemetry: BrollRenderCoverageTelemetry;
 }> {
+  const capacity = timelineSegmentCapacity(durationSec, fps);
+  if (capacity === 0 || assets.length > capacity) {
+    const rejected = buildBrollRenderCoverage([], durationSec, fps, {
+      requestedWindowCount: options.requestedWindowCount,
+      resolutionDroppedAssetCount: assets.length,
+    });
+    throw new BrollCoverageError(
+      "B-roll coverage ไม่ครบหลังตรวจไฟล์จริง — กรุณาลองเรนเดอร์ใหม่",
+      rejected.coverage.metrics,
+      rejected.telemetry,
+    );
+  }
+
   const probedAssets: ProbedBrollAsset[] = [];
+  const probeByLocalPath = new Map<string, Promise<number | null>>();
   let resolutionDroppedAssetCount = 0;
 
   for (const asset of assets) {
     try {
       const resolved = options.resolveAsset(asset.src);
       const probeRequired = resolved.localPath !== null;
-      const actualDurationSec =
-        probeRequired && options.isUsableLocalFile(resolved.localPath as string)
-          ? await options.probeDurationSec(resolved.localPath as string)
-          : null;
+      let actualDurationSec: number | null = null;
+      if (probeRequired && options.isUsableLocalFile(resolved.localPath as string)) {
+        const localPath = resolved.localPath as string;
+        let pendingProbe = probeByLocalPath.get(localPath);
+        if (!pendingProbe) {
+          pendingProbe = options.probeDurationSec(localPath);
+          probeByLocalPath.set(localPath, pendingProbe);
+        }
+        actualDurationSec = await pendingProbe;
+      }
       probedAssets.push({
         asset: { ...asset, src: resolved.src },
         actualDurationSec,
