@@ -18,7 +18,7 @@ import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipel
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
-  cardsByWordCount, POSITION_TOP_PERCENT,
+  cardsByWordCount, POSITION_TOP_PERCENT, buildDegradedTimingTelemetry,
 } from "@/lib/mcp/orchestrator-steps";
 import {
   compositeAvatarVideo,
@@ -769,7 +769,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         capRes = captionsFromTtsTiming(degraded as any, audioDurationMs, maxCardCharsFor(), null);
         if (capRes && capRes.captions.length > 0) {
-          console.warn(`[mcp-worker] job ${jobId}: TTS timing absent — recovered with single-segment clock over ${input.script.trim().length} chars / ${audioDurationMs}ms`);
+          const scriptCharCount = input.script.trim().length;
+          console.warn(`[mcp-worker] job ${jobId}: TTS timing absent — recovered with single-segment clock over ${scriptCharCount} chars / ${audioDurationMs}ms`);
+          // Durable marker (fire-and-forget, never fails the job) so degraded videos
+          // are identifiable and a systemic timing regression spikes this event.
+          emitTelemetry(buildDegradedTimingTelemetry({ pipelineRunId, jobId, provider, scriptCharCount, audioDurationMs }));
         }
       }
     }
