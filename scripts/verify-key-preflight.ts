@@ -1,6 +1,8 @@
 /**
- * Verify @/lib/key-preflight (Task 7, 2026-07-16 stability audit + 2026-07-17 review
- * round fixes).
+ * Verify @/lib/key-preflight (Task 7, 2026-07-16 stability audit + two 2026-07-17
+ * review rounds — 2nd round restores the TTS disambiguation probe in preflight mode
+ * for ambiguous 401s, since it's the only way to catch a scoped key missing
+ * text_to_speech, and the probe only ever costs the user anything when it succeeds).
  * Run: npx tsx scripts/verify-key-preflight.ts
  *
  * Mocks global.fetch — no real network calls, no DB needed.
@@ -47,18 +49,20 @@ async function check(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 async function main() {
-  console.log("ElevenLabs key checks (Settings mode — disambiguate defaults to true)");
-  await check("valid key (200 on /v1/user) -> valid", async () => {
+  console.log("ElevenLabs key checks (Settings mode — default, mode not passed)");
+  await check("valid key (200 on /v1/user) -> valid, 1 fetch", async () => {
     mockFetch(async () => jsonResponse(200, { subscription: {} }));
     const r = await testElevenLabsKey("k");
     assert.equal(r.verdict, "valid");
     assert.equal(r.ok, true);
+    assert.equal(fetchCallCount, 1);
   });
 
-  await check("scoped TTS-only key (401 + missing_permissions body) -> valid, NOT invalid", async () => {
+  await check("scoped TTS-only key (401 + missing_permissions body) -> valid, NO probe (1 fetch) — historical shortcut unchanged", async () => {
     mockFetch(async () => jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } }));
     const r = await testElevenLabsKey("k");
     assert.equal(r.verdict, "valid");
+    assert.equal(fetchCallCount, 1, "Settings mode trusts missing_permissions without probing");
   });
 
   await check("definitive bad key (401 invalid_api_key body) -> invalid WITHOUT the TTS call (1 fetch)", async () => {
@@ -68,7 +72,7 @@ async function main() {
     assert.equal(fetchCallCount, 1, "invalid_api_key is a free, definitive signal — must not fire the paid TTS call");
   });
 
-  await check("ambiguous 401 (Settings mode, disambiguate:true) -> escalates to the real TTS call", async () => {
+  await check("ambiguous 401 (not missing_permissions) -> escalates to the real TTS call, probe-401 -> invalid (2 fetches)", async () => {
     let call = 0;
     mockFetch(async () => {
       call++;
@@ -80,7 +84,7 @@ async function main() {
     assert.equal(fetchCallCount, 2, "Settings mode must disambiguate via the real TTS call");
   });
 
-  await check("ambiguous 401 but the TTS call itself succeeds -> valid (Settings mode)", async () => {
+  await check("ambiguous 401 but the TTS call itself succeeds -> valid (2 fetches)", async () => {
     let call = 0;
     mockFetch(async () => {
       call++;
@@ -89,6 +93,7 @@ async function main() {
     });
     const r = await testElevenLabsKey("k");
     assert.equal(r.verdict, "valid");
+    assert.equal(fetchCallCount, 2);
   });
 
   await check("network error -> unknown (fail-open)", async () => {
@@ -113,26 +118,100 @@ async function main() {
     assert.equal(r.verdict, "unknown");
   });
 
-  console.log("ElevenLabs key checks (preflight mode — disambiguate:false, review round 2026-07-17)");
-  await check("definitive bad key (401 invalid_api_key) -> STILL invalid, 1 fetch (no TTS call needed)", async () => {
-    mockFetch(async () => jsonResponse(401, { detail: { status: "invalid_api_key", message: "Invalid API key" } }));
-    const r = await testElevenLabsKey("k", { disambiguate: false });
-    assert.equal(r.verdict, "invalid");
-    assert.equal(fetchCallCount, 1);
-  });
-
-  await check("scoped TTS-only key (missing_permissions) -> still valid, 1 fetch", async () => {
-    mockFetch(async () => jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } }));
-    const r = await testElevenLabsKey("k", { disambiguate: false });
+  console.log("ElevenLabs key checks (preflight mode — mode:'preflight', 2nd review round 2026-07-17)");
+  await check("working key (200 on /v1/user) -> valid, exactly 1 fetch (no probe needed)", async () => {
+    mockFetch(async () => jsonResponse(200, { subscription: {} }));
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
     assert.equal(r.verdict, "valid");
     assert.equal(fetchCallCount, 1);
   });
 
-  await check("ambiguous 401 -> unknown (fail-open), NEVER fires the paid TTS call", async () => {
-    mockFetch(async () => jsonResponse(401, { detail: { message: "some_other_401_reason" } }));
-    const r = await testElevenLabsKey("k", { disambiguate: false });
+  await check("definitive bad key (401 invalid_api_key) -> invalid, 1 fetch (free gate, no probe needed)", async () => {
+    mockFetch(async () => jsonResponse(401, { detail: { status: "invalid_api_key", message: "Invalid API key" } }));
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "invalid");
+    assert.equal(fetchCallCount, 1);
+  });
+
+  await check("scoped key (missing_permissions) + probe-401 -> BLOCK (invalid), 2 fetches — the exact real-world failure class", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(401, { detail: { type: "authentication_error", code: "unauthorized", message: "missing the permission text_to_speech" } });
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "invalid");
+    assert.equal(fetchCallCount, 2, "preflight must probe missing_permissions (unlike Settings) — this is the case Settings alone would miss");
+    assert.match(r.message, /text_to_speech/);
+  });
+
+  await check("scoped key (missing_permissions) + probe-200 -> PASS (valid), 2 fetches", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(200, {});
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "valid");
+    assert.equal(fetchCallCount, 2);
+  });
+
+  await check("ambiguous 401 (other) + probe-401 -> BLOCK (invalid), 2 fetches", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { message: "some_other_401_reason" } });
+      return jsonResponse(403, { detail: { message: "forbidden" } });
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "invalid");
+    assert.equal(fetchCallCount, 2);
+  });
+
+  await check("ambiguous 401 (other) + probe-200 -> PASS (valid), 2 fetches", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { message: "some_other_401_reason" } });
+      return jsonResponse(200, {});
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "valid");
+    assert.equal(fetchCallCount, 2);
+  });
+
+  await check("probe network-error -> PASS (unknown, fail-open), 2 fetch attempts", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { message: "some_other_401_reason" } });
+      throw new Error("ECONNRESET during probe");
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
     assert.equal(r.verdict, "unknown");
-    assert.equal(fetchCallCount, 1, "preflight must make exactly ONE fetch call — no TTS-generation disambiguation");
+    assert.equal(fetchCallCount, 2);
+  });
+
+  await check("probe timeout (AbortError) -> PASS (unknown, fail-open)", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { message: "some_other_401_reason" } });
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    });
+    const r = await testElevenLabsKey("k", { mode: "preflight", timeoutMs: 10 });
+    assert.equal(r.verdict, "unknown");
+  });
+
+  await check("first-call network-error -> PASS (unknown, fail-open), no probe attempted", async () => {
+    mockFetch(async () => { throw new Error("ECONNRESET"); });
+    const r = await testElevenLabsKey("k", { mode: "preflight" });
+    assert.equal(r.verdict, "unknown");
+    assert.equal(fetchCallCount, 1);
   });
 
   console.log("Pexels key checks");
@@ -167,21 +246,54 @@ async function main() {
   });
 
   console.log("preflightElevenLabs / preflightPexels (job-submit gate)");
-  await check("preflightElevenLabs blocks only on invalid verdict, never calls TTS", async () => {
+  await check("preflightElevenLabs: invalid_api_key blocks for free (1 fetch, no probe)", async () => {
     mockFetch(async () => jsonResponse(401, { detail: { status: "invalid_api_key", message: "Invalid API key" } }));
-    let block = await preflightElevenLabs("k");
+    const block = await preflightElevenLabs("k");
     assert.ok(block, "expected a block for a confirmed-bad key");
     assert.equal(block!.key, "elevenlabs");
     assert.match(block!.message, /Settings/);
-    assert.equal(fetchCallCount, 1, "preflightElevenLabs must never fire the paid TTS call");
+    assert.equal(fetchCallCount, 1);
+  });
 
-    mockFetch(async () => jsonResponse(401, { detail: { message: "ambiguous_reason" } }));
-    block = await preflightElevenLabs("k");
-    assert.equal(block, null, "ambiguous 401 must fail-open (no block) in preflight mode");
-    assert.equal(fetchCallCount, 1, "still exactly one fetch — no TTS disambiguation call");
+  await check("preflightElevenLabs: missing_permissions + probe-401 blocks (2 fetches) — the real observed failure class", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(401, { detail: { message: "missing the permission text_to_speech" } });
+    });
+    const block = await preflightElevenLabs("k");
+    assert.ok(block, "expected a block — this is exactly the key class that caused the 10 real ElevenLabs failures");
+    assert.match(block!.message, /text_to_speech/);
+    assert.equal(fetchCallCount, 2);
+  });
 
+  await check("preflightElevenLabs: missing_permissions + probe succeeds -> no block (2 fetches)", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(200, {});
+    });
+    const block = await preflightElevenLabs("k");
+    assert.equal(block, null, "a working TTS-scoped key must never be blocked");
+    assert.equal(fetchCallCount, 2);
+  });
+
+  await check("preflightElevenLabs: probe network-error fails open (no block)", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { message: "ambiguous_reason" } });
+      throw new Error("probe network error");
+    });
+    const block = await preflightElevenLabs("k");
+    assert.equal(block, null, "probe network error must fail-open (no block)");
+  });
+
+  await check("preflightElevenLabs: first-call network error fails open (no block)", async () => {
     mockFetch(async () => { throw new Error("network down"); });
-    block = await preflightElevenLabs("k");
+    const block = await preflightElevenLabs("k");
     assert.equal(block, null, "network error must fail-open (no block)");
   });
 
