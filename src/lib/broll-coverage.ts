@@ -65,8 +65,7 @@ function normalizePool(
 ): BrollCoverageAsset[] {
   return pool.filter((asset) => {
     if (!asset?.src) return false;
-    const offset = Math.max(0, finiteOr(asset.clipOffset, 0));
-    return playableDuration(asset, offset, guardSec) > EPSILON_SEC;
+    return playableDuration(asset, 0, guardSec) > EPSILON_SEC;
   });
 }
 
@@ -214,6 +213,7 @@ export function coverBrollTimeline(
     let attemptsWithoutProgress = 0;
 
     while (cursor < target.end - EPSILON_SEC) {
+      const isPreferredAttempt = preferred !== undefined;
       const asset = preferred ?? assets[poolCursor % Math.max(assets.length, 1)];
       const offset = preferred
         ? Math.max(0, finiteOr(asset?.clipOffset, 0))
@@ -221,6 +221,7 @@ export function coverBrollTimeline(
       preferred = undefined;
 
       if (!asset?.src || playableDuration(asset, offset, guardSec) <= EPSILON_SEC) {
+        if (isPreferredAttempt) continue;
         attemptsWithoutProgress += 1;
         if (assets.length === 0 || attemptsWithoutProgress >= assets.length) break;
         poolCursor = (poolCursor + 1) % assets.length;

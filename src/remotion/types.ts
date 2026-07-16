@@ -40,6 +40,7 @@ export interface BrollVideo {
   src: string;         // absolute URL or /renders/xxx.mp4
   start: number;       // timeline position: seconds from video start
   end: number;         // timeline position: seconds from video start
+  sourceIndex?: number; // originating semantic window ordinal
   clipOffset?: number; // where inside the source clip to start playing (seconds, default 0)
   clipDuration?: number; // actual source clip duration in seconds (for Loop)
   keyword?: string;

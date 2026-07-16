@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 import {
   BROLL_SEQUENCE_GUARD_FRAMES,
@@ -45,6 +46,15 @@ const one = coverBrollTimeline(
 assert.equal(one.complete, true);
 assert.ok(one.segments.length > 1);
 
+const exhaustedOffset = coverBrollTimeline(
+  [{ src: "/offset.mp4", start: 0, end: 12, clipOffset: 4.9, clipDuration: 5 }],
+  [{ src: "/offset.mp4", start: 0, end: 0, clipOffset: 4.9, clipDuration: 5 }],
+  12,
+  fps,
+);
+assert.equal(exhaustedOffset.complete, true);
+assert.ok(exhaustedOffset.segments.some((segment) => segment.clipOffset === 0));
+
 const selected = selectRepresentativeItems(
   Array.from({ length: 53 }, (_, index) => index),
   36,
@@ -56,5 +66,13 @@ assert.ok(selected[selected.length - 1] >= 51);
 const empty = coverBrollTimeline([], [], 30, fps);
 assert.equal(empty.complete, false);
 assert.ok(empty.metrics.uncoveredTailSec >= 30 - 1 / fps);
+
+const configSource = fs.readFileSync(
+  "src/app/api/videos/generate-config/route.ts",
+  "utf8",
+);
+assert.ok(!configSource.includes("Math.min(brollWindows.length, pool.length)"));
+assert.ok(configSource.includes("assignBrollWindows("));
+assert.ok(configSource.includes("coverBrollTimeline("));
 
 console.log("All broll-coverage checks passed.");
