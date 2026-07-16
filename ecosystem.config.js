@@ -188,15 +188,16 @@ module.exports = {
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
         // CAP-1 launch-capacity knob: how many videos this single worker orchestrates at
-        // once (docs/audits/2026-07-07-system-optimization-audit.md). The code default is 2
-        // (matching the 2 render-worker instances above), but prod is GATED at "1" until Mew
-        // has load-verified that 2 concurrent renders hold the same visual quality as 1 —
-        // then flip this to "2". ecosystem env SHADOWS .env, and a plain `pm2 restart
-        // mcp-video-worker` keeps the OLD env; to apply a change here, restart against the
-        // FILE: `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
+        // once (docs/audits/2026-07-07-system-optimization-audit.md). Set to 2 after the
+        // KVM8 (8 vCPU/32GB) upgrade and validated by 7 days of live prod operation
+        // (2026-07-09 -> 2026-07-16: 202 done jobs, queue-wait p95 4s, no instability).
+        // Clamp 1..4 lives in the script (scripts/mcp-video-worker.ts), not here.
+        // ecosystem env SHADOWS .env, and a plain `pm2 restart mcp-video-worker` keeps
+        // the OLD env; to apply a change here, restart against the FILE:
+        // `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
-        MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "1",
+        MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
       },
     },
     {
@@ -235,6 +236,10 @@ module.exports = {
         // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
         // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
         DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        // This block (not .env) is the authoritative source for RENDER_CONCURRENCY —
+        // ecosystem env SHADOWS .env for this process, so a value set only in .env
+        // silently drifts. 2 instances x 3 = 6 frame threads <= 8 cores on the KVM8 box.
+        RENDER_CONCURRENCY: process.env.RENDER_CONCURRENCY || "3",
         // Render tuning for the worker process. JPEG quality 60 was a memory-headroom
         // compromise for the old 15GB box; the box is now KVM8 (8c/31Gi) with plenty of
         // headroom, so 90 (2026-07-05) trades a little more heap/CPU for sharper frames —
