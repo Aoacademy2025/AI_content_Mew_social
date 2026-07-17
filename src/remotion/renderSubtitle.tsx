@@ -109,9 +109,53 @@ function tokenLines(text: string): TokenLine[] {
   return result;
 }
 
-function activeTokenIndex(lines: TokenLine[], frame: number, captionDurFrames: number): number {
+const KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES = 8;
+
+function activeTokenIndex(
+  lines: TokenLine[],
+  frame: number,
+  captionDurFrames: number,
+  numericMinActiveFrames = 0,
+): number {
   const tokens = lines.flatMap((line) => line.parts).filter((part) => part.isWordLike);
   if (tokens.length === 0) return -1;
+
+  // A one-character number received only ~0.1s under pure character-weighted
+  // timing. For Karaoke, reserve a readable minimum for numeric tokens when the
+  // caption has enough frames, then distribute the remaining time using the
+  // existing character weights. Highlight passes 0 and keeps its old timing.
+  const totalFrames = Math.max(1, Math.round(captionDurFrames));
+  const numericCount = tokens.filter((part) => /\p{N}/u.test(part.text)).length;
+  if (numericMinActiveFrames > 0 && numericCount > 0 && totalFrames >= tokens.length) {
+    const nonNumericCount = tokens.length - numericCount;
+    const numericMinimum = Math.min(
+      numericMinActiveFrames,
+      Math.max(1, Math.floor((totalFrames - nonNumericCount) / numericCount)),
+    );
+    const minimums = tokens.map((part) => /\p{N}/u.test(part.text) ? numericMinimum : 1);
+    const remainingFrames = totalFrames - minimums.reduce((sum, value) => sum + value, 0);
+    const totalWeight = tokens.reduce((sum, part) => sum + Math.max(1, part.text.length), 0);
+    const exactExtras = tokens.map((part) => (
+      remainingFrames * Math.max(1, part.text.length) / totalWeight
+    ));
+    const extras = exactExtras.map(Math.floor);
+    let unassigned = remainingFrames - extras.reduce((sum, value) => sum + value, 0);
+    const remainderOrder = exactExtras
+      .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+      .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+    for (let i = 0; i < remainderOrder.length && unassigned > 0; i++, unassigned--) {
+      extras[remainderOrder[i].index] += 1;
+    }
+
+    const targetFrame = Math.max(0, Math.min(totalFrames - 1, Math.floor(frame)));
+    let cumulativeFrames = 0;
+    for (let index = 0; index < tokens.length; index++) {
+      cumulativeFrames += minimums[index] + extras[index];
+      if (targetFrame < cumulativeFrames) return index;
+    }
+    return tokens.length - 1;
+  }
+
   const totalChars = tokens.reduce((sum, part) => sum + part.text.length, 0) || 1;
   const cumulative: number[] = [];
   let cum = 0;
@@ -275,7 +319,12 @@ export function renderSubtitle(
           <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
         );
       }
-      const active = activeTokenIndex(lines, frame, captionDurFrames);
+      const active = activeTokenIndex(
+        lines,
+        frame,
+        captionDurFrames,
+        KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES,
+      );
       if (active < 0) {
         return wrapKaraoke(
           <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
@@ -294,7 +343,10 @@ export function renderSubtitle(
                 const isActive = currentIdx === active;
                 return (
                   <span key={`${lineIdx}-${partIdx}`} style={{
-                    color: isActive ? accentColor : `${color}60`,
+                    // Keep every token readable throughout playback. Karaoke is
+                    // communicated by the accent color, not by making future
+                    // words translucent against unpredictable video footage.
+                    color: isActive ? accentColor : color,
                     fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
                   }}>{part.text}</span>
                 );

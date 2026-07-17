@@ -32,5 +32,8 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Verify karaoke subtitle visibility
+        run: npm run verify:subtitle-karaoke
+
       - name: Build
         run: npm run build
