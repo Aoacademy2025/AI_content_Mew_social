@@ -18,6 +18,24 @@ export type AdminCleanupReviewRequest<T> =
     error: unknown;
   };
 
+export function adminCleanupFailureMessage(payload: unknown): string {
+  const data = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as { error?: unknown; graphErrors?: unknown }
+    : {};
+  if (data.error === "media graph incomplete" || data.error === "media graph incomplete after apply") {
+    const graphErrors = typeof data.graphErrors === "number"
+      && Number.isInteger(data.graphErrors)
+      && data.graphErrors > 0
+      ? data.graphErrors
+      : null;
+    const count = graphErrors === null ? "" : ` ${graphErrors} รายการ`;
+    return `ระบบตรวจพบข้อมูลอ้างอิงไฟล์ไม่สมบูรณ์${count} จึงหยุดการล้างไฟล์เพื่อความปลอดภัย — ยังไม่มีไฟล์ถูกลบ`;
+  }
+  return typeof data.error === "string" && data.error.trim()
+    ? data.error.trim()
+    : "สร้างรายการตรวจสอบไม่สำเร็จ";
+}
+
 function copySelection(selection: AdminCleanupSelection): AdminCleanupSelection {
   return {
     olderThanDays: selection.olderThanDays,

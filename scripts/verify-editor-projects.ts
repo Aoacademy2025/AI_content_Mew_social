@@ -1370,6 +1370,24 @@ async function main() {
   const afterFinish = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterFinish?.activeJobId === job.id && afterFinish?.status === "post", "finishJob moves preview project to post");
 
+  const foreignPointerProject = await projects.createEditorProject(alice.id, {
+    title: "Foreign pointer target",
+  });
+  let foreignPointerRejected = false;
+  try {
+    await projects.updateEditorProject(alice.id, foreignPointerProject.id, { activeJobId: job.id });
+  } catch (error) {
+    foreignPointerRejected = hasCode("invalid_project_pointer")(error);
+  }
+  ok(
+    foreignPointerRejected,
+    "project rejects an activeJobId owned by another project from the same user",
+  );
+  ok(
+    (await prisma.editorProject.findUnique({ where: { id: foreignPointerProject.id } }))?.activeJobId === null,
+    "rejected cross-project activeJobId is never persisted",
+  );
+
   const exportJob = await jobs.createVideoJob(
     alice.id,
     { mode: "export", sourceJobId: job.id },
@@ -1409,6 +1427,13 @@ async function main() {
 
   const archived = await projects.archiveEditorProject(alice.id, p.id);
   ok(archived, "archive succeeds for owner");
+  const archivedRow = await prisma.editorProject.findUnique({ where: { id: p.id } });
+  ok(
+    archivedRow?.activeJobId === null &&
+      archivedRow.activeExportJobId === null &&
+      archivedRow.latestVideoId === null,
+    "archive clears every media lifecycle pointer",
+  );
   ok(
     !(await projects.listEditorProjects(alice.id)).some((project) => project.id === p.id),
     "archived projects are hidden by default",
@@ -1421,6 +1446,40 @@ async function main() {
   let archivedDenied = false;
   try { await projects.assertEditorProjectOwner(alice.id, p.id); } catch { archivedDenied = true; }
   ok(archivedDenied, "archived projects cannot be used for new jobs/videos");
+
+  const archivedWhileRendering = await projects.createEditorProject(alice.id, {
+    title: "Archive while rendering",
+  });
+  const lateJob = await jobs.createVideoJob(
+    alice.id,
+    { script: "late completion", previewMode: true },
+    undefined,
+    { projectId: archivedWhileRendering.id },
+  );
+  await projects.updateEditorProject(alice.id, archivedWhileRendering.id, {
+    activeJobId: lateJob.id,
+    status: "rendering",
+  });
+  await prisma.videoJob.update({ where: { id: lateJob.id }, data: { status: "processing" } });
+  ok(
+    await projects.archiveEditorProject(alice.id, archivedWhileRendering.id),
+    "project with an in-flight job can be archived",
+  );
+  await jobs.finishJob(lateJob.id, {
+    version: 2,
+    mode: "preview",
+    videoUrl: "/api/renders/late.mp4",
+  });
+  const afterLateCompletion = await prisma.editorProject.findUnique({
+    where: { id: archivedWhileRendering.id },
+  });
+  ok(
+    afterLateCompletion?.status === "archived" &&
+      afterLateCompletion.activeJobId === null &&
+      afterLateCompletion.activeExportJobId === null &&
+      afterLateCompletion.latestVideoId === null,
+    "late job completion cannot resurrect an archived project or restore media pointers",
+  );
 
   const usageAfterAll = await prisma.user.findUnique({ where: { id: alice.id } });
   ok(usageAfterAll?.usageCount === 7 && usageAfterAll?.minutesUsed === 12, "project update/archive/job metadata does not mutate quota counters");

@@ -169,7 +169,7 @@ export async function finishJobWithTransition(
     if (job.projectId) {
       if (job.type === "export") {
         await tx.editorProject.updateMany({
-          where: { id: job.projectId, userId: job.userId },
+          where: { id: job.projectId, userId: job.userId, status: { not: "archived" } },
           data: {
             activeExportJobId: job.id,
             ...(output.videoId ? { latestVideoId: output.videoId } : {}),
@@ -179,7 +179,7 @@ export async function finishJobWithTransition(
         });
       } else {
         await tx.editorProject.updateMany({
-          where: { id: job.projectId, userId: job.userId },
+          where: { id: job.projectId, userId: job.userId, status: { not: "archived" } },
           data: {
             activeJobId: job.id,
             ...(output.videoId ? { latestVideoId: output.videoId } : {}),

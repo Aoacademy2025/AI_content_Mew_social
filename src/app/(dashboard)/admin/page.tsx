@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  adminCleanupFailureMessage,
   adminCleanupSelectionsEqual,
   createAdminCleanupReviewCoordinator,
   type AdminCleanupSelection,
@@ -664,6 +665,7 @@ export default function AdminDashboardPage() {
 
   // Disk cleanup
   const [cleanupInfo, setCleanupInfo] = useState<CleanupInfo | null>(null);
+  const [cleanupError, setCleanupError] = useState<string | null>(null);
   const [cleanupLoading, setCleanupLoading] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [cleanDays, setCleanDays] = useState(3);
@@ -682,6 +684,7 @@ export default function AdminDashboardPage() {
 
   const loadCleanupInfo = useCallback(async () => {
     setCleanupLoading(true);
+    setCleanupError(null);
     const request = await cleanupReviewCoordinator.current.request(async (selection) => {
       const params = new URLSearchParams({
         olderThanDays: String(selection.olderThanDays),
@@ -695,14 +698,15 @@ export default function AdminDashboardPage() {
     setCleanupLoading(false);
     if (!request.ok) {
       setCleanupInfo(null);
-      toast.error("สร้างรายการตรวจสอบไม่สำเร็จ");
+      setCleanupError("เชื่อมต่อระบบตรวจสอบไฟล์ไม่สำเร็จ กรุณาลองใหม่");
       return;
     }
     if (!request.value.response.ok) {
       setCleanupInfo(null);
-      toast.error(request.value.data.error ?? "สร้างรายการตรวจสอบไม่สำเร็จ");
+      setCleanupError(adminCleanupFailureMessage(request.value.data));
       return;
     }
+    setCleanupError(null);
     setCleanupInfo(request.value.data);
   }, []);
 
@@ -1396,6 +1400,14 @@ export default function AdminDashboardPage() {
             </div>
 
             {/* Reference-graph protection notice */}
+            {cleanupError && (
+              <div className="flex items-start gap-2 rounded-xl px-3 py-2.5 text-xs"
+                style={{ background: "hsl(38 92% 50% / 0.08)", border: "1px solid hsl(38 92% 50% / 0.28)" }}>
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                <span className="leading-relaxed text-amber-300">{cleanupError}</span>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs"
               style={{ background: "hsl(140 60% 50% / 0.06)", border: "1px solid hsl(140 60% 50% / 0.2)" }}>
               <ShieldCheck className="h-4 w-4 text-green-400 shrink-0" />

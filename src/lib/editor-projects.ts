@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import { resolveProjectMediaState } from "@/lib/media-retention";
@@ -63,6 +64,41 @@ function parseExpectedEditorProjectDraftRevision(value: unknown): number | null 
     : null;
 }
 
+function invalidProjectPointer(field: "activeJobId" | "activeExportJobId" | "latestVideoId"): Error {
+  const error = new Error("invalid_project_pointer");
+  (error as { code?: string; field?: string }).code = "invalid_project_pointer";
+  (error as { code?: string; field?: string }).field = field;
+  return error;
+}
+
+async function assertExactEditorProjectPointers(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  projectId: string,
+  pointers: {
+    activeJobId?: string | null;
+    activeExportJobId?: string | null;
+    latestVideoId?: string | null;
+  },
+): Promise<void> {
+  for (const field of ["activeJobId", "activeExportJobId"] as const) {
+    const jobId = pointers[field];
+    if (!jobId) continue;
+    const exactJob = await tx.videoJob.findFirst({
+      where: { id: jobId, userId, projectId },
+      select: { id: true },
+    });
+    if (!exactJob) throw invalidProjectPointer(field);
+  }
+  if (pointers.latestVideoId) {
+    const exactVideo = await tx.video.findFirst({
+      where: { id: pointers.latestVideoId, userId, projectId },
+      select: { id: true },
+    });
+    if (!exactVideo) throw invalidProjectPointer("latestVideoId");
+  }
+}
+
 export function editorProjectResponse(project: NonNullable<ProjectRow>) {
   return {
     id: project.id,
@@ -113,7 +149,7 @@ export async function getEditorProjectWithMediaState(
   }
 
   const job = await prisma.videoJob.findFirst({
-    where: { id: activeJobId, userId, status: "done" },
+    where: { id: activeJobId, userId, projectId, status: "done" },
     select: { outputJson: true, mediaExpiresAt: true },
   });
   if (!job) {
@@ -251,6 +287,7 @@ export async function updateEditorProject(
   let project: NonNullable<ProjectRow> | null = null;
   try {
     project = await prisma.$transaction(async (tx) => {
+      await assertExactEditorProjectPointers(tx, userId, projectId, data);
       const updated = await tx.editorProject.updateMany({
         where: {
           id: projectId,
@@ -286,7 +323,12 @@ export async function updateEditorProject(
 export async function archiveEditorProject(userId: string, projectId: string) {
   const updated = await prisma.editorProject.updateMany({
     where: { id: projectId, userId },
-    data: { status: "archived" },
+    data: {
+      status: "archived",
+      activeJobId: null,
+      activeExportJobId: null,
+      latestVideoId: null,
+    },
   });
   return updated.count === 1;
 }

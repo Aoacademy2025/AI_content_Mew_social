@@ -17,7 +17,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PrismaClient } from "@prisma/client";
-import { createAdminCleanupReviewCoordinator } from "../src/lib/admin-cleanup-review";
+import {
+  adminCleanupFailureMessage,
+  createAdminCleanupReviewCoordinator,
+} from "../src/lib/admin-cleanup-review";
 import {
   buildQuarantinedMediaIndex,
   fingerprintMediaRecord,
@@ -1210,6 +1213,14 @@ async function main(): Promise<void> {
     join(REPO_ROOT, "src", "app", "(dashboard)", "admin", "page.tsx"),
     "utf8",
   );
+  assert.equal(
+    adminCleanupFailureMessage({ error: "media graph incomplete", graphErrors: 1 }),
+    "ระบบตรวจพบข้อมูลอ้างอิงไฟล์ไม่สมบูรณ์ 1 รายการ จึงหยุดการล้างไฟล์เพื่อความปลอดภัย — ยังไม่มีไฟล์ถูกลบ",
+  );
+  assert.equal(
+    adminCleanupFailureMessage({ error: "media graph incomplete", graphErrors: 3 }),
+    "ระบบตรวจพบข้อมูลอ้างอิงไฟล์ไม่สมบูรณ์ 3 รายการ จึงหยุดการล้างไฟล์เพื่อความปลอดภัย — ยังไม่มีไฟล์ถูกลบ",
+  );
   const quarantineSource = readFileSync(
     join(REPO_ROOT, "src", "lib", "media-quarantine.ts"),
     "utf8",
@@ -1246,6 +1257,9 @@ async function main(): Promise<void> {
   assert.match(adminPageSource, /new URLSearchParams/);
   assert.match(adminPageSource, /createAdminCleanupReviewCoordinator/);
   assert.match(adminPageSource, /cleanupReviewCoordinator\.current\.request/);
+  assert.match(adminPageSource, /adminCleanupFailureMessage/);
+  assert.match(adminPageSource, /cleanupError/);
+  assert.doesNotMatch(adminPageSource, /toast\.error\(request\.value\.data\.error/);
   assert.match(adminPageSource, /olderThanDays:\s*String\(selection\.olderThanDays\)/);
   assert.match(adminPageSource, /includeStocks:\s*selection\.includeStocks\s*\?\s*"1"\s*:\s*"0"/);
   assert.match(adminPageSource, /includeTmp:\s*selection\.includeTmp\s*\?\s*"1"\s*:\s*"0"/);

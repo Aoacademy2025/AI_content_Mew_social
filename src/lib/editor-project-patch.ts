@@ -18,6 +18,9 @@ function projectError(error: unknown) {
   if (code === "invalid_draft_revision") {
     return NextResponse.json({ error: "invalid_draft_revision" }, { status: 400 });
   }
+  if (code === "invalid_project_pointer") {
+    return NextResponse.json({ error: "invalid_project_pointer" }, { status: 409 });
+  }
   if (code === "stale_revision") {
     return NextResponse.json(
       { error: "stale_revision", project: (error as { project?: unknown }).project ?? null },
