@@ -47,22 +47,15 @@ import { useIsMobile } from "./useIsMobile";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import {
   PROJECT_STATUS_FILTER_LABEL,
+  fetchRecentProjectMenu,
   filterProjectMenuItems,
   projectDeleteBlocked,
+  projectMenuDate,
   projectStatusLabel,
   type ProjectMenuItem,
   type ProjectStatusFilter,
 } from "./project-menu";
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
-
-const PROJECT_MENU_LIMIT = 8;
-
-async function fetchRecentProjects(limit = PROJECT_MENU_LIMIT): Promise<ProjectMenuItem[]> {
-  const res = await fetch("/api/editor-projects", { cache: "no-store" });
-  if (!res.ok) return [];
-  const data = await res.json().catch(() => null);
-  return Array.isArray(data?.projects) ? data.projects.slice(0, limit) : [];
-}
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -76,11 +69,15 @@ export function EditorV2Shell() {
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
+  const [projectTotal, setProjectTotal] = useState(0);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const [projectsReloadRevision, setProjectsReloadRevision] = useState(0);
   const [projectFilter, setProjectFilter] = useState<ProjectStatusFilter>("all");
   const [deleteProject, setDeleteProject] = useState<ProjectMenuItem | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
-  const editorBlocked = p.projectInitialization !== "ready"
+  const emptyProjectState = p.projectInitialization === "empty";
+  const editorBlocked = (p.projectInitialization !== "ready" && !emptyProjectState)
     || p.recovery.status !== "none";
 
   // Render Receipt (D5) — mandatory pre-render summary. Only interposed when the flag
@@ -116,15 +113,20 @@ export function EditorV2Shell() {
     if (!projectMenuOpen) return;
     let alive = true;
     setProjectsLoading(true);
-    fetchRecentProjects()
-      .then((items) => {
+    setProjectsError(null);
+    fetchRecentProjectMenu()
+      .then((snapshot) => {
         if (!alive) return;
-        setProjects(items);
+        setProjects(snapshot.projects);
+        setProjectTotal(snapshot.total);
       })
-      .catch(() => { if (alive) setProjects([]); })
+      .catch((error) => {
+        if (!alive) return;
+        setProjectsError(error instanceof Error ? error.message : "โหลดรายการโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่");
+      })
       .finally(() => { if (alive) setProjectsLoading(false); });
     return () => { alive = false; };
-  }, [projectMenuOpen, p.projectId]);
+  }, [projectMenuOpen, p.projectId, projectsReloadRevision]);
 
   useEffect(() => {
     if (!editorBlocked) return;
@@ -165,20 +167,28 @@ export function EditorV2Shell() {
     if (!r.ok && r.message) toast.error(r.message);
   }
 
-  function handleNewProject() {
-    if (!p.canRunProjectOperation()) return;
+  async function handleNewProject() {
+    if (!p.canRunProjectOperation() && !emptyProjectState) return;
     reset();
-    void p.resetProject();
     setStep(0);
+    const projectId = await p.resetProject();
+    if (!projectId) return;
+    const url = new URL(window.location.href);
+    url.pathname = "/video-editor";
+    url.searchParams.set("ui", "v2");
+    url.searchParams.set("projectId", projectId);
+    url.searchParams.delete("empty");
+    window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
   }
 
   function openProject(projectId: string) {
-    if (!p.canRunProjectOperation()) return;
+    if (!p.canRunProjectOperation() && !emptyProjectState) return;
     if (!projectId || projectId === p.projectId) return;
     const url = new URL(window.location.href);
     url.pathname = "/video-editor";
     url.searchParams.set("ui", "v2");
     url.searchParams.set("projectId", projectId);
+    url.searchParams.delete("empty");
     window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
   }
 
@@ -186,13 +196,18 @@ export function EditorV2Shell() {
     const url = new URL(window.location.href);
     url.pathname = "/video-editor";
     url.searchParams.set("ui", "v2");
-    if (projectId) url.searchParams.set("projectId", projectId);
-    else url.searchParams.delete("projectId");
+    if (projectId) {
+      url.searchParams.set("projectId", projectId);
+      url.searchParams.delete("empty");
+    } else {
+      url.searchParams.delete("projectId");
+      url.searchParams.set("empty", "1");
+    }
     window.location.assign(`${url.pathname}?${url.searchParams.toString()}`);
   }
 
   function requestDeleteProject(project: ProjectMenuItem) {
-    if (!p.canRunProjectOperation()) return;
+    if (!p.canRunProjectOperation() && !emptyProjectState) return;
     if (projectDeleteBlocked(project.status)) {
       toast.error("โปรเจกต์นี้กำลังทำงานอยู่ — รอให้เสร็จก่อนลบ");
       return;
@@ -202,7 +217,7 @@ export function EditorV2Shell() {
   }
 
   async function handleDeleteProject() {
-    if (!p.canRunProjectOperation()) return;
+    if (!p.canRunProjectOperation() && !emptyProjectState) return;
     const project = deleteProject;
     if (!project || deletingProjectId) return;
     if (projectDeleteBlocked(project.status)) {
@@ -230,10 +245,18 @@ export function EditorV2Shell() {
       if (!ownsAttempt()) return;
       if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
       const fallbackProjects = projects.filter((item) => item.id !== project.id);
-      const remainingProjects = (await fetchRecentProjects().catch(() => fallbackProjects))
-        .filter((item) => item.id !== project.id);
+      let remainingProjects = fallbackProjects;
+      let remainingTotal = Math.max(0, projectTotal - 1);
+      try {
+        const snapshot = await fetchRecentProjectMenu();
+        remainingProjects = snapshot.projects.filter((item) => item.id !== project.id);
+        remainingTotal = snapshot.total;
+      } catch {
+        toast.error("นำโปรเจกต์ออกแล้ว แต่โหลดรายการล่าสุดไม่สำเร็จ — กำลังใช้รายการที่มีอยู่");
+      }
       if (!ownsAttempt()) return;
       setProjects(remainingProjects);
+      setProjectTotal(remainingTotal);
       setDeleteProject(null);
       if (activeProjectIdRef.current === project.id) {
         if (!ownsAttempt()) return;
@@ -241,18 +264,18 @@ export function EditorV2Shell() {
         if (!ownsAttempt() || activeProjectIdRef.current !== project.id) return;
         const nextProject = remainingProjects[0];
         if (nextProject) {
-          toast.success(`ลบโปรเจกต์แล้ว กำลังเปิด ${nextProject.title || "โปรเจกต์ถัดไป"}`);
+          toast.success(`นำโปรเจกต์ออกแล้ว กำลังเปิด ${nextProject.title || "โปรเจกต์ถัดไป"}`);
           navigateAfterArchivedProject(nextProject.id);
         } else {
-          toast.success("ลบโปรเจกต์แล้ว เริ่มโปรเจกต์ใหม่ให้พร้อมใช้งาน");
+          toast.success("นำโปรเจกต์ออกแล้ว ตอนนี้ไม่มีโปรเจกต์ค้างอยู่");
           navigateAfterArchivedProject();
         }
         return;
       }
-      toast.success("ลบโปรเจกต์แล้ว");
+      toast.success("นำโปรเจกต์ออกจากรายการแล้ว");
     } catch (error) {
       if (!ownsAttempt()) return;
-      toast.error(error instanceof Error ? error.message : "ลบโปรเจกต์ไม่สำเร็จ");
+      toast.error(error instanceof Error ? error.message : "นำโปรเจกต์ออกไม่สำเร็จ");
     } finally {
       if (ownsAttempt()) {
         archiveAttemptRef.current = null;
@@ -275,7 +298,7 @@ export function EditorV2Shell() {
       className={`${v2FontClass} flex h-screen flex-col`}
       style={{ background: color.bg0, color: color.text }}
     >
-      {p.projectInitialization !== "ready" && p.recovery.status === "none" ? (
+      {p.projectInitialization !== "ready" && !emptyProjectState && p.recovery.status === "none" ? (
         <div role="status" aria-live="polite" className="sr-only">
           กำลังเตรียมโปรเจกต์
         </div>
@@ -296,7 +319,7 @@ export function EditorV2Shell() {
             type="button"
             data-editor-recovery-focus-fallback="true"
             onClick={() => {
-              if (!p.canRunProjectOperation()) return;
+              if (!p.canRunProjectOperation() && !emptyProjectState) return;
               router.push("/dashboard");
             }}
             aria-label="กลับแดชบอร์ด"
@@ -316,7 +339,7 @@ export function EditorV2Shell() {
           <DropdownMenu
             open={projectMenuOpen && !editorBlocked}
             onOpenChange={(open) => {
-              if (open && !p.canRunProjectOperation()) return;
+              if (open && !p.canRunProjectOperation() && !emptyProjectState) return;
               setProjectMenuOpen(open);
             }}
           >
@@ -335,11 +358,14 @@ export function EditorV2Shell() {
               className="w-[292px] rounded-[10px] p-1.5"
               style={{ background: color.bg1, border: `1px solid ${color.cardBorder}`, color: color.text }}
             >
-              <DropdownMenuLabel className="px-2 py-1.5" style={{ font: `600 11px ${font.heading}`, color: color.textFaint }}>
-                โปรเจกต์ล่าสุด
+              <DropdownMenuLabel className="flex items-center justify-between gap-3 px-2 py-1.5" style={{ font: `600 11px ${font.heading}`, color: color.textFaint }}>
+                <span>โปรเจกต์ล่าสุด</span>
+                <span style={{ fontWeight: 400 }}>
+                  {projectTotal > projects.length ? `${projects.length} จาก ${projectTotal}` : `${projectTotal} รายการ`}
+                </span>
               </DropdownMenuLabel>
               <DropdownMenuItem
-                onSelect={() => handleNewProject()}
+                onSelect={() => void handleNewProject()}
                 className="rounded-[8px] px-2.5 py-2"
                 style={{ color: color.primary300, cursor: "pointer" }}
               >
@@ -375,6 +401,22 @@ export function EditorV2Shell() {
                 <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
                   <span style={{ fontSize: 12 }}>กำลังโหลด…</span>
                 </DropdownMenuItem>
+              ) : projectsError ? (
+                <div className="flex items-center justify-between gap-3 rounded-[8px] px-2.5 py-2" role="alert">
+                  <span style={{ fontSize: 11, color: color.danger }}>โหลดรายการไม่สำเร็จ</span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setProjectsReloadRevision((value) => value + 1);
+                    }}
+                    className="rounded-[7px] px-2 py-1 focus-visible:outline-2 focus-visible:outline-offset-2"
+                    style={{ color: color.link, background: color.selectedBg, border: `1px solid ${color.selectedBorder}`, fontSize: 11 }}
+                  >
+                    ลองใหม่
+                  </button>
+                </div>
               ) : visibleProjects.length === 0 ? (
                 <DropdownMenuItem disabled className="rounded-[8px] px-2.5 py-2" style={{ color: color.textFaint }}>
                   <span style={{ fontSize: 12 }}>ไม่มีโปรเจกต์ในตัวกรองนี้</span>
@@ -383,6 +425,7 @@ export function EditorV2Shell() {
                 const active = project.id === p.projectId;
                 const deleteBlocked = projectDeleteBlocked(project.status);
                 const deleting = deletingProjectId === project.id;
+                const activityDate = projectMenuDate(project);
                 return (
                   <DropdownMenuItem
                     key={project.id}
@@ -396,15 +439,22 @@ export function EditorV2Shell() {
                     <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                       {active ? <Check size={13} strokeWidth={2.4} /> : null}
                     </span>
-                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: 12 }}>{project.title || "New Project"}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate" style={{ fontSize: 12 }}>{project.title || "New Project"}</span>
+                      {activityDate ? (
+                        <span className="mt-0.5 block truncate" style={{ fontSize: 9.5, color: color.textFaintest }}>
+                          แก้ไข {activityDate}
+                        </span>
+                      ) : null}
+                    </span>
                     <span className="shrink-0" style={{ fontSize: 10, color: color.textFaint }}>
                       {projectStatusLabel(project.status)}
                     </span>
                     <button
                       type="button"
-                      aria-label="ลบโปรเจกต์"
+                      aria-label="นำโปรเจกต์ออกจากรายการ"
                       aria-disabled={deleteBlocked || deleting}
-                      title={deleteBlocked ? "รอให้งานเสร็จก่อนลบ" : "ลบโปรเจกต์"}
+                      title={deleteBlocked ? "รอให้งานเสร็จก่อนนำออก" : "นำออกจากรายการ"}
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.preventDefault();
@@ -412,7 +462,7 @@ export function EditorV2Shell() {
                         if (deleting) return;
                         requestDeleteProject(project);
                       }}
-                      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-colors"
+                      className="ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-[7px] transition-colors lg:h-7 lg:w-7"
                       style={{
                         color: deleteBlocked ? color.textFaintest : color.textFaint,
                         cursor: deleteBlocked ? "not-allowed" : "pointer",
@@ -430,19 +480,23 @@ export function EditorV2Shell() {
           </DropdownMenu>
 
           <div className="flex min-w-0 flex-col leading-tight">
-            <input
-              aria-label="ชื่อโปรเจกต์"
-              value={p.projectTitle}
-              onChange={(event) => p.setProjectTitle(event.target.value.slice(0, 80))}
-              onBlur={() => {
-                const trimmed = p.projectTitle.trim();
-                p.setProjectTitle(trimmed || "New Project");
-              }}
-              className="-mx-1.5 min-w-0 truncate rounded-[6px] border-0 bg-transparent px-1.5 py-0 outline-none transition-colors focus:bg-white/[.06]"
-              style={{ font: `500 13.5px ${font.heading}`, color: color.text }}
-            />
+            {emptyProjectState ? (
+              <span style={{ font: `500 13.5px ${font.heading}`, color: color.text }}>ยังไม่มีโปรเจกต์</span>
+            ) : (
+              <input
+                aria-label="ชื่อโปรเจกต์"
+                value={p.projectTitle}
+                onChange={(event) => p.setProjectTitle(event.target.value.slice(0, 80))}
+                onBlur={() => {
+                  const trimmed = p.projectTitle.trim();
+                  p.setProjectTitle(trimmed || "New Project");
+                }}
+                className="-mx-1.5 min-w-0 truncate rounded-[6px] border-0 bg-transparent px-1.5 py-0 outline-none transition-colors focus:bg-white/[.06] focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{ font: `500 13.5px ${font.heading}`, color: color.text }}
+              />
+            )}
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
-              <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />
+              {emptyProjectState ? <span>ระบบจะสร้างเมื่อมิวกดเริ่ม</span> : <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />}
               <span>·</span>
               <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
             </div>
@@ -501,7 +555,9 @@ export function EditorV2Shell() {
         </div>
       </header>
 
-      {isRendering ? (
+      {emptyProjectState ? (
+        <EmptyProjectView onCreate={() => void handleNewProject()} />
+      ) : isRendering ? (
         <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} exportMode={job.jobType === "export"} onCancel={handleCancel} />
       ) : shouldShowUnavailablePreview(job.phase, job.mediaState) ? (
         <ExpiredPreviewView
@@ -555,19 +611,19 @@ export function EditorV2Shell() {
       <AlertDialog
         open={!!deleteProject && !editorBlocked}
         onOpenChange={(open) => {
-          if (open && !p.canRunProjectOperation()) return;
+          if (open && !p.canRunProjectOperation() && !emptyProjectState) return;
           if (!open && !deletingProjectId) setDeleteProject(null);
         }}
       >
         <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
           <AlertDialogHeader>
             <AlertDialogTitle style={{ font: `600 16px ${font.heading}`, color: color.text }}>
-              {deleteProject?.id === p.projectId ? "ลบโปรเจกต์ที่เปิดอยู่?" : "ลบโปรเจกต์นี้?"}
+              {deleteProject?.id === p.projectId ? "นำโปรเจกต์ที่เปิดอยู่ออกจากรายการ?" : "นำโปรเจกต์นี้ออกจากรายการ?"}
             </AlertDialogTitle>
             <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
               {deleteProject?.id === p.projectId
-                ? "หลังลบ ระบบจะเปิดโปรเจกต์ล่าสุดถัดไปแทน ถ้าไม่มีโปรเจกต์เหลือ จะเริ่มโปรเจกต์ใหม่เปล่าให้พร้อมใช้งาน วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ"
-                : "โปรเจกต์จะถูกลบออกจากรายการล่าสุด วิดีโอใน Gallery และงานที่เคยสร้างไว้จะไม่ถูกลบ"}
+                ? "โปรเจกต์จะหายจากรายการนี้ ระบบจะเปิดโปรเจกต์ถัดไปให้ ถ้าไม่เหลือ จะหยุดที่หน้าว่างโดยไม่สร้าง New Project เพิ่ม วิดีโอใน Gallery จะยังอยู่"
+                : "โปรเจกต์จะหายจากรายการนี้ แต่วิดีโอใน Gallery จะยังอยู่"}
               {deleteProject?.title ? `: ${deleteProject.title}` : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -587,7 +643,7 @@ export function EditorV2Shell() {
               }}
               className="bg-red-600 text-white hover:bg-red-700"
             >
-              {deletingProjectId ? <span className="flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> กำลังลบ…</span> : "ลบโปรเจกต์"}
+              {deletingProjectId ? <span className="flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> กำลังนำออก…</span> : "นำออกจากรายการ"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -601,6 +657,37 @@ export function EditorV2Shell() {
         onChooseServer={p.chooseServerProjectDraft}
       />
     </div>
+  );
+}
+
+function EmptyProjectView({ onCreate }: { onCreate: () => void }) {
+  return (
+    <main className="flex flex-1 items-center px-6 py-12 sm:px-10" aria-labelledby="empty-project-title">
+      <div className="mx-auto w-full max-w-[620px]">
+        <div className="mb-7 h-px w-16" style={{ background: color.primary500 }} />
+        <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em]" style={{ color: color.primary300 }}>
+          พื้นที่ทำงานว่าง
+        </p>
+        <h1
+          id="empty-project-title"
+          className="max-w-[520px] text-[clamp(1.75rem,5vw,3rem)] font-semibold leading-[1.08] tracking-[-0.035em]"
+          style={{ color: color.text, fontFamily: font.heading }}
+        >
+          ไม่มีโปรเจกต์ค้างอยู่แล้ว
+        </h1>
+        <p className="mt-4 max-w-[500px] text-sm leading-7" style={{ color: color.textSecondary }}>
+          โปรเจกต์ที่นำออกจะไม่เด้งกลับมาในรายการ และระบบจะยังไม่สร้าง New Project จนกว่ามิวจะพร้อมเริ่มงานถัดไป
+        </p>
+        <div className="mt-8 flex flex-wrap items-center gap-4">
+          <BtnPrimary onClick={onCreate} style={{ minHeight: 46 }}>
+            <span className="flex items-center gap-2"><Plus size={15} /> สร้างโปรเจกต์ใหม่</span>
+          </BtnPrimary>
+          <Link href="/videos" className="text-sm underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-4" style={{ color: color.link }}>
+            ดูงานใน Gallery
+          </Link>
+        </div>
+      </div>
+    </main>
   );
 }
 

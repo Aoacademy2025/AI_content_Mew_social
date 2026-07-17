@@ -319,6 +319,7 @@ export type V2AvatarMode = "bookend" | "bookend-both" | "full";
 export type ProjectInitializationState =
   | "loading-defaults"
   | "creating-project"
+  | "empty"
   | "ready"
   | "error";
 
@@ -911,7 +912,7 @@ export function useV2Project() {
     }
   }, [initializeAutosaveLineage, setProjectInitialization, setRecoveryState]);
 
-  const resetProject = useCallback(async () => {
+  const resetProject = useCallback(async (): Promise<string | null> => {
     invalidateLocalChoiceRequest();
     invalidateAutosaveLineage();
     const resetGeneration = bootstrapGenerationRef.current + 1;
@@ -931,13 +932,13 @@ export function useV2Project() {
     try {
       accountDefault = await loadAccountLogoDefault();
     } catch {
-      if (!isCurrentReset()) return;
+      if (!isCurrentReset()) return null;
       setProjectInitialization("error");
       setSaveStatus("error");
       setRecoveryState({ status: "load-error", message: "โหลดค่าเริ่มต้นไม่สำเร็จ กรุณาลองใหม่" });
-      return;
+      return null;
     }
-    if (!isCurrentReset()) return;
+    if (!isCurrentReset()) return null;
     setProjectInitialization("creating-project");
     const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
@@ -994,7 +995,7 @@ export function useV2Project() {
     setMixPresetRaw(nextPreset);
     setLogoOverlayRaw(inherited);
     setSaveStatus("idle");
-    await createServerProject(nextDraft, {
+    return await createServerProject(nextDraft, {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
@@ -1019,7 +1020,27 @@ export function useV2Project() {
     async function ensureServerProject() {
       const storage = browserStorage();
       const storedLocalDraft = loadDraft();
-      const urlProjectId = new URLSearchParams(window.location.search).get("projectId");
+      const searchParams = new URLSearchParams(window.location.search);
+      const urlProjectId = searchParams.get("projectId");
+      if (searchParams.get("empty") === "1" && !urlProjectId) {
+        accountDraftDefaultsAllowedRef.current = false;
+        trustedResumeDraftRef.current = null;
+        setProjectId(null);
+        setProjectReady(false);
+        setProjectStatus("draft");
+        setActiveJobId(null);
+        setActiveExportJobId(null);
+        setLatestVideoId(null);
+        setPreviewMediaState(null);
+        setSaveStatus("idle");
+        setRecoveryState({ status: "none" });
+        setProjectInitialization("empty");
+        try {
+          storage?.removeItem(PROJECT_ID_KEY);
+          storage?.removeItem(DRAFT_KEY);
+        } catch {}
+        return;
+      }
       let storedProjectId: string | null = null;
       try { storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null; } catch {}
       const existingProjectId = urlProjectId || storedProjectId;

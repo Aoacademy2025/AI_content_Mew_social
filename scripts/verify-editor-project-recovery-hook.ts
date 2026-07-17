@@ -211,7 +211,7 @@ function verifyHookSource(value: string): void {
   assert.match(reset, /setMixPresetRaw\(/);
   assert.match(reset, /setProjectReady\(false\);\s*setProjectInitialization\("loading-defaults"\);[\s\S]*await loadAccountLogoDefault/,
     "Reset blocks synchronously before awaiting account defaults");
-  assert.match(reset, /if \(!isCurrentReset\(\)\) return;[\s\S]*setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,
+  assert.match(reset, /if \(!isCurrentReset\(\)\) return null;[\s\S]*setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,
     "only the owned Reset advances from defaults to project creation");
 
   const clipUrlSetter = variableInitializer(root, "setClipUrl").getText(root);

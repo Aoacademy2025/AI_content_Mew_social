@@ -36,6 +36,7 @@
     "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts",
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
+    "verify:project-menu": "tsx scripts/verify-project-menu.ts",
     "verify:video-export-name": "tsx scripts/verify-video-export-name.ts",
     "verify:broll-preferences": "tsx scripts/verify-broll-preferences.ts",
     "verify:broll-spans": "tsx scripts/verify-broll-spans.ts",

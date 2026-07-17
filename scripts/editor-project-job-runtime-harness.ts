@@ -283,7 +283,7 @@ function makeShellProject(
     logoOverlay: undefined,
     setLogoOverlay: () => undefined,
     canUseLogoOverlay: false,
-    resetProject: () => Promise.resolve(),
+    resetProject: () => Promise.resolve(null),
     completeArchivedProject: () => true,
     retryProjectBootstrap: () => undefined,
     retryConflictServerRefresh: () => Promise.resolve(),
@@ -409,10 +409,24 @@ function mountEditorShell(input: {
     if (specifier === "./project-menu") {
       return {
         PROJECT_STATUS_FILTER_LABEL: { all: "all" },
+        fetchRecentProjectMenu: async () => {
+          const response = await input.fetch("/api/editor-projects", { cache: "no-store" }) as {
+            ok: boolean;
+            json(): Promise<{ projects?: unknown[] }>;
+          };
+          if (!response.ok) throw new Error("โหลดรายการโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่");
+          const payload = await response.json();
+          const projects = Array.isArray(payload.projects) ? payload.projects : [];
+          return { projects: projects.slice(0, 8), total: projects.length };
+        },
         filterProjectMenuItems: (items: unknown[]) => items,
         projectDeleteBlocked: () => false,
+        projectMenuDate: () => null,
         projectStatusLabel: (status: string) => status,
       };
+    }
+    if (specifier === "@/lib/video-export-name") {
+      return { resolveVideoDownloadFilename: () => "project.mp4" };
     }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
@@ -1244,7 +1258,7 @@ async function runOwnedArchiveCompletionScenario(
   (menu.props.onOpenChange as (open: boolean) => void)(true);
   runner.flush();
   await settleShell(runner);
-  const deleteButton = find("button", (node) => node.props["aria-label"] === "ลบโปรเจกต์");
+  const deleteButton = find("button", (node) => node.props["aria-label"] === "นำโปรเจกต์ออกจากรายการ");
   assert.ok(deleteButton, "actual project row exposes delete");
   (deleteButton.props.onClick as (event: { preventDefault(): void; stopPropagation(): void }) => void)({
     preventDefault() {},
@@ -1294,9 +1308,9 @@ async function archiveCompletionOwnsDeterministicTransition(): Promise<void> {
   const emptyNavigations = await runOwnedArchiveCompletionScenario(false, false);
   assert.equal(emptyNavigations.length, 1, "owned archive completion leaves no archived project stuck when none remain");
   assert.equal(
-    new URL(emptyNavigations[0], "https://example.test").searchParams.has("projectId"),
-    false,
-    "the empty-project transition clears the archived project identity so bootstrap creates a replacement",
+    new URL(emptyNavigations[0], "https://example.test").searchParams.get("empty"),
+    "1",
+    "the empty-project transition opens an explicit unpersisted empty state",
   );
 
   const staleNavigations = await runOwnedArchiveCompletionScenario(true);
@@ -1356,7 +1370,7 @@ export async function archiveUnmountInvalidatesLateCompletion(): Promise<void> {
   (menu.props.onOpenChange as (open: boolean) => void)(true);
   runner.flush();
   await settleShell(runner);
-  const deleteButton = find("button", (node) => node.props["aria-label"] === "ลบโปรเจกต์");
+  const deleteButton = find("button", (node) => node.props["aria-label"] === "นำโปรเจกต์ออกจากรายการ");
   assert.ok(deleteButton, "actual shell exposes archive before unmount");
   (deleteButton.props.onClick as (event: { preventDefault(): void; stopPropagation(): void }) => void)({
     preventDefault() {},
@@ -1451,6 +1465,14 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     }
     if (specifier === "@/lib/usage-limits") return { checkClipQuota: async () => ({ allowed: true }) };
     if (specifier === "@/lib/gemini-key") return { resolveGeminiKey: () => "key", KeyRequiredError };
+    if (specifier === "@/lib/key-crypto") return { decryptKey: (value: string) => value };
+    if (specifier === "@/lib/key-preflight") {
+      return {
+        preflightElevenLabs: async () => undefined,
+        preflightPexels: async () => undefined,
+        pexelsStockMayBeUsed: () => false,
+      };
+    }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") return { getAvatarPreset: async () => null, resolveAvatarLayout: () => null };
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
@@ -1626,6 +1648,14 @@ async function runExactReplayRouteScenario(input: {
       };
     }
     if (specifier === "@/lib/gemini-key") return { resolveGeminiKey: () => "key", KeyRequiredError };
+    if (specifier === "@/lib/key-crypto") return { decryptKey: (value: string) => value };
+    if (specifier === "@/lib/key-preflight") {
+      return {
+        preflightElevenLabs: async () => undefined,
+        preflightPexels: async () => undefined,
+        pexelsStockMayBeUsed: () => false,
+      };
+    }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") {
       return {

@@ -128,7 +128,7 @@ export async function listEditorProjects(userId: string, opts: { includeArchived
 
 export async function getEditorProject(userId: string, projectId: string) {
   const project = await prisma.editorProject.findFirst({
-    where: { id: projectId, userId },
+    where: { id: projectId, userId, status: { not: "archived" } },
   });
   return project ? editorProjectResponse(project) : null;
 }
@@ -139,7 +139,7 @@ export async function getEditorProjectWithMediaState(
   opts: { now?: Date; rendersRoot?: string } = {},
 ) {
   const project = await prisma.editorProject.findFirst({
-    where: { id: projectId, userId },
+    where: { id: projectId, userId, status: { not: "archived" } },
   });
   if (!project) return null;
 
@@ -292,6 +292,7 @@ export async function updateEditorProject(
         where: {
           id: projectId,
           userId,
+          status: { not: "archived" },
           ...(expectedDraftRevision !== undefined
             ? { draftRevision: expectedDraftRevision }
             : draftRevision !== undefined
@@ -322,7 +323,7 @@ export async function updateEditorProject(
 
 export async function archiveEditorProject(userId: string, projectId: string) {
   const updated = await prisma.editorProject.updateMany({
-    where: { id: projectId, userId },
+    where: { id: projectId, userId, status: { not: "archived" } },
     data: {
       status: "archived",
       activeJobId: null,

@@ -1442,6 +1442,28 @@ async function main() {
     (await projects.listEditorProjects(alice.id, { includeArchived: true })).some((project) => project.id === p.id),
     "includeArchived returns archived projects",
   );
+  ok(
+    (await projects.getEditorProject(alice.id, p.id)) === null,
+    "archived projects are rejected by the base project reader",
+  );
+  ok(
+    (await projects.getEditorProjectWithMediaState(alice.id, p.id)) === null,
+    "archived projects cannot be loaded by an old project URL",
+  );
+  const archivedTitleBeforePatch = archivedRow?.title;
+  const archivedPatchResponse = await patchEditorProjectForUser?.(alice.id, p.id, {
+    title: "Archived project must stay immutable",
+    touchLastOpened: true,
+  });
+  ok(
+    archivedPatchResponse?.status === 404,
+    "archived projects reject late editor PATCH requests",
+  );
+  const archivedAfterPatch = await prisma.editorProject.findUnique({ where: { id: p.id } });
+  ok(
+    archivedAfterPatch?.title === archivedTitleBeforePatch,
+    "rejected archived PATCH leaves the stored project unchanged",
+  );
 
   let archivedDenied = false;
   try { await projects.assertEditorProjectOwner(alice.id, p.id); } catch { archivedDenied = true; }

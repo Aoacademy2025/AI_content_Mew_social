@@ -374,7 +374,7 @@ class HookRunner<T> {
 type ProjectHook = {
   projectId: string | null;
   projectReady: boolean;
-  projectInitialization: "loading-defaults" | "creating-project" | "ready" | "error";
+  projectInitialization: "loading-defaults" | "creating-project" | "empty" | "ready" | "error";
   projectStatus: string;
   projectTitle: string;
   setProjectTitle(next: string | ((value: string) => string)): void;
@@ -402,7 +402,7 @@ type ProjectHook = {
   } | undefined): void;
   saveStatus: "idle" | "saving" | "saved" | "error";
   retryProjectSave(): void;
-  resetProject(): Promise<void>;
+  resetProject(): Promise<string | null>;
   recovery: {
     status: string;
     local?: { draft: JsonRecord; revision: number | null };
@@ -1263,6 +1263,24 @@ async function blankBootstrapBlocksUserMutationDuringInitialization(): Promise<v
   assert.equal(harness.runner.current.projectInitialization, "ready");
   assert.equal(harness.runner.current.projectReady, true);
   assert.notEqual(harness.runner.current.script, "must-not-survive-bootstrap");
+}
+
+async function explicitEmptyBootstrapStaysUnpersisted(): Promise<void> {
+  const harness = createHarness({ search: "?empty=1" });
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  assert.deepEqual({
+    initialization: harness.runner.current.projectInitialization,
+    ready: harness.runner.current.projectReady,
+    projectId: harness.runner.current.projectId,
+    posts: postBodies(harness.fetchMock).length,
+  }, {
+    initialization: "empty",
+    ready: false,
+    projectId: null,
+    posts: 0,
+  }, "the explicit post-delete empty state creates no replacement project");
 }
 
 async function resetBlocksUserMutationWhileDefaultsLoad(): Promise<void> {
@@ -2367,6 +2385,7 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["settings-after-GET", settingsAfterServerHydration],
     ["equal-revision-resume", exactEqualRevisionResume],
     ["blank-bootstrap-initialization", blankBootstrapBlocksUserMutationDuringInitialization],
+    ["explicit-empty-bootstrap", explicitEmptyBootstrapStaysUnpersisted],
     ["reset-initialization", resetBlocksUserMutationWhileDefaultsLoad],
     ["superseded-reset-initialization", supersededResetCannotCompleteInitialization],
     ["blank-bootstrap-unmount", unmountWhileBlankBootstrapAwaitsDefaults],
@@ -2412,10 +2431,10 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
       `    setProjectInitialization("loading-defaults");`,
     )
     .replace(
-      `    if (!isCurrentReset()) return;
+      `    if (!isCurrentReset()) return null;
     setProjectInitialization("creating-project");
     const nextPreset`,
-      `    if (!isCurrentReset()) return;
+      `    if (!isCurrentReset()) return null;
     setProjectReady(false);
     setProjectInitialization("creating-project");
     const nextPreset`,
@@ -2442,12 +2461,12 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
   );
 
   const supersededDefaultPublishesReady = hookSource.replace(
-    `    if (!isCurrentReset()) return;
+    `    if (!isCurrentReset()) return null;
     setProjectInitialization("creating-project");
     const nextPreset`,
     `    if (!isCurrentReset()) {
       setProjectInitialization("ready");
-      return;
+      return null;
     }
     setProjectInitialization("creating-project");
     const nextPreset`,
@@ -2659,8 +2678,8 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
   );
 
   const resetWithoutChoiceInvalidation = hookSource.replace(
-    "const resetProject = useCallback(async () => {\n    invalidateLocalChoiceRequest();",
-    "const resetProject = useCallback(async () => {",
+    "const resetProject = useCallback(async (): Promise<string | null> => {\n    invalidateLocalChoiceRequest();",
+    "const resetProject = useCallback(async (): Promise<string | null> => {",
   );
   assert.notEqual(resetWithoutChoiceInvalidation, hookSource, "reset choice invalidation mutation applied");
   activeCompiledHook = compileHook(resetWithoutChoiceInvalidation);
