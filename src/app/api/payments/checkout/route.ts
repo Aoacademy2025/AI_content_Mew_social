@@ -48,7 +48,7 @@ export async function POST(req: Request) {
       refCode = sanitizeRefCode(jar.get(AFF_COOKIE)?.value);
     } catch {}
     refCode = refCode ?? authUser.affiliateRefCode ?? null;
-    const affiliateMeta = refCode
+    const affiliateMeta: Record<string, string> = refCode
       ? { ref_code: refCode, product_id: studioProductSlug(plan, period), ha_brand: "hero-ai" }
       : {};
 
