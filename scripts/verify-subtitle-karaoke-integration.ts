@@ -60,7 +60,12 @@ async function verifyPausedEditorPreview(): Promise<void> {
     logLevel: "silent",
   });
 
-  const browser = await puppeteer.launch({ headless: true });
+  const browser = await puppeteer.launch({
+    headless: true,
+    // GitHub-hosted Linux runners disable the Chromium user-namespace sandbox.
+    // The runner is ephemeral and trusted, so launch without it only in CI.
+    args: process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
+  });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 540, height: 960, deviceScaleFactor: 1 });
