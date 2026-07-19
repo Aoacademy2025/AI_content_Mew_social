@@ -22,7 +22,8 @@ const pipelineDispatcher = new Agent({
 });
 
 export interface PipelineCaller {
-  /** opts.retries=0 for calls that SPEND on external services (kie image gen) —
+  /** opts.retries=0 for calls that SPEND scarce external/platform capacity (Kie,
+   *  OmniVoice synthesis) —
    *  a transport-timeout retry there means paying for the whole batch again. */
   post<T>(path: string, body: unknown, opts?: { retries?: number }): Promise<T>;
   patch<T>(path: string, body: unknown): Promise<T>;

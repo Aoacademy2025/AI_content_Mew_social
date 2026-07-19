@@ -33,7 +33,7 @@ export interface TtsCharAlignment {
 export interface SilenceInterval { startMs: number; endMs: number }
 
 export interface TtsTiming {
-  provider: "gemini" | "elevenlabs";
+  provider: "gemini" | "elevenlabs" | "omnivoice";
   segments: TtsSegment[];
   chars: TtsCharAlignment | null; // gemini has no char-level timing
   // Real-pause midpoints (ms) from ffmpeg silencedetect over the final audio.
@@ -228,7 +228,7 @@ export function mergeSegmentTiming(parts: { text: string; durationMs: number }[]
 // input, so the caller's trimmed script satisfies the iron rule. Returns null
 // when there is nothing to time (empty text or a non-positive duration).
 export function buildDegradedTtsTiming(
-  provider: "gemini" | "elevenlabs",
+  provider: "gemini" | "elevenlabs" | "omnivoice",
   spokenText: string,
   audioDurationMs: number,
 ): TtsTiming | null {
@@ -581,10 +581,12 @@ function buildCharClock(timing: TtsTiming, fullText: string): CharClock {
   // startMsAt[i] = time at the boundary BEFORE char i; length fullText.length+1
   const startMsAt = new Float64Array(fullText.length + 1);
   const pauseWeight = ellipsisPauseWeight();
-  // Real-pause anchoring (Gemini only): rebuild each segment's clock around the
+  // Real-pause anchoring (providers without char alignment): rebuild each segment's clock around the
   // detected silences; any segment where that isn't trustworthy falls back to
   // the legacy proportional spread below, float for float.
-  const silAnchors = timing.provider === "gemini" ? usableSilenceIntervals(timing) : null;
+  const silAnchors = timing.provider === "gemini" || timing.provider === "omnivoice"
+    ? usableSilenceIntervals(timing)
+    : null;
   const silBoundaries = silAnchors ? wordBoundaries(fullText) : null;
   let charBase = 0;
   let totalMs = 0;

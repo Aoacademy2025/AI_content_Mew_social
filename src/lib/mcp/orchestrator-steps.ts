@@ -3,6 +3,7 @@
 
 import type { BrollPreferenceInput } from "@/lib/broll-preferences";
 import type { TelemetryInput } from "@/lib/telemetry";
+import type { TtsProvider } from "@/lib/tts-providers";
 
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
 
@@ -16,7 +17,7 @@ export interface OrchCaption { text: string; startMs: number; endMs: number; tag
 export function buildDegradedTimingTelemetry(args: {
   pipelineRunId: string;
   jobId: string;
-  provider: "gemini" | "elevenlabs";
+  provider: TtsProvider;
   scriptCharCount: number;
   audioDurationMs: number;
 }): TelemetryInput {

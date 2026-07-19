@@ -1,4 +1,5 @@
 import type { User } from "@prisma/client";
+import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
 import { prisma } from "@/lib/prisma";
 import { refundVideoJobBaseReservation } from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
@@ -47,6 +48,7 @@ import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
+import { resolveJobTtsProvider } from "@/lib/tts-providers";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -76,7 +78,9 @@ export interface OrchestratorDeps {
 }
 
 interface CreateInput {
-  script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs"; voiceId?: string;
+  script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
+  /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
+  omniVoiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
@@ -375,7 +379,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
-    const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini");
+    const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
+    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(userId)) {
+      throw new Error("OmniVoice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
+    }
+    const provider = requestedProvider;
 
     const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
       const saved = await saveProviderCheckpoint(jobId, checkpoint);
@@ -456,7 +464,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         script: input.script.trim() || null,
         avatarModel: checkpoint.avatar.id,
         avatarVideoUrl,
-        voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
+        voiceModel: provider === "elevenlabs"
+          ? (input.voiceId ?? "elevenlabs")
+          : provider === "omnivoice"
+            ? (input.omniVoiceId ?? "voice_01")
+            : (user.geminiVoiceName ?? "gemini"),
         sceneCount: captions.length,
         renderConfig: checkpoint.baseConfig,
         status: "PROCESSING",
@@ -826,7 +838,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await step("tts", 10);
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
-      : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
+      : provider === "omnivoice"
+        ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+            "/api/videos/tts-omnivoice",
+            { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" },
+            { retries: 0 },
+          )
+        : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
     let audioDurationMs = typeof tts.audioDurationMs === "number" && tts.audioDurationMs > 0
       ? Math.round(tts.audioDurationMs)
       : durationFromTtsTiming(tts.timing);
@@ -1101,7 +1119,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
       videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : (user.geminiVoiceName ?? "gemini"),
+      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs"
+        ? (input.voiceId ?? "elevenlabs")
+        : provider === "omnivoice"
+          ? (input.omniVoiceId ?? "voice_01")
+          : (user.geminiVoiceName ?? "gemini"),
       sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 

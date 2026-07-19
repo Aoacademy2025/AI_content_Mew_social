@@ -31,6 +31,13 @@ import {
   videoJobOperationKind,
 } from "@/lib/video-job-idempotency";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import {
+  checkOmniVoiceReady,
+  isOmniVoiceUserAllowed,
+  isValidOmniVoiceId,
+  OmniVoiceConfigError,
+  omnivoiceConfig,
+} from "@/lib/omnivoice";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -46,7 +53,7 @@ import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-de
 
 type Body = {
   mode?: unknown; clipUrl?: unknown;
-  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown;
+  script?: unknown; voiceProvider?: unknown; voiceId?: unknown; geminiVoiceName?: unknown; omniVoiceId?: unknown;
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
@@ -306,9 +313,50 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
 
-    const voiceProvider = body.voiceProvider === "elevenlabs" ? "elevenlabs" : body.voiceProvider === "gemini" ? "gemini" : undefined;
+    const voiceProvider = body.voiceProvider === "elevenlabs"
+      ? "elevenlabs"
+      : body.voiceProvider === "omnivoice"
+        ? "omnivoice"
+        : body.voiceProvider === "gemini"
+          ? "gemini"
+          : undefined;
     const voiceId = str(body.voiceId, 120);
     const geminiVoiceName = str(body.geminiVoiceName, 60);
+    const omniVoiceId = str(body.omniVoiceId, 64);
+
+    if (!uploadMode && voiceProvider === "omnivoice") {
+      if (!isOmniVoiceUserAllowed(user.id)) {
+        return NextResponse.json({ error: "not_enabled", message: "OmniVoice ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
+      }
+      let config: ReturnType<typeof omnivoiceConfig>;
+      try {
+        config = omnivoiceConfig();
+      } catch (error) {
+        if (error instanceof OmniVoiceConfigError) {
+          return NextResponse.json({
+            error: "omnivoice_unavailable",
+            message: "OmniVoice ยังไม่พร้อมใช้งาน กรุณาสลับเป็น Gemini หรือ ElevenLabs",
+          }, { status: 503 });
+        }
+        throw error;
+      }
+      if (!await checkOmniVoiceReady(config)) {
+        return NextResponse.json({
+          error: "omnivoice_unavailable",
+          message: "OmniVoice ยังไม่พร้อมรับงาน กรุณาลองใหม่ภายหลังหรือสลับเป็น Gemini/ElevenLabs",
+        }, { status: 503 });
+      }
+      if (script.length > config.maxScriptChars) {
+        return NextResponse.json({
+          error: "omnivoice_script_too_long",
+          message: `OmniVoice บนเครื่องปัจจุบันรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับผู้ให้บริการเสียง`,
+          maxChars: config.maxScriptChars,
+        }, { status: 413 });
+      }
+      if (!omniVoiceId || !isValidOmniVoiceId(omniVoiceId)) {
+        return NextResponse.json({ error: "missing_voice_id", message: "กรุณาเลือกเสียง OmniVoice" }, { status: 400 });
+      }
+    }
 
     // Key guards — same checks as MCP create_video_job, same wording surface (web shows toasts)
     // upload mode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียง (Gemini ยังจำเป็น: transcribe/keywords)
@@ -448,6 +496,7 @@ export async function POST(req: Request) {
           ...(voiceProvider ? { voiceProvider } : {}),
           ...(voiceId ? { voiceId } : {}),
           ...(geminiVoiceName ? { geminiVoiceName } : {}),
+          ...(omniVoiceId ? { omniVoiceId } : {}),
           ...(avatar.kind === "ok" && avatarLayout
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }

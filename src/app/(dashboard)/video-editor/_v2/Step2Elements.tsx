@@ -29,7 +29,7 @@ import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
 import { AvatarPickerModal } from "./AvatarPickerModal";
-import type { V2Project, V2BrollSource } from "./useV2Project";
+import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import type { MixPreset } from "./mix-presets";
 
 // Mix Preset (D5.1) — non-admin b-roll AI mix. Copy = brief verbatim (ห้ามแปลใหม่).
@@ -66,6 +66,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
     ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
+    : undefined;
+  const omniVoice = p.voiceEngine === "omnivoice"
+    ? p.omniVoices?.find(v => v.voice_id === p.omniVoiceId)
     : undefined;
   const [submitting, setSubmitting] = useState(false);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
@@ -248,10 +251,16 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* 2 · เสียงพากย์ */}
         {p.mode !== "upload" && (
         <Group title="เสียงพากย์" desc="เสียง AI อ่านสคริปต์ของคุณ">
-          <Segmented
+          <Segmented<V2VoiceEngine>
             value={p.voiceEngine}
             onChange={p.setVoiceEngine}
-            options={[{ value: "gemini", label: "Gemini" }, { value: "elevenlabs", label: "ElevenLabs" }]}
+            options={[
+              { value: "gemini" as const, label: "Gemini" },
+              { value: "elevenlabs" as const, label: "ElevenLabs" },
+              ...(p.omniVoiceEnabled || p.voiceEngine === "omnivoice"
+                ? [{ value: "omnivoice" as const, label: p.omniVoiceEnabled ? "OmniVoice" : "OmniVoice (ไม่พร้อม)" }]
+                : []),
+            ]}
           />
           <Card selected className="flex items-center gap-3" style={{ display: "flex" }}>
             <span
@@ -262,17 +271,23 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
               <span style={{ font: `500 13px ${font.heading}` }}>
-                {p.voiceEngine === "gemini" ? geminiVoice.label : (elevenVoice?.name || "เสียงโคลนของฉัน")}
+                {p.voiceEngine === "gemini"
+                  ? geminiVoice.label
+                  : p.voiceEngine === "omnivoice"
+                    ? (omniVoice?.desc || "เสียง OmniVoice")
+                    : (elevenVoice?.name || "เสียงโคลนของฉัน")}
               </span>
               <span style={{ fontSize: 10.5, color: color.textFaint }}>
                 {p.voiceEngine === "gemini"
                   ? `${geminiVoice.gender} · ${geminiVoice.style}`
-                  : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
+                  : p.voiceEngine === "omnivoice"
+                    ? (omniVoice?.instruct || "เสียงจาก worker ของระบบ · เหมาะกับคลิปสั้น")
+                    : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
             {/* ปุ่มมี w-full+mt-2 ภายใน — คุมความกว้างเองกัน layout ระเบิด */}
             <span className="w-[132px] shrink-0" style={{ marginTop: -8 }}>
-              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} />
+              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
             </span>
           </Card>
           <Advanced label="เลือกเสียงอื่น" note="ปรับความเร็ว/อารมณ์เสียง">
@@ -295,6 +310,42 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     </option>
                   ))}
                 </select>
+              </label>
+            ) : p.voiceEngine === "omnivoice" ? (
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง OmniVoice</span>
+                {!p.omniVoiceEnabled ? (
+                  <span style={{ fontSize: 11.5, color: color.warning }}>
+                    OmniVoice ไม่พร้อมใช้งานในขณะนี้ — เลือก Gemini หรือ ElevenLabs ก่อนเรนเดอร์
+                  </span>
+                ) : p.omniVoices === null ? (
+                  <span style={{ fontSize: 11.5, color: color.textFaint }}>กำลังโหลดรายการเสียง…</span>
+                ) : p.omniVoices.length === 0 ? (
+                  <span className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.danger }}>
+                    เชื่อมต่อ OmniVoice ไม่ได้
+                    <button type="button" onClick={p.retryOmniVoices} className="font-semibold underline">ลองใหม่</button>
+                  </span>
+                ) : (
+                  <select
+                    value={p.omniVoiceId}
+                    onChange={(event) => p.setOmniVoiceId(event.target.value)}
+                    className="w-full max-w-[360px]"
+                    style={{
+                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
+                      background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
+                      color: color.text, fontFamily: font.body,
+                    }}
+                  >
+                    {p.omniVoices.map((voice) => (
+                      <option key={voice.voice_id} value={voice.voice_id} style={{ background: color.bg1 }}>
+                        {voice.desc || voice.voice_id}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <span style={{ fontSize: 10.5, color: color.textFaint }}>
+                  Worker CPU แยกจากระบบเรนเดอร์วิดีโอ · ระบบจำกัดคิวเพื่อไม่กระทบงานเดิม
+                </span>
               </label>
             ) : (
               <div className="flex flex-col gap-3">
@@ -546,7 +597,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(scriptEstSec)}`} />
               <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
-              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}` : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
+              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini"
+                ? `Gemini · ${geminiVoice.label}`
+                : p.voiceEngine === "omnivoice"
+                  ? `OmniVoice${omniVoice ? ` · ${omniVoice.desc}` : ""}`
+                  : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
             </>

@@ -4,8 +4,8 @@ import React from "react";
 import { Loader2, Pause, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import type { TtsProvider } from "@/lib/tts-providers";
 
-type VoiceProvider = "gemini" | "elevenlabs";
 const VOICE_PREVIEW_TEXT = "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ";
 
 type PreviewResponse = {
@@ -19,11 +19,15 @@ export function VoicePreviewButton({
   provider,
   geminiVoiceName,
   voiceId,
+  omniVoiceId = "voice_01",
+  omniPreviewUrl,
   onPlanError,
 }: {
-  provider: VoiceProvider;
+  provider: TtsProvider;
   geminiVoiceName: string;
   voiceId: string;
+  omniVoiceId?: string;
+  omniPreviewUrl?: string;
   onPlanError?: (msg: string) => void;
 }) {
   const [loading, setLoading] = React.useState(false);
@@ -31,7 +35,11 @@ export function VoicePreviewButton({
   const [previewUrl, setPreviewUrl] = React.useState("");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-  const voiceKey = provider === "gemini" ? geminiVoiceName : voiceId.trim();
+  const voiceKey = provider === "gemini"
+    ? geminiVoiceName
+    : provider === "omnivoice"
+      ? omniVoiceId
+      : voiceId.trim();
 
   React.useEffect(() => {
     audioRef.current?.pause();
@@ -74,10 +82,21 @@ export function VoicePreviewButton({
       toast.error("ใส่ ElevenLabs Voice ID ก่อนฟังตัวอย่าง");
       return;
     }
+    if (provider === "omnivoice") {
+      if (!omniPreviewUrl) {
+        toast.error("ยังโหลดเสียงตัวอย่าง OmniVoice ไม่สำเร็จ");
+        return;
+      }
+      setPreviewUrl(omniPreviewUrl);
+      await playUrl(omniPreviewUrl);
+      return;
+    }
 
     setLoading(true);
     try {
-      const endpoint = provider === "gemini" ? "/api/videos/tts-gemini" : "/api/videos/tts";
+      const endpoint = provider === "gemini"
+        ? "/api/videos/tts-gemini"
+        : "/api/videos/tts";
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

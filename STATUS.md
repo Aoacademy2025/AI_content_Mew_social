@@ -18,6 +18,7 @@
 - Coupon system · Admin · Notifications · Support tickets
 - First-party telemetry + Admin Insights (`/admin/insights`) — เก็บ page view, frontend error, Web Vitals, render pipeline/performance event เพื่อใช้วิเคราะห์ drop-off/error/resource จริง
 - Deploy: Hostinger VPS + PM2 + Nginx · render ด้วย Remotion/ffmpeg บนเครื่อง
+- **OmniVoice (canary proposed 07-20):** managed audio-only worker แยก KVM2; video ยัง render บน prod host เดิม. ค่าเริ่มต้นปิด, เปิดเฉพาะ account allowlist, จำกัดสคริปต์/คิว/AI-audio quota ตาม ADR 0003; Gemini/ElevenLabs เดิมไม่เปลี่ยน
 
 ## 🔄 Payment vertical (Mew) — ทั้งหมด LIVE บน prod แล้ว (06-07)
 - ✅ **Subscription LIVE (06-05)** — บัตร auto-renew + PromptPay one-time + billing portal + webhook lifecycle (config อยู่ใน DB `SiteConfig` ไม่ใช่ `.env`)
@@ -41,7 +42,7 @@
 - **Next production build ใช้ memory สูงมาก** → 06-09 build บน VPS เคยถูก OOM kill; เพิ่ม persistent swap `/swapfile-codex-build-extra` 24GB แล้ว + harden deploy script ให้ retry เมื่อ `.next/BUILD_ID` หาย; watch disk usage (หลังเพิ่ม swap เหลือประมาณ 41GB)
 - **Clip cap enforce แล้ว** ผ่าน `reserveClipUsage`: FREE 2, PRO 100, BUSINESS 300 ต่อ 30 วัน; ยังไม่มี global render queue
 - **VPS ตัวเดียว ไม่มี GPU** = คอขวด render ตอน scale (GPU ไม่ช่วย Remotion → ใช้ CPU/Lambda)
-- **BYOK** = ผู้ใช้ต้องตั้ง key เอง → adoption friction → ต้องทำ onboarding ให้ดี
+- **BYOK เป็นค่าเริ่มต้น** = ผู้ใช้ต้องตั้ง key เอง → adoption friction → ต้องทำ onboarding ให้ดี; OmniVoice เป็น managed exception เดียวและยังอยู่ canary
 
 ## 🎯 ซับเป๊ะจาก TTS timing — LIVE บน prod (06-12, PRs #35-#39)
 - **สถาปัตยกรรมใหม่**: เวลาซับมาจากขั้นสร้าง TTS โดยตรง (ไม่ใช่ AI ฟังเสียงแล้วเดา — ต้นเหตุ saga ซับเพี้ยนคลิปยาว #27-#34) → ซับตรงเสียงเป๊ะระดับเลขคณิตทุกความยาวคลิป + pipeline เร็วขึ้น 1 step (ข้าม transcribe)

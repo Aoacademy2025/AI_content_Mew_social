@@ -30,6 +30,13 @@ import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  parseTtsProvider,
+  visibleTtsProvider,
+  type OmniVoiceInfo,
+  type TtsProvider,
+} from "@/lib/tts-providers";
+import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -42,7 +49,7 @@ function scopedProjectIdKey(accountId: string | null): string {
 interface V2Draft {
   projectTitle?: string;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
-  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string;
+  voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
@@ -219,7 +226,7 @@ async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
 }
 
 type AccountVideoDefaults = {
-  voiceEngine: "gemini" | "elevenlabs";
+  voiceEngine: V2VoiceEngine;
   geminiVoiceName: string;
   voiceId: string;
   avatarId: string;
@@ -230,7 +237,7 @@ async function loadAccountVideoDefaults(): Promise<AccountVideoDefaults> {
   if (!res.ok) throw new Error("account video defaults unavailable");
   const data = await res.json();
   return {
-    voiceEngine: data?.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini",
+    voiceEngine: visibleTtsProvider(data?.ttsProvider),
     geminiVoiceName: typeof data?.geminiVoiceName === "string" && data.geminiVoiceName.trim()
       ? data.geminiVoiceName.trim()
       : "Aoede",
@@ -339,7 +346,7 @@ async function loadAuthoritativeEditorProjectDraft(
 
 export type V2Mode = "script" | "upload";
 export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
-export type V2VoiceEngine = "gemini" | "elevenlabs";
+export type V2VoiceEngine = TtsProvider;
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
 
 export type ProjectInitializationState =
@@ -365,6 +372,8 @@ export interface V2ElevenVoice {
   category?: string;
 }
 
+export type V2OmniVoice = OmniVoiceInfo;
+
 const DEFAULT_PROJECT = {
   projectTitle: "New Project",
   mode: "script" as V2Mode,
@@ -374,6 +383,7 @@ const DEFAULT_PROJECT = {
   voiceEngine: "gemini" as V2VoiceEngine,
   geminiVoiceName: "Aoede",
   voiceId: "",
+  omniVoiceId: "voice_01",
   musicTrack: "" as string | null,
   musicTrackKind: "system" as const,
   bgmVolume: 0.12,
@@ -494,13 +504,16 @@ export function useV2Project() {
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
   const [managedKieOn, setManagedKieOn] = useState(false);
   const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(
-    d.voiceEngine ?? "gemini", "voiceEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+    parseTtsProvider(d.voiceEngine), "voiceEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [geminiVoiceName, setGeminiVoiceName, setGeminiVoiceNameRaw] = useUserDraftState(
     d.geminiVoiceName ?? "Aoede", "geminiVoiceName", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   const [voiceId, setVoiceId, setVoiceIdRaw] = useUserDraftState(
     d.voiceId ?? "", "voiceId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+  );
+  const [omniVoiceId, setOmniVoiceId, setOmniVoiceIdRaw] = useUserDraftState(
+    d.omniVoiceId ?? "voice_01", "omniVoiceId", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
   /** filename ของ system track ที่เลือก · "" = ยังไม่เลือก · null = ไม่ใส่เพลง */
   const [musicTrack, setMusicTrack, setMusicTrackRaw] = useUserDraftState<string | null>(
@@ -568,7 +581,7 @@ export function useV2Project() {
 
   function buildDraft(): V2Draft {
     return {
-      mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId,
+      mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
@@ -588,9 +601,10 @@ export function useV2Project() {
         : 0);
     }
     if (next.brollSource) setBrollSourceRaw(next.brollSource);
-    if (next.voiceEngine) setVoiceEngineRaw(next.voiceEngine);
+    if (next.voiceEngine) setVoiceEngineRaw(parseTtsProvider(next.voiceEngine));
     if (next.geminiVoiceName !== undefined) setGeminiVoiceNameRaw(next.geminiVoiceName);
     if (next.voiceId !== undefined) setVoiceIdRaw(next.voiceId);
+    if (next.omniVoiceId !== undefined) setOmniVoiceIdRaw(next.omniVoiceId);
     if (next.musicTrack !== undefined) setMusicTrackRaw(next.musicTrack);
     if (next.musicTrackKind) setMusicTrackKindRaw(next.musicTrackKind);
     if (next.bgmVolume !== undefined) setBgmVolumeRaw(next.bgmVolume);
@@ -659,6 +673,10 @@ export function useV2Project() {
   const [avatarInfo, setAvatarInfo] = useState<V2AvatarInfo | null>(null);
   /** รายชื่อเสียง ElevenLabs ของผู้ใช้ (แสดงชื่อแทน Voice ID) · null = ยังไม่โหลด/โหลดไม่ได้ */
   const [elevenVoices, setElevenVoices] = useState<V2ElevenVoice[] | null>(null);
+  /** รายชื่อเสียง OmniVoice · null = ยังไม่โหลด, [] = โหลดไม่สำเร็จ */
+  const [omniVoices, setOmniVoices] = useState<V2OmniVoice[] | null>(null);
+  const omniVoiceAvailability = useOmniVoiceAvailability();
+  const omniVoiceEnabled = omniVoiceAvailability === true;
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
   const logoEligible = plan === "PRO" || plan === "BUSINESS";
 
@@ -988,6 +1006,7 @@ export function useV2Project() {
       voiceEngine: accountVideoDefaults.voiceEngine,
       geminiVoiceName: accountVideoDefaults.geminiVoiceName,
       voiceId: accountVideoDefaults.voiceId,
+      omniVoiceId: DEFAULT_PROJECT.omniVoiceId,
       avatarId: accountVideoDefaults.avatarId,
       ...(inherited ? { logoOverlay: inherited } : {}),
     };
@@ -1018,6 +1037,7 @@ export function useV2Project() {
     setVoiceEngineRaw(accountVideoDefaults.voiceEngine);
     setGeminiVoiceNameRaw(accountVideoDefaults.geminiVoiceName);
     setVoiceIdRaw(accountVideoDefaults.voiceId);
+    setOmniVoiceIdRaw(DEFAULT_PROJECT.omniVoiceId);
     setMusicTrackRaw(DEFAULT_PROJECT.musicTrack);
     setMusicTrackKindRaw(DEFAULT_PROJECT.musicTrackKind);
     setBgmVolumeRaw(DEFAULT_PROJECT.bgmVolume);
@@ -1665,7 +1685,7 @@ export function useV2Project() {
       if (!hadDraft) {
         if (s.heygenAvatarId) setAvatarIdRaw(s.heygenAvatarId);
         if (s.elevenlabsVoiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
-        if (s.ttsProvider === "gemini" || s.ttsProvider === "elevenlabs") setVoiceEngineRaw(s.ttsProvider);
+        setVoiceEngineRaw(visibleTtsProvider(s.ttsProvider));
         if (s.geminiVoiceName) setGeminiVoiceNameRaw(s.geminiVoiceName);
       } else {
         // เติมเฉพาะช่องที่ draft ไม่มีค่า
@@ -1941,7 +1961,7 @@ export function useV2Project() {
       latestQueuedSaveRef.current = { projectId: saveProjectId, revision };
     }, 1000);
     return () => { clearTimeout(t); };
-  }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+  }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
@@ -1969,6 +1989,18 @@ export function useV2Project() {
     return () => { alive = false; };
   }, [voiceEngine, elevenVoices]);
 
+  useEffect(() => {
+    if (!omniVoiceEnabled || voiceEngine !== "omnivoice" || omniVoices !== null) return;
+    let alive = true;
+    fetch("/api/omnivoice/voices")
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then((data) => { if (alive) setOmniVoices(Array.isArray(data) ? data : []); })
+      .catch(() => { if (alive) setOmniVoices([]); });
+    return () => { alive = false; };
+  }, [omniVoiceEnabled, voiceEngine, omniVoices]);
+
+  const retryOmniVoices = useCallback(() => setOmniVoices(null), []);
+
   return {
     projectTitle, setProjectTitle,
     mode, setMode,
@@ -1978,6 +2010,7 @@ export function useV2Project() {
     voiceEngine, setVoiceEngine,
     geminiVoiceName, setGeminiVoiceName,
     voiceId, setVoiceId,
+    omniVoiceId, setOmniVoiceId,
     musicTrack, setMusicTrack,
     musicTrackKind, setMusicTrackKind,
     bgmVolume, setBgmVolume,
@@ -1993,7 +2026,7 @@ export function useV2Project() {
     brollVisualStyle, setBrollVisualStyle,
     logoOverlay, setLogoOverlay,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
