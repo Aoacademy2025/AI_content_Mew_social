@@ -5,6 +5,7 @@
 - Production video rendering stays on the application host.
 - Worker port `8000` binds to loopback only; external traffic enters through HTTPS.
 - Worker API key is present only in root-readable runtime environment files. Commands, logs, screenshots, and this runbook must never print it.
+- Public `/health` and `/ready` endpoints expose liveness only. Voice catalog and synthesis endpoints require the worker API key; interactive docs stay disabled.
 - An empty `OMNIVOICE_ALLOWED_USER_IDS` denies everyone. Broad access requires the explicit value `*`.
 - Gemini and ElevenLabs are the operational fallback; OmniVoice synthesis POSTs are never retried automatically.
 
@@ -20,7 +21,7 @@ OMNIVOICE_ENABLED=0
 # Required before canary
 OMNIVOICE_URL=https://omnivoice.srv1497862.hstgr.cloud
 OMNIVOICE_API_KEY=<secret>
-OMNIVOICE_ALLOWED_USER_IDS=<comma-separated Clerk user IDs>
+OMNIVOICE_ALLOWED_USER_IDS=<comma-separated database User.id values>
 OMNIVOICE_NUM_STEP=4
 OMNIVOICE_MAX_SCRIPT_CHARS=300
 OMNIVOICE_REQUEST_BUDGET_MS=240000
@@ -38,7 +39,7 @@ The app caps three in-flight synthesis requests per process, matching the worker
 
 ## Phase 1 — internal canary
 
-1. Set the worker URL/key and one or more internal Clerk user IDs. Never start with `*`.
+1. Set the worker URL/key and one or more internal database `User.id` values. Never start with `*`.
 2. Set both flags to `1`, rebuild, and restart the application with updated environment.
 3. Verify an account outside the allowlist sees only Gemini and ElevenLabs.
 4. Verify an allowed account can list voices, preview a voice, create a short OmniVoice job, edit captions, and complete video export.
