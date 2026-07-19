@@ -34,6 +34,8 @@ assert.match(step2, /disabled:\s*!p\.omniVoiceEnabled/,
   "non-allowlisted users see but cannot select Hero Voice");
 assert.match(step2, /max-\[360px\]:grid-cols-\[34px_minmax\(0,1fr\)\]/,
   "the selected voice card stacks safely at 320px");
+assert.match(step2, /optionPadding="6px clamp\(7px, 2vw, 14px\)"/,
+  "the three provider names fit without truncation at 320px");
 assert.match(step2, /<HeroVoicePicker/);
 assert.doesNotMatch(step2, /Worker CPU|worker ของระบบ/,
   "end-user voice copy does not expose infrastructure jargon");
