@@ -10,10 +10,12 @@ import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 import { VoicePreviewButton } from "./VoicePreviewButton";
 import {
+  OMNIVOICE_UI_ENABLED,
   type OmniVoiceInfo,
   type TtsProvider,
 } from "@/lib/tts-providers";
 import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
+import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
 
@@ -133,7 +135,7 @@ export function OrderPanel(p: OrderPanelProps) {
     fetch("/api/omnivoice/voices")
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then((voices) => { if (alive) setOmniVoices(Array.isArray(voices) ? voices : []); })
-      .catch(() => { if (alive) { setOmniVoices([]); setOmniVoicesError("เชื่อมต่อ OmniVoice ไม่ได้"); } });
+      .catch(() => { if (alive) { setOmniVoices([]); setOmniVoicesError(`เตรียมรายการเสียง ${HERO_VOICE_NAME} ไม่สำเร็จ`); } });
     return () => { alive = false; };
   }, [omniVoiceEnabled, p.ttsProvider, omniLoadAttempt]);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
@@ -515,14 +517,22 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini", "elevenlabs", ...(omniVoiceEnabled || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
-                <button key={pv} onClick={() => p.setTtsProvider(pv)}
-                  className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
-                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
+              {(["gemini", "elevenlabs", ...(OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
+                <button
+                  key={pv}
+                  type="button"
+                  disabled={pv === "omnivoice" && !omniVoiceEnabled}
+                  aria-pressed={p.ttsProvider === pv}
+                  aria-label={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
+                  title={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
+                  onClick={() => { if (pv !== "omnivoice" || omniVoiceEnabled) p.setTtsProvider(pv); }}
+                  className={cn("flex min-h-11 flex-1 flex-col items-center justify-center rounded-xl border py-1.5 text-[11px] font-bold leading-tight transition-all focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9",
+                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-400 hover:text-slate-200 hover:border-violet-500/30")}
                   style={p.ttsProvider === pv
                     ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
                     : undefined}>
-                  {pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : omniVoiceEnabled ? "OmniVoice" : "OmniVoice (ไม่พร้อม)"}
+                  <span>{pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : HERO_VOICE_NAME}</span>
+                  {pv === "omnivoice" && <span className="mt-0.5 text-[8px] font-medium text-amber-300">{HERO_VOICE_COMING_SOON}</span>}
                 </button>
               ))}
             </div>
@@ -605,28 +615,32 @@ export function OrderPanel(p: OrderPanelProps) {
             )}
             {p.ttsProvider === "omnivoice" && (
               <div className="mt-2 space-y-1.5">
-                <div className="text-[10px] text-slate-600">Worker เสียงแยกจากเครื่องเรนเดอร์วิดีโอ · จำกัดคิวอัตโนมัติ</div>
+                <div className="text-[10px] leading-relaxed text-slate-400">ฟังตัวอย่างก่อนเลือก เพื่อหาโทนเสียงที่เข้ากับคลิปของคุณ</div>
                 {!omniVoiceEnabled ? (
                   <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[10px] text-amber-300">
-                    OmniVoice ไม่พร้อมใช้งานในขณะนี้ — เลือก Gemini หรือ ElevenLabs ก่อนเรนเดอร์
+                    {HERO_VOICE_NAME} กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้
                   </div>
                 ) : omniVoicesError ? (
                   <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/8 px-3 py-2">
                     <span className="text-[10px] text-red-400">{omniVoicesError}</span>
-                    <button type="button" onClick={() => setOmniLoadAttempt(value => value + 1)} className="text-[10px] font-bold text-violet-400">ลองใหม่</button>
+                    <button type="button" onClick={() => setOmniLoadAttempt(value => value + 1)} className="min-h-11 rounded-md px-2 text-[10px] font-bold text-violet-300 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-8">ลองใหม่</button>
                   </div>
                 ) : omniVoices.length === 0 ? (
-                  <div className="px-1 text-[10px] text-slate-600">กำลังโหลดรายการเสียง…</div>
+                  <div className="px-1 text-[10px] text-slate-400" role="status">กำลังเตรียมรายการเสียง…</div>
                 ) : (
-                  <select
-                    value={p.omniVoiceId}
-                    onChange={(event) => p.setOmniVoiceId(event.target.value)}
-                    className="w-full rounded-xl border border-[#26262f] bg-[#15151b] px-3 py-2.5 text-[11px] font-semibold text-slate-300 outline-none focus:border-violet-500/40"
-                  >
-                    {omniVoices.map((voice) => (
-                      <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>
-                    ))}
-                  </select>
+                  <>
+                    <label htmlFor="legacy-hero-voice-select" className="sr-only">เลือกเสียง {HERO_VOICE_NAME}</label>
+                    <select
+                      id="legacy-hero-voice-select"
+                      value={p.omniVoiceId}
+                      onChange={(event) => p.setOmniVoiceId(event.target.value)}
+                      className="min-h-11 w-full rounded-xl border border-[#26262f] bg-[#15151b] px-3 py-2.5 text-[11px] font-semibold text-slate-300 outline-none focus:border-violet-500/40 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
+                    >
+                      {omniVoices.map((voice) => (
+                        <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>
+                      ))}
+                    </select>
+                  </>
                 )}
               </div>
             )}

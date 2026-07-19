@@ -178,7 +178,7 @@ export function Chip({ selected = false, style, onMouseEnter, onMouseLeave, ...r
 
 /** Segmented control — เช่น ElevenLabs|Gemini, 1|2|3 ประโยค */
 export function Segmented<T extends string>({ options, value, onChange, style, semantics, id, ariaLabel }: {
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; badge?: string; disabled?: boolean; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   style?: React.CSSProperties;
@@ -203,8 +203,8 @@ export function Segmented<T extends string>({ options, value, onChange, style, s
 
   return (
     <div
-      role={semantics === "tabs" ? "tablist" : undefined}
-      aria-label={semantics === "tabs" ? ariaLabel : undefined}
+      role={semantics === "tabs" ? "tablist" : ariaLabel ? "group" : undefined}
+      aria-label={ariaLabel}
       aria-orientation={semantics === "tabs" ? "horizontal" : undefined}
       style={mergeStyle({
         display: "inline-flex", gap: 3, padding: 3, borderRadius: radius.control,
@@ -221,18 +221,32 @@ export function Segmented<T extends string>({ options, value, onChange, style, s
             id={semantics === "tabs" && id ? `${id}-${o.value}-tab` : undefined}
             aria-controls={semantics === "tabs" && id ? `${id}-${o.value}-panel` : undefined}
             aria-selected={semantics === "tabs" ? active : undefined}
+            aria-pressed={semantics === "tabs" ? undefined : active}
+            aria-label={o.badge ? `${o.label} ${o.badge}` : undefined}
+            title={o.title}
+            disabled={o.disabled}
             tabIndex={semantics === "tabs" ? (active ? 0 : -1) : undefined}
-            onClick={() => onChange(o.value)}
+            onClick={() => { if (!o.disabled) onChange(o.value); }}
             onKeyDown={(event) => handleTabKeyDown(event, index)}
+            className="min-h-11 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
             style={{
               padding: "6px 14px", borderRadius: radius.control - 3, border: "none",
               background: active ? color.gradientPrimary : "none",
               color: active ? "#fff" : color.textSecondary,
               font: `${active ? 500 : 400} 12.5px ${font.body}`,
-              cursor: "pointer", transition: fx.transition,
+              cursor: o.disabled ? "not-allowed" : "pointer", transition: fx.transition,
+              opacity: o.disabled ? 0.62 : 1,
+              outlineColor: color.primary300,
             }}
           >
-            {o.label}
+            <span className="flex min-w-0 flex-col items-center justify-center leading-tight">
+              <span className="max-w-full truncate">{o.label}</span>
+              {o.badge && (
+                <span className="mt-0.5 text-[9px] font-medium" style={{ color: active ? "#FFF3BF" : color.warning }}>
+                  {o.badge}
+                </span>
+              )}
+            </span>
           </button>
         );
       })}

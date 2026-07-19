@@ -27,7 +27,7 @@ export async function GET(_request: Request, context: { params: Promise<{ voiceI
     });
     if (!response.ok) {
       return NextResponse.json(
-        { error: response.status === 404 ? "Voice not found" : "OmniVoice unavailable" },
+        { error: response.status === 404 ? "ไม่พบเสียงที่เลือก" : "Hero Voice ยังไม่พร้อมใช้งาน" },
         { status: response.status === 404 ? 404 : 503 },
       );
     }
@@ -42,6 +42,6 @@ export async function GET(_request: Request, context: { params: Promise<{ voiceI
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[omnivoice/preview] request failed:", error instanceof Error ? error.message : error);
     }
-    return NextResponse.json({ error: "OmniVoice unavailable" }, { status: 503 });
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
   }
 }

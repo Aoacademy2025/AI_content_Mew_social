@@ -93,20 +93,20 @@ async function callOmniVoice(
 
 function upstreamError(result: Extract<CallResult, { ok: false }>) {
   if (result.status === 404) {
-    return NextResponse.json({ error: "ไม่พบเสียง OmniVoice ที่เลือก — กรุณาเลือกเสียงใหม่" }, { status: 404 });
+    return NextResponse.json({ error: "ไม่พบเสียง Hero Voice ที่เลือก — กรุณาเลือกเสียงใหม่" }, { status: 404 });
   }
   if (result.status === 422) {
-    return NextResponse.json({ error: "ข้อความไม่ผ่านการตรวจของ OmniVoice" }, { status: 422 });
+    return NextResponse.json({ error: "ข้อความไม่ผ่านการตรวจของ Hero Voice" }, { status: 422 });
   }
   if (result.status === 429) {
     return NextResponse.json(
-      { error: "คิว OmniVoice เต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+      { error: "คิว Hero Voice เต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
       { status: 429, headers: { "Retry-After": result.retryAfter ?? "30" } },
     );
   }
   console.error(`[tts-omnivoice] upstream status=${result.status} reason=${result.reason}`);
   return NextResponse.json(
-    { error: "OmniVoice ขัดข้องชั่วคราว กรุณาลองใหม่หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+    { error: "Hero Voice ขัดข้องชั่วคราว กรุณาลองใหม่หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
     { status: result.status === 504 ? 504 : 503 },
   );
 }
@@ -204,12 +204,12 @@ export async function POST(request: Request) {
     if (!fullText) return NextResponse.json({ error: "text required" }, { status: 400 });
     if (!isValidOmniVoiceId(voiceId)) return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
     if (preview) {
-      return NextResponse.json({ error: "ใช้เสียงตัวอย่างที่เตรียมไว้จากรายการ OmniVoice" }, { status: 400 });
+      return NextResponse.json({ error: "ใช้เสียงตัวอย่างที่เตรียมไว้จากรายการ Hero Voice" }, { status: 400 });
     }
     if (!preview && fullText.length > config.maxScriptChars) {
       return NextResponse.json({
         code: "OMNIVOICE_SCRIPT_TOO_LONG",
-        error: `OmniVoice บนเครื่องปัจจุบันรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับเป็น Gemini/ElevenLabs`,
+        error: `Hero Voice รุ่นทดลองรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับเป็น Gemini/ElevenLabs`,
         maxChars: config.maxScriptChars,
       }, { status: 413 });
     }
@@ -228,7 +228,7 @@ export async function POST(request: Request) {
     const admission = omnivoiceAdmission.tryAcquire();
     if (!admission) {
       return NextResponse.json(
-        { error: "คิว OmniVoice ฝั่งแอปเต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+        { error: "คิว Hero Voice ฝั่งแอปเต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
         { status: 429, headers: { "Retry-After": "30" } },
       );
     }
@@ -252,7 +252,7 @@ export async function POST(request: Request) {
         if (sampleRate === 0) sampleRate = result.sampleRate;
         if (result.sampleRate !== sampleRate) {
           await settleRefund();
-          return NextResponse.json({ error: "OmniVoice ส่ง sample rate ไม่สม่ำเสมอ", retryable: true }, { status: 503 });
+          return NextResponse.json({ error: "Hero Voice ส่งรูปแบบเสียงไม่สม่ำเสมอ", retryable: true }, { status: 503 });
         }
         pcms.push(result.pcm);
         durations.push(Math.round(pcmDurationMs(result.pcm.length, result.sampleRate)));
@@ -311,6 +311,6 @@ export async function POST(request: Request) {
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[tts-omnivoice] request failed:", error);
     }
-    return NextResponse.json({ error: "OmniVoice unavailable", retryable: true }, { status: 503 });
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน", retryable: true }, { status: 503 });
   }
 }

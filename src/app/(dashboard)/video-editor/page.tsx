@@ -1615,7 +1615,7 @@ function LegacyVideoEditorPage() {
       setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
     } else if (ttsProvider === "omnivoice") {
-      setStep("tts", "running", "OmniVoice TTS...");
+      setStep("tts", "running", "Hero Voice TTS...");
       const res = await fetch("/api/videos/tts-omnivoice", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId }),
