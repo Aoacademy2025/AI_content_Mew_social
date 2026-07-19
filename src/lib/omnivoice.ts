@@ -1,6 +1,6 @@
 import "server-only";
 
-import { userInOmniVoiceAllowlist } from "@/lib/omnivoice-core";
+import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
 export {
@@ -8,6 +8,10 @@ export {
   isValidOmniVoiceId,
   pcmFromWav,
 } from "@/lib/omnivoice-core";
+export {
+  isOmniVoiceServerEnabled,
+  isOmniVoiceUserAllowed,
+} from "@/lib/omnivoice-policy";
 
 export interface OmniTtsResponse {
   voice_id: string;
@@ -24,15 +28,6 @@ export class OmniVoiceConfigError extends Error {
     super(message);
     this.name = "OmniVoiceConfigError";
   }
-}
-
-export function isOmniVoiceServerEnabled(): boolean {
-  return process.env.OMNIVOICE_ENABLED === "1";
-}
-
-export function isOmniVoiceUserAllowed(userId: string): boolean {
-  if (!isOmniVoiceServerEnabled()) return false;
-  return userInOmniVoiceAllowlist(userId, process.env.OMNIVOICE_ALLOWED_USER_IDS);
 }
 
 export function omnivoiceConfig(): {
