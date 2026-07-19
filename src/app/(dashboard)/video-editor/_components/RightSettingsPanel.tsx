@@ -12,6 +12,7 @@ import { renderSubEl } from "./subtitle-renderer";
 import { EffectPreviewCard, EFFECT_KEYFRAMES } from "./EffectPreviewCard";
 import { SliderRow } from "./SliderRow";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
+import type { TtsProvider } from "@/lib/tts-providers";
 
 export interface RightPanelProps {
   wide: boolean; detached: boolean; dragging: boolean; panelPos: { x: number; y: number };
@@ -33,8 +34,8 @@ export interface RightPanelProps {
   setSubShadow: (v: boolean) => void; setSubOutline: (v: boolean) => void;
   setSubOutlineSize: (v: number) => void;
   displayCaptions: Caption[]; activeSegIdx: number;
-  ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini") => void;
+  ttsProvider: TtsProvider; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: TtsProvider) => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void;

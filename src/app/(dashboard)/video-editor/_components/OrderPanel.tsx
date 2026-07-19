@@ -9,6 +9,11 @@ import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImagePro
 import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 import { VoicePreviewButton } from "./VoicePreviewButton";
+import {
+  type OmniVoiceInfo,
+  type TtsProvider,
+} from "@/lib/tts-providers";
+import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
 
@@ -34,9 +39,10 @@ const BROLL_BADGE: Record<"ai" | "photo" | "video", { label: string; cls: string
 
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
-  ttsProvider: "elevenlabs" | "gemini"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini") => void;
+  ttsProvider: TtsProvider; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: TtsProvider) => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
+  omniVoiceId: string; setOmniVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void; setBgmVolume: (v: number) => void;
   bgmUploading: boolean; setBgmUploading: (v: boolean) => void;
@@ -114,6 +120,22 @@ export function OrderPanel(p: OrderPanelProps) {
   const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
   const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
   const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
+  const [omniVoices, setOmniVoices] = React.useState<OmniVoiceInfo[]>([]);
+  const [omniVoicesError, setOmniVoicesError] = React.useState("");
+  const [omniLoadAttempt, setOmniLoadAttempt] = React.useState(0);
+  const omniVoiceAvailability = useOmniVoiceAvailability();
+  const omniVoiceEnabled = omniVoiceAvailability === true;
+  const selectedOmniVoice = omniVoices.find((voice) => voice.voice_id === p.omniVoiceId);
+  React.useEffect(() => {
+    if (!omniVoiceEnabled || p.ttsProvider !== "omnivoice") return;
+    let alive = true;
+    setOmniVoicesError("");
+    fetch("/api/omnivoice/voices")
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then((voices) => { if (alive) setOmniVoices(Array.isArray(voices) ? voices : []); })
+      .catch(() => { if (alive) { setOmniVoices([]); setOmniVoicesError("เชื่อมต่อ OmniVoice ไม่ได้"); } });
+    return () => { alive = false; };
+  }, [omniVoiceEnabled, p.ttsProvider, omniLoadAttempt]);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
   const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
 
@@ -493,14 +515,14 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini","elevenlabs"] as const).map(pv => (
+              {(["gemini", "elevenlabs", ...(omniVoiceEnabled || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
                 <button key={pv} onClick={() => p.setTtsProvider(pv)}
                   className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
                     p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
                   style={p.ttsProvider === pv
                     ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
                     : undefined}>
-                  {pv === "gemini" ? "Gemini" : "ElevenLabs"}
+                  {pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : omniVoiceEnabled ? "OmniVoice" : "OmniVoice (ไม่พร้อม)"}
                 </button>
               ))}
             </div>
@@ -581,10 +603,39 @@ export function OrderPanel(p: OrderPanelProps) {
                   className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 text-[11px] font-semibold text-slate-300 placeholder:text-slate-700 outline-none focus:border-violet-500/40 transition-colors" />
               </div>
             )}
+            {p.ttsProvider === "omnivoice" && (
+              <div className="mt-2 space-y-1.5">
+                <div className="text-[10px] text-slate-600">Worker เสียงแยกจากเครื่องเรนเดอร์วิดีโอ · จำกัดคิวอัตโนมัติ</div>
+                {!omniVoiceEnabled ? (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[10px] text-amber-300">
+                    OmniVoice ไม่พร้อมใช้งานในขณะนี้ — เลือก Gemini หรือ ElevenLabs ก่อนเรนเดอร์
+                  </div>
+                ) : omniVoicesError ? (
+                  <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/8 px-3 py-2">
+                    <span className="text-[10px] text-red-400">{omniVoicesError}</span>
+                    <button type="button" onClick={() => setOmniLoadAttempt(value => value + 1)} className="text-[10px] font-bold text-violet-400">ลองใหม่</button>
+                  </div>
+                ) : omniVoices.length === 0 ? (
+                  <div className="px-1 text-[10px] text-slate-600">กำลังโหลดรายการเสียง…</div>
+                ) : (
+                  <select
+                    value={p.omniVoiceId}
+                    onChange={(event) => p.setOmniVoiceId(event.target.value)}
+                    className="w-full rounded-xl border border-[#26262f] bg-[#15151b] px-3 py-2.5 text-[11px] font-semibold text-slate-300 outline-none focus:border-violet-500/40"
+                  >
+                    {omniVoices.map((voice) => (
+                      <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
             <VoicePreviewButton
               provider={p.ttsProvider}
               geminiVoiceName={p.geminiVoiceName}
               voiceId={p.voiceId}
+              omniVoiceId={p.omniVoiceId}
+              omniPreviewUrl={selectedOmniVoice?.preview_url}
               onPlanError={p.onPlanError}
             />
           </div>

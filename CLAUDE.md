@@ -14,7 +14,7 @@
 | DB | **SQLite** via Prisma 6 — `prisma/dev.db` (NOT PostgreSQL) |
 | Hosting | **Hostinger VPS** (Ubuntu, 4 vCPU/15GB) + PM2 + Nginx + Let's Encrypt (NOT Vercel) |
 | Render | **Remotion + headless Chromium + ffmpeg**, runs locally on the VPS (software, no GPU) |
-| AI (all **BYOK** — users supply their own keys; no server AI keys) | Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS), Pexels/Pixabay (stock) |
+| AI | **BYOK by default:** Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS), Pexels/Pixabay (stock). **Managed exception:** team-operated OmniVoice audio-only worker, gated per ADR 0003. |
 | Payments | Stripe — **subscription (auto-renew) + one-time/PromptPay LIVE 06-05**; **Founding-100 (50%/forever, first 100, coupon `FOUNDING100`) + Free trial (7-day PRO) LIVE 06-07**. Config in DB `SiteConfig` (NOT `.env`), loaded by `src/lib/load-stripe-config.ts` |
 | Plans | FREE / PRO / BUSINESS — limits in `src/lib/plan-limits.ts` |
 
@@ -44,7 +44,7 @@
 - **Pricing tiers are admin-editable, NOT hardcoded:** `src/lib/plan-config.ts` is the single source (name/badge/tagline/features/price per tier), read from DB `SiteConfig` keys `plan_<tier>_<field>` (features pipe-delimited) → used by BOTH `/api/plans` (in-app `/pricing`) AND the marketing sale page (`PricingToggle` takes a `plans` prop). Edit at `/admin` → Plan Config. Don't re-hardcode tier features. **Plan LIMITS** (clips/duration/storage) stay in `plan-limits.ts` — backend-ENFORCED, not just display, so they're code not DB.
 - **Pricing display rule:** show effective **monthly price, NO annual total** on both pricing surfaces (full annual amount appears only at Stripe checkout). In-app `/pricing` is a LEAN convert page (personalized trial/usage band) — NOT a second sale page.
 - **Clerk middleware matcher must whitelist static media** (`mp4|webm|mov` in `src/middleware.ts`) or those files get redirected to /login (symptom: poster `.jpg` loads but `<video>` won't play). Any new static media type needs the same.
-- **BYOK:** paid features need the user's own API keys → onboarding must guide key setup.
+- **BYOK by default:** paid external-provider features need the user's own API keys → onboarding must guide key setup. OmniVoice is the sole managed audio exception: server credential only, HTTPS/IP restricted, fail-closed flags + account allowlist, backend AI-audio/minute limits (ADR 0003).
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.
 
 ## Working conventions

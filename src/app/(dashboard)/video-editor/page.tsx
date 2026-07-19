@@ -68,6 +68,7 @@ import { useCreditsQuota, CREDITS_LIVE_CLIENT } from "./_hooks/useCreditsQuota";
 import { useDraftAutosave } from "./_hooks/useDraftAutosave";
 import { WaveformCanvas } from "./_components/WaveformCanvas";
 import { snapPointsFromSilence, snapPointsFromPeaks, snapToNearest } from "./_components/waveform-snap";
+import { parseTtsProvider, visibleTtsProvider, type TtsProvider } from "@/lib/tts-providers";
 
 const STEP_EVENT_LABELS: Record<string, string> = {
   keywords: "หา keyword",
@@ -286,9 +287,10 @@ function LegacyVideoEditorPage() {
   }, [activeCaptionIdx, playing]);
 
   // ── TTS / Voice ───────────────────────────────────────────────────────
-  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
+  const [ttsProvider, setTtsProvider] = useState<TtsProvider>("gemini");
   const [voiceId, setVoiceId] = useState("");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
+  const [omniVoiceId, setOmniVoiceId] = useState("voice_01");
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
@@ -651,7 +653,7 @@ function LegacyVideoEditorPage() {
     fetch("/api/user/video-settings").then(r => r.json()).then(d => {
       if (d.heygenAvatarId) setAvatarId(d.heygenAvatarId);
       if (d.elevenlabsVoiceId) setVoiceId(d.elevenlabsVoiceId);
-      if (d.ttsProvider === "gemini" || d.ttsProvider === "elevenlabs") setTtsProvider(d.ttsProvider);
+      setTtsProvider(visibleTtsProvider(d.ttsProvider));
       if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     }).catch(() => {});
     // (/api/music fetch moved into useBgm)
@@ -931,9 +933,10 @@ function LegacyVideoEditorPage() {
     }
 
     // TTS
-    if (d.ttsProvider) setTtsProvider(d.ttsProvider);
+    if (d.ttsProvider) setTtsProvider(parseTtsProvider(d.ttsProvider));
     if (d.voiceId) setVoiceId(d.voiceId);
     if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
+    if (d.omniVoiceId) setOmniVoiceId(d.omniVoiceId);
 
     // Video + captions (preview)
     setVideoUrl(d.renderedUrl ?? "");
@@ -1074,7 +1077,7 @@ function LegacyVideoEditorPage() {
         burnedVideoUrl: v.videoUrl || undefined,
         compositeUrl: v.avatarVideoUrl || undefined,
         galleryVideoId: v.id,
-        ttsProvider, voiceId, geminiVoiceName,
+        ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
         captions: caps,
         voiceUrl: v.audioUrl || undefined,
         audioDurationMs: cfg?.durationInFrames ? Math.round((cfg.durationInFrames / fps) * 1000) : undefined,
@@ -1124,7 +1127,7 @@ function LegacyVideoEditorPage() {
       galleryVideoId: pipe.current.galleryVideoId,
       compositeUrl: pipe.current.compositeUrl,
 
-      ttsProvider, voiceId, geminiVoiceName,
+      ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
       captions: captionsRef.current,
       voiceUrl: pipe.current.voiceUrl,
       audioDurationMs: pipe.current.audioDurationMs,
@@ -1611,6 +1614,20 @@ function LegacyVideoEditorPage() {
       pipe.current.voiceUrl = url; setTtsUrl(url);
       setWaveformVoiceUrl(url || null);
       setStep("tts", "done", url); return url;
+    } else if (ttsProvider === "omnivoice") {
+      setStep("tts", "running", "OmniVoice TTS...");
+      const res = await fetch("/api/videos/tts-omnivoice", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId }),
+        signal: abortControllerRef.current?.signal,
+      });
+      const data = await res.json();
+      assertOk("TTS", res, data);
+      captureTtsTiming(data);
+      const url = data.voiceUrl as string;
+      pipe.current.voiceUrl = url; setTtsUrl(url);
+      setWaveformVoiceUrl(url || null);
+      setStep("tts", "done", url); return url;
     } else {
       setStep("tts", "running", "ElevenLabs...");
       const res = await fetch("/api/videos/tts", {
@@ -2033,7 +2050,7 @@ function LegacyVideoEditorPage() {
         thumbnail: thumbnailUrl,
         script: script.trim() || null,
         avatarModel: avatarId || "none",
-        voiceModel: voiceId || geminiVoiceName || "unknown",
+        voiceModel: ttsProvider === "omnivoice" ? omniVoiceId : (voiceId || geminiVoiceName || "unknown"),
         sceneCount: pipe.current.scenes?.length ?? 1,
         renderConfig: pipe.current.config ?? null,
         status: opts.status ?? "COMPLETED",
@@ -2938,7 +2955,7 @@ function LegacyVideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -4595,6 +4612,7 @@ function LegacyVideoEditorPage() {
               open={orderPanelOpen} onToggle={() => setOrderPanelOpen(v => !v)}
               ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
               setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
+              omniVoiceId={omniVoiceId} setOmniVoiceId={setOmniVoiceId}
               bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
               setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
               bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}
