@@ -1,6 +1,6 @@
 # ADR 0003: Managed OmniVoice audio worker
 
-- Status: Proposed for canary
+- Status: Accepted for internal canary
 - Date: 2026-07-20
 
 ## Context
