@@ -52,6 +52,9 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
   const activeIdx = checklistIndex(items, job.currentStep);
   const pct = Math.max(0, Math.min(100, job.progress));
   const queued = job.currentStep === null && pct === 0;
+  const queueLabel = job.queuePosition
+    ? `อยู่ในคิว #${job.queuePosition} — เริ่มอัตโนมัติเมื่อถึงลำดับ`
+    : "อยู่ในคิว — เริ่มอัตโนมัติเมื่อถึงลำดับ";
   const etaLabel = exportMode ? "~1–3 นาที" : hasAvatar ? "~15–25 นาที (มีพิธีกร AI)" : "~3–6 นาที";
 
   return (
@@ -75,8 +78,12 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
 
         <div className="text-center">
           <div style={{ font: `600 18px ${font.heading}` }}>{exportMode ? "กำลังส่งออกวิดีโอ" : "กำลังสร้างวิดีโอของคุณ"}</div>
-          <div style={{ fontSize: 11.5, color: color.textSecondary, marginTop: 4 }}>
-            {queued ? "อยู่ในคิว — เริ่มอัตโนมัติเมื่อถึงลำดับ" : `เวลาโดยประมาณ ${etaLabel}`}
+          <div
+            role="status"
+            aria-live="polite"
+            style={{ fontSize: 11.5, color: color.textSecondary, marginTop: 4 }}
+          >
+            {queued ? queueLabel : `เวลาโดยประมาณ ${etaLabel}`}
           </div>
         </div>
 

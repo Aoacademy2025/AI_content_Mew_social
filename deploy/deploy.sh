@@ -143,30 +143,33 @@ mv "$STAGING_DIR" "$APP_DIR/.next"
 unset NEXT_DIST_DIR
 
 echo "=== [6/6] Restart PM2 ==="
-if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
-  pm2 restart "$APP_NAME"
-else
-  pm2 start ecosystem.config.js --only "$APP_NAME"
-fi
+restart_from_ecosystem() {
+  local process_name="$1"
+  if pm2 describe "$process_name" > /dev/null 2>&1; then
+    # Supplying the ecosystem file is load-bearing: a name-only restart preserves
+    # PM2's old environment and silently ignores checked-in runtime config changes.
+    pm2 restart ecosystem.config.js --only "$process_name"
+  else
+    pm2 start ecosystem.config.js --only "$process_name"
+  fi
+}
+
+restart_from_ecosystem "$APP_NAME"
 
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would
 # otherwise leave the worker on stale code (version skew → silently-failing MCP
-# jobs), so restart it in lockstep right after ai-content. --update-env picks up
-# any ecosystem env changes; falls back to start if it isn't running yet.
+# jobs), so reload it from the checked-in ecosystem config in lockstep with ai-content.
 WORKER_NAME="mcp-video-worker"
-if pm2 describe "$WORKER_NAME" > /dev/null 2>&1; then
-  pm2 restart "$WORKER_NAME" --update-env
-else
-  pm2 start ecosystem.config.js --only "$WORKER_NAME"
-fi
+restart_from_ecosystem "$WORKER_NAME"
 
 # PR-7 durable render queue: the render-worker runs the render core (runRender) in
 # its OWN process, so a deploy must restart it in lockstep with ai-content (else it
-# stays on stale render code → version skew). --update-env picks up ecosystem env
-# changes (RENDER_VIA_QUEUE, heap); kill_timeout (30s) lets the in-flight render drain
-# gracefully (cancel + requeue with no attempt consumed). Falls back to start if absent.
-pm2 restart render-worker --update-env || pm2 start ecosystem.config.js --only render-worker --update-env
+# stays on stale render code → version skew). Reloading the ecosystem file applies the
+# reviewed render profile; kill_timeout (30s) still lets an in-flight render drain
+# gracefully (cancel + requeue with no attempt consumed).
+RENDER_WORKER_NAME="render-worker"
+restart_from_ecosystem "$RENDER_WORKER_NAME"
 
 pm2 save
 pm2 startup

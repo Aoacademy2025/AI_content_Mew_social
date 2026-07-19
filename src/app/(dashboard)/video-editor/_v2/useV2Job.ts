@@ -64,6 +64,7 @@ export interface V2JobState {
   projectId: string | null;
   currentStep: string | null;
   progress: number;
+  queuePosition: number | null;
   errorMessage: string | null;
   errorCode: string | null;
   errorProvider: string | null;
@@ -71,7 +72,7 @@ export interface V2JobState {
   mediaState: ProjectMediaState | null;
 }
 
-const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null };
+const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null };
 
 export type SubmitExportInput = {
   sourceJobId: string;
@@ -162,6 +163,7 @@ export function useV2Job(p: V2Project) {
 
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
+    queuePosition?: number | null;
     errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
   }) => {
@@ -179,16 +181,16 @@ export function useV2Job(p: V2Project) {
       stopPolling();
       setJob({
         phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null,
-        currentStep: d.currentStep, progress: 100, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
+        currentStep: d.currentStep, progress: 100, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
         // A fresh job poll is authoritative. Project detail is only a compatibility
         // fallback for a rolling deploy where the poll response lacks mediaState.
         mediaState: mediaStateFromJobPoll(d.mediaState, previewMediaStateRef.current),
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 
@@ -360,7 +362,7 @@ export function useV2Job(p: V2Project) {
         }
         retryAmbiguous = false;
         try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
         startPolling(d.jobId);
         return { ok: true, warning: typeof d?.warning === "string" ? d.warning : undefined };
       } catch {
@@ -441,7 +443,7 @@ export function useV2Job(p: V2Project) {
         }
         retryAmbiguous = false;
         try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
         startPolling(d.jobId);
         return { ok: true };
       } catch {

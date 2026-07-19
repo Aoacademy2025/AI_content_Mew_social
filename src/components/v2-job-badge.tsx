@@ -2,15 +2,19 @@
 
 /**
  * Dashboard badge สำหรับงาน background render ของ Editor v2 (in-app notify — decision #10):
- * อ่าน jobId ที่ v2 จำไว้ใน localStorage → เช็คสถานะ → แถบเล็ก "กำลังทำ/เสร็จแล้ว" + ลิงก์กลับ editor.
+ * อ่าน project/job pointer ที่ server เป็นหลัก → เช็คสถานะ → แถบเล็ก
+ * "กำลังทำ/เสร็จแล้ว" + ลิงก์กลับ project เจ้าของงานโดยตรง.
  * ไม่มีงาน (หรือ v2 ยังไม่เคยใช้) = ไม่ render อะไรเลย — ผู้ใช้ UI เก่าไม่เห็นการเปลี่ยนแปลง
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, CheckCircle2 } from "lucide-react";
-
-const STORAGE_KEY = "editor-v2-job"; // sync กับ useV2Job
+import {
+  editorDashboardJobHref,
+  resolveDashboardEditorJobPointer,
+  type DashboardEditorJobPointer,
+} from "@/lib/editor-dashboard-job";
 
 function browserStorage() {
   if (typeof window === "undefined") return null;
@@ -19,21 +23,36 @@ function browserStorage() {
 }
 
 export function V2JobBadge() {
-  const [state, setState] = useState<{ status: string; progress: number; queuePosition: number | null } | null>(null);
+  const [state, setState] = useState<{
+    pointer: DashboardEditorJobPointer;
+    status: string;
+    progress: number;
+    queuePosition: number | null;
+  } | null>(null);
 
   useEffect(() => {
-    let jobId: string | null = null;
-    try { jobId = browserStorage()?.getItem(STORAGE_KEY) ?? null; } catch {}
-    if (!jobId) return;
     let alive = true;
     const poll = async () => {
       try {
-        const res = await fetch(`/api/videos/jobs/${encodeURIComponent(jobId!)}`);
+        const pointer = await resolveDashboardEditorJobPointer({
+          fetchProjects: () => fetch("/api/editor-projects", { cache: "no-store" }),
+          storage: browserStorage(),
+        });
+        if (!alive) return;
+        if (!pointer) { setState(null); return; }
+        const res = await fetch(`/api/videos/jobs/${encodeURIComponent(pointer.jobId)}`, {
+          cache: "no-store",
+        });
         if (!alive) return;
         if (!res.ok) { if (res.status === 404) setState(null); return; }
         const d = await res.json();
         if (d.status === "queued" || d.status === "processing" || d.status === "done") {
-          setState({ status: d.status, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null });
+          setState({
+            pointer,
+            status: d.status,
+            progress: d.progress ?? 0,
+            queuePosition: d.queuePosition ?? null,
+          });
         } else {
           setState(null);
         }
@@ -49,7 +68,7 @@ export function V2JobBadge() {
 
   return (
     <Link
-      href="/video-editor?ui=v2"
+      href={editorDashboardJobHref(state.pointer)}
       className="mb-3 flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-[12px] transition-colors"
       style={{
         background: running ? "rgba(139,92,246,.10)" : "rgba(52,211,153,.10)",

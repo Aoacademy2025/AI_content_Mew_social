@@ -1,3 +1,21 @@
+// Reviewed KVM8 runtime profile. Keep render-output settings in ONE object so web
+// fallback rendering, --env production, and the durable render workers cannot drift.
+// These are the effective production values verified on 2026-07-19; Batch A only
+// makes them deterministic and does not tune speed or visual quality.
+const renderRuntimeEnv = Object.freeze({
+  RENDER_CONCURRENCY: "3",
+  RENDER_LOW_RESOURCE: "0",
+  RENDER_OFFTHREAD_CACHE_MB: "128",
+  RENDER_JPEG_QUALITY: "90",
+});
+
+// Stock normalization runs in the ai-content fetch-stock route, not render-worker.
+// Explicit defaults prevent a stale .env or caller shell from silently changing it.
+const stockRuntimeEnv = Object.freeze({
+  STOCK_NORMALIZE_CONCURRENCY: "1",
+  STOCK_NORMALIZE_PRESET: "ultrafast",
+});
+
 module.exports = {
   apps: [
   {
@@ -31,17 +49,15 @@ module.exports = {
         NODE_OPTIONS: "--max-old-space-size=3072",
         // Render tuning. Offthread cache lowered 512→128MB: a large per-job cache
         // inflates heap usage during long renders, which contributed to the OOM.
-        RENDER_CONCURRENCY: "4",
-        RENDER_OFFTHREAD_CACHE_MB: "128",
-        // JPEG quality 70 was tuned for the old 15GB box; box is now KVM8 (8c/31Gi)
-        // with headroom to spare, so 90 (2026-07-05) for sharper avatar/b-roll frames.
-        RENDER_JPEG_QUALITY: "90",
+        ...renderRuntimeEnv,
+        ...stockRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
         // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
         // (first live queue render OK; web stays ~0.5GB, isolated). ecosystem env
-        // SHADOWS .env — apply changes with `pm2 restart ecosystem.config.js --only
-        // ai-content` (NOT --update-env, which does not re-read this file).
+        // SHADOWS .env — apply changes by restarting against the checked-in file:
+        // `pm2 restart ecosystem.config.js --only ai-content`. A name-only restart
+        // does not re-read this file.
         // To revert to legacy: set "0" AND restore the 12288 heap + 13G above.
         RENDER_VIA_QUEUE: "1",
       },
@@ -55,6 +71,8 @@ module.exports = {
         // so the flag would be lost if someone starts with `pm2 ... --env production`.
         // Keep in sync with the env block (see the RENDER_VIA_QUEUE notes above).
         RENDER_VIA_QUEUE: "1",
+        ...renderRuntimeEnv,
+        ...stockRuntimeEnv,
       },
     },
     {
@@ -194,7 +212,7 @@ module.exports = {
         // Clamp 1..4 lives in the script (scripts/mcp-video-worker.ts), not here.
         // ecosystem env SHADOWS .env, and a plain `pm2 restart mcp-video-worker` keeps
         // the OLD env; to apply a change here, restart against the FILE:
-        // `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
+        // `pm2 restart ecosystem.config.js --only mcp-video-worker`.
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
@@ -236,16 +254,9 @@ module.exports = {
         // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
         // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
         DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
-        // This block (not .env) is the authoritative source for RENDER_CONCURRENCY —
-        // ecosystem env SHADOWS .env for this process, so a value set only in .env
-        // silently drifts. 2 instances x 3 = 6 frame threads <= 8 cores on the KVM8 box.
-        RENDER_CONCURRENCY: process.env.RENDER_CONCURRENCY || "3",
-        // Render tuning for the worker process. JPEG quality 60 was a memory-headroom
-        // compromise for the old 15GB box; the box is now KVM8 (8c/31Gi) with plenty of
-        // headroom, so 90 (2026-07-05) trades a little more heap/CPU for sharper frames —
-        // the blur users saw was avatar-source resolution + this quality floor compounding.
-        RENDER_OFFTHREAD_CACHE_MB: "128",
-        RENDER_JPEG_QUALITY: "90",
+        // Same authoritative profile used by the web fallback. 2 instances x 3 = 6
+        // frame threads <= 8 cores on KVM8; Batch B owns any future tuning experiment.
+        ...renderRuntimeEnv,
       },
     },
   ],

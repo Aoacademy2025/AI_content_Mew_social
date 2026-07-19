@@ -139,7 +139,7 @@ class HookRunner<T> {
 }
 
 type JobHook = {
-  job: { phase: string };
+  job: { phase: string; queuePosition?: number | null };
   submit(): Promise<{ ok: boolean; message?: string }>;
   submitExport(input: {
     sourceJobId: string;
@@ -888,6 +888,41 @@ function mountAttemptJobHook(
   runner = new HookRunner(() => useV2Job(project));
   runner.mount();
   return runner;
+}
+
+async function queuedPollSurfacesPosition(source: string): Promise<void> {
+  const project = makeJobRuntimeProject("create");
+  project.activeJobId = "queued-position-job";
+  const runner = mountAttemptJobHook(source, project, async (url, init = {}) => {
+    assert.equal(init.method, undefined);
+    assert.equal(url, "/api/videos/jobs/queued-position-job");
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "queued-position-job",
+          projectId: project.projectId,
+          type: "create",
+          status: "queued",
+          currentStep: null,
+          progress: 0,
+          queuePosition: 4,
+          errorMessage: null,
+          errorCode: null,
+          errorProvider: null,
+        };
+      },
+    };
+  });
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  runner.flush();
+  assert.equal(
+    runner.current.job.queuePosition,
+    4,
+    "a queued API response surfaces its 1-based queue position through the Editor V2 job state",
+  );
+  runner.unmount();
 }
 
 async function runAttempt(
@@ -1915,6 +1950,7 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
 }
 
 export async function verifyProjectJobRuntimeGate(): Promise<void> {
+  await queuedPollSurfacesPosition(jobSource);
   await sameTickConflictBlocksSubmitAndExport(jobSource);
   await archiveCompletionOwnsDeterministicTransition();
   await archiveUnmountInvalidatesLateCompletion();
@@ -1930,6 +1966,17 @@ export async function verifyProjectJobRuntimeGate(): Promise<void> {
 }
 
 export async function verifyProjectJobGateMutationSensitivity(): Promise<void> {
+  const dropsQueuePosition = jobSource.replace(
+    "queuePosition: d.queuePosition ?? null",
+    "queuePosition: null",
+  );
+  assert.notEqual(dropsQueuePosition, jobSource, "queue-position mutant applied");
+  await assert.rejects(
+    () => queuedPollSurfacesPosition(dropsQueuePosition),
+    /a queued API response surfaces its 1-based queue position/,
+    "runtime harness rejects a job state that drops the server queue position",
+  );
+
   const missingGuards = jobSource.replaceAll(
     "    if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };\n",
     "",
