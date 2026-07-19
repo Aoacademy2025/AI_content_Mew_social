@@ -326,7 +326,7 @@ export async function POST(req: Request) {
 
     if (!uploadMode && voiceProvider === "omnivoice") {
       if (!isOmniVoiceUserAllowed(user.id)) {
-        return NextResponse.json({ error: "not_enabled", message: "OmniVoice ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
+        return NextResponse.json({ error: "not_enabled", message: "Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
       }
       let config: ReturnType<typeof omnivoiceConfig>;
       try {
@@ -335,7 +335,7 @@ export async function POST(req: Request) {
         if (error instanceof OmniVoiceConfigError) {
           return NextResponse.json({
             error: "omnivoice_unavailable",
-            message: "OmniVoice ยังไม่พร้อมใช้งาน กรุณาสลับเป็น Gemini หรือ ElevenLabs",
+            message: "Hero Voice ยังไม่พร้อมใช้งาน กรุณาสลับเป็น Gemini หรือ ElevenLabs",
           }, { status: 503 });
         }
         throw error;
@@ -343,18 +343,18 @@ export async function POST(req: Request) {
       if (!await checkOmniVoiceReady(config)) {
         return NextResponse.json({
           error: "omnivoice_unavailable",
-          message: "OmniVoice ยังไม่พร้อมรับงาน กรุณาลองใหม่ภายหลังหรือสลับเป็น Gemini/ElevenLabs",
+          message: "Hero Voice ยังไม่พร้อมรับงาน กรุณาลองใหม่ภายหลังหรือสลับเป็น Gemini/ElevenLabs",
         }, { status: 503 });
       }
       if (script.length > config.maxScriptChars) {
         return NextResponse.json({
           error: "omnivoice_script_too_long",
-          message: `OmniVoice บนเครื่องปัจจุบันรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับผู้ให้บริการเสียง`,
+          message: `Hero Voice รุ่นทดลองรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับผู้ให้บริการเสียง`,
           maxChars: config.maxScriptChars,
         }, { status: 413 });
       }
       if (!omniVoiceId || !isValidOmniVoiceId(omniVoiceId)) {
-        return NextResponse.json({ error: "missing_voice_id", message: "กรุณาเลือกเสียง OmniVoice" }, { status: 400 });
+        return NextResponse.json({ error: "missing_voice_id", message: "กรุณาเลือกเสียง Hero Voice" }, { status: 400 });
       }
     }
 

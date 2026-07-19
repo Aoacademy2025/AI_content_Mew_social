@@ -24,7 +24,7 @@ export async function GET() {
     });
     if (!response.ok) {
       console.error(`[omnivoice/voices] upstream status=${response.status}`);
-      return NextResponse.json({ error: "OmniVoice unavailable" }, { status: 503 });
+      return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
     }
     const payload: unknown = await response.json();
     if (!Array.isArray(payload)) throw new Error("invalid voices payload");
@@ -42,6 +42,6 @@ export async function GET() {
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[omnivoice/voices] request failed:", error instanceof Error ? error.message : error);
     }
-    return NextResponse.json({ error: "OmniVoice unavailable" }, { status: 503 });
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
   }
 }

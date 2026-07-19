@@ -381,7 +381,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
     if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(userId)) {
-      throw new Error("OmniVoice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
+      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
     }
     const provider = requestedProvider;
 

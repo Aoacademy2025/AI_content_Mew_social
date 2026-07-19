@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { XCircle, ChevronLeft, BookOpen, RotateCcw, FolderOpen, Plus, Check, CheckCircle2, Download, Loader2, Trash2 } from "lucide-react";
+import { XCircle, ChevronLeft, BookOpen, FolderOpen, Plus, Check, CheckCircle2, Download, Loader2, Trash2 } from "lucide-react";
 import { color, font } from "./tokens";
 import { v2FontClass } from "./fonts";
 import { StepIndicator, BtnPrimary, BtnSecondary, BtnGhost } from "./ui";
@@ -555,12 +555,6 @@ export function EditorV2Shell() {
                     <BookOpen className="mr-2 h-4 w-4" />
                     วิธีใช้งาน
                   </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild className="cursor-pointer lg:hidden">
-                  <a href="/video-editor?ui=v1">
-                    <RotateCcw className="mr-2 h-4 w-4" />
-                    UI เดิม (รุ่นเก่า)
-                  </a>
                 </DropdownMenuItem>
               </>
             }
